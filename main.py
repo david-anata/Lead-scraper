@@ -408,6 +408,41 @@ def rows_to_csv(rows: List[Dict[str, Any]]) -> str:
     return output.getvalue()
 
 
+def build_debug_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, Any]]:
+    debug_rows: List[Dict[str, Any]] = []
+
+    for d in domains[:10]:
+        domain_name = normalize_domain(str(safe_get(d, "name") or ""))
+        sales = monthly_sales_usd(d)
+        employees = safe_get(d, "employee_count")
+        tech_names = ", ".join(get_tech_names(d))
+        amazon_tier, amazon_uncertain = infer_amazon_tier(d)
+
+        debug_rows.append(
+            {
+                "domain": domain_name,
+                "brand_name": safe_get(d, "title", "name") or domain_name,
+                "country": safe_get(d, "country_code", "country") or "",
+                "state": d.get("state") or "",
+                "city": d.get("city") or "",
+                "revenue_band": sales or "",
+                "employee_count": employees or "",
+                "categories": ", ".join(d.get("tags") or []),
+                "uses_shipstation": uses_shipping_app(d),
+                "amazon_tier": amazon_tier,
+                "amazon_uncertain": amazon_uncertain,
+                "decision_maker_name": "DEBUG_NO_CONTACTS",
+                "decision_maker_title": tech_names,
+                "decision_maker_email": "debug@example.com",
+                "decision_maker_linkedin_url": "",
+                "source": "DEBUG",
+                "date_added": run_date,
+            }
+        )
+
+    return debug_rows
+
+
 @app.get("/")
 def home():
     return {"status": "Agent server running"}
@@ -417,8 +452,19 @@ def home():
 def run_icp_build(payload: ICPBuildRequest):
     domains = list_storeleads_domains(payload.max_stores)
     rows = build_rows(domains, payload.date)
-    csv_text = rows_to_csv(rows)
 
+    if not rows:
+        debug_rows = build_debug_rows(domains, payload.date)
+        csv_text = rows_to_csv(debug_rows)
+        filename = f"icp_debug_{payload.date}.csv"
+
+        return StreamingResponse(
+            iter([csv_text]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    csv_text = rows_to_csv(rows)
     filename = f"icp_export_{payload.date}.csv"
 
     return StreamingResponse(
