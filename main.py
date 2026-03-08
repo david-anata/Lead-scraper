@@ -5,6 +5,7 @@ import csv
 import io
 import os
 import json
+import time
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -310,29 +311,46 @@ def apollo_search_people(domain: str) -> List[Dict[str, Any]]:
         "page": 1,
     }
 
-    try:
-        response = requests.post(
-            APOLLO_PEOPLE_SEARCH,
-            headers=apollo_headers(),
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if response.status_code == 403:
-            raise HTTPException(
-                status_code=500,
-                detail="Apollo People API Search returned 403. Your Apollo key likely is not a master API key.",
-            )
-        response.raise_for_status()
-    except HTTPException:
-        raise
-    except requests.HTTPError as e:
-        detail = f"Apollo people search error {e.response.status_code}: {e.response.text[:500]}"
-        raise HTTPException(status_code=502, detail=detail)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Apollo people search failed: {str(e)}")
+    max_attempts = 3
+    delay_seconds = 2
 
-    data = response.json()
-    return data.get("people") or []
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(
+                APOLLO_PEOPLE_SEARCH,
+                headers=apollo_headers(),
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if response.status_code == 403:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Apollo People API Search returned 403. Your Apollo key likely is not a master API key.",
+                )
+
+            if response.status_code == 429:
+                if attempt < max_attempts - 1:
+                    time.sleep(delay_seconds)
+                    continue
+                raise HTTPException(
+                    status_code=502,
+                    detail="Apollo people search hit rate limit (429). Reduce run size or wait and retry."
+                )
+
+            response.raise_for_status()
+            data = response.json()
+            return data.get("people") or []
+
+        except HTTPException:
+            raise
+        except requests.HTTPError as e:
+            detail = f"Apollo people search error {e.response.status_code}: {e.response.text[:500]}"
+            raise HTTPException(status_code=502, detail=detail)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Apollo people search failed: {str(e)}")
+
+    return []
 
 
 def apollo_bulk_match(people: List[Dict[str, Any]], company_domain: str) -> List[Dict[str, Any]]:
@@ -348,57 +366,69 @@ def apollo_bulk_match(people: List[Dict[str, Any]], company_domain: str) -> List
     if not details:
         return []
 
+    max_attempts = 3
+    delay_seconds = 2
+
     payload = {
         "details": details,
         "reveal_personal_emails": False,
         "reveal_phone_number": False,
     }
 
-    try:
-        response = requests.post(
-            APOLLO_BULK_MATCH,
-            headers=apollo_headers(),
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        detail = f"Apollo bulk match error {e.response.status_code}: {e.response.text[:500]}"
-        raise HTTPException(status_code=502, detail=detail)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Apollo bulk_match failed: {str(e)}")
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(
+                APOLLO_BULK_MATCH,
+                headers=apollo_headers(),
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+            )
 
-    data = response.json()
-    raw_people = data.get("people") or data.get("matches") or data.get("contacts") or []
+            if response.status_code == 429:
+                if attempt < max_attempts - 1:
+                    time.sleep(delay_seconds)
+                    continue
+                return []
 
-    enriched = []
-    for p in raw_people:
-        email = str(p.get("email") or "").strip().lower()
-        if not email:
-            continue
-        if email.startswith(GENERIC_PREFIXES):
-            continue
-        if not email.endswith("@" + company_domain):
-            continue
+            response.raise_for_status()
+            data = response.json()
+            raw_people = data.get("people") or data.get("matches") or data.get("contacts") or []
 
-        enriched.append(
-            {
-                "name": p.get("name") or p.get("full_name") or "",
-                "title": p.get("title") or "",
-                "email": email,
-                "linkedin_url": p.get("linkedin_url") or p.get("linkedin_profile_url") or "",
-            }
-        )
+            enriched = []
+            for p in raw_people:
+                email = str(p.get("email") or "").strip().lower()
+                if not email:
+                    continue
+                if email.startswith(GENERIC_PREFIXES):
+                    continue
+                if not email.endswith("@" + company_domain):
+                    continue
 
-    def title_rank(item: Dict[str, str]) -> int:
-        title = str(item.get("title") or "").lower()
-        for i, pref in enumerate(CONTACT_TITLE_PRIORITY):
-            if pref in title:
-                return i
-        return 999
+                enriched.append(
+                    {
+                        "name": p.get("name") or p.get("full_name") or "",
+                        "title": p.get("title") or "",
+                        "email": email,
+                        "linkedin_url": p.get("linkedin_url") or p.get("linkedin_profile_url") or "",
+                    }
+                )
 
-    enriched.sort(key=title_rank)
-    return enriched[:2]
+            def title_rank(item: Dict[str, str]) -> int:
+                title = str(item.get("title") or "").lower()
+                for i, pref in enumerate(CONTACT_TITLE_PRIORITY):
+                    if pref in title:
+                        return i
+                return 999
+
+            enriched.sort(key=title_rank)
+            return enriched[:2]
+
+        except requests.HTTPError:
+            return []
+        except Exception:
+            return []
+
+    return []
 
 
 def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, Any]]:
@@ -409,6 +439,8 @@ def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, A
         domain_name = normalize_domain(str(safe_get(d, "name") or ""))
         if not domain_name:
             continue
+
+        time.sleep(1.3)
 
         amazon_tier, amazon_uncertain = infer_amazon_tier(d)
         contacts = apollo_bulk_match(apollo_search_people(domain_name), domain_name)
