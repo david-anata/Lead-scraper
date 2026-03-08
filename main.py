@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import csv
 import io
 import os
+import json
 import requests
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -236,7 +237,7 @@ def fetch_storeleads_page(page: int, page_size: int) -> List[Dict[str, Any]]:
     payload = {
         "page": page,
         "page_size": page_size,
-        "bq": build_storeleads_bq(),
+        "bq": json.dumps(build_storeleads_bq()),
         "fields": ",".join(
             [
                 "name",
