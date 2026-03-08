@@ -27,9 +27,7 @@ MAX_EMPLOYEES = 25
 MAX_STORELEADS_PAGES = 10
 STORELEADS_PAGE_SIZE = 100
 
-SHIPSTATION_KEYWORDS = [
-    "shipstation",
-]
+TECH_MATCH = "Aftership ShipStation Easyship Pirate Ship Shippo ShippingEasy ShipHero"
 
 AMAZON_SIGNAL_KEYWORDS = [
     "amazon",
@@ -118,14 +116,6 @@ def get_tech_names(domain: Dict[str, Any]) -> List[str]:
     return names
 
 
-def uses_shipstation(domain: Dict[str, Any]) -> bool:
-    tech_names = [t.lower() for t in get_tech_names(domain)]
-    return any(
-        any(keyword in tech for keyword in SHIPSTATION_KEYWORDS)
-        for tech in tech_names
-    )
-
-
 def infer_amazon_tier(domain: Dict[str, Any]) -> Tuple[str, bool]:
     sales_channels = domain.get("sales_channels") or []
     tech_names = [t.lower() for t in get_tech_names(domain)]
@@ -155,12 +145,39 @@ def monthly_sales_usd(domain: Dict[str, Any]) -> Optional[float]:
         return None
 
 
+def matches_icp(domain: Dict[str, Any]) -> bool:
+    platform = str(safe_get(domain, "platform") or "").lower()
+    country = str(safe_get(domain, "country_code", "country") or "").upper()
+    employees = safe_get(domain, "employee_count")
+    sales = monthly_sales_usd(domain)
+
+    if platform != "shopify":
+        return False
+
+    if country != "US":
+        return False
+
+    if employees is not None:
+        try:
+            if int(employees) > MAX_EMPLOYEES:
+                return False
+        except Exception:
+            pass
+
+    if sales is None:
+        return False
+
+    if sales < MIN_MONTHLY_REVENUE or sales > MAX_MONTHLY_REVENUE:
+        return False
+
+    return True
+
+
 def icp_rejection_reason(domain: Dict[str, Any]) -> str:
     platform = str(safe_get(domain, "platform") or "").lower()
     country = str(safe_get(domain, "country_code", "country") or "").upper()
     employees = safe_get(domain, "employee_count")
     sales = monthly_sales_usd(domain)
-    shipstation = uses_shipstation(domain)
 
     if platform != "shopify":
         return f"platform={platform}"
@@ -178,21 +195,48 @@ def icp_rejection_reason(domain: Dict[str, Any]) -> str:
         return f"sales_too_low ({sales})"
     if sales > MAX_MONTHLY_REVENUE:
         return f"sales_too_high ({sales})"
-    if not shipstation:
-        return "no_shipstation_detected"
     return "match"
 
 
-def matches_icp(domain: Dict[str, Any]) -> bool:
-    return icp_rejection_reason(domain) == "match"
+def build_storeleads_bq() -> Dict[str, Any]:
+    return {
+        "must": {
+            "conjuncts": [
+                {
+                    "field": "p",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "1"
+                },
+                {
+                    "field": "tech",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": TECH_MATCH
+                },
+                {
+                    "field": "cc",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "US"
+                },
+                {
+                    "field": "er",
+                    "min": MIN_MONTHLY_REVENUE,
+                    "max": MAX_MONTHLY_REVENUE,
+                    "inclusive_min": True,
+                    "inclusive_max": True
+                }
+            ]
+        }
+    }
 
 
 def fetch_storeleads_page(page: int, page_size: int) -> List[Dict[str, Any]]:
     payload = {
         "page": page,
         "page_size": page_size,
-        "f:p": "shopify",
-        "f:cc": "US",
+        "bq": build_storeleads_bq(),
         "fields": ",".join(
             [
                 "name",
@@ -236,7 +280,7 @@ def collect_candidate_domains(max_stores: int, first_page_only: bool) -> List[Di
 
     pages_to_scan = 1 if first_page_only else MAX_STORELEADS_PAGES
 
-    for page in range(1, pages_to_scan + 1):
+    for page in range(0, pages_to_scan):
         domains = fetch_storeleads_page(page=page, page_size=STORELEADS_PAGE_SIZE)
         if not domains:
             break
@@ -388,7 +432,7 @@ def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, A
                     "revenue_band": monthly_sales_usd(d) or "",
                     "employee_count": d.get("employee_count") or "",
                     "categories": ", ".join(d.get("tags") or []),
-                    "uses_shipstation": uses_shipstation(d),
+                    "uses_shipstation": True,
                     "amazon_tier": amazon_tier,
                     "amazon_uncertain": amazon_uncertain,
                     "decision_maker_name": c.get("name") or "",
@@ -435,7 +479,7 @@ def build_debug_rows(run_date: str, first_page_only: bool) -> List[Dict[str, Any
     pages_to_scan = 1 if first_page_only else MAX_STORELEADS_PAGES
 
     collected = 0
-    for page in range(1, pages_to_scan + 1):
+    for page in range(0, pages_to_scan):
         domains = fetch_storeleads_page(page=page, page_size=STORELEADS_PAGE_SIZE)
         if not domains:
             break
@@ -461,7 +505,7 @@ def build_debug_rows(run_date: str, first_page_only: bool) -> List[Dict[str, Any
                     "revenue_band": sales or "",
                     "employee_count": employees or "",
                     "categories": reason,
-                    "uses_shipstation": uses_shipstation(d),
+                    "uses_shipstation": True,
                     "amazon_tier": amazon_tier,
                     "amazon_uncertain": amazon_uncertain,
                     "decision_maker_name": "DEBUG_NO_MATCHES",
