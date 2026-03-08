@@ -18,16 +18,14 @@ APOLLO_BULK_MATCH = "https://api.apollo.io/api/v1/people/bulk_match"
 
 REQUEST_TIMEOUT = 60
 
-SHIPPING_TECH_KEYWORDS = [
+# SMB-focused revenue range
+MIN_MONTHLY_REVENUE = 10000
+MAX_MONTHLY_REVENUE = 300000
+
+MAX_EMPLOYEES = 25
+
+SHIPSTATION_KEYWORDS = [
     "shipstation",
-    "shippo",
-    "easyship",
-    "shippingeasy",
-    "shiphero",
-    "aftership",
-    "desktopshipper",
-    "ordercup",
-    "pirate ship",
 ]
 
 AMAZON_SIGNAL_KEYWORDS = [
@@ -112,15 +110,15 @@ def get_tech_names(domain: Dict[str, Any]) -> List[str]:
             if name:
                 names.append(str(name))
         elif isinstance(t, str):
-            names.append(t)
+            names.append(str(t))
 
     return names
 
 
-def uses_shipping_app(domain: Dict[str, Any]) -> bool:
+def uses_shipstation(domain: Dict[str, Any]) -> bool:
     tech_names = [t.lower() for t in get_tech_names(domain)]
     return any(
-        any(keyword in tech for keyword in SHIPPING_TECH_KEYWORDS)
+        any(keyword in tech for keyword in SHIPSTATION_KEYWORDS)
         for tech in tech_names
     )
 
@@ -149,7 +147,7 @@ def monthly_sales_usd(domain: Dict[str, Any]) -> Optional[float]:
         return None
 
     try:
-        return float(value) / 100.0
+        return float(value)
     except Exception:
         return None
 
@@ -168,7 +166,7 @@ def matches_icp(domain: Dict[str, Any]) -> bool:
 
     if employees is not None:
         try:
-            if int(employees) > 25:
+            if int(employees) > MAX_EMPLOYEES:
                 return False
         except Exception:
             pass
@@ -176,10 +174,10 @@ def matches_icp(domain: Dict[str, Any]) -> bool:
     if sales is None:
         return False
 
-    if sales < 10000 or sales > 200000:
+    if sales < MIN_MONTHLY_REVENUE or sales > MAX_MONTHLY_REVENUE:
         return False
 
-    if not uses_shipping_app(domain):
+    if not uses_shipstation(domain):
         return False
 
     return True
@@ -190,7 +188,7 @@ def list_storeleads_domains(max_stores: int) -> List[Dict[str, Any]]:
         "page_size": min(max_stores, 100),
         "f:p": "shopify",
         "f:cc": "US",
-        "f:empcmax": 25,
+        "f:empcmax": MAX_EMPLOYEES,
         "fields": ",".join(
             [
                 "name",
@@ -363,7 +361,7 @@ def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, A
                     "revenue_band": monthly_sales_usd(d) or "",
                     "employee_count": d.get("employee_count") or "",
                     "categories": ", ".join(d.get("tags") or []),
-                    "uses_shipstation": uses_shipping_app(d),
+                    "uses_shipstation": uses_shipstation(d),
                     "amazon_tier": amazon_tier,
                     "amazon_uncertain": amazon_uncertain,
                     "decision_maker_name": c.get("name") or "",
@@ -411,7 +409,7 @@ def rows_to_csv(rows: List[Dict[str, Any]]) -> str:
 def build_debug_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, Any]]:
     debug_rows: List[Dict[str, Any]] = []
 
-    for d in domains[:10]:
+    for d in domains[:15]:
         domain_name = normalize_domain(str(safe_get(d, "name") or ""))
         sales = monthly_sales_usd(d)
         employees = safe_get(d, "employee_count")
@@ -428,7 +426,7 @@ def build_debug_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[
                 "revenue_band": sales or "",
                 "employee_count": employees or "",
                 "categories": ", ".join(d.get("tags") or []),
-                "uses_shipstation": uses_shipping_app(d),
+                "uses_shipstation": uses_shipstation(d),
                 "amazon_tier": amazon_tier,
                 "amazon_uncertain": amazon_uncertain,
                 "decision_maker_name": "DEBUG_NO_CONTACTS",
