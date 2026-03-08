@@ -1,13 +1,61 @@
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
-import os
+from pydantic import BaseModel
 import csv
 import io
+import os
+import requests
+from typing import Any, Dict, List, Optional
 
 app = FastAPI()
 
-API_SECRET = os.getenv("GPT_ACTION_SECRET")
+STORELEADS_API_KEY = os.getenv("STORELEADS_API_KEY")
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
+GPT_ACTION_SECRET = os.getenv("GPT_ACTION_SECRET")
+
+STORELEADS_BASE = "https://storeleads.app/json/api/v1/all/domain"
+APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
+APOLLO_BULK_MATCH = "https://api.apollo.io/api/v1/people/bulk_match"
+
+REQUEST_TIMEOUT = 60
+
+SHIPPING_TECH_KEYWORDS = [
+    "shipstation",
+    "shippo",
+    "easyship",
+    "shippingeasy",
+    "shiphero",
+    "aftership",
+    "desktopshipper",
+    "ordercup",
+    "pirate ship",
+]
+
+AMAZON_SIGNAL_KEYWORDS = [
+    "amazon",
+    "marketplace connect",
+    "codisto",
+    "cedcommerce",
+    "buy with prime",
+    "amazon mcf",
+]
+
+CONTACT_TITLE_PRIORITY = [
+    "founder",
+    "co-founder",
+    "cofounder",
+    "ceo",
+    "owner",
+    "head of ecommerce",
+    "head of e-commerce",
+    "head of operations",
+    "vp marketing",
+    "director of marketing",
+    "ecommerce lead",
+    "e-commerce lead",
+]
+
+GENERIC_PREFIXES = ("info@", "hello@", "support@", "contact@", "admin@")
 
 
 class ICPBuildRequest(BaseModel):
@@ -15,6 +63,330 @@ class ICPBuildRequest(BaseModel):
     sheet_name: str = "ICP Export"
     max_stores: int = 100
     first_page_only: bool = True
+
+
+def require_auth(authorization: Optional[str]) -> None:
+    if GPT_ACTION_SECRET and authorization != f"Bearer {GPT_ACTION_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def storeleads_headers() -> Dict[str, str]:
+    if not STORELEADS_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STORELEADS_API_KEY")
+    return {"Authorization": f"Bearer {STORELEADS_API_KEY}"}
+
+
+def apollo_headers() -> Dict[str, str]:
+    if not APOLLO_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing APOLLO_API_KEY")
+    return {
+        "X-Api-Key": APOLLO_API_KEY,
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "Accept": "application/json",
+    }
+
+
+def safe_get(d: Dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
+
+
+def normalize_domain(value: str) -> str:
+    return value.replace("https://", "").replace("http://", "").replace("www.", "").strip("/").lower()
+
+
+def get_tech_names(domain: Dict[str, Any]) -> List[str]:
+    techs = domain.get("technologies") or []
+    names = []
+    for t in techs:
+        name = t.get("name")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def uses_shipping_app(domain: Dict[str, Any]) -> bool:
+    tech_names = [t.lower() for t in get_tech_names(domain)]
+    return any(any(k in tech for k in SHIPPING_TECH_KEYWORDS) for tech in tech_names)
+
+
+def infer_amazon_tier(domain: Dict[str, Any]) -> (str, bool):
+    sales_channels = domain.get("sales_channels") or []
+    tech_names = [t.lower() for t in get_tech_names(domain)]
+    description = (domain.get("description") or "").lower()
+
+    if any(str(ch).lower() == "amazon" for ch in sales_channels):
+        return "A", False
+
+    for tech in tech_names:
+        if any(sig in tech for sig in AMAZON_SIGNAL_KEYWORDS):
+            return "A", False
+
+    if "amazon" in description:
+        return "A", True
+
+    return "B", True
+
+
+def monthly_sales_usd(domain: Dict[str, Any]) -> Optional[float]:
+    # StoreLeads estimated_sales is monthly sales in cents of USD.
+    value = safe_get(domain, "estimated_sales")
+    if value is None:
+        return None
+    try:
+        return float(value) / 100.0
+    except Exception:
+        return None
+
+
+def matches_icp(domain: Dict[str, Any]) -> bool:
+    platform = str(safe_get(domain, "platform") or "").lower()
+    country = str(safe_get(domain, "country_code", "country") or "").upper()
+    employees = safe_get(domain, "employee_count")
+    sales = monthly_sales_usd(domain)
+
+    if platform not in ("shopify",):
+        return False
+    if country != "US":
+        return False
+    if employees is not None:
+        try:
+            if int(employees) > 25:
+                return False
+        except Exception:
+            pass
+    if sales is None:
+        return False
+    if sales < 10000 or sales > 200000:
+        return False
+    if not uses_shipping_app(domain):
+        return False
+    return True
+
+
+def list_storeleads_domains(max_stores: int) -> List[Dict[str, Any]]:
+    """
+    First page only, capped batch.
+    """
+    payload = {
+        "page_size": min(max_stores, 100),
+        "f:p": "shopify",
+        "f:cc": "US",
+        "f:empcmax": 25,
+        # Ask for likely-needed fields explicitly.
+        "fields": ",".join([
+            "name",
+            "title",
+            "platform",
+            "country_code",
+            "state",
+            "city",
+            "employee_count",
+            "estimated_sales",
+            "description",
+            "sales_channels",
+            "shipping_carriers",
+            "technologies",
+            "tags",
+        ]),
+    }
+
+    try:
+        r = requests.post(
+            STORELEADS_BASE,
+            headers=storeleads_headers(),
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        detail = f"StoreLeads error {e.response.status_code}: {e.response.text[:500]}"
+        raise HTTPException(status_code=502, detail=detail)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"StoreLeads request failed: {str(e)}")
+
+    data = r.json()
+    return data.get("domains", [])[:max_stores]
+
+
+def apollo_search_people(domain: str) -> List[Dict[str, Any]]:
+    """
+    Requires Apollo master API key.
+    """
+    payload = {
+        "q_organization_domains": [domain],
+        "person_titles": CONTACT_TITLE_PRIORITY,
+        "per_page": 10,
+        "page": 1,
+    }
+
+    try:
+        r = requests.post(
+            APOLLO_PEOPLE_SEARCH,
+            headers=apollo_headers(),
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code == 403:
+            raise HTTPException(
+                status_code=500,
+                detail="Apollo People API Search returned 403. Your Apollo key likely is not a master API key."
+            )
+        r.raise_for_status()
+    except HTTPException:
+        raise
+    except requests.HTTPError as e:
+        detail = f"Apollo people search error {e.response.status_code}: {e.response.text[:500]}"
+        raise HTTPException(status_code=502, detail=detail)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Apollo people search failed: {str(e)}")
+
+    data = r.json()
+    people = data.get("people") or []
+    return people
+
+
+def apollo_bulk_match(people: List[Dict[str, Any]], company_domain: str) -> List[Dict[str, Any]]:
+    if not people:
+        return []
+
+    details = []
+    for p in people[:10]:
+        person_id = p.get("id") or p.get("person_id")
+        if not person_id:
+            continue
+        details.append({"id": person_id})
+
+    if not details:
+        return []
+
+    payload = {
+        "details": details,
+        "reveal_personal_emails": False,
+        "reveal_phone_number": False,
+    }
+
+    try:
+        r = requests.post(
+            APOLLO_BULK_MATCH,
+            headers=apollo_headers(),
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        detail = f"Apollo bulk match error {e.response.status_code}: {e.response.text[:500]}"
+        raise HTTPException(status_code=502, detail=detail)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Apollo bulk match failed: {str(e)}")
+
+    data = r.json()
+
+    # Apollo response shape can vary slightly.
+    raw_people = data.get("people") or data.get("matches") or data.get("contacts") or []
+    enriched = []
+
+    for p in raw_people:
+        email = (p.get("email") or "").strip().lower()
+        if not email:
+            continue
+        if email.startswith(GENERIC_PREFIXES):
+            continue
+        if not email.endswith("@" + company_domain):
+            continue
+
+        enriched.append({
+            "name": p.get("name") or p.get("full_name") or "",
+            "title": p.get("title") or "",
+            "email": email,
+            "linkedin_url": p.get("linkedin_url") or p.get("linkedin_profile_url") or "",
+        })
+
+    # Priority sort by preferred titles
+    def title_rank(item: Dict[str, str]) -> int:
+        t = (item.get("title") or "").lower()
+        for i, pref in enumerate(CONTACT_TITLE_PRIORITY):
+            if pref in t:
+                return i
+        return 999
+
+    enriched.sort(key=title_rank)
+    return enriched[:2]
+
+
+def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+
+    for d in domains:
+        domain_name = normalize_domain(str(safe_get(d, "name") or ""))
+        if not domain_name:
+            continue
+        if not matches_icp(d):
+            continue
+
+        amazon_tier, amazon_uncertain = infer_amazon_tier(d)
+
+        contacts = apollo_bulk_match(apollo_search_people(domain_name), domain_name)
+
+        for c in contacts:
+            email = (c.get("email") or "").strip().lower()
+            dedupe_key = f"{domain_name}|{email}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            rows.append({
+                "domain": domain_name,
+                "brand_name": safe_get(d, "title", "name") or domain_name,
+                "country": safe_get(d, "country_code", "country") or "",
+                "state": d.get("state") or "",
+                "city": d.get("city") or "",
+                "revenue_band": monthly_sales_usd(d) or "",
+                "employee_count": d.get("employee_count") or "",
+                "categories": ", ".join(d.get("tags") or []),
+                "uses_shipstation": uses_shipping_app(d),
+                "amazon_tier": amazon_tier,
+                "amazon_uncertain": amazon_uncertain,
+                "decision_maker_name": c.get("name") or "",
+                "decision_maker_title": c.get("title") or "",
+                "decision_maker_email": email,
+                "decision_maker_linkedin_url": c.get("linkedin_url") or "",
+                "source": "StoreLeads+Apollo",
+                "date_added": run_date,
+            })
+
+    return rows
+
+
+def rows_to_csv(rows: List[Dict[str, Any]]) -> str:
+    output = io.StringIO()
+    fieldnames = [
+        "domain",
+        "brand_name",
+        "country",
+        "state",
+        "city",
+        "revenue_band",
+        "employee_count",
+        "categories",
+        "uses_shipstation",
+        "amazon_tier",
+        "amazon_uncertain",
+        "decision_maker_name",
+        "decision_maker_title",
+        "decision_maker_email",
+        "decision_maker_linkedin_url",
+        "source",
+        "date_added",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
 
 
 @app.get("/")
@@ -25,84 +397,17 @@ def home():
 @app.post("/run-icp-build")
 def run_icp_build(
     payload: ICPBuildRequest,
-    authorization: str | None = Header(default=None)
+    authorization: Optional[str] = Header(default=None)
 ):
-    if API_SECRET and authorization != f"Bearer {API_SECRET}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_auth(authorization)
 
-    # Placeholder sample data for now
-    rows = [
-        {
-            "domain": "brandone.com",
-            "brand_name": "Brand One",
-            "country": "US",
-            "amazon_tier": "A",
-            "decision_maker_name": "Jane Smith",
-            "decision_maker_title": "Founder",
-            "decision_maker_email": "jane@brandone.com",
-            "date_added": payload.date
-        },
-        {
-            "domain": "brandone.com",
-            "brand_name": "Brand One",
-            "country": "US",
-            "amazon_tier": "A",
-            "decision_maker_name": "Jane Smith",
-            "decision_maker_title": "Founder",
-            "decision_maker_email": "jane@brandone.com",
-            "date_added": payload.date
-        },
-        {
-            "domain": "brandtwo.com",
-            "brand_name": "Brand Two",
-            "country": "US",
-            "amazon_tier": "B",
-            "decision_maker_name": "Mike Lee",
-            "decision_maker_title": "Head of Ecommerce",
-            "decision_maker_email": "mike@brandtwo.com",
-            "date_added": payload.date
-        }
-    ]
-
-    # Deduplicate by domain + email
-    seen = set()
-    deduped_rows = []
-    for row in rows:
-        email = row.get("decision_maker_email", "").strip().lower()
-        domain = row.get("domain", "").strip().lower()
-
-        if not email or not domain:
-            continue
-
-        key = f"{domain}|{email}"
-        if key in seen:
-            continue
-
-        seen.add(key)
-        deduped_rows.append(row)
-
-    output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=[
-            "domain",
-            "brand_name",
-            "country",
-            "amazon_tier",
-            "decision_maker_name",
-            "decision_maker_title",
-            "decision_maker_email",
-            "date_added"
-        ]
-    )
-    writer.writeheader()
-    writer.writerows(deduped_rows)
-    output.seek(0)
+    domains = list_storeleads_domains(payload.max_stores)
+    rows = build_rows(domains, payload.date)
+    csv_text = rows_to_csv(rows)
 
     filename = f"icp_export_{payload.date}.csv"
-
     return StreamingResponse(
-        iter([output.getvalue()]),
+        iter([csv_text]),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
