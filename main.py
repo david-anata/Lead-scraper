@@ -18,11 +18,14 @@ APOLLO_BULK_MATCH = "https://api.apollo.io/api/v1/people/bulk_match"
 
 REQUEST_TIMEOUT = 60
 
-# SMB-focused revenue range
+# SMB-focused ICP
 MIN_MONTHLY_REVENUE = 10000
 MAX_MONTHLY_REVENUE = 300000
-
 MAX_EMPLOYEES = 25
+
+# Search controls
+MAX_STORELEADS_PAGES = 10
+STORELEADS_PAGE_SIZE = 100
 
 SHIPSTATION_KEYWORDS = [
     "shipstation",
@@ -59,7 +62,7 @@ class ICPBuildRequest(BaseModel):
     date: str
     sheet_name: str = "ICP Export"
     max_stores: int = 100
-    first_page_only: bool = True
+    first_page_only: bool = False
 
 
 def storeleads_headers() -> Dict[str, str]:
@@ -152,43 +155,44 @@ def monthly_sales_usd(domain: Dict[str, Any]) -> Optional[float]:
         return None
 
 
-def matches_icp(domain: Dict[str, Any]) -> bool:
+def icp_rejection_reason(domain: Dict[str, Any]) -> str:
     platform = str(safe_get(domain, "platform") or "").lower()
     country = str(safe_get(domain, "country_code", "country") or "").upper()
     employees = safe_get(domain, "employee_count")
     sales = monthly_sales_usd(domain)
+    shipstation = uses_shipstation(domain)
 
     if platform != "shopify":
-        return False
-
+        return f"platform={platform}"
     if country != "US":
-        return False
-
+        return f"country={country}"
     if employees is not None:
         try:
             if int(employees) > MAX_EMPLOYEES:
-                return False
+                return f"employees>{MAX_EMPLOYEES} ({employees})"
         except Exception:
             pass
-
     if sales is None:
-        return False
+        return "missing_sales"
+    if sales < MIN_MONTHLY_REVENUE:
+        return f"sales_too_low ({sales})"
+    if sales > MAX_MONTHLY_REVENUE:
+        return f"sales_too_high ({sales})"
+    if not shipstation:
+        return "no_shipstation_detected"
+    return "match"
 
-    if sales < MIN_MONTHLY_REVENUE or sales > MAX_MONTHLY_REVENUE:
-        return False
 
-    if not uses_shipstation(domain):
-        return False
-
-    return True
+def matches_icp(domain: Dict[str, Any]) -> bool:
+    return icp_rejection_reason(domain) == "match"
 
 
-def list_storeleads_domains(max_stores: int) -> List[Dict[str, Any]]:
+def fetch_storeleads_page(page: int, page_size: int) -> List[Dict[str, Any]]:
     payload = {
-        "page_size": min(max_stores, 100),
+        "page": page,
+        "page_size": page_size,
         "f:p": "shopify",
         "f:cc": "US",
-        "f:empcmax": MAX_EMPLOYEES,
         "fields": ",".join(
             [
                 "name",
@@ -223,8 +227,34 @@ def list_storeleads_domains(max_stores: int) -> List[Dict[str, Any]]:
         raise HTTPException(status_code=502, detail=f"StoreLeads request failed: {str(e)}")
 
     data = response.json()
-    domains = data.get("domains") or []
-    return domains[:max_stores]
+    return data.get("domains") or []
+
+
+def collect_candidate_domains(max_stores: int, first_page_only: bool) -> List[Dict[str, Any]]:
+    matched: List[Dict[str, Any]] = []
+    seen_domains = set()
+
+    pages_to_scan = 1 if first_page_only else MAX_STORELEADS_PAGES
+
+    for page in range(1, pages_to_scan + 1):
+        domains = fetch_storeleads_page(page=page, page_size=STORELEADS_PAGE_SIZE)
+        if not domains:
+            break
+
+        for d in domains:
+            domain_name = normalize_domain(str(safe_get(d, "name") or ""))
+            if not domain_name or domain_name in seen_domains:
+                continue
+
+            seen_domains.add(domain_name)
+
+            if matches_icp(d):
+                matched.append(d)
+
+            if len(matched) >= max_stores:
+                return matched
+
+    return matched
 
 
 def apollo_search_people(domain: str) -> List[Dict[str, Any]]:
@@ -291,7 +321,7 @@ def apollo_bulk_match(people: List[Dict[str, Any]], company_domain: str) -> List
         detail = f"Apollo bulk match error {e.response.status_code}: {e.response.text[:500]}"
         raise HTTPException(status_code=502, detail=detail)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Apollo bulk match failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Apollo bulk_match failed: {str(e)}")
 
     data = response.json()
     raw_people = data.get("people") or data.get("matches") or data.get("contacts") or []
@@ -335,9 +365,6 @@ def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, A
         if not domain_name:
             continue
 
-        if not matches_icp(d):
-            continue
-
         amazon_tier, amazon_uncertain = infer_amazon_tier(d)
         contacts = apollo_bulk_match(apollo_search_people(domain_name), domain_name)
 
@@ -378,7 +405,6 @@ def build_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, A
 
 def rows_to_csv(rows: List[Dict[str, Any]]) -> str:
     output = io.StringIO()
-
     fieldnames = [
         "domain",
         "brand_name",
@@ -398,45 +424,55 @@ def rows_to_csv(rows: List[Dict[str, Any]]) -> str:
         "source",
         "date_added",
     ]
-
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
-
     return output.getvalue()
 
 
-def build_debug_rows(domains: List[Dict[str, Any]], run_date: str) -> List[Dict[str, Any]]:
+def build_debug_rows(run_date: str, first_page_only: bool) -> List[Dict[str, Any]]:
     debug_rows: List[Dict[str, Any]] = []
+    pages_to_scan = 1 if first_page_only else MAX_STORELEADS_PAGES
 
-    for d in domains[:15]:
-        domain_name = normalize_domain(str(safe_get(d, "name") or ""))
-        sales = monthly_sales_usd(d)
-        employees = safe_get(d, "employee_count")
-        tech_names = ", ".join(get_tech_names(d))
-        amazon_tier, amazon_uncertain = infer_amazon_tier(d)
+    collected = 0
+    for page in range(1, pages_to_scan + 1):
+        domains = fetch_storeleads_page(page=page, page_size=STORELEADS_PAGE_SIZE)
+        if not domains:
+            break
 
-        debug_rows.append(
-            {
-                "domain": domain_name,
-                "brand_name": safe_get(d, "title", "name") or domain_name,
-                "country": safe_get(d, "country_code", "country") or "",
-                "state": d.get("state") or "",
-                "city": d.get("city") or "",
-                "revenue_band": sales or "",
-                "employee_count": employees or "",
-                "categories": ", ".join(d.get("tags") or []),
-                "uses_shipstation": uses_shipstation(d),
-                "amazon_tier": amazon_tier,
-                "amazon_uncertain": amazon_uncertain,
-                "decision_maker_name": "DEBUG_NO_CONTACTS",
-                "decision_maker_title": tech_names,
-                "decision_maker_email": "debug@example.com",
-                "decision_maker_linkedin_url": "",
-                "source": "DEBUG",
-                "date_added": run_date,
-            }
-        )
+        for d in domains:
+            if collected >= 25:
+                return debug_rows
+
+            domain_name = normalize_domain(str(safe_get(d, "name") or ""))
+            sales = monthly_sales_usd(d)
+            employees = safe_get(d, "employee_count")
+            tech_names = ", ".join(get_tech_names(d))
+            amazon_tier, amazon_uncertain = infer_amazon_tier(d)
+            reason = icp_rejection_reason(d)
+
+            debug_rows.append(
+                {
+                    "domain": domain_name,
+                    "brand_name": safe_get(d, "title", "name") or domain_name,
+                    "country": safe_get(d, "country_code", "country") or "",
+                    "state": d.get("state") or "",
+                    "city": d.get("city") or "",
+                    "revenue_band": sales or "",
+                    "employee_count": employees or "",
+                    "categories": reason,
+                    "uses_shipstation": uses_shipstation(d),
+                    "amazon_tier": amazon_tier,
+                    "amazon_uncertain": amazon_uncertain,
+                    "decision_maker_name": "DEBUG_NO_MATCHES",
+                    "decision_maker_title": tech_names,
+                    "decision_maker_email": f"page_{page}@debug.local",
+                    "decision_maker_linkedin_url": "",
+                    "source": "DEBUG",
+                    "date_added": run_date,
+                }
+            )
+            collected += 1
 
     return debug_rows
 
@@ -448,11 +484,18 @@ def home():
 
 @app.post("/run-icp-build")
 def run_icp_build(payload: ICPBuildRequest):
-    domains = list_storeleads_domains(payload.max_stores)
-    rows = build_rows(domains, payload.date)
+    candidate_domains = collect_candidate_domains(
+        max_stores=payload.max_stores,
+        first_page_only=payload.first_page_only
+    )
+
+    rows = build_rows(candidate_domains, payload.date)
 
     if not rows:
-        debug_rows = build_debug_rows(domains, payload.date)
+        debug_rows = build_debug_rows(
+            run_date=payload.date,
+            first_page_only=payload.first_page_only
+        )
         csv_text = rows_to_csv(debug_rows)
         filename = f"icp_debug_{payload.date}.csv"
 
