@@ -1,26 +1,18 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import csv
 import io
 import os
 import json
 import time
 import requests
-import smtplib
-from email.message import EmailMessage
 
 app = FastAPI()
 
 STORELEADS_API_KEY = os.getenv("STORELEADS_API_KEY")
 HUNTER_IO_API_KEY = os.getenv("HUNTER_IO_API_KEY")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
-
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = os.getenv("SMTP_PORT")
-SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL")
 
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
 HUNTER_DOMAIN_SEARCH = "https://api.hunter.io/v2/domain-search"
@@ -46,29 +38,29 @@ POD_TECH = [
     "spocket",
     "zendrop",
     "dsers",
-    "modalyst",
+    "modalyst"
 ]
 
 REJECT_EMAIL_PREFIX = (
     "info@",
     "admin@",
     "noreply@",
-    "no-reply@",
+    "no-reply@"
 )
 
 FALLBACK_EMAIL_PREFIX = (
     "hello@",
     "support@",
     "contact@",
-    "team@",
+    "team@"
 )
 
 
 class ICPBuildRequest(BaseModel):
     date: str
-    recipient_email: EmailStr
     max_stores: int = 25
     first_page_only: bool = False
+    output_type: str = "master"  # "master" or "instantly"
 
 
 def normalize_domain(domain: str) -> str:
@@ -151,27 +143,27 @@ def build_storeleads_bq():
                     "field": "p",
                     "operator": "or",
                     "analyzer": "advanced",
-                    "match": "1",
+                    "match": "1"
                 },
                 {
                     "field": "tech",
                     "operator": "or",
                     "analyzer": "advanced",
-                    "match": TECH_MATCH,
+                    "match": TECH_MATCH
                 },
                 {
                     "field": "cc",
                     "operator": "or",
                     "analyzer": "advanced",
-                    "match": "US",
+                    "match": "US"
                 },
                 {
                     "field": "er",
                     "min": MIN_REVENUE,
                     "max": MAX_REVENUE,
                     "inclusive_min": True,
-                    "inclusive_max": True,
-                },
+                    "inclusive_max": True
+                }
             ]
         }
     }
@@ -180,37 +172,35 @@ def build_storeleads_bq():
 def fetch_storeleads_page(page_number):
     headers = {
         "Authorization": f"Bearer {STORELEADS_API_KEY}",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
     }
 
     payload = {
         "page": page_number,
         "page_size": PAGE_SIZE,
         "bq": json.dumps(build_storeleads_bq()),
-        "fields": ",".join(
-            [
-                "name",
-                "title",
-                "platform",
-                "country_code",
-                "state",
-                "city",
-                "employee_count",
-                "estimated_sales",
-                "description",
-                "sales_channels",
-                "shipping_carriers",
-                "technologies",
-                "tags",
-            ]
-        ),
+        "fields": ",".join([
+            "name",
+            "title",
+            "platform",
+            "country_code",
+            "state",
+            "city",
+            "employee_count",
+            "estimated_sales",
+            "description",
+            "sales_channels",
+            "shipping_carriers",
+            "technologies",
+            "tags"
+        ])
     }
 
     r = requests.post(
         STORELEADS_URL,
         headers=headers,
         json=payload,
-        timeout=REQUEST_TIMEOUT,
+        timeout=REQUEST_TIMEOUT
     )
     r.raise_for_status()
 
@@ -250,9 +240,9 @@ def hunter_search(domain):
             params={
                 "domain": domain,
                 "limit": 10,
-                "api_key": HUNTER_IO_API_KEY,
+                "api_key": HUNTER_IO_API_KEY
             },
-            timeout=REQUEST_TIMEOUT,
+            timeout=REQUEST_TIMEOUT
         )
 
         if r.status_code in [403, 429]:
@@ -271,16 +261,15 @@ def validate_email(email):
             HUNTER_VERIFY,
             params={
                 "email": email,
-                "api_key": HUNTER_IO_API_KEY,
+                "api_key": HUNTER_IO_API_KEY
             },
-            timeout=REQUEST_TIMEOUT,
+            timeout=REQUEST_TIMEOUT
         )
 
         if r.status_code in [403, 429]:
             return False
 
         r.raise_for_status()
-
         result = r.json().get("data", {}).get("result", "")
         return result in ["deliverable", "risky"]
 
@@ -314,7 +303,7 @@ def pick_emails(domain, contacts):
             "name": (first_name + " " + last_name).strip(),
             "title": title,
             "linkedin": linkedin,
-            "confidence": confidence,
+            "confidence": confidence
         }
 
         if email.startswith(FALLBACK_EMAIL_PREFIX):
@@ -355,43 +344,39 @@ def build_rows(domains, run_date):
         email_2 = valid_contacts[1]["email"] if len(valid_contacts) > 1 else ""
         email_3 = valid_contacts[2]["email"] if len(valid_contacts) > 2 else ""
 
-        master_rows.append(
-            {
-                "domain": domain,
-                "brand_name": d.get("title", ""),
-                "state": d.get("state", ""),
-                "city": d.get("city", ""),
-                "revenue": revenue,
-                "employees": d.get("employee_count", ""),
-                "tech_stack": tech_stack,
-                "contact_name": primary["name"],
-                "contact_title": primary["title"],
-                "primary_email": primary["email"],
-                "email_2": email_2,
-                "email_3": email_3,
-                "linkedin_url": primary["linkedin"],
-                "primary_offer": primary_offer,
-                "date_added": run_date,
-            }
-        )
+        master_rows.append({
+            "domain": domain,
+            "brand_name": d.get("title", ""),
+            "state": d.get("state", ""),
+            "city": d.get("city", ""),
+            "revenue": revenue,
+            "employees": d.get("employee_count", ""),
+            "tech_stack": tech_stack,
+            "contact_name": primary["name"],
+            "contact_title": primary["title"],
+            "primary_email": primary["email"],
+            "email_2": email_2,
+            "email_3": email_3,
+            "linkedin_url": primary["linkedin"],
+            "primary_offer": primary_offer,
+            "date_added": run_date
+        })
 
         send_key = f"{domain}|{primary['email']}"
         if send_key not in seen_sendable:
             seen_sendable.add(send_key)
-            instantly_rows.append(
-                {
-                    "email": primary["email"],
-                    "first_name": primary["name"].split(" ")[0] if primary["name"] else "",
-                    "last_name": " ".join(primary["name"].split(" ")[1:]) if primary["name"] else "",
-                    "company_name": d.get("title", ""),
-                    "website": domain,
-                    "custom_primary_offer": primary_offer,
-                    "custom_city": d.get("city", ""),
-                    "custom_state": d.get("state", ""),
-                    "custom_revenue": revenue,
-                    "custom_linkedin_url": primary["linkedin"],
-                }
-            )
+            instantly_rows.append({
+                "email": primary["email"],
+                "first_name": primary["name"].split(" ")[0] if primary["name"] else "",
+                "last_name": " ".join(primary["name"].split(" ")[1:]) if primary["name"] else "",
+                "company_name": d.get("title", ""),
+                "website": domain,
+                "custom_primary_offer": primary_offer,
+                "custom_city": d.get("city", ""),
+                "custom_state": d.get("state", ""),
+                "custom_revenue": revenue,
+                "custom_linkedin_url": primary["linkedin"]
+            })
 
         time.sleep(0.2)
 
@@ -406,38 +391,6 @@ def rows_to_csv(rows, fieldnames):
     return output.getvalue()
 
 
-def send_email_with_attachments(recipient_email, subject, body_text, attachments):
-    if not SMTP_HOST:
-        raise HTTPException(status_code=500, detail="Missing SMTP_HOST")
-    if not SMTP_PORT:
-        raise HTTPException(status_code=500, detail="Missing SMTP_PORT")
-    if not SMTP_USERNAME:
-        raise HTTPException(status_code=500, detail="Missing SMTP_USERNAME")
-    if not SMTP_PASSWORD:
-        raise HTTPException(status_code=500, detail="Missing SMTP_PASSWORD")
-    if not SMTP_FROM_EMAIL:
-        raise HTTPException(status_code=500, detail="Missing SMTP_FROM_EMAIL")
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = SMTP_FROM_EMAIL
-    msg["To"] = recipient_email
-    msg.set_content(body_text)
-
-    for filename, content in attachments:
-        msg.add_attachment(
-            content.encode("utf-8"),
-            maintype="text",
-            subtype="csv",
-            filename=filename,
-        )
-
-    with smtplib.SMTP(SMTP_HOST, int(SMTP_PORT)) as server:
-        server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-
-
 def post_to_slack(message):
     if not SLACK_WEBHOOK_URL:
         return
@@ -446,7 +399,7 @@ def post_to_slack(message):
         requests.post(
             SLACK_WEBHOOK_URL,
             json={"text": message},
-            timeout=REQUEST_TIMEOUT,
+            timeout=REQUEST_TIMEOUT
         )
     except Exception:
         pass
@@ -459,87 +412,81 @@ def home():
 
 @app.post("/run-icp-build")
 def run_icp_build(payload: ICPBuildRequest):
-    if not STORELEADS_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing STORELEADS_API_KEY")
-    if not HUNTER_IO_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing HUNTER_IO_API_KEY")
+    try:
+        if not STORELEADS_API_KEY:
+            raise HTTPException(status_code=500, detail="Missing STORELEADS_API_KEY")
+        if not HUNTER_IO_API_KEY:
+            raise HTTPException(status_code=500, detail="Missing HUNTER_IO_API_KEY")
 
-    domains = collect_domains(
-        max_stores=payload.max_stores,
-        first_page_only=payload.first_page_only,
-    )
+        domains = collect_domains(
+            max_stores=payload.max_stores,
+            first_page_only=payload.first_page_only
+        )
 
-    master_rows, instantly_rows = build_rows(domains, payload.date)
+        master_rows, instantly_rows = build_rows(domains, payload.date)
 
-    master_fields = [
-        "domain",
-        "brand_name",
-        "state",
-        "city",
-        "revenue",
-        "employees",
-        "tech_stack",
-        "contact_name",
-        "contact_title",
-        "primary_email",
-        "email_2",
-        "email_3",
-        "linkedin_url",
-        "primary_offer",
-        "date_added",
-    ]
+        master_fields = [
+            "domain",
+            "brand_name",
+            "state",
+            "city",
+            "revenue",
+            "employees",
+            "tech_stack",
+            "contact_name",
+            "contact_title",
+            "primary_email",
+            "email_2",
+            "email_3",
+            "linkedin_url",
+            "primary_offer",
+            "date_added"
+        ]
 
-    instantly_fields = [
-        "email",
-        "first_name",
-        "last_name",
-        "company_name",
-        "website",
-        "custom_primary_offer",
-        "custom_city",
-        "custom_state",
-        "custom_revenue",
-        "custom_linkedin_url",
-    ]
+        instantly_fields = [
+            "email",
+            "first_name",
+            "last_name",
+            "company_name",
+            "website",
+            "custom_primary_offer",
+            "custom_city",
+            "custom_state",
+            "custom_revenue",
+            "custom_linkedin_url"
+        ]
 
-    master_csv = rows_to_csv(master_rows, master_fields)
-    instantly_csv = rows_to_csv(instantly_rows, instantly_fields)
+        master_csv = rows_to_csv(master_rows, master_fields)
+        instantly_csv = rows_to_csv(instantly_rows, instantly_fields)
 
-    master_name = f"master_{payload.date}.csv"
-    instantly_name = f"instantly_upload_{payload.date}.csv"
+        master_name = f"master_{payload.date}.csv"
+        instantly_name = f"instantly_upload_{payload.date}.csv"
 
-    email_subject = f"Lead files ready for {payload.date}"
-    email_body = (
-        f"Lead files are attached.\n\n"
-        f"Master rows: {len(master_rows)}\n"
-        f"Instantly rows: {len(instantly_rows)}"
-    )
+        slack_message = (
+            f"Lead files generated for {payload.date}\n"
+            f"Master rows: {len(master_rows)}\n"
+            f"Instantly rows: {len(instantly_rows)}\n"
+            f"Output type requested: {payload.output_type}"
+        )
+        post_to_slack(slack_message)
 
-    send_email_with_attachments(
-        recipient_email=payload.recipient_email,
-        subject=email_subject,
-        body_text=email_body,
-        attachments=[
-            (master_name, master_csv),
-            (instantly_name, instantly_csv),
-        ],
-    )
+        if payload.output_type == "instantly":
+            return StreamingResponse(
+                iter([instantly_csv]),
+                media_type="text/csv",
+                headers={"Content-Disposition": f'attachment; filename="{instantly_name}"'}
+            )
 
-    slack_message = (
-        f"Lead files emailed for {payload.date}\n"
-        f"Recipient: {payload.recipient_email}\n"
-        f"Master rows: {len(master_rows)}\n"
-        f"Instantly rows: {len(instantly_rows)}"
-    )
-    post_to_slack(slack_message)
+        return StreamingResponse(
+            iter([master_csv]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{master_name}"'}
+        )
 
-    return JSONResponse(
-        {
-            "status": "success",
-            "recipient_email": payload.recipient_email,
-            "master_rows": len(master_rows),
-            "instantly_rows": len(instantly_rows),
-            "master_filename": master_name,
-            "instantly_filename": instantly_name,
-        }
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error_type": type(e).__name__, "detail": str(e)}
+        )
