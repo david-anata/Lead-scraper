@@ -305,35 +305,64 @@ def slack_headers():
 
 
 def upload_file(filename, content):
+    content_bytes = content.encode("utf-8")
 
-    content_bytes = content.encode()
-
-    step1 = requests.post(
+    step1_resp = requests.post(
         SLACK_GET_UPLOAD_URL,
         headers=slack_headers(),
         data={
             "filename": filename,
-            "length": len(content_bytes)
-        }
-    ).json()
-
-    upload_url = step1["upload_url"]
-    file_id = step1["file_id"]
-
-    requests.post(
-        upload_url,
-        data=content_bytes,
-        headers={"Content-Type":"application/octet-stream"}
+            "length": str(len(content_bytes))
+        },
+        timeout=REQUEST_TIMEOUT
     )
 
-    requests.post(
+    step1_resp.raise_for_status()
+    step1 = step1_resp.json()
+
+    if not step1.get("ok"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack getUploadURLExternal failed: {step1}"
+        )
+
+    upload_url = step1.get("upload_url")
+    file_id = step1.get("file_id")
+
+    if not upload_url or not file_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack upload URL missing from response: {step1}"
+        )
+
+    upload_resp = requests.post(
+        upload_url,
+        data=content_bytes,
+        headers={"Content-Type": "application/octet-stream"},
+        timeout=REQUEST_TIMEOUT
+    )
+    upload_resp.raise_for_status()
+
+    step3_resp = requests.post(
         SLACK_COMPLETE_UPLOAD,
         headers=slack_headers(),
         data={
-            "files": json.dumps([{"id":file_id,"title":filename}]),
+            "files": json.dumps([{"id": file_id, "title": filename}]),
             "channel_id": SLACK_CHANNEL_ID
-        }
+        },
+        timeout=REQUEST_TIMEOUT
     )
+
+    step3_resp.raise_for_status()
+    step3 = step3_resp.json()
+
+    if not step3.get("ok"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack completeUploadExternal failed: {step3}"
+        )
+
+    return step3
 
 
 def slack_summary(total_domains, success):
