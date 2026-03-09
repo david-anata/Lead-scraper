@@ -4,3 +4,4 @@ pydantic
 requests
 google-api-python-client
 google-auth
+email-validator
