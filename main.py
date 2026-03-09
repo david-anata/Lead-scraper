@@ -408,7 +408,7 @@ def slack_headers():
     }
 
 
-def slack_api_post_json(url, payload):
+def slack_api_post(url, payload):
     r = requests.post(
         url,
         headers={**slack_headers(), "Content-Type": "application/json; charset=utf-8"},
@@ -422,33 +422,34 @@ def slack_api_post_json(url, payload):
     return data
 
 
-def post_summary_to_slack(master_count, instantly_count):
+def post_summary_to_slack(date_str, master_count, instantly_count):
     if not SLACK_CHANNEL_ID:
         raise HTTPException(status_code=500, detail="Missing SLACK_CHANNEL_ID")
 
-    message = (
+    text = (
         f"Today's lead build is ready.\n\n"
-        f"I found {master_count} qualified leads and {instantly_count} campaign-ready contacts.\n"
-        f"I attached both CSV files below.\n"
+        f"I found {master_count} total qualified rows and {instantly_count} campaign-ready contacts.\n"
+        f"I've attached both CSV files below.\n"
         f"Use the Instantly file for outreach and the master file for reference."
     )
 
-    return slack_api_post_json(
+    return slack_api_post(
         SLACK_CHAT_POST_MESSAGE,
         {
             "channel": SLACK_CHANNEL_ID,
-            "text": message,
+            "text": text,
         },
     )
 
 
-def upload_file_to_slack(filename, file_content, title=None):
+def upload_file_to_slack(filename, file_content, title=None, initial_comment=None):
     if not SLACK_CHANNEL_ID:
         raise HTTPException(status_code=500, detail="Missing SLACK_CHANNEL_ID")
 
     content_bytes = file_content.encode("utf-8")
 
-    step1 = slack_api_post_json(
+    # Step 1: ask Slack for an upload URL
+    upload_meta = slack_api_post(
         SLACK_GET_UPLOAD_URL,
         {
             "filename": filename,
@@ -456,9 +457,10 @@ def upload_file_to_slack(filename, file_content, title=None):
         },
     )
 
-    upload_url = step1["upload_url"]
-    file_id = step1["file_id"]
+    upload_url = upload_meta["upload_url"]
+    file_id = upload_meta["file_id"]
 
+    # Step 2: upload the raw bytes to Slack's upload URL
     upload_resp = requests.post(
         upload_url,
         data=content_bytes,
@@ -467,15 +469,15 @@ def upload_file_to_slack(filename, file_content, title=None):
     )
     upload_resp.raise_for_status()
 
-    step3 = slack_api_post_json(
-        SLACK_COMPLETE_UPLOAD,
-        {
-            "files": [{"id": file_id, "title": title or filename}],
-            "channel_id": SLACK_CHANNEL_ID,
-        },
-    )
+    # Step 3: finalize and share into the channel
+    payload = {
+        "files": [{"id": file_id, "title": title or filename}],
+        "channel_id": SLACK_CHANNEL_ID,
+    }
+    if initial_comment:
+        payload["initial_comment"] = initial_comment
 
-    return step3
+    return slack_api_post(SLACK_COMPLETE_UPLOAD, payload)
 
 
 @app.get("/")
@@ -490,10 +492,6 @@ def run_icp_build(payload: ICPBuildRequest):
             raise HTTPException(status_code=500, detail="Missing STORELEADS_API_KEY")
         if not HUNTER_IO_API_KEY:
             raise HTTPException(status_code=500, detail="Missing HUNTER_IO_API_KEY")
-        if not SLACK_BOT_TOKEN:
-            raise HTTPException(status_code=500, detail="Missing SLACK_BOT_TOKEN")
-        if not SLACK_CHANNEL_ID:
-            raise HTTPException(status_code=500, detail="Missing SLACK_CHANNEL_ID")
 
         domains = collect_domains(
             max_stores=payload.max_stores,
@@ -539,10 +537,23 @@ def run_icp_build(payload: ICPBuildRequest):
         master_name = f"master_{payload.date}.csv"
         instantly_name = f"instantly_upload_{payload.date}.csv"
 
-        post_summary_to_slack(len(master_rows), len(instantly_rows))
-        upload_file_to_slack(master_name, master_csv, title=f"Master Lead File {payload.date}")
-        upload_file_to_slack(instantly_name, instantly_csv, title=f"Instantly Upload File {payload.date}")
+        # Human-style Slack message first
+        post_summary_to_slack(payload.date, len(master_rows), len(instantly_rows))
 
+        # Upload both files to Slack
+        upload_file_to_slack(
+            filename=master_name,
+            file_content=master_csv,
+            title=f"Master Lead File {payload.date}",
+        )
+
+        upload_file_to_slack(
+            filename=instantly_name,
+            file_content=instantly_csv,
+            title=f"Instantly Upload File {payload.date}",
+        )
+
+        # Browser download still works for manual runs
         if payload.output_type == "instantly":
             return StreamingResponse(
                 iter([instantly_csv]),
