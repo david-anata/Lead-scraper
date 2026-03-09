@@ -411,6 +411,7 @@ def post_summary_to_slack(master_count, instantly_count):
         raise HTTPException(status_code=500, detail="Missing SLACK_CHANNEL_ID")
 
     message = (
+        f"@channel\n\n"
         f"Today's lead build is ready.\n\n"
         f"I found {master_count} qualified leads and {instantly_count} campaign-ready contacts.\n"
         f"The CSV files are posted below.\n"
@@ -439,7 +440,7 @@ def upload_file_to_slack(filename, file_content, title=None):
 
     content_bytes = file_content.encode("utf-8")
 
-    # Step 1: get upload URL from Slack
+    # Step 1
     step1 = requests.post(
         SLACK_GET_UPLOAD_URL,
         headers=slack_headers(),
@@ -452,21 +453,24 @@ def upload_file_to_slack(filename, file_content, title=None):
     step1.raise_for_status()
     step1_data = step1.json()
     if not step1_data.get("ok"):
-        raise HTTPException(status_code=500, detail=f"Slack getUploadURLExternal failed: {step1_data.get('error')}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack getUploadURLExternal failed: {step1_data.get('error')}"
+        )
 
     upload_url = step1_data["upload_url"]
     file_id = step1_data["file_id"]
 
-    # Step 2: upload the raw file bytes
+    # Step 2
     upload_resp = requests.post(
         upload_url,
         data=content_bytes,
-        headers={"Content-Type": "text/csv"},
+        headers={"Content-Type": "application/octet-stream"},
         timeout=REQUEST_TIMEOUT,
     )
     upload_resp.raise_for_status()
 
-    # Step 3: complete upload and share to channel
+    # Step 3
     step3 = requests.post(
         SLACK_COMPLETE_UPLOAD,
         headers=slack_headers(),
@@ -479,7 +483,10 @@ def upload_file_to_slack(filename, file_content, title=None):
     step3.raise_for_status()
     step3_data = step3.json()
     if not step3_data.get("ok"):
-        raise HTTPException(status_code=500, detail=f"Slack completeUploadExternal failed: {step3_data.get('error')}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack completeUploadExternal failed: {step3_data.get('error')}"
+        )
 
     return step3_data
 
@@ -549,7 +556,7 @@ def run_icp_build(payload: ICPBuildRequest):
         upload_file_to_slack(master_name, master_csv, title=f"Master Lead File {payload.date}")
         upload_file_to_slack(instantly_name, instantly_csv, title=f"Instantly Upload File {payload.date}")
 
-        # Then post the summary message
+        # Then post summary
         post_summary_to_slack(len(master_rows), len(instantly_rows))
 
         if payload.output_type == "instantly":
