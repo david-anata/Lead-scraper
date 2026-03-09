@@ -1,4 +1,6 @@
 fastapi
 uvicorn
-requests
 pydantic
+requests
+google-api-python-client
+google-auth
