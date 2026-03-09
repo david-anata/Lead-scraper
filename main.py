@@ -305,6 +305,9 @@ def slack_headers():
 
 
 def upload_file(filename, content):
+    if not content or len(content.encode("utf-8")) <= 1:
+        return {"ok": True, "skipped": True, "reason": "empty_file"}
+
     content_bytes = content.encode("utf-8")
 
     step1_resp = requests.post(
@@ -363,7 +366,6 @@ def upload_file(filename, content):
         )
 
     return step3
-
 
 def slack_summary(total_domains, success):
 
