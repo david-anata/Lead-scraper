@@ -3,8 +3,8 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import csv
 import io
-import json
 import os
+import json
 import time
 import requests
 
@@ -18,10 +18,10 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
 INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 
-# ========= URLS =========
+# ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
-APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
-HUNTER_VERIFY_URL = "https://api.hunter.io/v2/email-verifier"
+APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
+HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
@@ -82,10 +82,13 @@ def monthly_sales(domain_obj):
 
 
 def matches_icp(domain_obj) -> bool:
-    if str(domain_obj.get("platform", "")).lower() != "shopify":
+    platform = str(domain_obj.get("platform", "")).lower()
+    country_code = str(domain_obj.get("country_code", "")).upper()
+
+    if platform != "shopify":
         return False
 
-    if str(domain_obj.get("country_code", "")).upper() != "US":
+    if country_code != "US":
         return False
 
     revenue = monthly_sales(domain_obj)
@@ -107,6 +110,7 @@ def fetch_storeleads_page(page: int):
     payload = {
         "page": page,
         "page_size": PAGE_SIZE,
+        # Critical: include platform + country_code or everything filters out
         "fields": "name,title,platform,country_code,state,city,estimated_sales",
     }
 
@@ -124,6 +128,7 @@ def fetch_storeleads_page(page: int):
 def collect_domains(max_domains: int):
     results = []
     seen = set()
+    raw_scanned = 0
 
     for page in range(MAX_PAGES):
         domains = fetch_storeleads_page(page)
@@ -131,8 +136,11 @@ def collect_domains(max_domains: int):
         if not domains:
             break
 
+        raw_scanned += len(domains)
+
         for d in domains:
             domain = normalize_domain(d.get("name", ""))
+
             if not domain or domain in seen:
                 continue
 
@@ -142,15 +150,15 @@ def collect_domains(max_domains: int):
                 results.append(d)
 
             if len(results) >= max_domains:
-                return results
+                return results, raw_scanned
 
-    return results
+    return results, raw_scanned
 
 
 def apollo_people_search(domain: str):
     headers = {
-        "X-Api-Key": APOLLO_API_KEY,
         "Content-Type": "application/json",
+        "X-Api-Key": APOLLO_API_KEY,
         "Accept": "application/json",
         "Cache-Control": "no-cache",
     }
@@ -162,7 +170,7 @@ def apollo_people_search(domain: str):
     }
 
     r = requests.post(
-        APOLLO_PEOPLE_SEARCH_URL,
+        APOLLO_PEOPLE_SEARCH,
         headers=headers,
         json=payload,
         timeout=REQUEST_TIMEOUT,
@@ -172,7 +180,7 @@ def apollo_people_search(domain: str):
         return []
 
     data = r.json()
-    return data.get("people") or []
+    return data.get("people", []) or []
 
 
 def is_personal_email(email: str) -> bool:
@@ -191,7 +199,7 @@ def is_personal_email(email: str) -> bool:
 def validate_email(email: str) -> bool:
     try:
         r = requests.get(
-            HUNTER_VERIFY_URL,
+            HUNTER_VERIFY,
             params={
                 "email": email,
                 "api_key": HUNTER_IO_API_KEY,
@@ -240,10 +248,32 @@ def build_rows(domains, run_date: str):
     linkedin_rows = []
 
     success = 0
+    apollo_hits = 0
 
     for d in domains:
         domain = normalize_domain(d.get("name", ""))
-        contact = find_contact(domain)
+        people = apollo_people_search(domain)
+
+        if people:
+            apollo_hits += 1
+
+        contact = None
+        for p in people:
+            email = (p.get("email") or "").strip().lower()
+
+            if not is_personal_email(email):
+                continue
+
+            if not validate_email(email):
+                continue
+
+            contact = {
+                "name": p.get("name", "") or "",
+                "title": p.get("title", "") or "",
+                "email": email,
+                "linkedin": p.get("linkedin_url", "") or "",
+            }
+            break
 
         if not contact:
             continue
@@ -252,8 +282,9 @@ def build_rows(domains, run_date: str):
         offer = determine_offer(revenue)
 
         full_name = contact["name"].strip()
-        first_name = full_name.split(" ")[0] if full_name else ""
-        last_name = " ".join(full_name.split(" ")[1:]) if len(full_name.split(" ")) > 1 else ""
+        name_parts = full_name.split()
+        first_name = name_parts[0] if name_parts else ""
+        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
         instantly_rows.append(
             {
@@ -291,7 +322,7 @@ def build_rows(domains, run_date: str):
         success += 1
         time.sleep(0.2)
 
-    return instantly_rows, linkedin_rows, success
+    return instantly_rows, linkedin_rows, success, apollo_hits
 
 
 def rows_to_csv(rows):
@@ -327,7 +358,6 @@ def upload_file(filename: str, content: str):
         },
         timeout=REQUEST_TIMEOUT,
     )
-
     step1_resp.raise_for_status()
     step1 = step1_resp.json()
 
@@ -363,7 +393,6 @@ def upload_file(filename: str, content: str):
         },
         timeout=REQUEST_TIMEOUT,
     )
-
     step3_resp.raise_for_status()
     step3 = step3_resp.json()
 
@@ -376,17 +405,21 @@ def upload_file(filename: str, content: str):
     return step3
 
 
-def slack_summary(total_domains: int, success: int):
-    rate = round((success / total_domains) * 100, 2) if total_domains else 0
+def slack_summary(raw_scanned: int, qualified_domains: int, apollo_hits: int, success: int):
+    contact_hit_rate = round((success / qualified_domains) * 100, 2) if qualified_domains else 0
+    pipeline_success_rate = round((success / raw_scanned) * 100, 2) if raw_scanned else 0
 
     text = f"""@channel
 
 Lead build completed.
 
-Domains scanned: {total_domains}
+Domains scanned: {raw_scanned}
+ICP matches: {qualified_domains}
+Apollo contacts found: {apollo_hits}
 Personal contacts found: {success}
 
-Success rate: {rate}%
+Contact hit rate: {contact_hit_rate}%
+Pipeline success rate: {pipeline_success_rate}%
 
 Files attached below.
 """
@@ -423,9 +456,9 @@ def run(payload: ICPBuildRequest):
         raise HTTPException(status_code=500, detail="SLACK_CHANNEL_ID missing")
 
     try:
-        domains = collect_domains(payload.max_domains)
+        domains, raw_scanned = collect_domains(payload.max_domains)
 
-        instantly_rows, linkedin_rows, success = build_rows(domains, payload.date)
+        instantly_rows, linkedin_rows, success, apollo_hits = build_rows(domains, payload.date)
 
         instantly_csv = rows_to_csv(instantly_rows)
         linkedin_csv = rows_to_csv(linkedin_rows)
@@ -436,7 +469,7 @@ def run(payload: ICPBuildRequest):
         if linkedin_rows:
             upload_file(f"linkedin_targets_{payload.date}.csv", linkedin_csv)
 
-        slack_summary(len(domains), success)
+        slack_summary(raw_scanned, len(domains), apollo_hits, success)
 
         if not instantly_rows:
             return JSONResponse(
@@ -444,7 +477,9 @@ def run(payload: ICPBuildRequest):
                 content={
                     "status": "ok",
                     "message": "No valid personal contacts found for this run.",
-                    "domains_scanned": len(domains),
+                    "domains_scanned": raw_scanned,
+                    "icp_matches": len(domains),
+                    "apollo_contacts_found": apollo_hits,
                     "personal_contacts_found": success,
                 },
             )
