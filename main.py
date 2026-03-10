@@ -20,9 +20,11 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
-APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
+
+# Use new People API Search endpoint
+APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/v1/people/search"  # per docs[web:34]
+
 HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
-HUNTER_DOMAIN_SEARCH = "https://api.hunter.io/v2/domain-search"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
@@ -37,6 +39,10 @@ MAX_EMPLOYEES = 25
 
 MAX_PAGES = 5
 PAGE_SIZE = 100
+
+# We will only call Apollo for the first N ICP domains per run
+MAX_APOLLO_DOMAINS_PER_RUN = 40
+APOLLO_SLEEP_SECONDS = 1.2  # keep under 50 calls/min[web:22]
 
 TECH_MATCH = "Aftership ShipStation Easyship Pirate Ship Shippo ShippingEasy ShipHero"
 
@@ -69,27 +75,13 @@ GENERIC_PREFIXES = (
     "no-reply@",
 )
 
-REJECT_EMAIL_PREFIX = (
-    "info@",
-    "admin@",
-    "noreply@",
-    "no-reply@",
-)
-
-FALLBACK_EMAIL_PREFIX = (
-    "hello@",
-    "support@",
-    "contact@",
-    "team@",
-)
-
 TARGET_CAMPAIGN_NAME = "Amazon | DTC Brands | Performance Marketing | Mar 2026"
 
 
 # ========= REQUEST MODEL =========
 class ICPBuildRequest(BaseModel):
     date: str
-    max_domains: int = 150
+    max_domains: int = 150  # total ICP domains to consider (Apollo will be capped separately)
 
 
 # ========= HELPERS: ICP & TECH =========
@@ -166,6 +158,7 @@ def matches_icp(domain_obj) -> bool:
 
 
 def build_storeleads_bq():
+    # Same as old working ICP filter
     return {
         "must": {
             "conjuncts": [
@@ -173,7 +166,7 @@ def build_storeleads_bq():
                     "field": "p",
                     "operator": "or",
                     "analyzer": "advanced",
-                    "match": "1",
+                    "match": "1",  # Shopify
                 },
                 {
                     "field": "tech",
@@ -273,47 +266,7 @@ def collect_domains(max_domains: int):
     return results, raw_scanned
 
 
-# ========= APOLLO & HUNTER =========
-def apollo_people_search(domain: str):
-    if not APOLLO_API_KEY:
-        print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
-        return []
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Api-Key": APOLLO_API_KEY,
-        "Accept": "application/json",
-        "Cache-Control": "no-cache",
-    }
-
-    payload = {
-        "q_organization_domains": [domain],
-        "page": 1,
-        "per_page": 5,
-    }
-
-    try:
-        r = requests.post(
-            APOLLO_PEOPLE_SEARCH,
-            headers=headers,
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-    except Exception as e:
-        print(f"[Apollo] request error for domain={domain}: {e}")
-        return []
-
-    if r.status_code != 200:
-        print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
-        return []
-
-    data = r.json()
-    people = data.get("people", []) or []
-    if not people:
-        print(f"[Apollo] no people for domain={domain}")
-    return people
-
-
+# ========= APOLLO (PEOPLE API SEARCH) + HUNTER VERIFY =========
 def validate_email(email: str) -> bool:
     try:
         if not HUNTER_IO_API_KEY:
@@ -329,7 +282,7 @@ def validate_email(email: str) -> bool:
         )
 
         if r.status_code in [403, 429]:
-            print(f"[Hunter] rate/permission issue for {email}: {r.status_code}")
+            print(f"[Hunter] validate rate/permission issue for {email}: {r.status_code}")
             return False
 
         r.raise_for_status()
@@ -357,71 +310,46 @@ def is_personal_email(email: str) -> bool:
     return True
 
 
-def hunter_search(domain: str):
-    try:
-        if not HUNTER_IO_API_KEY:
-            print("[Hunter] missing HUNTER_IO_API_KEY, skipping domain search")
-            return []
-
-        r = requests.get(
-            HUNTER_DOMAIN_SEARCH,
-            params={
-                "domain": domain,
-                "limit": 10,
-                "api_key": HUNTER_IO_API_KEY,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        if r.status_code in [403, 429]:
-            print(f"[Hunter] domain search rate/permission issue for {domain}: {r.status_code}")
-            return []
-
-        r.raise_for_status()
-        return r.json().get("data", {}).get("emails", [])
-    except Exception as e:
-        print(f"[Hunter] domain search error for {domain}: {e}")
+def apollo_people_search(domain: str):
+    if not APOLLO_API_KEY:
+        print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
         return []
 
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+    }
 
-def pick_emails_from_hunter(domain: str, contacts):
-    valid_person = []
-    valid_fallback = []
+    payload = {
+        "api_key": APOLLO_API_KEY,
+        # per People API Search docs; we mainly key on domain[web:34]
+        "organization_domains": [domain],
+        "page": 1,
+        "per_page": 10,
+    }
 
-    for c in contacts:
-        email = (c.get("value") or "").strip().lower()
-        confidence = int(c.get("confidence") or 0)
-        first_name = (c.get("first_name") or "").strip()
-        last_name = (c.get("last_name") or "").strip()
-        title = (c.get("position") or "").strip()
-        linkedin = (c.get("linkedin") or "").strip()
+    try:
+        r = requests.post(
+            APOLLO_PEOPLE_SEARCH,
+            headers=headers,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as e:
+        print(f"[Apollo] request error for domain={domain}: {e}")
+        return []
 
-        if not email:
-            continue
-        if not email.endswith("@" + domain):
-            continue
-        if email.startswith(REJECT_EMAIL_PREFIX):
-            continue
-        if not validate_email(email):
-            continue
+    if r.status_code != 200:
+        print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
+        return []
 
-        record = {
-            "email": email,
-            "name": (first_name + " " + last_name).strip(),
-            "title": title,
-            "linkedin": linkedin,
-            "confidence": confidence,
-        }
-
-        if email.startswith(FALLBACK_EMAIL_PREFIX):
-            valid_fallback.append(record)
-        else:
-            valid_person.append(record)
-
-    valid_person.sort(key=lambda x: x["confidence"], reverse=True)
-    valid_fallback.sort(key=lambda x: x["confidence"], reverse=True)
-
-    return (valid_person + valid_fallback)[:1]  # we only need one contact per domain
+    data = r.json()
+    people = data.get("people", []) or []
+    if not people:
+        print(f"[Apollo] no people for domain={domain}")
+    else:
+        print(f"[Apollo] {len(people)} people for domain={domain}")
+    return people
 
 
 def determine_offer(revenue):
@@ -430,7 +358,6 @@ def determine_offer(revenue):
     return "Shipping Optimization"
 
 
-# ========= BUILD ROWS WITH APOLLO + HUNTER FALLBACK =========
 def build_rows(domains, run_date: str):
     instantly_rows = []
     linkedin_rows = []
@@ -438,51 +365,44 @@ def build_rows(domains, run_date: str):
     success = 0
     apollo_hits = 0
 
-    for d in domains:
+    # Apollo-only enrichment for the first N domains; rest are skipped for now
+    max_apollo_domains = min(MAX_APOLLO_DOMAINS_PER_RUN, len(domains))
+
+    for idx, d in enumerate(domains):
         domain = normalize_domain(d.get("name", ""))
         if not domain:
             continue
 
-        contact = None
+        if idx >= max_apollo_domains:
+            # beyond Apollo budget, skip for this run
+            continue
 
-        # 1) Try Apollo first
+        # Apollo People API call
         people = apollo_people_search(domain)
+
+        # throttle to avoid 429s
+        time.sleep(APOLLO_SLEEP_SECONDS)
 
         if people:
             apollo_hits += 1
 
-            for p in people:
-                email = (p.get("email") or "").strip().lower()
+        contact = None
+        for p in people:
+            email = (p.get("email") or "").strip().lower()
 
-                if not is_personal_email(email):
-                    continue
+            if not is_personal_email(email):
+                continue
 
-                if not validate_email(email):
-                    continue
+            if not validate_email(email):
+                continue
 
-                contact = {
-                    "name": p.get("name", "") or "",
-                    "title": p.get("title", "") or "",
-                    "email": email,
-                    "linkedin": p.get("linkedin_url", "") or "",
-                    "source": "apollo",
-                }
-                break
-
-        # 2) If Apollo gave nothing usable, fall back to Hunter
-        if not contact:
-            hunter_contacts = hunter_search(domain)
-            picked = pick_emails_from_hunter(domain, hunter_contacts)
-
-            if picked:
-                h = picked[0]
-                contact = {
-                    "name": h["name"],
-                    "title": h["title"],
-                    "email": h["email"],
-                    "linkedin": h["linkedin"],
-                    "source": "hunter",
-                }
+            contact = {
+                "name": p.get("name", "") or "",
+                "title": p.get("title", "") or "",
+                "email": email,
+                "linkedin": p.get("linkedin_url", "") or "",
+            }
+            break
 
         if not contact:
             continue
@@ -510,7 +430,6 @@ def build_rows(domains, run_date: str):
                 "campaign_name": TARGET_CAMPAIGN_NAME,
                 "campaign_id": INSTANTLY_CAMPAIGN_ID,
                 "custom_offer": offer,
-                "source": contact["source"],
             }
         )
 
@@ -526,12 +445,10 @@ def build_rows(domains, run_date: str):
                 "state": d.get("state", ""),
                 "revenue": revenue,
                 "date_added": run_date,
-                "source": contact["source"],
             }
         )
 
         success += 1
-        time.sleep(0.2)
 
     return instantly_rows, linkedin_rows, success, apollo_hits
 
@@ -662,6 +579,8 @@ def home():
 def run(payload: ICPBuildRequest):
     if not STORELEADS_API_KEY:
         raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
+    if not APOLLO_API_KEY:
+        raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
     if not HUNTER_IO_API_KEY:
         raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
     if not SLACK_BOT_TOKEN:
@@ -707,7 +626,7 @@ def run(payload: ICPBuildRequest):
             iter([instantly_csv]),
             media_type="text/csv",
             headers={
-                "Content-Disposition": f'attachment; filename="instantly_upload_{payload.date}.csv"'
+                "Content-Disposition": f'attachment; filename=\"instantly_upload_{payload.date}.csv\"'
             },
         )
 
