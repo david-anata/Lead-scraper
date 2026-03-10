@@ -317,12 +317,10 @@ def apollo_people_search(domain: str):
 
     headers = {
         "Content-Type": "application/json",
-        "Cache-Control": "no-cache",
+        "X-Api-Key": APOLLO_API_KEY,
     }
 
     payload = {
-        "api_key": APOLLO_API_KEY,
-        # per People API Search docs; we mainly key on domain[web:34]
         "organization_domains": [domain],
         "page": 1,
         "per_page": 10,
@@ -345,12 +343,13 @@ def apollo_people_search(domain: str):
 
     data = r.json()
     people = data.get("people", []) or []
+
     if not people:
         print(f"[Apollo] no people for domain={domain}")
     else:
         print(f"[Apollo] {len(people)} people for domain={domain}")
-    return people
 
+    return people
 
 def determine_offer(revenue):
     if revenue and revenue >= 150000:
