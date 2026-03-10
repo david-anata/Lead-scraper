@@ -32,10 +32,28 @@ REQUEST_TIMEOUT = 60
 
 MIN_REVENUE = 20000
 MAX_REVENUE = 300000
+MAX_EMPLOYEES = 25  # from old ICP
 
-MAX_PAGES = 10
-PAGE_SIZE = 200
+MAX_PAGES = 5       # match old behavior
+PAGE_SIZE = 100
 
+# shipping-tech match string from old code
+TECH_MATCH = "Aftership ShipStation Easyship Pirate Ship Shippo ShippingEasy ShipHero"
+
+# POD / dropship techs to exclude
+POD_TECH = [
+    "printful",
+    "printify",
+    "teelaunch",
+    "shineon",
+    "gearment",
+    "spocket",
+    "zendrop",
+    "dsers",
+    "modalyst",
+]
+
+# generic email prefixes
 GENERIC_PREFIXES = (
     "info@",
     "support@",
@@ -61,7 +79,7 @@ class ICPBuildRequest(BaseModel):
     max_domains: int = 150
 
 
-# ========= HELPERS =========
+# ========= HELPERS: ICP & TECH =========
 def normalize_domain(domain: str) -> str:
     return (
         str(domain or "")
@@ -73,21 +91,44 @@ def normalize_domain(domain: str) -> str:
     )
 
 
+def get_technologies(domain_obj):
+    techs = domain_obj.get("technologies") or []
+    names = []
+
+    for t in techs:
+        if isinstance(t, dict):
+            names.append((t.get("name") or "").lower())
+        else:
+            names.append(str(t).lower())
+
+    return names
+
+
+def is_dropship(techs):
+    for tech in techs:
+        for bad in POD_TECH:
+            if bad in tech:
+                return True
+    return False
+
+
 def monthly_sales(domain_obj):
     try:
-        return float(domain_obj.get("estimated_sales"))
+        value = domain_obj.get("estimated_sales")
+        if value is None:
+            return None
+        return float(value)
     except Exception:
         return None
 
 
 def matches_icp(domain_obj) -> bool:
+    # Same logic as old version, but used after StoreLeads bq filter
     platform = str(domain_obj.get("platform", "")).lower()
-    country_code = str(domain_obj.get("country_code", "")).upper()
-
     if platform != "shopify":
         return False
 
-    if country_code != "US":
+    if str(domain_obj.get("country_code", "")).upper() != "US":
         return False
 
     revenue = monthly_sales(domain_obj)
@@ -97,9 +138,57 @@ def matches_icp(domain_obj) -> bool:
     if revenue < MIN_REVENUE or revenue > MAX_REVENUE:
         return False
 
+    employees = domain_obj.get("employee_count")
+    if employees:
+        try:
+            if int(employees) > MAX_EMPLOYEES:
+                return False
+        except Exception:
+            pass
+
+    techs = get_technologies(domain_obj)
+    if is_dropship(techs):
+        return False
+
     return True
 
 
+def build_storeleads_bq():
+    # Directly ported from old file
+    return {
+        "must": {
+            "conjuncts": [
+                {
+                    "field": "p",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "1",  # Shopify
+                },
+                {
+                    "field": "tech",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": TECH_MATCH,
+                },
+                {
+                    "field": "cc",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "US",
+                },
+                {
+                    "field": "er",
+                    "min": MIN_REVENUE,
+                    "max": MAX_REVENUE,
+                    "inclusive_min": True,
+                    "inclusive_max": True,
+                },
+            ]
+        }
+    }
+
+
+# ========= STORELEADS =========
 def fetch_storeleads_page(page: int):
     if not STORELEADS_API_KEY:
         raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
@@ -112,8 +201,20 @@ def fetch_storeleads_page(page: int):
     payload = {
         "page": page,
         "page_size": PAGE_SIZE,
-        # Critical: include platform + country_code or everything filters out
-        "fields": "name,title,platform,country_code,state,city,estimated_sales",
+        "bq": json.dumps(build_storeleads_bq()),
+        "fields": ",".join(
+            [
+                "name",
+                "title",
+                "platform",
+                "country_code",
+                "state",
+                "city",
+                "employee_count",
+                "estimated_sales",
+                "technologies",
+            ]
+        ),
     }
 
     r = requests.post(
@@ -127,9 +228,7 @@ def fetch_storeleads_page(page: int):
     data = r.json()
     domains = data.get("domains", []) or []
 
-    # Simple logging so you can debug zero-domain runs later
     print(f"[StoreLeads] page={page} returned {len(domains)} domains")
-
     return domains
 
 
@@ -142,7 +241,6 @@ def collect_domains(max_domains: int):
         domains = fetch_storeleads_page(page)
 
         if not domains:
-            # No more pages
             break
 
         raw_scanned += len(domains)
@@ -164,358 +262,9 @@ def collect_domains(max_domains: int):
     return results, raw_scanned
 
 
+# ========= APOLLO & HUNTER =========
 def apollo_people_search(domain: str):
     if not APOLLO_API_KEY:
         raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-Api-Key": APOLLO_API_KEY,
-        "Accept": "application/json",
-        "Cache-Control": "no-cache",
-    }
-
-    payload = {
-        "q_organization_domains": [domain],
-        "page": 1,
-        "per_page": 5,
-    }
-
-    r = requests.post(
-        APOLLO_PEOPLE_SEARCH,
-        headers=headers,
-        json=payload,
-        timeout=REQUEST_TIMEOUT,
-    )
-
-    if r.status_code != 200:
-        print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
-        return []
-
-    data = r.json()
-    people = data.get("people", []) or []
-    return people
-
-
-def is_personal_email(email: str) -> bool:
-    if not email:
-        return False
-
-    email = email.strip().lower()
-
-    for prefix in GENERIC_PREFIXES:
-        if email.startswith(prefix):
-            return False
-
-    return True
-
-
-def validate_email(email: str) -> bool:
-    try:
-        if not HUNTER_IO_API_KEY:
-            raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
-
-        r = requests.get(
-            HUNTER_VERIFY,
-            params={
-                "email": email,
-                "api_key": HUNTER_IO_API_KEY,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        r.raise_for_status()
-
-        result = r.json()["data"]["result"]
-        return result in ["deliverable", "risky"]
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Hunter] validate_email error for {email}: {e}")
-        return False
-
-
-def determine_offer(revenue):
-    if revenue and revenue > 150000:
-        return "Fulfillment"
-    return "Shipping Optimization"
-
-
-def build_rows(domains, run_date: str):
-    instantly_rows = []
-    linkedin_rows = []
-
-    success = 0
-    apollo_hits = 0
-
-    for d in domains:
-        domain = normalize_domain(d.get("name", ""))
-        if not domain:
-            continue
-
-        people = apollo_people_search(domain)
-
-        if people:
-            apollo_hits += 1
-
-        contact = None
-        for p in people:
-            email = (p.get("email") or "").strip().lower()
-
-            if not is_personal_email(email):
-                continue
-
-            if not validate_email(email):
-                continue
-
-            contact = {
-                "name": p.get("name", "") or "",
-                "title": p.get("title", "") or "",
-                "email": email,
-                "linkedin": p.get("linkedin_url", "") or "",
-            }
-            break
-
-        if not contact:
-            continue
-
-        revenue = monthly_sales(d)
-        offer = determine_offer(revenue)
-
-        full_name = contact["name"].strip()
-        name_parts = full_name.split()
-        first_name = name_parts[0] if name_parts else ""
-        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
-
-        instantly_rows.append(
-            {
-                "first_name": first_name,
-                "last_name": last_name,
-                "email": contact["email"],
-                "role": contact["title"],
-                "linkedin_url": contact["linkedin"],
-                "company_name": d.get("title", ""),
-                "website": domain,
-                "city": d.get("city", ""),
-                "state": d.get("state", ""),
-                "revenue": revenue,
-                "campaign_name": TARGET_CAMPAIGN_NAME,
-                "campaign_id": INSTANTLY_CAMPAIGN_ID,
-                "custom_offer": offer,
-            }
-        )
-
-        linkedin_rows.append(
-            {
-                "name": contact["name"],
-                "role": contact["title"],
-                "linkedin_url": contact["linkedin"],
-                "company": d.get("title", ""),
-                "website": domain,
-                "email": contact["email"],
-                "city": d.get("city", ""),
-                "state": d.get("state", ""),
-                "revenue": revenue,
-                "date_added": run_date,
-            }
-        )
-
-        success += 1
-        # small delay to be gentle on APIs
-        time.sleep(0.2)
-
-    return instantly_rows, linkedin_rows, success, apollo_hits
-
-
-def rows_to_csv(rows):
-    if not rows:
-        return ""
-
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue()
-
-
-# ========= SLACK =========
-def slack_headers():
-    if not SLACK_BOT_TOKEN:
-        raise HTTPException(status_code=500, detail="SLACK_BOT_TOKEN missing")
-    return {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-
-
-def upload_file(filename: str, content: str):
-    if not content:
-        return {"ok": True, "skipped": True, "reason": "empty_file"}
-
-    content_bytes = content.encode("utf-8")
-    if len(content_bytes) <= 1:
-        return {"ok": True, "skipped": True, "reason": "empty_file"}
-
-    # Step 1: get upload URL
-    step1_resp = requests.post(
-        SLACK_GET_UPLOAD_URL,
-        headers=slack_headers(),
-        data={
-            "filename": filename,
-            "length": str(len(content_bytes)),
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-
-    step1_resp.raise_for_status()
-    step1 = step1_resp.json()
-
-    if not step1.get("ok"):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Slack getUploadURLExternal failed: {step1}",
-        )
-
-    upload_url = step1.get("upload_url")
-    file_id = step1.get("file_id")
-
-    if not upload_url or not file_id:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Slack upload URL missing from response: {step1}",
-        )
-
-    # Step 2: upload file bytes
-    upload_resp = requests.post(
-        upload_url,
-        data=content_bytes,
-        headers={"Content-Type": "application/octet-stream"},
-        timeout=REQUEST_TIMEOUT,
-    )
-    upload_resp.raise_for_status()
-
-    # Step 3: complete upload
-    step3_resp = requests.post(
-        SLACK_COMPLETE_UPLOAD,
-        headers=slack_headers(),
-        data={
-            "files": json.dumps([{"id": file_id, "title": filename}]),
-            "channel_id": SLACK_CHANNEL_ID,
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-
-    step3_resp.raise_for_status()
-    step3 = step3_resp.json()
-
-    if not step3.get("ok"):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Slack completeUploadExternal failed: {step3}",
-        )
-
-    return step3
-
-
-def slack_summary(raw_scanned: int, qualified_domains: int, apollo_hits: int, success: int):
-    contact_hit_rate = round((success / qualified_domains) * 100, 2) if qualified_domains else 0
-    pipeline_success_rate = round((success / raw_scanned) * 100, 2) if raw_scanned else 0
-
-    text = f"""@channel
-
-Lead build completed.
-
-Domains scanned: {raw_scanned}
-ICP matches: {qualified_domains}
-Apollo contacts found: {apollo_hits}
-Personal contacts found: {success}
-
-Contact hit rate: {contact_hit_rate}%
-Pipeline success rate: {pipeline_success_rate}%
-
-Files attached below.
-"""
-
-    r = requests.post(
-        SLACK_CHAT_POST_MESSAGE,
-        headers={**slack_headers(), "Content-Type": "application/json"},
-        json={
-            "channel": SLACK_CHANNEL_ID,
-            "text": text,
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-
-    r.raise_for_status()
-
-
-# ========= ROUTES =========
-@app.get("/")
-def home():
-    return {"status": "lead engine running"}
-
-
-@app.post("/run-lead-build")
-def run(payload: ICPBuildRequest):
-    # Basic env checks
-    if not STORELEADS_API_KEY:
-        raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
-    if not APOLLO_API_KEY:
-        raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
-    if not HUNTER_IO_API_KEY:
-        raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
-    if not SLACK_BOT_TOKEN:
-        raise HTTPException(status_code=500, detail="SLACK_BOT_TOKEN missing")
-    if not SLACK_CHANNEL_ID:
-        raise HTTPException(status_code=500, detail="SLACK_CHANNEL_ID missing")
-
-    try:
-        domains, raw_scanned = collect_domains(payload.max_domains)
-
-        print(
-            f"[Run] date={payload.date} max_domains={payload.max_domains} "
-            f"raw_scanned={raw_scanned} icp_matches={len(domains)}"
-        )
-
-        instantly_rows, linkedin_rows, success, apollo_hits = build_rows(domains, payload.date)
-
-        instantly_csv = rows_to_csv(instantly_rows)
-        linkedin_csv = rows_to_csv(linkedin_rows)
-
-        if instantly_rows:
-            upload_file(f"instantly_upload_{payload.date}.csv", instantly_csv)
-
-        if linkedin_rows:
-            upload_file(f"linkedin_targets_{payload.date}.csv", linkedin_csv)
-
-        slack_summary(raw_scanned, len(domains), apollo_hits, success)
-
-        if not instantly_rows:
-            # MVP behavior: still HTTP 200, message indicates zero contacts
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "ok",
-                    "message": "No valid personal contacts found for this run.",
-                    "domains_scanned": raw_scanned,
-                    "icp_matches": len(domains),
-                    "apollo_contacts_found": apollo_hits,
-                    "personal_contacts_found": success,
-                },
-            )
-
-        # When we have contacts, return Instantly CSV as download
-        return StreamingResponse(
-            iter([instantly_csv]),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f'attachment; filename="instantly_upload_{payload.date}.csv"'
-            },
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Run] unexpected error: {type(e).__name__} {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error_type": type(e).__name__, "detail": str(e)},
-        )
+    headers =
