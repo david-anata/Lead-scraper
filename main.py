@@ -22,6 +22,7 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
 APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
 HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
+HUNTER_DOMAIN_SEARCH = "https://api.hunter.io/v2/domain-search"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
@@ -32,15 +33,13 @@ REQUEST_TIMEOUT = 60
 
 MIN_REVENUE = 20000
 MAX_REVENUE = 300000
-MAX_EMPLOYEES = 25  # from old ICP
+MAX_EMPLOYEES = 25
 
-MAX_PAGES = 5       # match old behavior
+MAX_PAGES = 5
 PAGE_SIZE = 100
 
-# shipping-tech match string from old code
 TECH_MATCH = "Aftership ShipStation Easyship Pirate Ship Shippo ShippingEasy ShipHero"
 
-# POD / dropship techs to exclude
 POD_TECH = [
     "printful",
     "printify",
@@ -53,7 +52,6 @@ POD_TECH = [
     "modalyst",
 ]
 
-# generic email prefixes
 GENERIC_PREFIXES = (
     "info@",
     "support@",
@@ -71,7 +69,22 @@ GENERIC_PREFIXES = (
     "no-reply@",
 )
 
+REJECT_EMAIL_PREFIX = (
+    "info@",
+    "admin@",
+    "noreply@",
+    "no-reply@",
+)
+
+FALLBACK_EMAIL_PREFIX = (
+    "hello@",
+    "support@",
+    "contact@",
+    "team@",
+)
+
 TARGET_CAMPAIGN_NAME = "Amazon | DTC Brands | Performance Marketing | Mar 2026"
+
 
 # ========= REQUEST MODEL =========
 class ICPBuildRequest(BaseModel):
@@ -123,7 +136,6 @@ def monthly_sales(domain_obj):
 
 
 def matches_icp(domain_obj) -> bool:
-    # Same logic as old version, but used after StoreLeads bq filter
     platform = str(domain_obj.get("platform", "")).lower()
     if platform != "shopify":
         return False
@@ -154,7 +166,6 @@ def matches_icp(domain_obj) -> bool:
 
 
 def build_storeleads_bq():
-    # Directly ported from old file
     return {
         "must": {
             "conjuncts": [
@@ -162,7 +173,7 @@ def build_storeleads_bq():
                     "field": "p",
                     "operator": "or",
                     "analyzer": "advanced",
-                    "match": "1",  # Shopify
+                    "match": "1",
                 },
                 {
                     "field": "tech",
@@ -265,7 +276,8 @@ def collect_domains(max_domains: int):
 # ========= APOLLO & HUNTER =========
 def apollo_people_search(domain: str):
     if not APOLLO_API_KEY:
-        raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
+        print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
+        return []
 
     headers = {
         "Content-Type": "application/json",
@@ -280,12 +292,16 @@ def apollo_people_search(domain: str):
         "per_page": 5,
     }
 
-    r = requests.post(
-        APOLLO_PEOPLE_SEARCH,
-        headers=headers,
-        json=payload,
-        timeout=REQUEST_TIMEOUT,
-    )
+    try:
+        r = requests.post(
+            APOLLO_PEOPLE_SEARCH,
+            headers=headers,
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as e:
+        print(f"[Apollo] request error for domain={domain}: {e}")
+        return []
 
     if r.status_code != 200:
         print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
@@ -293,20 +309,9 @@ def apollo_people_search(domain: str):
 
     data = r.json()
     people = data.get("people", []) or []
+    if not people:
+        print(f"[Apollo] no people for domain={domain}")
     return people
-
-
-def is_personal_email(email: str) -> bool:
-    if not email:
-        return False
-
-    email = email.strip().lower()
-
-    for prefix in GENERIC_PREFIXES:
-        if email.startswith(prefix):
-            return False
-
-    return True
 
 
 def validate_email(email: str) -> bool:
@@ -323,9 +328,13 @@ def validate_email(email: str) -> bool:
             timeout=REQUEST_TIMEOUT,
         )
 
+        if r.status_code in [403, 429]:
+            print(f"[Hunter] rate/permission issue for {email}: {r.status_code}")
+            return False
+
         r.raise_for_status()
 
-        result = r.json()["data"]["result"]
+        result = r.json().get("data", {}).get("result", "")
         return result in ["deliverable", "risky"]
 
     except HTTPException:
@@ -335,12 +344,93 @@ def validate_email(email: str) -> bool:
         return False
 
 
+def is_personal_email(email: str) -> bool:
+    if not email:
+        return False
+
+    email = email.strip().lower()
+
+    for prefix in GENERIC_PREFIXES:
+        if email.startswith(prefix):
+            return False
+
+    return True
+
+
+def hunter_search(domain: str):
+    try:
+        if not HUNTER_IO_API_KEY:
+            print("[Hunter] missing HUNTER_IO_API_KEY, skipping domain search")
+            return []
+
+        r = requests.get(
+            HUNTER_DOMAIN_SEARCH,
+            params={
+                "domain": domain,
+                "limit": 10,
+                "api_key": HUNTER_IO_API_KEY,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if r.status_code in [403, 429]:
+            print(f"[Hunter] domain search rate/permission issue for {domain}: {r.status_code}")
+            return []
+
+        r.raise_for_status()
+        return r.json().get("data", {}).get("emails", [])
+    except Exception as e:
+        print(f"[Hunter] domain search error for {domain}: {e}")
+        return []
+
+
+def pick_emails_from_hunter(domain: str, contacts):
+    valid_person = []
+    valid_fallback = []
+
+    for c in contacts:
+        email = (c.get("value") or "").strip().lower()
+        confidence = int(c.get("confidence") or 0)
+        first_name = (c.get("first_name") or "").strip()
+        last_name = (c.get("last_name") or "").strip()
+        title = (c.get("position") or "").strip()
+        linkedin = (c.get("linkedin") or "").strip()
+
+        if not email:
+            continue
+        if not email.endswith("@" + domain):
+            continue
+        if email.startswith(REJECT_EMAIL_PREFIX):
+            continue
+        if not validate_email(email):
+            continue
+
+        record = {
+            "email": email,
+            "name": (first_name + " " + last_name).strip(),
+            "title": title,
+            "linkedin": linkedin,
+            "confidence": confidence,
+        }
+
+        if email.startswith(FALLBACK_EMAIL_PREFIX):
+            valid_fallback.append(record)
+        else:
+            valid_person.append(record)
+
+    valid_person.sort(key=lambda x: x["confidence"], reverse=True)
+    valid_fallback.sort(key=lambda x: x["confidence"], reverse=True)
+
+    return (valid_person + valid_fallback)[:1]  # we only need one contact per domain
+
+
 def determine_offer(revenue):
     if revenue and revenue >= 150000:
         return "Fulfillment"
     return "Shipping Optimization"
 
 
+# ========= BUILD ROWS WITH APOLLO + HUNTER FALLBACK =========
 def build_rows(domains, run_date: str):
     instantly_rows = []
     linkedin_rows = []
@@ -353,28 +443,46 @@ def build_rows(domains, run_date: str):
         if not domain:
             continue
 
+        contact = None
+
+        # 1) Try Apollo first
         people = apollo_people_search(domain)
 
         if people:
             apollo_hits += 1
 
-        contact = None
-        for p in people:
-            email = (p.get("email") or "").strip().lower()
+            for p in people:
+                email = (p.get("email") or "").strip().lower()
 
-            if not is_personal_email(email):
-                continue
+                if not is_personal_email(email):
+                    continue
 
-            if not validate_email(email):
-                continue
+                if not validate_email(email):
+                    continue
 
-            contact = {
-                "name": p.get("name", "") or "",
-                "title": p.get("title", "") or "",
-                "email": email,
-                "linkedin": p.get("linkedin_url", "") or "",
-            }
-            break
+                contact = {
+                    "name": p.get("name", "") or "",
+                    "title": p.get("title", "") or "",
+                    "email": email,
+                    "linkedin": p.get("linkedin_url", "") or "",
+                    "source": "apollo",
+                }
+                break
+
+        # 2) If Apollo gave nothing usable, fall back to Hunter
+        if not contact:
+            hunter_contacts = hunter_search(domain)
+            picked = pick_emails_from_hunter(domain, hunter_contacts)
+
+            if picked:
+                h = picked[0]
+                contact = {
+                    "name": h["name"],
+                    "title": h["title"],
+                    "email": h["email"],
+                    "linkedin": h["linkedin"],
+                    "source": "hunter",
+                }
 
         if not contact:
             continue
@@ -402,6 +510,7 @@ def build_rows(domains, run_date: str):
                 "campaign_name": TARGET_CAMPAIGN_NAME,
                 "campaign_id": INSTANTLY_CAMPAIGN_ID,
                 "custom_offer": offer,
+                "source": contact["source"],
             }
         )
 
@@ -417,6 +526,7 @@ def build_rows(domains, run_date: str):
                 "state": d.get("state", ""),
                 "revenue": revenue,
                 "date_added": run_date,
+                "source": contact["source"],
             }
         )
 
@@ -452,7 +562,6 @@ def upload_file(filename: str, content: str):
     if len(content_bytes) <= 1:
         return {"ok": True, "skipped": True, "reason": "empty_file"}
 
-    # Step 1: get upload URL
     step1_resp = requests.post(
         SLACK_GET_UPLOAD_URL,
         headers=slack_headers(),
@@ -481,7 +590,6 @@ def upload_file(filename: str, content: str):
             detail=f"Slack upload URL missing from response: {step1}",
         )
 
-    # Step 2: upload file bytes
     upload_resp = requests.post(
         upload_url,
         data=content_bytes,
@@ -490,7 +598,6 @@ def upload_file(filename: str, content: str):
     )
     upload_resp.raise_for_status()
 
-    # Step 3: complete upload
     step3_resp = requests.post(
         SLACK_COMPLETE_UPLOAD,
         headers=slack_headers(),
@@ -553,11 +660,8 @@ def home():
 
 @app.post("/run-lead-build")
 def run(payload: ICPBuildRequest):
-    # Basic env checks
     if not STORELEADS_API_KEY:
         raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
-    if not APOLLO_API_KEY:
-        raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
     if not HUNTER_IO_API_KEY:
         raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
     if not SLACK_BOT_TOKEN:
@@ -587,7 +691,6 @@ def run(payload: ICPBuildRequest):
         slack_summary(raw_scanned, len(domains), apollo_hits, success)
 
         if not instantly_rows:
-            # Still HTTP 200 for MVP, signal zero contacts in JSON
             return JSONResponse(
                 status_code=200,
                 content={
@@ -600,7 +703,6 @@ def run(payload: ICPBuildRequest):
                 },
             )
 
-        # When we have contacts, return Instantly CSV as download
         return StreamingResponse(
             iter([instantly_csv]),
             media_type="text/csv",
