@@ -267,4 +267,353 @@ def apollo_people_search(domain: str):
     if not APOLLO_API_KEY:
         raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
 
-    headers =
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-Key": APOLLO_API_KEY,
+        "Accept": "application/json",
+        "Cache-Control": "no-cache",
+    }
+
+    payload = {
+        "q_organization_domains": [domain],
+        "page": 1,
+        "per_page": 5,
+    }
+
+    r = requests.post(
+        APOLLO_PEOPLE_SEARCH,
+        headers=headers,
+        json=payload,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    if r.status_code != 200:
+        print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
+        return []
+
+    data = r.json()
+    people = data.get("people", []) or []
+    return people
+
+
+def is_personal_email(email: str) -> bool:
+    if not email:
+        return False
+
+    email = email.strip().lower()
+
+    for prefix in GENERIC_PREFIXES:
+        if email.startswith(prefix):
+            return False
+
+    return True
+
+
+def validate_email(email: str) -> bool:
+    try:
+        if not HUNTER_IO_API_KEY:
+            raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
+
+        r = requests.get(
+            HUNTER_VERIFY,
+            params={
+                "email": email,
+                "api_key": HUNTER_IO_API_KEY,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        r.raise_for_status()
+
+        result = r.json()["data"]["result"]
+        return result in ["deliverable", "risky"]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Hunter] validate_email error for {email}: {e}")
+        return False
+
+
+def determine_offer(revenue):
+    if revenue and revenue >= 150000:
+        return "Fulfillment"
+    return "Shipping Optimization"
+
+
+def build_rows(domains, run_date: str):
+    instantly_rows = []
+    linkedin_rows = []
+
+    success = 0
+    apollo_hits = 0
+
+    for d in domains:
+        domain = normalize_domain(d.get("name", ""))
+        if not domain:
+            continue
+
+        people = apollo_people_search(domain)
+
+        if people:
+            apollo_hits += 1
+
+        contact = None
+        for p in people:
+            email = (p.get("email") or "").strip().lower()
+
+            if not is_personal_email(email):
+                continue
+
+            if not validate_email(email):
+                continue
+
+            contact = {
+                "name": p.get("name", "") or "",
+                "title": p.get("title", "") or "",
+                "email": email,
+                "linkedin": p.get("linkedin_url", "") or "",
+            }
+            break
+
+        if not contact:
+            continue
+
+        revenue = monthly_sales(d)
+        offer = determine_offer(revenue)
+
+        full_name = contact["name"].strip()
+        name_parts = full_name.split()
+        first_name = name_parts[0] if name_parts else ""
+        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+
+        instantly_rows.append(
+            {
+                "first_name": first_name,
+                "last_name": last_name,
+                "email": contact["email"],
+                "role": contact["title"],
+                "linkedin_url": contact["linkedin"],
+                "company_name": d.get("title", ""),
+                "website": domain,
+                "city": d.get("city", ""),
+                "state": d.get("state", ""),
+                "revenue": revenue,
+                "campaign_name": TARGET_CAMPAIGN_NAME,
+                "campaign_id": INSTANTLY_CAMPAIGN_ID,
+                "custom_offer": offer,
+            }
+        )
+
+        linkedin_rows.append(
+            {
+                "name": contact["name"],
+                "role": contact["title"],
+                "linkedin_url": contact["linkedin"],
+                "company": d.get("title", ""),
+                "website": domain,
+                "email": contact["email"],
+                "city": d.get("city", ""),
+                "state": d.get("state", ""),
+                "revenue": revenue,
+                "date_added": run_date,
+            }
+        )
+
+        success += 1
+        time.sleep(0.2)
+
+    return instantly_rows, linkedin_rows, success, apollo_hits
+
+
+def rows_to_csv(rows):
+    if not rows:
+        return ""
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+# ========= SLACK =========
+def slack_headers():
+    if not SLACK_BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="SLACK_BOT_TOKEN missing")
+    return {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+
+
+def upload_file(filename: str, content: str):
+    if not content:
+        return {"ok": True, "skipped": True, "reason": "empty_file"}
+
+    content_bytes = content.encode("utf-8")
+    if len(content_bytes) <= 1:
+        return {"ok": True, "skipped": True, "reason": "empty_file"}
+
+    # Step 1: get upload URL
+    step1_resp = requests.post(
+        SLACK_GET_UPLOAD_URL,
+        headers=slack_headers(),
+        data={
+            "filename": filename,
+            "length": str(len(content_bytes)),
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    step1_resp.raise_for_status()
+    step1 = step1_resp.json()
+
+    if not step1.get("ok"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack getUploadURLExternal failed: {step1}",
+        )
+
+    upload_url = step1.get("upload_url")
+    file_id = step1.get("file_id")
+
+    if not upload_url or not file_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack upload URL missing from response: {step1}",
+        )
+
+    # Step 2: upload file bytes
+    upload_resp = requests.post(
+        upload_url,
+        data=content_bytes,
+        headers={"Content-Type": "application/octet-stream"},
+        timeout=REQUEST_TIMEOUT,
+    )
+    upload_resp.raise_for_status()
+
+    # Step 3: complete upload
+    step3_resp = requests.post(
+        SLACK_COMPLETE_UPLOAD,
+        headers=slack_headers(),
+        data={
+            "files": json.dumps([{"id": file_id, "title": filename}]),
+            "channel_id": SLACK_CHANNEL_ID,
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    step3_resp.raise_for_status()
+    step3 = step3_resp.json()
+
+    if not step3.get("ok"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Slack completeUploadExternal failed: {step3}",
+        )
+
+    return step3
+
+
+def slack_summary(raw_scanned: int, qualified_domains: int, apollo_hits: int, success: int):
+    contact_hit_rate = round((success / qualified_domains) * 100, 2) if qualified_domains else 0
+    pipeline_success_rate = round((success / raw_scanned) * 100, 2) if raw_scanned else 0
+
+    text = f"""@channel
+
+Lead build completed.
+
+Domains scanned: {raw_scanned}
+ICP matches: {qualified_domains}
+Apollo contacts found: {apollo_hits}
+Personal contacts found: {success}
+
+Contact hit rate: {contact_hit_rate}%
+Pipeline success rate: {pipeline_success_rate}%
+
+Files attached below.
+"""
+
+    r = requests.post(
+        SLACK_CHAT_POST_MESSAGE,
+        headers={**slack_headers(), "Content-Type": "application/json"},
+        json={
+            "channel": SLACK_CHANNEL_ID,
+            "text": text,
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    r.raise_for_status()
+
+
+# ========= ROUTES =========
+@app.get("/")
+def home():
+    return {"status": "lead engine running"}
+
+
+@app.post("/run-lead-build")
+def run(payload: ICPBuildRequest):
+    # Basic env checks
+    if not STORELEADS_API_KEY:
+        raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
+    if not APOLLO_API_KEY:
+        raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
+    if not HUNTER_IO_API_KEY:
+        raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
+    if not SLACK_BOT_TOKEN:
+        raise HTTPException(status_code=500, detail="SLACK_BOT_TOKEN missing")
+    if not SLACK_CHANNEL_ID:
+        raise HTTPException(status_code=500, detail="SLACK_CHANNEL_ID missing")
+
+    try:
+        domains, raw_scanned = collect_domains(payload.max_domains)
+
+        print(
+            f"[Run] date={payload.date} max_domains={payload.max_domains} "
+            f"raw_scanned={raw_scanned} icp_matches={len(domains)}"
+        )
+
+        instantly_rows, linkedin_rows, success, apollo_hits = build_rows(domains, payload.date)
+
+        instantly_csv = rows_to_csv(instantly_rows)
+        linkedin_csv = rows_to_csv(linkedin_rows)
+
+        if instantly_rows:
+            upload_file(f"instantly_upload_{payload.date}.csv", instantly_csv)
+
+        if linkedin_rows:
+            upload_file(f"linkedin_targets_{payload.date}.csv", linkedin_csv)
+
+        slack_summary(raw_scanned, len(domains), apollo_hits, success)
+
+        if not instantly_rows:
+            # Still HTTP 200 for MVP, signal zero contacts in JSON
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "ok",
+                    "message": "No valid personal contacts found for this run.",
+                    "domains_scanned": raw_scanned,
+                    "icp_matches": len(domains),
+                    "apollo_contacts_found": apollo_hits,
+                    "personal_contacts_found": success,
+                },
+            )
+
+        # When we have contacts, return Instantly CSV as download
+        return StreamingResponse(
+            iter([instantly_csv]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="instantly_upload_{payload.date}.csv"'
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Run] unexpected error: {type(e).__name__} {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error_type": type(e).__name__, "detail": str(e)},
+        )
