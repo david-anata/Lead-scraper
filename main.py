@@ -310,7 +310,7 @@ def is_personal_email(email: str) -> bool:
     return True
 
 
-ddef apollo_people_search(domain: str):
+def apollo_people_search(domain: str):
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
         return []
