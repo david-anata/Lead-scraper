@@ -21,8 +21,8 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
 
-# Use new People API Search endpoint
-APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/v1/people/search"  # per docs[web:34]
+# Use mixed people search endpoint (works with your key)
+APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
 
 HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
 
@@ -310,18 +310,18 @@ def is_personal_email(email: str) -> bool:
     return True
 
 
-def apollo_people_search(domain: str):
+ddef apollo_people_search(domain: str):
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
         return []
 
     headers = {
         "Content-Type": "application/json",
-        "X-Api-Key": APOLLO_API_KEY,
+        "X-Api-Key": APOLLO_API_KEY,  # key in header
     }
 
     payload = {
-        "organization_domains": [domain],
+        "q_organization_domains": [domain],
         "page": 1,
         "per_page": 10,
     }
@@ -350,6 +350,7 @@ def apollo_people_search(domain: str):
         print(f"[Apollo] {len(people)} people for domain={domain}")
 
     return people
+
 
 def determine_offer(revenue):
     if revenue and revenue >= 150000:
