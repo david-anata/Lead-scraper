@@ -13,7 +13,6 @@ app = FastAPI()
 # ========= ENV =========
 STORELEADS_API_KEY = os.getenv("STORELEADS_API_KEY")
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
-HUNTER_IO_API_KEY = os.getenv("HUNTER_IO_API_KEY")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
 INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
@@ -21,7 +20,6 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
 APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
-HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
@@ -36,7 +34,6 @@ MAX_REVENUE = 300000
 MAX_PAGES = 10
 PAGE_SIZE = 200
 
-# To avoid slamming Apollo; can tune later
 MAX_APOLLO_DOMAINS_PER_RUN = 40
 APOLLO_SLEEP_SECONDS = 1.2  # stay under ~50 calls/minute[web:22]
 
@@ -118,7 +115,7 @@ def build_storeleads_bq():
 
 
 def matches_icp(domain_obj) -> bool:
-    # StoreLeads already enforced ICP via bq; keep for future tweaks if needed.
+    # StoreLeads already enforced ICP via bq.
     return True
 
 
@@ -194,7 +191,7 @@ def collect_domains(max_domains: int):
     return results, raw_scanned
 
 
-# ========= APOLLO + HUNTER =========
+# ========= APOLLO (NO HUNTER) =========
 def is_personal_email(email: str) -> bool:
     if not email:
         return False
@@ -208,34 +205,33 @@ def is_personal_email(email: str) -> bool:
     return True
 
 
-def validate_email(email: str) -> bool:
-    try:
-        if not HUNTER_IO_API_KEY:
-            raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
+def extract_email_from_person(p: dict) -> str:
+    """
+    Try multiple possible fields where Apollo may put the work email.
+    Adjust if we see different keys in debug logs.
+    """
+    # 1) Standard email field
+    email = (p.get("email") or "").strip().lower()
+    if email:
+        return email
 
-        r = requests.get(
-            HUNTER_VERIFY,
-            params={
-                "email": email,
-                "api_key": HUNTER_IO_API_KEY,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
+    # 2) Some responses use 'current_work_email'
+    email = (p.get("current_work_email") or "").strip().lower()
+    if email:
+        return email
 
-        if r.status_code in [403, 429]:
-            print(f"[Hunter] validate rate/permission issue for {email}: {r.status_code}")
-            return False
+    # 3) Fallback: look into 'emails' list if present
+    emails = p.get("emails") or []
+    if isinstance(emails, list):
+        for item in emails:
+            if isinstance(item, dict):
+                candidate = (item.get("email") or "").strip().lower()
+            else:
+                candidate = str(item).strip().lower()
+            if candidate:
+                return candidate
 
-        r.raise_for_status()
-
-        result = r.json().get("data", {}).get("result", "")
-        return result in ["deliverable", "risky"]
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Hunter] validate_email error for {email}: {e}")
-        return False
+    return ""
 
 
 def apollo_people_search(domain: str):
@@ -312,12 +308,9 @@ def build_rows(domains, run_date: str):
 
         contact = None
         for p in people:
-            email = (p.get("email") or "").strip().lower()
+            email = extract_email_from_person(p)
 
             if not is_personal_email(email):
-                continue
-
-            if not validate_email(email):
                 continue
 
             contact = {
@@ -505,8 +498,6 @@ def run(payload: ICPBuildRequest):
         raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
     if not APOLLO_API_KEY:
         raise HTTPException(status_code=500, detail="APOLLO_API_KEY missing")
-    if not HUNTER_IO_API_KEY:
-        raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
     if not SLACK_BOT_TOKEN:
         raise HTTPException(status_code=500, detail="SLACK_BOT_TOKEN missing")
     if not SLACK_CHANNEL_ID:
