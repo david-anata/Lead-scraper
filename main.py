@@ -54,19 +54,6 @@ GENERIC_PREFIXES = (
     "no-reply@",
 )
 
-PRIORITY_TITLES = (
-    "founder",
-    "co-founder",
-    "owner",
-    "ceo",
-    "coo",
-    "cmo",
-    "vp marketing",
-    "head of growth",
-    "growth",
-    "marketing director",
-)
-
 TARGET_CAMPAIGN_NAME = "Amazon | DTC Brands | Performance Marketing | Mar 2026"
 
 
@@ -223,6 +210,36 @@ def extract_email_from_contact(c: dict) -> str:
     return email or ""
 
 
+def contact_matches_domain(contact: dict, domain: str) -> bool:
+    """
+    Make sure the contact is actually tied to this brand.
+    We check any org/account website-like field for the domain substring.
+    """
+    domain = domain.lower()
+    possible_fields = []
+
+    org = contact.get("organization") or {}
+    acct = contact.get("account") or {}
+
+    possible_fields.extend(
+        [
+            org.get("website_url"),
+            org.get("domain"),
+            acct.get("website_url"),
+            acct.get("domain"),
+        ]
+    )
+
+    for val in possible_fields:
+        if not val:
+            continue
+        val_norm = normalize_domain(val)
+        if domain in val_norm or val_norm in domain:
+            return True
+
+    return False
+
+
 def apollo_contacts_search(domain: str, max_per_domain: int = 2):
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
@@ -235,9 +252,9 @@ def apollo_contacts_search(domain: str, max_per_domain: int = 2):
 
     payload = {
         "page": 1,
-        "per_page": max_per_domain * 4,  # fetch extras so we can filter
+        "per_page": max_per_domain * 6,  # grab extras so we can filter
         "domain": domain,
-        "contact_titles": list(PRIORITY_TITLES),
+        # no title filter; we just want real humans with non-generic emails
     }
 
     try:
@@ -262,29 +279,19 @@ def apollo_contacts_search(domain: str, max_per_domain: int = 2):
         print(f"[Apollo] no contacts for domain={domain}")
         return []
 
-    # Score by title priority so we pick founders/CEOs first.
-    scored = []
-    for c in contacts:
-        title = (c.get("title") or "").lower()
-        score = 0
-        for idx, t in enumerate(PRIORITY_TITLES):
-            if t in title:
-                score = len(PRIORITY_TITLES) - idx
-                break
-        scored.append((score, c))
-
-    scored.sort(reverse=True, key=lambda x: x[0])
-
+    print(f"[Apollo] raw contacts for domain={domain}: {len(contacts)}")
     results = []
     seen_emails = set()
 
-    for _, c in scored:
+    for c in contacts:
         email = extract_email_from_contact(c)
         if not email:
             continue
         if not is_personal_email(email):
             continue
         if email in seen_emails:
+            continue
+        if not contact_matches_domain(c, domain):
             continue
 
         seen_emails.add(email)
