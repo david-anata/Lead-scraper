@@ -86,10 +86,39 @@ def monthly_sales(domain_obj):
 
 
 def build_storeleads_bq():
-    # Shopify + US + revenue band.
     return {
         "must": {
             "conjuncts": [
+                {
+                    "field": "tech",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": (
+                        "Wordpress Cloudflare Cloudflare...CDN Google...Ads...Pixel "
+                        "Facebook...Pixel Apple...Pay Google...Pay Shop...Pay "
+                        "PayPal...Express...Checkout Yoast Google...Analytics "
+                        "Google...Analytics...4 Judge.me TikTok...Pixel Klaviyo "
+                        "Mailchimp Shop Klarna Stripe Hotjar Omnisend ReCharge "
+                        "Yotpo ShareASale Aftership Affirm Route Faire Reviews.io "
+                        "HubSpot"
+                    ),
+                },
+                {
+                    "field": "an",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": (
+                        "1.judgeme 1.product-reviews 1.loox 1.tt-reviewimport "
+                        "1.yotpo-social-reviews 1.ryviu 1.sealapps-product-review "
+                        "1.product-reviews-addon 1.vitals 1.air-reviews"
+                    ),
+                },
+                {
+                    "field": "it",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "4 7 3 2 8 1 10 13",
+                },
                 {
                     "field": "p",
                     "operator": "or",
@@ -97,21 +126,131 @@ def build_storeleads_bq():
                     "match": "1",  # Shopify
                 },
                 {
-                    "field": "cc",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "US",
-                },
-                {
-                    "field": "er",
-                    "min": MIN_REVENUE,
-                    "max": MAX_REVENUE,
+                    "field": "empc",
+                    "min": None,
+                    "max": 200,
                     "inclusive_min": True,
                     "inclusive_max": True,
                 },
+                {
+                    "field": "er",
+                    "min": None,
+                    "max": 100000000,
+                    "inclusive_min": True,
+                    "inclusive_max": True,
+                },
+                {
+                    "field": "cc",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "Unknown US GB CA AU",
+                },
+                {
+                    "field": "scs",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "8 1 2 9",
+                },
             ]
-        }
+        },
+        "must_not": {
+            "disjuncts": [
+                {
+                    "field": "tech",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "Printful Printify teelaunch Calendly",
+                },
+                {
+                    "field": "an",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "1.printful 1.printify 1.gelato-print-on-demand",
+                },
+                {
+                    "field": "scs",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": "12 10 14 13 3 11",
+                },
+                {
+                    "field": "cat",
+                    "operator": "or",
+                    "analyzer": "advanced",
+                    "match": (
+                        "/People...&...Society /Autos...&...Vehicles "
+                        "/Business...&...Industrial/Business...Services "
+                        "/People...&...Society/Religion...&...Belief "
+                        "/Autos...&...Vehicles/Parts...&...Services "
+                        "/People...&...Society/Family...&...Relationships "
+                        "/Business...&...Industrial/Industrial...Materials...&...Equipment "
+                        "/People...&...Society/Family...&...Relationships/Family "
+                        "/Business...&...Industrial/Agriculture...&...Forestry "
+                        "/People...&...Society/Social...Issues...&...Advocacy "
+                        "/Business...&...Industrial/Business...Services/Office...Supplies "
+                        "/Travel/Hotels...&...Accommodations "
+                        "/Business...&...Industrial/Construction...&...Maintenance "
+                        "/Business...&...Industrial/Chemicals...Industry "
+                        "/Business...&...Industrial/Business...Operations "
+                        "/Autos...&...Vehicles/Motor...Vehicles "
+                        "/People...&...Society/Family...&...Relationships/Marriage "
+                        "/Finance/Investing "
+                        "/Autos...&...Vehicles/Motor...Vehicles/Motorcycles...&...Scooters "
+                        "/People...&...Society/Social...Issues...&...Advocacy/Charity...&...Philanthropy "
+                        "/Business...&...Industrial/Metals...&...Mining "
+                        "/Autos...&...Vehicles/Boats...&...Watercraft "
+                        "/Business...&...Industrial/Renewable...&...Alternative...Energy "
+                        "/Autos...&...Vehicles/Repair...&...Maintenance "
+                        "/Travel/Car...Rental...&...Taxi...Services "
+                        "/Business...&...Industrial/Packaging "
+                        "/Business...&...Industrial/Manufacturing "
+                        "/Business...&...Industrial/Industrial...Materials...&...Equipment/Heavy...Machinery "
+                        "/Travel/Air...Travel "
+                        "/Computers/Software/Business...&...Productivity...Software "
+                        "/People...&...Society/Social...Issues...&...Advocacy/Green...Living...&...Environmental...Issues "
+                        "/Business...&...Industrial/Business...Services/E-Commerce...Services "
+                        "/Business...&...Industrial/Pharmaceuticals...&...Biotech "
+                        "/People...&...Society/Kids...&...Teens "
+                        "/Business...&...Industrial/Chemicals...Industry/Plastics...&...Polymers "
+                        "/Business...&...Industrial/Agriculture...&...Forestry/Agricultural...Equipment "
+                        "/Business...&...Industrial/Mail...&...Package...Delivery "
+                        "/Finance/Investing/Currencies...&...Foreign...Exchange "
+                        "/Business...&...Industrial/Retail...Equipment...&...Technology "
+                        "/People...&...Society/Politics "
+                        "/Business...&...Industrial/Metals...&...Mining/Precious...Metals "
+                        "/Business...&...Industrial/Business...Services/Consulting "
+                        "/Business...&...Industrial/Business...Services/Corporate...Events "
+                        "/Business...&...Industrial/Agriculture...&...Forestry/Livestock "
+                        "/Travel/Cruises...&...Charters "
+                        "/Autos...&...Vehicles/Motor...Vehicles/Off-Road "
+                        "/Autos...&...Vehicles/Campers...&...RVs "
+                        "/Autos...&...Vehicles/Motor...Vehicles/Trucks...&...SUVs "
+                        "/People...&...Society/Social...Networks "
+                        "/Consumer...Electronics/Mobile...&...Wireless/Mobile...Apps...&...Add-Ons "
+                        "/Business...&...Industrial/Moving...&...Relocation "
+                        "/Autos...&...Vehicles/Motor...Vehicles/Electric...&...Alternative "
+                        "/Travel/Air...Travel/Airport...Parking...&...Transportation "
+                        "/Travel/Bus...&...Rail "
+                        "/Business...&...Industrial/Agriculture...&...Forestry/Wood...&...Forestry "
+                        "/Autos...&...Vehicles/Safety "
+                        "/Business...&...Industrial/Business...Finance "
+                        "/Business...&...Industrial/Agriculture...&...Forestry/Beekeeping "
+                        "/Business...&...Industrial/Business...Services/Office...Services "
+                        "/Jobs...&...Education/Business "
+                        "/People...&...Society/Family...&...Relationships/Troubled...Relationships "
+                        "/Autos...&...Vehicles/Classic...Vehicles "
+                        "/Business...&...Industrial/Advertising...&...Marketing/Public...Relations "
+                        "/Business...&...Industrial/Advertising...&...Marketing "
+                        "/Business...&...Industrial/Business...Services/Writing...&...Editing...Services "
+                        "/Finance/Investing/Stocks...&...Bonds "
+                        "/Business...&...Industrial/Printing...&...Publishing "
+                        "/Computers"
+                    ),
+                },
+            ]
+        },
     }
+
 
 
 def matches_icp(domain_obj) -> bool:
