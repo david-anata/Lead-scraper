@@ -32,7 +32,7 @@ MAX_PAGES = 10
 PAGE_SIZE = 200
 
 MAX_APOLLO_DOMAINS_PER_RUN = 40
-APOLLO_SLEEP_SECONDS = 1.2  # stay under ~50 calls/minute
+APOLLO_SLEEP_SECONDS = 1.2  # keep under ~50 calls/minute
 
 GENERIC_PREFIXES = (
     "info@",
@@ -85,7 +85,7 @@ def monthly_sales(domain_obj):
 
 
 def build_storeleads_bq():
-    # Mirrors your StoreLeads POST bq exactly.
+    # Your StoreLeads POST bq mirrored as Python dict.
     return {
         "must": {
             "conjuncts": [
@@ -344,6 +344,7 @@ def is_personal_email(email: str) -> bool:
 
 
 def extract_email_from_contact(c: dict) -> str:
+    # Use the primary email field Apollo exposes for contacts.
     email = (c.get("email") or "").strip().lower()
     return email or ""
 
@@ -351,31 +352,11 @@ def extract_email_from_contact(c: dict) -> str:
 def email_matches_store(email: str, store_domain: str) -> bool:
     email_domain = normalize_domain(email.split("@")[-1])
     store_domain = normalize_domain(store_domain)
-    # exact match or subdomain of store
+    # Exact domain match or subdomain of the store domain.
     return email_domain == store_domain or email_domain.endswith("." + store_domain)
 
 
-def org_matches_store(contact: dict, store_domain: str, store_title: str) -> bool:
-    store_domain = normalize_domain(store_domain)
-    store_title = (store_title or "").lower()
-
-    org_name = (contact.get("organization_name") or "").lower()
-    if store_title and store_title.split(" ")[0] in org_name:
-        return True
-
-    # if Apollo ever exposes an org domain/website here, check that too
-    org_domain = normalize_domain(contact.get("organization_domain", ""))
-    if org_domain and (org_domain == store_domain or store_domain in org_domain or org_domain in store_domain):
-        return True
-
-    return False
-
-
 def apollo_contacts_search(domain: str, max_per_domain: int = MAX_CONTACTS_PER_DOMAIN):
-    """
-    Ask Apollo for contacts for this domain.
-    Let Apollo handle ranking; we just require that contacts have emails.
-    """
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
         return []
@@ -387,8 +368,9 @@ def apollo_contacts_search(domain: str, max_per_domain: int = MAX_CONTACTS_PER_D
 
     payload = {
         "page": 1,
-        "per_page": max_per_domain * 6,  # grab extras so we can filter
+        "per_page": max_per_domain * 6,
         "domain": domain,
+        # Ask Apollo for contacts that actually have emails available.
         "has_personal_emails": True,
         "has_valid_emails": True,
     }
@@ -412,15 +394,6 @@ def apollo_contacts_search(domain: str, max_per_domain: int = MAX_CONTACTS_PER_D
     contacts = data.get("contacts", []) or []
 
     print(f"[Apollo] raw contacts for domain={domain}: {len(contacts)}")
-
-    # Keep the debug logging for now while we tune.
-    if contacts:
-        try:
-            sample = json.dumps(contacts[0])[:1200]
-            print(f"[Apollo debug] domain={domain} sample_contact={sample}")
-        except Exception as e:
-            print(f"[Apollo debug] error serializing sample contact for {domain}: {e}")
-
     return contacts
 
 
@@ -434,9 +407,9 @@ def build_rows(domains, run_date: str):
     instantly_rows = []
     linkedin_rows = []
 
-    success = 0          # total personal contacts generated
-    apollo_hits = 0      # domains where Apollo returned >=1 contact
-    seen_emails_global = set()  # de-dupe across the entire run
+    success = 0
+    apollo_hits = 0
+    seen_emails_global = set()
 
     max_apollo_domains = min(MAX_APOLLO_DOMAINS_PER_RUN, len(domains))
 
@@ -446,7 +419,6 @@ def build_rows(domains, run_date: str):
             continue
 
         if idx >= max_apollo_domains:
-            # beyond Apollo budget for this run
             continue
 
         contacts = apollo_contacts_search(domain, max_per_domain=MAX_CONTACTS_PER_DOMAIN)
@@ -471,15 +443,11 @@ def build_rows(domains, run_date: str):
                 continue
             if not is_personal_email(email):
                 continue
+            if not email_matches_store(email, domain):
+                continue
             if email in seen_emails_global:
                 continue
 
-            # NEW: ensure this contact actually belongs to this store
-            store_title = d.get("title", "") or ""
-            if not (email_matches_store(email, domain) or org_matches_store(c, domain, store_title)):
-                continue
-
-            # accept this contact
             seen_emails_global.add(email)
             accepted_for_domain += 1
 
@@ -488,6 +456,7 @@ def build_rows(domains, run_date: str):
             last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
             linkedin_url = c.get("linkedin_url", "") or ""
+            store_title = d.get("title", "") or ""
 
             instantly_rows.append(
                 {
