@@ -19,7 +19,7 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
-APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
+APOLLO_CONTACTS_SEARCH = "https://api.apollo.io/api/v1/contacts/search"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
@@ -35,7 +35,7 @@ MAX_PAGES = 10
 PAGE_SIZE = 200
 
 MAX_APOLLO_DOMAINS_PER_RUN = 40
-APOLLO_SLEEP_SECONDS = 1.2  # stay under ~50 calls/minute[web:22]
+APOLLO_SLEEP_SECONDS = 1.2  # stay under ~50 calls/minute
 
 GENERIC_PREFIXES = (
     "info@",
@@ -52,6 +52,19 @@ GENERIC_PREFIXES = (
     "help@",
     "noreply@",
     "no-reply@",
+)
+
+PRIORITY_TITLES = (
+    "founder",
+    "co-founder",
+    "owner",
+    "ceo",
+    "coo",
+    "cmo",
+    "vp marketing",
+    "head of growth",
+    "growth",
+    "marketing director",
 )
 
 TARGET_CAMPAIGN_NAME = "Amazon | DTC Brands | Performance Marketing | Mar 2026"
@@ -191,7 +204,7 @@ def collect_domains(max_domains: int):
     return results, raw_scanned
 
 
-# ========= APOLLO (NO HUNTER) =========
+# ========= APOLLO CONTACTS =========
 def is_personal_email(email: str) -> bool:
     if not email:
         return False
@@ -205,36 +218,12 @@ def is_personal_email(email: str) -> bool:
     return True
 
 
-def extract_email_from_person(p: dict) -> str:
-    """
-    Try multiple possible fields where Apollo may put the work email.
-    Adjust if we see different keys in debug logs.
-    """
-    # 1) Standard email field
-    email = (p.get("email") or "").strip().lower()
-    if email:
-        return email
-
-    # 2) Some responses use 'current_work_email'
-    email = (p.get("current_work_email") or "").strip().lower()
-    if email:
-        return email
-
-    # 3) Fallback: look into 'emails' list if present
-    emails = p.get("emails") or []
-    if isinstance(emails, list):
-        for item in emails:
-            if isinstance(item, dict):
-                candidate = (item.get("email") or "").strip().lower()
-            else:
-                candidate = str(item).strip().lower()
-            if candidate:
-                return candidate
-
-    return ""
+def extract_email_from_contact(c: dict) -> str:
+    email = (c.get("email") or "").strip().lower()
+    return email or ""
 
 
-def apollo_people_search(domain: str):
+def apollo_contacts_search(domain: str, max_per_domain: int = 2):
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
         return []
@@ -245,35 +234,66 @@ def apollo_people_search(domain: str):
     }
 
     payload = {
-        "organization_domains": [domain],
         "page": 1,
-        "per_page": 10,
+        "per_page": max_per_domain * 4,  # fetch extras so we can filter
+        "domain": domain,
+        "contact_titles": list(PRIORITY_TITLES),
     }
 
     try:
         r = requests.post(
-            APOLLO_PEOPLE_SEARCH,
+            APOLLO_CONTACTS_SEARCH,
             headers=headers,
             json=payload,
             timeout=REQUEST_TIMEOUT,
         )
     except Exception as e:
-        print(f"[Apollo] request error for domain={domain}: {e}")
+        print(f"[Apollo] contacts request error for domain={domain}: {e}")
         return []
 
     if r.status_code != 200:
-        print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
+        print(f"[Apollo] contacts non-200 for domain={domain}: {r.status_code} {r.text}")
         return []
 
     data = r.json()
-    people = data.get("people", []) or []
+    contacts = data.get("contacts", []) or []
 
-    if not people:
-        print(f"[Apollo] no people for domain={domain}")
-    else:
-        print(f"[Apollo] {len(people)} people for domain={domain}")
+    if not contacts:
+        print(f"[Apollo] no contacts for domain={domain}")
+        return []
 
-    return people
+    # Score by title priority so we pick founders/CEOs first.
+    scored = []
+    for c in contacts:
+        title = (c.get("title") or "").lower()
+        score = 0
+        for idx, t in enumerate(PRIORITY_TITLES):
+            if t in title:
+                score = len(PRIORITY_TITLES) - idx
+                break
+        scored.append((score, c))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    results = []
+    seen_emails = set()
+
+    for _, c in scored:
+        email = extract_email_from_contact(c)
+        if not email:
+            continue
+        if not is_personal_email(email):
+            continue
+        if email in seen_emails:
+            continue
+
+        seen_emails.add(email)
+        results.append(c)
+        if len(results) >= max_per_domain:
+            break
+
+    print(f"[Apollo] selected {len(results)} contacts for domain={domain}")
+    return results
 
 
 def determine_offer(revenue):
@@ -286,8 +306,8 @@ def build_rows(domains, run_date: str):
     instantly_rows = []
     linkedin_rows = []
 
-    success = 0
-    apollo_hits = 0
+    success = 0  # total personal contacts generated
+    apollo_hits = 0  # domains where Apollo returned >=1 contact
 
     max_apollo_domains = min(MAX_APOLLO_DOMAINS_PER_RUN, len(domains))
 
@@ -300,72 +320,58 @@ def build_rows(domains, run_date: str):
             # beyond Apollo budget for this run
             continue
 
-        people = apollo_people_search(domain)
+        contacts = apollo_contacts_search(domain, max_per_domain=2)
         time.sleep(APOLLO_SLEEP_SECONDS)
 
-        if people:
+        if contacts:
             apollo_hits += 1
-
-        contact = None
-        for p in people:
-            email = extract_email_from_person(p)
-
-            if not is_personal_email(email):
-                continue
-
-            contact = {
-                "name": p.get("name", "") or "",
-                "title": p.get("title", "") or "",
-                "email": email,
-                "linkedin": p.get("linkedin_url", "") or "",
-            }
-            break
-
-        if not contact:
-            continue
 
         revenue = monthly_sales(d)
         offer = determine_offer(revenue)
 
-        full_name = contact["name"].strip()
-        name_parts = full_name.split()
-        first_name = name_parts[0] if name_parts else ""
-        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        for c in contacts:
+            full_name = (c.get("name") or "").strip()
+            name_parts = full_name.split()
+            first_name = name_parts[0] if name_parts else ""
+            last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
-        instantly_rows.append(
-            {
-                "first_name": first_name,
-                "last_name": last_name,
-                "email": contact["email"],
-                "role": contact["title"],
-                "linkedin_url": contact["linkedin"],
-                "company_name": d.get("title", ""),
-                "website": domain,
-                "city": d.get("city", ""),
-                "state": d.get("state", ""),
-                "revenue": revenue,
-                "campaign_name": TARGET_CAMPAIGN_NAME,
-                "campaign_id": INSTANTLY_CAMPAIGN_ID,
-                "custom_offer": offer,
-            }
-        )
+            email = extract_email_from_contact(c)
+            linkedin_url = c.get("linkedin_url", "") or ""
 
-        linkedin_rows.append(
-            {
-                "name": contact["name"],
-                "role": contact["title"],
-                "linkedin_url": contact["linkedin"],
-                "company": d.get("title", ""),
-                "website": domain,
-                "email": contact["email"],
-                "city": d.get("city", ""),
-                "state": d.get("state", ""),
-                "revenue": revenue,
-                "date_added": run_date,
-            }
-        )
+            instantly_rows.append(
+                {
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "email": email,
+                    "role": c.get("title", "") or "",
+                    "linkedin_url": linkedin_url,
+                    "company_name": d.get("title", ""),
+                    "website": domain,
+                    "city": d.get("city", ""),
+                    "state": d.get("state", ""),
+                    "revenue": revenue,
+                    "campaign_name": TARGET_CAMPAIGN_NAME,
+                    "campaign_id": INSTANTLY_CAMPAIGN_ID,
+                    "custom_offer": offer,
+                }
+            )
 
-        success += 1
+            linkedin_rows.append(
+                {
+                    "name": full_name,
+                    "role": c.get("title", "") or "",
+                    "linkedin_url": linkedin_url,
+                    "company": d.get("title", ""),
+                    "website": domain,
+                    "email": email,
+                    "city": d.get("city", ""),
+                    "state": d.get("state", ""),
+                    "revenue": revenue,
+                    "date_added": run_date,
+                }
+            )
+
+            success += 1
 
     return instantly_rows, linkedin_rows, success, apollo_hits
 
