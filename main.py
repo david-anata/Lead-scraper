@@ -20,7 +20,7 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
-APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"  # works with your key[web:26][web:29]
+APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
 HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
@@ -35,9 +35,6 @@ MAX_REVENUE = 300000
 
 MAX_PAGES = 10
 PAGE_SIZE = 200
-
-# We can throttle Apollo later if needed
-APOLLO_SLEEP_SECONDS = 0.3
 
 GENERIC_PREFIXES = (
     "info@",
@@ -79,10 +76,7 @@ def normalize_domain(domain: str) -> str:
 
 def monthly_sales(domain_obj):
     try:
-        value = domain_obj.get("estimated_sales")
-        if value is None:
-            return None
-        return float(value)
+        return float(domain_obj.get("estimated_sales"))
     except Exception:
         return None
 
@@ -108,9 +102,6 @@ def matches_icp(domain_obj) -> bool:
 
 
 def fetch_storeleads_page(page: int):
-    if not STORELEADS_API_KEY:
-        raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
-
     headers = {
         "Authorization": f"Bearer {STORELEADS_API_KEY}",
         "Content-Type": "application/json",
@@ -119,6 +110,7 @@ def fetch_storeleads_page(page: int):
     payload = {
         "page": page,
         "page_size": PAGE_SIZE,
+        # Critical: include platform + country_code or everything filters out
         "fields": "name,title,platform,country_code,state,city,estimated_sales",
     }
 
@@ -130,11 +122,7 @@ def fetch_storeleads_page(page: int):
     )
     r.raise_for_status()
 
-    data = r.json()
-    domains = data.get("domains", []) or []
-
-    print(f"[StoreLeads] page={page} returned {len(domains)} domains")
-    return domains
+    return r.json().get("domains", [])
 
 
 def collect_domains(max_domains: int):
@@ -167,7 +155,34 @@ def collect_domains(max_domains: int):
     return results, raw_scanned
 
 
-# ========= APOLLO + HUNTER =========
+def apollo_people_search(domain: str):
+    headers = {
+        "Content-Type": "application/json",
+        "X-Api-Key": APOLLO_API_KEY,
+        "Accept": "application/json",
+        "Cache-Control": "no-cache",
+    }
+
+    payload = {
+        "q_organization_domains": [domain],
+        "page": 1,
+        "per_page": 5,
+    }
+
+    r = requests.post(
+        APOLLO_PEOPLE_SEARCH,
+        headers=headers,
+        json=payload,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    if r.status_code != 200:
+        return []
+
+    data = r.json()
+    return data.get("people", []) or []
+
+
 def is_personal_email(email: str) -> bool:
     if not email:
         return False
@@ -183,9 +198,6 @@ def is_personal_email(email: str) -> bool:
 
 def validate_email(email: str) -> bool:
     try:
-        if not HUNTER_IO_API_KEY:
-            raise HTTPException(status_code=500, detail="HUNTER_IO_API_KEY missing")
-
         r = requests.get(
             HUNTER_VERIFY,
             params={
@@ -194,64 +206,39 @@ def validate_email(email: str) -> bool:
             },
             timeout=REQUEST_TIMEOUT,
         )
-
-        if r.status_code in [403, 429]:
-            print(f"[Hunter] validate rate/permission issue for {email}: {r.status_code}")
-            return False
-
         r.raise_for_status()
 
-        result = r.json().get("data", {}).get("result", "")
+        result = r.json()["data"]["result"]
         return result in ["deliverable", "risky"]
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Hunter] validate_email error for {email}: {e}")
+    except Exception:
         return False
 
 
-def apollo_people_search(domain: str):
-    if not APOLLO_API_KEY:
-        print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
-        return []
+def find_contact(domain: str):
+    people = apollo_people_search(domain)
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-Api-Key": APOLLO_API_KEY,
-    }
+    for p in people:
+        email = (p.get("email") or "").strip().lower()
 
-    # Minimal filter: just domain, first page, a few people
-    payload = {
-        "q_organization_domains": [domain],
-        "page": 1,
-        "per_page": 10,
-    }
+        if not is_personal_email(email):
+            continue
 
-    try:
-        r = requests.post(
-            APOLLO_PEOPLE_SEARCH,
-            headers=headers,
-            json=payload,
-            timeout=REQUEST_TIMEOUT,
-        )
-    except Exception as e:
-        print(f"[Apollo] request error for domain={domain}: {e}")
-        return []
+        if not validate_email(email):
+            continue
 
-    if r.status_code != 200:
-        print(f"[Apollo] non-200 for domain={domain}: {r.status_code} {r.text}")
-        return []
+        return {
+            "name": p.get("name", "") or "",
+            "title": p.get("title", "") or "",
+            "email": email,
+            "linkedin": p.get("linkedin_url", "") or "",
+        }
 
-    data = r.json()
-    people = data.get("people", []) or []
-
-    print(f"[Apollo] {len(people)} raw people for domain={domain}")
-    return people
+    return None
 
 
 def determine_offer(revenue):
-    if revenue and revenue >= 150000:
+    if revenue and revenue > 150000:
         return "Fulfillment"
     return "Shipping Optimization"
 
@@ -265,11 +252,7 @@ def build_rows(domains, run_date: str):
 
     for d in domains:
         domain = normalize_domain(d.get("name", ""))
-        if not domain:
-            continue
-
         people = apollo_people_search(domain)
-        time.sleep(APOLLO_SLEEP_SECONDS)
 
         if people:
             apollo_hits += 1
@@ -337,6 +320,7 @@ def build_rows(domains, run_date: str):
         )
 
         success += 1
+        time.sleep(0.2)
 
     return instantly_rows, linkedin_rows, success, apollo_hits
 
@@ -354,8 +338,6 @@ def rows_to_csv(rows):
 
 # ========= SLACK =========
 def slack_headers():
-    if not SLACK_BOT_TOKEN:
-        raise HTTPException(status_code=500, detail="SLACK_BOT_TOKEN missing")
     return {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 
 
@@ -376,7 +358,6 @@ def upload_file(filename: str, content: str):
         },
         timeout=REQUEST_TIMEOUT,
     )
-
     step1_resp.raise_for_status()
     step1 = step1_resp.json()
 
@@ -412,7 +393,6 @@ def upload_file(filename: str, content: str):
         },
         timeout=REQUEST_TIMEOUT,
     )
-
     step3_resp.raise_for_status()
     step3 = step3_resp.json()
 
@@ -453,7 +433,6 @@ Files attached below.
         },
         timeout=REQUEST_TIMEOUT,
     )
-
     r.raise_for_status()
 
 
@@ -478,11 +457,6 @@ def run(payload: ICPBuildRequest):
 
     try:
         domains, raw_scanned = collect_domains(payload.max_domains)
-
-        print(
-            f"[Run] date={payload.date} max_domains={payload.max_domains} "
-            f"raw_scanned={raw_scanned} icp_matches={len(domains)}"
-        )
 
         instantly_rows, linkedin_rows, success, apollo_hits = build_rows(domains, payload.date)
 
@@ -521,7 +495,6 @@ def run(payload: ICPBuildRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[Run] unexpected error: {type(e).__name__} {e}")
         return JSONResponse(
             status_code=500,
             content={"error_type": type(e).__name__, "detail": str(e)},
