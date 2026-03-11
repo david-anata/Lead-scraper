@@ -19,7 +19,7 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
-APOLLO_CONTACTS_SEARCH = "https://api.apollo.io/api/v1/contacts/search"
+APOLLO_CONTACTS_SEARCH = "https://api.apollo.io/api/v1/contacts/search"  # [web:77]
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
@@ -35,7 +35,7 @@ MAX_PAGES = 10
 PAGE_SIZE = 200
 
 MAX_APOLLO_DOMAINS_PER_RUN = 40
-APOLLO_SLEEP_SECONDS = 1.2  # stay under ~50 calls/minute
+APOLLO_SLEEP_SECONDS = 1.2  # stay under ~50 calls/minute[web:77]
 
 GENERIC_PREFIXES = (
     "info@",
@@ -86,7 +86,7 @@ def monthly_sales(domain_obj):
 
 
 def build_storeleads_bq():
-    # Server-side ICP filter: Shopify + US + revenue band.
+    # Shopify + US + revenue band.
     return {
         "must": {
             "conjuncts": [
@@ -210,37 +210,11 @@ def extract_email_from_contact(c: dict) -> str:
     return email or ""
 
 
-def contact_matches_domain(contact: dict, domain: str) -> bool:
-    """
-    Make sure the contact is actually tied to this brand.
-    We check any org/account website-like field for the domain substring.
-    """
-    domain = domain.lower()
-    possible_fields = []
-
-    org = contact.get("organization") or {}
-    acct = contact.get("account") or {}
-
-    possible_fields.extend(
-        [
-            org.get("website_url"),
-            org.get("domain"),
-            acct.get("website_url"),
-            acct.get("domain"),
-        ]
-    )
-
-    for val in possible_fields:
-        if not val:
-            continue
-        val_norm = normalize_domain(val)
-        if domain in val_norm or val_norm in domain:
-            return True
-
-    return False
-
-
 def apollo_contacts_search(domain: str, max_per_domain: int = 2):
+    """
+    Ask Apollo for contacts for this domain.
+    Let Apollo handle ranking; we just require that contacts have emails.[web:77]
+    """
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
         return []
@@ -250,11 +224,13 @@ def apollo_contacts_search(domain: str, max_per_domain: int = 2):
         "X-Api-Key": APOLLO_API_KEY,
     }
 
+    # Apollo docs expose filters like has_email / has_verified_email.[web:77][web:55]
     payload = {
         "page": 1,
         "per_page": max_per_domain * 6,  # grab extras so we can filter
         "domain": domain,
-        # no title filter; we just want real humans with non-generic emails
+        "has_personal_emails": True,
+        "has_valid_emails": True,
     }
 
     try:
@@ -275,32 +251,8 @@ def apollo_contacts_search(domain: str, max_per_domain: int = 2):
     data = r.json()
     contacts = data.get("contacts", []) or []
 
-    if not contacts:
-        print(f"[Apollo] no contacts for domain={domain}")
-        return []
-
     print(f"[Apollo] raw contacts for domain={domain}: {len(contacts)}")
-    results = []
-    seen_emails = set()
-
-    for c in contacts:
-        email = extract_email_from_contact(c)
-        if not email:
-            continue
-        if not is_personal_email(email):
-            continue
-        if email in seen_emails:
-            continue
-        if not contact_matches_domain(c, domain):
-            continue
-
-        seen_emails.add(email)
-        results.append(c)
-        if len(results) >= max_per_domain:
-            break
-
-    print(f"[Apollo] selected {len(results)} contacts for domain={domain}")
-    return results
+    return contacts
 
 
 def determine_offer(revenue):
@@ -313,8 +265,9 @@ def build_rows(domains, run_date: str):
     instantly_rows = []
     linkedin_rows = []
 
-    success = 0  # total personal contacts generated
-    apollo_hits = 0  # domains where Apollo returned >=1 contact
+    success = 0          # total personal contacts generated
+    apollo_hits = 0      # domains where Apollo returned >=1 contact
+    seen_emails_global = set()  # de-dupe across the entire run
 
     max_apollo_domains = min(MAX_APOLLO_DOMAINS_PER_RUN, len(domains))
 
@@ -336,13 +289,30 @@ def build_rows(domains, run_date: str):
         revenue = monthly_sales(d)
         offer = determine_offer(revenue)
 
+        accepted_for_domain = 0
+
         for c in contacts:
+            if accepted_for_domain >= 2:
+                break
+
             full_name = (c.get("name") or "").strip()
+            email = extract_email_from_contact(c)
+
+            if not email:
+                continue
+            if not is_personal_email(email):
+                continue
+            if email in seen_emails_global:
+                continue
+
+            # accept this contact
+            seen_emails_global.add(email)
+            accepted_for_domain += 1
+
             name_parts = full_name.split()
             first_name = name_parts[0] if name_parts else ""
             last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
-            email = extract_email_from_contact(c)
             linkedin_url = c.get("linkedin_url", "") or ""
 
             instantly_rows.append(
