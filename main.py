@@ -20,10 +20,7 @@ INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 
 # ========= ENDPOINTS =========
 STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
-
-# Use mixed people search endpoint (works with your key)
-APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"
-
+APOLLO_PEOPLE_SEARCH = "https://api.apollo.io/api/v1/mixed_people/api_search"  # works with your key[web:26][web:29]
 HUNTER_VERIFY = "https://api.hunter.io/v2/email-verifier"
 
 SLACK_CHAT_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
@@ -35,28 +32,12 @@ REQUEST_TIMEOUT = 60
 
 MIN_REVENUE = 20000
 MAX_REVENUE = 300000
-MAX_EMPLOYEES = 25
 
-MAX_PAGES = 5
-PAGE_SIZE = 100
+MAX_PAGES = 10
+PAGE_SIZE = 200
 
-# We will only call Apollo for the first N ICP domains per run
-MAX_APOLLO_DOMAINS_PER_RUN = 40
-APOLLO_SLEEP_SECONDS = 1.2  # keep under 50 calls/min[web:22]
-
-TECH_MATCH = "Aftership ShipStation Easyship Pirate Ship Shippo ShippingEasy ShipHero"
-
-POD_TECH = [
-    "printful",
-    "printify",
-    "teelaunch",
-    "shineon",
-    "gearment",
-    "spocket",
-    "zendrop",
-    "dsers",
-    "modalyst",
-]
+# We can throttle Apollo later if needed
+APOLLO_SLEEP_SECONDS = 0.3
 
 GENERIC_PREFIXES = (
     "info@",
@@ -81,10 +62,10 @@ TARGET_CAMPAIGN_NAME = "Amazon | DTC Brands | Performance Marketing | Mar 2026"
 # ========= REQUEST MODEL =========
 class ICPBuildRequest(BaseModel):
     date: str
-    max_domains: int = 150  # total ICP domains to consider (Apollo will be capped separately)
+    max_domains: int = 150
 
 
-# ========= HELPERS: ICP & TECH =========
+# ========= HELPERS =========
 def normalize_domain(domain: str) -> str:
     return (
         str(domain or "")
@@ -94,27 +75,6 @@ def normalize_domain(domain: str) -> str:
         .strip("/")
         .lower()
     )
-
-
-def get_technologies(domain_obj):
-    techs = domain_obj.get("technologies") or []
-    names = []
-
-    for t in techs:
-        if isinstance(t, dict):
-            names.append((t.get("name") or "").lower())
-        else:
-            names.append(str(t).lower())
-
-    return names
-
-
-def is_dropship(techs):
-    for tech in techs:
-        for bad in POD_TECH:
-            if bad in tech:
-                return True
-    return False
 
 
 def monthly_sales(domain_obj):
@@ -129,10 +89,12 @@ def monthly_sales(domain_obj):
 
 def matches_icp(domain_obj) -> bool:
     platform = str(domain_obj.get("platform", "")).lower()
+    country_code = str(domain_obj.get("country_code", "")).upper()
+
     if platform != "shopify":
         return False
 
-    if str(domain_obj.get("country_code", "")).upper() != "US":
+    if country_code != "US":
         return False
 
     revenue = monthly_sales(domain_obj)
@@ -142,57 +104,9 @@ def matches_icp(domain_obj) -> bool:
     if revenue < MIN_REVENUE or revenue > MAX_REVENUE:
         return False
 
-    employees = domain_obj.get("employee_count")
-    if employees:
-        try:
-            if int(employees) > MAX_EMPLOYEES:
-                return False
-        except Exception:
-            pass
-
-    techs = get_technologies(domain_obj)
-    if is_dropship(techs):
-        return False
-
     return True
 
 
-def build_storeleads_bq():
-    # Same as old working ICP filter
-    return {
-        "must": {
-            "conjuncts": [
-                {
-                    "field": "p",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "1",  # Shopify
-                },
-                {
-                    "field": "tech",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": TECH_MATCH,
-                },
-                {
-                    "field": "cc",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "US",
-                },
-                {
-                    "field": "er",
-                    "min": MIN_REVENUE,
-                    "max": MAX_REVENUE,
-                    "inclusive_min": True,
-                    "inclusive_max": True,
-                },
-            ]
-        }
-    }
-
-
-# ========= STORELEADS =========
 def fetch_storeleads_page(page: int):
     if not STORELEADS_API_KEY:
         raise HTTPException(status_code=500, detail="STORELEADS_API_KEY missing")
@@ -205,20 +119,7 @@ def fetch_storeleads_page(page: int):
     payload = {
         "page": page,
         "page_size": PAGE_SIZE,
-        "bq": json.dumps(build_storeleads_bq()),
-        "fields": ",".join(
-            [
-                "name",
-                "title",
-                "platform",
-                "country_code",
-                "state",
-                "city",
-                "employee_count",
-                "estimated_sales",
-                "technologies",
-            ]
-        ),
+        "fields": "name,title,platform,country_code,state,city,estimated_sales",
     }
 
     r = requests.post(
@@ -227,8 +128,8 @@ def fetch_storeleads_page(page: int):
         json=payload,
         timeout=REQUEST_TIMEOUT,
     )
-
     r.raise_for_status()
+
     data = r.json()
     domains = data.get("domains", []) or []
 
@@ -266,7 +167,20 @@ def collect_domains(max_domains: int):
     return results, raw_scanned
 
 
-# ========= APOLLO (PEOPLE API SEARCH) + HUNTER VERIFY =========
+# ========= APOLLO + HUNTER =========
+def is_personal_email(email: str) -> bool:
+    if not email:
+        return False
+
+    email = email.strip().lower()
+
+    for prefix in GENERIC_PREFIXES:
+        if email.startswith(prefix):
+            return False
+
+    return True
+
+
 def validate_email(email: str) -> bool:
     try:
         if not HUNTER_IO_API_KEY:
@@ -297,19 +211,6 @@ def validate_email(email: str) -> bool:
         return False
 
 
-def is_personal_email(email: str) -> bool:
-    if not email:
-        return False
-
-    email = email.strip().lower()
-
-    for prefix in GENERIC_PREFIXES:
-        if email.startswith(prefix):
-            return False
-
-    return True
-
-
 def apollo_people_search(domain: str):
     if not APOLLO_API_KEY:
         print("[Apollo] missing APOLLO_API_KEY, skipping Apollo for this run")
@@ -317,9 +218,10 @@ def apollo_people_search(domain: str):
 
     headers = {
         "Content-Type": "application/json",
-        "X-Api-Key": APOLLO_API_KEY,  # key in header
+        "X-Api-Key": APOLLO_API_KEY,
     }
 
+    # Minimal filter: just domain, first page, a few people
     payload = {
         "q_organization_domains": [domain],
         "page": 1,
@@ -344,11 +246,7 @@ def apollo_people_search(domain: str):
     data = r.json()
     people = data.get("people", []) or []
 
-    if not people:
-        print(f"[Apollo] no people for domain={domain}")
-    else:
-        print(f"[Apollo] {len(people)} people for domain={domain}")
-
+    print(f"[Apollo] {len(people)} raw people for domain={domain}")
     return people
 
 
@@ -365,22 +263,12 @@ def build_rows(domains, run_date: str):
     success = 0
     apollo_hits = 0
 
-    # Apollo-only enrichment for the first N domains; rest are skipped for now
-    max_apollo_domains = min(MAX_APOLLO_DOMAINS_PER_RUN, len(domains))
-
-    for idx, d in enumerate(domains):
+    for d in domains:
         domain = normalize_domain(d.get("name", ""))
         if not domain:
             continue
 
-        if idx >= max_apollo_domains:
-            # beyond Apollo budget, skip for this run
-            continue
-
-        # Apollo People API call
         people = apollo_people_search(domain)
-
-        # throttle to avoid 429s
         time.sleep(APOLLO_SLEEP_SECONDS)
 
         if people:
@@ -626,7 +514,7 @@ def run(payload: ICPBuildRequest):
             iter([instantly_csv]),
             media_type="text/csv",
             headers={
-                "Content-Disposition": f'attachment; filename=\"instantly_upload_{payload.date}.csv\"'
+                "Content-Disposition": f'attachment; filename="instantly_upload_{payload.date}.csv"'
             },
         )
 
