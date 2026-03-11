@@ -391,6 +391,13 @@ def apollo_contacts_search(domain: str, max_per_domain: int = 2):
     contacts = data.get("contacts", []) or []
 
     print(f"[Apollo] raw contacts for domain={domain}: {len(contacts)}")
+    if contacts:
+        try:
+            sample = json.dumps(contacts[0])[:1200]
+            print(f"[Apollo debug] domain={domain} sample_contact={sample}")
+        except Exception as e:
+            print(f"[Apollo debug] error serializing sample contact for {domain}: {e}")
+
     return contacts
 
 
