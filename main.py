@@ -3,8 +3,11 @@ import io
 import json
 import logging
 import os
+import re
 import time
+import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -82,6 +85,7 @@ APOLLO_DEBUG_RAW = os.getenv("APOLLO_DEBUG_RAW", "").strip().lower() in {"1", "t
 APP_VERSION = os.getenv("APP_VERSION", "apollo-people-search-v2")
 RENDER_GIT_COMMIT = os.getenv("RENDER_GIT_COMMIT", "").strip()
 RENDER_GIT_BRANCH = os.getenv("RENDER_GIT_BRANCH", "").strip()
+PROCESSED_DOMAINS_FILE = os.getenv("PROCESSED_DOMAINS_FILE", "processed_domains.csv").strip()
 
 
 # ========= REQUEST / SETTINGS MODELS =========
@@ -204,6 +208,77 @@ def rows_to_csv(rows: list[dict[str, Any]]) -> str:
     writer.writeheader()
     writer.writerows(rows)
     return buffer.getvalue()
+
+
+def processed_domains_path() -> Path:
+    configured_path = Path(PROCESSED_DOMAINS_FILE)
+    if configured_path.is_absolute():
+        return configured_path
+    return Path(__file__).resolve().parent / configured_path
+
+
+def load_processed_domains() -> set[str]:
+    path = processed_domains_path()
+    if not path.exists():
+        return set()
+
+    processed_domains: set[str] = set()
+    with path.open("r", encoding="utf-8", newline="") as file_obj:
+        reader = csv.DictReader(file_obj)
+        for row in reader:
+            domain = normalize_domain((row or {}).get("domain", ""))
+            if domain:
+                processed_domains.add(domain)
+
+    return processed_domains
+
+
+def append_processed_domains(domains: set[str], run_date: str) -> None:
+    if not domains:
+        return
+
+    path = processed_domains_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = path.exists()
+
+    with path.open("a", encoding="utf-8", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=["domain", "date_added"])
+        if not file_exists:
+            writer.writeheader()
+
+        for domain in sorted(domains):
+            writer.writerow({"domain": domain, "date_added": run_date})
+
+
+def clean_company_name(company_name: str) -> str:
+    cleaned = (company_name or "").strip()
+    if not cleaned:
+        return ""
+
+    mojibake_replacements = {
+        "‚Ä¢": " • ",
+        "â€¢": " • ",
+        "Â®": "",
+        "Â™": "",
+        "â„¢": "",
+        "Ã©": "e",
+        "Ã¨": "e",
+        "Ã": "",
+    }
+
+    for source, target in mojibake_replacements.items():
+        cleaned = cleaned.replace(source, target)
+
+    cleaned = unicodedata.normalize("NFKC", cleaned)
+
+    for separator in (" • ", " | ", " — ", " – ", " :: ", " - "):
+        if separator in cleaned:
+            cleaned = cleaned.split(separator, 1)[0]
+            break
+
+    cleaned = re.sub(r"[^\w\s&'\-.,]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|•,")
+    return cleaned
 
 
 # ========= STORELEADS =========
@@ -747,7 +822,7 @@ def build_csv_rows(
 
             first_name, last_name = split_full_name(full_name)
             linkedin_url = contact.get("linkedin_url", "") or ""
-            store_title = store.get("title", "") or ""
+            store_title = clean_company_name(store.get("title", "") or "")
             role = contact.get("title", "") or ""
 
             instantly_rows.append(
@@ -871,26 +946,34 @@ def upload_file_to_slack(filename: str, content: str, settings: Settings) -> dic
 def post_slack_summary(
     raw_scanned: int,
     qualified_domains: int,
+    new_domains_considered: int,
+    previously_processed_domains: int,
+    apollo_domains_queried: int,
     apollo_hits: int,
     successful_contacts: int,
     settings: Settings,
 ) -> None:
-    contact_hit_rate = round((successful_contacts / qualified_domains) * 100, 2) if qualified_domains else 0
-    pipeline_success_rate = round((successful_contacts / raw_scanned) * 100, 2) if raw_scanned else 0
+    contact_rate_per_apollo_domain = (
+        round((successful_contacts / apollo_domains_queried) * 100, 2) if apollo_domains_queried else 0
+    )
+    contact_rate_per_apollo_hit = round((successful_contacts / apollo_hits) * 100, 2) if apollo_hits else 0
 
-    message_text = f"""@channel
+    message_text = f"""<!channel>
 
 Lead build completed.
 
-Domains scanned: {raw_scanned}
+Domains scanned from StoreLeads: {raw_scanned}
 ICP matches: {qualified_domains}
-Apollo contacts found: {apollo_hits}
-Personal contacts found: {successful_contacts}
+Previously processed domains skipped: {previously_processed_domains}
+New domains considered: {new_domains_considered}
+Domains queried in Apollo: {apollo_domains_queried}
+Domains with Apollo candidates: {apollo_hits}
+Final contacts selected: {successful_contacts}
 
-Contact hit rate: {contact_hit_rate}%
-Pipeline success rate: {pipeline_success_rate}%
+Contacts per Apollo-queried domain: {contact_rate_per_apollo_domain}%
+Contacts per Apollo-positive domain: {contact_rate_per_apollo_hit}%
 
-Files attached below.
+CSV file attached below.
 """
 
     response = requests.post(
@@ -924,37 +1007,49 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
 
     try:
         qualified_domains, raw_scanned = collect_domains(payload.max_domains, settings)
+        processed_domains = load_processed_domains()
+        filtered_domains = [
+            domain_obj
+            for domain_obj in qualified_domains
+            if normalize_domain(domain_obj.get("name", "")) not in processed_domains
+        ]
+        previously_processed_domains = len(qualified_domains) - len(filtered_domains)
+        apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(filtered_domains))
 
         logger.info(
-            "[Run] date=%s max_domains=%s raw_scanned=%s icp_matches=%s",
+            "[Run] date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s",
             payload.date,
             payload.max_domains,
             raw_scanned,
             len(qualified_domains),
+            len(filtered_domains),
+            previously_processed_domains,
+            apollo_domains_queried,
         )
 
         instantly_rows, linkedin_rows, successful_contacts, apollo_hits = build_csv_rows(
-            qualified_domains,
+            filtered_domains,
             payload.date,
             settings,
         )
 
         instantly_csv = rows_to_csv(instantly_rows)
-        linkedin_csv = rows_to_csv(linkedin_rows)
-
-        if instantly_rows:
-            upload_file_to_slack(f"instantly_upload_{payload.date}.csv", instantly_csv, settings)
-
-        if linkedin_rows:
-            upload_file_to_slack(f"linkedin_targets_{payload.date}.csv", linkedin_csv, settings)
+        exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
+        append_processed_domains(exported_domains, payload.date)
 
         post_slack_summary(
             raw_scanned=raw_scanned,
             qualified_domains=len(qualified_domains),
+            new_domains_considered=len(filtered_domains),
+            previously_processed_domains=previously_processed_domains,
+            apollo_domains_queried=apollo_domains_queried,
             apollo_hits=apollo_hits,
             successful_contacts=successful_contacts,
             settings=settings,
         )
+
+        if instantly_rows:
+            upload_file_to_slack(f"instantly_upload_{payload.date}.csv", instantly_csv, settings)
 
         if not instantly_rows:
             return JSONResponse(
