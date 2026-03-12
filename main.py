@@ -870,7 +870,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/run-lead-build")
+@app.post("/run-lead-build", response_model=None)
 def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
     settings = load_settings()
     app.state.settings = settings
