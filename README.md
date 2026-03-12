@@ -25,6 +25,8 @@ Required:
 Optional:
 
 - `INSTANTLY_CAMPAIGN_ID`: included in the generated Instantly CSV rows as the campaign ID field
+- `INSTANTLY_API_KEY`: when set with `INSTANTLY_CAMPAIGN_ID`, the app also pushes accepted leads directly into the Instantly campaign API
+- `INSTANTLY_AI`: supported as an alias for `INSTANTLY_API_KEY` if your existing deployment already uses that env var name
 
 If any required variables are missing, the app fails clearly at startup.
 
@@ -55,6 +57,9 @@ export APOLLO_API_KEY="your-apollo-key"
 export SLACK_BOT_TOKEN="your-slack-bot-token"
 export SLACK_CHANNEL_ID="your-slack-channel-id"
 export INSTANTLY_CAMPAIGN_ID="your-instantly-campaign-id"
+export INSTANTLY_API_KEY="your-instantly-api-key"
+# or, if your deploy already uses this name:
+export INSTANTLY_AI="your-instantly-api-key"
 ```
 
 ## Start the FastAPI Server

@@ -28,6 +28,7 @@ APOLLO_BULK_PEOPLE_MATCH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
 SLACK_CHAT_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
 SLACK_COMPLETE_UPLOAD_URL = "https://slack.com/api/files.completeUploadExternal"
+INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
 
 
 # ========= RUNTIME CONFIG =========
@@ -101,6 +102,7 @@ class Settings:
     slack_bot_token: str
     slack_channel_id: str
     instantly_campaign_id: str
+    instantly_api_key: str
 
 
 # ========= CONFIGURATION =========
@@ -116,6 +118,7 @@ def load_settings() -> Settings:
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip(),
         instantly_campaign_id=os.getenv("INSTANTLY_CAMPAIGN_ID", "").strip(),
+        instantly_api_key=(os.getenv("INSTANTLY_API_KEY") or os.getenv("INSTANTLY_AI") or "").strip(),
     )
 
 
@@ -276,9 +279,54 @@ def clean_company_name(company_name: str) -> str:
             cleaned = cleaned.split(separator, 1)[0]
             break
 
+    cleaned = cleaned.replace("&amp;", "&")
     cleaned = re.sub(r"[^\w\s&'\-.,]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|•,")
     return cleaned
+
+
+def clean_role_name(role_name: str) -> str:
+    cleaned = (role_name or "").strip()
+    if not cleaned:
+        return ""
+
+    cleaned = unicodedata.normalize("NFKC", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.title()
+
+    acronym_replacements = {
+        "Ceo": "CEO",
+        "Coo": "COO",
+        "Cfo": "CFO",
+        "Cmo": "CMO",
+        "Cto": "CTO",
+        "Cro": "CRO",
+        "Cso": "CSO",
+        "Cpo": "CPO",
+        "Vp": "VP",
+    }
+    for source, target in acronym_replacements.items():
+        cleaned = re.sub(rf"\b{source}\b", target, cleaned)
+
+    cleaned = re.sub(r"\bEcommerce\b", "Ecommerce", cleaned)
+    cleaned = re.sub(r"\bE-Commerce\b", "E-commerce", cleaned)
+    return cleaned.strip()
+
+
+def format_revenue_bucket(revenue: float | None) -> str:
+    if revenue is None:
+        return ""
+
+    normalized_revenue = int(max(revenue, 0))
+    if normalized_revenue == 0:
+        return "$0"
+
+    bucket_size = 10000
+    bucketed_revenue = (normalized_revenue // bucket_size) * bucket_size
+    if bucketed_revenue == 0:
+        bucketed_revenue = bucket_size
+
+    return f"${bucketed_revenue:,.0f}"
 
 
 # ========= STORELEADS =========
@@ -798,6 +846,7 @@ def build_csv_rows(
             apollo_hits += 1
 
         revenue = parse_monthly_sales(store)
+        formatted_revenue = format_revenue_bucket(revenue)
         offer = determine_offer(revenue)
         accepted_for_domain = 0
 
@@ -823,7 +872,7 @@ def build_csv_rows(
             first_name, last_name = split_full_name(full_name)
             linkedin_url = contact.get("linkedin_url", "") or ""
             store_title = clean_company_name(store.get("title", "") or "")
-            role = contact.get("title", "") or ""
+            role = clean_role_name(contact.get("title", "") or "")
 
             instantly_rows.append(
                 {
@@ -836,7 +885,7 @@ def build_csv_rows(
                     "website": domain,
                     "city": store.get("city", ""),
                     "state": store.get("state", ""),
-                    "revenue": revenue,
+                    "revenue": formatted_revenue,
                     "campaign_name": TARGET_CAMPAIGN_NAME,
                     "campaign_id": settings.instantly_campaign_id,
                     "custom_offer": offer,
@@ -853,7 +902,7 @@ def build_csv_rows(
                     "email": email,
                     "city": store.get("city", ""),
                     "state": store.get("state", ""),
-                    "revenue": revenue,
+                    "revenue": formatted_revenue,
                     "date_added": run_date,
                 }
             )
@@ -943,6 +992,73 @@ def upload_file_to_slack(filename: str, content: str, settings: Settings) -> dic
     return completion
 
 
+def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) -> dict[str, Any]:
+    if not rows:
+        return {"status": "skipped", "reason": "no_rows", "created_count": 0, "skipped_count": 0}
+
+    if not settings.instantly_campaign_id:
+        logger.warning("[Instantly] import skipped: INSTANTLY_CAMPAIGN_ID missing")
+        return {"status": "skipped", "reason": "missing_campaign_id", "created_count": 0, "skipped_count": 0}
+
+    if not settings.instantly_api_key:
+        logger.warning("[Instantly] import skipped: INSTANTLY_API_KEY missing")
+        return {"status": "skipped", "reason": "missing_api_key", "created_count": 0, "skipped_count": 0}
+
+    leads = []
+    for row in rows:
+        leads.append(
+            {
+                "email": row.get("email", ""),
+                "first_name": row.get("first_name", ""),
+                "last_name": row.get("last_name", ""),
+                "company_name": row.get("company_name", ""),
+                "website": row.get("website", ""),
+                "custom_variables": {
+                    "custom_offer": row.get("custom_offer", ""),
+                    "linkedin_url": row.get("linkedin_url", ""),
+                    "city": row.get("city", ""),
+                    "state": row.get("state", ""),
+                    "revenue": row.get("revenue", ""),
+                },
+            }
+        )
+
+    response = requests.post(
+        INSTANTLY_ADD_LEADS_URL,
+        headers={
+            "Authorization": f"Bearer {settings.instantly_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "campaign_id": settings.instantly_campaign_id,
+            "leads": leads,
+            "verify_leads_on_import": False,
+            "skip_if_in_workspace": True,
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    result = response.json()
+
+    created_count = len(result.get("created_leads", []) or [])
+    skipped_count = int(result.get("skipped_count", 0) or 0)
+    logger.info(
+        "[Instantly] status=%s total_sent=%s created_count=%s skipped_count=%s invalid_email_count=%s",
+        result.get("status", "unknown"),
+        result.get("total_sent", len(rows)),
+        created_count,
+        skipped_count,
+        result.get("invalid_email_count", 0),
+    )
+    return {
+        "status": result.get("status", "unknown"),
+        "reason": "",
+        "created_count": created_count,
+        "skipped_count": skipped_count,
+        "total_sent": result.get("total_sent", len(rows)),
+    }
+
+
 def post_slack_summary(
     raw_scanned: int,
     qualified_domains: int,
@@ -951,6 +1067,7 @@ def post_slack_summary(
     apollo_domains_queried: int,
     apollo_hits: int,
     successful_contacts: int,
+    instantly_import_result: dict[str, Any],
     settings: Settings,
 ) -> None:
     contact_rate_per_apollo_domain = (
@@ -969,6 +1086,9 @@ New domains considered: {new_domains_considered}
 Domains queried in Apollo: {apollo_domains_queried}
 Domains with Apollo candidates: {apollo_hits}
 Final contacts selected: {successful_contacts}
+Instantly import status: {instantly_import_result.get("status", "unknown")}
+Instantly leads created: {instantly_import_result.get("created_count", 0)}
+Instantly leads skipped: {instantly_import_result.get("skipped_count", 0)}
 
 Contacts per Apollo-queried domain: {contact_rate_per_apollo_domain}%
 Contacts per Apollo-positive domain: {contact_rate_per_apollo_hit}%
@@ -1036,6 +1156,7 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
         instantly_csv = rows_to_csv(instantly_rows)
         exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
         append_processed_domains(exported_domains, payload.date)
+        instantly_import_result = import_leads_to_instantly(instantly_rows, settings)
 
         post_slack_summary(
             raw_scanned=raw_scanned,
@@ -1045,6 +1166,7 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
             apollo_domains_queried=apollo_domains_queried,
             apollo_hits=apollo_hits,
             successful_contacts=successful_contacts,
+            instantly_import_result=instantly_import_result,
             settings=settings,
         )
 
