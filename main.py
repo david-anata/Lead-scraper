@@ -79,6 +79,9 @@ APOLLO_TARGET_SENIORITIES = (
     "manager",
 )
 APOLLO_DEBUG_RAW = os.getenv("APOLLO_DEBUG_RAW", "").strip().lower() in {"1", "true", "yes", "on"}
+APP_VERSION = os.getenv("APP_VERSION", "apollo-people-search-v2")
+RENDER_GIT_COMMIT = os.getenv("RENDER_GIT_COMMIT", "").strip()
+RENDER_GIT_BRANCH = os.getenv("RENDER_GIT_BRANCH", "").strip()
 
 
 # ========= REQUEST / SETTINGS MODELS =========
@@ -155,6 +158,12 @@ def startup() -> None:
     settings = load_settings()
     app.state.settings = settings
     validate_settings_on_startup(settings)
+    logger.info(
+        "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=people_search_enrichment",
+        APP_VERSION,
+        RENDER_GIT_BRANCH or "unknown",
+        RENDER_GIT_COMMIT or "unknown",
+    )
 
 
 # ========= GENERAL HELPERS =========
@@ -510,6 +519,15 @@ def search_apollo_people(
     *,
     max_results: int = APOLLO_SEARCH_CANDIDATES_PER_DOMAIN,
 ) -> list[dict[str, Any]]:
+    search_params = {
+        "page": 1,
+        "per_page": max_results,
+        "include_similar_titles": "true",
+        "person_titles[]": list(APOLLO_TARGET_TITLES),
+        "person_seniorities[]": list(APOLLO_TARGET_SENIORITIES),
+        "q_organization_domains_list[]": [domain],
+    }
+
     try:
         response = requests.post(
             APOLLO_PEOPLE_SEARCH_URL,
@@ -517,14 +535,7 @@ def search_apollo_people(
                 "Content-Type": "application/json",
                 "X-Api-Key": settings.apollo_api_key,
             },
-            params={
-                "page": 1,
-                "per_page": max_results,
-                "include_similar_titles": "true",
-                "person_titles[]": list(APOLLO_TARGET_TITLES),
-                "person_seniorities[]": list(APOLLO_TARGET_SENIORITIES),
-                "q_organization_domains_list[]": [domain],
-            },
+            params=search_params,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
@@ -532,12 +543,22 @@ def search_apollo_people(
         return []
 
     if response.status_code != 200:
+        failure_class = "request_shape_or_unknown"
+        if response.status_code in (401, 403):
+            failure_class = "api_key_permission_or_scope"
+        elif response.status_code == 422:
+            failure_class = "request_shape"
+        elif response.status_code >= 500:
+            failure_class = "apollo_server_error"
         logger.warning(
-            "[Apollo] people search non-200 for domain=%s: %s %s",
+            "[Apollo] people search non-200 for domain=%s status=%s failure_class=%s body=%s",
             domain,
             response.status_code,
+            failure_class,
             response.text,
         )
+        if APOLLO_DEBUG_RAW:
+            logger.debug("[Apollo] people search params for domain=%s: %s", domain, search_params)
         return []
 
     try:
@@ -562,6 +583,8 @@ def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> li
     if not details:
         return []
 
+    enrich_payload = {"details": details}
+
     try:
         response = requests.post(
             APOLLO_BULK_PEOPLE_MATCH_URL,
@@ -573,7 +596,7 @@ def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> li
                 "reveal_personal_emails": "false",
                 "reveal_phone_number": "false",
             },
-            json={"details": details},
+            json=enrich_payload,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
@@ -581,7 +604,21 @@ def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> li
         return []
 
     if response.status_code != 200:
-        logger.warning("[Apollo] people enrichment non-200: %s %s", response.status_code, response.text)
+        failure_class = "request_shape_or_unknown"
+        if response.status_code in (401, 403):
+            failure_class = "api_key_permission_or_scope"
+        elif response.status_code == 422:
+            failure_class = "request_shape"
+        elif response.status_code >= 500:
+            failure_class = "apollo_server_error"
+        logger.warning(
+            "[Apollo] people enrichment non-200 status=%s failure_class=%s body=%s",
+            response.status_code,
+            failure_class,
+            response.text,
+        )
+        if APOLLO_DEBUG_RAW:
+            logger.debug("[Apollo] people enrichment payload: %s", enrich_payload)
         return []
 
     try:
@@ -606,6 +643,10 @@ def search_apollo_contacts(
 ) -> tuple[list[dict[str, Any]], dict[str, int | str]]:
     people = search_apollo_people(domain, settings)
     if not people:
+        logger.info(
+            "[ApolloPipeline] domain=%s stage=people_search result=empty likely_root_cause=request_shape_permission_or_no_results",
+            domain,
+        )
         return [], {
             "domain": domain,
             "people_search_candidates": 0,
@@ -616,6 +657,11 @@ def search_apollo_contacts(
 
     enriched_people = enrich_apollo_people(people, settings)
     if not enriched_people:
+        logger.info(
+            "[ApolloPipeline] domain=%s stage=enrichment result=empty likely_root_cause=permission_shape_or_no_matches people_search_candidates=%s",
+            domain,
+            len(people),
+        )
         return [], {
             "domain": domain,
             "people_search_candidates": len(people),
