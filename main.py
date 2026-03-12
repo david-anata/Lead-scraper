@@ -7,6 +7,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,14 @@ APP_VERSION = os.getenv("APP_VERSION", "apollo-people-search-v2")
 RENDER_GIT_COMMIT = os.getenv("RENDER_GIT_COMMIT", "").strip()
 RENDER_GIT_BRANCH = os.getenv("RENDER_GIT_BRANCH", "").strip()
 PROCESSED_DOMAINS_FILE = os.getenv("PROCESSED_DOMAINS_FILE", "processed_domains.csv").strip()
+DAILY_IMPORT_LOG_FILE = os.getenv("DAILY_IMPORT_LOG_FILE", "daily_import_counts.csv").strip()
+DAILY_NEW_LEAD_LIMIT = int((os.getenv("DAILY_NEW_LEAD_LIMIT", "0") or "0").strip() or 0)
+ENABLE_WEEKDAY_ONLY_IMPORTS = os.getenv("ENABLE_WEEKDAY_ONLY_IMPORTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 # ========= REQUEST / SETTINGS MODELS =========
@@ -195,6 +204,20 @@ def parse_monthly_sales(store: dict[str, Any]) -> float | None:
         return None
 
 
+def parse_average_product_price_usd(store: dict[str, Any]) -> float | None:
+    for field_name in ("avg_price_usd", "average_product_price_usd", "avgppusd"):
+        try:
+            value = store.get(field_name)
+            if value is None:
+                continue
+            parsed_value = float(value)
+            # StoreLeads price values are in minor currency units.
+            return parsed_value / 100.0
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def split_full_name(full_name: str) -> tuple[str, str]:
     name_parts = full_name.split()
     first_name = name_parts[0] if name_parts else ""
@@ -251,6 +274,50 @@ def append_processed_domains(domains: set[str], run_date: str) -> None:
 
         for domain in sorted(domains):
             writer.writerow({"domain": domain, "date_added": run_date})
+
+
+def daily_import_log_path() -> Path:
+    configured_path = Path(DAILY_IMPORT_LOG_FILE)
+    if configured_path.is_absolute():
+        return configured_path
+    return Path(__file__).resolve().parent / configured_path
+
+
+def load_daily_import_counts() -> dict[str, int]:
+    path = daily_import_log_path()
+    if not path.exists():
+        return {}
+
+    counts_by_date: dict[str, int] = {}
+    with path.open("r", encoding="utf-8", newline="") as file_obj:
+        reader = csv.DictReader(file_obj)
+        for row in reader:
+            date_key = ((row or {}).get("date") or "").strip()
+            try:
+                imported_count = int((row or {}).get("imported_count", 0) or 0)
+            except (TypeError, ValueError):
+                imported_count = 0
+
+            if date_key:
+                counts_by_date[date_key] = counts_by_date.get(date_key, 0) + max(imported_count, 0)
+
+    return counts_by_date
+
+
+def append_daily_import_count(run_date: str, imported_count: int) -> None:
+    if imported_count <= 0:
+        return
+
+    path = daily_import_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = path.exists()
+
+    with path.open("a", encoding="utf-8", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=["date", "imported_count"])
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow({"date": run_date, "imported_count": imported_count})
 
 
 def clean_company_name(company_name: str) -> str:
@@ -313,20 +380,175 @@ def clean_role_name(role_name: str) -> str:
     return cleaned.strip()
 
 
-def format_revenue_bucket(revenue: float | None) -> str:
-    if revenue is None:
+def clean_platform_name(platform_name: str) -> str:
+    cleaned = (platform_name or "").strip()
+    if not cleaned:
         return ""
 
-    normalized_revenue = int(max(revenue, 0))
-    if normalized_revenue == 0:
+    normalized = cleaned.lower()
+    if "shopify" in normalized:
+        return "Shopify"
+    if "woocommerce" in normalized:
+        return "WooCommerce"
+    if "bigcommerce" in normalized:
+        return "BigCommerce"
+    if "magento" in normalized:
+        return "Magento"
+    if "wordpress" in normalized:
+        return "WordPress"
+
+    cleaned = unicodedata.normalize("NFKC", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.title().strip()
+
+
+def derive_department(role_name: str) -> str:
+    normalized_role = (role_name or "").strip().lower()
+    if not normalized_role:
+        return ""
+
+    department_keywords = (
+        ("operations", "Operations"),
+        ("operator", "Operations"),
+        ("supply chain", "Operations"),
+        ("logistics", "Operations"),
+        ("fulfillment", "Operations"),
+        ("ecommerce", "Ecommerce"),
+        ("e-commerce", "Ecommerce"),
+        ("digital", "Ecommerce"),
+        ("growth", "Growth"),
+        ("marketing", "Marketing"),
+        ("brand", "Brand"),
+        ("partnership", "Partnerships"),
+        ("sales", "Sales"),
+        ("revenue", "Revenue"),
+        ("founder", "Leadership"),
+        ("owner", "Leadership"),
+        ("chief", "Leadership"),
+        ("president", "Leadership"),
+        ("ceo", "Leadership"),
+        ("coo", "Leadership"),
+    )
+
+    for keyword, department in department_keywords:
+        if keyword in normalized_role:
+            return department
+
+    return "Leadership"
+
+
+def format_money_bucket(amount: float | None) -> str:
+    if amount is None:
+        return ""
+
+    normalized_amount = int(round(max(amount, 0)))
+    if normalized_amount == 0:
         return "$0"
 
-    bucket_size = 10000
-    bucketed_revenue = (normalized_revenue // bucket_size) * bucket_size
-    if bucketed_revenue == 0:
-        bucketed_revenue = bucket_size
+    if normalized_amount < 1_000:
+        bucket_size = 100
+    elif normalized_amount < 100_000:
+        bucket_size = 10_000
+    elif normalized_amount < 1_000_000:
+        bucket_size = 100_000
+    elif normalized_amount < 10_000_000:
+        bucket_size = 1_000_000
+    else:
+        bucket_size = 10_000_000
 
-    return f"${bucketed_revenue:,.0f}"
+    bucketed_amount = round(normalized_amount / bucket_size) * bucket_size
+    bucketed_amount = max(bucketed_amount, bucket_size)
+
+    return f"${int(bucketed_amount):,}"
+
+
+def estimate_monthly_orders(revenue: float | None, average_product_price_usd: float | None) -> int | None:
+    if revenue is None or average_product_price_usd is None or average_product_price_usd <= 0:
+        return None
+
+    return max(int(round(revenue / average_product_price_usd)), 0)
+
+
+def format_orders_bucket(order_count: int | None) -> str:
+    if order_count is None:
+        return ""
+
+    if order_count == 0:
+        return "0"
+
+    if order_count < 100:
+        bucket_size = 10
+    elif order_count < 1_000:
+        bucket_size = 100
+    elif order_count < 10_000:
+        bucket_size = 1_000
+    else:
+        bucket_size = 10_000
+
+    bucketed_orders = round(order_count / bucket_size) * bucket_size
+    bucketed_orders = max(bucketed_orders, bucket_size)
+
+    return f"{int(bucketed_orders):,}"
+
+
+def build_location_name(city: str, state: str, country_code: str) -> str:
+    parts = [part.strip() for part in (city, state, country_code) if str(part or "").strip()]
+    if not parts:
+        return ""
+
+    if len(parts) >= 2 and parts[0].lower() == parts[1].lower():
+        parts = [parts[0]] + parts[2:]
+
+    return ", ".join(parts)
+
+
+def apply_daily_import_limit(
+    rows: list[dict[str, Any]],
+    run_date: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    scheduler_status = {
+        "enabled": False,
+        "weekday_only": ENABLE_WEEKDAY_ONLY_IMPORTS,
+        "daily_limit": DAILY_NEW_LEAD_LIMIT,
+        "already_imported_today": 0,
+        "remaining_capacity": None,
+        "run_date": run_date,
+        "status": "disabled",
+    }
+
+    if not rows:
+        scheduler_status["status"] = "no_rows"
+        return rows, scheduler_status
+
+    if DAILY_NEW_LEAD_LIMIT <= 0 and not ENABLE_WEEKDAY_ONLY_IMPORTS:
+        return rows, scheduler_status
+
+    scheduler_status["enabled"] = True
+
+    current_date = datetime.now().date()
+    if ENABLE_WEEKDAY_ONLY_IMPORTS and current_date.weekday() >= 5:
+        scheduler_status["status"] = "weekend_blocked"
+        scheduler_status["remaining_capacity"] = 0
+        return [], scheduler_status
+
+    if DAILY_NEW_LEAD_LIMIT <= 0:
+        scheduler_status["status"] = "weekday_only_passthrough"
+        return rows, scheduler_status
+
+    daily_counts = load_daily_import_counts()
+    today_key = current_date.isoformat()
+    already_imported_today = daily_counts.get(today_key, 0)
+    remaining_capacity = max(DAILY_NEW_LEAD_LIMIT - already_imported_today, 0)
+
+    scheduler_status["already_imported_today"] = already_imported_today
+    scheduler_status["remaining_capacity"] = remaining_capacity
+
+    if remaining_capacity <= 0:
+        scheduler_status["status"] = "daily_capacity_reached"
+        return [], scheduler_status
+
+    scheduler_status["status"] = "limited" if len(rows) > remaining_capacity else "within_capacity"
+    return rows[:remaining_capacity], scheduler_status
 
 
 # ========= STORELEADS =========
@@ -517,6 +739,7 @@ def fetch_storeleads_page(page: int, settings: Settings) -> list[dict[str, Any]]
                 "state",
                 "city",
                 "estimated_sales",
+                "avg_price_usd",
             ]
         ),
     }
@@ -846,7 +1069,11 @@ def build_csv_rows(
             apollo_hits += 1
 
         revenue = parse_monthly_sales(store)
-        formatted_revenue = format_revenue_bucket(revenue)
+        formatted_revenue = format_money_bucket(revenue)
+        average_product_price_usd = parse_average_product_price_usd(store)
+        formatted_average_product_price = format_money_bucket(average_product_price_usd)
+        estimated_monthly_orders = estimate_monthly_orders(revenue, average_product_price_usd)
+        formatted_estimated_monthly_orders = format_orders_bucket(estimated_monthly_orders)
         offer = determine_offer(revenue)
         accepted_for_domain = 0
 
@@ -873,6 +1100,13 @@ def build_csv_rows(
             linkedin_url = contact.get("linkedin_url", "") or ""
             store_title = clean_company_name(store.get("title", "") or "")
             role = clean_role_name(contact.get("title", "") or "")
+            department = derive_department(role)
+            platform = clean_platform_name(store.get("platform", "") or "")
+            location = build_location_name(
+                store.get("city", "") or "",
+                store.get("state", "") or "",
+                store.get("country_code", "") or "",
+            )
 
             instantly_rows.append(
                 {
@@ -880,12 +1114,17 @@ def build_csv_rows(
                     "last_name": last_name,
                     "email": email,
                     "role": role,
+                    "department": department,
                     "linkedin_url": linkedin_url,
                     "company_name": store_title,
                     "website": domain,
+                    "platform": platform,
+                    "location": location,
                     "city": store.get("city", ""),
                     "state": store.get("state", ""),
                     "revenue": formatted_revenue,
+                    "average_product_price": formatted_average_product_price,
+                    "estimated_monthly_orders": formatted_estimated_monthly_orders,
                     "campaign_name": TARGET_CAMPAIGN_NAME,
                     "campaign_id": settings.instantly_campaign_id,
                     "custom_offer": offer,
@@ -896,13 +1135,18 @@ def build_csv_rows(
                 {
                     "name": full_name,
                     "role": role,
+                    "department": department,
                     "linkedin_url": linkedin_url,
                     "company": store_title,
                     "website": domain,
                     "email": email,
+                    "platform": platform,
+                    "location": location,
                     "city": store.get("city", ""),
                     "state": store.get("state", ""),
                     "revenue": formatted_revenue,
+                    "average_product_price": formatted_average_product_price,
+                    "estimated_monthly_orders": formatted_estimated_monthly_orders,
                     "date_added": run_date,
                 }
             )
@@ -1016,9 +1260,15 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
                 "custom_variables": {
                     "custom_offer": row.get("custom_offer", ""),
                     "linkedin_url": row.get("linkedin_url", ""),
+                    "role": row.get("role", ""),
+                    "department": row.get("department", ""),
+                    "platform": row.get("platform", ""),
+                    "location": row.get("location", ""),
                     "city": row.get("city", ""),
                     "state": row.get("state", ""),
                     "revenue": row.get("revenue", ""),
+                    "average_product_price": row.get("average_product_price", ""),
+                    "estimated_monthly_orders": row.get("estimated_monthly_orders", ""),
                 },
             }
         )
@@ -1068,12 +1318,22 @@ def post_slack_summary(
     apollo_hits: int,
     successful_contacts: int,
     instantly_import_result: dict[str, Any],
+    scheduler_status: dict[str, Any],
     settings: Settings,
 ) -> None:
     contact_rate_per_apollo_domain = (
         round((successful_contacts / apollo_domains_queried) * 100, 2) if apollo_domains_queried else 0
     )
     contact_rate_per_apollo_hit = round((successful_contacts / apollo_hits) * 100, 2) if apollo_hits else 0
+
+    scheduler_lines = ""
+    if scheduler_status.get("enabled"):
+        scheduler_lines = f"""
+Scheduler status: {scheduler_status.get("status", "unknown")}
+Daily new lead limit: {scheduler_status.get("daily_limit", 0)}
+Already imported today: {scheduler_status.get("already_imported_today", 0)}
+Remaining capacity: {scheduler_status.get("remaining_capacity", 0)}
+"""
 
     message_text = f"""<!channel>
 
@@ -1089,6 +1349,7 @@ Final contacts selected: {successful_contacts}
 Instantly import status: {instantly_import_result.get("status", "unknown")}
 Instantly leads created: {instantly_import_result.get("created_count", 0)}
 Instantly leads skipped: {instantly_import_result.get("skipped_count", 0)}
+{scheduler_lines}
 
 Contacts per Apollo-queried domain: {contact_rate_per_apollo_domain}%
 Contacts per Apollo-positive domain: {contact_rate_per_apollo_hit}%
@@ -1153,10 +1414,19 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
             settings,
         )
 
+        instantly_rows, scheduler_status = apply_daily_import_limit(instantly_rows, payload.date)
+        allowed_emails = {row.get("email", "") for row in instantly_rows if row.get("email")}
+        linkedin_rows = [row for row in linkedin_rows if row.get("email", "") in allowed_emails]
+        successful_contacts = len(instantly_rows)
+
         instantly_csv = rows_to_csv(instantly_rows)
         exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
-        append_processed_domains(exported_domains, payload.date)
         instantly_import_result = import_leads_to_instantly(instantly_rows, settings)
+        if instantly_rows and instantly_import_result.get("status") != "error":
+            append_processed_domains(exported_domains, payload.date)
+        created_count = int(instantly_import_result.get("created_count", 0) or 0)
+        if created_count > 0:
+            append_daily_import_count(datetime.now().date().isoformat(), created_count)
 
         post_slack_summary(
             raw_scanned=raw_scanned,
@@ -1167,6 +1437,7 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
             apollo_hits=apollo_hits,
             successful_contacts=successful_contacts,
             instantly_import_result=instantly_import_result,
+            scheduler_status=scheduler_status,
             settings=settings,
         )
 
