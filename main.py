@@ -79,9 +79,12 @@ APOLLO_TARGET_SENIORITIES = (
     "manager",
 )
 APOLLO_DEBUG_RAW = os.getenv("APOLLO_DEBUG_RAW", "").strip().lower() in {"1", "true", "yes", "on"}
+<<<<<<< HEAD
 APP_VERSION = os.getenv("APP_VERSION", "apollo-people-search-v2")
 RENDER_GIT_COMMIT = os.getenv("RENDER_GIT_COMMIT", "").strip()
 RENDER_GIT_BRANCH = os.getenv("RENDER_GIT_BRANCH", "").strip()
+=======
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
 
 
 # ========= REQUEST / SETTINGS MODELS =========
@@ -158,12 +161,15 @@ def startup() -> None:
     settings = load_settings()
     app.state.settings = settings
     validate_settings_on_startup(settings)
+<<<<<<< HEAD
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=people_search_enrichment",
         APP_VERSION,
         RENDER_GIT_BRANCH or "unknown",
         RENDER_GIT_COMMIT or "unknown",
     )
+=======
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
 
 
 # ========= GENERAL HELPERS =========
@@ -486,6 +492,7 @@ def score_contact_title(title: str) -> int:
     normalized_title = (title or "").strip().lower()
     if not normalized_title:
         return 0
+<<<<<<< HEAD
 
     weighted_keywords = (
         ("founder", 100),
@@ -531,10 +538,101 @@ def search_apollo_people(
     try:
         response = requests.post(
             APOLLO_PEOPLE_SEARCH_URL,
+=======
+
+    weighted_keywords = (
+        ("founder", 100),
+        ("co-founder", 100),
+        ("owner", 90),
+        ("chief executive officer", 85),
+        ("ceo", 85),
+        ("president", 80),
+        ("chief operating officer", 75),
+        ("coo", 75),
+        ("chief of staff", 70),
+        ("head of", 65),
+        ("vp", 55),
+        ("vice president", 55),
+        ("director", 45),
+        ("operations", 40),
+        ("operator", 40),
+        ("manager", 30),
+    )
+
+    for keyword, score in weighted_keywords:
+        if keyword in normalized_title:
+            return score
+
+    return 10
+
+
+def search_apollo_people(
+    domain: str,
+    settings: Settings,
+    *,
+    max_results: int = APOLLO_SEARCH_CANDIDATES_PER_DOMAIN,
+) -> list[dict[str, Any]]:
+    try:
+        response = requests.post(
+            APOLLO_PEOPLE_SEARCH_URL,
             headers={
                 "Content-Type": "application/json",
                 "X-Api-Key": settings.apollo_api_key,
             },
+            params={
+                "page": 1,
+                "per_page": max_results,
+                "include_similar_titles": "true",
+                "person_titles[]": list(APOLLO_TARGET_TITLES),
+                "person_seniorities[]": list(APOLLO_TARGET_SENIORITIES),
+                "q_organization_domains_list[]": [domain],
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        logger.warning("[Apollo] people search request error for domain=%s: %s", domain, exc)
+        return []
+
+    if response.status_code != 200:
+        logger.warning(
+            "[Apollo] people search non-200 for domain=%s: %s %s",
+            domain,
+            response.status_code,
+            response.text,
+        )
+        return []
+
+    try:
+        data = response.json()
+    except ValueError:
+        logger.warning("[Apollo] invalid people search JSON for domain=%s", domain)
+        return []
+
+    if APOLLO_DEBUG_RAW:
+        logger.debug("[Apollo] people search response for domain=%s: %s", domain, data)
+
+    people = data.get("people", []) or []
+    logger.info("[Apollo] raw people for domain=%s: %s", domain, len(people))
+    return people
+
+
+def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> list[dict[str, Any]]:
+    if not people:
+        return []
+
+    details = [{"id": person["id"]} for person in people if person.get("id")]
+    if not details:
+        return []
+
+    try:
+        response = requests.post(
+            APOLLO_BULK_PEOPLE_MATCH_URL,
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
+            headers={
+                "Content-Type": "application/json",
+                "X-Api-Key": settings.apollo_api_key,
+            },
+<<<<<<< HEAD
             params=search_params,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
@@ -559,11 +657,27 @@ def search_apollo_people(
         )
         if APOLLO_DEBUG_RAW:
             logger.debug("[Apollo] people search params for domain=%s: %s", domain, search_params)
+=======
+            params={
+                "reveal_personal_emails": "false",
+                "reveal_phone_number": "false",
+            },
+            json={"details": details},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        logger.warning("[Apollo] people enrichment request error: %s", exc)
+        return []
+
+    if response.status_code != 200:
+        logger.warning("[Apollo] people enrichment non-200: %s %s", response.status_code, response.text)
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
         return []
 
     try:
         data = response.json()
     except ValueError:
+<<<<<<< HEAD
         logger.warning("[Apollo] invalid people search JSON for domain=%s", domain)
         return []
 
@@ -635,6 +749,19 @@ def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> li
     return matches
 
 
+=======
+        logger.warning("[Apollo] invalid people enrichment JSON")
+        return []
+
+    if APOLLO_DEBUG_RAW:
+        logger.debug("[Apollo] people enrichment response: %s", data)
+
+    matches = [match for match in (data.get("matches", []) or []) if isinstance(match, dict)]
+    logger.info("[Apollo] enriched people returned: %s", len(matches))
+    return matches
+
+
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
 def search_apollo_contacts(
     domain: str,
     settings: Settings,
@@ -643,10 +770,13 @@ def search_apollo_contacts(
 ) -> tuple[list[dict[str, Any]], dict[str, int | str]]:
     people = search_apollo_people(domain, settings)
     if not people:
+<<<<<<< HEAD
         logger.info(
             "[ApolloPipeline] domain=%s stage=people_search result=empty likely_root_cause=request_shape_permission_or_no_results",
             domain,
         )
+=======
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
         return [], {
             "domain": domain,
             "people_search_candidates": 0,
@@ -657,11 +787,14 @@ def search_apollo_contacts(
 
     enriched_people = enrich_apollo_people(people, settings)
     if not enriched_people:
+<<<<<<< HEAD
         logger.info(
             "[ApolloPipeline] domain=%s stage=enrichment result=empty likely_root_cause=permission_shape_or_no_matches people_search_candidates=%s",
             domain,
             len(people),
         )
+=======
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
         return [], {
             "domain": domain,
             "people_search_candidates": len(people),
@@ -916,7 +1049,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+<<<<<<< HEAD
 @app.post("/run-lead-build", response_model=None)
+=======
+@app.post("/run-lead-build")
+>>>>>>> 955d608 (Update Apollo flow and add project docs)
 def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
     settings = load_settings()
     app.state.settings = settings
