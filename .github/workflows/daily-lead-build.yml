@@ -1,0 +1,51 @@
+name: Daily Lead Build
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-lead-build
+  cancel-in-progress: false
+
+jobs:
+  run-lead-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MAX_DOMAINS: "150"
+    steps:
+      - name: Validate configuration
+        env:
+          LEAD_BUILD_URL: ${{ secrets.LEAD_BUILD_URL }}
+        run: |
+          if [ -z "$LEAD_BUILD_URL" ]; then
+            echo "LEAD_BUILD_URL secret is required."
+            exit 1
+          fi
+
+      - name: Build run payload
+        run: |
+          echo "RUN_DATE=$(TZ=America/Denver date +%F)" >> "$GITHUB_ENV"
+
+      - name: Trigger FastAPI lead build
+        env:
+          LEAD_BUILD_URL: ${{ secrets.LEAD_BUILD_URL }}
+        run: |
+          BASE_URL="${LEAD_BUILD_URL%/}"
+          PAYLOAD=$(printf '{"date":"%s","max_domains":%s}' "$RUN_DATE" "$MAX_DOMAINS")
+
+          HTTP_STATUS=$(curl -sS \
+            -o response.json \
+            -w "%{http_code}" \
+            -X POST "${BASE_URL}/run-lead-build" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          cat response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "Lead build failed with HTTP status $HTTP_STATUS"
+            exit 1
+          fi
