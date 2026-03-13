@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,18 @@ class Settings:
     slack_channel_id: str
     instantly_campaign_id: str
     instantly_api_key: str
+
+
+def detect_scheduler_source(request: Request) -> str:
+    query_source = (request.query_params.get("scheduler_source") or "").strip().lower()
+    if query_source:
+        return query_source
+
+    header_source = (request.headers.get("X-Scheduler-Source") or "").strip().lower()
+    if header_source:
+        return header_source
+
+    return "manual"
 
 
 # ========= CONFIGURATION =========
@@ -1289,19 +1301,23 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
     )
     response.raise_for_status()
     result = response.json()
+    result_status = (result.get("status") or "unknown").lower()
+
+    if result.get("error") or result_status in {"error", "failed"}:
+        raise HTTPException(status_code=500, detail=f"Instantly import failed: {result}")
 
     created_count = len(result.get("created_leads", []) or [])
     skipped_count = int(result.get("skipped_count", 0) or 0)
     logger.info(
         "[Instantly] status=%s total_sent=%s created_count=%s skipped_count=%s invalid_email_count=%s",
-        result.get("status", "unknown"),
+        result_status,
         result.get("total_sent", len(rows)),
         created_count,
         skipped_count,
         result.get("invalid_email_count", 0),
     )
     return {
-        "status": result.get("status", "unknown"),
+        "status": result_status,
         "reason": "",
         "created_count": created_count,
         "skipped_count": skipped_count,
@@ -1310,6 +1326,8 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
 
 
 def post_slack_summary(
+    run_date: str,
+    scheduler_source: str,
     raw_scanned: int,
     qualified_domains: int,
     new_domains_considered: int,
@@ -1339,6 +1357,8 @@ Remaining capacity: {scheduler_status.get("remaining_capacity", 0)}
 
 Lead build completed.
 
+Run date: {run_date}
+Scheduler source: {scheduler_source}
 Domains scanned from StoreLeads: {raw_scanned}
 ICP matches: {qualified_domains}
 Previously processed domains skipped: {previously_processed_domains}
@@ -1381,10 +1401,11 @@ def health() -> dict[str, str]:
 
 
 @app.post("/run-lead-build", response_model=None)
-def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
+def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingResponse:
     settings = load_settings()
     app.state.settings = settings
     validate_required_settings(settings)
+    scheduler_source = detect_scheduler_source(request)
 
     try:
         qualified_domains, raw_scanned = collect_domains(payload.max_domains, settings)
@@ -1398,7 +1419,8 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
         apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(filtered_domains))
 
         logger.info(
-            "[Run] date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s",
+            "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s daily_new_lead_limit=%s weekday_only=%s",
+            scheduler_source,
             payload.date,
             payload.max_domains,
             raw_scanned,
@@ -1406,6 +1428,8 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
             len(filtered_domains),
             previously_processed_domains,
             apollo_domains_queried,
+            DAILY_NEW_LEAD_LIMIT,
+            ENABLE_WEEKDAY_ONLY_IMPORTS,
         )
 
         instantly_rows, linkedin_rows, successful_contacts, apollo_hits = build_csv_rows(
@@ -1418,6 +1442,17 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
         allowed_emails = {row.get("email", "") for row in instantly_rows if row.get("email")}
         linkedin_rows = [row for row in linkedin_rows if row.get("email", "") in allowed_emails]
         successful_contacts = len(instantly_rows)
+        logger.info(
+            "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s",
+            scheduler_source,
+            payload.date,
+            payload.max_domains,
+            scheduler_status.get("status", "unknown"),
+            scheduler_status.get("daily_limit", 0),
+            scheduler_status.get("already_imported_today", 0),
+            scheduler_status.get("remaining_capacity", 0),
+            successful_contacts,
+        )
 
         instantly_csv = rows_to_csv(instantly_rows)
         exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
@@ -1429,6 +1464,8 @@ def run(payload: ICPBuildRequest) -> JSONResponse | StreamingResponse:
             append_daily_import_count(datetime.now().date().isoformat(), created_count)
 
         post_slack_summary(
+            run_date=payload.date,
+            scheduler_source=scheduler_source,
             raw_scanned=raw_scanned,
             qualified_domains=len(qualified_domains),
             new_domains_considered=len(filtered_domains),

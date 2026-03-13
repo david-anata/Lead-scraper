@@ -27,6 +27,10 @@ Optional:
 - `INSTANTLY_CAMPAIGN_ID`: included in the generated Instantly CSV rows as the campaign ID field
 - `INSTANTLY_API_KEY`: when set with `INSTANTLY_CAMPAIGN_ID`, the app also pushes accepted leads directly into the Instantly campaign API
 - `INSTANTLY_AI`: supported as an alias for `INSTANTLY_API_KEY` if your existing deployment already uses that env var name
+- `DAILY_NEW_LEAD_LIMIT`: caps how many new leads can be added to Instantly in a single day; recommended production default is `15`
+- `ENABLE_WEEKDAY_ONLY_IMPORTS`: when `true`, blocks scheduled imports on Saturday and Sunday
+- `PROCESSED_DOMAINS_FILE`: optional override for the temporary processed-domain state file
+- `DAILY_IMPORT_LOG_FILE`: optional override for the temporary daily import counter file
 
 If any required variables are missing, the app fails clearly at startup.
 
@@ -60,6 +64,8 @@ export INSTANTLY_CAMPAIGN_ID="your-instantly-campaign-id"
 export INSTANTLY_API_KEY="your-instantly-api-key"
 # or, if your deploy already uses this name:
 export INSTANTLY_AI="your-instantly-api-key"
+export DAILY_NEW_LEAD_LIMIT="15"
+export ENABLE_WEEKDAY_ONLY_IMPORTS="true"
 ```
 
 ## Start the FastAPI Server
@@ -103,8 +109,7 @@ Successful run with contacts found:
 - response content type is `text/csv`
 - response includes a `Content-Disposition` header with a filename like `instantly_upload_2026-03-11.csv`
 - uploads the Instantly CSV to Slack
-- uploads the LinkedIn CSV to Slack when LinkedIn rows exist
-- posts a Slack summary with scanned domain and contact counts
+- posts a Slack summary with scanned domain counts, pacing information, scheduler source, and Instantly import counts
 
 Successful run with no valid personal contacts found:
 
@@ -134,3 +139,46 @@ Response:
   "status": "ok"
 }
 ```
+
+## Daily Automation
+
+Recommended production scheduler:
+
+- primary: Render Cron
+- backup/manual rerun: GitHub Actions
+
+### Render Cron
+
+Configure Render Cron to send:
+
+- method: `POST`
+- URL: `https://agent.anatainc.com/run-lead-build?scheduler_source=render_cron`
+- body:
+
+```json
+{
+  "date": "YYYY-MM-DD",
+  "max_domains": 150
+}
+```
+
+Recommended schedule:
+
+- weekdays at `8:00 AM America/Denver`
+
+The app will still enforce:
+
+- `DAILY_NEW_LEAD_LIMIT=15`
+- `ENABLE_WEEKDAY_ONLY_IMPORTS=true`
+
+### GitHub Actions Backup Runner
+
+The repo includes a manual/backup workflow at [`.github/workflows/daily-lead-build.yml`](/Users/davidnarayan/Documents/Playground/Lead-scraper/.github/workflows/daily-lead-build.yml).
+
+Set this GitHub Actions secret exactly:
+
+```txt
+LEAD_BUILD_URL=https://lead-scraper-jb3u.onrender.com
+```
+
+No quotes, no trailing slash, and no extra spaces.

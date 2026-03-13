@@ -50,8 +50,9 @@ jobs:
           HTTP_STATUS=$(curl -sS \
             -o response.json \
             -w "%{http_code}" \
-            -X POST "${BASE_URL}/run-lead-build" \
+            -X POST "${BASE_URL}/run-lead-build?scheduler_source=github_actions" \
             -H "Content-Type: application/json" \
+            -H "X-Scheduler-Source: github_actions" \
             -d "$PAYLOAD")
 
           cat response.json
