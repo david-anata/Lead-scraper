@@ -29,6 +29,13 @@ Optional:
 - `INSTANTLY_AI`: supported as an alias for `INSTANTLY_API_KEY` if your existing deployment already uses that env var name
 - `DAILY_NEW_LEAD_LIMIT`: caps how many new leads can be added to Instantly in a single day; recommended production default is `15`
 - `ENABLE_WEEKDAY_ONLY_IMPORTS`: when `true`, blocks scheduled imports on Saturday and Sunday
+- `STATE_BACKEND`: state storage backend for processed domains and daily import counts; use `github` to avoid Render local-disk resets
+- `GITHUB_STATE_TOKEN`: GitHub token with contents write access, required when `STATE_BACKEND=github`
+- `GITHUB_STATE_REPO`: repo used for durable state storage, for example `david-anata/Lead-scraper`
+- `GITHUB_STATE_BRANCH`: branch used only for state commits; recommended value is `state`
+- `GITHUB_STATE_BASE_BRANCH`: branch to copy from if the state branch does not exist yet; usually `main`
+- `GITHUB_STATE_PROCESSED_DOMAINS_PATH`: path of the processed-domain CSV on the state branch
+- `GITHUB_STATE_DAILY_IMPORTS_PATH`: path of the daily import counter CSV on the state branch
 - `PROCESSED_DOMAINS_FILE`: optional override for the temporary processed-domain state file
 - `DAILY_IMPORT_LOG_FILE`: optional override for the temporary daily import counter file
 
@@ -66,6 +73,11 @@ export INSTANTLY_API_KEY="your-instantly-api-key"
 export INSTANTLY_AI="your-instantly-api-key"
 export DAILY_NEW_LEAD_LIMIT="15"
 export ENABLE_WEEKDAY_ONLY_IMPORTS="true"
+export STATE_BACKEND="github"
+export GITHUB_STATE_TOKEN="your-github-token"
+export GITHUB_STATE_REPO="david-anata/Lead-scraper"
+export GITHUB_STATE_BRANCH="state"
+export GITHUB_STATE_BASE_BRANCH="main"
 ```
 
 ## Start the FastAPI Server
@@ -170,6 +182,24 @@ The app will still enforce:
 
 - `DAILY_NEW_LEAD_LIMIT=15`
 - `ENABLE_WEEKDAY_ONLY_IMPORTS=true`
+
+### Durable State Without Postgres
+
+Render free services do not provide durable local disk for the processed-domain and daily import counters. To keep moving forward through new domains without paying for Postgres, switch the app to GitHub-backed state:
+
+```txt
+STATE_BACKEND=github
+GITHUB_STATE_TOKEN=your-github-token-with-contents-write-access
+GITHUB_STATE_REPO=david-anata/Lead-scraper
+GITHUB_STATE_BRANCH=state
+GITHUB_STATE_BASE_BRANCH=main
+```
+
+Recommended setup:
+
+- create a fine-grained GitHub token with repository contents read/write access
+- store state on a dedicated `state` branch so routine state commits do not touch `main`
+- let the app auto-create the `state` branch from `main` if it does not exist yet
 
 ### GitHub Actions Backup Runner
 

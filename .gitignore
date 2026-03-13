@@ -3,3 +3,4 @@
 __pycache__/
 *.py[cod]
 processed_domains.csv
+daily_import_counts.csv

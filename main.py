@@ -6,6 +6,7 @@ import os
 import re
 import time
 import unicodedata
+from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +97,19 @@ ENABLE_WEEKDAY_ONLY_IMPORTS = os.getenv("ENABLE_WEEKDAY_ONLY_IMPORTS", "").strip
     "yes",
     "on",
 }
+STATE_BACKEND = os.getenv("STATE_BACKEND", "").strip().lower() or "local"
+GITHUB_STATE_TOKEN = os.getenv("GITHUB_STATE_TOKEN", "").strip()
+GITHUB_STATE_REPO = os.getenv("GITHUB_STATE_REPO", "").strip()
+GITHUB_STATE_BRANCH = os.getenv("GITHUB_STATE_BRANCH", "state").strip() or "state"
+GITHUB_STATE_BASE_BRANCH = os.getenv("GITHUB_STATE_BASE_BRANCH", "main").strip() or "main"
+GITHUB_STATE_PROCESSED_DOMAINS_PATH = (
+    os.getenv("GITHUB_STATE_PROCESSED_DOMAINS_PATH", "state/processed_domains.csv").strip()
+    or "state/processed_domains.csv"
+)
+GITHUB_STATE_DAILY_IMPORTS_PATH = (
+    os.getenv("GITHUB_STATE_DAILY_IMPORTS_PATH", "state/daily_import_counts.csv").strip()
+    or "state/daily_import_counts.csv"
+)
 
 
 # ========= REQUEST / SETTINGS MODELS =========
@@ -187,10 +201,13 @@ def startup() -> None:
     app.state.settings = settings
     validate_settings_on_startup(settings)
     logger.info(
-        "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=people_search_enrichment",
+        "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=people_search_enrichment state_backend=%s github_state_repo=%s github_state_branch=%s",
         APP_VERSION,
         RENDER_GIT_BRANCH or "unknown",
         RENDER_GIT_COMMIT or "unknown",
+        STATE_BACKEND,
+        GITHUB_STATE_REPO or "n/a",
+        GITHUB_STATE_BRANCH,
     )
 
 
@@ -248,6 +265,94 @@ def rows_to_csv(rows: list[dict[str, Any]]) -> str:
     return buffer.getvalue()
 
 
+def github_state_enabled() -> bool:
+    return STATE_BACKEND == "github" and bool(GITHUB_STATE_TOKEN and GITHUB_STATE_REPO)
+
+
+def github_api_headers() -> dict[str, str]:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {GITHUB_STATE_TOKEN}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def ensure_github_state_branch() -> None:
+    ref_url = f"https://api.github.com/repos/{GITHUB_STATE_REPO}/git/ref/heads/{GITHUB_STATE_BRANCH}"
+    response = requests.get(ref_url, headers=github_api_headers(), timeout=REQUEST_TIMEOUT_SECONDS)
+    if response.status_code == 200:
+        return
+    if response.status_code != 404:
+        response.raise_for_status()
+
+    base_ref_url = f"https://api.github.com/repos/{GITHUB_STATE_REPO}/git/ref/heads/{GITHUB_STATE_BASE_BRANCH}"
+    base_response = requests.get(base_ref_url, headers=github_api_headers(), timeout=REQUEST_TIMEOUT_SECONDS)
+    base_response.raise_for_status()
+    base_sha = ((base_response.json() or {}).get("object") or {}).get("sha")
+    if not base_sha:
+        raise HTTPException(status_code=500, detail="GitHub state branch creation failed: missing base branch SHA")
+
+    create_response = requests.post(
+        f"https://api.github.com/repos/{GITHUB_STATE_REPO}/git/refs",
+        headers=github_api_headers(),
+        json={"ref": f"refs/heads/{GITHUB_STATE_BRANCH}", "sha": base_sha},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if create_response.status_code not in (200, 201, 422):
+        create_response.raise_for_status()
+
+
+def load_github_state_file(path: str) -> tuple[str, str | None]:
+    ensure_github_state_branch()
+    response = requests.get(
+        f"https://api.github.com/repos/{GITHUB_STATE_REPO}/contents/{path}",
+        headers=github_api_headers(),
+        params={"ref": GITHUB_STATE_BRANCH},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    if response.status_code == 404:
+        return "", None
+
+    response.raise_for_status()
+    payload = response.json() or {}
+    encoded_content = (payload.get("content") or "").replace("\n", "")
+    decoded_content = b64decode(encoded_content).decode("utf-8") if encoded_content else ""
+    return decoded_content, payload.get("sha")
+
+
+def write_github_state_file(path: str, content: str, message: str) -> None:
+    ensure_github_state_branch()
+    _, current_sha = load_github_state_file(path)
+    response = requests.put(
+        f"https://api.github.com/repos/{GITHUB_STATE_REPO}/contents/{path}",
+        headers=github_api_headers(),
+        json={
+            "message": message,
+            "content": b64encode(content.encode("utf-8")).decode("utf-8"),
+            "branch": GITHUB_STATE_BRANCH,
+            **({"sha": current_sha} if current_sha else {}),
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+
+
+def parse_csv_text(content: str) -> list[dict[str, str]]:
+    if not content.strip():
+        return []
+
+    buffer = io.StringIO(content)
+    return [dict(row) for row in csv.DictReader(buffer)]
+
+
+def write_csv_text(rows: list[dict[str, Any]], fieldnames: list[str]) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue()
+
+
 def processed_domains_path() -> Path:
     configured_path = Path(PROCESSED_DOMAINS_FILE)
     if configured_path.is_absolute():
@@ -256,6 +361,20 @@ def processed_domains_path() -> Path:
 
 
 def load_processed_domains() -> set[str]:
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_PROCESSED_DOMAINS_PATH)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub processed-domain state read failed: {exc}") from exc
+
+        processed_domains = {
+            normalize_domain((row or {}).get("domain", ""))
+            for row in parse_csv_text(content)
+            if normalize_domain((row or {}).get("domain", ""))
+        }
+        logger.info("[State] backend=github processed_domains=%s", len(processed_domains))
+        return processed_domains
+
     path = processed_domains_path()
     if not path.exists():
         return set()
@@ -274,6 +393,32 @@ def load_processed_domains() -> set[str]:
 def append_processed_domains(domains: set[str], run_date: str) -> None:
     if not domains:
         return
+
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_PROCESSED_DOMAINS_PATH)
+            existing_rows = parse_csv_text(content)
+            existing_domains = {
+                normalize_domain((row or {}).get("domain", ""))
+                for row in existing_rows
+                if normalize_domain((row or {}).get("domain", ""))
+            }
+            new_rows = list(existing_rows)
+            for domain in sorted(domains):
+                normalized_domain = normalize_domain(domain)
+                if normalized_domain and normalized_domain not in existing_domains:
+                    new_rows.append({"domain": normalized_domain, "date_added": run_date})
+                    existing_domains.add(normalized_domain)
+
+            write_github_state_file(
+                GITHUB_STATE_PROCESSED_DOMAINS_PATH,
+                write_csv_text(new_rows, ["domain", "date_added"]),
+                f"Update processed domains for {run_date}",
+            )
+            logger.info("[State] backend=github appended_processed_domains=%s", len(domains))
+            return
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub processed-domain state write failed: {exc}") from exc
 
     path = processed_domains_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,6 +441,26 @@ def daily_import_log_path() -> Path:
 
 
 def load_daily_import_counts() -> dict[str, int]:
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_DAILY_IMPORTS_PATH)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub daily import state read failed: {exc}") from exc
+
+        counts_by_date: dict[str, int] = {}
+        for row in parse_csv_text(content):
+            date_key = ((row or {}).get("date") or "").strip()
+            try:
+                imported_count = int((row or {}).get("imported_count", 0) or 0)
+            except (TypeError, ValueError):
+                imported_count = 0
+
+            if date_key:
+                counts_by_date[date_key] = counts_by_date.get(date_key, 0) + max(imported_count, 0)
+
+        logger.info("[State] backend=github daily_import_dates=%s", len(counts_by_date))
+        return counts_by_date
+
     path = daily_import_log_path()
     if not path.exists():
         return {}
@@ -319,6 +484,21 @@ def load_daily_import_counts() -> dict[str, int]:
 def append_daily_import_count(run_date: str, imported_count: int) -> None:
     if imported_count <= 0:
         return
+
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_DAILY_IMPORTS_PATH)
+            rows = parse_csv_text(content)
+            rows.append({"date": run_date, "imported_count": imported_count})
+            write_github_state_file(
+                GITHUB_STATE_DAILY_IMPORTS_PATH,
+                write_csv_text(rows, ["date", "imported_count"]),
+                f"Update daily import counts for {run_date}",
+            )
+            logger.info("[State] backend=github appended_daily_import_count=%s", imported_count)
+            return
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub daily import state write failed: {exc}") from exc
 
     path = daily_import_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
