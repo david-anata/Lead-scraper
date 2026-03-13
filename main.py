@@ -953,10 +953,17 @@ def fetch_storeleads_page(page: int, settings: Settings) -> list[dict[str, Any]]
     return domains
 
 
-def collect_domains(max_domains: int, settings: Settings) -> tuple[list[dict[str, Any]], int]:
+def collect_domains(
+    max_domains: int,
+    settings: Settings,
+    processed_domains: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], int, int, int]:
     qualified_domains: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
+    processed_domains = processed_domains or set()
     raw_scanned = 0
+    qualified_matches_total = 0
+    skipped_processed_domains = 0
 
     for page in range(MAX_STORELEADS_PAGES):
         domains = fetch_storeleads_page(page, settings)
@@ -972,13 +979,21 @@ def collect_domains(max_domains: int, settings: Settings) -> tuple[list[dict[str
 
             seen_domains.add(normalized_domain)
 
-            if matches_icp(store):
-                qualified_domains.append(store)
+            if not matches_icp(store):
+                continue
+
+            qualified_matches_total += 1
+
+            if normalized_domain in processed_domains:
+                skipped_processed_domains += 1
+                continue
+
+            qualified_domains.append(store)
 
             if len(qualified_domains) >= max_domains:
-                return qualified_domains, raw_scanned
+                return qualified_domains, raw_scanned, qualified_matches_total, skipped_processed_domains
 
-    return qualified_domains, raw_scanned
+    return qualified_domains, raw_scanned, qualified_matches_total, skipped_processed_domains
 
 
 # ========= APOLLO =========
@@ -1588,15 +1603,13 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
     scheduler_source = detect_scheduler_source(request)
 
     try:
-        qualified_domains, raw_scanned = collect_domains(payload.max_domains, settings)
         processed_domains = load_processed_domains()
-        filtered_domains = [
-            domain_obj
-            for domain_obj in qualified_domains
-            if normalize_domain(domain_obj.get("name", "")) not in processed_domains
-        ]
-        previously_processed_domains = len(qualified_domains) - len(filtered_domains)
-        apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(filtered_domains))
+        qualified_domains, raw_scanned, qualified_matches_total, previously_processed_domains = collect_domains(
+            payload.max_domains,
+            settings,
+            processed_domains,
+        )
+        apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(qualified_domains))
 
         logger.info(
             "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s daily_new_lead_limit=%s weekday_only=%s",
@@ -1604,8 +1617,8 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
             payload.date,
             payload.max_domains,
             raw_scanned,
+            qualified_matches_total,
             len(qualified_domains),
-            len(filtered_domains),
             previously_processed_domains,
             apollo_domains_queried,
             DAILY_NEW_LEAD_LIMIT,
@@ -1613,7 +1626,7 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
         )
 
         instantly_rows, linkedin_rows, successful_contacts, apollo_hits = build_csv_rows(
-            filtered_domains,
+            qualified_domains,
             payload.date,
             settings,
         )
@@ -1647,8 +1660,8 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
             run_date=payload.date,
             scheduler_source=scheduler_source,
             raw_scanned=raw_scanned,
-            qualified_domains=len(qualified_domains),
-            new_domains_considered=len(filtered_domains),
+            qualified_domains=qualified_matches_total,
+            new_domains_considered=len(qualified_domains),
             previously_processed_domains=previously_processed_domains,
             apollo_domains_queried=apollo_domains_queried,
             apollo_hits=apollo_hits,
