@@ -27,6 +27,9 @@ Optional:
 - `INSTANTLY_CAMPAIGN_ID`: included in the generated Instantly CSV rows as the campaign ID field
 - `INSTANTLY_API_KEY`: when set with `INSTANTLY_CAMPAIGN_ID`, the app also pushes accepted leads directly into the Instantly campaign API
 - `INSTANTLY_AI`: supported as an alias for `INSTANTLY_API_KEY` if your existing deployment already uses that env var name
+- `HEYREACH_API_KEY`: when set with `HEYREACH_CAMPAIGN_ID`, the app also pushes accepted leads with valid LinkedIn URLs directly into HeyReach
+- `HEYREACH_CAMPAIGN_ID`: HeyReach campaign that receives accepted leads; the campaign should be launched once in HeyReach before API adds are used
+- `HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL`: optional override for the HeyReach public add-to-campaign endpoint if their API path changes
 - `DAILY_NEW_LEAD_LIMIT`: caps how many new leads can be added to Instantly in a single day; recommended production default is `15`
 - `ENABLE_WEEKDAY_ONLY_IMPORTS`: when `true`, blocks scheduled imports on Saturday and Sunday
 - `STATE_BACKEND`: state storage backend for processed domains and daily import counts; use `github` to avoid Render local-disk resets
@@ -36,8 +39,10 @@ Optional:
 - `GITHUB_STATE_BASE_BRANCH`: branch to copy from if the state branch does not exist yet; usually `main`
 - `GITHUB_STATE_PROCESSED_DOMAINS_PATH`: path of the processed-domain CSV on the state branch
 - `GITHUB_STATE_DAILY_IMPORTS_PATH`: path of the daily import counter CSV on the state branch
+- `GITHUB_STATE_HEYREACH_LEADS_PATH`: path of the processed HeyReach lead state on the state branch
 - `PROCESSED_DOMAINS_FILE`: optional override for the temporary processed-domain state file
 - `DAILY_IMPORT_LOG_FILE`: optional override for the temporary daily import counter file
+- `HEYREACH_PROCESSED_LEADS_FILE`: optional override for the temporary processed HeyReach lead state file
 
 If any required variables are missing, the app fails clearly at startup.
 
@@ -71,6 +76,8 @@ export INSTANTLY_CAMPAIGN_ID="your-instantly-campaign-id"
 export INSTANTLY_API_KEY="your-instantly-api-key"
 # or, if your deploy already uses this name:
 export INSTANTLY_AI="your-instantly-api-key"
+export HEYREACH_API_KEY="your-heyreach-api-key"
+export HEYREACH_CAMPAIGN_ID="your-heyreach-campaign-id"
 export DAILY_NEW_LEAD_LIMIT="15"
 export ENABLE_WEEKDAY_ONLY_IMPORTS="true"
 export STATE_BACKEND="github"
@@ -121,7 +128,7 @@ Successful run with contacts found:
 - response content type is `text/csv`
 - response includes a `Content-Disposition` header with a filename like `instantly_upload_2026-03-11.csv`
 - uploads the Instantly CSV to Slack
-- posts a Slack summary with scanned domain counts, pacing information, scheduler source, and Instantly import counts
+- posts a Slack summary with scanned domain counts, pacing information, scheduler source, and Instantly/HeyReach import counts
 
 Successful run with no valid personal contacts found:
 
@@ -158,6 +165,23 @@ Recommended production scheduler:
 
 - primary: Render Cron
 - backup/manual rerun: GitHub Actions
+
+## HeyReach Setup
+
+To enable LinkedIn automation in parallel with email:
+
+1. In HeyReach, launch the target campaign at least once.
+2. Add `HEYREACH_API_KEY` and `HEYREACH_CAMPAIGN_ID` to your Render web service.
+3. Redeploy the app.
+4. Run a small `/run-lead-build` test.
+5. Check Slack for:
+   - `HeyReach import status`
+   - `HeyReach leads attempted`
+   - `HeyReach leads added`
+   - `HeyReach leads skipped`
+   - `HeyReach missing LinkedIn URLs`
+
+The app only sends accepted leads that have a valid `linkedin_url`, and it keeps a separate processed-lead state so the same LinkedIn profile is not re-added to the same HeyReach campaign across runs.
 
 ### Render Cron
 

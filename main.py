@@ -31,6 +31,11 @@ SLACK_CHAT_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 SLACK_GET_UPLOAD_URL = "https://slack.com/api/files.getUploadURLExternal"
 SLACK_COMPLETE_UPLOAD_URL = "https://slack.com/api/files.completeUploadExternal"
 INSTANTLY_ADD_LEADS_URL = "https://api.instantly.ai/api/v2/leads/add"
+HEYREACH_CHECK_API_KEY_URL = "https://api.heyreach.io/api/public/auth/CheckApiKey"
+HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
+    "HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL",
+    "https://api.heyreach.io/api/public/campaign/AddLeadsToCampaignV2",
+).strip()
 
 
 # ========= RUNTIME CONFIG =========
@@ -110,6 +115,11 @@ GITHUB_STATE_DAILY_IMPORTS_PATH = (
     os.getenv("GITHUB_STATE_DAILY_IMPORTS_PATH", "state/daily_import_counts.csv").strip()
     or "state/daily_import_counts.csv"
 )
+HEYREACH_PROCESSED_LEADS_FILE = os.getenv("HEYREACH_PROCESSED_LEADS_FILE", "heyreach_processed_leads.csv").strip()
+GITHUB_STATE_HEYREACH_LEADS_PATH = (
+    os.getenv("GITHUB_STATE_HEYREACH_LEADS_PATH", "state/heyreach_processed_leads.csv").strip()
+    or "state/heyreach_processed_leads.csv"
+)
 
 
 # ========= REQUEST / SETTINGS MODELS =========
@@ -126,6 +136,8 @@ class Settings:
     slack_channel_id: str
     instantly_campaign_id: str
     instantly_api_key: str
+    heyreach_api_key: str
+    heyreach_campaign_id: str
 
 
 def detect_scheduler_source(request: Request) -> str:
@@ -154,6 +166,8 @@ def load_settings() -> Settings:
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip(),
         instantly_campaign_id=os.getenv("INSTANTLY_CAMPAIGN_ID", "").strip(),
         instantly_api_key=(os.getenv("INSTANTLY_API_KEY") or os.getenv("INSTANTLY_AI") or "").strip(),
+        heyreach_api_key=os.getenv("HEYREACH_API_KEY", "").strip(),
+        heyreach_campaign_id=os.getenv("HEYREACH_CAMPAIGN_ID", "").strip(),
     )
 
 
@@ -438,6 +452,120 @@ def daily_import_log_path() -> Path:
     if configured_path.is_absolute():
         return configured_path
     return Path(__file__).resolve().parent / configured_path
+
+
+def heyreach_processed_leads_path() -> Path:
+    configured_path = Path(HEYREACH_PROCESSED_LEADS_FILE)
+    if configured_path.is_absolute():
+        return configured_path
+    return Path(__file__).resolve().parent / configured_path
+
+
+def normalize_linkedin_url(linkedin_url: str) -> str:
+    normalized = (linkedin_url or "").strip()
+    if not normalized:
+        return ""
+
+    normalized = normalized.split("?", 1)[0].strip().rstrip("/")
+    normalized = re.sub(r"^http://", "https://", normalized, flags=re.IGNORECASE)
+    return normalized.lower()
+
+
+def build_heyreach_lead_key(campaign_id: str, linkedin_url: str) -> str:
+    normalized_url = normalize_linkedin_url(linkedin_url)
+    if not normalized_url:
+        return ""
+    return f"{campaign_id.strip()}::{normalized_url}"
+
+
+def load_processed_heyreach_leads() -> set[str]:
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_HEYREACH_LEADS_PATH)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub HeyReach state read failed: {exc}") from exc
+
+        processed_leads = {
+            ((row or {}).get("lead_key") or "").strip()
+            for row in parse_csv_text(content)
+            if ((row or {}).get("lead_key") or "").strip()
+        }
+        logger.info("[State] backend=github heyreach_processed_leads=%s", len(processed_leads))
+        return processed_leads
+
+    path = heyreach_processed_leads_path()
+    if not path.exists():
+        return set()
+
+    processed_leads: set[str] = set()
+    with path.open("r", encoding="utf-8", newline="") as file_obj:
+        reader = csv.DictReader(file_obj)
+        for row in reader:
+            lead_key = ((row or {}).get("lead_key") or "").strip()
+            if lead_key:
+                processed_leads.add(lead_key)
+
+    return processed_leads
+
+
+def append_processed_heyreach_leads(lead_rows: list[dict[str, str]], run_date: str) -> None:
+    if not lead_rows:
+        return
+
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_HEYREACH_LEADS_PATH)
+            existing_rows = parse_csv_text(content)
+            existing_keys = {
+                ((row or {}).get("lead_key") or "").strip()
+                for row in existing_rows
+                if ((row or {}).get("lead_key") or "").strip()
+            }
+            new_rows = list(existing_rows)
+            appended_count = 0
+
+            for row in lead_rows:
+                lead_key = (row.get("lead_key") or "").strip()
+                if not lead_key or lead_key in existing_keys:
+                    continue
+                new_rows.append(
+                    {
+                        "lead_key": lead_key,
+                        "campaign_id": row.get("campaign_id", ""),
+                        "linkedin_url": row.get("linkedin_url", ""),
+                        "date_added": run_date,
+                    }
+                )
+                existing_keys.add(lead_key)
+                appended_count += 1
+
+            write_github_state_file(
+                GITHUB_STATE_HEYREACH_LEADS_PATH,
+                write_csv_text(new_rows, ["lead_key", "campaign_id", "linkedin_url", "date_added"]),
+                f"Update HeyReach processed leads for {run_date}",
+            )
+            logger.info("[State] backend=github appended_heyreach_processed_leads=%s", appended_count)
+            return
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub HeyReach state write failed: {exc}") from exc
+
+    path = heyreach_processed_leads_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = path.exists()
+
+    with path.open("a", encoding="utf-8", newline="") as file_obj:
+        writer = csv.DictWriter(file_obj, fieldnames=["lead_key", "campaign_id", "linkedin_url", "date_added"])
+        if not file_exists:
+            writer.writeheader()
+        for row in lead_rows:
+            writer.writerow(
+                {
+                    "lead_key": row.get("lead_key", ""),
+                    "campaign_id": row.get("campaign_id", ""),
+                    "linkedin_url": row.get("linkedin_url", ""),
+                    "date_added": run_date,
+                }
+            )
 
 
 def load_daily_import_counts() -> dict[str, int]:
@@ -1380,6 +1508,13 @@ def build_slack_headers(settings: Settings) -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.slack_bot_token}"}
 
 
+def build_heyreach_headers(settings: Settings) -> dict[str, str]:
+    return {
+        "X-API-KEY": settings.heyreach_api_key,
+        "Content-Type": "application/json",
+    }
+
+
 def upload_file_to_slack(filename: str, content: str, settings: Settings) -> dict[str, Any]:
     if not content:
         return {"ok": True, "skipped": True, "reason": "empty_file"}
@@ -1520,6 +1655,151 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
     }
 
 
+def import_leads_to_heyreach(rows: list[dict[str, Any]], run_date: str, settings: Settings) -> dict[str, Any]:
+    if not rows:
+        return {
+            "status": "skipped",
+            "reason": "no_rows",
+            "attempted_count": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+            "missing_linkedin_url_count": 0,
+        }
+
+    if not settings.heyreach_campaign_id:
+        logger.info("[HeyReach] import skipped: HEYREACH_CAMPAIGN_ID missing")
+        return {
+            "status": "skipped",
+            "reason": "missing_campaign_id",
+            "attempted_count": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+            "missing_linkedin_url_count": 0,
+        }
+
+    if not settings.heyreach_api_key:
+        logger.info("[HeyReach] import skipped: HEYREACH_API_KEY missing")
+        return {
+            "status": "skipped",
+            "reason": "missing_api_key",
+            "attempted_count": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+            "missing_linkedin_url_count": 0,
+        }
+
+    processed_leads = load_processed_heyreach_leads()
+    prepared_leads: list[dict[str, Any]] = []
+    processed_rows_to_append: list[dict[str, str]] = []
+    skipped_count = 0
+    missing_linkedin_url_count = 0
+
+    for row in rows:
+        linkedin_url = normalize_linkedin_url(row.get("linkedin_url", ""))
+        if not linkedin_url:
+            missing_linkedin_url_count += 1
+            continue
+
+        lead_key = build_heyreach_lead_key(settings.heyreach_campaign_id, linkedin_url)
+        if not lead_key or lead_key in processed_leads:
+            skipped_count += 1
+            continue
+
+        prepared_leads.append(
+            {
+                "firstName": row.get("first_name", ""),
+                "lastName": row.get("last_name", ""),
+                "email": row.get("email", ""),
+                "company": row.get("company_name", ""),
+                "position": row.get("role", ""),
+                "linkedinUrl": linkedin_url,
+            }
+        )
+        processed_rows_to_append.append(
+            {
+                "lead_key": lead_key,
+                "campaign_id": settings.heyreach_campaign_id,
+                "linkedin_url": linkedin_url,
+            }
+        )
+
+    if not prepared_leads:
+        return {
+            "status": "skipped",
+            "reason": "no_eligible_leads",
+            "attempted_count": 0,
+            "created_count": 0,
+            "skipped_count": skipped_count,
+            "missing_linkedin_url_count": missing_linkedin_url_count,
+        }
+
+    payload = {
+        "campaignId": settings.heyreach_campaign_id,
+        "leads": prepared_leads,
+    }
+
+    try:
+        response = requests.post(
+            HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL,
+            headers=build_heyreach_headers(settings),
+            json=payload,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        result = response.json()
+    except requests.RequestException as exc:
+        logger.warning("[HeyReach] import request failed: %s", exc)
+        return {
+            "status": "error",
+            "reason": "request_failed",
+            "attempted_count": len(prepared_leads),
+            "created_count": 0,
+            "skipped_count": skipped_count,
+            "missing_linkedin_url_count": missing_linkedin_url_count,
+        }
+    except ValueError:
+        logger.warning("[HeyReach] import returned invalid JSON")
+        return {
+            "status": "error",
+            "reason": "invalid_json",
+            "attempted_count": len(prepared_leads),
+            "created_count": 0,
+            "skipped_count": skipped_count,
+            "missing_linkedin_url_count": missing_linkedin_url_count,
+        }
+
+    result_status = str(result.get("status") or "success").lower()
+    if result.get("error") or result_status in {"error", "failed"}:
+        logger.warning("[HeyReach] import failed response: %s", result)
+        return {
+            "status": "error",
+            "reason": "api_error",
+            "attempted_count": len(prepared_leads),
+            "created_count": 0,
+            "skipped_count": skipped_count,
+            "missing_linkedin_url_count": missing_linkedin_url_count,
+        }
+
+    created_count = len(prepared_leads)
+    append_processed_heyreach_leads(processed_rows_to_append, run_date)
+    logger.info(
+        "[HeyReach] status=%s attempted_count=%s created_count=%s skipped_count=%s missing_linkedin_url_count=%s",
+        result_status,
+        len(prepared_leads),
+        created_count,
+        skipped_count,
+        missing_linkedin_url_count,
+    )
+    return {
+        "status": result_status,
+        "reason": "",
+        "attempted_count": len(prepared_leads),
+        "created_count": created_count,
+        "skipped_count": skipped_count,
+        "missing_linkedin_url_count": missing_linkedin_url_count,
+    }
+
+
 def post_slack_summary(
     run_date: str,
     scheduler_source: str,
@@ -1531,6 +1811,7 @@ def post_slack_summary(
     apollo_hits: int,
     successful_contacts: int,
     instantly_import_result: dict[str, Any],
+    heyreach_import_result: dict[str, Any],
     scheduler_status: dict[str, Any],
     settings: Settings,
 ) -> None:
@@ -1564,6 +1845,11 @@ Final contacts selected: {successful_contacts}
 Instantly import status: {instantly_import_result.get("status", "unknown")}
 Instantly leads created: {instantly_import_result.get("created_count", 0)}
 Instantly leads skipped: {instantly_import_result.get("skipped_count", 0)}
+HeyReach import status: {heyreach_import_result.get("status", "unknown")}
+HeyReach leads attempted: {heyreach_import_result.get("attempted_count", 0)}
+HeyReach leads added: {heyreach_import_result.get("created_count", 0)}
+HeyReach leads skipped: {heyreach_import_result.get("skipped_count", 0)}
+HeyReach missing LinkedIn URLs: {heyreach_import_result.get("missing_linkedin_url_count", 0)}
 {scheduler_lines}
 
 Contacts per Apollo-queried domain: {contact_rate_per_apollo_domain}%
@@ -1650,6 +1936,7 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
         instantly_csv = rows_to_csv(instantly_rows)
         exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
         instantly_import_result = import_leads_to_instantly(instantly_rows, settings)
+        heyreach_import_result = import_leads_to_heyreach(instantly_rows, payload.date, settings)
         if instantly_rows and instantly_import_result.get("status") != "error":
             append_processed_domains(exported_domains, payload.date)
         created_count = int(instantly_import_result.get("created_count", 0) or 0)
@@ -1667,6 +1954,7 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
             apollo_hits=apollo_hits,
             successful_contacts=successful_contacts,
             instantly_import_result=instantly_import_result,
+            heyreach_import_result=heyreach_import_result,
             scheduler_status=scheduler_status,
             settings=settings,
         )
