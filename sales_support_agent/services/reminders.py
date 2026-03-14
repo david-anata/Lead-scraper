@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -12,6 +13,13 @@ from sqlalchemy.orm import Session
 from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.models.entities import CommunicationEvent, LeadMirror
 from sales_support_agent.rules.follow_up import FollowUpAssessment, assess_status_follow_up
+from sales_support_agent.services.notification_policy import (
+    STALE_URGENCY_LABELS,
+    STALE_URGENCY_ORDER,
+    classify_stale_assessment_state,
+    build_clickup_owner_reference,
+    determine_stale_notification_mode,
+)
 
 
 AGENT_COMMENT_PREFIX = "[Sales Support Agent]"
@@ -23,6 +31,17 @@ class LeadEvaluation:
     assessment: FollowUpAssessment
     last_meaningful_touch_at: datetime | None
     has_work_signal: bool
+
+
+@dataclass(frozen=True)
+class StaleDigestItem:
+    evaluation: LeadEvaluation
+    urgency: str
+    urgency_label: str
+    owner_label: str
+    owner_display: str
+    last_touch_label: str
+    notification_mode: str
 
 
 class ReminderService:
@@ -68,14 +87,14 @@ class ReminderService:
         anchor = evaluation.assessment.anchor_date.isoformat()
         return f"{evaluation.lead.clickup_task_id}:{evaluation.lead.status}:{evaluation.assessment.state}:{anchor}"
 
-    def build_slack_message(self, evaluation: LeadEvaluation) -> dict[str, Any]:
+    def build_immediate_stale_slack_message(self, evaluation: LeadEvaluation) -> dict[str, Any]:
         lead = evaluation.lead
         mention = self._format_assignee_mention(lead.assignee_id, lead.assignee_name)
-        last_touch = evaluation.last_meaningful_touch_at.date().isoformat() if evaluation.last_meaningful_touch_at else "none"
+        urgency_label = self._urgency_label(evaluation)
+        last_touch = self._last_touch_label(evaluation.last_meaningful_touch_at)
         text = (
-            f"{mention} {evaluation.assessment.state.replace('_', ' ')}: {lead.task_name} "
-            f"({lead.status}) needs attention. Last meaningful touch: {last_touch}. "
-            f"Next action: {evaluation.assessment.recommended_next_action} {lead.task_url}"
+            f"{mention} {urgency_label}: {lead.task_name} ({lead.status}). "
+            f"Last touch: {last_touch}. Next step: {evaluation.assessment.recommended_next_action} {lead.task_url}"
         )
         blocks = [
             {
@@ -83,12 +102,11 @@ class ReminderService:
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"{mention} *{lead.task_name}*\n"
+                        f"{mention} *{urgency_label}: {lead.task_name}*\n"
                         f"*Status:* {lead.status}\n"
-                        f"*Created:* {(lead.created_at.date().isoformat() if lead.created_at else 'unknown')}\n"
                         f"*Last meaningful touch:* {last_touch}\n"
-                        f"*Enforcement state:* {evaluation.assessment.state.replace('_', ' ')}\n"
-                        f"*Recommended next action:* {evaluation.assessment.recommended_next_action}\n"
+                        f"*Why this matters:* {evaluation.assessment.reason}\n"
+                        f"*Next step:* {evaluation.assessment.recommended_next_action}\n"
                         f"<{lead.task_url}|Open ClickUp task>"
                     ),
                 },
@@ -96,10 +114,108 @@ class ReminderService:
         ]
         return {"text": text, "blocks": blocks}
 
+    def build_digest_item(self, evaluation: LeadEvaluation) -> StaleDigestItem:
+        owner_display = self._format_assignee_mention(evaluation.lead.assignee_id, evaluation.lead.assignee_name)
+        urgency = self._urgency_key(evaluation)
+        return StaleDigestItem(
+            evaluation=evaluation,
+            urgency=urgency,
+            urgency_label=STALE_URGENCY_LABELS[urgency],
+            owner_label=evaluation.lead.assignee_name or "Assigned AE",
+            owner_display=owner_display,
+            last_touch_label=self._last_touch_label(evaluation.last_meaningful_touch_at),
+            notification_mode=determine_stale_notification_mode(urgency, self.settings.stale_lead_immediate_alert_urgencies),
+        )
+
+    def build_stale_digest_message(self, items: list[StaleDigestItem]) -> dict[str, Any] | None:
+        if not items:
+            return None
+
+        ordered = sorted(
+            items,
+            key=lambda item: (
+                STALE_URGENCY_ORDER.index(item.urgency),
+                item.owner_label.lower(),
+                item.evaluation.lead.task_name.lower(),
+            ),
+        )
+        total_items = len(ordered)
+        visible_items = ordered[: self.settings.stale_lead_slack_digest_max_items]
+        truncated = total_items - len(visible_items)
+        urgency_counts = Counter(item.urgency for item in ordered)
+        assignee_counts = Counter(item.owner_display for item in ordered)
+
+        intro_prefix = "<!channel> " if self.settings.stale_lead_slack_digest_mention_channel else ""
+        intro = (
+            f"{intro_prefix}*SDR Support Digest*\n"
+            f"{total_items} leads need attention from the latest stale scan."
+        )
+        summary_lines = [
+            f"*{STALE_URGENCY_LABELS[urgency]}:* {urgency_counts.get(urgency, 0)}"
+            for urgency in STALE_URGENCY_ORDER
+            if urgency_counts.get(urgency, 0)
+        ]
+        owner_summary = ", ".join(
+            f"{owner}: {count}"
+            for owner, count in sorted(assignee_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+        ) or "No owners assigned"
+
+        sections = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": intro},
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Summary*\n" + "\n".join(summary_lines) + f"\n*By owner:* {owner_summary}",
+                },
+            },
+        ]
+
+        for urgency in STALE_URGENCY_ORDER:
+            urgency_items = [item for item in visible_items if item.urgency == urgency]
+            if not urgency_items:
+                continue
+            lines = [
+                (
+                    f"- {item.owner_display} | *{item.evaluation.lead.task_name}* | {item.evaluation.lead.status} | "
+                    f"last touch {item.last_touch_label} | next step: {item.evaluation.assessment.recommended_next_action} "
+                    f"<{item.evaluation.lead.task_url}|Open>"
+                )
+                for item in urgency_items
+            ]
+            sections.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{STALE_URGENCY_LABELS[urgency]}*\n" + "\n".join(lines),
+                    },
+                }
+            )
+
+        if truncated > 0:
+            sections.append(
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": f"_Digest truncated. {truncated} additional leads were omitted from the message._"}],
+                }
+            )
+
+        fallback = intro_prefix + f"SDR Support Digest: {total_items} leads need attention."
+        return {"text": fallback, "blocks": sections}
+
     def build_agent_comment(self, evaluation: LeadEvaluation) -> str:
+        owner_reference = build_clickup_owner_reference(evaluation.lead.assignee_name)
+        last_touch = self._last_touch_label(evaluation.last_meaningful_touch_at)
+        urgency_label = self._urgency_label(evaluation)
         return (
-            f"{AGENT_COMMENT_PREFIX} {evaluation.assessment.state.replace('_', ' ').title()}: "
-            f"{evaluation.assessment.reason} Recommended next action: {evaluation.assessment.recommended_next_action}"
+            f"{AGENT_COMMENT_PREFIX} {owner_reference} {urgency_label.lower()} for this lead.\n"
+            f"Why it matters: {evaluation.assessment.reason}\n"
+            f"Last meaningful touch: {last_touch}\n"
+            f"Next step: {evaluation.assessment.recommended_next_action}"
         )
 
     def _latest_meaningful_event(self, task_id: str) -> datetime | None:
@@ -143,6 +259,15 @@ class ReminderService:
         if not filtered:
             return None
         return max(filtered)
+
+    def _urgency_key(self, evaluation: LeadEvaluation) -> str:
+        return classify_stale_assessment_state(evaluation.assessment.state)
+
+    def _urgency_label(self, evaluation: LeadEvaluation) -> str:
+        return STALE_URGENCY_LABELS[self._urgency_key(evaluation)]
+
+    def _last_touch_label(self, value: datetime | None) -> str:
+        return value.date().isoformat() if value else "none recorded"
 
     def _format_assignee_mention(self, assignee_id: str, assignee_name: str) -> str:
         slack_user_id = self.settings.slack_assignee_map.get(assignee_id) or self.settings.slack_assignee_map.get(assignee_name)

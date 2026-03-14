@@ -28,7 +28,11 @@ class _FakeClickUpClient:
 
 
 class _FakeSlackClient:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
     def post_message(self, **_: object) -> dict[str, object]:
+        self.messages.append(dict(_))
         return {"ok": True}
 
 
@@ -42,9 +46,14 @@ def _build_settings(database_path: Path) -> Settings:
         clickup_discovery_sample_size=10,
         stale_lead_scan_max_tasks=5,
         stale_lead_scan_sync_max_tasks=7,
+        stale_lead_slack_digest_enabled=True,
+        stale_lead_slack_digest_mention_channel=True,
+        stale_lead_slack_digest_max_items=20,
+        stale_lead_immediate_alert_urgencies=("overdue",),
         slack_bot_token="slack-token",
         slack_channel_id="channel-123",
         slack_assignee_map={},
+        slack_immediate_event_types=("inbound_reply_received", "meeting_notes_missing"),
         sales_agent_db_url=f"sqlite:///{database_path}",
         internal_api_key="internal-key",
         discovery_snapshot_path=Path("runtime/clickup_schema_snapshot.json"),
@@ -133,6 +142,30 @@ class StaleLeadJobTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertFalse(result["sync_failed"])
             self.assertEqual(result["synced_tasks"], 2)
+        finally:
+            session.close()
+
+    def test_run_posts_single_digest_for_routine_due_items(self) -> None:
+        self._insert_lead()
+        session = self.session_factory()
+        slack_client = _FakeSlackClient()
+        try:
+            with patch("sales_support_agent.jobs.stale_leads.ClickUpSyncService") as sync_service_cls:
+                sync_service_cls.return_value.sync_list.return_value = {"synced_tasks": 1}
+
+                result = StaleLeadJob(
+                    self.settings,
+                    _FakeClickUpClient(),
+                    slack_client,
+                    session,
+                ).run(dry_run=False, as_of_date=date(2026, 3, 13))
+
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["digest_posted"])
+            self.assertEqual(result["immediate_alerted"], 0)
+            self.assertEqual(result["alerted"], 1)
+            self.assertEqual(len(slack_client.messages), 1)
+            self.assertIn("<!channel>", str(slack_client.messages[0].get("text", "")))
         finally:
             session.close()
 

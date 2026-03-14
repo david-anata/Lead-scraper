@@ -19,6 +19,7 @@ from sales_support_agent.services.field_mapping import (
     resolve_managed_fields,
     serialize_clickup_date,
 )
+from sales_support_agent.services.notification_policy import build_clickup_owner_reference
 from sales_support_agent.services.sync import ClickUpSyncService
 
 
@@ -79,7 +80,7 @@ class CommunicationService:
         self.session.add(event)
         self.session.flush()
 
-        comment_text = self._build_comment_text(payload, occurred_at)
+        comment_text = self._build_comment_text(task, payload, occurred_at)
         comment_result = self.clickup_client.create_task_comment(payload.task_id, comment_text)
         self.audit.record_action(
             run_id=None,
@@ -94,9 +95,13 @@ class CommunicationService:
         sync_service.sync_task(self.clickup_client.get_task(payload.task_id))
 
         slack_result: dict[str, Any] = {"ok": False, "skipped": True}
-        if payload.event_type == "inbound_reply_received":
+        if payload.event_type == "inbound_reply_received" and self._should_send_immediate_event_alert("inbound_reply_received"):
             slack_result = self._notify_reply_received(task, payload, occurred_at)
-        elif payload.event_type == "meeting_completed" and not (payload.summary or payload.outcome):
+        elif (
+            payload.event_type == "meeting_completed"
+            and not (payload.summary or payload.outcome)
+            and self._should_send_immediate_event_alert("meeting_notes_missing")
+        ):
             slack_result = self._notify_meeting_notes_missing(task)
         if not slack_result.get("skipped"):
             self.audit.record_action(
@@ -187,17 +192,20 @@ class CommunicationService:
             return add_business_days(occurred_date, policy.due_days)
         return None
 
-    def _build_comment_text(self, payload: CommunicationEventRequest, occurred_at: datetime) -> str:
+    def _build_comment_text(self, task: dict[str, Any], payload: CommunicationEventRequest, occurred_at: datetime) -> str:
+        assignee = (task.get("assignees") or [{}])[0] or {}
+        assignee_name = str(assignee.get("username") or assignee.get("email") or "")
+        owner_reference = build_clickup_owner_reference(assignee_name)
         parts = [
-            "[Sales Support Agent] " + EVENT_LABELS[payload.event_type],
+            f"[Sales Support Agent] {owner_reference} {EVENT_LABELS[payload.event_type].lower()}.",
             f"Occurred at: {occurred_at.isoformat()}",
         ]
         if payload.summary:
-            parts.append(f"Summary: {payload.summary}")
+            parts.append(f"Why it matters: {payload.summary}")
         if payload.outcome:
             parts.append(f"Outcome: {payload.outcome}")
         if payload.recommended_next_action:
-            parts.append(f"Recommended next action: {payload.recommended_next_action}")
+            parts.append(f"Next step: {payload.recommended_next_action}")
         if payload.suggested_status:
             parts.append(f"Suggested status: {payload.suggested_status}")
         return "\n".join(parts)
@@ -211,7 +219,7 @@ class CommunicationService:
         text = (
             f"{mention} reply received for {task.get('name', 'Lead')} "
             f"({((task.get('status') or {}).get('status')) or 'Unknown'}). "
-            f"Recommended next action: {payload.recommended_next_action or 'Review and respond.'} "
+            f"Next step: {payload.recommended_next_action or 'Review and respond.'} "
             f"{task.get('url', '')}"
         )
         return self.slack_client.post_message(text=text)
@@ -224,9 +232,12 @@ class CommunicationService:
         mention = f"<@{slack_user}>" if slack_user else assignee_name
         text = (
             f"{mention} meeting completed for {task.get('name', 'Lead')} but notes are still missing. "
-            f"Please log the outcome in ClickUp. {task.get('url', '')}"
+            f"Next step: log the meeting outcome and next follow-up in ClickUp. {task.get('url', '')}"
         )
         return self.slack_client.post_message(text=text)
+
+    def _should_send_immediate_event_alert(self, event_type: str) -> bool:
+        return event_type in self.settings.slack_immediate_event_types
 
     def _record_clickup_write(self, task_id: str, action_type: str, result: dict[str, Any], updates: dict[str, Any]) -> None:
         self.audit.record_action(

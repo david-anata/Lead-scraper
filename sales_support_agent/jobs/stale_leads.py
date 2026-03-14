@@ -69,9 +69,14 @@ class StaleLeadJob:
 
         inspected = 0
         alerted = 0
+        immediate_alerted = 0
         commented = 0
         skipped = 0
         failed = 0
+        digest_items = []
+        digest_posted = False
+        urgency_counts: dict[str, int] = {}
+        assignee_counts: dict[str, int] = {}
         for lead in leads:
             if processing_limit and inspected >= processing_limit:
                 break
@@ -90,21 +95,26 @@ class StaleLeadJob:
                     skipped += 1
                     continue
 
+                digest_item = self.reminders.build_digest_item(evaluation)
+                digest_items.append(digest_item)
                 if dry_run:
                     continue
 
-                slack_payload = self.reminders.build_slack_message(evaluation)
-                slack_result = self.slack_client.post_message(**slack_payload)
-                alerted += 1
-                self.audit.record_action(
-                    run_id=run.id,
-                    clickup_task_id=lead.clickup_task_id,
-                    system="slack",
-                    action_type=evaluation.assessment.state,
-                    dedupe_key=dedupe_key,
-                    before={"status": lead.status, "follow_up_state": lead.follow_up_state},
-                    after=slack_result,
-                )
+                if digest_item.notification_mode == "immediate_alert":
+                    slack_payload = self.reminders.build_immediate_stale_slack_message(evaluation)
+                    slack_result = self.slack_client.post_message(**slack_payload)
+                    if not slack_result.get("skipped"):
+                        alerted += 1
+                        immediate_alerted += 1
+                        self.audit.record_action(
+                            run_id=run.id,
+                            clickup_task_id=lead.clickup_task_id,
+                            system="slack",
+                            action_type="stale_lead_immediate_alert",
+                            dedupe_key=dedupe_key,
+                            before={"status": lead.status, "follow_up_state": lead.follow_up_state},
+                            after=slack_result,
+                        )
 
                 comment_text = self.reminders.build_agent_comment(evaluation)
                 comment_result = self.clickup_client.create_task_comment(lead.clickup_task_id, comment_text)
@@ -134,15 +144,52 @@ class StaleLeadJob:
                     after={},
                 )
 
+        urgency_counts = {
+            urgency: sum(1 for item in digest_items if item.urgency == urgency)
+            for urgency in ("overdue", "needs_immediate_review", "follow_up_due")
+            if any(item.urgency == urgency for item in digest_items)
+        }
+        assignee_counts = {}
+        for item in digest_items:
+            assignee_counts[item.owner_display] = assignee_counts.get(item.owner_display, 0) + 1
+
+        if not dry_run and self.settings.stale_lead_slack_digest_enabled and digest_items:
+            digest_dedupe_key = f"stale_lead_digest:{run.id}"
+            if not self.audit.has_successful_action(digest_dedupe_key):
+                digest_payload = self.reminders.build_stale_digest_message(digest_items)
+                if digest_payload:
+                    digest_result = self.slack_client.post_message(**digest_payload)
+                    if not digest_result.get("skipped"):
+                        digest_posted = True
+                        alerted += 1
+                        self.audit.record_action(
+                            run_id=run.id,
+                            clickup_task_id="",
+                            system="slack",
+                            action_type="stale_lead_digest",
+                            dedupe_key=digest_dedupe_key,
+                            before={
+                                "digest_items": len(digest_items),
+                                "urgency_counts": urgency_counts,
+                                "assignee_counts": assignee_counts,
+                            },
+                            after=digest_result,
+                        )
+
         self.audit.finish_run(
             run,
             status="success",
             summary={
                 "inspected": inspected,
                 "alerted": alerted,
+                "immediate_alerted": immediate_alerted,
                 "commented": commented,
                 "skipped_deduped": skipped,
                 "failed": failed,
+                "digest_posted": digest_posted,
+                "digest_items": len(digest_items),
+                "urgency_counts": urgency_counts,
+                "assignee_counts": assignee_counts,
                 "sync_failed": sync_failed,
                 "synced_tasks": sync_summary.get("synced_tasks", 0),
             },
@@ -151,9 +198,14 @@ class StaleLeadJob:
             "status": "ok",
             "inspected": inspected,
             "alerted": alerted,
+            "immediate_alerted": immediate_alerted,
             "commented": commented,
             "skipped_deduped": skipped,
             "failed": failed,
+            "digest_posted": digest_posted,
+            "digest_items": len(digest_items),
+            "urgency_counts": urgency_counts,
+            "assignee_counts": assignee_counts,
             "sync_failed": sync_failed,
             "synced_tasks": int(sync_summary.get("synced_tasks", 0)),
         }

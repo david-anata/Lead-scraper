@@ -68,9 +68,14 @@ class Settings:
     clickup_discovery_sample_size: int
     stale_lead_scan_max_tasks: int
     stale_lead_scan_sync_max_tasks: int
+    stale_lead_slack_digest_enabled: bool
+    stale_lead_slack_digest_mention_channel: bool
+    stale_lead_slack_digest_max_items: int
+    stale_lead_immediate_alert_urgencies: tuple[str, ...]
     slack_bot_token: str
     slack_channel_id: str
     slack_assignee_map: dict[str, str]
+    slack_immediate_event_types: tuple[str, ...]
     sales_agent_db_url: str
     internal_api_key: str
     discovery_snapshot_path: Path
@@ -102,6 +107,13 @@ def _parse_json_object(value: str) -> dict[str, str]:
     return {str(key): str(val) for key, val in parsed.items()}
 
 
+def _parse_csv_tuple(value: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    raw = (value or "").strip()
+    if not raw:
+        return default
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 def normalize_status_key(value: str) -> str:
     return " ".join((value or "").strip().lower().split())
 
@@ -126,9 +138,23 @@ def load_settings() -> Settings:
         clickup_discovery_sample_size=int((os.getenv("CLICKUP_DISCOVERY_SAMPLE_SIZE", "10") or "10").strip()),
         stale_lead_scan_max_tasks=int((os.getenv("STALE_LEAD_SCAN_MAX_TASKS", "50") or "50").strip()),
         stale_lead_scan_sync_max_tasks=int((os.getenv("STALE_LEAD_SCAN_SYNC_MAX_TASKS", "100") or "100").strip()),
+        stale_lead_slack_digest_enabled=_parse_bool(os.getenv("STALE_LEAD_SLACK_DIGEST_ENABLED", "true"), default=True),
+        stale_lead_slack_digest_mention_channel=_parse_bool(
+            os.getenv("STALE_LEAD_SLACK_DIGEST_MENTION_CHANNEL", "true"),
+            default=True,
+        ),
+        stale_lead_slack_digest_max_items=int((os.getenv("STALE_LEAD_SLACK_DIGEST_MAX_ITEMS", "20") or "20").strip()),
+        stale_lead_immediate_alert_urgencies=_parse_csv_tuple(
+            os.getenv("STALE_LEAD_IMMEDIATE_ALERT_URGENCIES", "overdue"),
+            default=("overdue",),
+        ),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip(),
         slack_assignee_map=_parse_json_object(os.getenv("SLACK_AE_MAP_JSON", "{}")),
+        slack_immediate_event_types=_parse_csv_tuple(
+            os.getenv("SLACK_IMMEDIATE_EVENT_TYPES", "inbound_reply_received,meeting_notes_missing"),
+            default=("inbound_reply_received", "meeting_notes_missing"),
+        ),
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
         discovery_snapshot_path=Path(
