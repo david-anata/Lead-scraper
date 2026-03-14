@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from sqlalchemy import select
@@ -14,6 +15,9 @@ from sales_support_agent.models.entities import LeadMirror
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.reminders import ReminderService
 from sales_support_agent.services.sync import ClickUpSyncService
+
+
+logger = logging.getLogger(__name__)
 
 
 class StaleLeadJob:
@@ -42,50 +46,65 @@ class StaleLeadJob:
         alerted = 0
         commented = 0
         skipped = 0
+        failed = 0
         for lead in leads:
             if max_tasks and inspected >= max_tasks:
                 break
             inspected += 1
-            comments = self.clickup_client.get_task_comments(lead.clickup_task_id)
-            evaluation = self.reminders.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
-            if evaluation is None:
-                continue
+            try:
+                comments = self.clickup_client.get_task_comments(lead.clickup_task_id)
+                evaluation = self.reminders.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
+                if evaluation is None:
+                    continue
 
-            dedupe_key = self.reminders.build_dedupe_key(evaluation)
-            if self.audit.has_successful_action(dedupe_key):
-                skipped += 1
-                continue
+                dedupe_key = self.reminders.build_dedupe_key(evaluation)
+                if self.audit.has_successful_action(dedupe_key):
+                    skipped += 1
+                    continue
 
-            if dry_run:
-                continue
+                if dry_run:
+                    continue
 
-            slack_payload = self.reminders.build_slack_message(evaluation)
-            slack_result = self.slack_client.post_message(**slack_payload)
-            alerted += 1
-            self.audit.record_action(
-                run_id=run.id,
-                clickup_task_id=lead.clickup_task_id,
-                system="slack",
-                action_type=evaluation.assessment.state,
-                dedupe_key=dedupe_key,
-                before={"status": lead.status, "follow_up_state": lead.follow_up_state},
-                after=slack_result,
-            )
+                slack_payload = self.reminders.build_slack_message(evaluation)
+                slack_result = self.slack_client.post_message(**slack_payload)
+                alerted += 1
+                self.audit.record_action(
+                    run_id=run.id,
+                    clickup_task_id=lead.clickup_task_id,
+                    system="slack",
+                    action_type=evaluation.assessment.state,
+                    dedupe_key=dedupe_key,
+                    before={"status": lead.status, "follow_up_state": lead.follow_up_state},
+                    after=slack_result,
+                )
 
-            comment_text = self.reminders.build_agent_comment(evaluation)
-            comment_result = self.clickup_client.create_task_comment(lead.clickup_task_id, comment_text)
-            commented += 1
-            self.audit.record_action(
-                run_id=run.id,
-                clickup_task_id=lead.clickup_task_id,
-                system="clickup",
-                action_type="append_reminder_comment",
-                dedupe_key=f"{dedupe_key}:comment",
-                before={"status": lead.status},
-                after=comment_result,
-            )
-            lead.follow_up_state = evaluation.assessment.state
-            self.session.add(lead)
+                comment_text = self.reminders.build_agent_comment(evaluation)
+                comment_result = self.clickup_client.create_task_comment(lead.clickup_task_id, comment_text)
+                commented += 1
+                self.audit.record_action(
+                    run_id=run.id,
+                    clickup_task_id=lead.clickup_task_id,
+                    system="clickup",
+                    action_type="append_reminder_comment",
+                    dedupe_key=f"{dedupe_key}:comment",
+                    before={"status": lead.status},
+                    after=comment_result,
+                )
+                lead.follow_up_state = evaluation.assessment.state
+                self.session.add(lead)
+            except Exception as exc:
+                failed += 1
+                logger.exception("stale lead processing failed for task %s", lead.clickup_task_id)
+                self.audit.record_action(
+                    run_id=run.id,
+                    clickup_task_id=lead.clickup_task_id,
+                    system="sales_support_agent",
+                    action_type="stale_lead_processing_failed",
+                    success=False,
+                    error_message=str(exc),
+                    before={"status": lead.status, "follow_up_state": lead.follow_up_state},
+                    after={},
+                )
 
         self.audit.finish_run(
             run,
@@ -95,6 +114,7 @@ class StaleLeadJob:
                 "alerted": alerted,
                 "commented": commented,
                 "skipped_deduped": skipped,
+                "failed": failed,
                 "synced_tasks": sync_summary.get("synced_tasks", 0),
             },
         )
@@ -104,6 +124,6 @@ class StaleLeadJob:
             "alerted": alerted,
             "commented": commented,
             "skipped_deduped": skipped,
+            "failed": failed,
             "synced_tasks": int(sync_summary.get("synced_tasks", 0)),
         }
-
