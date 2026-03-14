@@ -2,3 +2,4 @@ fastapi
 uvicorn
 pydantic
 requests
+SQLAlchemy>=2.0,<3.0

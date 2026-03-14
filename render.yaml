@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: sales-support-agent
+    runtime: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn sales_support_agent.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: CLICKUP_API_TOKEN
+        sync: false
+      - key: CLICKUP_API_KEY
+        sync: false
+      - key: CLICKUP_LIST_ID
+        sync: false
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_CHANNEL_ID
+        sync: false
+      - key: SLACK_AE_MAP_JSON
+        sync: false
+      - key: INSTANTLY_WEBHOOK_SECRET
+        sync: false
+      - key: INSTANTLY_WEBHOOK_SECRET_HEADER
+        value: X-Instantly-Webhook-Secret
+      - key: INSTANTLY_WEBHOOK_ALLOWED_EVENT_TYPES
+        value: email_sent,reply_received,lead_meeting_booked,lead_meeting_completed,lead_interested,lead_not_interested,lead_neutral
+      - key: CLICKUP_DISCOVERY_SAMPLE_SIZE
+        value: "10"
+      - key: CLICKUP_DISCOVERY_SNAPSHOT_PATH
+        value: runtime/clickup_schema_snapshot.json
+      - key: CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP
+        value: "false"
+      - key: SALES_AGENT_DB_URL
+        sync: false
+
+  - type: cron
+    name: sales-support-stale-scan
+    runtime: python
+    schedule: "0 15 * * 1-5"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/stale-leads/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+        -d '{"dry_run":false}'
+    envVars:
+      - key: SALES_SUPPORT_AGENT_URL
+        sync: false
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false

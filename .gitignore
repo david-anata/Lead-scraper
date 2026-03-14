@@ -1,6 +1,10 @@
 .env
+.DS_Store
 .venv/
 __pycache__/
 *.py[cod]
 processed_domains.csv
 daily_import_counts.csv
+runtime/
+*.sqlite3
+*.db

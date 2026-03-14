@@ -1,30 +1,30 @@
 # AGENTS.md
 
-## Project Purpose
+## Project Mission
 
-This repository contains a single FastAPI service for outbound lead generation.
+This repo now supports two related operational tools:
 
-The service:
+1. the original outbound lead-scraper service
+2. the ClickUp sales support agent that keeps existing leads moving after creation
 
-- queries StoreLeads for domains that match a fixed ICP
-- enriches those domains with Apollo contact data
-- filters for valid personal emails that match the company domain
-- generates CSV output for Instantly and LinkedIn workflows
-- uploads output files to Slack
-- posts a Slack summary after each run
+The sales support agent powers an internal sales support automation flow that ensures Account Executives follow up on time, maintain CRM hygiene in ClickUp, and do not let opportunities go stale.
 
-This is currently a single-service, single-file FastAPI project. Treat it as an integration-heavy operational tool, not a generic starter API.
+## Product Priorities
+
+1. Reliability over cleverness
+2. Clear auditability of automated actions
+3. CRM hygiene and data completeness
+4. Actionable notifications for the AE
+5. Modular integrations and simple deployment
 
 ## Current File Structure
 
-At the time of writing, the project is intentionally small:
-
-- `main.py`: FastAPI app entrypoint and all lead-build logic
-- `requirements.txt`: Python dependencies
-- `README.md`: local setup and usage instructions
+- `main.py`: original single-file lead-scraper FastAPI app
+- `sales_support_agent/`: modular sales support agent app
+- `requirements.txt`: shared Python dependencies
+- `README.md`: repo-level instructions
+- `sales_support_agent/README.md`: sales support agent setup and architecture
 - `AGENTS.md`: guidance for future coding agents
-
-Do not assume additional architecture exists. Inspect the repository before proposing abstractions.
 
 ## How To Run The API
 
@@ -38,26 +38,40 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Current routes:
+Lead-scraper routes:
 
 - `GET /`
 - `GET /health`
 - `POST /run-lead-build`
 
+Sales support agent:
+
+```bash
+cd /Users/davidnarayan/Documents/Playground/Lead-scraper
+uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
+```
+
 ## Required Environment Variables
 
-These variables are required for the service to function:
+Lead-scraper required variables:
 
 - `STORELEADS_API_KEY`
 - `APOLLO_API_KEY`
 - `SLACK_BOT_TOKEN`
 - `SLACK_CHANNEL_ID`
 
-Optional:
+Sales support agent required variables:
+
+- `CLICKUP_API_TOKEN`
+- `CLICKUP_LIST_ID`
+
+Common optional variables:
 
 - `INSTANTLY_CAMPAIGN_ID`
+- `SALES_AGENT_INTERNAL_API_KEY`
+- `SLACK_AE_MAP_JSON`
 
-The application is expected to fail clearly when required variables are missing.
+Each app should fail clearly when its own required variables are missing.
 
 ## Change Guardrails
 
@@ -72,7 +86,28 @@ That includes:
 - Slack upload and summary behavior
 - route paths and response behavior
 
-If you refactor code, the default expectation is behavior-preserving cleanup only.
+For the sales support agent:
+
+- Use Python and FastAPI
+- Prefer deterministic business rules for follow-up logic
+- Use AI only for summarization and recommendation layers
+- Keep integrations isolated behind service classes
+- Log all external writes
+- Never silently update CRM records without an audit trail
+- Add docstrings and type hints
+- Keep env vars in `.env`
+- Use background jobs or scheduled triggers for recurring checks
+- Do not introduce unnecessary framework complexity
+
+## Business Logic
+
+- ClickUp is the source of truth for lead records and statuses
+- The agent works only on existing ClickUp tasks after they are created upstream
+- “Meaningful touch” includes outbound email, inbound email, completed call, completed meeting, or logged note
+- “Follow-up due” means no meaningful touch within the configured status threshold
+- “Overdue” means the lead has passed the due threshold and still lacks the next step
+- Slack alerts should include owner, lead name, current status, last touch, and recommended next action
+- Exclude `LOST`, `LOST - NOT QUALIFIED`, and `WON - CANCELED` from follow-up enforcement
 
 ## Refactor Guidance
 
@@ -82,8 +117,16 @@ Preferred approach:
 
 1. Keep changes small and easy to review.
 2. Preserve endpoint contracts and output behavior unless explicitly asked otherwise.
-3. Avoid splitting into multiple files unless the user explicitly asks for it.
+3. Do not refactor the lead-scraper into the sales support app unless explicitly asked.
 4. Verify syntax and affected behavior after edits.
 5. Document new operational behavior in `README.md` when relevant.
 
-Do not introduce large architectural changes speculatively. This repo is still in an early, compact form.
+## Expected Outputs
+
+When making changes:
+
+1. Explain assumptions
+2. List affected files
+3. Implement cleanly
+4. Provide validation steps
+5. Suggest next phase improvements

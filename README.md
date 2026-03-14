@@ -1,8 +1,15 @@
-# Lead Scraper Service
+# Lead Scraper Repo
 
-This project is a single-file FastAPI service that builds outbound lead lists for ecommerce brands.
+This repo now contains two FastAPI services:
 
-The service:
+- the original lead-scraper service in [`main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/main.py)
+- the new post-creation ClickUp sales support agent in [`sales_support_agent/main.py`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/main.py)
+
+## Lead Scraper Service
+
+The original service builds outbound lead lists for ecommerce brands.
+
+It:
 
 - queries StoreLeads for domains that match a fixed ICP
 - enriches those domains with contact data from Apollo
@@ -48,8 +55,9 @@ If any required variables are missing, the app fails clearly at startup.
 
 ## Project Structure
 
-- `main.py`: FastAPI application entrypoint and all service logic
-- `requirements.txt`: Python dependencies
+- `main.py`: original lead-scraper FastAPI application entrypoint and all service logic
+- `sales_support_agent/`: modular ClickUp sales support agent
+- `requirements.txt`: shared Python dependencies
 
 ## Run Locally
 
@@ -234,5 +242,18 @@ Set this GitHub Actions secret exactly:
 ```txt
 LEAD_BUILD_URL=https://lead-scraper-jb3u.onrender.com
 ```
+
+## Sales Support Agent
+
+The sales support agent works only after a lead already exists in ClickUp. It monitors existing lead tasks, tracks meaningful touches, updates existing follow-up fields when available, logs append-only task comments, and reminds the assigned AE when a lead is untouched or stale.
+
+Run it separately:
+
+```bash
+cd /Users/davidnarayan/Documents/Playground/Lead-scraper
+uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
+```
+
+See the dedicated setup and system diagram in [`sales_support_agent/README.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/README.md).
 
 No quotes, no trailing slash, and no extra spaces.

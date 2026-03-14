@@ -1,0 +1,63 @@
+name: Sales Support Stale Scan
+
+on:
+  schedule:
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: sales-support-stale-scan
+  cancel-in-progress: false
+
+jobs:
+  run-stale-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Validate configuration
+        env:
+          SALES_SUPPORT_AGENT_URL: ${{ secrets.SALES_SUPPORT_AGENT_URL }}
+          SALES_AGENT_INTERNAL_API_KEY: ${{ secrets.SALES_AGENT_INTERNAL_API_KEY }}
+        run: |
+          CLEAN_URL=$(printf '%s' "$SALES_SUPPORT_AGENT_URL" | tr -d '\r\n' | sed 's/^["'\'']//; s/["'\'']$//' | sed 's:/*$::')
+
+          if [ -z "$CLEAN_URL" ]; then
+            echo "SALES_SUPPORT_AGENT_URL secret is required."
+            exit 1
+          fi
+
+          if [ -z "$SALES_AGENT_INTERNAL_API_KEY" ]; then
+            echo "SALES_AGENT_INTERNAL_API_KEY secret is required."
+            exit 1
+          fi
+
+          case "$CLEAN_URL" in
+            http://*|https://*)
+              ;;
+            *)
+              echo "SALES_SUPPORT_AGENT_URL must start with http:// or https://"
+              exit 1
+              ;;
+          esac
+
+      - name: Trigger stale lead scan
+        env:
+          SALES_SUPPORT_AGENT_URL: ${{ secrets.SALES_SUPPORT_AGENT_URL }}
+          SALES_AGENT_INTERNAL_API_KEY: ${{ secrets.SALES_AGENT_INTERNAL_API_KEY }}
+        run: |
+          BASE_URL=$(printf '%s' "$SALES_SUPPORT_AGENT_URL" | tr -d '\r\n' | sed 's/^["'\'']//; s/["'\'']$//' | sed 's:/*$::')
+
+          HTTP_STATUS=$(curl -sS \
+            -o response.json \
+            -w "%{http_code}" \
+            -X POST "${BASE_URL}/api/jobs/stale-leads/run" \
+            -H "Content-Type: application/json" \
+            -H "X-Internal-Api-Key: ${SALES_AGENT_INTERNAL_API_KEY}" \
+            -d '{"dry_run":false}')
+
+          cat response.json
+
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "Stale lead scan failed with HTTP status $HTTP_STATUS"
+            exit 1
+          fi
