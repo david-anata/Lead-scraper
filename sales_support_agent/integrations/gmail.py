@@ -77,7 +77,10 @@ class GmailClient:
             json=json_body,
             timeout=30,
         )
-        response.raise_for_status()
+        if not response.ok:
+            raise RuntimeError(
+                f"Gmail API request failed ({response.status_code}) for {path}: {response.text}"
+            )
         if not response.content:
             return {}
         return response.json()
@@ -95,7 +98,10 @@ class GmailClient:
             },
             timeout=30,
         )
-        response.raise_for_status()
+        if not response.ok:
+            raise RuntimeError(
+                f"Gmail token refresh failed ({response.status_code}): {response.text}"
+            )
         payload = response.json()
         access_token = str(payload.get("access_token") or "").strip()
         if not access_token:
