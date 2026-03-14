@@ -57,6 +57,35 @@ class CommunicationEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class MailboxSignal(Base):
+    __tablename__ = "mailbox_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(64), default="gmail", index=True)
+    external_message_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    external_thread_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    matched_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    sender_name: Mapped[str] = mapped_column(String(255), default="")
+    sender_email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    sender_domain: Mapped[str] = mapped_column(String(255), default="", index=True)
+    subject: Mapped[str] = mapped_column(Text, default="")
+    snippet: Mapped[str] = mapped_column(Text, default="")
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    classification: Mapped[str] = mapped_column(String(64), default="", index=True)
+    urgency: Mapped[str] = mapped_column(String(64), default="follow_up_due", index=True)
+    owner_id: Mapped[str] = mapped_column(String(64), default="")
+    owner_name: Mapped[str] = mapped_column(String(255), default="")
+    task_name: Mapped[str] = mapped_column(String(255), default="")
+    task_url: Mapped[str] = mapped_column(String(1024), default="")
+    task_status: Mapped[str] = mapped_column(String(128), default="")
+    action_summary: Mapped[str] = mapped_column(Text, default="")
+    suggested_reply_draft: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class AutomationRun(Base):
     __tablename__ = "automation_runs"
 

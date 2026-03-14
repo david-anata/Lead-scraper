@@ -121,6 +121,29 @@ def build_recommended_next_action(payload: dict[str, Any]) -> str:
     return "Review the Instantly activity and update ClickUp if needed."
 
 
+def build_suggested_reply_draft(payload: dict[str, Any]) -> str:
+    event_type = str(payload.get("event_type") or "")
+    if event_type == "reply_received":
+        return (
+            "Thanks for the reply. I appreciate the update and would love to keep this moving. "
+            "Let me know the best next step and I’ll take care of it."
+        )
+    if event_type == "lead_interested":
+        return (
+            "Thanks for the interest. I’d be happy to walk you through the next step and share the right details. "
+            "What timing works best on your side?"
+        )
+    if event_type == "lead_meeting_booked":
+        return (
+            "Thanks for booking time. I’m looking forward to the conversation and will come prepared with the right context."
+        )
+    if event_type == "lead_meeting_completed":
+        return (
+            "Thanks again for the conversation. I’m summarizing the next steps and will follow up with exactly what we discussed."
+        )
+    return ""
+
+
 def build_suggested_status(payload: dict[str, Any]) -> str:
     event_type = str(payload.get("event_type") or "")
     if event_type == "lead_interested":
@@ -138,4 +161,3 @@ def build_next_follow_up_date(payload: dict[str, Any]) -> date | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
     except ValueError:
         return None
-

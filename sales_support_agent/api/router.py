@@ -6,13 +6,18 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from sales_support_agent.config import get_missing_runtime_settings
 from sales_support_agent.integrations.clickup import ClickUpClient
+from sales_support_agent.integrations.gmail import GmailClient
 from sales_support_agent.integrations.slack import SlackClient
+from sales_support_agent.jobs.daily_digest import DailyDigestJob
+from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
 from sales_support_agent.jobs.stale_leads import StaleLeadJob
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.schemas import (
     ApiMessage,
     CommunicationEventRequest,
+    DailyDigestRunRequest,
     DiscoveryRequest,
+    GmailSyncRequest,
     StaleLeadRunRequest,
     SyncRequest,
 )
@@ -121,6 +126,52 @@ def run_stale_lead_job(
             max_tasks=payload.max_tasks,
         )
     return ApiMessage(status="ok", message="Stale lead scan completed.", details=result)
+
+
+@router.post("/api/jobs/gmail-sync/run", response_model=ApiMessage)
+def run_gmail_sync_job(
+    payload: GmailSyncRequest,
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> ApiMessage:
+    _enforce_api_key(request, x_internal_api_key)
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        result = GmailMailboxSyncJob(
+            settings,
+            ClickUpClient(settings),
+            SlackClient(settings),
+            GmailClient(settings),
+            session,
+        ).run(
+            dry_run=payload.dry_run,
+            query=payload.query or None,
+            max_messages=payload.max_messages,
+        )
+    return ApiMessage(status="ok", message="Gmail mailbox sync completed.", details=result)
+
+
+@router.post("/api/jobs/daily-digest/run", response_model=ApiMessage)
+def run_daily_digest_job(
+    payload: DailyDigestRunRequest,
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> ApiMessage:
+    _enforce_api_key(request, x_internal_api_key)
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        result = DailyDigestJob(
+            settings,
+            ClickUpClient(settings),
+            GmailClient(settings),
+            session,
+        ).run(
+            as_of_date=payload.as_of_date,
+            include_stale=payload.include_stale,
+            include_mailbox=payload.include_mailbox,
+            max_items=payload.max_items,
+        )
+    return ApiMessage(status="ok", message="Daily digest completed.", details=result)
 
 
 @router.post("/api/communications/events", response_model=ApiMessage)

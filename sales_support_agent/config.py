@@ -72,10 +72,25 @@ class Settings:
     stale_lead_slack_digest_mention_channel: bool
     stale_lead_slack_digest_max_items: int
     stale_lead_immediate_alert_urgencies: tuple[str, ...]
+    daily_digest_enabled: bool
+    daily_digest_email_to: tuple[str, ...]
+    daily_digest_email_cc: tuple[str, ...]
+    daily_digest_subject_prefix: str
+    daily_digest_max_items: int
     slack_bot_token: str
     slack_channel_id: str
     slack_assignee_map: dict[str, str]
     slack_immediate_event_types: tuple[str, ...]
+    gmail_api_base_url: str
+    gmail_oauth_token_url: str
+    gmail_access_token: str
+    gmail_client_id: str
+    gmail_client_secret: str
+    gmail_refresh_token: str
+    gmail_user_id: str
+    gmail_poll_query: str
+    gmail_poll_max_messages: int
+    gmail_source_domains: tuple[str, ...]
     sales_agent_db_url: str
     internal_api_key: str
     discovery_snapshot_path: Path
@@ -138,16 +153,21 @@ def load_settings() -> Settings:
         clickup_discovery_sample_size=int((os.getenv("CLICKUP_DISCOVERY_SAMPLE_SIZE", "10") or "10").strip()),
         stale_lead_scan_max_tasks=int((os.getenv("STALE_LEAD_SCAN_MAX_TASKS", "50") or "50").strip()),
         stale_lead_scan_sync_max_tasks=int((os.getenv("STALE_LEAD_SCAN_SYNC_MAX_TASKS", "100") or "100").strip()),
-        stale_lead_slack_digest_enabled=_parse_bool(os.getenv("STALE_LEAD_SLACK_DIGEST_ENABLED", "true"), default=True),
+        stale_lead_slack_digest_enabled=_parse_bool(os.getenv("STALE_LEAD_SLACK_DIGEST_ENABLED", "false"), default=False),
         stale_lead_slack_digest_mention_channel=_parse_bool(
-            os.getenv("STALE_LEAD_SLACK_DIGEST_MENTION_CHANNEL", "true"),
-            default=True,
+            os.getenv("STALE_LEAD_SLACK_DIGEST_MENTION_CHANNEL", "false"),
+            default=False,
         ),
         stale_lead_slack_digest_max_items=int((os.getenv("STALE_LEAD_SLACK_DIGEST_MAX_ITEMS", "20") or "20").strip()),
         stale_lead_immediate_alert_urgencies=_parse_csv_tuple(
-            os.getenv("STALE_LEAD_IMMEDIATE_ALERT_URGENCIES", "overdue"),
-            default=("overdue",),
+            os.getenv("STALE_LEAD_IMMEDIATE_ALERT_URGENCIES", ""),
+            default=(),
         ),
+        daily_digest_enabled=_parse_bool(os.getenv("DAILY_DIGEST_ENABLED", "true"), default=True),
+        daily_digest_email_to=_parse_csv_tuple(os.getenv("DAILY_DIGEST_EMAIL_TO", ""), default=()),
+        daily_digest_email_cc=_parse_csv_tuple(os.getenv("DAILY_DIGEST_EMAIL_CC", ""), default=()),
+        daily_digest_subject_prefix=os.getenv("DAILY_DIGEST_SUBJECT_PREFIX", "[SDR Support]").strip() or "[SDR Support]",
+        daily_digest_max_items=int((os.getenv("DAILY_DIGEST_MAX_ITEMS", "25") or "25").strip()),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip(),
         slack_assignee_map=_parse_json_object(os.getenv("SLACK_AE_MAP_JSON", "{}")),
@@ -155,6 +175,16 @@ def load_settings() -> Settings:
             os.getenv("SLACK_IMMEDIATE_EVENT_TYPES", "inbound_reply_received,meeting_notes_missing"),
             default=("inbound_reply_received", "meeting_notes_missing"),
         ),
+        gmail_api_base_url=os.getenv("GMAIL_API_BASE_URL", "https://gmail.googleapis.com/gmail/v1").strip() or "https://gmail.googleapis.com/gmail/v1",
+        gmail_oauth_token_url=os.getenv("GMAIL_OAUTH_TOKEN_URL", "https://oauth2.googleapis.com/token").strip() or "https://oauth2.googleapis.com/token",
+        gmail_access_token=os.getenv("GMAIL_ACCESS_TOKEN", "").strip(),
+        gmail_client_id=os.getenv("GMAIL_CLIENT_ID", "").strip(),
+        gmail_client_secret=os.getenv("GMAIL_CLIENT_SECRET", "").strip(),
+        gmail_refresh_token=os.getenv("GMAIL_REFRESH_TOKEN", "").strip(),
+        gmail_user_id=os.getenv("GMAIL_USER_ID", "me").strip() or "me",
+        gmail_poll_query=os.getenv("GMAIL_POLL_QUERY", "newer_than:2d").strip() or "newer_than:2d",
+        gmail_poll_max_messages=int((os.getenv("GMAIL_POLL_MAX_MESSAGES", "25") or "25").strip()),
+        gmail_source_domains=_parse_csv_tuple(os.getenv("GMAIL_SOURCE_DOMAINS", "fulfil.com"), default=("fulfil.com",)),
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
         discovery_snapshot_path=Path(

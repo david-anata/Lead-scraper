@@ -7,6 +7,7 @@ from sales_support_agent.integrations.instantly_payloads import (
     build_external_event_key,
     build_next_follow_up_date,
     build_recommended_next_action,
+    build_suggested_reply_draft,
     build_summary,
     extract_email,
 )
@@ -45,6 +46,10 @@ class InstantlyWebhookHelperTests(unittest.TestCase):
     def test_recommended_next_action_for_not_interested_is_review_based(self) -> None:
         payload = {"event_type": "lead_not_interested"}
         self.assertIn("closed status", build_recommended_next_action(payload))
+
+    def test_build_suggested_reply_draft_for_reply_received_is_non_empty(self) -> None:
+        payload = {"event_type": "reply_received"}
+        self.assertIn("Thanks for the reply", build_suggested_reply_draft(payload))
 
 
 if __name__ == "__main__":

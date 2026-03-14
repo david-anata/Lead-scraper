@@ -20,6 +20,7 @@ from sales_support_agent.services.field_mapping import (
     serialize_clickup_date,
 )
 from sales_support_agent.services.notification_policy import build_clickup_owner_reference
+from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
 from sales_support_agent.services.sync import ClickUpSyncService
 
 
@@ -196,18 +197,22 @@ class CommunicationService:
         assignee = (task.get("assignees") or [{}])[0] or {}
         assignee_name = str(assignee.get("username") or assignee.get("email") or "")
         owner_reference = build_clickup_owner_reference(assignee_name)
+        classification = str(payload.metadata.get("classification") or payload.event_type)
         parts = [
             f"[Sales Support Agent] {owner_reference} {EVENT_LABELS[payload.event_type].lower()}.",
-            f"Occurred at: {occurred_at.isoformat()}",
+            f"Date: {format_date_label(occurred_at)}",
         ]
         if payload.summary:
-            parts.append(f"Why it matters: {payload.summary}")
+            parts.append(f"Action summary: {payload.summary}")
         if payload.outcome:
             parts.append(f"Outcome: {payload.outcome}")
         if payload.recommended_next_action:
             parts.append(f"Next step: {payload.recommended_next_action}")
+        if payload.suggested_reply_draft:
+            parts.append(f"Suggested reply: {payload.suggested_reply_draft}")
         if payload.suggested_status:
             parts.append(f"Suggested status: {payload.suggested_status}")
+        parts.append(f"Classification: {classification}")
         return "\n".join(parts)
 
     def _notify_reply_received(self, task: dict[str, Any], payload: CommunicationEventRequest, occurred_at: datetime) -> dict[str, Any]:
@@ -216,10 +221,14 @@ class CommunicationService:
         assignee_name = str(assignee.get("username") or assignee.get("email") or "Assigned AE")
         slack_user = self.settings.slack_assignee_map.get(assignee_id) or self.settings.slack_assignee_map.get(assignee_name)
         mention = f"<@{slack_user}>" if slack_user else assignee_name
+        date_label = format_date_label(occurred_at)
+        action_summary = payload.summary or payload.recommended_next_action or "Lead activity needs review."
+        draft = trim_for_slack(payload.suggested_reply_draft or "", limit=140)
         text = (
-            f"{mention} reply received for {task.get('name', 'Lead')} "
-            f"({((task.get('status') or {}).get('status')) or 'Unknown'}). "
-            f"Next step: {payload.recommended_next_action or 'Review and respond.'} "
+            f"{mention} {date_label} | {task.get('name', 'Lead')} | "
+            f"{trim_for_slack(action_summary, limit=140)} | "
+            f"next: {payload.recommended_next_action or 'Review and respond.'}"
+            f"{f' | draft: {draft}' if draft else ''} "
             f"{task.get('url', '')}"
         )
         return self.slack_client.post_message(text=text)
@@ -231,7 +240,7 @@ class CommunicationService:
         slack_user = self.settings.slack_assignee_map.get(assignee_id) or self.settings.slack_assignee_map.get(assignee_name)
         mention = f"<@{slack_user}>" if slack_user else assignee_name
         text = (
-            f"{mention} meeting completed for {task.get('name', 'Lead')} but notes are still missing. "
+            f"{mention} {format_date_label(datetime.now(timezone.utc))} | {task.get('name', 'Lead')} | meeting notes still missing. "
             f"Next step: log the meeting outcome and next follow-up in ClickUp. {task.get('url', '')}"
         )
         return self.slack_client.post_message(text=text)

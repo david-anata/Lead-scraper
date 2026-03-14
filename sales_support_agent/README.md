@@ -1,6 +1,6 @@
 # Sales Support Agent
 
-This FastAPI app handles post-creation sales support inside your existing ClickUp CRM workflow. It does not create new leads. It starts after the ClickUp task already exists and focuses on follow-through, stale-lead prevention, append-only activity logging, and AE reminders.
+This FastAPI app handles post-creation sales support inside your existing ClickUp CRM workflow. It does not create new leads in the normal flow. It starts after the ClickUp task already exists and focuses on follow-through, stale-lead prevention, append-only activity logging, owner-directed reminders, daily digests, and mailbox-based signal intake.
 
 ## What Phase 1 Includes
 
@@ -8,8 +8,10 @@ This FastAPI app handles post-creation sales support inside your existing ClickU
 - Local mirror of ClickUp lead tasks for auditability and rule evaluation
 - Manual communication event ingest for outbound, inbound, call, meeting, offer, and note events
 - Native Instantly webhook ingest for email, reply, and meeting events
-- Status-aware stale-lead scanning for your current ClickUp statuses
-- Slack reminders to the assigned AE with dedupe
+- Gmail mailbox polling for reply and lead-source signal intake
+- Status-aware stale-lead scanning for active `new`, `contacted`, and `working` statuses
+- Concise Slack alerts for high-signal events only
+- Daily SDR email digest with grouped action items and draft replies
 - SQLite-backed audit logs for every automation run and external write
 
 ## Folder Structure
@@ -55,6 +57,21 @@ Operational:
 - `STALE_LEAD_SLACK_DIGEST_MAX_ITEMS`
 - `STALE_LEAD_IMMEDIATE_ALERT_URGENCIES`
 - `SLACK_IMMEDIATE_EVENT_TYPES`
+- `DAILY_DIGEST_ENABLED`
+- `DAILY_DIGEST_EMAIL_TO`
+- `DAILY_DIGEST_EMAIL_CC`
+- `DAILY_DIGEST_SUBJECT_PREFIX`
+- `DAILY_DIGEST_MAX_ITEMS`
+- `GMAIL_API_BASE_URL`
+- `GMAIL_OAUTH_TOKEN_URL`
+- `GMAIL_ACCESS_TOKEN`
+- `GMAIL_CLIENT_ID`
+- `GMAIL_CLIENT_SECRET`
+- `GMAIL_REFRESH_TOKEN`
+- `GMAIL_USER_ID`
+- `GMAIL_POLL_QUERY`
+- `GMAIL_POLL_MAX_MESSAGES`
+- `GMAIL_SOURCE_DOMAINS`
 - `INSTANTLY_WEBHOOK_SECRET`
 - `INSTANTLY_WEBHOOK_SECRET_HEADER`
 
@@ -94,6 +111,8 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `POST /api/discovery/clickup-schema`
 - `POST /api/clickup/sync`
 - `POST /api/jobs/stale-leads/run`
+- `POST /api/jobs/gmail-sync/run`
+- `POST /api/jobs/daily-digest/run`
 - `POST /api/communications/events`
 - `POST /api/integrations/instantly/webhook`
 
@@ -117,6 +136,24 @@ curl -X POST http://127.0.0.1:8010/api/jobs/stale-leads/run \
   -H "Content-Type: application/json" \
   -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
   -d '{"dry_run": true}'
+```
+
+Gmail mailbox sync:
+
+```bash
+curl -X POST http://127.0.0.1:8010/api/jobs/gmail-sync/run \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+  -d '{"dry_run": true, "max_messages": 10}'
+```
+
+Daily digest:
+
+```bash
+curl -X POST http://127.0.0.1:8010/api/jobs/daily-digest/run \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+  -d '{"include_stale": true, "include_mailbox": true}'
 ```
 
 Communication event:
@@ -154,18 +191,20 @@ flowchart LR
     ClickUp["ClickUp CRM List"] --> Sync["ClickUp Sync Service"]
     Sync --> Mirror["SQLite Mirror + Audit DB"]
     Instantly["Instantly Webhooks"] --> Updates["Activity Update Service"]
+    Gmail["Gmail Mailbox Polling"] --> Updates
     Events["Manual Communication Event API"] --> Updates
     Updates --> ClickUp
     Updates --> Mirror
     Mirror --> Rules["Status + Meaningful-Touch Rules"]
     Rules --> Job["Stale Lead Job"]
-    Job --> Slack["Slack AE Alerts"]
+    Job --> Slack["Urgent Slack Alerts"]
+    Job --> Digest["Daily Email Digest"]
     Job --> ClickUp
 ```
 
 ## Active Status Logic
 
-- Active enforcement: `CONTACTED COLD`, `CONTACTED WARM`, `WORKING QUALIFIED`, `WORKING NEEDS OFFER`, `WORKING OFFERED`, `WORKING NEGOTIATING`, `FOLLOW UP`
+- Active enforcement: `NEW LEAD`, `CONTACTED COLD`, `CONTACTED WARM`, `WORKING QUALIFIED`, `WORKING NEEDS OFFER`, `WORKING OFFERED`, `WORKING NEGOTIATING`
 - Excluded from enforcement: `WON - ACTIVE`, `LOST`, `LOST - NOT QUALIFIED`, `WON - CANCELED`
 
 ## Notes
@@ -174,6 +213,7 @@ flowchart LR
 - The local database exists only for audit logs, dedupe, and automation memory.
 - Phase 1 uses Monday-Friday business-day logic and does not implement holiday calendars.
 - Instantly can push conversation events directly into the native webhook endpoint.
+- Gmail polling is safe-triage-first: unmatched emails are surfaced in the daily digest and are not auto-created as leads.
 
 ## Team SOP
 

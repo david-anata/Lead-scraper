@@ -15,6 +15,7 @@ from sales_support_agent.integrations.instantly_payloads import (
     build_next_follow_up_date,
     build_outcome,
     build_recommended_next_action,
+    build_suggested_reply_draft,
     build_summary,
     build_suggested_status,
     extract_email,
@@ -96,10 +97,11 @@ class InstantlyWebhookService:
             summary=build_summary(payload),
             outcome=build_outcome(payload),
             recommended_next_action=build_recommended_next_action(payload),
+            suggested_reply_draft=build_suggested_reply_draft(payload),
             next_follow_up_date=build_next_follow_up_date(payload),
             suggested_status=build_suggested_status(payload),
             source="instantly_webhook",
-            metadata={"raw_payload": payload},
+            metadata={"raw_payload": payload, "classification": "reply_received" if str(payload.get("event_type") or "") == "reply_received" else "instantly_activity"},
         )
 
 

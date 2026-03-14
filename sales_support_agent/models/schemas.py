@@ -33,6 +33,19 @@ class StaleLeadRunRequest(BaseModel):
     max_tasks: int | None = Field(default=None, ge=1, le=1000)
 
 
+class GmailSyncRequest(BaseModel):
+    dry_run: bool = False
+    query: str = ""
+    max_messages: int | None = Field(default=None, ge=1, le=250)
+
+
+class DailyDigestRunRequest(BaseModel):
+    as_of_date: date | None = None
+    include_stale: bool = True
+    include_mailbox: bool = True
+    max_items: int | None = Field(default=None, ge=1, le=250)
+
+
 class CommunicationEventRequest(BaseModel):
     task_id: str = Field(min_length=1)
     event_type: CommunicationEventType
@@ -41,6 +54,7 @@ class CommunicationEventRequest(BaseModel):
     summary: str = ""
     outcome: str = ""
     recommended_next_action: str = ""
+    suggested_reply_draft: str = ""
     next_follow_up_date: date | None = None
     suggested_status: str = ""
     source: str = "manual"

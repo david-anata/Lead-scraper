@@ -29,6 +29,23 @@ class LeadMatchingService:
         ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(include_closed=True)
         return self._query_by_email(normalized_email)
 
+    def find_by_candidate_emails(self, emails: tuple[str, ...], *, sync_on_miss: bool = True) -> LeadMirror | None:
+        candidates = tuple(email.strip().lower() for email in emails if email and email.strip())
+        for candidate in candidates:
+            match = self._query_by_email(candidate)
+            if match is not None:
+                return match
+
+        if not candidates or not sync_on_miss:
+            return None
+
+        ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(include_closed=True)
+        for candidate in candidates:
+            match = self._query_by_email(candidate)
+            if match is not None:
+                return match
+        return None
+
     def _query_by_email(self, email: str) -> LeadMirror | None:
         query = (
             select(LeadMirror)
@@ -37,4 +54,3 @@ class LeadMatchingService:
             .limit(1)
         )
         return self.session.execute(query).scalar_one_or_none()
-

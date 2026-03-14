@@ -20,6 +20,12 @@ from sales_support_agent.services.notification_policy import (
     build_clickup_owner_reference,
     determine_stale_notification_mode,
 )
+from sales_support_agent.services.reply_templates import (
+    build_stale_action_summary,
+    build_stale_reply_draft,
+    format_date_label,
+    trim_for_slack,
+)
 
 
 AGENT_COMMENT_PREFIX = "[Sales Support Agent]"
@@ -41,6 +47,8 @@ class StaleDigestItem:
     owner_label: str
     owner_display: str
     last_touch_label: str
+    action_summary: str
+    suggested_reply_draft: str
     notification_mode: str
 
 
@@ -95,9 +103,22 @@ class ReminderService:
         mention = self._format_assignee_mention(lead.assignee_id, lead.assignee_name)
         urgency_label = self._urgency_label(evaluation)
         last_touch = self._last_touch_label(evaluation.last_meaningful_touch_at)
+        action_summary = build_stale_action_summary(
+            task_name=lead.task_name,
+            status=lead.status,
+            last_touch_label=last_touch,
+            next_step=evaluation.assessment.recommended_next_action,
+            urgency_label=urgency_label,
+        )
+        suggested_reply = build_stale_reply_draft(
+            task_name=lead.task_name,
+            status=lead.status,
+            next_step=evaluation.assessment.recommended_next_action,
+            as_of_date=evaluation.assessment.anchor_date,
+        )
         text = (
-            f"{mention} {urgency_label}: {lead.task_name} ({lead.status}). "
-            f"Last touch: {last_touch}. Next step: {evaluation.assessment.recommended_next_action} {lead.task_url}"
+            f"{mention} {format_date_label(evaluation.assessment.anchor_date)} | {lead.task_name} | "
+            f"{trim_for_slack(action_summary)} | draft: {trim_for_slack(suggested_reply)} {lead.task_url}"
         )
         blocks = [
             {
@@ -106,10 +127,11 @@ class ReminderService:
                     "type": "mrkdwn",
                     "text": (
                         f"{mention} *{urgency_label}: {lead.task_name}*\n"
+                        f"*Date:* {format_date_label(evaluation.assessment.anchor_date)}\n"
                         f"*Status:* {lead.status}\n"
                         f"*Last meaningful touch:* {last_touch}\n"
-                        f"*Why this matters:* {evaluation.assessment.reason}\n"
-                        f"*Next step:* {evaluation.assessment.recommended_next_action}\n"
+                        f"*Action summary:* {action_summary}\n"
+                        f"*Suggested reply:* {suggested_reply}\n"
                         f"<{lead.task_url}|Open ClickUp task>"
                     ),
                 },
@@ -127,6 +149,19 @@ class ReminderService:
             owner_label=evaluation.lead.assignee_name or "Assigned AE",
             owner_display=owner_display,
             last_touch_label=self._last_touch_label(evaluation.last_meaningful_touch_at),
+            action_summary=build_stale_action_summary(
+                task_name=evaluation.lead.task_name,
+                status=evaluation.lead.status,
+                last_touch_label=self._last_touch_label(evaluation.last_meaningful_touch_at),
+                next_step=evaluation.assessment.recommended_next_action,
+                urgency_label=STALE_URGENCY_LABELS[urgency],
+            ),
+            suggested_reply_draft=build_stale_reply_draft(
+                task_name=evaluation.lead.task_name,
+                status=evaluation.lead.status,
+                next_step=evaluation.assessment.recommended_next_action,
+                as_of_date=evaluation.assessment.anchor_date,
+            ),
             notification_mode=determine_stale_notification_mode(urgency, self.settings.stale_lead_immediate_alert_urgencies),
         )
 
@@ -185,7 +220,8 @@ class ReminderService:
             lines = [
                 (
                     f"- {item.owner_display} | *{item.evaluation.lead.task_name}* | {item.evaluation.lead.status} | "
-                    f"last touch {item.last_touch_label} | next step: {item.evaluation.assessment.recommended_next_action} "
+                    f"{format_date_label(item.evaluation.assessment.anchor_date)} | {item.action_summary} | "
+                    f"draft: {trim_for_slack(item.suggested_reply_draft, limit=120)} "
                     f"<{item.evaluation.lead.task_url}|Open>"
                 )
                 for item in urgency_items
@@ -218,9 +254,11 @@ class ReminderService:
         urgency_label = self._urgency_label(evaluation)
         return (
             f"{AGENT_COMMENT_PREFIX} {owner_reference} {urgency_label.lower()} for this lead.\n"
+            f"Date: {format_date_label(evaluation.assessment.anchor_date)}\n"
             f"Why it matters: {evaluation.assessment.reason}\n"
             f"Last meaningful touch: {last_touch}\n"
-            f"Next step: {evaluation.assessment.recommended_next_action}"
+            f"Next step: {evaluation.assessment.recommended_next_action}\n"
+            f"Suggested reply: {build_stale_reply_draft(task_name=evaluation.lead.task_name, status=evaluation.lead.status, next_step=evaluation.assessment.recommended_next_action, as_of_date=evaluation.assessment.anchor_date)}"
         )
 
     def _latest_meaningful_event(self, task_id: str) -> datetime | None:

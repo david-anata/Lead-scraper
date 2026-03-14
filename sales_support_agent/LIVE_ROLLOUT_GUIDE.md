@@ -6,7 +6,7 @@ Launch the sales support agent using the same stack pattern as the current lead 
 
 - GitHub repo for source control
 - Render web service for the FastAPI app
-- Render Cron for scheduled stale-lead scans
+- Render Cron for scheduled stale-lead scans and daily digests
 - GitHub Actions as a backup/manual trigger path
 
 This guide is written as a click-by-click walkthrough for someone setting it up in production.
@@ -16,6 +16,11 @@ This guide is written as a click-by-click walkthrough for someone setting it up 
 The native Instantly webhook endpoint is now implemented at:
 
 - `POST /api/integrations/instantly/webhook`
+
+New internal jobs are also available for rollout:
+
+- `POST /api/jobs/gmail-sync/run`
+- `POST /api/jobs/daily-digest/run`
 
 The remaining work is production setup:
 
@@ -150,11 +155,23 @@ CLICKUP_DISCOVERY_SNAPSHOT_PATH=runtime/clickup_schema_snapshot.json
 CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP=false
 STALE_LEAD_SCAN_MAX_TASKS=50
 STALE_LEAD_SCAN_SYNC_MAX_TASKS=100
-STALE_LEAD_SLACK_DIGEST_ENABLED=true
-STALE_LEAD_SLACK_DIGEST_MENTION_CHANNEL=true
+STALE_LEAD_SLACK_DIGEST_ENABLED=false
+STALE_LEAD_SLACK_DIGEST_MENTION_CHANNEL=false
 STALE_LEAD_SLACK_DIGEST_MAX_ITEMS=20
-STALE_LEAD_IMMEDIATE_ALERT_URGENCIES=overdue
+STALE_LEAD_IMMEDIATE_ALERT_URGENCIES=
 SLACK_IMMEDIATE_EVENT_TYPES=inbound_reply_received,meeting_notes_missing
+DAILY_DIGEST_ENABLED=true
+DAILY_DIGEST_EMAIL_TO=sdr-team@yourcompany.com
+DAILY_DIGEST_EMAIL_CC=
+DAILY_DIGEST_SUBJECT_PREFIX=[SDR Support]
+DAILY_DIGEST_MAX_ITEMS=25
+GMAIL_CLIENT_ID=...
+GMAIL_CLIENT_SECRET=...
+GMAIL_REFRESH_TOKEN=...
+GMAIL_USER_ID=me
+GMAIL_POLL_QUERY=newer_than:2d
+GMAIL_POLL_MAX_MESSAGES=25
+GMAIL_SOURCE_DOMAINS=fulfil.com
 ```
 
 Database choice:
@@ -337,6 +354,8 @@ Where to click:
 
 ## Part 5: Configure Slack
 
+Slack should now be treated as the urgent attention layer, not the full reporting layer.
+
 ### Step 15: Confirm the existing Slack bot token and channel
 
 If you already use Slack with the lead builder, you may be able to reuse the same bot token and channel.
@@ -391,6 +410,75 @@ curl -X POST "https://<sales-support-agent-url>/api/jobs/stale-leads/run" \
   -H "X-Internal-Api-Key: <internal-key>" \
   -d '{"dry_run": false, "max_tasks": 10}'
 ```
+
+Expected behavior:
+
+- routine stale updates should flow into the daily email digest
+- immediate Slack alerts should remain limited to high-signal items like replies and missing meeting notes
+
+## Part 5B: Configure Gmail Polling and Daily Digest
+
+### Step 17A: Create or confirm the shared team digest alias
+
+Recommended:
+
+```env
+DAILY_DIGEST_EMAIL_TO=sdr-team@yourcompany.com
+```
+
+This should be a shared team alias, not an individual inbox.
+
+### Step 17B: Create Gmail API credentials
+
+Use Google Cloud to create OAuth credentials with Gmail API access for the mailbox the agent should poll.
+
+Minimum app env vars:
+
+```env
+GMAIL_CLIENT_ID=...
+GMAIL_CLIENT_SECRET=...
+GMAIL_REFRESH_TOKEN=...
+GMAIL_USER_ID=me
+```
+
+Optional overrides:
+
+```env
+GMAIL_POLL_QUERY=newer_than:2d
+GMAIL_POLL_MAX_MESSAGES=25
+GMAIL_SOURCE_DOMAINS=fulfil.com
+```
+
+### Step 17C: Test Gmail mailbox sync
+
+```bash
+curl -X POST "https://<sales-support-agent-url>/api/jobs/gmail-sync/run" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Api-Key: <internal-key>" \
+  -d '{"dry_run": true, "max_messages": 10}'
+```
+
+Expected behavior:
+
+- matched replies should route into the normal owner-notification flow
+- unmatched lead-source emails should be classified for triage
+- no leads should be auto-created from unmatched mailbox traffic
+
+### Step 17D: Test the daily digest
+
+```bash
+curl -X POST "https://<sales-support-agent-url>/api/jobs/daily-digest/run" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Api-Key: <internal-key>" \
+  -d '{"include_stale": true, "include_mailbox": true}'
+```
+
+Expected behavior:
+
+- one grouped email to the shared team alias
+- grouped by urgency and owner
+- concise action summaries
+- send-ready draft replies for each item
 
 ## Part 6: Configure Instantly
 
