@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings
+from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.integrations.clickup import ClickUpClient
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.models.entities import CommunicationEvent
@@ -182,7 +182,7 @@ class CommunicationService:
         current_status = str(((task.get("status") or {}).get("status")) or "")
         if payload.event_type == "offer_sent":
             return add_business_days(occurred_date, 4)
-        policy = self.settings.status_policies.get(current_status)
+        policy = self.settings.status_policies.get(normalize_status_key(current_status))
         if policy and policy.due_days is not None and not policy.use_follow_up_date:
             return add_business_days(occurred_date, policy.due_days)
         return None

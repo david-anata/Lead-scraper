@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 ACTIVE_FOLLOW_UP_STATUSES = (
+    "new lead",
     "CONTACTED COLD",
     "CONTACTED WARM",
     "WORKING QUALIFIED",
@@ -19,6 +20,7 @@ ACTIVE_FOLLOW_UP_STATUSES = (
 )
 
 INACTIVE_STATUSES = (
+    "WON - ONBOARDING",
     "WON - ACTIVE",
     "LOST",
     "LOST - NOT QUALIFIED",
@@ -35,6 +37,7 @@ class StatusPolicy:
 
 
 DEFAULT_STATUS_POLICIES: dict[str, StatusPolicy] = {
+    "new lead": StatusPolicy(first_action_days=1, due_days=2, overdue_days=3),
     "CONTACTED COLD": StatusPolicy(first_action_days=1, due_days=2, overdue_days=3),
     "CONTACTED WARM": StatusPolicy(first_action_days=1, due_days=1, overdue_days=2),
     "WORKING QUALIFIED": StatusPolicy(due_days=2, overdue_days=3),
@@ -98,6 +101,14 @@ def _parse_json_object(value: str) -> dict[str, str]:
     return {str(key): str(val) for key, val in parsed.items()}
 
 
+def normalize_status_key(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def build_normalized_status_policies(status_policies: dict[str, StatusPolicy]) -> dict[str, StatusPolicy]:
+    return {normalize_status_key(status): policy for status, policy in status_policies.items()}
+
+
 def _default_db_url() -> str:
     runtime_dir = Path("runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +151,15 @@ def load_settings() -> Settings:
             ).split(",")
             if event_type.strip()
         ),
+        active_statuses=tuple(
+            normalize_status_key(status)
+            for status in ACTIVE_FOLLOW_UP_STATUSES
+        ),
+        inactive_statuses=tuple(
+            normalize_status_key(status)
+            for status in INACTIVE_STATUSES
+        ),
+        status_policies=build_normalized_status_policies(DEFAULT_STATUS_POLICIES),
         managed_fields=ManagedFieldSettings(
             next_follow_up_date_field_id=os.getenv("CLICKUP_NEXT_FOLLOW_UP_FIELD_ID", "").strip(),
             communication_summary_field_id=os.getenv("CLICKUP_COMMUNICATION_SUMMARY_FIELD_ID", "").strip(),

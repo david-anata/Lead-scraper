@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings
+from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.models.entities import CommunicationEvent, LeadMirror
 from sales_support_agent.rules.follow_up import FollowUpAssessment, assess_status_follow_up
 
@@ -38,7 +38,8 @@ class ReminderService:
         comments: list[dict[str, Any]] | None = None,
     ) -> LeadEvaluation | None:
         status = (lead.status or "").strip()
-        if status in self.settings.inactive_statuses or status not in self.settings.active_statuses:
+        status_key = normalize_status_key(status)
+        if status_key in self.settings.inactive_statuses or status_key not in self.settings.active_statuses:
             return None
 
         last_event = self._latest_meaningful_event(lead.clickup_task_id)
@@ -48,7 +49,7 @@ class ReminderService:
             last_touch
             or ((lead.next_follow_up_at is not None) and (lead.communication_summary or lead.recommended_next_action))
         )
-        policy = self.settings.status_policies[status]
+        policy = self.settings.status_policies[status_key]
         created_at = lead.created_at or lead.last_sync_at or datetime.utcnow()
         assessment = assess_status_follow_up(
             status=status,
@@ -148,4 +149,3 @@ class ReminderService:
         if slack_user_id:
             return f"<@{slack_user_id}>"
         return assignee_name or "Assigned AE"
-

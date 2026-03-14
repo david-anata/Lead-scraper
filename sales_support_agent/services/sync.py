@@ -22,7 +22,7 @@ VISIBLE_FIELD_NAMES = {
     "source": {"source"},
     "email": {"email"},
     "value": {"value"},
-    "phone_number": {"phone number", "phone"},
+    "phone_number": {"phone number", "phone", "phone #"},
 }
 
 
@@ -114,4 +114,3 @@ class ClickUpSyncService:
         self.session.add(lead)
         self.session.flush()
         return lead
-

@@ -80,7 +80,19 @@ class FollowUpRuleTests(unittest.TestCase):
         self.assertIsNotNone(assessment)
         self.assertEqual(assessment.state, "follow_up_due")
 
+    def test_new_lead_policy_is_present(self) -> None:
+        assessment = assess_status_follow_up(
+            status="new lead",
+            policy=DEFAULT_STATUS_POLICIES["new lead"],
+            created_at=datetime(2026, 3, 13, 9, 0, 0),
+            as_of_date=date(2026, 3, 16),
+            meaningful_touch_at=None,
+            next_follow_up_date=None,
+            has_work_signal=False,
+        )
+        self.assertIsNotNone(assessment)
+        self.assertEqual(assessment.state, "new_and_untouched")
+
 
 if __name__ == "__main__":
     unittest.main()
-
