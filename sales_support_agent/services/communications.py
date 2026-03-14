@@ -74,7 +74,7 @@ class CommunicationService:
             outcome=payload.outcome,
             recommended_next_action=payload.recommended_next_action,
             occurred_at=occurred_at,
-            raw_payload=payload.dict(),
+            raw_payload=payload.model_dump(mode="json"),
         )
         self.session.add(event)
         self.session.flush()
