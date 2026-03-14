@@ -156,25 +156,44 @@ class StaleLeadJob:
         if not dry_run and self.settings.stale_lead_slack_digest_enabled and digest_items:
             digest_dedupe_key = f"stale_lead_digest:{run.id}"
             if not self.audit.has_successful_action(digest_dedupe_key):
-                digest_payload = self.reminders.build_stale_digest_message(digest_items)
-                if digest_payload:
-                    digest_result = self.slack_client.post_message(**digest_payload)
-                    if not digest_result.get("skipped"):
-                        digest_posted = True
-                        alerted += 1
-                        self.audit.record_action(
-                            run_id=run.id,
-                            clickup_task_id="",
-                            system="slack",
-                            action_type="stale_lead_digest",
-                            dedupe_key=digest_dedupe_key,
-                            before={
-                                "digest_items": len(digest_items),
-                                "urgency_counts": urgency_counts,
-                                "assignee_counts": assignee_counts,
-                            },
-                            after=digest_result,
-                        )
+                try:
+                    digest_payload = self.reminders.build_stale_digest_message(digest_items)
+                    if digest_payload:
+                        digest_result = self.slack_client.post_message(**digest_payload)
+                        if not digest_result.get("skipped"):
+                            digest_posted = True
+                            alerted += 1
+                            self.audit.record_action(
+                                run_id=run.id,
+                                clickup_task_id="",
+                                system="slack",
+                                action_type="stale_lead_digest",
+                                dedupe_key=digest_dedupe_key,
+                                before={
+                                    "digest_items": len(digest_items),
+                                    "urgency_counts": urgency_counts,
+                                    "assignee_counts": assignee_counts,
+                                },
+                                after=digest_result,
+                            )
+                except Exception as exc:
+                    failed += 1
+                    logger.exception("stale lead digest notification failed")
+                    self.audit.record_action(
+                        run_id=run.id,
+                        clickup_task_id="",
+                        system="sales_support_agent",
+                        action_type="stale_lead_digest_failed",
+                        dedupe_key=digest_dedupe_key,
+                        success=False,
+                        error_message=str(exc),
+                        before={
+                            "digest_items": len(digest_items),
+                            "urgency_counts": urgency_counts,
+                            "assignee_counts": assignee_counts,
+                        },
+                        after={},
+                    )
 
         self.audit.finish_run(
             run,

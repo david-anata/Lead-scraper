@@ -45,6 +45,9 @@ class StaleDigestItem:
 
 
 class ReminderService:
+    _SLACK_SECTION_TEXT_LIMIT = 2800
+    _SLACK_OWNER_SUMMARY_LIMIT = 8
+
     def __init__(self, settings: Settings, session: Session):
         self.settings = settings
         self.session = session
@@ -155,10 +158,11 @@ class ReminderService:
             for urgency in STALE_URGENCY_ORDER
             if urgency_counts.get(urgency, 0)
         ]
-        owner_summary = ", ".join(
-            f"{owner}: {count}"
-            for owner, count in sorted(assignee_counts.items(), key=lambda item: (-item[1], item[0].lower()))
-        ) or "No owners assigned"
+        ranked_owners = sorted(assignee_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+        visible_owners = ranked_owners[: self._SLACK_OWNER_SUMMARY_LIMIT]
+        owner_summary = ", ".join(f"{owner}: {count}" for owner, count in visible_owners) or "No owners assigned"
+        if len(ranked_owners) > len(visible_owners):
+            owner_summary += f", +{len(ranked_owners) - len(visible_owners)} more"
 
         sections = [
             {
@@ -186,15 +190,16 @@ class ReminderService:
                 )
                 for item in urgency_items
             ]
-            sections.append(
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*{STALE_URGENCY_LABELS[urgency]}*\n" + "\n".join(lines),
-                    },
-                }
-            )
+            for section_text in self._chunk_digest_lines(STALE_URGENCY_LABELS[urgency], lines):
+                sections.append(
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": section_text,
+                        },
+                    }
+                )
 
         if truncated > 0:
             sections.append(
@@ -274,3 +279,17 @@ class ReminderService:
         if slack_user_id:
             return f"<@{slack_user_id}>"
         return assignee_name or "Assigned AE"
+
+    def _chunk_digest_lines(self, heading: str, lines: list[str]) -> list[str]:
+        chunks: list[str] = []
+        current = f"*{heading}*"
+        for line in lines:
+            candidate = f"{current}\n{line}"
+            if len(candidate) > self._SLACK_SECTION_TEXT_LIMIT and current != f"*{heading}*":
+                chunks.append(current)
+                current = f"*{heading}*\n{line}"
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        return chunks
