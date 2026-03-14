@@ -61,6 +61,11 @@ class ManagedFieldSettings:
 @dataclass(frozen=True)
 class Settings:
     app_name: str
+    admin_username: str
+    admin_password: str
+    admin_session_secret: str
+    admin_cookie_name: str
+    admin_session_ttl_hours: int
     clickup_api_token: str
     clickup_base_url: str
     clickup_list_id: str
@@ -146,6 +151,15 @@ def _default_db_url() -> str:
 def load_settings() -> Settings:
     return Settings(
         app_name="sales-support-agent",
+        admin_username=os.getenv("ADMIN_DASHBOARD_USERNAME", "admin").strip() or "admin",
+        admin_password=os.getenv("ADMIN_DASHBOARD_PASSWORD", "").strip(),
+        admin_session_secret=(
+            os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "").strip()
+            or os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip()
+            or "sales-support-agent-session-secret"
+        ),
+        admin_cookie_name=os.getenv("ADMIN_DASHBOARD_COOKIE_NAME", "sales_support_admin_session").strip() or "sales_support_admin_session",
+        admin_session_ttl_hours=int((os.getenv("ADMIN_DASHBOARD_SESSION_TTL_HOURS", "24") or "24").strip()),
         clickup_api_token=(os.getenv("CLICKUP_API_TOKEN") or os.getenv("CLICKUP_API_KEY") or "").strip(),
         clickup_base_url=(os.getenv("CLICKUP_BASE_URL", "https://api.clickup.com/api/v2").strip() or "https://api.clickup.com/api/v2"),
         clickup_list_id=os.getenv("CLICKUP_LIST_ID", "").strip(),

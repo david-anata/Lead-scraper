@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs
+
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+
+from main import (
+    ICPBuildRequest as LeadBuildRequest,
+    execute_lead_build,
+    get_missing_required_settings as get_missing_lead_builder_settings,
+    load_settings as load_lead_builder_settings,
+)
 
 from sales_support_agent.config import get_missing_runtime_settings
 from sales_support_agent.integrations.clickup import ClickUpClient
@@ -22,6 +32,17 @@ from sales_support_agent.models.schemas import (
     SyncRequest,
 )
 from sales_support_agent.services.communications import CommunicationService
+from sales_support_agent.services.admin_auth import (
+    admin_login_enabled,
+    create_admin_session_token,
+    validate_admin_session_token,
+    verify_admin_password,
+)
+from sales_support_agent.services.admin_dashboard import (
+    build_dashboard_data,
+    render_dashboard_page,
+    render_login_page,
+)
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
@@ -43,6 +64,41 @@ def _validate_runtime(request: Request) -> None:
             status_code=500,
             detail=f"Missing required environment variables for sales support agent: {', '.join(missing)}",
         )
+
+
+def _lead_builder_status() -> dict[str, object]:
+    try:
+        lead_settings = load_lead_builder_settings()
+        missing = get_missing_lead_builder_settings(lead_settings)
+        return {"ready": not missing, "missing": missing}
+    except Exception as exc:
+        return {"ready": False, "missing": [str(exc)]}
+
+
+def _require_admin_enabled(request: Request) -> None:
+    if not admin_login_enabled(request.app.state.settings):
+        raise HTTPException(
+            status_code=503,
+            detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD first.",
+        )
+
+
+def _is_admin_authenticated(request: Request) -> bool:
+    settings = request.app.state.settings
+    token = request.cookies.get(settings.admin_cookie_name, "")
+    return validate_admin_session_token(settings, token)
+
+
+def _admin_cookie_options(request: Request) -> dict[str, object]:
+    settings = request.app.state.settings
+    return {
+        "key": settings.admin_cookie_name,
+        "httponly": True,
+        "secure": request.url.scheme == "https",
+        "samesite": "lax",
+        "max_age": settings.admin_session_ttl_hours * 3600,
+        "path": "/",
+    }
 
 
 def _enforce_instantly_webhook_auth(request: Request) -> None:
@@ -76,6 +132,93 @@ def health(request: Request) -> ApiMessage:
             "clickup_configured": bool(settings.clickup_api_token and settings.clickup_list_id),
             "slack_configured": bool(settings.slack_bot_token and settings.slack_channel_id),
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
+        },
+    )
+
+
+@router.get("/admin/login", response_class=HTMLResponse)
+def admin_login_page(request: Request) -> HTMLResponse:
+    _require_admin_enabled(request)
+    if _is_admin_authenticated(request):
+        return HTMLResponse("", status_code=302, headers={"Location": "/admin"})
+    return HTMLResponse(render_login_page())
+
+
+@router.post("/admin/login", response_class=HTMLResponse)
+async def admin_login_submit(request: Request) -> Response:
+    _require_admin_enabled(request)
+    body = (await request.body()).decode("utf-8")
+    password = parse_qs(body).get("password", [""])[0]
+    if not verify_admin_password(request.app.state.settings, password):
+        return HTMLResponse(render_login_page(error_message="Incorrect password."), status_code=401)
+
+    response = RedirectResponse(url="/admin", status_code=302)
+    response.set_cookie(
+        value=create_admin_session_token(request.app.state.settings),
+        **_admin_cookie_options(request),
+    )
+    return response
+
+
+@router.get("/admin/logout")
+def admin_logout(request: Request) -> RedirectResponse:
+    response = RedirectResponse(url="/admin/login", status_code=302)
+    response.delete_cookie(request.app.state.settings.admin_cookie_name, path="/")
+    return response
+
+
+@router.get("/admin", response_class=HTMLResponse)
+def admin_dashboard(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        dashboard = build_dashboard_data(
+            settings=settings,
+            session=session,
+            lead_builder_status=_lead_builder_status(),
+        )
+    return HTMLResponse(render_dashboard_page(dashboard))
+
+
+@router.post("/admin/api/run-lead-build", response_model=None)
+async def admin_run_lead_build(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    lead_builder_status = _lead_builder_status()
+    if not lead_builder_status.get("ready"):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Lead builder is not configured on this service.",
+                "missing": lead_builder_status.get("missing", []),
+            },
+        )
+
+    payload = await request.json()
+    build_request = LeadBuildRequest(**payload)
+    result = execute_lead_build(build_request, scheduler_source="admin_dashboard")
+    if not result.instantly_rows:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "ok",
+                "message": "No valid personal contacts found for this run.",
+                "domains_scanned": result.raw_scanned,
+                "icp_matches": result.qualified_domains_count,
+                "apollo_contacts_found": result.apollo_hits,
+                "personal_contacts_found": result.successful_contacts,
+            },
+        )
+
+    return Response(
+        content=result.instantly_csv,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="instantly_upload_{build_request.date}.csv"'
         },
     )
 

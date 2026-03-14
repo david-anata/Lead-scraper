@@ -140,6 +140,22 @@ class Settings:
     heyreach_campaign_id: str
 
 
+@dataclass(frozen=True)
+class LeadBuildExecutionResult:
+    instantly_csv: str
+    instantly_rows: list[dict[str, Any]]
+    raw_scanned: int
+    qualified_domains_count: int
+    qualified_matches_total: int
+    previously_processed_domains: int
+    apollo_domains_queried: int
+    apollo_hits: int
+    successful_contacts: int
+    scheduler_status: dict[str, Any]
+    instantly_import_result: dict[str, Any]
+    heyreach_import_result: dict[str, Any]
+
+
 def detect_scheduler_source(request: Request) -> str:
     query_source = (request.query_params.get("scheduler_source") or "").strip().lower()
     if query_source:
@@ -1870,6 +1886,99 @@ CSV file attached below.
     response.raise_for_status()
 
 
+def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> LeadBuildExecutionResult:
+    settings = load_settings()
+    validate_required_settings(settings)
+
+    processed_domains = load_processed_domains()
+    qualified_domains, raw_scanned, qualified_matches_total, previously_processed_domains = collect_domains(
+        payload.max_domains,
+        settings,
+        processed_domains,
+    )
+    apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(qualified_domains))
+
+    logger.info(
+        "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s daily_new_lead_limit=%s weekday_only=%s",
+        scheduler_source,
+        payload.date,
+        payload.max_domains,
+        raw_scanned,
+        qualified_matches_total,
+        len(qualified_domains),
+        previously_processed_domains,
+        apollo_domains_queried,
+        DAILY_NEW_LEAD_LIMIT,
+        ENABLE_WEEKDAY_ONLY_IMPORTS,
+    )
+
+    instantly_rows, linkedin_rows, successful_contacts, apollo_hits = build_csv_rows(
+        qualified_domains,
+        payload.date,
+        settings,
+    )
+
+    instantly_rows, scheduler_status = apply_daily_import_limit(instantly_rows, payload.date)
+    allowed_emails = {row.get("email", "") for row in instantly_rows if row.get("email")}
+    linkedin_rows = [row for row in linkedin_rows if row.get("email", "") in allowed_emails]
+    successful_contacts = len(instantly_rows)
+    logger.info(
+        "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s",
+        scheduler_source,
+        payload.date,
+        payload.max_domains,
+        scheduler_status.get("status", "unknown"),
+        scheduler_status.get("daily_limit", 0),
+        scheduler_status.get("already_imported_today", 0),
+        scheduler_status.get("remaining_capacity", 0),
+        successful_contacts,
+    )
+
+    instantly_csv = rows_to_csv(instantly_rows)
+    exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
+    instantly_import_result = import_leads_to_instantly(instantly_rows, settings)
+    heyreach_import_result = import_leads_to_heyreach(instantly_rows, payload.date, settings)
+    if instantly_rows and instantly_import_result.get("status") != "error":
+        append_processed_domains(exported_domains, payload.date)
+    created_count = int(instantly_import_result.get("created_count", 0) or 0)
+    if created_count > 0:
+        append_daily_import_count(datetime.now().date().isoformat(), created_count)
+
+    post_slack_summary(
+        run_date=payload.date,
+        scheduler_source=scheduler_source,
+        raw_scanned=raw_scanned,
+        qualified_domains=qualified_matches_total,
+        new_domains_considered=len(qualified_domains),
+        previously_processed_domains=previously_processed_domains,
+        apollo_domains_queried=apollo_domains_queried,
+        apollo_hits=apollo_hits,
+        successful_contacts=successful_contacts,
+        instantly_import_result=instantly_import_result,
+        heyreach_import_result=heyreach_import_result,
+        scheduler_status=scheduler_status,
+        settings=settings,
+    )
+
+    if instantly_rows:
+        upload_file_to_slack(f"instantly_upload_{payload.date}.csv", instantly_csv, settings)
+
+    return LeadBuildExecutionResult(
+        instantly_csv=instantly_csv,
+        instantly_rows=instantly_rows,
+        raw_scanned=raw_scanned,
+        qualified_domains_count=len(qualified_domains),
+        qualified_matches_total=qualified_matches_total,
+        previously_processed_domains=previously_processed_domains,
+        apollo_domains_queried=apollo_domains_queried,
+        apollo_hits=apollo_hits,
+        successful_contacts=successful_contacts,
+        scheduler_status=scheduler_status,
+        instantly_import_result=instantly_import_result,
+        heyreach_import_result=heyreach_import_result,
+    )
+
+
 # ========= ROUTES =========
 @app.get("/")
 def home() -> dict[str, str]:
@@ -1883,100 +1992,26 @@ def health() -> dict[str, str]:
 
 @app.post("/run-lead-build", response_model=None)
 def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingResponse:
-    settings = load_settings()
-    app.state.settings = settings
-    validate_required_settings(settings)
     scheduler_source = detect_scheduler_source(request)
 
     try:
-        processed_domains = load_processed_domains()
-        qualified_domains, raw_scanned, qualified_matches_total, previously_processed_domains = collect_domains(
-            payload.max_domains,
-            settings,
-            processed_domains,
-        )
-        apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(qualified_domains))
+        result = execute_lead_build(payload, scheduler_source=scheduler_source)
 
-        logger.info(
-            "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s daily_new_lead_limit=%s weekday_only=%s",
-            scheduler_source,
-            payload.date,
-            payload.max_domains,
-            raw_scanned,
-            qualified_matches_total,
-            len(qualified_domains),
-            previously_processed_domains,
-            apollo_domains_queried,
-            DAILY_NEW_LEAD_LIMIT,
-            ENABLE_WEEKDAY_ONLY_IMPORTS,
-        )
-
-        instantly_rows, linkedin_rows, successful_contacts, apollo_hits = build_csv_rows(
-            qualified_domains,
-            payload.date,
-            settings,
-        )
-
-        instantly_rows, scheduler_status = apply_daily_import_limit(instantly_rows, payload.date)
-        allowed_emails = {row.get("email", "") for row in instantly_rows if row.get("email")}
-        linkedin_rows = [row for row in linkedin_rows if row.get("email", "") in allowed_emails]
-        successful_contacts = len(instantly_rows)
-        logger.info(
-            "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s",
-            scheduler_source,
-            payload.date,
-            payload.max_domains,
-            scheduler_status.get("status", "unknown"),
-            scheduler_status.get("daily_limit", 0),
-            scheduler_status.get("already_imported_today", 0),
-            scheduler_status.get("remaining_capacity", 0),
-            successful_contacts,
-        )
-
-        instantly_csv = rows_to_csv(instantly_rows)
-        exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
-        instantly_import_result = import_leads_to_instantly(instantly_rows, settings)
-        heyreach_import_result = import_leads_to_heyreach(instantly_rows, payload.date, settings)
-        if instantly_rows and instantly_import_result.get("status") != "error":
-            append_processed_domains(exported_domains, payload.date)
-        created_count = int(instantly_import_result.get("created_count", 0) or 0)
-        if created_count > 0:
-            append_daily_import_count(datetime.now().date().isoformat(), created_count)
-
-        post_slack_summary(
-            run_date=payload.date,
-            scheduler_source=scheduler_source,
-            raw_scanned=raw_scanned,
-            qualified_domains=qualified_matches_total,
-            new_domains_considered=len(qualified_domains),
-            previously_processed_domains=previously_processed_domains,
-            apollo_domains_queried=apollo_domains_queried,
-            apollo_hits=apollo_hits,
-            successful_contacts=successful_contacts,
-            instantly_import_result=instantly_import_result,
-            heyreach_import_result=heyreach_import_result,
-            scheduler_status=scheduler_status,
-            settings=settings,
-        )
-
-        if instantly_rows:
-            upload_file_to_slack(f"instantly_upload_{payload.date}.csv", instantly_csv, settings)
-
-        if not instantly_rows:
+        if not result.instantly_rows:
             return JSONResponse(
                 status_code=200,
                 content={
                     "status": "ok",
                     "message": "No valid personal contacts found for this run.",
-                    "domains_scanned": raw_scanned,
-                    "icp_matches": len(qualified_domains),
-                    "apollo_contacts_found": apollo_hits,
-                    "personal_contacts_found": successful_contacts,
+                    "domains_scanned": result.raw_scanned,
+                    "icp_matches": result.qualified_domains_count,
+                    "apollo_contacts_found": result.apollo_hits,
+                    "personal_contacts_found": result.successful_contacts,
                 },
             )
 
         return StreamingResponse(
-            iter([instantly_csv]),
+            iter([result.instantly_csv]),
             media_type="text/csv",
             headers={
                 "Content-Disposition": f'attachment; filename="instantly_upload_{payload.date}.csv"'
