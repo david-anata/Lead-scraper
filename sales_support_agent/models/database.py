@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
@@ -23,6 +24,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if engine is None:
         raise RuntimeError("Session factory is missing an engine binding.")
     Base.metadata.create_all(bind=engine)
+    _apply_sqlite_compat_migrations(engine)
 
 
 @contextmanager
@@ -36,3 +38,32 @@ def session_scope(session_factory: sessionmaker[Session]):
         raise
     finally:
         session.close()
+
+
+def _apply_sqlite_compat_migrations(engine: Any) -> None:
+    """Add newly introduced columns for existing SQLite deployments.
+
+    This keeps small single-file deployments moving without a separate
+    migration tool while the schema is still evolving.
+    """
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    migrations: dict[str, dict[str, str]] = {
+        "communication_events": {
+            "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
+        },
+    }
+
+    with engine.begin() as connection:
+        for table_name, column_migrations in migrations.items():
+            if table_name not in existing_tables:
+                continue
+            existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, statement in column_migrations.items():
+                if column_name in existing_columns:
+                    continue
+                connection.execute(text(statement))
