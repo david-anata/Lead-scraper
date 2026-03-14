@@ -8,7 +8,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings
+from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.integrations.clickup import ClickUpClient
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.models.entities import LeadMirror
@@ -35,11 +35,36 @@ class StaleLeadJob:
         self.audit = AuditService(session)
         self.reminders = ReminderService(settings, session)
 
-    def run(self, *, dry_run: bool = False, as_of_date: date | None = None, max_tasks: int | None = None) -> dict[str, int | str]:
+    def run(self, *, dry_run: bool = False, as_of_date: date | None = None, max_tasks: int | None = None) -> dict[str, int | str | bool]:
         effective_date = as_of_date or date.today()
+        processing_limit = max_tasks if max_tasks is not None else self.settings.stale_lead_scan_max_tasks
+        sync_limit = max_tasks if max_tasks is not None else self.settings.stale_lead_scan_sync_max_tasks
         run = self.audit.start_run("stale_lead_scan", trigger="manual", metadata={"dry_run": dry_run, "as_of_date": effective_date.isoformat()})
-        sync_summary = ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(include_closed=True, max_tasks=max_tasks)
-        query = select(LeadMirror).where(LeadMirror.list_id == self.settings.clickup_list_id)
+        sync_summary: dict[str, int | str] = {"synced_tasks": 0}
+        sync_failed = False
+        try:
+            sync_summary = ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(
+                include_closed=True,
+                max_tasks=sync_limit,
+            )
+        except Exception as exc:
+            sync_failed = True
+            logger.exception("stale lead sync refresh failed")
+            self.audit.record_action(
+                run_id=run.id,
+                clickup_task_id="",
+                system="sales_support_agent",
+                action_type="stale_lead_sync_failed",
+                success=False,
+                error_message=str(exc),
+                before={"sync_limit": sync_limit},
+                after={},
+            )
+        query = (
+            select(LeadMirror)
+            .where(LeadMirror.list_id == self.settings.clickup_list_id)
+            .order_by(LeadMirror.updated_at.asc(), LeadMirror.last_sync_at.asc())
+        )
         leads = list(self.session.execute(query).scalars())
 
         inspected = 0
@@ -48,8 +73,11 @@ class StaleLeadJob:
         skipped = 0
         failed = 0
         for lead in leads:
-            if max_tasks and inspected >= max_tasks:
+            if processing_limit and inspected >= processing_limit:
                 break
+            status_key = normalize_status_key(lead.status or "")
+            if status_key not in self.settings.active_statuses:
+                continue
             inspected += 1
             try:
                 comments = self.clickup_client.get_task_comments(lead.clickup_task_id)
@@ -115,6 +143,7 @@ class StaleLeadJob:
                 "commented": commented,
                 "skipped_deduped": skipped,
                 "failed": failed,
+                "sync_failed": sync_failed,
                 "synced_tasks": sync_summary.get("synced_tasks", 0),
             },
         )
@@ -125,5 +154,6 @@ class StaleLeadJob:
             "commented": commented,
             "skipped_deduped": skipped,
             "failed": failed,
+            "sync_failed": sync_failed,
             "synced_tasks": int(sync_summary.get("synced_tasks", 0)),
         }

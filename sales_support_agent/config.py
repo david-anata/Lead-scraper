@@ -67,6 +67,8 @@ class Settings:
     clickup_list_id: str
     clickup_request_timeout_seconds: int
     clickup_discovery_sample_size: int
+    stale_lead_scan_max_tasks: int
+    stale_lead_scan_sync_max_tasks: int
     slack_bot_token: str
     slack_channel_id: str
     slack_assignee_map: dict[str, str]
@@ -123,6 +125,8 @@ def load_settings() -> Settings:
         clickup_list_id=os.getenv("CLICKUP_LIST_ID", "").strip(),
         clickup_request_timeout_seconds=int((os.getenv("CLICKUP_REQUEST_TIMEOUT_SECONDS", "30") or "30").strip()),
         clickup_discovery_sample_size=int((os.getenv("CLICKUP_DISCOVERY_SAMPLE_SIZE", "10") or "10").strip()),
+        stale_lead_scan_max_tasks=int((os.getenv("STALE_LEAD_SCAN_MAX_TASKS", "50") or "50").strip()),
+        stale_lead_scan_sync_max_tasks=int((os.getenv("STALE_LEAD_SCAN_SYNC_MAX_TASKS", "100") or "100").strip()),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip(),
         slack_assignee_map=_parse_json_object(os.getenv("SLACK_AE_MAP_JSON", "{}")),
