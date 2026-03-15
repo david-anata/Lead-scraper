@@ -240,6 +240,30 @@ async def admin_run_lead_build(request: Request) -> Response:
     )
 
 
+@router.post("/admin/api/sync-dashboard", response_model=None)
+def admin_sync_dashboard(request: Request) -> JSONResponse:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        clickup_summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
+        stale_summary = StaleLeadJob(settings, ClickUpClient(settings), SlackClient(settings), session).run(dry_run=True)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ok",
+            "message": "Dashboard sync completed.",
+            "details": {
+                "clickup_sync": clickup_summary,
+                "stale_lead_scan": stale_summary,
+                "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
+            },
+        },
+    )
+
+
 @router.post("/api/discovery/clickup-schema", response_model=ApiMessage)
 def discover_clickup_schema(
     payload: DiscoveryRequest,

@@ -340,6 +340,40 @@ def fetch_remote_dashboard_data() -> DashboardData:
         )
 
 
+def _post_sales_support_job(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
+        raise RuntimeError("Sales support agent URL or internal API key is not configured on this service.")
+
+    response = requests.post(
+        f"{admin_settings.sales_support_agent_url}{path}",
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key,
+        },
+        json=payload,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def sync_remote_dashboard_sources() -> dict[str, Any]:
+    clickup_sync = _post_sales_support_job(
+        "/api/clickup/sync",
+        {"include_closed": True},
+    )
+    stale_scan = _post_sales_support_job(
+        "/api/jobs/stale-leads/run",
+        {"dry_run": True},
+    )
+    return {
+        "clickup_sync": clickup_sync.get("details", clickup_sync),
+        "stale_lead_scan": stale_scan.get("details", stale_scan),
+        "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
+    }
+
+
 # ========= GENERAL HELPERS =========
 def normalize_domain(domain: str) -> str:
     return (
@@ -2161,6 +2195,27 @@ async def admin_run_lead_build(request: Request) -> Response:
         headers={
             "Content-Disposition": f'attachment; filename="instantly_upload_{build_request.date}.csv"'
         },
+    )
+
+
+@app.post("/admin/api/sync-dashboard")
+def admin_sync_dashboard(request: Request) -> JSONResponse:
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    try:
+        result = sync_remote_dashboard_sources()
+    except Exception as exc:
+        logger.exception("[AdminDashboard] sync failed")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Dashboard sync failed.", "error": str(exc)},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ok", "message": "Dashboard sync completed.", "details": result},
     )
 
 

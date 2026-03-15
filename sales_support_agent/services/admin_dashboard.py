@@ -740,6 +740,11 @@ def render_dashboard_page(data: DashboardData) -> str:
           {''.join(owner_sections) or '<section class="owner-card"><p class="empty">No owner queues yet. Run a sync or stale scan to populate the dashboard.</p></section>'}
         </div>
         <aside class="panel tool-card">
+          <h2>Dashboard sync</h2>
+          <p>Refresh the mirrored ClickUp data and recompute stale priorities before reviewing the owner queues. Gmail sync stays off here until OAuth is fixed.</p>
+          <button id="sync-dashboard-button" type="button">Sync dashboard data</button>
+          <div id="sync-status">Ready.</div>
+
           <h2>Lead scraper</h2>
           <p>Run the existing lead build pipeline from this admin panel. The run still pushes leads into Instantly first, then returns the CSV download directly here.</p>
           {lead_builder_notice}
@@ -759,8 +764,27 @@ def render_dashboard_page(data: DashboardData) -> str:
       </section>
     </div>
     <script>
+      const syncButton = document.getElementById("sync-dashboard-button");
+      const syncStatus = document.getElementById("sync-status");
       const form = document.getElementById("lead-build-form");
       const status = document.getElementById("run-status");
+      syncButton?.addEventListener("click", async () => {{
+        syncStatus.textContent = "Refreshing ClickUp mirror and stale queue...";
+        try {{
+          const response = await fetch("/admin/api/sync-dashboard", {{
+            method: "POST",
+          }});
+          const payload = await response.json().catch(() => ({{ detail: "Dashboard sync failed." }}));
+          if (!response.ok) {{
+            syncStatus.textContent = payload.detail || "Dashboard sync failed.";
+            return;
+          }}
+          syncStatus.textContent = "Dashboard sync completed. Reloading...";
+          window.setTimeout(() => window.location.reload(), 900);
+        }} catch (error) {{
+          syncStatus.textContent = "Dashboard sync failed before a response came back.";
+        }}
+      }});
       form?.addEventListener("submit", async (event) => {{
         event.preventDefault();
         status.textContent = "Running lead build. This can take a minute...";
