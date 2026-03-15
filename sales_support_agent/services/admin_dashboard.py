@@ -519,11 +519,9 @@ def render_login_page(*, error_message: str = "") -> str:
   <body>
     <header class="topbar">
       <div class="topbar-inner">
-        <div class="brand">anata<span class="dot">.</span></div>
+        <div class="brand">agent<span class="dot">.</span></div>
         <nav class="nav" aria-label="Dashboard navigation">
-          <span>Owner Priorities</span>
-          <span>Lead Pull</span>
-          <span>Shipping OS</span>
+          
         </nav>
         <div class="cta">AGENT LOGIN</div>
       </div>
@@ -566,15 +564,15 @@ def render_dashboard_page(data: DashboardData) -> str:
 
     metric_cards = "".join(
         [
-            _card("Active tracked leads", str(data.total_active_leads), "Current ClickUp leads in active statuses"),
+            _card("Leads", str(data.total_active_leads), "Current ClickUp leads in active statuses"),
             _card("Overdue", str(data.stale_counts.get("overdue", 0)), "Highest priority follow-up risk"),
             _card(
-                "Needs immediate review",
+                "Review",
                 str(data.stale_counts.get("needs_immediate_review", 0)),
                 "Untouched or missing-next-step leads",
             ),
-            _card("Follow-up due", str(data.stale_counts.get("follow_up_due", 0)), "Routine queue ready for review"),
-            _card("Mailbox findings", str(data.mailbox_findings), "Signals captured in the last 7 days"),
+            _card("Follow-up", str(data.stale_counts.get("follow_up_due", 0)), "Routine queue ready for review"),
+            _card("Mailbox", str(data.mailbox_findings), "Signals captured in the last 7 days"),
         ]
     )
 
@@ -1161,7 +1159,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       <section class="hero">
         <div class="panel">
           <div class="eyebrow">Agent dashboard</div>
-          <h1 class="hero-title">Make your sales board <span class="highlight">impossible</span> to ignore.</h1>
+          <h1 class="hero-title">Sales <span class="highlight">Priorities</span>.</h1>
         </div>
         <div class="hero-copy">
           <p>This board pulls together the signals that matter most so your team can review owner priorities, refresh the pipeline, and act on the next best move without guesswork.</p>
@@ -1173,16 +1171,13 @@ def render_dashboard_page(data: DashboardData) -> str:
         <div class="action-panel">
           <h3>Refresh dashboard</h3>
           <p>Update the ClickUp mirror and recompute stale priorities before reviewing the owner queue.</p>
-          <button id="sync-dashboard-button" type="button">SYNC DASHBOARD DATA</button>
+          <button id="sync-dashboard-button" type="button">SYNC DATA</button>
           <div class="status-line" id="sync-status">Ready.</div>
         </div>
         <div class="action-panel">
           <h3>Run lead pull</h3>
           <p>Run the existing lead build pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
-          <button type="button" onclick="document.getElementById('lead-pull-panel').scrollIntoView({{behavior:'smooth', block:'start'}})">GO TO LEAD PULL</button>
-        </div>
-        <div class="logout-panel">
-          <a class="logout-link" href="/admin/logout">LOG OUT</a>
+          <button type="button" onclick="document.getElementById('lead-pull-panel').scrollIntoView({{behavior:'smooth', block:'start'}})">Pull Leads</button>
         </div>
       </section>
 
@@ -1214,9 +1209,9 @@ def render_dashboard_page(data: DashboardData) -> str:
                   Max domains
                   <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
                 </label>
-                <button type="submit">RUN SCRAPER AND DOWNLOAD CSV</button>
+                <button type="submit">RUN SCRAPER</button>
               </form>
-              <div class="status-line" id="run-status">Ready.</div>
+              <div class="status-line" id="run-status">Scrape Status: Ready.</div>
           </section>
         </div>
       </section>
@@ -1228,7 +1223,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       const form = document.getElementById("lead-build-form");
       const status = document.getElementById("run-status");
       syncButton?.addEventListener("click", async () => {{
-        syncStatus.textContent = "Refreshing ClickUp mirror and stale queue...";
+        syncStatus.textContent = "Refreshing sync...";
         try {{
           const response = await fetch("/admin/api/sync-dashboard", {{
             method: "POST",
