@@ -55,6 +55,88 @@ class DashboardData:
     lead_builder_missing: list[str]
 
 
+def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
+    return {
+        "as_of_date": data.as_of_date.isoformat(),
+        "total_active_leads": data.total_active_leads,
+        "stale_counts": data.stale_counts,
+        "mailbox_findings": data.mailbox_findings,
+        "owner_queues": [
+            {
+                "owner_name": queue.owner_name,
+                "total_items": queue.total_items,
+                "overdue_count": queue.overdue_count,
+                "immediate_count": queue.immediate_count,
+                "follow_up_count": queue.follow_up_count,
+                "items": [
+                    {
+                        "owner_name": item.owner_name,
+                        "urgency": item.urgency,
+                        "title": item.title,
+                        "subtitle": item.subtitle,
+                        "action_summary": item.action_summary,
+                        "suggested_reply": item.suggested_reply,
+                        "source": item.source,
+                        "link_url": item.link_url,
+                        "date_label": item.date_label,
+                    }
+                    for item in queue.items
+                ],
+            }
+            for queue in data.owner_queues
+        ],
+        "latest_sync_at": data.latest_sync_at.isoformat() if data.latest_sync_at else "",
+        "latest_run_summary": data.latest_run_summary,
+        "lead_builder_ready": data.lead_builder_ready,
+        "lead_builder_missing": data.lead_builder_missing,
+    }
+
+
+def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
+    owner_queues = []
+    for queue_payload in payload.get("owner_queues", []):
+        queue_dict = dict(queue_payload)
+        items = [
+            DashboardActionItem(
+                owner_name=str(item.get("owner_name", "")),
+                urgency=str(item.get("urgency", "follow_up_due")),
+                title=str(item.get("title", "")),
+                subtitle=str(item.get("subtitle", "")),
+                action_summary=str(item.get("action_summary", "")),
+                suggested_reply=str(item.get("suggested_reply", "")),
+                source=str(item.get("source", "")),
+                link_url=str(item.get("link_url", "")),
+                date_label=str(item.get("date_label", "")),
+                sort_timestamp=0.0,
+            )
+            for item in queue_dict.get("items", [])
+        ]
+        owner_queues.append(
+            DashboardOwnerQueue(
+                owner_name=str(queue_dict.get("owner_name", "")),
+                total_items=int(queue_dict.get("total_items", len(items)) or len(items)),
+                overdue_count=int(queue_dict.get("overdue_count", 0) or 0),
+                immediate_count=int(queue_dict.get("immediate_count", 0) or 0),
+                follow_up_count=int(queue_dict.get("follow_up_count", 0) or 0),
+                items=items,
+            )
+        )
+
+    latest_sync_raw = str(payload.get("latest_sync_at", "") or "")
+    latest_sync_at = datetime.fromisoformat(latest_sync_raw) if latest_sync_raw else None
+    return DashboardData(
+        as_of_date=date.fromisoformat(str(payload.get("as_of_date"))),
+        total_active_leads=int(payload.get("total_active_leads", 0) or 0),
+        stale_counts=dict(payload.get("stale_counts", {})),
+        mailbox_findings=int(payload.get("mailbox_findings", 0) or 0),
+        owner_queues=owner_queues,
+        latest_sync_at=latest_sync_at,
+        latest_run_summary=dict(payload.get("latest_run_summary", {})),
+        lead_builder_ready=bool(payload.get("lead_builder_ready")),
+        lead_builder_missing=[str(item) for item in payload.get("lead_builder_missing", [])],
+    )
+
+
 def build_dashboard_data(
     *,
     settings: Settings,

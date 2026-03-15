@@ -6,16 +6,30 @@ import os
 import re
 import time
 import unicodedata
+from urllib.parse import parse_qs
 from base64 import b64decode, b64encode
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+
+from sales_support_agent.services.admin_auth import (
+    admin_login_enabled,
+    create_admin_session_token,
+    validate_admin_session_token,
+    verify_admin_password,
+)
+from sales_support_agent.services.admin_dashboard import (
+    DashboardData,
+    dashboard_data_from_dict,
+    render_dashboard_page,
+    render_login_page,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -141,6 +155,17 @@ class Settings:
 
 
 @dataclass(frozen=True)
+class AdminDashboardSettings:
+    admin_username: str
+    admin_password: str
+    admin_session_secret: str
+    admin_cookie_name: str
+    admin_session_ttl_hours: int
+    sales_support_agent_url: str
+    sales_agent_internal_api_key: str
+
+
+@dataclass(frozen=True)
 class LeadBuildExecutionResult:
     instantly_csv: str
     instantly_rows: list[dict[str, Any]]
@@ -184,6 +209,22 @@ def load_settings() -> Settings:
         instantly_api_key=(os.getenv("INSTANTLY_API_KEY") or os.getenv("INSTANTLY_AI") or "").strip(),
         heyreach_api_key=os.getenv("HEYREACH_API_KEY", "").strip(),
         heyreach_campaign_id=os.getenv("HEYREACH_CAMPAIGN_ID", "").strip(),
+    )
+
+
+def load_admin_dashboard_settings() -> AdminDashboardSettings:
+    return AdminDashboardSettings(
+        admin_username=os.getenv("ADMIN_DASHBOARD_USERNAME", "admin").strip() or "admin",
+        admin_password=os.getenv("ADMIN_DASHBOARD_PASSWORD", "").strip(),
+        admin_session_secret=(
+            os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "").strip()
+            or os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip()
+            or "lead-scraper-admin-session-secret"
+        ),
+        admin_cookie_name=os.getenv("ADMIN_DASHBOARD_COOKIE_NAME", "lead_scraper_admin_session").strip() or "lead_scraper_admin_session",
+        admin_session_ttl_hours=int((os.getenv("ADMIN_DASHBOARD_SESSION_TTL_HOURS", "24") or "24").strip()),
+        sales_support_agent_url=os.getenv("SALES_SUPPORT_AGENT_URL", "https://sales-support-agent.onrender.com").strip().rstrip("/"),
+        sales_agent_internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
     )
 
 
@@ -239,6 +280,64 @@ def startup() -> None:
         GITHUB_STATE_REPO or "n/a",
         GITHUB_STATE_BRANCH,
     )
+
+
+def _admin_cookie_options(request: Request, admin_settings: AdminDashboardSettings) -> dict[str, Any]:
+    return {
+        "key": admin_settings.admin_cookie_name,
+        "httponly": True,
+        "secure": request.url.scheme == "https",
+        "samesite": "lax",
+        "max_age": admin_settings.admin_session_ttl_hours * 3600,
+        "path": "/",
+    }
+
+
+def _build_empty_dashboard(*, lead_builder_missing: list[str], error_message: str = "") -> DashboardData:
+    summary = {"dashboard_error": error_message} if error_message else {}
+    return DashboardData(
+        as_of_date=date.today(),
+        total_active_leads=0,
+        stale_counts={"overdue": 0, "needs_immediate_review": 0, "follow_up_due": 0},
+        mailbox_findings=0,
+        owner_queues=[],
+        latest_sync_at=None,
+        latest_run_summary=summary,
+        lead_builder_ready=not lead_builder_missing,
+        lead_builder_missing=lead_builder_missing,
+    )
+
+
+def fetch_remote_dashboard_data() -> DashboardData:
+    admin_settings = load_admin_dashboard_settings()
+    lead_builder_missing = get_missing_required_settings(load_settings())
+    if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
+        return _build_empty_dashboard(
+            lead_builder_missing=lead_builder_missing,
+            error_message="Sales support dashboard feed is not configured on this service.",
+        )
+
+    try:
+        response = requests.get(
+            f"{admin_settings.sales_support_agent_url}/api/admin/dashboard-data",
+            headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        details = payload.get("details") or {}
+        dashboard = dashboard_data_from_dict(details)
+        return replace(
+            dashboard,
+            lead_builder_ready=not lead_builder_missing,
+            lead_builder_missing=lead_builder_missing,
+        )
+    except Exception as exc:
+        logger.exception("[AdminDashboard] remote data fetch failed")
+        return _build_empty_dashboard(
+            lead_builder_missing=lead_builder_missing,
+            error_message=f"Sales support dashboard feed unavailable: {exc}",
+        )
 
 
 # ========= GENERAL HELPERS =========
@@ -1980,6 +2079,91 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
 
 
 # ========= ROUTES =========
+@app.get("/admin/login", response_class=HTMLResponse)
+def admin_login_page(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin", status_code=302)
+    return HTMLResponse(render_login_page())
+
+
+@app.post("/admin/login", response_class=HTMLResponse)
+async def admin_login_submit(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    body = (await request.body()).decode("utf-8")
+    password = parse_qs(body).get("password", [""])[0]
+    if not verify_admin_password(admin_settings, password):
+        return HTMLResponse(render_login_page(error_message="Incorrect password."), status_code=401)
+
+    response = RedirectResponse(url="/admin", status_code=302)
+    response.set_cookie(
+        value=create_admin_session_token(admin_settings),
+        **_admin_cookie_options(request, admin_settings),
+    )
+    return response
+
+
+@app.get("/admin/logout")
+def admin_logout(request: Request) -> RedirectResponse:
+    admin_settings = load_admin_dashboard_settings()
+    response = RedirectResponse(url="/admin/login", status_code=302)
+    response.delete_cookie(admin_settings.admin_cookie_name, path="/")
+    return response
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_dashboard(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    dashboard = fetch_remote_dashboard_data()
+    return HTMLResponse(render_dashboard_page(dashboard))
+
+
+@app.post("/admin/api/run-lead-build", response_model=None)
+async def admin_run_lead_build(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    payload = await request.json()
+    build_request = ICPBuildRequest(**payload)
+    try:
+        result = execute_lead_build(build_request, scheduler_source="admin_dashboard")
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    if not result.instantly_rows:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "ok",
+                "message": "No valid personal contacts found for this run.",
+                "domains_scanned": result.raw_scanned,
+                "icp_matches": result.qualified_domains_count,
+                "apollo_contacts_found": result.apollo_hits,
+                "personal_contacts_found": result.successful_contacts,
+            },
+        )
+
+    return Response(
+        content=result.instantly_csv,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="instantly_upload_{build_request.date}.csv"'
+        },
+    )
+
+
 @app.get("/")
 def home() -> dict[str, str]:
     return {"status": "lead engine running"}

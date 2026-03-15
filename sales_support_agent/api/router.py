@@ -40,6 +40,7 @@ from sales_support_agent.services.admin_auth import (
 )
 from sales_support_agent.services.admin_dashboard import (
     build_dashboard_data,
+    dashboard_data_to_dict,
     render_dashboard_page,
     render_login_page,
 )
@@ -181,6 +182,22 @@ def admin_dashboard(request: Request) -> Response:
             lead_builder_status=_lead_builder_status(),
         )
     return HTMLResponse(render_dashboard_page(dashboard))
+
+
+@router.get("/api/admin/dashboard-data", response_model=ApiMessage)
+def admin_dashboard_data(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> ApiMessage:
+    _enforce_api_key(request, x_internal_api_key)
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        dashboard = build_dashboard_data(
+            settings=settings,
+            session=session,
+            lead_builder_status=_lead_builder_status(),
+        )
+    return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=dashboard_data_to_dict(dashboard))
 
 
 @router.post("/admin/api/run-lead-build", response_model=None)

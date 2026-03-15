@@ -8,7 +8,7 @@ try:
     from sales_support_agent.config import DEFAULT_STATUS_POLICIES, build_normalized_status_policies, normalize_status_key
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
     from sales_support_agent.models.entities import LeadMirror, MailboxSignal
-    from sales_support_agent.services.admin_dashboard import build_dashboard_data
+    from sales_support_agent.services.admin_dashboard import build_dashboard_data, dashboard_data_from_dict, dashboard_data_to_dict
 
     SQLALCHEMY_AVAILABLE = True
 except ModuleNotFoundError as exc:
@@ -84,6 +84,31 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.owner_queues[0].owner_name, "Valeria Morales")
         owner_names = [queue.owner_name for queue in dashboard.owner_queues]
         self.assertIn("David Narayan", owner_names)
+
+    def test_dashboard_payload_round_trip(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = SimpleNamespace(
+            clickup_list_id="list-123",
+            active_statuses=(normalize_status_key("new lead"),),
+            inactive_statuses=(),
+            status_policies=build_normalized_status_policies(DEFAULT_STATUS_POLICIES),
+            slack_assignee_map={},
+            stale_lead_immediate_alert_urgencies=(),
+            stale_lead_slack_digest_max_items=20,
+            stale_lead_slack_digest_mention_channel=False,
+        )
+        with session_scope(session_factory) as session:
+            dashboard = build_dashboard_data(
+                settings=settings,
+                session=session,
+                lead_builder_status={"ready": False, "missing": ["STORELEADS_API_KEY"]},
+                as_of_date=date(2026, 3, 14),
+            )
+
+        rebuilt = dashboard_data_from_dict(dashboard_data_to_dict(dashboard))
+        self.assertEqual(rebuilt.as_of_date.isoformat(), "2026-03-14")
+        self.assertEqual(rebuilt.lead_builder_missing, ["STORELEADS_API_KEY"])
 
 
 if __name__ == "__main__":
