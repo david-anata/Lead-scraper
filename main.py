@@ -9,7 +9,7 @@ import unicodedata
 from urllib.parse import parse_qs
 from base64 import b64decode, b64encode
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -161,6 +161,7 @@ class AdminDashboardSettings:
     admin_session_secret: str
     admin_cookie_name: str
     admin_session_ttl_hours: int
+    admin_auto_sync_max_age_minutes: int
     sales_support_agent_url: str
     sales_agent_internal_api_key: str
 
@@ -223,6 +224,7 @@ def load_admin_dashboard_settings() -> AdminDashboardSettings:
         ),
         admin_cookie_name=os.getenv("ADMIN_DASHBOARD_COOKIE_NAME", "lead_scraper_admin_session").strip() or "lead_scraper_admin_session",
         admin_session_ttl_hours=int((os.getenv("ADMIN_DASHBOARD_SESSION_TTL_HOURS", "24") or "24").strip()),
+        admin_auto_sync_max_age_minutes=int((os.getenv("ADMIN_DASHBOARD_AUTO_SYNC_MAX_AGE_MINUTES", "30") or "30").strip()),
         sales_support_agent_url=os.getenv("SALES_SUPPORT_AGENT_URL", "https://sales-support-agent.onrender.com").strip().rstrip("/"),
         sales_agent_internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
     )
@@ -308,6 +310,27 @@ def _build_empty_dashboard(*, lead_builder_missing: list[str], error_message: st
     )
 
 
+def dashboard_needs_auto_sync(
+    dashboard: DashboardData,
+    admin_settings: AdminDashboardSettings,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    max_age_minutes = max(admin_settings.admin_auto_sync_max_age_minutes, 0)
+    if max_age_minutes == 0:
+        return False
+
+    if dashboard.latest_sync_at is None:
+        return True
+
+    current_time = now or datetime.now(timezone.utc)
+    latest_sync_at = dashboard.latest_sync_at
+    if latest_sync_at.tzinfo is None:
+        latest_sync_at = latest_sync_at.replace(tzinfo=timezone.utc)
+
+    return current_time - latest_sync_at >= timedelta(minutes=max_age_minutes)
+
+
 def fetch_remote_dashboard_data() -> DashboardData:
     admin_settings = load_admin_dashboard_settings()
     lead_builder_missing = get_missing_required_settings(load_settings())
@@ -372,6 +395,21 @@ def sync_remote_dashboard_sources() -> dict[str, Any]:
         "stale_lead_scan": stale_scan.get("details", stale_scan),
         "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
     }
+
+
+def should_run_auto_dashboard_sync(request: Request, dashboard: DashboardData, admin_settings: AdminDashboardSettings) -> bool:
+    if not dashboard_needs_auto_sync(dashboard, admin_settings):
+        return False
+
+    last_attempt = getattr(request.app.state, "admin_dashboard_last_auto_sync_at", None)
+    if isinstance(last_attempt, datetime):
+        current_time = datetime.now(timezone.utc)
+        if last_attempt.tzinfo is None:
+            last_attempt = last_attempt.replace(tzinfo=timezone.utc)
+        if current_time - last_attempt < timedelta(minutes=5):
+            return False
+
+    return True
 
 
 # ========= GENERAL HELPERS =========
@@ -2159,6 +2197,13 @@ def admin_dashboard(request: Request) -> Response:
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
     dashboard = fetch_remote_dashboard_data()
+    if should_run_auto_dashboard_sync(request, dashboard, admin_settings):
+        request.app.state.admin_dashboard_last_auto_sync_at = datetime.now(timezone.utc)
+        try:
+            sync_remote_dashboard_sources()
+            dashboard = fetch_remote_dashboard_data()
+        except Exception:
+            logger.exception("[AdminDashboard] automatic preload sync failed")
     return HTMLResponse(render_dashboard_page(dashboard))
 
 
