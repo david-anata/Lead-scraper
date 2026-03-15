@@ -15,7 +15,7 @@ from sales_support_agent.config import Settings
 from sales_support_agent.models.entities import AutomationRun, LeadMirror, MailboxSignal
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
-from sales_support_agent.services.reply_templates import format_date_label
+from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
 
 
 @dataclass(frozen=True)
@@ -274,191 +274,282 @@ def render_login_page(*, error_message: str = "") -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>anata | Agent Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
     <style>
       :root {{
-        --bg: #f5efe4;
-        --ink: #171411;
-        --muted: #6d6559;
-        --panel: rgba(255, 251, 244, 0.92);
-        --border: rgba(57, 48, 35, 0.12);
-        --brand: #1f4a3a;
-        --brand-deep: #133126;
-        --glow: #c99654;
-        --danger: #8e4330;
-        --shadow: rgba(20, 16, 11, 0.10);
+        --dark-blue: #2B3644;
+        --alt-dark-blue: #33445C;
+        --light-blue: #85BBDA;
+        --brown: #BFA889;
+        --light-brown: #F9F7F3;
+        --white: #FFFFFF;
+        --text: #2B3644;
+        --shadow: rgba(43, 54, 68, 0.10);
+        --danger: #8b4c42;
       }}
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
         min-height: 100vh;
-        display: grid;
-        place-items: center;
-        padding: 24px;
-        background:
-          radial-gradient(circle at top left, rgba(201, 150, 84, .26), transparent 30%),
-          radial-gradient(circle at bottom right, rgba(31, 74, 58, .20), transparent 34%),
-          linear-gradient(180deg, rgba(255,255,255,.45), rgba(245,239,228,.92)),
-          var(--bg);
-        color: var(--ink);
-        font-family: Georgia, "Times New Roman", serif;
+        background: var(--light-brown);
+        color: var(--text);
+        font-family: "Roboto", sans-serif;
       }}
-      .card {{
-        width: min(1020px, 100%);
-        display: grid;
-        grid-template-columns: 1.15fr .9fr;
-        overflow: hidden;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 28px;
-        box-shadow: 0 28px 80px var(--shadow);
-        backdrop-filter: blur(10px);
+      .topbar {{
+        background: var(--alt-dark-blue);
+        color: var(--white);
+        padding: 24px 56px;
       }}
-      .brand-panel {{
-        padding: 40px 36px;
-        background:
-          linear-gradient(180deg, rgba(31,74,58,.05), rgba(31,74,58,0)),
-          linear-gradient(135deg, rgba(201,150,84,.18), rgba(255,255,255,0));
-        border-right: 1px solid var(--border);
+      .topbar-inner {{
+        max-width: 1480px;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
       }}
-      .form-panel {{
-        padding: 40px 36px;
+      .brand {{
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 68px;
+        line-height: 1;
+        letter-spacing: -0.06em;
       }}
-      .brand-mark {{
+      .brand .dot {{
+        color: var(--light-blue);
+      }}
+      .nav {{
+        display: flex;
+        align-items: center;
+        gap: 42px;
+        font-family: "Roboto", sans-serif;
+        font-weight: 400;
+        font-size: 22px;
+      }}
+      .nav span {{
+        white-space: nowrap;
+      }}
+      .nav span::after {{
+        content: " ▾";
+        font-size: 18px;
+      }}
+      .nav span:last-child::after {{
+        content: "";
+      }}
+      .cta {{
         display: inline-flex;
         align-items: center;
-        gap: 10px;
-        margin-bottom: 28px;
-        color: var(--brand);
-      }}
-      .brand-mark strong {{
-        font-size: 28px;
-        font-weight: 600;
-        letter-spacing: -.03em;
-      }}
-      .brand-tag {{
-        display: inline-flex;
-        padding: 6px 10px;
+        justify-content: center;
+        min-width: 278px;
+        padding: 20px 28px;
         border-radius: 999px;
-        background: rgba(31,74,58,.08);
-        color: var(--brand);
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: .08em;
-        margin-bottom: 16px;
+        background: var(--light-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 26px;
+        text-decoration: none;
       }}
-      .hero-copy h1 {{
-        margin: 0 0 14px;
-        font-size: clamp(44px, 6vw, 72px);
-        line-height: .92;
-        letter-spacing: -.04em;
+      .shell {{
+        max-width: 1480px;
+        margin: 0 auto;
+        padding: 72px 56px 96px;
       }}
-      .hero-copy p {{
-        margin: 0;
-        max-width: 42ch;
-        color: var(--muted);
-        font-size: 17px;
-        line-height: 1.65;
-      }}
-      .principles {{
-        margin-top: 28px;
+      .split {{
         display: grid;
-        gap: 10px;
+        grid-template-columns: 1.05fr .95fr;
+        gap: 84px;
+        align-items: start;
       }}
-      .principles div {{
-        padding: 14px 16px;
-        border-radius: 16px;
-        background: rgba(255,255,255,.72);
-        border: 1px solid var(--border);
-        color: var(--muted);
-        line-height: 1.55;
-      }}
-      .form-panel h2 {{
-        margin: 0 0 8px;
-        font-size: 36px;
+      .eyebrow {{
+        display: inline-block;
+        padding: 18px 30px;
+        border-radius: 6px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 24px;
         line-height: 1;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 38px;
       }}
-      .form-panel p {{
-        margin: 0 0 24px;
-        color: var(--muted);
-        line-height: 1.55;
+      h1 {{
+        margin: 0;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 80px;
+        line-height: 0.98;
+        letter-spacing: -0.05em;
+        color: var(--dark-blue);
+      }}
+      .highlight {{
+        color: var(--light-blue);
+      }}
+      .copy {{
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 24px;
+        line-height: 1.36;
+        color: var(--dark-blue);
+      }}
+      .copy p {{
+        margin: 0 0 30px;
+      }}
+      .login-card {{
+        margin-top: 28px;
+        padding-top: 24px;
+        border-top: 4px solid var(--dark-blue);
+      }}
+      .login-card h2 {{
+        margin: 0 0 14px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 58px;
+        line-height: 1;
+        color: var(--dark-blue);
+      }}
+      .login-card p {{
+        margin: 0 0 26px;
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 24px;
+        line-height: 1.36;
+        color: var(--dark-blue);
       }}
       label {{
         display: block;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-        letter-spacing: .08em;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 24px;
+        letter-spacing: 0.04em;
         text-transform: uppercase;
-        margin-bottom: 8px;
+        margin-bottom: 12px;
       }}
       input {{
         width: 100%;
-        padding: 16px 18px;
-        border-radius: 16px;
-        border: 1px solid var(--border);
-        background: rgba(255,255,255,.88);
-        font-size: 16px;
-        margin-bottom: 18px;
+        padding: 18px 20px;
+        border-radius: 10px;
+        border: 2px solid rgba(43, 54, 68, 0.16);
+        background: var(--white);
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 24px;
+        margin-bottom: 22px;
+        color: var(--dark-blue);
       }}
       button {{
-        width: 100%;
+        width: auto;
         border: 0;
         border-radius: 999px;
-        padding: 15px 18px;
-        background: linear-gradient(135deg, var(--brand), var(--brand-deep));
-        color: white;
-        font-size: 16px;
-        font-weight: 600;
+        padding: 20px 34px;
+        background: var(--light-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 24px;
         cursor: pointer;
-        box-shadow: 0 16px 30px rgba(31,74,58,.18);
+        box-shadow: 0 18px 34px var(--shadow);
       }}
       .notice {{
-        border-radius: 14px;
-        padding: 12px 14px;
-        margin-bottom: 16px;
-        font-size: 14px;
+        border-radius: 10px;
+        padding: 16px 18px;
+        margin-bottom: 20px;
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 20px;
       }}
       .error {{
         background: rgba(138,63,47,.08);
         color: var(--danger);
         border: 1px solid rgba(138,63,47,.18);
       }}
-      @media (max-width: 880px) {{
-        .card {{
-          grid-template-columns: 1fr;
+      .footer-bar {{
+        height: 18px;
+        background: var(--alt-dark-blue);
+        margin-top: 64px;
+      }}
+      @media (max-width: 1200px) {{
+        .topbar {{
+          padding: 20px 28px;
         }}
-        .brand-panel {{
-          border-right: 0;
-          border-bottom: 1px solid var(--border);
+        .shell {{
+          padding: 48px 28px 72px;
+        }}
+        .split {{
+          grid-template-columns: 1fr;
+          gap: 48px;
+        }}
+        .brand {{
+          font-size: 56px;
+        }}
+        h1 {{
+          font-size: clamp(54px, 10vw, 80px);
+        }}
+      }}
+      @media (max-width: 920px) {{
+        .topbar-inner {{
+          flex-wrap: wrap;
+        }}
+        .nav {{
+          width: 100%;
+          justify-content: center;
+          flex-wrap: wrap;
+          gap: 18px 26px;
+          font-size: 18px;
+        }}
+        .cta {{
+          min-width: 220px;
+          font-size: 22px;
+          padding: 16px 24px;
+        }}
+        .copy,
+        .login-card p,
+        input,
+        label,
+        button {{
+          font-size: 20px;
         }}
       }}
     </style>
   </head>
   <body>
-    <main class="card">
-      <section class="brand-panel">
-        <div class="brand-mark"><strong>anata</strong></div>
-        <div class="brand-tag">Agent operations</div>
-        <div class="hero-copy">
-          <h1>Partner with confidence.</h1>
-          <p>This private workspace turns sales follow-up, lead generation, and owner priorities into one calm operating view for the team.</p>
-        </div>
-        <div class="principles">
-          <div><strong>Brand-first.</strong> Built to feel like part of Anata, not a separate back-office tool.</div>
-          <div><strong>Focused actions.</strong> Sync the board, review owner priorities, and run a fresh lead pull without hopping between tools.</div>
-        </div>
-      </section>
-      <section class="form-panel">
-        <h2>Agent Admin</h2>
-        <p>Password-protected access for the dashboard and lead engine controls.</p>
-        {error_html}
-        <form method="post" action="/admin/login">
-          <label for="password">Password</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" required />
-          <button type="submit">Enter dashboard</button>
-        </form>
-      </section>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">anata<span class="dot">.</span></div>
+        <nav class="nav" aria-label="Dashboard navigation">
+          <span>Owner Priorities</span>
+          <span>Lead Pull</span>
+          <span>Shipping OS</span>
+        </nav>
+        <div class="cta">AGENT LOGIN</div>
+      </div>
+    </header>
+    <main class="shell">
+      <div class="split">
+        <section>
+          <div class="eyebrow">Agent admin</div>
+          <h1>Make your sales board <span class="highlight">impossible</span> to ignore.</h1>
+        </section>
+        <section class="copy">
+          <p>Succeeding in outbound and pipeline management takes more than guesswork. This dashboard gives you a password-protected view into the signals, action items, and lead generation workflows that need attention right now.</p>
+          <div class="login-card">
+            <h2>Enter the dashboard.</h2>
+            <p>Use the admin password to access owner priorities, refresh the board, and run a lead pull without leaving the workspace.</p>
+            {error_html}
+            <form method="post" action="/admin/login">
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" required />
+              <button type="submit">GET STARTED</button>
+            </form>
+          </div>
+        </section>
+      </div>
     </main>
+    <div class="footer-bar" aria-hidden="true"></div>
   </body>
 </html>"""
 
@@ -492,6 +583,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         item_cards = []
         for item in queue.items:
             urgency_label = STALE_URGENCY_LABELS.get(item.urgency, item.urgency.replace("_", " ").title())
+            draft_preview = trim_for_slack(item.suggested_reply, limit=120)
             link_html = (
                 f'<a href="{html.escape(item.link_url)}" target="_blank" rel="noreferrer">Open task</a>'
                 if item.link_url
@@ -508,7 +600,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                   <h4>{html.escape(item.title)}</h4>
                   <p class="subtitle">{html.escape(item.subtitle)}</p>
                   <p><strong>Action:</strong> {html.escape(item.action_summary)}</p>
-                  <p><strong>Draft:</strong> {html.escape(item.suggested_reply)}</p>
+                  <p><strong>Draft:</strong> {html.escape(draft_preview)}</p>
                   {link_html}
                 </article>
                 """
@@ -551,168 +643,273 @@ def render_dashboard_page(data: DashboardData) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>anata | Agent Admin Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
     <style>
       :root {{
-        --bg: #f5efe4;
-        --panel: rgba(255, 251, 244, 0.94);
-        --panel-strong: rgba(255,255,255,.92);
-        --text: #16130f;
-        --muted: #6b6255;
-        --border: rgba(57, 48, 35, 0.12);
-        --accent: #1f4a3a;
-        --accent-soft: #d1a15f;
-        --accent-pale: #f4ebdc;
-        --danger: #a64d31;
-        --warn: #a57722;
-        --shadow: rgba(16, 16, 16, 0.09);
+        --dark-blue: #2B3644;
+        --alt-dark-blue: #33445C;
+        --light-blue: #85BBDA;
+        --brown: #BFA889;
+        --light-brown: #F9F7F3;
+        --white: #FFFFFF;
+        --text: #2B3644;
+        --danger: #9A5A4E;
+        --warn: #BFA889;
+        --shadow: rgba(43, 54, 68, 0.10);
       }}
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
+        background: var(--light-brown);
         color: var(--text);
-        background:
-          radial-gradient(circle at top left, rgba(201, 150, 84, .22), transparent 24%),
-          radial-gradient(circle at top right, rgba(31, 74, 58, .16), transparent 28%),
-          linear-gradient(180deg, rgba(255,255,255,.58), rgba(245,239,228,.92)),
-          var(--bg);
-        font-family: Georgia, "Times New Roman", serif;
+        font-family: "Roboto", sans-serif;
       }}
-      a {{ color: var(--accent); }}
-      .shell {{ max-width: 1320px; margin: 0 auto; padding: 28px 20px 60px; }}
-      .brandbar {{
+      a {{ color: var(--dark-blue); }}
+      .topbar {{
+        background: var(--alt-dark-blue);
+        color: var(--white);
+        padding: 24px 56px;
+      }}
+      .topbar-inner {{
+        max-width: 1480px;
+        margin: 0 auto;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 18px;
-        margin-bottom: 18px;
+        gap: 24px;
       }}
       .brandmark {{
         display: inline-flex;
         align-items: center;
-        gap: 10px;
-        color: var(--accent);
+        gap: 0;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 68px;
+        line-height: 1;
+        letter-spacing: -0.06em;
+        color: var(--white);
       }}
-      .brandmark strong {{
-        font-size: 30px;
-        font-weight: 600;
-        letter-spacing: -.04em;
+      .brandmark .dot {{
+        color: var(--light-blue);
       }}
-      .brandmeta {{
-        display: inline-flex;
-        gap: 10px;
-        flex-wrap: wrap;
+      .topnav {{
+        display: flex;
+        align-items: center;
+        gap: 42px;
+        font-size: 22px;
+        color: var(--white);
       }}
-      .brandmeta span {{
-        display: inline-flex;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: rgba(31,74,58,.08);
-        color: var(--accent);
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: .08em;
+      .topnav span::after {{
+        content: " ▾";
+        font-size: 18px;
       }}
-      .hero {{
-        display: grid;
-        gap: 20px;
-        grid-template-columns: 1.7fr .95fr;
-        margin-bottom: 26px;
+      .topnav span:last-child::after {{
+        content: "";
       }}
-      .panel {{
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 24px;
-        box-shadow: 0 18px 60px var(--shadow);
-        padding: 24px;
-        backdrop-filter: blur(10px);
-      }}
-      .hero h1 {{
-        margin: 0 0 10px;
-        font-size: clamp(44px, 6vw, 72px);
-        line-height: .95;
-        letter-spacing: -.05em;
-      }}
-      .hero p {{
-        margin: 0;
-        color: var(--muted);
-        line-height: 1.55;
-        max-width: 62ch;
-        font-size: 17px;
-      }}
-      .topline {{
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        text-transform: uppercase;
-        font-size: 12px;
-        letter-spacing: .08em;
-        color: var(--muted);
-        margin-bottom: 16px;
-      }}
-      .logout {{
+      .topcta {{
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 11px 16px;
+        min-width: 278px;
+        padding: 20px 28px;
         border-radius: 999px;
-        background: rgba(255,255,255,.76);
-        border: 1px solid var(--border);
-        font-size: 14px;
+        background: var(--light-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 26px;
+        text-decoration: none;
+      }}
+      .shell {{ max-width: 1480px; margin: 0 auto; padding: 58px 56px 96px; }}
+      .hero {{
+        display: grid;
+        grid-template-columns: 1.08fr .92fr;
+        gap: 84px;
+        align-items: start;
+        margin-bottom: 40px;
+      }}
+      .panel {{
+        background: transparent;
+        border-radius: 0;
+        padding: 0;
+        box-shadow: none;
+      }}
+      .eyebrow {{
+        display: inline-block;
+        padding: 18px 30px;
+        border-radius: 6px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 24px;
+        line-height: 1;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 38px;
+      }}
+      .hero-title {{
+        margin: 0;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 80px;
+        line-height: 0.98;
+        letter-spacing: -0.05em;
+        color: var(--dark-blue);
+      }}
+      .highlight {{
+        color: var(--light-blue);
+      }}
+      .hero-copy {{
+        font-weight: 300;
+        font-size: 24px;
+        line-height: 1.36;
+      }}
+      .hero-copy p {{
+        margin: 0 0 34px;
+      }}
+      .actions-bar {{
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 20px;
+        align-items: stretch;
+        padding: 28px 0 24px;
+        border-top: 4px solid var(--dark-blue);
+        border-bottom: 4px solid var(--dark-blue);
+        margin-bottom: 34px;
+      }}
+      .action-panel {{
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
+        border-radius: 18px;
+        padding: 20px 22px;
+      }}
+      .action-panel h3 {{
+        margin: 0 0 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 30px;
+        color: var(--dark-blue);
+      }}
+      .action-panel p {{
+        margin: 0 0 18px;
+        font-weight: 300;
+        font-size: 22px;
+        line-height: 1.35;
+      }}
+      .action-panel button {{
+        width: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 18px 28px;
+        background: var(--light-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 22px;
+        cursor: pointer;
+      }}
+      .logout-panel {{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      .logout-link {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px 28px;
+        min-height: 100%;
+        border-radius: 999px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 22px;
         text-decoration: none;
       }}
       .metrics {{
         display: grid;
         grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 14px;
-        margin-bottom: 26px;
+        gap: 16px;
+        margin-bottom: 36px;
       }}
       .metric {{
-        background: var(--panel-strong);
-        border: 1px solid var(--border);
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
         border-radius: 18px;
-        padding: 18px;
+        padding: 20px;
+        min-height: 190px;
       }}
       .metric span {{
         display: block;
-        color: var(--muted);
-        font-size: 13px;
-        margin-bottom: 12px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 24px;
+        line-height: 1;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--alt-dark-blue);
+        margin-bottom: 20px;
       }}
       .metric strong {{
         display: block;
-        font-size: 34px;
-        margin-bottom: 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 58px;
+        line-height: 1;
+        color: var(--dark-blue);
+        margin-bottom: 14px;
       }}
       .metric small {{
-        color: var(--muted);
+        color: var(--dark-blue);
         display: block;
-        line-height: 1.4;
+        font-weight: 300;
+        font-size: 20px;
+        line-height: 1.35;
       }}
       .layout {{
         display: grid;
-        gap: 22px;
-        grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+        gap: 40px;
+        grid-template-columns: minmax(0, 1.55fr) minmax(320px, .85fr);
+      }}
+      .section-title {{
+        margin: 0 0 22px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 58px;
+        line-height: 1;
+        color: var(--dark-blue);
       }}
       .owner-card {{
-        background: var(--panel);
-        border: 1px solid var(--border);
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
         border-radius: 22px;
-        padding: 22px;
-        margin-bottom: 18px;
+        padding: 26px;
+        margin-bottom: 22px;
       }}
       .owner-card header {{
         display: flex;
         justify-content: space-between;
         gap: 18px;
         align-items: flex-start;
-        margin-bottom: 16px;
+        margin-bottom: 18px;
       }}
       .owner-card h3 {{
-        margin: 0 0 6px;
-        font-size: 28px;
+        margin: 0 0 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 38px;
+        line-height: 1;
+        color: var(--dark-blue);
       }}
       .owner-card p {{
         margin: 0;
-        color: var(--muted);
+        color: var(--dark-blue);
+        font-weight: 300;
+        font-size: 22px;
       }}
       .owner-stats {{
         display: flex;
@@ -720,182 +917,272 @@ def render_dashboard_page(data: DashboardData) -> str:
         flex-wrap: wrap;
         justify-content: flex-end;
       }}
-      .owner-stats span,
+      .owner-stats span {{
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 10px 14px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 18px;
+        background: rgba(133, 187, 218, 0.20);
+        color: var(--dark-blue);
+      }}
       .badge,
       .source {{
         display: inline-flex;
         align-items: center;
         border-radius: 999px;
-        padding: 6px 10px;
-        font-size: 12px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        background: var(--accent-pale);
-        color: #4f4637;
+        padding: 9px 14px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 16px;
+        background: rgba(191, 168, 137, 0.22);
+        color: var(--dark-blue);
       }}
       .owner-items {{
         display: grid;
-        gap: 12px;
+        gap: 16px;
       }}
       .action-item {{
-        background: var(--panel-strong);
-        border: 1px solid var(--border);
-        border-left: 5px solid var(--accent-soft);
+        background: var(--light-brown);
+        border: 2px solid rgba(43, 54, 68, 0.08);
+        border-left: 10px solid var(--brown);
         border-radius: 18px;
-        padding: 18px;
+        padding: 22px;
       }}
       .urgency-overdue {{ border-left-color: var(--danger); }}
-      .urgency-needs_immediate_review {{ border-left-color: var(--warn); }}
-      .urgency-follow_up_due {{ border-left-color: var(--accent); }}
+      .urgency-needs_immediate_review {{ border-left-color: var(--brown); }}
+      .urgency-follow_up_due {{ border-left-color: var(--light-blue); }}
       .action-top {{
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: 10px;
         align-items: center;
-        margin-bottom: 10px;
+        margin-bottom: 14px;
       }}
       .date {{
-        color: var(--muted);
-        font-size: 12px;
+        color: var(--dark-blue);
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 18px;
       }}
       .action-item h4 {{
-        margin: 0 0 6px;
-        font-size: 22px;
+        margin: 0 0 10px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 34px;
+        line-height: 1.02;
+        color: var(--dark-blue);
       }}
       .action-item p {{
-        margin: 0 0 8px;
-        line-height: 1.45;
+        margin: 0 0 10px;
+        font-weight: 300;
+        font-size: 22px;
+        line-height: 1.32;
       }}
       .subtitle {{
-        color: var(--muted);
+        color: var(--alt-dark-blue);
       }}
       .notice {{
-        border-radius: 16px;
+        border-radius: 12px;
         padding: 14px 16px;
         margin-bottom: 14px;
-        line-height: 1.5;
+        line-height: 1.35;
+        font-weight: 300;
+        font-size: 20px;
       }}
       .success {{
-        background: rgba(32,75,58,.08);
-        border: 1px solid rgba(32,75,58,.18);
+        background: rgba(133, 187, 218, 0.14);
+        border: 1px solid rgba(133, 187, 218, 0.30);
       }}
       .warning {{
-        background: rgba(166,77,49,.08);
-        border: 1px solid rgba(166,77,49,.18);
-      }}
-      .tool-card h2,
-      .meta-card h2 {{
-        margin: 0 0 14px;
-        font-size: 28px;
-      }}
-      .tool-card {{
-        position: sticky;
-        top: 20px;
-      }}
-      .tool-stack {{
-        display: grid;
-        gap: 16px;
-      }}
-      .tool-module {{
-        padding: 16px;
-        border: 1px solid var(--border);
-        border-radius: 18px;
-        background: rgba(255,255,255,.56);
-      }}
-      .tool-module h3 {{
-        margin: 0 0 8px;
-        font-size: 24px;
-      }}
-      .tool-card p,
-      .meta-card p {{
-        color: var(--muted);
-        line-height: 1.55;
-      }}
-      .tool-card form {{
-        display: grid;
-        gap: 12px;
-        margin-top: 14px;
-      }}
-      .tool-card label {{
-        display: grid;
-        gap: 6px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-        letter-spacing: .08em;
-        text-transform: uppercase;
-      }}
-      .tool-card input {{
-        width: 100%;
-        padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid var(--border);
-        font-size: 16px;
-        background: white;
-      }}
-      .tool-card button {{
-        border: 0;
-        border-radius: 999px;
-        padding: 14px 18px;
-        background: linear-gradient(135deg, var(--accent), #10271f);
-        color: white;
-        font-size: 16px;
-        font-weight: 600;
-        cursor: pointer;
-        box-shadow: 0 16px 28px rgba(31,74,58,.15);
+        background: rgba(191, 168, 137, 0.18);
+        border: 1px solid rgba(191, 168, 137, 0.30);
       }}
       .status-line {{
         margin-top: 14px;
-        font-size: 14px;
-        color: var(--muted);
+        font-weight: 300;
+        font-size: 18px;
+        color: var(--dark-blue);
       }}
       pre {{
         white-space: pre-wrap;
         word-break: break-word;
-        font-size: 12px;
+        font-size: 16px;
         line-height: 1.45;
-        background: #fbf6eb;
-        border: 1px solid var(--border);
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
         border-radius: 14px;
         padding: 12px;
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
       }}
-      @media (max-width: 980px) {{
+      .meta-card {{
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
+        border-radius: 22px;
+        padding: 26px;
+      }}
+      .meta-card h2 {{
+        margin: 0 0 14px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 40px;
+        color: var(--dark-blue);
+      }}
+      .meta-card p {{
+        margin: 0 0 18px;
+        font-weight: 300;
+        font-size: 22px;
+        line-height: 1.35;
+      }}
+      .tools-column {{
+        display: grid;
+        gap: 20px;
+        align-content: start;
+      }}
+      .lead-form {{
+        display: grid;
+        gap: 14px;
+      }}
+      .lead-form label {{
+        display: grid;
+        gap: 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 24px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }}
+      .lead-form input {{
+        width: 100%;
+        padding: 18px 20px;
+        border-radius: 10px;
+        border: 2px solid rgba(43, 54, 68, 0.16);
+        background: var(--white);
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 24px;
+        color: var(--dark-blue);
+      }}
+      .lead-form button {{
+        width: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 20px 28px;
+        background: var(--light-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 22px;
+        cursor: pointer;
+      }}
+      .footer-bar {{
+        height: 18px;
+        background: var(--alt-dark-blue);
+        margin-top: 72px;
+      }}
+      @media (max-width: 1280px) {{
+        .topbar {{
+          padding: 20px 30px;
+        }}
+        .shell {{
+          padding: 40px 30px 72px;
+        }}
         .hero,
         .layout,
-        .metrics {{
+        .metrics,
+        .actions-bar {{
           grid-template-columns: 1fr;
         }}
-        .owner-card header {{
-          display: block;
+        .hero-title {{
+          font-size: clamp(54px, 10vw, 80px);
         }}
-        .owner-stats {{
-          justify-content: flex-start;
-          margin-top: 10px;
+      }}
+      @media (max-width: 960px) {{
+        .topbar-inner {{
+          flex-wrap: wrap;
+        }}
+        .topnav {{
+          width: 100%;
+          justify-content: center;
+          flex-wrap: wrap;
+          gap: 18px 26px;
+          font-size: 18px;
+        }}
+        .topcta {{
+          min-width: 220px;
+          font-size: 22px;
+          padding: 16px 24px;
+        }}
+        .brandmark {{
+          font-size: 56px;
+        }}
+        .eyebrow,
+        .metric span,
+        .lead-form label {{
+          font-size: 18px;
+        }}
+        .hero-copy,
+        .action-item p,
+        .owner-card p,
+        .meta-card p,
+        .action-panel p,
+        .lead-form input {{
+          font-size: 20px;
+        }}
+        .section-title,
+        .metric strong {{
+          font-size: 42px;
+        }}
+        .owner-card h3,
+        .action-item h4,
+        .meta-card h2,
+        .action-panel h3 {{
+          font-size: 30px;
         }}
       }}
     </style>
   </head>
   <body>
-    <div class="shell">
-      <div class="brandbar">
-        <div class="brandmark">
-          <strong>anata</strong>
-          <div class="brandmeta">
-            <span>Agent operations</span>
-            <span>{html.escape(data.as_of_date.isoformat())}</span>
-          </div>
-        </div>
-        <a class="logout" href="/admin/logout">Log out</a>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brandmark">anata<span class="dot">.</span></div>
+        <nav class="topnav" aria-label="Dashboard navigation">
+          <span>Owner Priorities</span>
+          <span>Lead Pull</span>
+          <span>Sync Status</span>
+        </nav>
+        <a class="topcta" href="/admin/logout">LOG OUT</a>
       </div>
+    </header>
+    <div class="shell">
       <section class="hero">
         <div class="panel">
-          <div class="topline">Partner with confidence / Sales operating view</div>
-          <h1>Sales review, owner priorities, and lead generation in one place.</h1>
-          <p>This board mirrors the Anata brand language and gives your team one calm workflow: refresh the queue, review the highest-risk owner actions first, and run a fresh lead pull without leaving the dashboard.</p>
+          <div class="eyebrow">Agent dashboard</div>
+          <h1 class="hero-title">Make your sales board <span class="highlight">impossible</span> to ignore.</h1>
         </div>
-        <div class="panel meta-card">
-          <h2>Ops snapshot</h2>
-          <p><strong>Latest ClickUp mirror sync:</strong> {html.escape(latest_sync)}</p>
-          <p><strong>Latest stale scan summary:</strong></p>
-          <pre>{latest_run_json}</pre>
+        <div class="hero-copy">
+          <p>This board pulls together the signals that matter most so your team can review owner priorities, refresh the pipeline, and act on the next best move without guesswork.</p>
+          <p>Use the controls below to sync ClickUp activity, run a fresh lead pull, and keep every action tied to a measurable output.</p>
+        </div>
+      </section>
+
+      <section class="actions-bar">
+        <div class="action-panel">
+          <h3>Refresh dashboard</h3>
+          <p>Update the ClickUp mirror and recompute stale priorities before reviewing the owner queue.</p>
+          <button id="sync-dashboard-button" type="button">SYNC DASHBOARD DATA</button>
+          <div class="status-line" id="sync-status">Ready.</div>
+        </div>
+        <div class="action-panel">
+          <h3>Run lead pull</h3>
+          <p>Run the existing lead build pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
+          <button type="button" onclick="document.getElementById('lead-pull-panel').scrollIntoView({{behavior:'smooth', block:'start'}})">GO TO LEAD PULL</button>
+        </div>
+        <div class="logout-panel">
+          <a class="logout-link" href="/admin/logout">LOG OUT</a>
         </div>
       </section>
 
@@ -903,23 +1190,22 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       <section class="layout">
         <div>
+          <h2 class="section-title">Owner priorities.</h2>
           {''.join(owner_sections) or '<section class="owner-card"><p class="empty">No owner queues yet. Run a sync or stale scan to populate the dashboard.</p></section>'}
         </div>
-        <aside class="panel tool-card">
-          <h2>Control center</h2>
-          <div class="tool-stack">
-            <section class="tool-module">
-              <h3>Refresh dashboard</h3>
-              <p>Update the ClickUp mirror and recompute stale priorities before you review the owner queue.</p>
-              <button id="sync-dashboard-button" type="button">Sync dashboard data</button>
-              <div class="status-line" id="sync-status">Ready.</div>
-            </section>
+        <div class="tools-column">
+          <section class="meta-card">
+          <h2>Ops snapshot</h2>
+          <p><strong>Latest ClickUp mirror sync:</strong> {html.escape(latest_sync)}</p>
+          <p><strong>Latest stale scan summary:</strong></p>
+          <pre>{latest_run_json}</pre>
+          </section>
 
-            <section class="tool-module">
-              <h3>Run lead pull</h3>
-              <p>Run the existing lead build pipeline from here. The pull still adds leads to Instantly first, then returns the CSV for immediate download.</p>
+          <section class="meta-card" id="lead-pull-panel">
+            <h2>Lead pull</h2>
+            <p>Run the existing lead build pipeline from here. The pull still adds leads to Instantly first, then returns the CSV for immediate download.</p>
               {lead_builder_notice}
-              <form id="lead-build-form">
+              <form class="lead-form" id="lead-build-form">
                 <label>
                   Run date
                   <input type="date" name="date" value="{html.escape(today_value)}" required />
@@ -928,14 +1214,14 @@ def render_dashboard_page(data: DashboardData) -> str:
                   Max domains
                   <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
                 </label>
-                <button type="submit">Run scraper and download CSV</button>
+                <button type="submit">RUN SCRAPER AND DOWNLOAD CSV</button>
               </form>
               <div class="status-line" id="run-status">Ready.</div>
-            </section>
-          </div>
-        </aside>
+          </section>
+        </div>
       </section>
     </div>
+    <div class="footer-bar" aria-hidden="true"></div>
     <script>
       const syncButton = document.getElementById("sync-dashboard-button");
       const syncStatus = document.getElementById("sync-status");
