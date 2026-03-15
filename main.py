@@ -2165,7 +2165,12 @@ async def admin_run_lead_build(request: Request) -> Response:
 
 
 @app.get("/")
-def home() -> dict[str, str]:
+def home() -> RedirectResponse:
+    return RedirectResponse(url="/admin/login", status_code=302)
+
+
+@app.get("/api/status")
+def api_status() -> dict[str, str]:
     return {"status": "lead engine running"}
 
 
