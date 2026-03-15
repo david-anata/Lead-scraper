@@ -273,17 +273,19 @@ def render_login_page(*, error_message: str = "") -> str:
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sales Admin Login</title>
+    <title>anata | Agent Admin</title>
     <style>
       :root {{
-        --bg: #f4efe4;
-        --panel: #fffaf0;
-        --text: #1a1a1a;
-        --muted: #6a6458;
-        --border: #d7cfbf;
-        --accent: #294d3c;
-        --accent-2: #d68c45;
-        --danger: #8a3f2f;
+        --bg: #f5efe4;
+        --ink: #171411;
+        --muted: #6d6559;
+        --panel: rgba(255, 251, 244, 0.92);
+        --border: rgba(57, 48, 35, 0.12);
+        --brand: #1f4a3a;
+        --brand-deep: #133126;
+        --glow: #c99654;
+        --danger: #8e4330;
+        --shadow: rgba(20, 16, 11, 0.10);
       }}
       * {{ box-sizing: border-box; }}
       body {{
@@ -293,29 +295,93 @@ def render_login_page(*, error_message: str = "") -> str:
         place-items: center;
         padding: 24px;
         background:
-          radial-gradient(circle at top left, rgba(214,140,69,.22), transparent 30%),
-          radial-gradient(circle at bottom right, rgba(41,77,60,.18), transparent 36%),
+          radial-gradient(circle at top left, rgba(201, 150, 84, .26), transparent 30%),
+          radial-gradient(circle at bottom right, rgba(31, 74, 58, .20), transparent 34%),
+          linear-gradient(180deg, rgba(255,255,255,.45), rgba(245,239,228,.92)),
           var(--bg);
-        color: var(--text);
+        color: var(--ink);
         font-family: Georgia, "Times New Roman", serif;
       }}
       .card {{
-        width: min(440px, 100%);
+        width: min(1020px, 100%);
+        display: grid;
+        grid-template-columns: 1.15fr .9fr;
+        overflow: hidden;
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 20px;
-        padding: 32px;
-        box-shadow: 0 28px 80px rgba(26,26,26,.10);
+        border-radius: 28px;
+        box-shadow: 0 28px 80px var(--shadow);
+        backdrop-filter: blur(10px);
       }}
-      h1 {{
-        margin: 0 0 10px;
-        font-size: 40px;
+      .brand-panel {{
+        padding: 40px 36px;
+        background:
+          linear-gradient(180deg, rgba(31,74,58,.05), rgba(31,74,58,0)),
+          linear-gradient(135deg, rgba(201,150,84,.18), rgba(255,255,255,0));
+        border-right: 1px solid var(--border);
+      }}
+      .form-panel {{
+        padding: 40px 36px;
+      }}
+      .brand-mark {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 28px;
+        color: var(--brand);
+      }}
+      .brand-mark strong {{
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -.03em;
+      }}
+      .brand-tag {{
+        display: inline-flex;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(31,74,58,.08);
+        color: var(--brand);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        margin-bottom: 16px;
+      }}
+      .hero-copy h1 {{
+        margin: 0 0 14px;
+        font-size: clamp(44px, 6vw, 72px);
+        line-height: .92;
+        letter-spacing: -.04em;
+      }}
+      .hero-copy p {{
+        margin: 0;
+        max-width: 42ch;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.65;
+      }}
+      .principles {{
+        margin-top: 28px;
+        display: grid;
+        gap: 10px;
+      }}
+      .principles div {{
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(255,255,255,.72);
+        border: 1px solid var(--border);
+        color: var(--muted);
+        line-height: 1.55;
+      }}
+      .form-panel h2 {{
+        margin: 0 0 8px;
+        font-size: 36px;
         line-height: 1;
       }}
-      p {{
-        margin: 0 0 22px;
+      .form-panel p {{
+        margin: 0 0 24px;
         color: var(--muted);
-        line-height: 1.5;
+        line-height: 1.55;
       }}
       label {{
         display: block;
@@ -327,26 +393,27 @@ def render_login_page(*, error_message: str = "") -> str:
       }}
       input {{
         width: 100%;
-        padding: 14px 16px;
-        border-radius: 12px;
+        padding: 16px 18px;
+        border-radius: 16px;
         border: 1px solid var(--border);
-        background: white;
+        background: rgba(255,255,255,.88);
         font-size: 16px;
-        margin-bottom: 16px;
+        margin-bottom: 18px;
       }}
       button {{
         width: 100%;
         border: 0;
         border-radius: 999px;
-        padding: 14px 18px;
-        background: linear-gradient(135deg, var(--accent), #1f362b);
+        padding: 15px 18px;
+        background: linear-gradient(135deg, var(--brand), var(--brand-deep));
         color: white;
         font-size: 16px;
         font-weight: 600;
         cursor: pointer;
+        box-shadow: 0 16px 30px rgba(31,74,58,.18);
       }}
       .notice {{
-        border-radius: 12px;
+        border-radius: 14px;
         padding: 12px 14px;
         margin-bottom: 16px;
         font-size: 14px;
@@ -356,18 +423,41 @@ def render_login_page(*, error_message: str = "") -> str:
         color: var(--danger);
         border: 1px solid rgba(138,63,47,.18);
       }}
+      @media (max-width: 880px) {{
+        .card {{
+          grid-template-columns: 1fr;
+        }}
+        .brand-panel {{
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }}
+      }}
     </style>
   </head>
   <body>
     <main class="card">
-      <h1>Agent Admin</h1>
-      <p>Password-protected access for the sales review dashboard and lead build actions.</p>
-      {error_html}
-      <form method="post" action="/admin/login">
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required />
-        <button type="submit">Enter dashboard</button>
-      </form>
+      <section class="brand-panel">
+        <div class="brand-mark"><strong>anata</strong></div>
+        <div class="brand-tag">Agent operations</div>
+        <div class="hero-copy">
+          <h1>Partner with confidence.</h1>
+          <p>This private workspace turns sales follow-up, lead generation, and owner priorities into one calm operating view for the team.</p>
+        </div>
+        <div class="principles">
+          <div><strong>Brand-first.</strong> Built to feel like part of Anata, not a separate back-office tool.</div>
+          <div><strong>Focused actions.</strong> Sync the board, review owner priorities, and run a fresh lead pull without hopping between tools.</div>
+        </div>
+      </section>
+      <section class="form-panel">
+        <h2>Agent Admin</h2>
+        <p>Password-protected access for the dashboard and lead engine controls.</p>
+        {error_html}
+        <form method="post" action="/admin/login">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+          <button type="submit">Enter dashboard</button>
+        </form>
+      </section>
     </main>
   </body>
 </html>"""
@@ -460,36 +550,73 @@ def render_dashboard_page(data: DashboardData) -> str:
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Agent Admin Dashboard</title>
+    <title>anata | Agent Admin Dashboard</title>
     <style>
       :root {{
-        --bg: #f3efe5;
-        --panel: #fffaf1;
-        --panel-strong: #fff;
-        --text: #171717;
-        --muted: #69614f;
-        --border: #d7cfbf;
-        --accent: #204b3a;
-        --accent-soft: #dcb16c;
+        --bg: #f5efe4;
+        --panel: rgba(255, 251, 244, 0.94);
+        --panel-strong: rgba(255,255,255,.92);
+        --text: #16130f;
+        --muted: #6b6255;
+        --border: rgba(57, 48, 35, 0.12);
+        --accent: #1f4a3a;
+        --accent-soft: #d1a15f;
+        --accent-pale: #f4ebdc;
         --danger: #a64d31;
         --warn: #a57722;
-        --shadow: rgba(16, 16, 16, 0.08);
+        --shadow: rgba(16, 16, 16, 0.09);
       }}
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
         color: var(--text);
         background:
-          linear-gradient(180deg, rgba(255,255,255,.5), rgba(243,239,229,.9)),
+          radial-gradient(circle at top left, rgba(201, 150, 84, .22), transparent 24%),
+          radial-gradient(circle at top right, rgba(31, 74, 58, .16), transparent 28%),
+          linear-gradient(180deg, rgba(255,255,255,.58), rgba(245,239,228,.92)),
           var(--bg);
         font-family: Georgia, "Times New Roman", serif;
       }}
       a {{ color: var(--accent); }}
-      .shell {{ max-width: 1240px; margin: 0 auto; padding: 28px 20px 60px; }}
+      .shell {{ max-width: 1320px; margin: 0 auto; padding: 28px 20px 60px; }}
+      .brandbar {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 18px;
+        margin-bottom: 18px;
+      }}
+      .brandmark {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--accent);
+      }}
+      .brandmark strong {{
+        font-size: 30px;
+        font-weight: 600;
+        letter-spacing: -.04em;
+      }}
+      .brandmeta {{
+        display: inline-flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }}
+      .brandmeta span {{
+        display: inline-flex;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(31,74,58,.08);
+        color: var(--accent);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+      }}
       .hero {{
         display: grid;
         gap: 20px;
-        grid-template-columns: 1.6fr 1fr;
+        grid-template-columns: 1.7fr .95fr;
         margin-bottom: 26px;
       }}
       .panel {{
@@ -498,17 +625,20 @@ def render_dashboard_page(data: DashboardData) -> str:
         border-radius: 24px;
         box-shadow: 0 18px 60px var(--shadow);
         padding: 24px;
+        backdrop-filter: blur(10px);
       }}
       .hero h1 {{
         margin: 0 0 10px;
-        font-size: 54px;
+        font-size: clamp(44px, 6vw, 72px);
         line-height: .95;
+        letter-spacing: -.05em;
       }}
       .hero p {{
         margin: 0;
         color: var(--muted);
         line-height: 1.55;
         max-width: 62ch;
+        font-size: 17px;
       }}
       .topline {{
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -519,8 +649,15 @@ def render_dashboard_page(data: DashboardData) -> str:
         margin-bottom: 16px;
       }}
       .logout {{
-        float: right;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 11px 16px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.76);
+        border: 1px solid var(--border);
         font-size: 14px;
+        text-decoration: none;
       }}
       .metrics {{
         display: grid;
@@ -592,7 +729,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         padding: 6px 10px;
         font-size: 12px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        background: #f2ebdd;
+        background: var(--accent-pale);
         color: #4f4637;
       }}
       .owner-items {{
@@ -604,7 +741,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         border: 1px solid var(--border);
         border-left: 5px solid var(--accent-soft);
         border-radius: 18px;
-        padding: 16px;
+        padding: 18px;
       }}
       .urgency-overdue {{ border-left-color: var(--danger); }}
       .urgency-needs_immediate_review {{ border-left-color: var(--warn); }}
@@ -650,6 +787,24 @@ def render_dashboard_page(data: DashboardData) -> str:
         margin: 0 0 14px;
         font-size: 28px;
       }}
+      .tool-card {{
+        position: sticky;
+        top: 20px;
+      }}
+      .tool-stack {{
+        display: grid;
+        gap: 16px;
+      }}
+      .tool-module {{
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(255,255,255,.56);
+      }}
+      .tool-module h3 {{
+        margin: 0 0 8px;
+        font-size: 24px;
+      }}
       .tool-card p,
       .meta-card p {{
         color: var(--muted);
@@ -680,13 +835,14 @@ def render_dashboard_page(data: DashboardData) -> str:
         border: 0;
         border-radius: 999px;
         padding: 14px 18px;
-        background: linear-gradient(135deg, var(--accent), #142d24);
+        background: linear-gradient(135deg, var(--accent), #10271f);
         color: white;
         font-size: 16px;
         font-weight: 600;
         cursor: pointer;
+        box-shadow: 0 16px 28px rgba(31,74,58,.15);
       }}
-      #run-status {{
+      .status-line {{
         margin-top: 14px;
         font-size: 14px;
         color: var(--muted);
@@ -719,11 +875,21 @@ def render_dashboard_page(data: DashboardData) -> str:
   </head>
   <body>
     <div class="shell">
+      <div class="brandbar">
+        <div class="brandmark">
+          <strong>anata</strong>
+          <div class="brandmeta">
+            <span>Agent operations</span>
+            <span>{html.escape(data.as_of_date.isoformat())}</span>
+          </div>
+        </div>
+        <a class="logout" href="/admin/logout">Log out</a>
+      </div>
       <section class="hero">
         <div class="panel">
-          <div class="topline">Agent Admin / {html.escape(data.as_of_date.isoformat())}<a class="logout" href="/admin/logout">Log out</a></div>
-          <h1>Sales review and lead engine control.</h1>
-          <p>This dashboard ranks action items for each owner from highest urgency to lowest, surfaces mirrored mailbox signals, and gives you one protected place to run the lead scraper and download the Instantly-ready CSV immediately.</p>
+          <div class="topline">Partner with confidence / Sales operating view</div>
+          <h1>Sales review, owner priorities, and lead generation in one place.</h1>
+          <p>This board mirrors the Anata brand language and gives your team one calm workflow: refresh the queue, review the highest-risk owner actions first, and run a fresh lead pull without leaving the dashboard.</p>
         </div>
         <div class="panel meta-card">
           <h2>Ops snapshot</h2>
@@ -740,26 +906,33 @@ def render_dashboard_page(data: DashboardData) -> str:
           {''.join(owner_sections) or '<section class="owner-card"><p class="empty">No owner queues yet. Run a sync or stale scan to populate the dashboard.</p></section>'}
         </div>
         <aside class="panel tool-card">
-          <h2>Dashboard sync</h2>
-          <p>Refresh the mirrored ClickUp data and recompute stale priorities before reviewing the owner queues. Gmail sync stays off here until OAuth is fixed.</p>
-          <button id="sync-dashboard-button" type="button">Sync dashboard data</button>
-          <div id="sync-status">Ready.</div>
+          <h2>Control center</h2>
+          <div class="tool-stack">
+            <section class="tool-module">
+              <h3>Refresh dashboard</h3>
+              <p>Update the ClickUp mirror and recompute stale priorities before you review the owner queue.</p>
+              <button id="sync-dashboard-button" type="button">Sync dashboard data</button>
+              <div class="status-line" id="sync-status">Ready.</div>
+            </section>
 
-          <h2>Lead scraper</h2>
-          <p>Run the existing lead build pipeline from this admin panel. The run still pushes leads into Instantly first, then returns the CSV download directly here.</p>
-          {lead_builder_notice}
-          <form id="lead-build-form">
-            <label>
-              Run date
-              <input type="date" name="date" value="{html.escape(today_value)}" required />
-            </label>
-            <label>
-              Max domains
-              <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
-            </label>
-            <button type="submit">Run scraper and download CSV</button>
-          </form>
-          <div id="run-status">Ready.</div>
+            <section class="tool-module">
+              <h3>Run lead pull</h3>
+              <p>Run the existing lead build pipeline from here. The pull still adds leads to Instantly first, then returns the CSV for immediate download.</p>
+              {lead_builder_notice}
+              <form id="lead-build-form">
+                <label>
+                  Run date
+                  <input type="date" name="date" value="{html.escape(today_value)}" required />
+                </label>
+                <label>
+                  Max domains
+                  <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
+                </label>
+                <button type="submit">Run scraper and download CSV</button>
+              </form>
+              <div class="status-line" id="run-status">Ready.</div>
+            </section>
+          </div>
         </aside>
       </section>
     </div>
