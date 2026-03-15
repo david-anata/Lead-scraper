@@ -56,10 +56,12 @@ HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_STORELEADS_PAGES = 10
 STORELEADS_PAGE_SIZE = 200
-MAX_APOLLO_DOMAINS_PER_RUN = 40
+MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "120") or "120").strip())
 APOLLO_SLEEP_SECONDS = 1.2
 MAX_CONTACTS_PER_DOMAIN = 2
 APOLLO_SEARCH_CANDIDATES_PER_DOMAIN = 10
+APOLLO_ATTEMPT_COOLDOWN_DAYS = int((os.getenv("APOLLO_ATTEMPT_COOLDOWN_DAYS", "60") or "60").strip())
+TARGET_ACCEPTED_LEADS_PER_RUN = int((os.getenv("TARGET_ACCEPTED_LEADS_PER_RUN", "0") or "0").strip())
 
 GENERIC_EMAIL_PREFIXES = (
     "info@",
@@ -129,6 +131,16 @@ GITHUB_STATE_DAILY_IMPORTS_PATH = (
     os.getenv("GITHUB_STATE_DAILY_IMPORTS_PATH", "state/daily_import_counts.csv").strip()
     or "state/daily_import_counts.csv"
 )
+APOLLO_ATTEMPTS_FILE = os.getenv("APOLLO_ATTEMPTS_FILE", "apollo_attempts.csv").strip()
+STORELEADS_CURSOR_FILE = os.getenv("STORELEADS_CURSOR_FILE", "storeleads_cursor.csv").strip()
+GITHUB_STATE_APOLLO_ATTEMPTS_PATH = (
+    os.getenv("GITHUB_STATE_APOLLO_ATTEMPTS_PATH", "state/apollo_attempts.csv").strip()
+    or "state/apollo_attempts.csv"
+)
+GITHUB_STATE_STORELEADS_CURSOR_PATH = (
+    os.getenv("GITHUB_STATE_STORELEADS_CURSOR_PATH", "state/storeleads_cursor.csv").strip()
+    or "state/storeleads_cursor.csv"
+)
 HEYREACH_PROCESSED_LEADS_FILE = os.getenv("HEYREACH_PROCESSED_LEADS_FILE", "heyreach_processed_leads.csv").strip()
 GITHUB_STATE_HEYREACH_LEADS_PATH = (
     os.getenv("GITHUB_STATE_HEYREACH_LEADS_PATH", "state/heyreach_processed_leads.csv").strip()
@@ -174,12 +186,40 @@ class LeadBuildExecutionResult:
     qualified_domains_count: int
     qualified_matches_total: int
     previously_processed_domains: int
+    skipped_apollo_cooldown_domains: int
+    storeleads_start_page: int
+    storeleads_end_page: int
+    storeleads_pages_scanned: int
     apollo_domains_queried: int
+    accepted_lead_target: int
     apollo_hits: int
     successful_contacts: int
     scheduler_status: dict[str, Any]
     instantly_import_result: dict[str, Any]
     heyreach_import_result: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class StoreLeadsCollectionResult:
+    domains: list[dict[str, Any]]
+    raw_scanned: int
+    qualified_matches_total: int
+    skipped_processed_domains: int
+    skipped_apollo_cooldown_domains: int
+    start_page: int
+    end_page: int
+    pages_scanned: int
+    next_page: int
+
+
+@dataclass(frozen=True)
+class LeadBuildRowsResult:
+    instantly_rows: list[dict[str, Any]]
+    linkedin_rows: list[dict[str, Any]]
+    successful_contacts: int
+    apollo_hits: int
+    apollo_domains_attempted: int
+    apollo_attempt_rows: list[dict[str, str]]
 
 
 def detect_scheduler_source(request: Request) -> str:
@@ -554,8 +594,45 @@ def write_csv_text(rows: list[dict[str, Any]], fieldnames: list[str]) -> str:
     return buffer.getvalue()
 
 
+def current_utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def parse_iso_datetime(value: str) -> datetime | None:
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed_value = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed_value.tzinfo is None:
+        parsed_value = parsed_value.replace(tzinfo=timezone.utc)
+
+    return parsed_value.astimezone(timezone.utc)
+
+
 def processed_domains_path() -> Path:
     configured_path = Path(PROCESSED_DOMAINS_FILE)
+    if configured_path.is_absolute():
+        return configured_path
+    return Path(__file__).resolve().parent / configured_path
+
+
+def apollo_attempts_path() -> Path:
+    configured_path = Path(APOLLO_ATTEMPTS_FILE)
+    if configured_path.is_absolute():
+        return configured_path
+    return Path(__file__).resolve().parent / configured_path
+
+
+def storeleads_cursor_path() -> Path:
+    configured_path = Path(STORELEADS_CURSOR_FILE)
     if configured_path.is_absolute():
         return configured_path
     return Path(__file__).resolve().parent / configured_path
@@ -632,6 +709,158 @@ def append_processed_domains(domains: set[str], run_date: str) -> None:
 
         for domain in sorted(domains):
             writer.writerow({"domain": domain, "date_added": run_date})
+
+
+def load_apollo_attempts() -> dict[str, dict[str, str]]:
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_APOLLO_ATTEMPTS_PATH)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub Apollo state read failed: {exc}") from exc
+
+        attempts = {
+            normalize_domain((row or {}).get("domain", "")): dict(row)
+            for row in parse_csv_text(content)
+            if normalize_domain((row or {}).get("domain", ""))
+        }
+        logger.info("[State] backend=github apollo_attempt_domains=%s", len(attempts))
+        return attempts
+
+    path = apollo_attempts_path()
+    if not path.exists():
+        return {}
+
+    attempts: dict[str, dict[str, str]] = {}
+    with path.open("r", encoding="utf-8", newline="") as file_obj:
+        reader = csv.DictReader(file_obj)
+        for row in reader:
+            domain = normalize_domain((row or {}).get("domain", ""))
+            if domain:
+                attempts[domain] = dict(row or {})
+
+    return attempts
+
+
+def upsert_apollo_attempts(attempt_rows: list[dict[str, str]]) -> None:
+    if not attempt_rows:
+        return
+
+    fieldnames = ["domain", "last_attempted_at", "result", "cooldown_until"]
+
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_APOLLO_ATTEMPTS_PATH)
+            existing_rows = parse_csv_text(content)
+            attempts_by_domain = {
+                normalize_domain((row or {}).get("domain", "")): dict(row)
+                for row in existing_rows
+                if normalize_domain((row or {}).get("domain", ""))
+            }
+            for row in attempt_rows:
+                domain = normalize_domain(row.get("domain", ""))
+                if not domain:
+                    continue
+                attempts_by_domain[domain] = {
+                    "domain": domain,
+                    "last_attempted_at": row.get("last_attempted_at", ""),
+                    "result": row.get("result", ""),
+                    "cooldown_until": row.get("cooldown_until", ""),
+                }
+
+            ordered_rows = [attempts_by_domain[domain] for domain in sorted(attempts_by_domain)]
+            write_github_state_file(
+                GITHUB_STATE_APOLLO_ATTEMPTS_PATH,
+                write_csv_text(ordered_rows, fieldnames),
+                "Update Apollo attempts state",
+            )
+            logger.info("[State] backend=github upserted_apollo_attempts=%s", len(attempt_rows))
+            return
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub Apollo state write failed: {exc}") from exc
+
+    path = apollo_attempts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    attempts_by_domain = load_apollo_attempts()
+    for row in attempt_rows:
+        domain = normalize_domain(row.get("domain", ""))
+        if not domain:
+            continue
+        attempts_by_domain[domain] = {
+            "domain": domain,
+            "last_attempted_at": row.get("last_attempted_at", ""),
+            "result": row.get("result", ""),
+            "cooldown_until": row.get("cooldown_until", ""),
+        }
+
+    ordered_rows = [attempts_by_domain[domain] for domain in sorted(attempts_by_domain)]
+    path.write_text(write_csv_text(ordered_rows, fieldnames), encoding="utf-8")
+
+
+def load_storeleads_cursor() -> int:
+    default_page = 0
+
+    if github_state_enabled():
+        try:
+            content, _ = load_github_state_file(GITHUB_STATE_STORELEADS_CURSOR_PATH)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub StoreLeads cursor read failed: {exc}") from exc
+
+        rows = parse_csv_text(content)
+        if not rows:
+            return default_page
+        try:
+            next_page = int((rows[0] or {}).get("next_page", default_page) or default_page)
+        except (TypeError, ValueError):
+            next_page = default_page
+        next_page = max(next_page, 0) % MAX_STORELEADS_PAGES
+        logger.info("[State] backend=github storeleads_next_page=%s", next_page)
+        return next_page
+
+    path = storeleads_cursor_path()
+    if not path.exists():
+        return default_page
+
+    with path.open("r", encoding="utf-8", newline="") as file_obj:
+        rows = list(csv.DictReader(file_obj))
+    if not rows:
+        return default_page
+    try:
+        next_page = int((rows[0] or {}).get("next_page", default_page) or default_page)
+    except (TypeError, ValueError):
+        next_page = default_page
+    return max(next_page, 0) % MAX_STORELEADS_PAGES
+
+
+def save_storeleads_cursor(next_page: int) -> None:
+    normalized_next_page = max(next_page, 0) % MAX_STORELEADS_PAGES
+    rows = [{"next_page": normalized_next_page, "last_updated": current_utc_timestamp()}]
+    fieldnames = ["next_page", "last_updated"]
+
+    if github_state_enabled():
+        try:
+            write_github_state_file(
+                GITHUB_STATE_STORELEADS_CURSOR_PATH,
+                write_csv_text(rows, fieldnames),
+                "Update StoreLeads cursor",
+            )
+            logger.info("[State] backend=github saved_storeleads_next_page=%s", normalized_next_page)
+            return
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=500, detail=f"GitHub StoreLeads cursor write failed: {exc}") from exc
+
+    path = storeleads_cursor_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(write_csv_text(rows, fieldnames), encoding="utf-8")
+
+
+def domains_in_apollo_cooldown(apollo_attempts: dict[str, dict[str, str]], current_time: datetime) -> set[str]:
+    cooldown_domains: set[str] = set()
+    for domain, record in apollo_attempts.items():
+        result = ((record or {}).get("result") or "").strip().lower()
+        cooldown_until = parse_iso_datetime((record or {}).get("cooldown_until", ""))
+        if result == "no_usable_contacts" and cooldown_until and cooldown_until > current_time:
+            cooldown_domains.add(domain)
+    return cooldown_domains
 
 
 def daily_import_log_path() -> Path:
@@ -1272,19 +1501,25 @@ def collect_domains(
     max_domains: int,
     settings: Settings,
     processed_domains: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], int, int, int]:
+) -> StoreLeadsCollectionResult:
+    start_page = load_storeleads_cursor()
     qualified_domains: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
     processed_domains = processed_domains or set()
+    apollo_attempts = load_apollo_attempts()
+    apollo_cooldown_domains = domains_in_apollo_cooldown(apollo_attempts, datetime.now(timezone.utc))
     raw_scanned = 0
     qualified_matches_total = 0
     skipped_processed_domains = 0
+    skipped_apollo_cooldown_domains = 0
+    pages_scanned = 0
+    last_scanned_page = start_page
 
-    for page in range(MAX_STORELEADS_PAGES):
+    for page_offset in range(MAX_STORELEADS_PAGES):
+        page = (start_page + page_offset) % MAX_STORELEADS_PAGES
         domains = fetch_storeleads_page(page, settings)
-        if not domains:
-            break
-
+        pages_scanned += 1
+        last_scanned_page = page
         raw_scanned += len(domains)
 
         for store in domains:
@@ -1303,12 +1538,40 @@ def collect_domains(
                 skipped_processed_domains += 1
                 continue
 
+            if normalized_domain in apollo_cooldown_domains:
+                skipped_apollo_cooldown_domains += 1
+                continue
+
             qualified_domains.append(store)
 
             if len(qualified_domains) >= max_domains:
-                return qualified_domains, raw_scanned, qualified_matches_total, skipped_processed_domains
+                next_page = (page + 1) % MAX_STORELEADS_PAGES
+                save_storeleads_cursor(next_page)
+                return StoreLeadsCollectionResult(
+                    domains=qualified_domains,
+                    raw_scanned=raw_scanned,
+                    qualified_matches_total=qualified_matches_total,
+                    skipped_processed_domains=skipped_processed_domains,
+                    skipped_apollo_cooldown_domains=skipped_apollo_cooldown_domains,
+                    start_page=start_page,
+                    end_page=page,
+                    pages_scanned=pages_scanned,
+                    next_page=next_page,
+                )
 
-    return qualified_domains, raw_scanned, qualified_matches_total, skipped_processed_domains
+    next_page = (last_scanned_page + 1) % MAX_STORELEADS_PAGES
+    save_storeleads_cursor(next_page)
+    return StoreLeadsCollectionResult(
+        domains=qualified_domains,
+        raw_scanned=raw_scanned,
+        qualified_matches_total=qualified_matches_total,
+        skipped_processed_domains=skipped_processed_domains,
+        skipped_apollo_cooldown_domains=skipped_apollo_cooldown_domains,
+        start_page=start_page,
+        end_page=last_scanned_page,
+        pages_scanned=pages_scanned,
+        next_page=next_page,
+    )
 
 
 # ========= APOLLO =========
@@ -1386,7 +1649,7 @@ def search_apollo_people(
     settings: Settings,
     *,
     max_results: int = APOLLO_SEARCH_CANDIDATES_PER_DOMAIN,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     search_params = {
         "page": 1,
         "per_page": max_results,
@@ -1408,7 +1671,7 @@ def search_apollo_people(
         )
     except requests.RequestException as exc:
         logger.warning("[Apollo] people search request error for domain=%s: %s", domain, exc)
-        return []
+        return [], "request_error"
 
     if response.status_code != 200:
         failure_class = "request_shape_or_unknown"
@@ -1427,29 +1690,29 @@ def search_apollo_people(
         )
         if APOLLO_DEBUG_RAW:
             logger.debug("[Apollo] people search params for domain=%s: %s", domain, search_params)
-        return []
+        return [], "request_error"
 
     try:
         data = response.json()
     except ValueError:
         logger.warning("[Apollo] invalid people search JSON for domain=%s", domain)
-        return []
+        return [], "request_error"
 
     if APOLLO_DEBUG_RAW:
         logger.debug("[Apollo] people search response for domain=%s: %s", domain, data)
 
     people = data.get("people", []) or []
     logger.info("[Apollo] raw people for domain=%s: %s", domain, len(people))
-    return people
+    return people, "ok"
 
 
-def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> list[dict[str, Any]]:
+def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> tuple[list[dict[str, Any]], str]:
     if not people:
-        return []
+        return [], "ok"
 
     details = [{"id": person["id"]} for person in people if person.get("id")]
     if not details:
-        return []
+        return [], "ok"
 
     enrich_payload = {"details": details}
 
@@ -1469,7 +1732,7 @@ def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> li
         )
     except requests.RequestException as exc:
         logger.warning("[Apollo] people enrichment request error: %s", exc)
-        return []
+        return [], "request_error"
 
     if response.status_code != 200:
         failure_class = "request_shape_or_unknown"
@@ -1487,20 +1750,20 @@ def enrich_apollo_people(people: list[dict[str, Any]], settings: Settings) -> li
         )
         if APOLLO_DEBUG_RAW:
             logger.debug("[Apollo] people enrichment payload: %s", enrich_payload)
-        return []
+        return [], "request_error"
 
     try:
         data = response.json()
     except ValueError:
         logger.warning("[Apollo] invalid people enrichment JSON")
-        return []
+        return [], "request_error"
 
     if APOLLO_DEBUG_RAW:
         logger.debug("[Apollo] people enrichment response: %s", data)
 
     matches = [match for match in (data.get("matches", []) or []) if isinstance(match, dict)]
     logger.info("[Apollo] enriched people returned: %s", len(matches))
-    return matches
+    return matches, "ok"
 
 
 def search_apollo_contacts(
@@ -1509,7 +1772,20 @@ def search_apollo_contacts(
     *,
     max_per_domain: int = MAX_CONTACTS_PER_DOMAIN,
 ) -> tuple[list[dict[str, Any]], dict[str, int | str]]:
-    people = search_apollo_people(domain, settings)
+    people, people_status = search_apollo_people(domain, settings)
+    if people_status != "ok":
+        logger.info(
+            "[ApolloPipeline] domain=%s stage=people_search result=request_error likely_root_cause=request_or_api_error",
+            domain,
+        )
+        return [], {
+            "domain": domain,
+            "people_search_candidates": 0,
+            "enrichment_matches": 0,
+            "candidates_with_any_email": 0,
+            "candidates_with_brand_domain_email": 0,
+            "attempt_status": "request_error",
+        }
     if not people:
         logger.info(
             "[ApolloPipeline] domain=%s stage=people_search result=empty likely_root_cause=request_shape_permission_or_no_results",
@@ -1521,9 +1797,24 @@ def search_apollo_contacts(
             "enrichment_matches": 0,
             "candidates_with_any_email": 0,
             "candidates_with_brand_domain_email": 0,
+            "attempt_status": "ok",
         }
 
-    enriched_people = enrich_apollo_people(people, settings)
+    enriched_people, enrichment_status = enrich_apollo_people(people, settings)
+    if enrichment_status != "ok":
+        logger.info(
+            "[ApolloPipeline] domain=%s stage=enrichment result=request_error likely_root_cause=permission_shape_or_api_error people_search_candidates=%s",
+            domain,
+            len(people),
+        )
+        return [], {
+            "domain": domain,
+            "people_search_candidates": len(people),
+            "enrichment_matches": 0,
+            "candidates_with_any_email": 0,
+            "candidates_with_brand_domain_email": 0,
+            "attempt_status": "request_error",
+        }
     if not enriched_people:
         logger.info(
             "[ApolloPipeline] domain=%s stage=enrichment result=empty likely_root_cause=permission_shape_or_no_matches people_search_candidates=%s",
@@ -1536,6 +1827,7 @@ def search_apollo_contacts(
             "enrichment_matches": 0,
             "candidates_with_any_email": 0,
             "candidates_with_brand_domain_email": 0,
+            "attempt_status": "ok",
         }
 
     candidates_with_any_email = sum(1 for person in enriched_people if extract_contact_email(person))
@@ -1552,10 +1844,19 @@ def search_apollo_contacts(
         "enrichment_matches": len(enriched_people),
         "candidates_with_any_email": candidates_with_any_email,
         "candidates_with_brand_domain_email": len(filtered_people),
+        "attempt_status": "ok",
     }
 
 
 # ========= LEAD OUTPUT BUILDERS =========
+def accepted_lead_target_per_run() -> int:
+    if TARGET_ACCEPTED_LEADS_PER_RUN > 0:
+        return TARGET_ACCEPTED_LEADS_PER_RUN
+    if DAILY_NEW_LEAD_LIMIT > 0:
+        return DAILY_NEW_LEAD_LIMIT
+    return 15
+
+
 def determine_offer(revenue: float | None) -> str:
     if revenue and revenue >= 150000:
         return "Fulfillment"
@@ -1566,25 +1867,31 @@ def build_csv_rows(
     domains: list[dict[str, Any]],
     run_date: str,
     settings: Settings,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int]:
+) -> LeadBuildRowsResult:
     instantly_rows: list[dict[str, Any]] = []
     linkedin_rows: list[dict[str, Any]] = []
     successful_contacts = 0
     apollo_hits = 0
+    apollo_domains_attempted = 0
+    apollo_attempt_rows: list[dict[str, str]] = []
     seen_emails_global: set[str] = set()
+    accepted_target = accepted_lead_target_per_run()
 
-    max_apollo_domains = min(MAX_APOLLO_DOMAINS_PER_RUN, len(domains))
-
-    for index, store in enumerate(domains):
+    for store in domains:
         domain = normalize_domain(store.get("name", ""))
-        if not domain or index >= max_apollo_domains:
+        if not domain:
             continue
+        if apollo_domains_attempted >= MAX_APOLLO_DOMAINS_PER_RUN:
+            break
+        if successful_contacts >= accepted_target:
+            break
 
         contacts, apollo_debug_stats = search_apollo_contacts(
             domain,
             settings,
             max_per_domain=MAX_CONTACTS_PER_DOMAIN,
         )
+        apollo_domains_attempted += 1
         time.sleep(APOLLO_SLEEP_SECONDS)
 
         if contacts:
@@ -1675,6 +1982,23 @@ def build_csv_rows(
 
             successful_contacts += 1
 
+        attempt_status = str(apollo_debug_stats.get("attempt_status", "ok"))
+        cooldown_until = ""
+        attempt_result = "accepted_contacts" if accepted_for_domain > 0 else "no_usable_contacts"
+        if attempt_status == "request_error":
+            attempt_result = "request_error"
+        elif accepted_for_domain == 0:
+            cooldown_until = (datetime.now(timezone.utc) + timedelta(days=APOLLO_ATTEMPT_COOLDOWN_DAYS)).isoformat()
+
+        apollo_attempt_rows.append(
+            {
+                "domain": domain,
+                "last_attempted_at": current_utc_timestamp(),
+                "result": attempt_result,
+                "cooldown_until": cooldown_until,
+            }
+        )
+
         logger.info(
             "[ApolloPipeline] domain=%s people_search_candidates=%s enrichment_matches=%s "
             "candidates_with_any_email=%s candidates_with_brand_domain_email=%s "
@@ -1687,7 +2011,14 @@ def build_csv_rows(
             accepted_for_domain,
         )
 
-    return instantly_rows, linkedin_rows, successful_contacts, apollo_hits
+    return LeadBuildRowsResult(
+        instantly_rows=instantly_rows,
+        linkedin_rows=linkedin_rows,
+        successful_contacts=successful_contacts,
+        apollo_hits=apollo_hits,
+        apollo_domains_attempted=apollo_domains_attempted,
+        apollo_attempt_rows=apollo_attempt_rows,
+    )
 
 
 # ========= SLACK =========
@@ -1991,10 +2322,15 @@ def post_slack_summary(
     run_date: str,
     scheduler_source: str,
     raw_scanned: int,
+    storeleads_start_page: int,
+    storeleads_end_page: int,
+    storeleads_pages_scanned: int,
     qualified_domains: int,
     new_domains_considered: int,
     previously_processed_domains: int,
+    skipped_apollo_cooldown_domains: int,
     apollo_domains_queried: int,
+    accepted_lead_target: int,
     apollo_hits: int,
     successful_contacts: int,
     instantly_import_result: dict[str, Any],
@@ -2023,10 +2359,15 @@ Lead build completed.
 Run date: {run_date}
 Scheduler source: {scheduler_source}
 Domains scanned from StoreLeads: {raw_scanned}
+StoreLeads start page: {storeleads_start_page}
+StoreLeads end page: {storeleads_end_page}
+StoreLeads pages scanned: {storeleads_pages_scanned}
 ICP matches: {qualified_domains}
 Previously processed domains skipped: {previously_processed_domains}
+Apollo cooldown domains skipped: {skipped_apollo_cooldown_domains}
 New domains considered: {new_domains_considered}
 Domains queried in Apollo: {apollo_domains_queried}
+Accepted lead target: {accepted_lead_target}
 Domains with Apollo candidates: {apollo_hits}
 Final contacts selected: {successful_contacts}
 Instantly import status: {instantly_import_result.get("status", "unknown")}
@@ -2062,39 +2403,45 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
     validate_required_settings(settings)
 
     processed_domains = load_processed_domains()
-    qualified_domains, raw_scanned, qualified_matches_total, previously_processed_domains = collect_domains(
+    collection_result = collect_domains(
         payload.max_domains,
         settings,
         processed_domains,
     )
-    apollo_domains_queried = min(MAX_APOLLO_DOMAINS_PER_RUN, len(qualified_domains))
+    accepted_lead_target = accepted_lead_target_per_run()
 
     logger.info(
-        "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s apollo_domains_queried=%s daily_new_lead_limit=%s weekday_only=%s",
+        "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s start_page=%s end_page=%s pages_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s skipped_apollo_cooldown=%s accepted_lead_target=%s max_apollo_domains=%s daily_new_lead_limit=%s weekday_only=%s",
         scheduler_source,
         payload.date,
         payload.max_domains,
-        raw_scanned,
-        qualified_matches_total,
-        len(qualified_domains),
-        previously_processed_domains,
-        apollo_domains_queried,
+        collection_result.raw_scanned,
+        collection_result.start_page,
+        collection_result.end_page,
+        collection_result.pages_scanned,
+        collection_result.qualified_matches_total,
+        len(collection_result.domains),
+        collection_result.skipped_processed_domains,
+        collection_result.skipped_apollo_cooldown_domains,
+        accepted_lead_target,
+        MAX_APOLLO_DOMAINS_PER_RUN,
         DAILY_NEW_LEAD_LIMIT,
         ENABLE_WEEKDAY_ONLY_IMPORTS,
     )
 
-    instantly_rows, linkedin_rows, successful_contacts, apollo_hits = build_csv_rows(
-        qualified_domains,
+    rows_result = build_csv_rows(
+        collection_result.domains,
         payload.date,
         settings,
     )
+    upsert_apollo_attempts(rows_result.apollo_attempt_rows)
 
-    instantly_rows, scheduler_status = apply_daily_import_limit(instantly_rows, payload.date)
+    instantly_rows, scheduler_status = apply_daily_import_limit(rows_result.instantly_rows, payload.date)
     allowed_emails = {row.get("email", "") for row in instantly_rows if row.get("email")}
-    linkedin_rows = [row for row in linkedin_rows if row.get("email", "") in allowed_emails]
+    linkedin_rows = [row for row in rows_result.linkedin_rows if row.get("email", "") in allowed_emails]
     successful_contacts = len(instantly_rows)
     logger.info(
-        "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s",
+        "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s accepted_lead_target=%s apollo_domains_attempted=%s",
         scheduler_source,
         payload.date,
         payload.max_domains,
@@ -2103,6 +2450,8 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
         scheduler_status.get("already_imported_today", 0),
         scheduler_status.get("remaining_capacity", 0),
         successful_contacts,
+        accepted_lead_target,
+        rows_result.apollo_domains_attempted,
     )
 
     instantly_csv = rows_to_csv(instantly_rows)
@@ -2118,12 +2467,17 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
     post_slack_summary(
         run_date=payload.date,
         scheduler_source=scheduler_source,
-        raw_scanned=raw_scanned,
-        qualified_domains=qualified_matches_total,
-        new_domains_considered=len(qualified_domains),
-        previously_processed_domains=previously_processed_domains,
-        apollo_domains_queried=apollo_domains_queried,
-        apollo_hits=apollo_hits,
+        raw_scanned=collection_result.raw_scanned,
+        storeleads_start_page=collection_result.start_page,
+        storeleads_end_page=collection_result.end_page,
+        storeleads_pages_scanned=collection_result.pages_scanned,
+        qualified_domains=collection_result.qualified_matches_total,
+        new_domains_considered=len(collection_result.domains),
+        previously_processed_domains=collection_result.skipped_processed_domains,
+        skipped_apollo_cooldown_domains=collection_result.skipped_apollo_cooldown_domains,
+        apollo_domains_queried=rows_result.apollo_domains_attempted,
+        accepted_lead_target=accepted_lead_target,
+        apollo_hits=rows_result.apollo_hits,
         successful_contacts=successful_contacts,
         instantly_import_result=instantly_import_result,
         heyreach_import_result=heyreach_import_result,
@@ -2137,12 +2491,17 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
     return LeadBuildExecutionResult(
         instantly_csv=instantly_csv,
         instantly_rows=instantly_rows,
-        raw_scanned=raw_scanned,
-        qualified_domains_count=len(qualified_domains),
-        qualified_matches_total=qualified_matches_total,
-        previously_processed_domains=previously_processed_domains,
-        apollo_domains_queried=apollo_domains_queried,
-        apollo_hits=apollo_hits,
+        raw_scanned=collection_result.raw_scanned,
+        qualified_domains_count=len(collection_result.domains),
+        qualified_matches_total=collection_result.qualified_matches_total,
+        previously_processed_domains=collection_result.skipped_processed_domains,
+        skipped_apollo_cooldown_domains=collection_result.skipped_apollo_cooldown_domains,
+        storeleads_start_page=collection_result.start_page,
+        storeleads_end_page=collection_result.end_page,
+        storeleads_pages_scanned=collection_result.pages_scanned,
+        apollo_domains_queried=rows_result.apollo_domains_attempted,
+        accepted_lead_target=accepted_lead_target,
+        apollo_hits=rows_result.apollo_hits,
         successful_contacts=successful_contacts,
         scheduler_status=scheduler_status,
         instantly_import_result=instantly_import_result,
@@ -2228,7 +2587,15 @@ async def admin_run_lead_build(request: Request) -> Response:
                 "status": "ok",
                 "message": "No valid personal contacts found for this run.",
                 "domains_scanned": result.raw_scanned,
-                "icp_matches": result.qualified_domains_count,
+                "icp_matches": result.qualified_matches_total,
+                "new_domains_considered": result.qualified_domains_count,
+                "previously_processed_domains": result.previously_processed_domains,
+                "skipped_apollo_cooldown_domains": result.skipped_apollo_cooldown_domains,
+                "storeleads_start_page": result.storeleads_start_page,
+                "storeleads_end_page": result.storeleads_end_page,
+                "storeleads_pages_scanned": result.storeleads_pages_scanned,
+                "apollo_domains_attempted": result.apollo_domains_queried,
+                "accepted_lead_target": result.accepted_lead_target,
                 "apollo_contacts_found": result.apollo_hits,
                 "personal_contacts_found": result.successful_contacts,
             },
@@ -2293,7 +2660,15 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
                     "status": "ok",
                     "message": "No valid personal contacts found for this run.",
                     "domains_scanned": result.raw_scanned,
-                    "icp_matches": result.qualified_domains_count,
+                    "icp_matches": result.qualified_matches_total,
+                    "new_domains_considered": result.qualified_domains_count,
+                    "previously_processed_domains": result.previously_processed_domains,
+                    "skipped_apollo_cooldown_domains": result.skipped_apollo_cooldown_domains,
+                    "storeleads_start_page": result.storeleads_start_page,
+                    "storeleads_end_page": result.storeleads_end_page,
+                    "storeleads_pages_scanned": result.storeleads_pages_scanned,
+                    "apollo_domains_attempted": result.apollo_domains_queried,
+                    "accepted_lead_target": result.accepted_lead_target,
                     "apollo_contacts_found": result.apollo_hits,
                     "personal_contacts_found": result.successful_contacts,
                 },
