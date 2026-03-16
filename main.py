@@ -26,8 +26,11 @@ from sales_support_agent.services.admin_auth import (
 )
 from sales_support_agent.services.admin_dashboard import (
     DashboardData,
+    ExecutiveData,
     dashboard_data_from_dict,
+    executive_data_from_dict,
     render_dashboard_page,
+    render_executive_page,
     render_login_page,
 )
 
@@ -350,6 +353,40 @@ def _build_empty_dashboard(*, lead_builder_missing: list[str], error_message: st
     )
 
 
+def _build_empty_executive(*, error_message: str = "") -> ExecutiveData:
+    return ExecutiveData(
+        as_of_date=date.today(),
+        latest_sync_at=None,
+        latest_run_summary={"executive_error": error_message} if error_message else {},
+        summary_text=error_message or "No executive data is currently available.",
+        kpis={
+            "active_leads": 0,
+            "overdue": 0,
+            "review": 0,
+            "due": 0,
+            "untouched_7_plus": 0,
+            "late_stage_stale": 0,
+        },
+        owner_scorecards=[],
+        status_distribution=[],
+        source_distribution=[],
+        aging_buckets=[],
+        late_stage_distribution=[],
+        risk_leads=[],
+        inbound_replies_by_owner=[],
+        mailbox_signals_by_owner=[],
+        hygiene_counts={
+            "missing_next_action": 0,
+            "missing_meeting_outcome": 0,
+            "untouched_new_or_contacted": 0,
+            "inbound_replies_last_7_days": 0,
+            "mailbox_signals_last_7_days": 0,
+        },
+        filters={"owners": [], "statuses": [], "sources": [], "urgencies": ["overdue", "needs_immediate_review", "follow_up_due"]},
+        lead_records=[],
+    )
+
+
 def dashboard_needs_auto_sync(
     dashboard: DashboardData,
     admin_settings: AdminDashboardSettings,
@@ -369,6 +406,26 @@ def dashboard_needs_auto_sync(
         latest_sync_at = latest_sync_at.replace(tzinfo=timezone.utc)
 
     return current_time - latest_sync_at >= timedelta(minutes=max_age_minutes)
+
+
+def latest_sync_is_stale(
+    latest_sync_at: datetime | None,
+    admin_settings: AdminDashboardSettings,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    max_age_minutes = max(admin_settings.admin_auto_sync_max_age_minutes, 0)
+    if max_age_minutes == 0:
+        return False
+    if latest_sync_at is None:
+        return True
+
+    current_time = now or datetime.now(timezone.utc)
+    normalized_latest_sync = latest_sync_at
+    if normalized_latest_sync.tzinfo is None:
+        normalized_latest_sync = normalized_latest_sync.replace(tzinfo=timezone.utc)
+
+    return current_time - normalized_latest_sync >= timedelta(minutes=max_age_minutes)
 
 
 def fetch_remote_dashboard_data() -> DashboardData:
@@ -400,6 +457,30 @@ def fetch_remote_dashboard_data() -> DashboardData:
         return _build_empty_dashboard(
             lead_builder_missing=lead_builder_missing,
             error_message=f"Sales support dashboard feed unavailable: {exc}",
+        )
+
+
+def fetch_remote_executive_data() -> ExecutiveData:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
+        return _build_empty_executive(
+            error_message="Sales support executive feed is not configured on this service.",
+        )
+
+    try:
+        response = requests.get(
+            f"{admin_settings.sales_support_agent_url}/api/admin/executive-data",
+            headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        details = payload.get("details") or {}
+        return executive_data_from_dict(details)
+    except Exception as exc:
+        logger.exception("[ExecutiveDashboard] remote data fetch failed")
+        return _build_empty_executive(
+            error_message=f"Sales support executive feed unavailable: {exc}",
         )
 
 
@@ -438,7 +519,7 @@ def sync_remote_dashboard_sources() -> dict[str, Any]:
 
 
 def should_run_auto_dashboard_sync(request: Request, dashboard: DashboardData, admin_settings: AdminDashboardSettings) -> bool:
-    if not dashboard_needs_auto_sync(dashboard, admin_settings):
+    if not latest_sync_is_stale(dashboard.latest_sync_at, admin_settings):
         return False
 
     last_attempt = getattr(request.app.state, "admin_dashboard_last_auto_sync_at", None)
@@ -2564,6 +2645,33 @@ def admin_dashboard(request: Request) -> Response:
         except Exception:
             logger.exception("[AdminDashboard] automatic preload sync failed")
     return HTMLResponse(render_dashboard_page(dashboard))
+
+
+@app.get("/admin/executive", response_class=HTMLResponse)
+def admin_executive_dashboard(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD first.")
+
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    executive = fetch_remote_executive_data()
+    if latest_sync_is_stale(executive.latest_sync_at, admin_settings):
+        try:
+            last_attempt = getattr(request.app.state, "admin_dashboard_last_auto_sync_at", None)
+            current_time = datetime.now(timezone.utc)
+            if not isinstance(last_attempt, datetime) or (
+                (current_time - (last_attempt if last_attempt.tzinfo else last_attempt.replace(tzinfo=timezone.utc))) >= timedelta(minutes=5)
+            ):
+                request.app.state.admin_dashboard_last_auto_sync_at = datetime.now(timezone.utc)
+                sync_remote_dashboard_sources()
+                executive = fetch_remote_executive_data()
+        except Exception:
+            logger.exception("[AdminDashboard] automatic sync failed before executive page load")
+
+    return HTMLResponse(render_executive_page(executive))
 
 
 @app.post("/admin/api/run-lead-build", response_model=None)
