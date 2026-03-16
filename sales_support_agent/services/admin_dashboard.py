@@ -2048,6 +2048,14 @@ def render_dashboard_page(data: DashboardData) -> str:
 def render_executive_page(data: ExecutiveData) -> str:
     payload_json = json.dumps(executive_data_to_dict(data)).replace("</", "<\\/")
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
+    def info_hint(text: str) -> str:
+        escaped = html.escape(text, quote=True)
+        return (
+            '<span class="info-hint" tabindex="0">'
+            '<span class="info-dot" aria-hidden="true">i</span>'
+            f'<span class="tooltip-bubble" role="tooltip">{escaped}</span>'
+            "</span>"
+        )
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -2190,6 +2198,11 @@ def render_executive_page(data: ExecutiveData) -> str:
         align-items: center;
         gap: 8px;
       }}
+      .info-hint {{
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }}
       .info-dot {{
         display: inline-flex;
         align-items: center;
@@ -2204,6 +2217,43 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-weight: 700;
         line-height: 1;
         cursor: help;
+      }}
+      .tooltip-bubble {{
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 10px);
+        transform: translateX(-50%) translateY(4px);
+        width: min(260px, 60vw);
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: var(--alt-dark-blue);
+        color: var(--white);
+        font-family: "Roboto", sans-serif;
+        font-size: 13px;
+        line-height: 1.45;
+        box-shadow: 0 10px 24px rgba(43, 54, 68, 0.18);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+        z-index: 20;
+      }}
+      .tooltip-bubble::after {{
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 100%;
+        width: 10px;
+        height: 10px;
+        background: var(--alt-dark-blue);
+        transform: translateX(-50%) rotate(45deg);
+      }}
+      .info-hint:hover .tooltip-bubble,
+      .info-hint:focus .tooltip-bubble,
+      .info-hint:focus-within .tooltip-bubble {{
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(-50%) translateY(0);
       }}
       .summary-card p {{
         margin: 0;
@@ -2448,7 +2498,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         </section>
 
         <section class="summary-card">
-          <h2 class="heading-line">Executive summary <span class="info-dot" title="Leadership readout generated from the current active ClickUp mirror, response signals, and stale-priority logic.">i</span></h2>
+          <h2 class="heading-line">Executive summary {info_hint("Leadership readout generated from the current active ClickUp mirror, response signals, and stale-priority logic.")}</h2>
           <p id="summary-text">{html.escape(data.summary_text)}</p>
         </section>
 
@@ -2476,33 +2526,33 @@ def render_executive_page(data: ExecutiveData) -> str:
         <section class="layout">
           <div>
             <section class="section">
-              <h2 class="heading-line">AE scorecard <span class="info-dot" title="Owner-level view of active pipeline, follow-up risk, late-stage exposure, and parseable value totals.">i</span></h2>
+              <h2 class="heading-line">AE scorecard {info_hint("Owner-level view of active pipeline, follow-up risk, late-stage exposure, and parseable value totals.")}</h2>
               <div id="scorecard-table"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">At-risk leads <span class="info-dot" title="Prioritized by urgency first, then late stage, then time since last touch, then parseable value.">i</span></h2>
+              <h2 class="heading-line">At-risk leads {info_hint("Prioritized by urgency first, then late stage, then time since last touch, then parseable value.")}</h2>
               <div class="risk-list" id="risk-list"></div>
             </section>
           </div>
           <div>
             <section class="section">
-              <h2 class="heading-line">Leads by status <span class="info-dot" title="Current pipeline mix across the active ClickUp sales statuses.">i</span></h2>
+              <h2 class="heading-line">Leads by status {info_hint("Current pipeline mix across the active ClickUp sales statuses.")}</h2>
               <div class="dist-list" id="status-distribution"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">Leads by source <span class="info-dot" title="Distribution of the current active pipeline by lead source.">i</span></h2>
+              <h2 class="heading-line">Leads by source {info_hint("Distribution of the current active pipeline by lead source.")}</h2>
               <div class="dist-list" id="source-distribution"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">Last-touch aging <span class="info-dot" title="How long it has been since the most recent meaningful touch on each active lead.">i</span></h2>
+              <h2 class="heading-line">Last-touch aging {info_hint("How long it has been since the most recent meaningful touch on each active lead.")}</h2>
               <div class="dist-list" id="aging-distribution"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">Late-stage mix <span class="info-dot" title="Pipeline concentration in qualified, needs offer, offered, and negotiating stages.">i</span></h2>
+              <h2 class="heading-line">Late-stage mix {info_hint("Pipeline concentration in qualified, needs offer, offered, and negotiating stages.")}</h2>
               <div class="dist-list" id="late-stage-distribution"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">Response and hygiene <span class="info-dot" title="Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.">i</span></h2>
+              <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.")}</h2>
               <div class="snapshot" id="hygiene-snapshot"></div>
               <div id="owner-response"></div>
             </section>
@@ -2533,6 +2583,10 @@ def render_executive_page(data: ExecutiveData) -> str:
 
       function formatSourceLabel(value) {{
         return value && String(value).trim() ? value : "Unknown";
+      }}
+
+      function renderInfoHint(text) {{
+        return `<span class="info-hint" tabindex="0"><span class="info-dot" aria-hidden="true">i</span><span class="tooltip-bubble" role="tooltip">${{text}}</span></span>`;
       }}
 
       function initFilters() {{
@@ -2640,7 +2694,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         ];
         document.getElementById("kpi-grid").innerHTML = kpis.map(([label, value, note, type, tooltip]) => `
           <section class="kpi">
-            <span class="heading-line">${{label}} <span class="info-dot" title="${{tooltip}}">i</span></span>
+            <span class="heading-line">${{label}} ${{renderInfoHint(tooltip)}}</span>
             <strong>${{type === "currency" ? formatCurrency(value) : type === "percent" ? formatPercent(value) : formatNumber(value)}}</strong>
             <small>${{note}}</small>
           </section>
