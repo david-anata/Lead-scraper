@@ -386,6 +386,34 @@ def _safe_numeric_value(raw_value: str) -> float | None:
         return None
 
 
+def _display_source_name(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return "Unknown"
+
+    normalized = re.sub(r"[_\-]+", " ", value)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return "Unknown"
+
+    known_labels = {
+        "apollo": "Apollo",
+        "clickup": "ClickUp",
+        "gmail": "Gmail",
+        "instantly": "Instantly",
+        "linkedin": "LinkedIn",
+        "storeleads": "StoreLeads",
+        "manual": "Manual",
+        "referral": "Referral",
+        "unknown": "Unknown",
+    }
+    lower = normalized.lower()
+    if lower in known_labels:
+        return known_labels[lower]
+
+    return " ".join(part.upper() if len(part) <= 3 else part.capitalize() for part in normalized.split())
+
+
 def _latest_touch_for_lead(lead: LeadMirror) -> datetime | None:
     return max(
         (dt for dt in [lead.last_meaningful_touch_at, lead.last_outbound_at, lead.last_inbound_at] if dt is not None),
@@ -422,6 +450,8 @@ def _build_executive_summary_text(
     top_risk_owner: str,
     top_risk_owner_count: int,
     top_source: str,
+    pipeline_value: float,
+    pipeline_target: float,
 ) -> str:
     if total_active_leads == 0:
         return "No active leads are currently mirrored into the executive summary."
@@ -430,6 +460,9 @@ def _build_executive_summary_text(
         f"{total_active_leads} active leads are currently tracked. "
         f"{overdue_count} are overdue and {review_count} need review. "
     )
+    if pipeline_value > 0:
+        progress_percent = int(round((pipeline_value / pipeline_target) * 100)) if pipeline_target > 0 else 0
+        summary += f"Parseable pipeline value is ${pipeline_value:,.0f}, or {progress_percent}% of the $100,000 target. "
     if top_risk_owner_count > 0:
         summary += f"{top_risk_owner} carries the largest risk queue with {top_risk_owner_count} overdue leads. "
     if late_stage_stale_count > 0:
@@ -669,7 +702,7 @@ def build_executive_data(
         digest_item = reminder_service.build_digest_item(evaluation)
         owner_name = lead.assignee_name or "Assigned AE"
         lead_owner_map[lead.clickup_task_id] = owner_name
-        source_name = (lead.source or "").strip() or "Unknown"
+        source_name = _display_source_name(lead.source)
         value_numeric = _safe_numeric_value(lead.value)
         days_since_touch = _days_since_touch(lead, effective_date)
         late_stage = status_key in late_stage_status_keys
@@ -823,6 +856,8 @@ def build_executive_data(
         1 for item in lead_records if item.days_since_touch is not None and item.days_since_touch >= 7
     )
     late_stage_stale_count = sum(1 for item in lead_records if item.late_stage_stale)
+    pipeline_value = round(sum(item.value_numeric or 0.0 for item in lead_records), 2)
+    pipeline_target = 100000.0
     top_source = source_distribution[0].label if source_distribution else ""
     top_risk_owner, top_risk_owner_count = overdue_by_owner.most_common(1)[0] if overdue_by_owner else ("", 0)
 
@@ -843,6 +878,8 @@ def build_executive_data(
         top_risk_owner=top_risk_owner,
         top_risk_owner_count=top_risk_owner_count,
         top_source=top_source,
+        pipeline_value=pipeline_value,
+        pipeline_target=pipeline_target,
     )
 
     return ExecutiveData(
@@ -857,6 +894,9 @@ def build_executive_data(
             "due": due_count,
             "untouched_7_plus": untouched_7_plus_count,
             "late_stage_stale": late_stage_stale_count,
+            "pipeline_value": int(round(pipeline_value)),
+            "pipeline_target": int(round(pipeline_target)),
+            "pipeline_gap": int(round(max(pipeline_target - pipeline_value, 0))),
         },
         owner_scorecards=owner_scorecards,
         status_distribution=status_distribution,
@@ -2055,7 +2095,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-weight: 800;
         font-size: 42px;
         line-height: 1;
-        letter-spacing: -0.06em;
+        letter-spacing: -0.04em;
       }}
       .brandmark .dot {{
         color: var(--light-blue);
@@ -2111,7 +2151,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
         font-size: 16px;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.06em;
         text-transform: uppercase;
         margin-bottom: 18px;
       }}
@@ -2121,7 +2161,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-weight: 800;
         font-size: 60px;
         line-height: 0.94;
-        letter-spacing: -0.05em;
+        letter-spacing: -0.02em;
         color: var(--dark-blue);
       }}
       .highlight {{
@@ -2143,6 +2183,27 @@ def render_executive_page(data: ExecutiveData) -> str:
         margin: 0 0 8px;
         font-family: "Montserrat", sans-serif;
         font-size: 24px;
+        letter-spacing: 0.01em;
+      }}
+      .heading-line {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .info-dot {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: rgba(133, 187, 218, 0.18);
+        color: var(--alt-dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+        cursor: help;
       }}
       .summary-card p {{
         margin: 0;
@@ -2176,7 +2237,7 @@ def render_executive_page(data: ExecutiveData) -> str:
       }}
       .kpis {{
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 14px;
         margin-bottom: 24px;
       }}
@@ -2191,7 +2252,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-family: "Montserrat", sans-serif;
         font-size: 14px;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.06em;
         margin-bottom: 12px;
       }}
       .kpi strong {{
@@ -2222,6 +2283,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         margin: 0 0 16px;
         font-family: "Montserrat", sans-serif;
         font-size: 28px;
+        letter-spacing: 0.01em;
       }}
       table {{
         width: 100%;
@@ -2386,7 +2448,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         </section>
 
         <section class="summary-card">
-          <h2>Executive summary</h2>
+          <h2 class="heading-line">Executive summary <span class="info-dot" title="Leadership readout generated from the current active ClickUp mirror, response signals, and stale-priority logic.">i</span></h2>
           <p id="summary-text">{html.escape(data.summary_text)}</p>
         </section>
 
@@ -2414,33 +2476,33 @@ def render_executive_page(data: ExecutiveData) -> str:
         <section class="layout">
           <div>
             <section class="section">
-              <h2>AE scorecard</h2>
+              <h2 class="heading-line">AE scorecard <span class="info-dot" title="Owner-level view of active pipeline, follow-up risk, late-stage exposure, and parseable value totals.">i</span></h2>
               <div id="scorecard-table"></div>
             </section>
             <section class="section">
-              <h2>At-risk leads</h2>
+              <h2 class="heading-line">At-risk leads <span class="info-dot" title="Prioritized by urgency first, then late stage, then time since last touch, then parseable value.">i</span></h2>
               <div class="risk-list" id="risk-list"></div>
             </section>
           </div>
           <div>
             <section class="section">
-              <h2>Leads by status</h2>
+              <h2 class="heading-line">Leads by status <span class="info-dot" title="Current pipeline mix across the active ClickUp sales statuses.">i</span></h2>
               <div class="dist-list" id="status-distribution"></div>
             </section>
             <section class="section">
-              <h2>Leads by source</h2>
+              <h2 class="heading-line">Leads by source <span class="info-dot" title="Distribution of the current active pipeline by lead source.">i</span></h2>
               <div class="dist-list" id="source-distribution"></div>
             </section>
             <section class="section">
-              <h2>Last-touch aging</h2>
+              <h2 class="heading-line">Last-touch aging <span class="info-dot" title="How long it has been since the most recent meaningful touch on each active lead.">i</span></h2>
               <div class="dist-list" id="aging-distribution"></div>
             </section>
             <section class="section">
-              <h2>Late-stage mix</h2>
+              <h2 class="heading-line">Late-stage mix <span class="info-dot" title="Pipeline concentration in qualified, needs offer, offered, and negotiating stages.">i</span></h2>
               <div class="dist-list" id="late-stage-distribution"></div>
             </section>
             <section class="section">
-              <h2>Response and hygiene</h2>
+              <h2 class="heading-line">Response and hygiene <span class="info-dot" title="Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.">i</span></h2>
               <div class="snapshot" id="hygiene-snapshot"></div>
               <div id="owner-response"></div>
             </section>
@@ -2465,6 +2527,14 @@ def render_executive_page(data: ExecutiveData) -> str:
         return new Intl.NumberFormat("en-US", {{ style: "currency", currency: "USD", maximumFractionDigits: 0 }}).format(Number(value));
       }}
 
+      function formatPercent(value) {{
+        return `${{Math.round(Number(value || 0))}}%`;
+      }}
+
+      function formatSourceLabel(value) {{
+        return value && String(value).trim() ? value : "Unknown";
+      }}
+
       function initFilters() {{
         const filterDefs = [
           [ownerFilter, ["all", ...(executiveData.filters.owners || [])]],
@@ -2474,7 +2544,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         ];
         filterDefs.forEach(([element, values]) => {{
           element.innerHTML = values
-            .map((value) => `<option value="${{value}}">${{value === "all" ? "All" : value}}</option>`)
+            .map((value) => `<option value="${{value}}">${{value === "all" ? "All" : (element === sourceFilter ? formatSourceLabel(value) : value)}}</option>`)
             .join("");
           element.addEventListener("change", renderExecutiveView);
         }});
@@ -2500,7 +2570,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         const maxCount = Math.max(1, ...items.map((item) => item.count || 0));
         return items.map((item) => `
           <div class="dist-row">
-            <span>${{item.label}}</span>
+            <span>${{formatSourceLabel(item.label)}}</span>
             <div class="dist-bar"><div class="dist-bar-fill" style="width:${{Math.max(6, (item.count / maxCount) * 100)}}%"></div></div>
             <strong>${{formatNumber(item.count)}}</strong>
           </div>
@@ -2555,18 +2625,23 @@ def render_executive_page(data: ExecutiveData) -> str:
       }}
 
       function renderKpis(leads) {{
+        const pipelineValue = leads.reduce((sum, lead) => sum + Number(lead.value_numeric || 0), 0);
+        const pipelineTarget = Number(executiveData.kpis.pipeline_target || 100000);
+        const pipelineProgress = pipelineTarget > 0 ? Math.min((pipelineValue / pipelineTarget) * 100, 999) : 0;
         const kpis = [
-          ["Active leads", leads.length, "Current active pipeline"],
-          ["Overdue", leads.filter((lead) => lead.urgency === "overdue").length, "Highest urgency follow-up risk"],
-          ["Review", leads.filter((lead) => lead.urgency === "needs_immediate_review").length, "Needs a decision or clean-up"],
-          ["Due", leads.filter((lead) => lead.urgency === "follow_up_due").length, "Routine next touches"],
-          ["Untouched 7+ days", leads.filter((lead) => lead.days_since_touch !== null && lead.days_since_touch >= 7).length, "Aging engagement risk"],
-          ["Late-stage stale", leads.filter((lead) => lead.late_stage_stale).length, "Needs offer / offered / negotiating at risk"],
+          ["Active leads", leads.length, "Current active pipeline", "number", "Current active pipeline in the filtered view."],
+          ["Pipeline value", pipelineValue, "Parseable close value across filtered leads", "currency", "Only leads with parseable value are included in this rollup."],
+          ["Goal progress", pipelineProgress, `Toward the $${{formatNumber(pipelineTarget)}} pipeline target`, "percent", "Share of the $100k target covered by parseable pipeline value."],
+          ["Overdue", leads.filter((lead) => lead.urgency === "overdue").length, "Highest urgency follow-up risk", "number", "Leads whose follow-up window has already passed."],
+          ["Review", leads.filter((lead) => lead.urgency === "needs_immediate_review").length, "Needs a decision or clean-up", "number", "Leads needing immediate review because they are untouched or missing the next step."],
+          ["Due", leads.filter((lead) => lead.urgency === "follow_up_due").length, "Routine next touches", "number", "Leads due for a routine follow-up today."],
+          ["Untouched 7+ days", leads.filter((lead) => lead.days_since_touch !== null && lead.days_since_touch >= 7).length, "Aging engagement risk", "number", "Leads with seven or more days since their last meaningful touch."],
+          ["Late-stage stale", leads.filter((lead) => lead.late_stage_stale).length, "Needs offer / offered / negotiating at risk", "number", "Late-stage leads that are overdue or require immediate review."],
         ];
-        document.getElementById("kpi-grid").innerHTML = kpis.map(([label, value, note]) => `
+        document.getElementById("kpi-grid").innerHTML = kpis.map(([label, value, note, type, tooltip]) => `
           <section class="kpi">
-            <span>${{label}}</span>
-            <strong>${{formatNumber(value)}}</strong>
+            <span class="heading-line">${{label}} <span class="info-dot" title="${{tooltip}}">i</span></span>
+            <strong>${{type === "currency" ? formatCurrency(value) : type === "percent" ? formatPercent(value) : formatNumber(value)}}</strong>
             <small>${{note}}</small>
           </section>
         `).join("");
@@ -2637,7 +2712,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         }});
 
         const statusRows = Array.from(statusCounter.entries()).sort((a, b) => b[1] - a[1]).map(([label, count]) => ({{ label, count }}));
-        const sourceRows = Array.from(sourceCounter.entries()).sort((a, b) => b[1] - a[1]).map(([label, count]) => ({{ label, count }}));
+        const sourceRows = Array.from(sourceCounter.entries()).sort((a, b) => b[1] - a[1]).map(([label, count]) => ({{ label: formatSourceLabel(label), count }}));
         const agingRows = Array.from(agingCounter.entries()).map(([label, count]) => ({{ label, count }}));
         const lateStageRows = Array.from(lateStageCounter.entries()).map(([label, count]) => ({{ label, count }})).filter((item) => item.count > 0);
 

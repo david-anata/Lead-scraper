@@ -174,6 +174,8 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertEqual(executive.kpis["review"], 1)
         self.assertEqual(executive.kpis["due"], 1)
         self.assertEqual(executive.kpis["late_stage_stale"], 1)
+        self.assertEqual(executive.kpis["pipeline_value"], 12000)
+        self.assertEqual(executive.kpis["pipeline_target"], 100000)
         self.assertEqual(executive.owner_scorecards[0].owner_name, "Gabe Smedley")
         self.assertEqual(executive.owner_scorecards[0].value_total, 12000.0)
         self.assertEqual(executive.risk_leads[0].task_name, "Acme Wholesale")
@@ -184,7 +186,9 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertEqual(executive.inbound_replies_by_owner[0].owner_name, "Gabe Smedley")
         self.assertEqual(executive.inbound_replies_by_owner[0].count, 1)
         self.assertEqual(executive.mailbox_signals_by_owner[0].count, 1)
+        self.assertIn("Apollo", {item.label for item in executive.source_distribution})
         self.assertIn("3 active leads are currently tracked.", executive.summary_text)
+        self.assertIn("$12,000", executive.summary_text)
         self.assertNotIn("FOLLOW UP", {item.label for item in executive.status_distribution})
 
     def test_executive_payload_round_trip_and_render(self) -> None:
@@ -206,6 +210,8 @@ class AdminExecutiveTests(unittest.TestCase):
         html = render_executive_page(rebuilt)
         self.assertIn("/admin", html)
         self.assertIn("Executive summary", html)
+        self.assertIn("Pipeline value", html)
+        self.assertIn("info-dot", html)
         self.assertIn("id=\"owner-filter\"", html)
         self.assertIn("id=\"scorecard-table\"", html)
 
