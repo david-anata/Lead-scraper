@@ -183,6 +183,7 @@ def admin_dashboard(request: Request) -> Response:
             settings=settings,
             session=session,
             lead_builder_status=_lead_builder_status(),
+            clickup_client=ClickUpClient(settings),
         )
     return HTMLResponse(render_dashboard_page(dashboard))
 
@@ -198,6 +199,7 @@ def admin_executive_dashboard(request: Request) -> Response:
         executive = build_executive_data(
             settings=settings,
             session=session,
+            clickup_client=ClickUpClient(settings),
         )
     return HTMLResponse(render_executive_page(executive))
 
@@ -214,6 +216,7 @@ def admin_dashboard_data(
             settings=settings,
             session=session,
             lead_builder_status=_lead_builder_status(),
+            clickup_client=ClickUpClient(settings),
         )
     return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=dashboard_data_to_dict(dashboard))
 
@@ -229,6 +232,7 @@ def admin_executive_data(
         executive = build_executive_data(
             settings=settings,
             session=session,
+            clickup_client=ClickUpClient(settings),
         )
     return ApiMessage(
         status="ok",

@@ -479,11 +479,13 @@ def build_dashboard_data(
     settings: Settings,
     session: Session,
     lead_builder_status: dict[str, object],
+    clickup_client: object | None = None,
     as_of_date: date | None = None,
     max_items_per_owner: int = 8,
 ) -> DashboardData:
     effective_date = as_of_date or date.today()
     reminder_service = ReminderService(settings, session)
+    comment_cache: dict[str, list[dict[str, object]]] = {}
 
     leads_query: Select[tuple[LeadMirror]] = (
         select(LeadMirror)
@@ -500,7 +502,8 @@ def build_dashboard_data(
     for lead in leads:
         if not (lead.status or "").strip():
             continue
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
+        comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)
+        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
         if evaluation is None:
             continue
         active_lead_count += 1
@@ -603,12 +606,14 @@ def build_executive_data(
     *,
     settings: Settings,
     session: Session,
+    clickup_client: object | None = None,
     as_of_date: date | None = None,
     risk_limit: int = 15,
 ) -> ExecutiveData:
     effective_date = as_of_date or date.today()
     reminder_service = ReminderService(settings, session)
     active_statuses = set(settings.active_statuses)
+    comment_cache: dict[str, list[dict[str, object]]] = {}
 
     late_stage_status_keys = {
         "working qualified",
@@ -695,7 +700,8 @@ def build_executive_data(
         if not status or status_key not in active_statuses:
             continue
 
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
+        comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)
+        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
         if evaluation is None:
             continue
 
@@ -921,6 +927,23 @@ def build_executive_data(
         },
         lead_records=lead_records,
     )
+
+
+def _get_task_comments(
+    clickup_client: object | None,
+    task_id: str | None,
+    cache: dict[str, list[dict[str, object]]],
+) -> list[dict[str, object]]:
+    if clickup_client is None or not task_id:
+        return []
+    if task_id in cache:
+        return cache[task_id]
+    try:
+        comments = list(clickup_client.get_task_comments(task_id))
+    except Exception:
+        comments = []
+    cache[task_id] = comments
+    return comments
 
 
 def render_login_page(*, error_message: str = "") -> str:

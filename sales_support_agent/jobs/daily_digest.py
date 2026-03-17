@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.integrations.clickup import ClickUpClient
-from sales_support_agent.integrations.gmail import GmailClient
+from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
 from sales_support_agent.models.entities import LeadMirror
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.daily_digest import (
@@ -62,8 +62,13 @@ class DailyDigestJob:
             self.audit.finish_run(run, status="success", summary={"status": "skipped", "reason": "daily_digest_disabled"})
             return {"status": "skipped", "reason": "daily_digest_disabled"}
         if not self.gmail_client.is_configured():
-            self.audit.finish_run(run, status="success", summary={"status": "skipped", "reason": "gmail_not_configured"})
-            return {"status": "skipped", "reason": "gmail_not_configured"}
+            summary = {
+                "status": "skipped",
+                "reason": "gmail_not_configured",
+                "missing_configuration": list(self.gmail_client.missing_configuration()),
+            }
+            self.audit.finish_run(run, status="success", summary=summary)
+            return summary
         if not self.settings.daily_digest_email_to:
             self.audit.finish_run(run, status="success", summary={"status": "skipped", "reason": "missing_daily_digest_email_to"})
             return {"status": "skipped", "reason": "missing_daily_digest_email_to"}
@@ -87,12 +92,35 @@ class DailyDigestJob:
             mailbox_signals=mailbox_signals,
             max_items=digest_limit,
         )
-        result = self.gmail_client.send_message(
-            to=self.settings.daily_digest_email_to,
-            cc=self.settings.daily_digest_email_cc,
-            subject=subject,
-            text=text,
-        )
+        try:
+            result = self.gmail_client.send_message(
+                to=self.settings.daily_digest_email_to,
+                cc=self.settings.daily_digest_email_cc,
+                subject=subject,
+                text=text,
+            )
+        except GmailIntegrationError as exc:
+            summary = {
+                "status": "failed",
+                "stage": exc.stage,
+                "stale_items": len(stale_items),
+                "mailbox_signals": len(mailbox_signals),
+                **exc.as_dict(),
+            }
+            self.audit.finish_run(run, status="failed", summary=summary)
+            return summary
+        except Exception as exc:
+            summary = {
+                "status": "failed",
+                "stage": "send_digest",
+                "stale_items": len(stale_items),
+                "mailbox_signals": len(mailbox_signals),
+                "error_code": "unexpected_error",
+                "error": str(exc),
+                "hint": "Validate Gmail auth first with /api/jobs/gmail-sync/run before retrying the daily digest.",
+            }
+            self.audit.finish_run(run, status="failed", summary=summary)
+            return summary
         self.audit.record_action(
             run_id=run.id,
             clickup_task_id="",

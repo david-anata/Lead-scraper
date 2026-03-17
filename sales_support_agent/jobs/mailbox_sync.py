@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.clickup import ClickUpClient
-from sales_support_agent.integrations.gmail import GmailClient
+from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
 from sales_support_agent.integrations.gmail_payloads import normalize_gmail_message
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.models.entities import MailboxSignal
@@ -44,8 +44,13 @@ class GmailMailboxSyncJob:
             metadata={"dry_run": dry_run, "query": query or self.settings.gmail_poll_query},
         )
         if not self.gmail_client.is_configured():
-            self.audit.finish_run(run, status="success", summary={"status": "skipped", "reason": "gmail_not_configured"})
-            return {"status": "skipped", "reason": "gmail_not_configured"}
+            summary = {
+                "status": "skipped",
+                "reason": "gmail_not_configured",
+                "missing_configuration": list(self.gmail_client.missing_configuration()),
+            }
+            self.audit.finish_run(run, status="success", summary=summary)
+            return summary
 
         fetched = 0
         processed = 0
@@ -55,6 +60,7 @@ class GmailMailboxSyncJob:
         failed = 0
         max_results = max_messages if max_messages is not None else self.settings.gmail_poll_max_messages
         mailbox_query = query or self.settings.gmail_poll_query
+        preflight: dict[str, object] = {}
         matcher = LeadMatchingService(self.settings, self.clickup_client, self.session)
         communication_service = CommunicationService(
             self.settings,
@@ -64,10 +70,30 @@ class GmailMailboxSyncJob:
         )
 
         try:
+            preflight = self.gmail_client.debug_preflight()
             message_refs = self.gmail_client.list_messages(query=mailbox_query, max_results=max_results)
+        except GmailIntegrationError as exc:
+            summary = {
+                "status": "failed",
+                "stage": exc.stage,
+                "query": mailbox_query,
+                "max_messages": max_results,
+                **exc.as_dict(),
+            }
+            self.audit.finish_run(run, status="failed", summary=summary)
+            return summary
         except Exception as exc:
-            self.audit.finish_run(run, status="failed", summary={"status": "failed", "error": str(exc)})
-            raise
+            summary = {
+                "status": "failed",
+                "stage": "mailbox_sync",
+                "query": mailbox_query,
+                "max_messages": max_results,
+                "error_code": "unexpected_error",
+                "error": str(exc),
+                "hint": "Inspect the sales-support-agent logs for the mailbox sync run and verify Gmail auth and message normalization.",
+            }
+            self.audit.finish_run(run, status="failed", summary=summary)
+            return summary
 
         for message_ref in message_refs:
             fetched += 1
@@ -157,6 +183,9 @@ class GmailMailboxSyncJob:
 
         summary = {
             "status": "ok",
+            "query": mailbox_query,
+            "max_messages": max_results,
+            "preflight": preflight,
             "fetched": fetched,
             "processed": processed,
             "matched": matched,

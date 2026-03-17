@@ -3,12 +3,42 @@
 from __future__ import annotations
 
 import base64
+import json
 from email.message import EmailMessage
 from typing import Any
 
 import requests
 
 from sales_support_agent.config import Settings
+
+
+class GmailIntegrationError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        stage: str,
+        message: str,
+        code: str = "gmail_error",
+        http_status: int | None = None,
+        hint: str = "",
+        provider_payload: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.code = code
+        self.http_status = http_status
+        self.hint = hint
+        self.provider_payload = provider_payload or {}
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "error_code": self.code,
+            "http_status": self.http_status,
+            "error": str(self),
+            "hint": self.hint,
+            "provider_payload": self.provider_payload,
+        }
 
 
 class GmailClient:
@@ -19,17 +49,43 @@ class GmailClient:
     def is_configured(self) -> bool:
         if self.settings.gmail_access_token:
             return True
-        return bool(
-            self.settings.gmail_client_id
-            and self.settings.gmail_client_secret
-            and self.settings.gmail_refresh_token
-        )
+        return not self.missing_configuration()
+
+    def missing_configuration(self) -> tuple[str, ...]:
+        if self.settings.gmail_access_token:
+            return ()
+
+        missing: list[str] = []
+        if not self.settings.gmail_client_id:
+            missing.append("GMAIL_CLIENT_ID")
+        if not self.settings.gmail_client_secret:
+            missing.append("GMAIL_CLIENT_SECRET")
+        if not self.settings.gmail_refresh_token:
+            missing.append("GMAIL_REFRESH_TOKEN")
+        return tuple(missing)
+
+    def get_profile(self) -> dict[str, Any]:
+        return self._request("GET", f"users/{self.settings.gmail_user_id}/profile", stage="profile_lookup")
+
+    def debug_preflight(self) -> dict[str, Any]:
+        access_token = self._get_access_token()
+        profile = self.get_profile()
+        return {
+            "auth_ok": True,
+            "token_source": "static_access_token" if self.settings.gmail_access_token else "refresh_token",
+            "access_token_preview": access_token[:12] + "..." if access_token else "",
+            "gmail_address": str(profile.get("emailAddress") or ""),
+            "messages_total": int(profile.get("messagesTotal") or 0),
+            "threads_total": int(profile.get("threadsTotal") or 0),
+            "history_id": str(profile.get("historyId") or ""),
+        }
 
     def list_messages(self, *, query: str, max_results: int) -> list[dict[str, Any]]:
         payload = self._request(
             "GET",
             f"users/{self.settings.gmail_user_id}/messages",
             params={"q": query, "maxResults": max_results},
+            stage="list_messages",
         )
         return list(payload.get("messages", []) or [])
 
@@ -38,6 +94,7 @@ class GmailClient:
             "GET",
             f"users/{self.settings.gmail_user_id}/messages/{message_id}",
             params={"format": "full"},
+            stage="get_message",
         )
 
     def send_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -55,6 +112,7 @@ class GmailClient:
             "POST",
             f"users/{self.settings.gmail_user_id}/messages/send",
             json_body={"raw": raw},
+            stage="send_message",
         )
 
     def _request(
@@ -62,6 +120,7 @@ class GmailClient:
         method: str,
         path: str,
         *,
+        stage: str,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -78,8 +137,14 @@ class GmailClient:
             timeout=30,
         )
         if not response.ok:
-            raise RuntimeError(
-                f"Gmail API request failed ({response.status_code}) for {path}: {response.text}"
+            provider_payload = self._parse_response_payload(response.text)
+            raise GmailIntegrationError(
+                stage=stage,
+                code=self._infer_error_code(provider_payload),
+                http_status=response.status_code,
+                message=f"Gmail API request failed for {path}: {response.text}",
+                hint=self._build_hint(self._infer_error_code(provider_payload), stage=stage),
+                provider_payload=provider_payload,
             )
         if not response.content:
             return {}
@@ -88,6 +153,15 @@ class GmailClient:
     def _get_access_token(self) -> str:
         if self._cached_access_token:
             return self._cached_access_token
+        missing = self.missing_configuration()
+        if missing:
+            raise GmailIntegrationError(
+                stage="configuration",
+                code="missing_configuration",
+                message=f"Gmail is not configured. Missing: {', '.join(missing)}",
+                hint="Set the missing GMAIL_* environment variables on the sales-support-agent service and redeploy.",
+                provider_payload={"missing": list(missing)},
+            )
         response = requests.post(
             self.settings.gmail_oauth_token_url,
             data={
@@ -99,12 +173,62 @@ class GmailClient:
             timeout=30,
         )
         if not response.ok:
-            raise RuntimeError(
-                f"Gmail token refresh failed ({response.status_code}): {response.text}"
+            provider_payload = self._parse_response_payload(response.text)
+            code = self._infer_error_code(provider_payload)
+            raise GmailIntegrationError(
+                stage="token_refresh",
+                code=code,
+                http_status=response.status_code,
+                message=f"Gmail token refresh failed ({response.status_code}): {response.text}",
+                hint=self._build_hint(code, stage="token_refresh"),
+                provider_payload=provider_payload,
             )
         payload = response.json()
         access_token = str(payload.get("access_token") or "").strip()
         if not access_token:
-            raise RuntimeError(f"Gmail token refresh failed: {payload}")
+            raise GmailIntegrationError(
+                stage="token_refresh",
+                code="missing_access_token",
+                message=f"Gmail token refresh succeeded but no access token was returned: {payload}",
+                hint="Re-authorize the Gmail OAuth client and generate a fresh refresh token using the same Web application client.",
+                provider_payload=payload,
+            )
         self._cached_access_token = access_token
         return access_token
+
+    def _parse_response_payload(self, raw_text: str) -> dict[str, Any]:
+        text = (raw_text or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        return {"raw_text": text}
+
+    def _infer_error_code(self, payload: dict[str, Any]) -> str:
+        code = str(payload.get("error") or "").strip()
+        if code:
+            return code
+        if isinstance(payload.get("error"), dict):
+            nested = str((payload.get("error") or {}).get("status") or "").strip()
+            if nested:
+                return nested.lower()
+        return "gmail_error"
+
+    def _build_hint(self, code: str, *, stage: str) -> str:
+        if code == "invalid_client":
+            return "The Gmail OAuth client ID and client secret do not match the Web application client used to create the refresh token."
+        if code == "invalid_grant":
+            return "The Gmail refresh token is invalid, revoked, expired, or was generated for a different OAuth client."
+        if code == "insufficient_scope":
+            return "The connected Google account authorized the wrong Gmail scope. Re-authorize with https://www.googleapis.com/auth/gmail.modify."
+        if code == "unauthorized_client":
+            return "The Google OAuth client is not allowed to use this grant or redirect URI. Confirm it is a Web application client with the OAuth Playground redirect URI."
+        if code == "missing_configuration":
+            return "Set the missing GMAIL_* environment variables on the sales-support-agent service and redeploy."
+        if stage == "send_message":
+            return "Inbound sync can still be validated first. Confirm DAILY_DIGEST_EMAIL_TO only after Gmail auth succeeds."
+        return "Check the Gmail OAuth client, refresh token, and Render environment variables on the sales-support-agent service."

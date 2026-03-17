@@ -418,21 +418,25 @@ Expected behavior:
 
 ## Part 5B: Configure Gmail Polling and Daily Digest
 
-### Step 17A: Create or confirm the shared team digest alias
+### Step 17A: Choose the pilot mailbox
 
-Recommended:
+For the first Gmail connection, use one real inbox as the pilot mailbox.
+
+Recommended fastest path:
 
 ```env
-DAILY_DIGEST_EMAIL_TO=sdr-team@yourcompany.com
+GMAIL_USER_ID=me
 ```
 
-This should be a shared team alias, not an individual inbox.
+This means the Gmail OAuth credentials should be created and authorized against the pilot user who is completing setup.
+
+Daily digest recipients can be added later. They do not need to block inbound Gmail sync.
 
 ### Step 17B: Create Gmail API credentials
 
 Use Google Cloud to create OAuth credentials with Gmail API access for the mailbox the agent should poll.
 
-Minimum app env vars:
+Minimum app env vars on `sales-support-agent`:
 
 ```env
 GMAIL_CLIENT_ID=...
@@ -445,9 +449,15 @@ Optional overrides:
 
 ```env
 GMAIL_POLL_QUERY=newer_than:2d
-GMAIL_POLL_MAX_MESSAGES=25
-GMAIL_SOURCE_DOMAINS=fulfil.com
+GMAIL_POLL_MAX_MESSAGES=10
+GMAIL_SOURCE_DOMAINS=fulfil.com,another-source.com
 ```
+
+Important:
+
+- `GMAIL_SOURCE_DOMAINS` is a comma-separated list of actual lead-vendor domains
+- it should not be left as a placeholder example
+- these Gmail env vars belong only on the `sales-support-agent` web service, not on cron jobs
 
 ### Step 17C: Test Gmail mailbox sync
 
@@ -463,6 +473,11 @@ Expected behavior:
 - matched replies should route into the normal owner-notification flow
 - unmatched lead-source emails should be classified for triage
 - no leads should be auto-created from unmatched mailbox traffic
+- if Gmail auth is broken, the endpoint now returns a structured failed summary with:
+  - `stage`
+  - `error_code`
+  - `hint`
+  - `provider_payload`
 
 ### Step 17D: Test the daily digest
 
@@ -475,10 +490,69 @@ curl -X POST "https://<sales-support-agent-url>/api/jobs/daily-digest/run" \
 
 Expected behavior:
 
-- one grouped email to the shared team alias
+- one grouped email to the configured recipient
 - grouped by urgency and owner
 - concise action summaries
 - send-ready draft replies for each item
+
+If this fails while `gmail-sync` still fails, debug inbound Gmail sync first.
+
+### Step 17E: Gmail debug ladder
+
+Use this order every time:
+
+1. confirm `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, and `GMAIL_REFRESH_TOKEN` exist on `sales-support-agent`
+2. redeploy the web service
+3. run `POST /api/jobs/gmail-sync/run` with `dry_run=true`
+4. check whether `status` is:
+   - `ok`
+   - `failed`
+   - `skipped`
+5. if `failed`, use:
+   - `stage`
+   - `error_code`
+   - `hint`
+   - `provider_payload`
+6. only after `gmail-sync` succeeds should you test `daily-digest`
+
+### Step 17F: Common Gmail errors and fixes
+
+`invalid_client`
+
+- the client ID and client secret do not match the Web application OAuth client used to create the refresh token
+- fix by re-copying the client ID and client secret from the same Web OAuth client and generating a fresh refresh token with that exact client
+
+`invalid_grant`
+
+- the refresh token is invalid, revoked, expired, or belongs to a different OAuth client
+- fix by re-authorizing in OAuth Playground and replacing `GMAIL_REFRESH_TOKEN`
+
+`insufficient_scope`
+
+- the Google account authorized the wrong Gmail scope
+- fix by re-authorizing with:
+
+```txt
+https://www.googleapis.com/auth/gmail.modify
+```
+
+`gmail_not_configured`
+
+- one or more Gmail env vars are missing on `sales-support-agent`
+- fix by checking:
+  - `GMAIL_CLIENT_ID`
+  - `GMAIL_CLIENT_SECRET`
+  - `GMAIL_REFRESH_TOKEN`
+  - `GMAIL_USER_ID`
+
+`missing_daily_digest_email_to`
+
+- Gmail auth may already be working; only the digest recipient is missing
+- fix by setting:
+
+```env
+DAILY_DIGEST_EMAIL_TO=your-recipient@yourcompany.com
+```
 
 ## Part 6: Configure Instantly
 
