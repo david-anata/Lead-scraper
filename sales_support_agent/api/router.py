@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import secrets
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from main import (
@@ -15,6 +17,7 @@ from main import (
 )
 
 from sales_support_agent.config import get_missing_runtime_settings
+from sales_support_agent.integrations.canva import CanvaClient
 from sales_support_agent.integrations.clickup import ClickUpClient
 from sales_support_agent.integrations.gmail import GmailClient
 from sales_support_agent.integrations.slack import SlackClient
@@ -35,6 +38,8 @@ from sales_support_agent.services.communications import CommunicationService
 from sales_support_agent.services.admin_auth import (
     admin_login_enabled,
     create_admin_session_token,
+    create_signed_state_token,
+    read_signed_state_token,
     validate_admin_session_token,
     verify_admin_password,
 )
@@ -303,6 +308,146 @@ def admin_sync_dashboard(request: Request) -> JSONResponse:
             },
         },
     )
+
+
+@router.get("/admin/api/canva/connect", response_model=None)
+def admin_canva_connect(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+
+    settings = request.app.state.settings
+    missing = [
+        env_name
+        for env_name, attr_name in (
+            ("CANVA_CLIENT_ID", "canva_client_id"),
+            ("CANVA_CLIENT_SECRET", "canva_client_secret"),
+            ("CANVA_REDIRECT_URI", "canva_redirect_uri"),
+        )
+        if not getattr(settings, attr_name, "")
+    ]
+    if missing:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"Canva OAuth is missing environment variables: {', '.join(missing)}"},
+        )
+
+    state = secrets.token_urlsafe(18)
+    code_verifier = secrets.token_urlsafe(64)
+    signed_state = create_signed_state_token(
+        settings.admin_session_secret,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "issued_at": str(int(datetime.now(timezone.utc).timestamp())),
+        },
+    )
+    authorize_url = CanvaClient(settings).build_authorize_url(
+        state=state,
+        code_verifier=code_verifier,
+    )
+    response = RedirectResponse(url=authorize_url, status_code=302)
+    response.set_cookie(
+        key=_canva_oauth_cookie_name(request),
+        value=signed_state,
+        **_canva_oauth_cookie_options(request),
+    )
+    return response
+
+
+@router.get("/admin/api/canva/callback", response_model=None)
+def admin_canva_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    if error:
+        return JSONResponse(status_code=400, content={"detail": error_description or error})
+
+    signed_state = request.cookies.get(_canva_oauth_cookie_name(request), "")
+    state_payload = read_signed_state_token(request.app.state.settings.admin_session_secret, signed_state)
+    if not state_payload or state_payload.get("state") != state or not code:
+        return JSONResponse(status_code=400, content={"detail": "Canva OAuth state validation failed."})
+
+    issued_at = int(state_payload.get("issued_at", "0") or 0)
+    if issued_at and datetime.now(timezone.utc) > datetime.fromtimestamp(issued_at, tz=timezone.utc) + timedelta(minutes=15):
+        return JSONResponse(status_code=400, content={"detail": "Canva OAuth state expired. Start the connection flow again."})
+
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        DeckGenerationService(settings, session).connect_canva(
+            code=code,
+            code_verifier=state_payload.get("code_verifier", ""),
+        )
+
+    response = RedirectResponse(url="/admin", status_code=302)
+    response.delete_cookie(_canva_oauth_cookie_name(request), path="/")
+    return response
+
+
+@router.post("/admin/api/generate-deck", response_model=ApiMessage)
+async def admin_generate_deck(
+    request: Request,
+    competitor_csv: UploadFile = File(...),
+    run_label: str = Form(default=""),
+    reporting_period: str = Form(default=""),
+    report_date: str = Form(default=""),
+) -> ApiMessage:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Admin login required.")
+
+    try:
+        parsed_report_date = date.fromisoformat(report_date) if report_date else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Report date must use YYYY-MM-DD format.") from exc
+    competitor_bytes = await competitor_csv.read()
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        result = DeckGenerationService(settings, session).generate_deck(
+            competitor_csv_bytes=competitor_bytes,
+            competitor_filename=competitor_csv.filename or "competitor.csv",
+            run_label=run_label,
+            report_date=parsed_report_date,
+            reporting_period=reporting_period,
+        )
+    return ApiMessage(
+        status="ok",
+        message=result.message,
+        details={
+            "run_id": result.run_id,
+            "status": result.status,
+            "design_id": result.design_id,
+            "design_title": result.design_title,
+            "edit_url": result.edit_url,
+            "view_url": result.view_url,
+            "warnings": result.warnings,
+            "sales_row_count": result.sales_row_count,
+            "competitor_row_count": result.competitor_row_count,
+            "template_fields": result.template_fields,
+        },
+    )
+
+
+@router.get("/admin/api/deck-runs", response_model=ApiMessage)
+def admin_deck_runs(request: Request) -> ApiMessage:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Admin login required.")
+
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        service = DeckGenerationService(settings, session)
+        details = {
+            "connection": service.get_connection_summary(),
+            "runs": service.list_recent_runs(limit=10),
+        }
+    return ApiMessage(status="ok", message="Deck generation runs loaded.", details=details)
 
 
 @router.post("/api/discovery/clickup-schema", response_model=ApiMessage)

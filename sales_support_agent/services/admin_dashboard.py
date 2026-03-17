@@ -589,6 +589,50 @@ def build_dashboard_data(
 
     latest_run_summary = latest_run.summary_json if latest_run else {}
 
+    deck_generator_missing = [
+        env_name
+        for env_name, attr_name in (
+            ("GOOGLE_SHEETS_SPREADSHEET_ID", "google_sheets_spreadsheet_id"),
+            ("GOOGLE_SHEETS_SALES_RANGE", "google_sheets_sales_range"),
+            ("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"),
+            ("CANVA_CLIENT_ID", "canva_client_id"),
+            ("CANVA_CLIENT_SECRET", "canva_client_secret"),
+            ("CANVA_REDIRECT_URI", "canva_redirect_uri"),
+            ("CANVA_BRAND_TEMPLATE_ID", "canva_brand_template_id"),
+            ("CANVA_TOKEN_SECRET", "canva_token_secret"),
+        )
+        if not getattr(settings, attr_name, "")
+    ]
+    deck_connection = session.execute(
+        select(CanvaConnection)
+        .order_by(CanvaConnection.updated_at.desc(), CanvaConnection.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    deck_runs = list(
+        session.execute(
+            select(AutomationRun)
+            .where(AutomationRun.run_type == "deck_generation")
+            .order_by(AutomationRun.started_at.desc())
+            .limit(5)
+        ).scalars()
+    )
+    recent_deck_runs = [
+        {
+            "id": run.id,
+            "status": dict(run.summary_json or {}).get("status") or run.status,
+            "message": dict(run.summary_json or {}).get("message", ""),
+            "design_id": dict(run.summary_json or {}).get("design_id", ""),
+            "design_title": dict(run.summary_json or {}).get("design_title", ""),
+            "edit_url": dict(run.summary_json or {}).get("edit_url", ""),
+            "view_url": dict(run.summary_json or {}).get("view_url", ""),
+            "warnings": list(dict(run.summary_json or {}).get("warnings", []) or []),
+            "started_at": run.started_at.isoformat() if run.started_at else "",
+            "completed_at": run.completed_at.isoformat() if run.completed_at else "",
+        }
+        for run in deck_runs
+    ]
+    deck_capabilities = dict(deck_connection.capabilities_json) if deck_connection else {}
+
     return DashboardData(
         as_of_date=effective_date,
         total_active_leads=active_lead_count,
@@ -599,6 +643,17 @@ def build_dashboard_data(
         latest_run_summary=latest_run_summary,
         lead_builder_ready=bool(lead_builder_status.get("ready")),
         lead_builder_missing=[str(item) for item in lead_builder_status.get("missing", [])],
+        deck_generator_ready=not deck_generator_missing,
+        deck_generator_missing=deck_generator_missing,
+        deck_canva_connected=deck_connection is not None,
+        deck_canva_display_name=(deck_connection.display_name if deck_connection else ""),
+        deck_canva_capabilities={
+            "autofill": bool(deck_capabilities.get("autofill")),
+            "brand_template": bool(deck_capabilities.get("brand_template")),
+        },
+        deck_google_source=str(getattr(settings, "google_sheets_sales_range", "")),
+        deck_template_id=str(getattr(settings, "canva_brand_template_id", "")),
+        recent_deck_runs=recent_deck_runs,
     )
 
 
@@ -1861,7 +1916,8 @@ def render_dashboard_page(data: DashboardData) -> str:
         .owner-card p,
         .meta-card p,
         .panel-card p,
-        .lead-form input {{
+        .lead-form input,
+        .deck-run-item p {{
           font-size: 15px;
         }}
         .section-title,
@@ -1925,6 +1981,47 @@ def render_dashboard_page(data: DashboardData) -> str:
           </form>
           <div class="status-line" id="run-status">Scrape Status: Ready.</div>
         </div>
+        <div class="panel-card" id="deck-generator-panel">
+          <h3>Generate sales deck</h3>
+          <p>Pull sales metrics from Google Sheets, upload the competitor CSV, and generate a fresh Canva deck copy from the configured brand template.</p>
+          {deck_ready_notice}
+          <div class="panel-stack">
+            <div class="snapshot-rows">
+              {_summary_row("Google sheet range", data.deck_google_source or "Not configured")}
+              {_summary_row("Brand template", data.deck_template_id or "Not configured")}
+              {_summary_row("Canva connection", canva_connection_label)}
+            </div>
+            <div class="deck-capabilities">
+              {deck_capability_bits}
+            </div>
+          </div>
+          <form class="lead-form" id="deck-generator-form">
+            <label>
+              Competitor CSV
+              <input type="file" name="competitor_csv" accept=".csv,text/csv" required />
+            </label>
+            <label>
+              Report date
+              <input type="date" name="report_date" value="{html.escape(today_value)}" />
+            </label>
+            <label>
+              Reporting period
+              <input type="text" name="reporting_period" placeholder="Q1 2026" />
+            </label>
+            <label>
+              Deck title
+              <input type="text" name="run_label" placeholder="Sales Deck | Q1 2026" />
+            </label>
+            <div class="lead-submit">
+              <button type="submit">GENERATE DECK</button>
+              <a class="button-link" id="connect-canva-button" href="/admin/api/canva/connect">CONNECT CANVA</a>
+            </div>
+          </form>
+          <div class="status-line" id="deck-status">Deck status: Ready.</div>
+          <div class="deck-run-list" id="deck-run-list">
+            {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
+          </div>
+        </div>
         <section class="meta-card">
           <h2>Ops snapshot</h2>
           <div class="snapshot-rows">
@@ -1971,6 +2068,8 @@ def render_dashboard_page(data: DashboardData) -> str:
       const syncStatus = document.getElementById("sync-status");
       const form = document.getElementById("lead-build-form");
       const status = document.getElementById("run-status");
+      const deckForm = document.getElementById("deck-generator-form");
+      const deckStatus = document.getElementById("deck-status");
       const ownerFilter = document.getElementById("owner-filter");
       const urgencyButtons = document.querySelectorAll("#urgency-filter .filter-button");
       let activeUrgency = "all";
