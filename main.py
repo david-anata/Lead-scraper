@@ -2114,6 +2114,43 @@ def build_heyreach_headers(settings: Settings) -> dict[str, str]:
     }
 
 
+def normalize_external_identifier(value: str) -> int | str:
+    normalized = (value or "").strip()
+    if normalized.isdigit():
+        return int(normalized)
+    return normalized
+
+
+def validate_heyreach_api_key(settings: Settings) -> tuple[bool, str]:
+    try:
+        response = requests.get(
+            HEYREACH_CHECK_API_KEY_URL,
+            headers={"X-API-KEY": settings.heyreach_api_key},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        logger.warning("[HeyReach] API key check request failed: %s", exc)
+        return False, "request_failed"
+
+    if response.status_code != 200:
+        logger.warning(
+            "[HeyReach] API key check non-200 status=%s body=%s",
+            response.status_code,
+            response.text,
+        )
+        return False, "invalid_api_key"
+
+    try:
+        payload = response.json()
+    except ValueError:
+        logger.warning("[HeyReach] API key check returned invalid JSON")
+        return False, "invalid_api_key"
+
+    payload_status = str(payload.get("status") or payload.get("message") or "ok").lower()
+    logger.info("[HeyReach] API key check status=%s", payload_status)
+    return True, "ok"
+
+
 def upload_file_to_slack(filename: str, content: str, settings: Settings) -> dict[str, Any]:
     if not content:
         return {"ok": True, "skipped": True, "reason": "empty_file"}
@@ -2287,6 +2324,17 @@ def import_leads_to_heyreach(rows: list[dict[str, Any]], run_date: str, settings
             "missing_linkedin_url_count": 0,
         }
 
+    api_key_valid, api_key_reason = validate_heyreach_api_key(settings)
+    if not api_key_valid:
+        return {
+            "status": "error",
+            "reason": api_key_reason,
+            "attempted_count": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+            "missing_linkedin_url_count": 0,
+        }
+
     processed_leads = load_processed_heyreach_leads()
     prepared_leads: list[dict[str, Any]] = []
     processed_rows_to_append: list[dict[str, str]] = []
@@ -2333,7 +2381,7 @@ def import_leads_to_heyreach(rows: list[dict[str, Any]], run_date: str, settings
         }
 
     payload = {
-        "campaignId": settings.heyreach_campaign_id,
+        "campaignId": normalize_external_identifier(settings.heyreach_campaign_id),
         "leads": prepared_leads,
     }
 
@@ -2346,8 +2394,24 @@ def import_leads_to_heyreach(rows: list[dict[str, Any]], run_date: str, settings
         )
         response.raise_for_status()
         result = response.json()
+    except requests.HTTPError as exc:
+        response = exc.response
+        logger.warning(
+            "[HeyReach] import request failed status=%s body=%s payload=%s",
+            response.status_code if response is not None else "unknown",
+            response.text if response is not None else "",
+            payload,
+        )
+        return {
+            "status": "error",
+            "reason": "http_error",
+            "attempted_count": len(prepared_leads),
+            "created_count": 0,
+            "skipped_count": skipped_count,
+            "missing_linkedin_url_count": missing_linkedin_url_count,
+        }
     except requests.RequestException as exc:
-        logger.warning("[HeyReach] import request failed: %s", exc)
+        logger.warning("[HeyReach] import request failed: %s payload=%s", exc, payload)
         return {
             "status": "error",
             "reason": "request_failed",
