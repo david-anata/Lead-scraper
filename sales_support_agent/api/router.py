@@ -394,8 +394,11 @@ async def admin_create_gmail_drafts(
             "row_number": row["row_number"],
             "email": row["email"],
             "subject": row["subject"],
+            "body": row["body"],
             "body_preview": row["body"][:240],
+            "body_length": len(row["body"]),
             "first_name": row.get("first_name", ""),
+            "last_name": row.get("last_name", ""),
             "company": row.get("company", ""),
         }
         for row in prepared_rows[:10]
@@ -406,6 +409,8 @@ async def admin_create_gmail_drafts(
         "prepared": len(prepared_rows),
         "created": len(created_rows),
         "failed": len(failed_rows),
+        "preview_limit": 10,
+        "previewed": len(preview_rows),
         "available_placeholders": payload["available_placeholders"],
         "drafts_url": "https://mail.google.com/mail/u/0/#drafts",
         "previews": preview_rows,

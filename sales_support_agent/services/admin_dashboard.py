@@ -2244,6 +2244,139 @@ def render_dashboard_page(data: DashboardData) -> str:
       .empty {{
         font-size: 16px;
       }}
+      .draft-mode-note {{
+        margin: -6px 0 14px;
+        font-size: 14px;
+        line-height: 1.45;
+        color: var(--alt-dark-blue);
+      }}
+      .draft-mode-note strong {{
+        font-family: "Montserrat", sans-serif;
+        font-size: 13px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }}
+      .draft-summary-grid {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }}
+      .draft-summary-card {{
+        background: rgba(133, 187, 218, 0.08);
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 14px;
+        padding: 12px 14px;
+      }}
+      .draft-summary-card span {{
+        display: block;
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--alt-dark-blue);
+        margin-bottom: 8px;
+      }}
+      .draft-summary-card strong {{
+        display: block;
+        font-family: "Montserrat", sans-serif;
+        font-size: 24px;
+        font-weight: 800;
+        color: var(--dark-blue);
+      }}
+      .draft-summary-card small {{
+        display: block;
+        margin-top: 6px;
+        font-size: 13px;
+        line-height: 1.4;
+        color: var(--dark-blue);
+      }}
+      .result-meta {{
+        margin: 4px 0 12px;
+        font-size: 14px;
+        color: var(--alt-dark-blue);
+      }}
+      .preview-card-list,
+      .created-card-list {{
+        display: grid;
+        gap: 12px;
+      }}
+      .preview-card,
+      .created-card {{
+        background: rgba(249, 247, 243, 0.8);
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 16px;
+        padding: 14px 16px;
+      }}
+      .preview-card-head,
+      .created-card-head {{
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        margin-bottom: 10px;
+      }}
+      .preview-card h4,
+      .created-card h4 {{
+        margin: 0 0 4px;
+        font-family: "Montserrat", sans-serif;
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--dark-blue);
+      }}
+      .preview-card p,
+      .created-card p {{
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.45;
+      }}
+      .preview-subject {{
+        margin: 10px 0 8px;
+        font-size: 14px;
+        color: var(--dark-blue);
+      }}
+      .preview-body {{
+        margin: 0;
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: var(--white);
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--dark-blue);
+      }}
+      .preview-card-tags,
+      .created-card-tags {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
+      .draft-chip {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 7px 10px;
+        border-radius: 999px;
+        background: rgba(133, 187, 218, 0.16);
+        border: 1px solid rgba(43, 54, 68, 0.08);
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--dark-blue);
+      }}
+      .draft-chip.success {{
+        background: rgba(133, 187, 218, 0.22);
+      }}
+      .draft-chip.warn {{
+        background: rgba(191, 168, 137, 0.22);
+      }}
+      .result-block ul {{
+        margin: 10px 0 0;
+        padding-left: 18px;
+      }}
       .info-hint {{
         position: relative;
         display: inline-flex;
@@ -2312,6 +2445,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         .page-header,
         .controls-grid,
         .metrics,
+        .draft-summary-grid,
         .lead-form,
         .draft-form {{
           grid-template-columns: 1fr;
@@ -2443,6 +2577,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                     Preview mode
                     <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
                   </label>
+                  <div class="draft-mode-note" id="draft-mode-note"><strong>Preview mode is on.</strong> We will validate rows and show rendered email previews, but nothing will be created in Gmail until you turn preview mode off.</div>
                   <label class="draft-body-field">
                     Body template
                     <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
@@ -2451,7 +2586,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                     Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
                   </div>
                   <div class="draft-submit">
-                    <button type="submit">PREVIEW / CREATE DRAFTS</button>
+                    <button type="submit" id="drafts-submit-button">PREVIEW DRAFTS</button>
                     <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
                   </div>
                 </form>
@@ -2550,12 +2685,36 @@ def render_dashboard_page(data: DashboardData) -> str:
       const draftsForm = document.getElementById("gmail-drafts-form");
       const draftsStatus = document.getElementById("drafts-status");
       const draftsResults = document.getElementById("drafts-results");
+      const draftsSubmitButton = document.getElementById("drafts-submit-button");
+      const draftModeNote = document.getElementById("draft-mode-note");
+      const draftsDryRunCheckbox = draftsForm?.querySelector('input[name="dry_run"]');
       const ownerFilter = document.getElementById("owner-filter");
       const searchInput = document.getElementById("queue-search");
       const filterResults = document.getElementById("filter-results");
       const queueEmptyState = document.getElementById("queue-empty-state");
       const urgencyButtons = document.querySelectorAll("#urgency-filter .filter-button");
       let activeUrgency = "all";
+
+      function escapeHtml(value) {{
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }}
+
+      function updateDraftModeUi() {{
+        const previewOnly = Boolean(draftsDryRunCheckbox?.checked);
+        if (draftsSubmitButton) {{
+          draftsSubmitButton.textContent = previewOnly ? "PREVIEW DRAFTS" : "CREATE DRAFTS";
+        }}
+        if (draftModeNote) {{
+          draftModeNote.innerHTML = previewOnly
+            ? "<strong>Preview mode is on.</strong> We will validate rows and show rendered email previews, but nothing will be created in Gmail until you turn preview mode off."
+            : "<strong>Create mode is on.</strong> Clicking the button will create Gmail drafts for all valid rows in this upload."
+        }}
+      }}
 
       function applyQueueFilters() {{
         const selectedOwner = ownerFilter?.value || "all";
@@ -2729,7 +2888,8 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       draftsForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
-        draftsStatus.textContent = "Preparing Gmail drafts...";
+        const previewOnly = Boolean(draftsDryRunCheckbox?.checked);
+        draftsStatus.textContent = previewOnly ? "Preparing Gmail preview..." : "Creating Gmail drafts...";
         draftsResults.innerHTML = "";
         const formData = new FormData(draftsForm);
         try {{
@@ -2749,28 +2909,96 @@ def render_dashboard_page(data: DashboardData) -> str:
             : summary;
 
           const blocks = [];
+          blocks.push(`
+            <div class="draft-summary-grid">
+              <div class="draft-summary-card">
+                <span>Total rows</span>
+                <strong>${{details.rows_total || 0}}</strong>
+                <small>Rows detected in the uploaded CSV.</small>
+              </div>
+              <div class="draft-summary-card">
+                <span>Prepared</span>
+                <strong>${{details.prepared || 0}}</strong>
+                <small>Rows that were valid enough to turn into drafts.</small>
+              </div>
+              <div class="draft-summary-card">
+                <span>Created</span>
+                <strong>${{details.created || 0}}</strong>
+                <small>${{details.dry_run ? "Preview mode does not create drafts." : "Drafts successfully created in Gmail."}}</small>
+              </div>
+              <div class="draft-summary-card">
+                <span>Failed</span>
+                <strong>${{details.failed || 0}}</strong>
+                <small>Rows that need fixes before they can be drafted.</small>
+              </div>
+            </div>
+          `);
           if (Array.isArray(details.available_placeholders) && details.available_placeholders.length) {{
             blocks.push(`
               <div class="result-block">
-                <strong>Available placeholders</strong>
-                <div>${{details.available_placeholders.map((item) => `<span class="source">${{item}}</span>`).join(" ")}}</div>
+                <strong>Available placeholders (${{details.available_placeholders.length}})</strong>
+                <div>${{details.available_placeholders.map((item) => `<span class="source">${{escapeHtml(item)}}</span>`).join(" ")}}</div>
               </div>
             `);
           }}
           if (Array.isArray(details.previews) && details.previews.length) {{
+            const previewHeading = details.dry_run ? "Preview drafts" : "Created draft content";
+            const previewMeta = details.previewed < details.prepared
+              ? `Showing the first ${{details.previewed}} rendered emails out of ${{details.prepared}} prepared rows.`
+              : `Showing all ${{details.previewed}} rendered emails.`;
             blocks.push(`
               <div class="result-block">
-                <strong>${{details.dry_run ? "Preview rows" : "Created drafts"}}</strong>
-                <ul>
-                  ${{details.previews.map((item) => `<li><strong>${{item.email}}</strong> - ${{item.subject}}</li>`).join("")}}
-                </ul>
+                <strong>${{previewHeading}}</strong>
+                <div class="result-meta">${{previewMeta}}</div>
+                <div class="preview-card-list">
+                  ${{details.previews.map((item) => `
+                    <article class="preview-card">
+                      <div class="preview-card-head">
+                        <div>
+                          <h4>${{escapeHtml(item.email)}}</h4>
+                          <p>Row ${{item.row_number}}${{item.first_name || item.last_name ? ` · ${{escapeHtml([item.first_name, item.last_name].filter(Boolean).join(" "))}}` : ""}}${{item.company ? ` · ${{escapeHtml(item.company)}}` : ""}}</p>
+                        </div>
+                        <div class="preview-card-tags">
+                          <span class="draft-chip">${{item.body_length || 0}} chars</span>
+                          <span class="draft-chip">${{details.dry_run ? "Preview" : "Drafted"}}</span>
+                        </div>
+                      </div>
+                      <div class="preview-subject"><strong>Subject:</strong> ${{escapeHtml(item.subject)}}</div>
+                      <pre class="preview-body">${{escapeHtml(item.body || "")}}</pre>
+                    </article>
+                  `).join("")}}
+                </div>
+              </div>
+            `);
+          }}
+          if (Array.isArray(details.created_rows) && details.created_rows.length) {{
+            blocks.push(`
+              <div class="result-block">
+                <strong>Created draft records</strong>
+                <div class="created-card-list">
+                  ${{details.created_rows.map((item) => `
+                    <article class="created-card">
+                      <div class="created-card-head">
+                        <div>
+                          <h4>${{escapeHtml(item.email)}}</h4>
+                          <p>Row ${{item.row_number}}</p>
+                        </div>
+                        <div class="created-card-tags">
+                          <span class="draft-chip success">Draft created</span>
+                        </div>
+                      </div>
+                      <p><strong>Subject:</strong> ${{escapeHtml(item.subject)}}</p>
+                      <p><strong>Draft ID:</strong> ${{escapeHtml(item.draft_id || "n/a")}}${{item.message_id ? ` · <strong>Message ID:</strong> ${{escapeHtml(item.message_id)}}` : ""}}</p>
+                    </article>
+                  `).join("")}}
+                </div>
               </div>
             `);
           }}
           if (Array.isArray(details.failed_rows) && details.failed_rows.length) {{
             const failureItems = details.failed_rows.map((item) => {{
-              const emailPart = item.email ? ` (${{item.email}})` : "";
-              return `<li>Row ${{item.row_number}}${{emailPart}}: ${{item.error}}</li>`;
+              const emailPart = item.email ? ` (${{escapeHtml(item.email)}})` : "";
+              return `<li>Row ${{item.row_number}}${{emailPart}}: ${{escapeHtml(item.error)}}</li>`;
             }}).join("");
             blocks.push(`
               <div class="result-block">
@@ -2784,7 +3012,8 @@ def render_dashboard_page(data: DashboardData) -> str:
           draftsStatus.textContent = "Draft creation failed before a response came back.";
         }}
       }});
-
+      draftsDryRunCheckbox?.addEventListener("change", updateDraftModeUi);
+      updateDraftModeUi();
       applyQueueFilters();
     </script>
   </body>
