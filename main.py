@@ -57,6 +57,7 @@ HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
 
 # ========= RUNTIME CONFIG =========
 REQUEST_TIMEOUT_SECONDS = 60
+ADMIN_REMOTE_TIMEOUT_SECONDS = int((os.getenv("ADMIN_REMOTE_TIMEOUT_SECONDS", "8") or "8").strip())
 MAX_APOLLO_ORG_PAGES = int((os.getenv("MAX_APOLLO_ORG_PAGES", "100") or "100").strip())
 APOLLO_ORG_PAGE_SIZE = min(int((os.getenv("APOLLO_ORG_PAGE_SIZE", "100") or "100").strip()), 100)
 MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "120") or "120").strip())
@@ -507,7 +508,7 @@ def fetch_remote_dashboard_data() -> DashboardData:
         response = requests.get(
             f"{admin_settings.sales_support_agent_url}/api/admin/dashboard-data",
             headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=ADMIN_REMOTE_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         payload = response.json()
@@ -537,7 +538,7 @@ def fetch_remote_executive_data() -> ExecutiveData:
         response = requests.get(
             f"{admin_settings.sales_support_agent_url}/api/admin/executive-data",
             headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=ADMIN_REMOTE_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         payload = response.json()
@@ -2939,13 +2940,6 @@ def admin_dashboard(request: Request) -> Response:
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
     dashboard = fetch_remote_dashboard_data()
-    if should_run_auto_dashboard_sync(request, dashboard, admin_settings):
-        request.app.state.admin_dashboard_last_auto_sync_at = datetime.now(timezone.utc)
-        try:
-            sync_remote_dashboard_sources()
-            dashboard = fetch_remote_dashboard_data()
-        except Exception:
-            logger.exception("[AdminDashboard] automatic preload sync failed")
     return HTMLResponse(render_dashboard_page(dashboard))
 
 
@@ -2960,19 +2954,6 @@ def admin_executive_dashboard(request: Request) -> Response:
         return RedirectResponse(url="/admin/login", status_code=302)
 
     executive = fetch_remote_executive_data()
-    if latest_sync_is_stale(executive.latest_sync_at, admin_settings):
-        try:
-            last_attempt = getattr(request.app.state, "admin_dashboard_last_auto_sync_at", None)
-            current_time = datetime.now(timezone.utc)
-            if not isinstance(last_attempt, datetime) or (
-                (current_time - (last_attempt if last_attempt.tzinfo else last_attempt.replace(tzinfo=timezone.utc))) >= timedelta(minutes=5)
-            ):
-                request.app.state.admin_dashboard_last_auto_sync_at = datetime.now(timezone.utc)
-                sync_remote_dashboard_sources()
-                executive = fetch_remote_executive_data()
-        except Exception:
-            logger.exception("[AdminDashboard] automatic sync failed before executive page load")
-
     return HTMLResponse(render_executive_page(executive))
 
 
