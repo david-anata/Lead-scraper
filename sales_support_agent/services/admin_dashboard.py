@@ -1317,6 +1317,15 @@ def render_dashboard_page(data: DashboardData) -> str:
             "</div>"
         )
 
+    def info_hint(text: str) -> str:
+        escaped = html.escape(text, quote=True)
+        return (
+            '<span class="info-hint" tabindex="0">'
+            '<span class="info-dot" aria-hidden="true">?</span>'
+            f'<span class="tooltip-bubble" role="tooltip">{escaped}</span>'
+            "</span>"
+        )
+
     metric_cards = "".join(
         [
             _card("Leads", str(data.total_active_leads), "Current ClickUp leads in active statuses"),
@@ -1585,7 +1594,13 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       .controls-grid {{
         display: grid;
-        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr) minmax(280px, 0.9fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+        margin-bottom: 24px;
+      }}
+      .secondary-tools {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
         gap: 18px;
         margin-bottom: 24px;
       }}
@@ -1594,6 +1609,17 @@ def render_dashboard_page(data: DashboardData) -> str:
         border: 2px solid rgba(43, 54, 68, 0.10);
         border-radius: 18px;
         padding: 20px 22px;
+      }}
+      .card-title-line {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }}
+      .card-title-line h2,
+      .card-title-line h3 {{
+        margin-bottom: 0;
       }}
       .panel-card h3 {{
         margin: 0 0 8px;
@@ -2083,6 +2109,65 @@ def render_dashboard_page(data: DashboardData) -> str:
         gap: 12px;
         flex-wrap: wrap;
       }}
+      .info-hint {{
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        outline: none;
+      }}
+      .info-dot {{
+        width: 24px;
+        height: 24px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(133, 187, 218, 0.18);
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1;
+        cursor: help;
+      }}
+      .tooltip-bubble {{
+        position: absolute;
+        top: calc(100% + 12px);
+        right: 0;
+        z-index: 12;
+        width: min(320px, 80vw);
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-size: 14px;
+        line-height: 1.45;
+        box-shadow: 0 16px 30px rgba(43, 54, 68, 0.18);
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-6px);
+        transition: opacity 0.16s ease, transform 0.16s ease;
+      }}
+      .tooltip-bubble::after {{
+        content: "";
+        position: absolute;
+        top: -7px;
+        right: 12px;
+        width: 14px;
+        height: 14px;
+        background: var(--dark-blue);
+        transform: rotate(45deg);
+      }}
+      .info-hint:hover .tooltip-bubble,
+      .info-hint:focus .tooltip-bubble,
+      .info-hint:focus-within .tooltip-bubble {{
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }}
       .footer-bar {{
         height: 18px;
         background: var(--alt-dark-blue);
@@ -2100,6 +2185,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         }}
         .page-header,
         .controls-grid,
+        .secondary-tools,
         .layout,
         .metrics,
         .lead-form,
@@ -2175,13 +2261,19 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       <section class="controls-grid">
         <div class="panel-card">
-          <h3>Sync data</h3>
+          <div class="card-title-line">
+            <h3>Sync data</h3>
+            {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
+          </div>
           <p>Refresh the ClickUp mirror and recompute stale priorities before reviewing the board.</p>
           <button id="sync-dashboard-button" type="button">SYNC DATA</button>
           <div class="status-line" id="sync-status">Ready.</div>
         </div>
         <div class="panel-card" id="lead-pull-panel">
-          <h3>Run lead pull</h3>
+          <div class="card-title-line">
+            <h3>Run lead pull</h3>
+            {info_hint("Runs the outbound lead pipeline from this dashboard. It sources fresh companies, finds matched contacts, adds accepted leads into Instantly, and then returns the CSV download for review.")}
+          </div>
           <p>Run the existing lead build pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
           {lead_builder_notice}
           <form class="lead-form" id="lead-build-form">
@@ -2199,8 +2291,23 @@ def render_dashboard_page(data: DashboardData) -> str:
           </form>
           <div class="status-line" id="run-status">Scrape Status: Ready.</div>
         </div>
+        <section class="meta-card">
+          <div class="card-title-line">
+            <h2>Ops snapshot</h2>
+            {info_hint("Quick readout of the latest sync and stale-scan activity so you can see whether the board is fresh and whether recent automation runs completed cleanly.")}
+          </div>
+          <div class="snapshot-rows">
+            {''.join(snapshot_rows)}
+          </div>
+        </section>
+      </section>
+
+      <section class="secondary-tools">
         <div class="panel-card" id="deck-generator-panel">
-          <h3>Generate sales deck</h3>
+          <div class="card-title-line">
+            <h3>Generate sales deck</h3>
+            {info_hint("Pulls sales metrics from Google Sheets, combines them with your uploaded competitor CSV, and generates a fresh Canva deck from the configured brand template.")}
+          </div>
           <p>Pull sales metrics from Google Sheets, upload the competitor CSV, and generate a fresh Canva deck copy from the configured brand template.</p>
           {deck_ready_notice}
           <div class="panel-stack">
@@ -2240,16 +2347,13 @@ def render_dashboard_page(data: DashboardData) -> str:
             {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
           </div>
         </div>
-        <section class="meta-card">
-          <h2>Ops snapshot</h2>
-          <div class="snapshot-rows">
-            {''.join(snapshot_rows)}
-          </div>
-        </section>
       </section>
 
       <section class="panel-card draft-panel" id="gmail-drafts-panel">
-        <h3>Create Gmail drafts</h3>
+        <div class="card-title-line">
+          <h3>Create Gmail drafts</h3>
+          {info_hint("Uploads a CSV and creates Gmail drafts in bulk without sending anything. Preview mode lets you inspect the merged rows first so you can catch template or data issues before draft creation.")}
+        </div>
         <p>Upload a simple CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
         <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
           <label>
