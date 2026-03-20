@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from sales_support_agent.services.admin_auth import (
     admin_login_enabled,
     create_admin_session_token,
+    create_signed_state_token,
+    read_signed_state_token,
     validate_admin_session_token,
     verify_admin_password,
 )
@@ -34,6 +36,14 @@ class AdminAuthTests(unittest.TestCase):
 
         self.assertTrue(validate_admin_session_token(settings, token, now=issued_at + timedelta(hours=1)))
         self.assertFalse(validate_admin_session_token(settings, token, now=issued_at + timedelta(hours=25)))
+
+    def test_signed_state_token_round_trip(self) -> None:
+        token = create_signed_state_token("signing-secret", {"state": "abc", "code_verifier": "xyz"})
+        self.assertEqual(
+            read_signed_state_token("signing-secret", token),
+            {"state": "abc", "code_verifier": "xyz"},
+        )
+        self.assertIsNone(read_signed_state_token("wrong-secret", token))
 
 
 if __name__ == "__main__":
