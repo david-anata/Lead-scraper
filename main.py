@@ -417,6 +417,14 @@ def _build_empty_dashboard(*, lead_builder_missing: list[str], error_message: st
         latest_run_summary=summary,
         lead_builder_ready=not lead_builder_missing,
         lead_builder_missing=lead_builder_missing,
+        deck_generator_ready=False,
+        deck_generator_missing=[],
+        deck_canva_connected=False,
+        deck_canva_display_name="",
+        deck_canva_capabilities={"autofill": False, "brand_template": False},
+        deck_google_source="",
+        deck_template_id="",
+        recent_deck_runs=[],
     )
 
 
