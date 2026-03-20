@@ -46,6 +46,14 @@ DEFAULT_STATUS_POLICIES: dict[str, StatusPolicy] = {
     "FOLLOW UP": StatusPolicy(due_days=0, overdue_days=1, use_follow_up_date=True),
 }
 
+DEFAULT_CANVA_SCOPES = (
+    "design:content:write",
+    "design:meta:read",
+    "brandtemplate:meta:read",
+    "brandtemplate:content:read",
+    "profile:read",
+)
+
 
 @dataclass(frozen=True)
 class ManagedFieldSettings:
@@ -105,6 +113,24 @@ class Settings:
     instantly_webhook_secret: str
     instantly_webhook_secret_header: str
     instantly_webhook_allowed_event_types: tuple[str, ...]
+    google_sheets_api_base_url: str
+    google_sheets_spreadsheet_id: str
+    google_sheets_sales_range: str
+    google_service_account_json: str
+    canva_api_base_url: str
+    canva_authorize_url: str
+    canva_token_url: str
+    canva_client_id: str
+    canva_client_secret: str
+    canva_redirect_uri: str
+    canva_brand_template_id: str
+    canva_scopes: tuple[str, ...]
+    canva_token_secret: str
+    deck_canva_poll_interval_seconds: int
+    deck_canva_poll_attempts: int
+    deck_competitor_required_columns: tuple[str, ...]
+    deck_competitor_allowed_columns: tuple[str, ...]
+    deck_required_template_fields: tuple[str, ...]
     active_statuses: tuple[str, ...] = field(default_factory=lambda: ACTIVE_FOLLOW_UP_STATUSES)
     inactive_statuses: tuple[str, ...] = field(default_factory=lambda: INACTIVE_STATUSES)
     managed_fields: ManagedFieldSettings = field(default_factory=ManagedFieldSettings)
@@ -224,6 +250,42 @@ def load_settings() -> Settings:
             ).split(",")
             if event_type.strip()
         ),
+        google_sheets_api_base_url=(
+            os.getenv("GOOGLE_SHEETS_API_BASE_URL", "https://sheets.googleapis.com/v4").strip()
+            or "https://sheets.googleapis.com/v4"
+        ),
+        google_sheets_spreadsheet_id=os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
+        google_sheets_sales_range=os.getenv("GOOGLE_SHEETS_SALES_RANGE", "").strip(),
+        google_service_account_json=os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip(),
+        canva_api_base_url=(os.getenv("CANVA_API_BASE_URL", "https://api.canva.com/rest/v1").strip() or "https://api.canva.com/rest/v1"),
+        canva_authorize_url=(
+            os.getenv("CANVA_AUTHORIZE_URL", "https://www.canva.com/api/oauth/authorize").strip()
+            or "https://www.canva.com/api/oauth/authorize"
+        ),
+        canva_token_url=(os.getenv("CANVA_TOKEN_URL", "https://api.canva.com/rest/v1/oauth/token").strip() or "https://api.canva.com/rest/v1/oauth/token"),
+        canva_client_id=os.getenv("CANVA_CLIENT_ID", "").strip(),
+        canva_client_secret=os.getenv("CANVA_CLIENT_SECRET", "").strip(),
+        canva_redirect_uri=os.getenv("CANVA_REDIRECT_URI", "").strip(),
+        canva_brand_template_id=os.getenv("CANVA_BRAND_TEMPLATE_ID", "").strip(),
+        canva_scopes=_parse_csv_tuple(
+            os.getenv("CANVA_SCOPES", ",".join(DEFAULT_CANVA_SCOPES)),
+            default=DEFAULT_CANVA_SCOPES,
+        ),
+        canva_token_secret=os.getenv("CANVA_TOKEN_SECRET", "").strip(),
+        deck_canva_poll_interval_seconds=int((os.getenv("DECK_CANVA_POLL_INTERVAL_SECONDS", "2") or "2").strip()),
+        deck_canva_poll_attempts=int((os.getenv("DECK_CANVA_POLL_ATTEMPTS", "15") or "15").strip()),
+        deck_competitor_required_columns=_parse_csv_tuple(
+            os.getenv("DECK_COMPETITOR_REQUIRED_COLUMNS", ""),
+            default=(),
+        ),
+        deck_competitor_allowed_columns=_parse_csv_tuple(
+            os.getenv("DECK_COMPETITOR_ALLOWED_COLUMNS", ""),
+            default=(),
+        ),
+        deck_required_template_fields=_parse_csv_tuple(
+            os.getenv("DECK_REQUIRED_TEMPLATE_FIELDS", ""),
+            default=(),
+        ),
         active_statuses=tuple(
             normalize_status_key(status)
             for status in ACTIVE_FOLLOW_UP_STATUSES
@@ -251,4 +313,25 @@ def get_missing_runtime_settings(settings: Settings) -> list[str]:
         missing.append("CLICKUP_API_TOKEN")
     if not settings.clickup_list_id:
         missing.append("CLICKUP_LIST_ID")
+    return missing
+
+
+def get_missing_deck_generator_settings(settings: Settings) -> list[str]:
+    missing: list[str] = []
+    if not settings.google_sheets_spreadsheet_id:
+        missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
+    if not settings.google_sheets_sales_range:
+        missing.append("GOOGLE_SHEETS_SALES_RANGE")
+    if not settings.google_service_account_json:
+        missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not settings.canva_client_id:
+        missing.append("CANVA_CLIENT_ID")
+    if not settings.canva_client_secret:
+        missing.append("CANVA_CLIENT_SECRET")
+    if not settings.canva_redirect_uri:
+        missing.append("CANVA_REDIRECT_URI")
+    if not settings.canva_brand_template_id:
+        missing.append("CANVA_BRAND_TEMPLATE_ID")
+    if not settings.canva_token_secret:
+        missing.append("CANVA_TOKEN_SECRET")
     return missing

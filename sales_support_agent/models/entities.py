@@ -127,3 +127,20 @@ class IntegrationLog(Base):
     status_code: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class CanvaConnection(Base):
+    __tablename__ = "canva_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    canva_user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    display_name: Mapped[str] = mapped_column(String(255), default="")
+    scope: Mapped[str] = mapped_column(Text, default="")
+    access_token_encrypted: Mapped[str] = mapped_column(Text, default="")
+    refresh_token_encrypted: Mapped[str] = mapped_column(Text, default="")
+    token_type: Mapped[str] = mapped_column(String(64), default="Bearer")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
