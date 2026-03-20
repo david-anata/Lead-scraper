@@ -41,7 +41,7 @@ app = FastAPI()
 
 
 # ========= EXTERNAL ENDPOINTS =========
-STORELEADS_URL = "https://storeleads.app/json/api/v1/all/domain"
+APOLLO_ORG_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_companies/search"
 APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 APOLLO_BULK_PEOPLE_MATCH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
 SLACK_CHAT_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
@@ -57,8 +57,8 @@ HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
 
 # ========= RUNTIME CONFIG =========
 REQUEST_TIMEOUT_SECONDS = 60
-MAX_STORELEADS_PAGES = 10
-STORELEADS_PAGE_SIZE = 200
+MAX_APOLLO_ORG_PAGES = int((os.getenv("MAX_APOLLO_ORG_PAGES", "100") or "100").strip())
+APOLLO_ORG_PAGE_SIZE = min(int((os.getenv("APOLLO_ORG_PAGE_SIZE", "100") or "100").strip()), 100)
 MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "120") or "120").strip())
 APOLLO_SLEEP_SECONDS = 1.2
 MAX_CONTACTS_PER_DOMAIN = 2
@@ -109,7 +109,7 @@ APOLLO_TARGET_SENIORITIES = (
     "manager",
 )
 APOLLO_DEBUG_RAW = os.getenv("APOLLO_DEBUG_RAW", "").strip().lower() in {"1", "true", "yes", "on"}
-APP_VERSION = os.getenv("APP_VERSION", "apollo-people-search-v2")
+APP_VERSION = os.getenv("APP_VERSION", "apollo-org-sourcing-v1")
 RENDER_GIT_COMMIT = os.getenv("RENDER_GIT_COMMIT", "").strip()
 RENDER_GIT_BRANCH = os.getenv("RENDER_GIT_BRANCH", "").strip()
 PROCESSED_DOMAINS_FILE = os.getenv("PROCESSED_DOMAINS_FILE", "processed_domains.csv").strip()
@@ -135,15 +135,85 @@ GITHUB_STATE_DAILY_IMPORTS_PATH = (
     or "state/daily_import_counts.csv"
 )
 APOLLO_ATTEMPTS_FILE = os.getenv("APOLLO_ATTEMPTS_FILE", "apollo_attempts.csv").strip()
-STORELEADS_CURSOR_FILE = os.getenv("STORELEADS_CURSOR_FILE", "storeleads_cursor.csv").strip()
+APOLLO_ORG_CURSOR_FILE = (
+    os.getenv("APOLLO_ORG_CURSOR_FILE")
+    or os.getenv("STORELEADS_CURSOR_FILE")
+    or "apollo_org_cursor.csv"
+).strip()
 GITHUB_STATE_APOLLO_ATTEMPTS_PATH = (
     os.getenv("GITHUB_STATE_APOLLO_ATTEMPTS_PATH", "state/apollo_attempts.csv").strip()
     or "state/apollo_attempts.csv"
 )
-GITHUB_STATE_STORELEADS_CURSOR_PATH = (
-    os.getenv("GITHUB_STATE_STORELEADS_CURSOR_PATH", "state/storeleads_cursor.csv").strip()
-    or "state/storeleads_cursor.csv"
+GITHUB_STATE_APOLLO_ORG_CURSOR_PATH = (
+    os.getenv("GITHUB_STATE_APOLLO_ORG_CURSOR_PATH")
+    or os.getenv("GITHUB_STATE_STORELEADS_CURSOR_PATH")
+    or "state/apollo_org_cursor.csv"
+).strip()
+INSTANTLY_CAMPAIGN_ROUTING_JSON = os.getenv("INSTANTLY_CAMPAIGN_ROUTING_JSON", "").strip()
+APOLLO_ALLOWED_COUNTRIES = {"US", "GB", "UK", "CA", "AU", "UNITED STATES", "UNITED KINGDOM", "CANADA", "AUSTRALIA"}
+APOLLO_EXCLUDED_KEYWORDS = (
+    "agency",
+    "consulting",
+    "consultancy",
+    "software",
+    "saas",
+    "printing",
+    "publisher",
+    "publishing",
+    "industrial",
+    "construction",
+    "pharmaceutical",
+    "church",
+    "politics",
+    "charity",
+    "hotel",
+    "consultant",
+    "services",
+    "mail delivery",
+    "public relations",
+    "printful",
+    "printify",
 )
+APOLLO_ECOMMERCE_INCLUDE_KEYWORDS = (
+    "ecommerce",
+    "e-commerce",
+    "shopify",
+    "woocommerce",
+    "bigcommerce",
+    "magento",
+    "direct to consumer",
+    "dtc",
+    "consumer goods",
+    "retail",
+    "apparel",
+    "fashion",
+    "beauty",
+    "cosmetics",
+    "skincare",
+    "food",
+    "beverage",
+    "snack",
+    "supplement",
+    "pet",
+    "jewelry",
+    "home goods",
+    "furniture",
+    "baby",
+    "gift",
+    "wellness",
+    "sporting goods",
+    "toys",
+)
+ORG_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "beauty_wellness": ("beauty", "skincare", "cosmetic", "wellness", "supplement", "personal care"),
+    "food_beverage": ("food", "beverage", "drink", "snack", "coffee", "tea"),
+    "apparel_accessories": ("apparel", "fashion", "clothing", "footwear", "jewelry", "accessories"),
+    "home_lifestyle": ("home", "furniture", "decor", "lifestyle", "kitchen", "bedding"),
+    "pets": ("pet", "pets", "animal"),
+    "family_gifts": ("baby", "kids", "toys", "gift", "stationery"),
+}
+GITHUB_STATE_STORELEADS_CURSOR_PATH = GITHUB_STATE_APOLLO_ORG_CURSOR_PATH
+STORELEADS_CURSOR_FILE = APOLLO_ORG_CURSOR_FILE
 HEYREACH_PROCESSED_LEADS_FILE = os.getenv("HEYREACH_PROCESSED_LEADS_FILE", "heyreach_processed_leads.csv").strip()
 GITHUB_STATE_HEYREACH_LEADS_PATH = (
     os.getenv("GITHUB_STATE_HEYREACH_LEADS_PATH", "state/heyreach_processed_leads.csv").strip()
@@ -159,7 +229,6 @@ class ICPBuildRequest(BaseModel):
 
 @dataclass(frozen=True)
 class Settings:
-    storeleads_api_key: str
     apollo_api_key: str
     slack_bot_token: str
     slack_channel_id: str
@@ -245,7 +314,6 @@ def configure_logging() -> None:
 
 def load_settings() -> Settings:
     return Settings(
-        storeleads_api_key=os.getenv("STORELEADS_API_KEY", "").strip(),
         apollo_api_key=os.getenv("APOLLO_API_KEY", "").strip(),
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
         slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip(),
@@ -276,8 +344,6 @@ def load_admin_dashboard_settings() -> AdminDashboardSettings:
 def get_missing_required_settings(settings: Settings) -> list[str]:
     missing: list[str] = []
 
-    if not settings.storeleads_api_key:
-        missing.append("STORELEADS_API_KEY")
     if not settings.apollo_api_key:
         missing.append("APOLLO_API_KEY")
     if not settings.slack_bot_token:
@@ -317,7 +383,7 @@ def startup() -> None:
     app.state.settings = settings
     validate_settings_on_startup(settings)
     logger.info(
-        "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=people_search_enrichment state_backend=%s github_state_repo=%s github_state_branch=%s",
+        "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
         APP_VERSION,
         RENDER_GIT_BRANCH or "unknown",
         RENDER_GIT_COMMIT or "unknown",
@@ -570,13 +636,36 @@ def normalize_domain(domain: str) -> str:
 
 
 def parse_monthly_sales(store: dict[str, Any]) -> float | None:
-    try:
-        value = store.get("estimated_sales")
-        if value is None:
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    monthly_candidates = (
+        "estimated_sales",
+        "estimated_monthly_revenue",
+        "monthly_revenue",
+    )
+    for field_name in monthly_candidates:
+        try:
+            value = store.get(field_name)
+            if value is None:
+                continue
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+
+    annual_candidates = (
+        "estimated_annual_revenue",
+        "annual_revenue",
+        "organization_estimated_annual_revenue",
+        "organization_annual_revenue",
+    )
+    for field_name in annual_candidates:
+        try:
+            value = store.get(field_name)
+            if value is None:
+                continue
+            return float(value) / 12.0
+        except (TypeError, ValueError):
+            continue
+
+    return None
 
 
 def parse_average_product_price_usd(store: dict[str, Any]) -> float | None:
@@ -736,8 +825,8 @@ def apollo_attempts_path() -> Path:
     return Path(__file__).resolve().parent / configured_path
 
 
-def storeleads_cursor_path() -> Path:
-    configured_path = Path(STORELEADS_CURSOR_FILE)
+def apollo_org_cursor_path() -> Path:
+    configured_path = Path(APOLLO_ORG_CURSOR_FILE)
     if configured_path.is_absolute():
         return configured_path
     return Path(__file__).resolve().parent / configured_path
@@ -901,14 +990,14 @@ def upsert_apollo_attempts(attempt_rows: list[dict[str, str]]) -> None:
     path.write_text(write_csv_text(ordered_rows, fieldnames), encoding="utf-8")
 
 
-def load_storeleads_cursor() -> int:
-    default_page = 0
+def load_apollo_org_cursor() -> int:
+    default_page = 1
 
     if github_state_enabled():
         try:
-            content, _ = load_github_state_file(GITHUB_STATE_STORELEADS_CURSOR_PATH)
+            content, _ = load_github_state_file(GITHUB_STATE_APOLLO_ORG_CURSOR_PATH)
         except requests.RequestException as exc:
-            raise HTTPException(status_code=500, detail=f"GitHub StoreLeads cursor read failed: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"GitHub Apollo org cursor read failed: {exc}") from exc
 
         rows = parse_csv_text(content)
         if not rows:
@@ -917,11 +1006,11 @@ def load_storeleads_cursor() -> int:
             next_page = int((rows[0] or {}).get("next_page", default_page) or default_page)
         except (TypeError, ValueError):
             next_page = default_page
-        next_page = max(next_page, 0) % MAX_STORELEADS_PAGES
-        logger.info("[State] backend=github storeleads_next_page=%s", next_page)
+        next_page = min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
+        logger.info("[State] backend=github apollo_org_next_page=%s", next_page)
         return next_page
 
-    path = storeleads_cursor_path()
+    path = apollo_org_cursor_path()
     if not path.exists():
         return default_page
 
@@ -933,27 +1022,27 @@ def load_storeleads_cursor() -> int:
         next_page = int((rows[0] or {}).get("next_page", default_page) or default_page)
     except (TypeError, ValueError):
         next_page = default_page
-    return max(next_page, 0) % MAX_STORELEADS_PAGES
+    return min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
 
 
-def save_storeleads_cursor(next_page: int) -> None:
-    normalized_next_page = max(next_page, 0) % MAX_STORELEADS_PAGES
+def save_apollo_org_cursor(next_page: int) -> None:
+    normalized_next_page = min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
     rows = [{"next_page": normalized_next_page, "last_updated": current_utc_timestamp()}]
     fieldnames = ["next_page", "last_updated"]
 
     if github_state_enabled():
         try:
             write_github_state_file(
-                GITHUB_STATE_STORELEADS_CURSOR_PATH,
+                GITHUB_STATE_APOLLO_ORG_CURSOR_PATH,
                 write_csv_text(rows, fieldnames),
-                "Update StoreLeads cursor",
+                "Update Apollo org cursor",
             )
-            logger.info("[State] backend=github saved_storeleads_next_page=%s", normalized_next_page)
+            logger.info("[State] backend=github saved_apollo_org_next_page=%s", normalized_next_page)
             return
         except requests.RequestException as exc:
-            raise HTTPException(status_code=500, detail=f"GitHub StoreLeads cursor write failed: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"GitHub Apollo org cursor write failed: {exc}") from exc
 
-    path = storeleads_cursor_path()
+    path = apollo_org_cursor_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(write_csv_text(rows, fieldnames), encoding="utf-8")
 
@@ -1392,214 +1481,294 @@ def apply_daily_import_limit(
     return rows[:remaining_capacity], scheduler_status
 
 
-# ========= STORELEADS =========
-def build_storeleads_query() -> dict[str, Any]:
-    # This payload is intentionally preserved because it defines the current ICP.
+# ========= APOLLO ORGANIZATION SEARCH =========
+def _flatten_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_flatten_text(item) for item in value.values())
+    if isinstance(value, list):
+        return " ".join(_flatten_text(item) for item in value)
+    return ""
+
+
+def _extract_first_text(value: Any) -> str:
+    flattened = _flatten_text(value)
+    return re.sub(r"\s+", " ", flattened).strip()
+
+
+def _extract_country_code(value: Any) -> str:
+    normalized = _extract_first_text(value).upper()
+    if normalized in {"UNITED STATES", "USA"}:
+        return "US"
+    if normalized in {"UNITED KINGDOM", "GREAT BRITAIN"}:
+        return "GB"
+    if normalized in {"CANADA"}:
+        return "CA"
+    if normalized in {"AUSTRALIA"}:
+        return "AU"
+    return normalized
+
+
+def _parse_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    digits = re.sub(r"[^\d]", "", str(value))
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
+def _extract_revenue_ceiling(value: Any) -> int | None:
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = _extract_first_text(value).lower()
+    if not text:
+        return None
+    amounts = re.findall(r"(\d+(?:\.\d+)?)\s*([mbk]?)", text)
+    if not amounts:
+        return None
+    max_value = 0
+    for amount_text, suffix in amounts:
+        amount = float(amount_text)
+        multiplier = 1
+        if suffix == "k":
+            multiplier = 1_000
+        elif suffix == "m":
+            multiplier = 1_000_000
+        elif suffix == "b":
+            multiplier = 1_000_000_000
+        max_value = max(max_value, int(amount * multiplier))
+    return max_value or None
+
+
+def build_apollo_org_search_params(page: int) -> dict[str, Any]:
     return {
-        "must": {
-            "conjuncts": [
-                {
-                    "field": "tech",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": (
-                        "Wordpress Cloudflare Cloudflare...CDN Google...Ads...Pixel "
-                        "Facebook...Pixel Apple...Pay Google...Pay Shop...Pay "
-                        "PayPal...Express...Checkout Yoast Google...Analytics "
-                        "Google...Analytics...4 Judge.me TikTok...Pixel Klaviyo "
-                        "Mailchimp Shop Klarna Stripe Hotjar Omnisend ReCharge "
-                        "Yotpo ShareASale Aftership Affirm Route Faire Reviews.io "
-                        "HubSpot"
-                    ),
-                },
-                {
-                    "field": "an",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": (
-                        "1.judgeme 1.product-reviews 1.loox 1.tt-reviewimport "
-                        "1.yotpo-social-reviews 1.ryviu 1.sealapps-product-review "
-                        "1.product-reviews-addon 1.vitals 1.air-reviews"
-                    ),
-                },
-                {
-                    "field": "it",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "4 7 3 2 8 1 10 13",
-                },
-                {
-                    "field": "p",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "1",
-                },
-                {
-                    "field": "empc",
-                    "min": None,
-                    "max": 200,
-                    "inclusive_min": True,
-                    "inclusive_max": True,
-                },
-                {
-                    "field": "er",
-                    "min": None,
-                    "max": 100000000,
-                    "inclusive_min": True,
-                    "inclusive_max": True,
-                },
-                {
-                    "field": "cc",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "Unknown US GB CA AU",
-                },
-                {
-                    "field": "scs",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "8 1 2 9",
-                },
-            ]
-        },
-        "must_not": {
-            "disjuncts": [
-                {
-                    "field": "tech",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "Printful Printify teelaunch Calendly",
-                },
-                {
-                    "field": "an",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "1.printful 1.printify 1.gelato-print-on-demand",
-                },
-                {
-                    "field": "scs",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": "12 10 14 13 3 11",
-                },
-                {
-                    "field": "cat",
-                    "operator": "or",
-                    "analyzer": "advanced",
-                    "match": (
-                        "/People...&...Society /Autos...&...Vehicles "
-                        "/Business...&...Industrial/Business...Services "
-                        "/People...&...Society/Religion...&...Belief "
-                        "/Autos...&...Vehicles/Parts...&...Services "
-                        "/People...&...Society/Family...&...Relationships "
-                        "/Business...&...Industrial/Industrial...Materials...&...Equipment "
-                        "/People...&...Society/Family...&...Relationships/Family "
-                        "/Business...&...Industrial/Agriculture...&...Forestry "
-                        "/People...&...Society/Social...Issues...&...Advocacy "
-                        "/Business...&...Industrial/Business...Services/Office...Supplies "
-                        "/Travel/Hotels...&...Accommodations "
-                        "/Business...&...Industrial/Construction...&...Maintenance "
-                        "/Business...&...Industrial/Chemicals...Industry "
-                        "/Business...&...Industrial/Business...Operations "
-                        "/Autos...&...Vehicles/Motor...Vehicles "
-                        "/People...&...Society/Family...&...Relationships/Marriage "
-                        "/Finance/Investing "
-                        "/Autos...&...Vehicles/Motor...Vehicles/Motorcycles...&...Scooters "
-                        "/People...&...Society/Social...Issues...&...Advocacy/Charity...&...Philanthropy "
-                        "/Business...&...Industrial/Metals...&...Mining "
-                        "/Autos...&...Vehicles/Boats...&...Watercraft "
-                        "/Business...&...Industrial/Renewable...&...Alternative...Energy "
-                        "/Autos...&...Vehicles/Repair...&...Maintenance "
-                        "/Travel/Car...Rental...&...Taxi...Services "
-                        "/Business...&...Industrial/Packaging "
-                        "/Business...&...Industrial/Manufacturing "
-                        "/Business...&...Industrial/Industrial...Materials...&...Equipment/Heavy...Machinery "
-                        "/Travel/Air...Travel "
-                        "/Computers/Software/Business...&...Productivity...Software "
-                        "/People...&...Society/Social...Issues...&...Advocacy/Green...Living...&...Environmental...Issues "
-                        "/Business...&...Industrial/Business...Services/E-Commerce...Services "
-                        "/Business...&...Industrial/Pharmaceuticals...&...Biotech "
-                        "/People...&...Society/Kids...&...Teens "
-                        "/Business...&...Industrial/Chemicals...Industry/Plastics...&...Polymers "
-                        "/Business...&...Industrial/Agriculture...&...Forestry/Agricultural...Equipment "
-                        "/Business...&...Industrial/Mail...&...Package...Delivery "
-                        "/Finance/Investing/Currencies...&...Foreign...Exchange "
-                        "/Business...&...Industrial/Retail...Equipment...&...Technology "
-                        "/People...&...Society/Politics "
-                        "/Business...&...Industrial/Metals...&...Mining/Precious...Metals "
-                        "/Business...&...Industrial/Business...Services/Consulting "
-                        "/Business...&...Industrial/Business...Services/Corporate...Events "
-                        "/Business...&...Industrial/Agriculture...&...Forestry/Livestock "
-                        "/Travel/Cruises...&...Charters "
-                        "/Autos...&...Vehicles/Motor...Vehicles/Off-Road "
-                        "/Autos...&...Vehicles/Campers...&...RVs "
-                        "/Autos...&...Vehicles/Motor...Vehicles/Trucks...&...SUVs "
-                        "/People...&...Society/Social...Networks "
-                        "/Consumer...Electronics/Mobile...&...Wireless/Mobile...Apps...&...Add-Ons "
-                        "/Business...&...Industrial/Moving...&...Relocation "
-                        "/Autos...&...Vehicles/Motor...Vehicles/Electric...&...Alternative "
-                        "/Travel/Air...Travel/Airport...Parking...&...Transportation "
-                        "/Travel/Bus...&...Rail "
-                        "/Business...&...Industrial/Agriculture...&...Forestry/Wood...&...Forestry "
-                        "/Autos...&...Vehicles/Safety "
-                        "/Business...&...Industrial/Business...Finance "
-                        "/Business...&...Industrial/Agriculture...&...Forestry/Beekeeping "
-                        "/Business...&...Industrial/Business...Services/Office...Services "
-                        "/Jobs...&...Education/Business "
-                        "/People...&...Society/Family...&...Relationships/Troubled...Relationships "
-                        "/Autos...&...Vehicles/Classic...Vehicles "
-                        "/Business...&...Industrial/Advertising...&...Marketing/Public...Relations "
-                        "/Business...&...Industrial/Advertising...&...Marketing "
-                        "/Business...&...Industrial/Business...Services/Writing...&...Editing...Services "
-                        "/Finance/Investing/Stocks...&...Bonds "
-                        "/Business...&...Industrial/Printing...&...Publishing "
-                        "/Computers"
-                    ),
-                },
-            ]
-        },
+        "page": page,
+        "per_page": APOLLO_ORG_PAGE_SIZE,
+        "organization_num_employees_ranges[]": ["1,200"],
+        "organization_locations[]": ["United States", "United Kingdom", "Canada", "Australia"],
     }
 
 
-def matches_icp(_store: dict[str, Any]) -> bool:
-    # StoreLeads already applies the full ICP query above.
-    return True
+def normalize_apollo_organization(org: dict[str, Any]) -> dict[str, Any]:
+    domain = normalize_domain(
+        org.get("website_url")
+        or org.get("primary_domain")
+        or org.get("domain")
+        or org.get("organization_website_url")
+        or org.get("organization_primary_domain")
+        or ""
+    )
+    technologies_text = _extract_first_text(
+        org.get("organization_technology_names")
+        or org.get("technology_names")
+        or org.get("organization_technologies")
+        or org.get("technologies")
+    )
+    industry_text = _extract_first_text(
+        org.get("industry")
+        or org.get("industry_tag")
+        or org.get("industry_tags")
+        or org.get("industry_keywords")
+        or org.get("keywords")
+        or org.get("organization_keywords")
+    )
+    market_segment_text = _extract_first_text(
+        org.get("market_segment")
+        or org.get("market_segments")
+        or org.get("organization_market_segments")
+    )
+    sic_text = _extract_first_text(org.get("sic") or org.get("sic_codes"))
+    naics_text = _extract_first_text(org.get("naics") or org.get("naics_codes"))
+    country_code = _extract_country_code(
+        org.get("country")
+        or org.get("country_code")
+        or org.get("organization_country")
+        or org.get("organization_country_code")
+    )
 
-
-def fetch_storeleads_page(page: int, settings: Settings) -> list[dict[str, Any]]:
-    payload = {
-        "page": page,
-        "page_size": STORELEADS_PAGE_SIZE,
-        "bq": json.dumps(build_storeleads_query()),
-        "fields": ",".join(
-            [
-                "name",
-                "title",
-                "platform",
-                "country_code",
-                "state",
-                "city",
-                "estimated_sales",
-                "avg_price_usd",
-            ]
+    return {
+        "name": domain,
+        "title": clean_company_name(org.get("name") or org.get("organization_name") or domain),
+        "website_url": org.get("website_url") or org.get("organization_website_url") or "",
+        "platform": technologies_text,
+        "country_code": country_code,
+        "state": _extract_first_text(org.get("state") or org.get("organization_state")),
+        "city": _extract_first_text(org.get("city") or org.get("organization_city")),
+        "estimated_sales": parse_monthly_sales(org),
+        "avg_price_usd": "",
+        "industry": industry_text,
+        "market_segment": market_segment_text,
+        "sic": sic_text,
+        "naics": naics_text,
+        "employee_count": _parse_int(
+            org.get("estimated_num_employees")
+            or org.get("employee_count")
+            or org.get("employees")
+            or org.get("organization_num_employees")
+        ),
+        "annual_revenue": _extract_revenue_ceiling(
+            org.get("estimated_annual_revenue")
+            or org.get("annual_revenue")
+            or org.get("organization_annual_revenue")
+            or org.get("organization_estimated_annual_revenue")
+            or org.get("estimated_revenue_range")
+        ),
+        "source_provider": "apollo_org_search",
+        "raw_keywords": " ".join(
+            part for part in (industry_text, market_segment_text, sic_text, naics_text, technologies_text) if part
         ),
     }
 
-    response = requests.post(
-        STORELEADS_URL,
-        headers={
-            "Authorization": f"Bearer {settings.storeleads_api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
 
-    data = response.json()
-    domains = data.get("domains", []) or []
-    logger.info("[StoreLeads] page=%s returned %s domains", page, len(domains))
-    return domains
+def derive_org_category(org: dict[str, Any]) -> str:
+    searchable_text = " ".join(
+        part
+        for part in (
+            org.get("market_segment", ""),
+            org.get("industry", ""),
+            org.get("sic", ""),
+            org.get("naics", ""),
+            org.get("platform", ""),
+            org.get("raw_keywords", ""),
+            org.get("title", ""),
+        )
+        if part
+    ).lower()
+
+    for category, keywords in ORG_CATEGORY_KEYWORDS.items():
+        if any(keyword in searchable_text for keyword in keywords):
+            return category
+    return "general_dtc"
+
+
+def load_campaign_routing() -> dict[str, dict[str, str]]:
+    if not INSTANTLY_CAMPAIGN_ROUTING_JSON:
+        return {}
+    try:
+        payload = json.loads(INSTANTLY_CAMPAIGN_ROUTING_JSON)
+    except json.JSONDecodeError:
+        logger.warning("[Routing] invalid INSTANTLY_CAMPAIGN_ROUTING_JSON")
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    routing: dict[str, dict[str, str]] = {}
+    for key, value in payload.items():
+        if not isinstance(value, dict):
+            continue
+        routing[str(key)] = {
+            "campaign_id": str(value.get("campaign_id", "")).strip(),
+            "campaign_name": str(value.get("campaign_name", key)).strip() or str(key),
+        }
+    return routing
+
+
+def route_campaign_for_org(org: dict[str, Any], settings: Settings) -> tuple[str, str, str]:
+    category = derive_org_category(org)
+    routing = load_campaign_routing()
+    route = routing.get(category)
+    if route and route.get("campaign_id"):
+        return category, route["campaign_id"], route.get("campaign_name") or category
+    return category, settings.instantly_campaign_id, TARGET_CAMPAIGN_NAME
+
+
+def matches_apollo_org_icp(org: dict[str, Any]) -> bool:
+    domain = normalize_domain(org.get("name", ""))
+    if not domain:
+        return False
+
+    employee_count = org.get("employee_count")
+    if employee_count is not None and employee_count > 200:
+        return False
+
+    annual_revenue = org.get("annual_revenue")
+    if annual_revenue is not None and annual_revenue > 100_000_000:
+        return False
+
+    country_code = _extract_country_code(org.get("country_code", ""))
+    if country_code and country_code not in APOLLO_ALLOWED_COUNTRIES:
+        return False
+
+    searchable_text = " ".join(
+        part
+        for part in (
+            domain,
+            org.get("title", ""),
+            org.get("platform", ""),
+            org.get("industry", ""),
+            org.get("market_segment", ""),
+            org.get("sic", ""),
+            org.get("naics", ""),
+            org.get("raw_keywords", ""),
+        )
+        if part
+    ).lower()
+    if any(keyword in searchable_text for keyword in APOLLO_EXCLUDED_KEYWORDS):
+        return False
+
+    return any(keyword in searchable_text for keyword in APOLLO_ECOMMERCE_INCLUDE_KEYWORDS)
+
+
+def fetch_apollo_org_page(page: int, settings: Settings) -> list[dict[str, Any]]:
+    preferred_params = build_apollo_org_search_params(page)
+    try:
+        response = requests.post(
+            APOLLO_ORG_SEARCH_URL,
+            headers={
+                "Content-Type": "application/json",
+                "X-Api-Key": settings.apollo_api_key,
+            },
+            params=preferred_params,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        logger.warning("[ApolloOrg] organization search request error for page=%s: %s", page, exc)
+        raise HTTPException(status_code=502, detail=f"Apollo organization search failed on page {page}") from exc
+
+    if response.status_code in {401, 403, 422}:
+        logger.warning(
+            "[ApolloOrg] preferred search params rejected status=%s body=%s; retrying with basic paging only",
+            response.status_code,
+            response.text,
+        )
+        try:
+            response = requests.post(
+                APOLLO_ORG_SEARCH_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Api-Key": settings.apollo_api_key,
+                },
+                params={"page": page, "per_page": APOLLO_ORG_PAGE_SIZE},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            logger.warning("[ApolloOrg] fallback organization search request error for page=%s: %s", page, exc)
+            raise HTTPException(status_code=502, detail=f"Apollo organization search failed on page {page}") from exc
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        logger.warning("[ApolloOrg] organization search non-200 page=%s status=%s body=%s", page, response.status_code, response.text)
+        raise HTTPException(status_code=502, detail=f"Apollo organization search failed on page {page}") from exc
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.warning("[ApolloOrg] invalid JSON for page=%s body=%s", page, response.text)
+        raise HTTPException(status_code=502, detail=f"Apollo organization search returned invalid JSON on page {page}") from exc
+
+    organizations = data.get("organizations") or data.get("accounts") or []
+    logger.info("[ApolloOrg] page=%s returned %s organizations", page, len(organizations))
+    return [normalize_apollo_organization(org) for org in organizations if isinstance(org, dict)]
 
 
 def collect_domains(
@@ -1607,7 +1776,7 @@ def collect_domains(
     settings: Settings,
     processed_domains: set[str] | None = None,
 ) -> StoreLeadsCollectionResult:
-    start_page = load_storeleads_cursor()
+    start_page = load_apollo_org_cursor()
     qualified_domains: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
     processed_domains = processed_domains or set()
@@ -1620,21 +1789,25 @@ def collect_domains(
     pages_scanned = 0
     last_scanned_page = start_page
 
-    for page_offset in range(MAX_STORELEADS_PAGES):
-        page = (start_page + page_offset) % MAX_STORELEADS_PAGES
-        domains = fetch_storeleads_page(page, settings)
+    for page_offset in range(MAX_APOLLO_ORG_PAGES):
+        page = ((start_page - 1 + page_offset) % MAX_APOLLO_ORG_PAGES) + 1
+        organizations = fetch_apollo_org_page(page, settings)
         pages_scanned += 1
         last_scanned_page = page
-        raw_scanned += len(domains)
 
-        for store in domains:
-            normalized_domain = normalize_domain(store.get("name", ""))
+        if not organizations:
+            continue
+
+        raw_scanned += len(organizations)
+
+        for org in organizations:
+            normalized_domain = normalize_domain(org.get("name", ""))
             if not normalized_domain or normalized_domain in seen_domains:
                 continue
 
             seen_domains.add(normalized_domain)
 
-            if not matches_icp(store):
+            if not matches_apollo_org_icp(org):
                 continue
 
             qualified_matches_total += 1
@@ -1647,11 +1820,11 @@ def collect_domains(
                 skipped_apollo_cooldown_domains += 1
                 continue
 
-            qualified_domains.append(store)
+            qualified_domains.append(org)
 
             if len(qualified_domains) >= max_domains:
-                next_page = (page + 1) % MAX_STORELEADS_PAGES
-                save_storeleads_cursor(next_page)
+                next_page = (page % MAX_APOLLO_ORG_PAGES) + 1
+                save_apollo_org_cursor(next_page)
                 return StoreLeadsCollectionResult(
                     domains=qualified_domains,
                     raw_scanned=raw_scanned,
@@ -1664,8 +1837,8 @@ def collect_domains(
                     next_page=next_page,
                 )
 
-    next_page = (last_scanned_page + 1) % MAX_STORELEADS_PAGES
-    save_storeleads_cursor(next_page)
+    next_page = (last_scanned_page % MAX_APOLLO_ORG_PAGES) + 1
+    save_apollo_org_cursor(next_page)
     return StoreLeadsCollectionResult(
         domains=qualified_domains,
         raw_scanned=raw_scanned,
@@ -2009,6 +2182,7 @@ def build_csv_rows(
         estimated_monthly_orders = estimate_monthly_orders(revenue, average_product_price_usd)
         formatted_estimated_monthly_orders = format_orders_bucket(estimated_monthly_orders)
         offer = determine_offer(revenue)
+        org_category, campaign_id, campaign_name = route_campaign_for_org(store, settings)
         accepted_for_domain = 0
 
         for contact in contacts:
@@ -2059,8 +2233,11 @@ def build_csv_rows(
                     "revenue": formatted_revenue,
                     "average_product_price": formatted_average_product_price,
                     "estimated_monthly_orders": formatted_estimated_monthly_orders,
-                    "campaign_name": TARGET_CAMPAIGN_NAME,
-                    "campaign_id": settings.instantly_campaign_id,
+                    "market_segment": store.get("market_segment", ""),
+                    "industry": store.get("industry", ""),
+                    "org_category": org_category,
+                    "campaign_name": campaign_name,
+                    "campaign_id": campaign_id,
                     "custom_offer": offer,
                 }
             )
@@ -2081,6 +2258,9 @@ def build_csv_rows(
                     "revenue": formatted_revenue,
                     "average_product_price": formatted_average_product_price,
                     "estimated_monthly_orders": formatted_estimated_monthly_orders,
+                    "market_segment": store.get("market_segment", ""),
+                    "industry": store.get("industry", ""),
+                    "org_category": org_category,
                     "date_added": run_date,
                 }
             )
@@ -2242,7 +2422,7 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
     if not rows:
         return {"status": "skipped", "reason": "no_rows", "created_count": 0, "skipped_count": 0}
 
-    if not settings.instantly_campaign_id:
+    if not settings.instantly_campaign_id and not any(str(row.get("campaign_id", "")).strip() for row in rows):
         logger.warning("[Instantly] import skipped: INSTANTLY_CAMPAIGN_ID missing")
         return {"status": "skipped", "reason": "missing_campaign_id", "created_count": 0, "skipped_count": 0}
 
@@ -2250,68 +2430,102 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
         logger.warning("[Instantly] import skipped: INSTANTLY_API_KEY missing")
         return {"status": "skipped", "reason": "missing_api_key", "created_count": 0, "skipped_count": 0}
 
-    leads = []
+    rows_by_campaign: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        leads.append(
+        campaign_id = str(row.get("campaign_id", "")).strip() or settings.instantly_campaign_id
+        if not campaign_id:
+            continue
+        rows_by_campaign.setdefault(campaign_id, []).append(row)
+
+    created_count = 0
+    skipped_count = 0
+    total_sent = 0
+    statuses: list[str] = []
+    campaign_results: list[dict[str, Any]] = []
+
+    for campaign_id, campaign_rows in rows_by_campaign.items():
+        leads = []
+        for row in campaign_rows:
+            leads.append(
+                {
+                    "email": row.get("email", ""),
+                    "first_name": row.get("first_name", ""),
+                    "last_name": row.get("last_name", ""),
+                    "company_name": row.get("company_name", ""),
+                    "website": row.get("website", ""),
+                    "custom_variables": {
+                        "custom_offer": row.get("custom_offer", ""),
+                        "linkedin_url": row.get("linkedin_url", ""),
+                        "role": row.get("role", ""),
+                        "department": row.get("department", ""),
+                        "platform": row.get("platform", ""),
+                        "location": row.get("location", ""),
+                        "city": row.get("city", ""),
+                        "state": row.get("state", ""),
+                        "revenue": row.get("revenue", ""),
+                        "average_product_price": row.get("average_product_price", ""),
+                        "estimated_monthly_orders": row.get("estimated_monthly_orders", ""),
+                        "market_segment": row.get("market_segment", ""),
+                        "industry": row.get("industry", ""),
+                        "org_category": row.get("org_category", ""),
+                    },
+                }
+            )
+
+        response = requests.post(
+            INSTANTLY_ADD_LEADS_URL,
+            headers={
+                "Authorization": f"Bearer {settings.instantly_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "campaign_id": campaign_id,
+                "leads": leads,
+                "verify_leads_on_import": False,
+                "skip_if_in_workspace": True,
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        result = response.json()
+        result_status = (result.get("status") or "unknown").lower()
+        if result.get("error") or result_status in {"error", "failed"}:
+            raise HTTPException(status_code=500, detail=f"Instantly import failed: {result}")
+
+        batch_created_count = len(result.get("created_leads", []) or [])
+        batch_skipped_count = int(result.get("skipped_count", 0) or 0)
+        batch_total_sent = int(result.get("total_sent", len(campaign_rows)) or len(campaign_rows))
+        created_count += batch_created_count
+        skipped_count += batch_skipped_count
+        total_sent += batch_total_sent
+        statuses.append(result_status)
+        campaign_results.append(
             {
-                "email": row.get("email", ""),
-                "first_name": row.get("first_name", ""),
-                "last_name": row.get("last_name", ""),
-                "company_name": row.get("company_name", ""),
-                "website": row.get("website", ""),
-                "custom_variables": {
-                    "custom_offer": row.get("custom_offer", ""),
-                    "linkedin_url": row.get("linkedin_url", ""),
-                    "role": row.get("role", ""),
-                    "department": row.get("department", ""),
-                    "platform": row.get("platform", ""),
-                    "location": row.get("location", ""),
-                    "city": row.get("city", ""),
-                    "state": row.get("state", ""),
-                    "revenue": row.get("revenue", ""),
-                    "average_product_price": row.get("average_product_price", ""),
-                    "estimated_monthly_orders": row.get("estimated_monthly_orders", ""),
-                },
+                "campaign_id": campaign_id,
+                "campaign_name": campaign_rows[0].get("campaign_name", ""),
+                "created_count": batch_created_count,
+                "skipped_count": batch_skipped_count,
+                "total_sent": batch_total_sent,
+                "status": result_status,
             }
         )
 
-    response = requests.post(
-        INSTANTLY_ADD_LEADS_URL,
-        headers={
-            "Authorization": f"Bearer {settings.instantly_api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "campaign_id": settings.instantly_campaign_id,
-            "leads": leads,
-            "verify_leads_on_import": False,
-            "skip_if_in_workspace": True,
-        },
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    response.raise_for_status()
-    result = response.json()
-    result_status = (result.get("status") or "unknown").lower()
-
-    if result.get("error") or result_status in {"error", "failed"}:
-        raise HTTPException(status_code=500, detail=f"Instantly import failed: {result}")
-
-    created_count = len(result.get("created_leads", []) or [])
-    skipped_count = int(result.get("skipped_count", 0) or 0)
+    overall_status = "success" if all(status == "success" for status in statuses) else ",".join(sorted(set(statuses)))
     logger.info(
-        "[Instantly] status=%s total_sent=%s created_count=%s skipped_count=%s invalid_email_count=%s",
-        result_status,
-        result.get("total_sent", len(rows)),
+        "[Instantly] status=%s campaigns=%s total_sent=%s created_count=%s skipped_count=%s",
+        overall_status,
+        len(rows_by_campaign),
+        total_sent,
         created_count,
         skipped_count,
-        result.get("invalid_email_count", 0),
     )
     return {
-        "status": result_status,
+        "status": overall_status,
         "reason": "",
         "created_count": created_count,
         "skipped_count": skipped_count,
-        "total_sent": result.get("total_sent", len(rows)),
+        "total_sent": total_sent,
+        "campaign_results": campaign_results,
     }
 
 
@@ -2527,15 +2741,15 @@ Lead build completed.
 
 Run date: {run_date}
 Scheduler source: {scheduler_source}
-Domains scanned from StoreLeads: {raw_scanned}
-StoreLeads start page: {storeleads_start_page}
-StoreLeads end page: {storeleads_end_page}
-StoreLeads pages scanned: {storeleads_pages_scanned}
-ICP matches: {qualified_domains}
+Organizations scanned from Apollo: {raw_scanned}
+Apollo org start page: {storeleads_start_page}
+Apollo org end page: {storeleads_end_page}
+Apollo org pages scanned: {storeleads_pages_scanned}
+ICP-qualified organizations: {qualified_domains}
 Previously processed domains skipped: {previously_processed_domains}
 Apollo cooldown domains skipped: {skipped_apollo_cooldown_domains}
 New domains considered: {new_domains_considered}
-Domains queried in Apollo: {apollo_domains_queried}
+Domains queried in Apollo people search: {apollo_domains_queried}
 Accepted lead target: {accepted_lead_target}
 Domains with Apollo candidates: {apollo_hits}
 Final contacts selected: {successful_contacts}
@@ -2782,11 +2996,15 @@ async def admin_run_lead_build(request: Request) -> Response:
             content={
                 "status": "ok",
                 "message": "No valid personal contacts found for this run.",
+                "organizations_scanned": result.raw_scanned,
                 "domains_scanned": result.raw_scanned,
                 "icp_matches": result.qualified_matches_total,
                 "new_domains_considered": result.qualified_domains_count,
                 "previously_processed_domains": result.previously_processed_domains,
                 "skipped_apollo_cooldown_domains": result.skipped_apollo_cooldown_domains,
+                "apollo_org_start_page": result.storeleads_start_page,
+                "apollo_org_end_page": result.storeleads_end_page,
+                "apollo_org_pages_scanned": result.storeleads_pages_scanned,
                 "storeleads_start_page": result.storeleads_start_page,
                 "storeleads_end_page": result.storeleads_end_page,
                 "storeleads_pages_scanned": result.storeleads_pages_scanned,
@@ -2897,11 +3115,15 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
                 content={
                     "status": "ok",
                     "message": "No valid personal contacts found for this run.",
+                    "organizations_scanned": result.raw_scanned,
                     "domains_scanned": result.raw_scanned,
                     "icp_matches": result.qualified_matches_total,
                     "new_domains_considered": result.qualified_domains_count,
                     "previously_processed_domains": result.previously_processed_domains,
                     "skipped_apollo_cooldown_domains": result.skipped_apollo_cooldown_domains,
+                    "apollo_org_start_page": result.storeleads_start_page,
+                    "apollo_org_end_page": result.storeleads_end_page,
+                    "apollo_org_pages_scanned": result.storeleads_pages_scanned,
                     "storeleads_start_page": result.storeleads_start_page,
                     "storeleads_end_page": result.storeleads_end_page,
                     "storeleads_pages_scanned": result.storeleads_pages_scanned,
