@@ -1345,20 +1345,29 @@ def render_dashboard_page(data: DashboardData) -> str:
         for queue in data.owner_queues
     )
 
+    item_display_limit = 4
+    total_queue_items = 0
     owner_sections = []
     for queue in data.owner_queues:
+        total_queue_items += queue.total_items
         item_cards = []
-        for item in queue.items:
+        for index, item in enumerate(queue.items):
             urgency_label = STALE_URGENCY_LABELS.get(item.urgency, item.urgency.replace("_", " ").title())
-            draft_preview = trim_for_slack(item.suggested_reply, limit=120)
+            draft_preview = trim_for_slack(item.suggested_reply, limit=140)
             link_html = (
                 f'<a href="{html.escape(item.link_url)}" target="_blank" rel="noreferrer">Open task</a>'
                 if item.link_url
                 else ""
             )
+            search_blob = " ".join(
+                part.lower()
+                for part in [queue.owner_name, item.title, item.subtitle, item.action_summary, item.source, item.date_label]
+                if part
+            )
+            collapsed_class = " is-collapsed-by-limit" if index >= item_display_limit else ""
             item_cards.append(
                 f"""
-                <article class="action-item urgency-{html.escape(item.urgency)}" data-owner="{html.escape(queue.owner_name)}" data-urgency="{html.escape(item.urgency)}">
+                <article class="action-item urgency-{html.escape(item.urgency)}{collapsed_class}" data-owner="{html.escape(queue.owner_name)}" data-urgency="{html.escape(item.urgency)}" data-search="{html.escape(search_blob, quote=True)}">
                   <div class="action-top">
                     <span class="badge">{html.escape(urgency_label)}</span>
                     <span class="source">{html.escape(item.source)}</span>
@@ -1367,18 +1376,27 @@ def render_dashboard_page(data: DashboardData) -> str:
                   <h4>{html.escape(item.title)}</h4>
                   <p class="subtitle">{html.escape(item.subtitle)}</p>
                   <p><strong>Action:</strong> {html.escape(item.action_summary)}</p>
-                  <p><strong>Draft:</strong> {html.escape(draft_preview)}</p>
+                  <details class="draft-preview">
+                    <summary>Suggested draft</summary>
+                    <p>{html.escape(draft_preview or "No draft suggested yet.")}</p>
+                  </details>
                   {link_html}
                 </article>
                 """
             )
+
+        show_more_button = (
+            f'<button class="show-more-button" type="button" data-expanded="false">Show {queue.total_items - item_display_limit} more</button>'
+            if queue.total_items > item_display_limit
+            else ""
+        )
         owner_sections.append(
             f"""
-            <section class="owner-card" data-owner="{html.escape(queue.owner_name)}">
+            <section class="owner-card" data-owner="{html.escape(queue.owner_name)}" data-display-limit="{item_display_limit}">
               <header>
                 <div>
                   <h3>{html.escape(queue.owner_name)}</h3>
-                  <p>{queue.total_items} items queued</p>
+                  <p><span class="owner-visible-count">{min(queue.total_items, item_display_limit)}</span> of {queue.total_items} items shown</p>
                 </div>
                 <div class="owner-stats">
                   <span>Overdue {queue.overdue_count}</span>
@@ -1389,6 +1407,7 @@ def render_dashboard_page(data: DashboardData) -> str:
               <div class="owner-items">
                 {''.join(item_cards) or '<p class="empty">No action items yet.</p>'}
               </div>
+              {show_more_button}
             </section>
             """
         )
@@ -1416,6 +1435,12 @@ def render_dashboard_page(data: DashboardData) -> str:
         snapshot_rows.append(_summary_row("Digest posted", latest_run_summary.get("digest_posted")))
     if "immediate_alerted" in latest_run_summary:
         snapshot_rows.append(_summary_row("Immediate alerts", latest_run_summary.get("immediate_alerted")))
+    headline_snapshot_rows = [
+        _summary_row("Board updated", latest_sync),
+        _summary_row("Stale scan", latest_run_summary.get("status", "No stale scan recorded")),
+        _summary_row("Failed items", latest_run_summary.get("failed", 0)),
+    ]
+    extended_snapshot_rows = snapshot_rows[3:]
 
     deck_ready_notice = (
         '<div class="notice warning">Deck generator is missing env vars: '
@@ -1453,7 +1478,7 @@ def render_dashboard_page(data: DashboardData) -> str:
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>anata | Agent Admin Dashboard</title>
+    <title>agent | Admin Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
@@ -1466,8 +1491,6 @@ def render_dashboard_page(data: DashboardData) -> str:
         --light-brown: #F9F7F3;
         --white: #FFFFFF;
         --text: #2B3644;
-        --danger: #9A5A4E;
-        --warn: #BFA889;
         --shadow: rgba(43, 54, 68, 0.10);
       }}
       * {{ box-sizing: border-box; }}
@@ -1481,15 +1504,15 @@ def render_dashboard_page(data: DashboardData) -> str:
       .topbar {{
         background: var(--alt-dark-blue);
         color: var(--white);
-        padding: 18px 32px;
+        padding: 16px 28px;
       }}
       .topbar-inner {{
-        max-width: 1240px;
+        max-width: 1180px;
         margin: 0 auto;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 24px;
+        gap: 20px;
       }}
       .brandmark {{
         display: inline-flex;
@@ -1497,27 +1520,13 @@ def render_dashboard_page(data: DashboardData) -> str:
         gap: 0;
         font-family: "Montserrat", sans-serif;
         font-weight: 800;
-        font-size: 42px;
+        font-size: 38px;
         line-height: 1;
-        letter-spacing: -0.06em;
+        letter-spacing: -0.05em;
         color: var(--white);
       }}
       .brandmark .dot {{
         color: var(--light-blue);
-      }}
-      .topcta {{
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 150px;
-        padding: 14px 22px;
-        border-radius: 999px;
-        background: var(--light-blue);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 18px;
-        text-decoration: none;
       }}
       .top-actions {{
         display: flex;
@@ -1525,86 +1534,113 @@ def render_dashboard_page(data: DashboardData) -> str:
         gap: 10px;
         flex-wrap: wrap;
       }}
+      .topcta,
       .toplink {{
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 170px;
-        padding: 14px 22px;
+        min-width: 150px;
+        padding: 12px 18px;
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.12);
         color: var(--white);
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 16px;
+        font-size: 15px;
         text-decoration: none;
       }}
+      .topcta {{
+        background: var(--light-blue);
+      }}
+      .toplink {{
+        background: rgba(255, 255, 255, 0.12);
+      }}
       .shell {{
-        max-width: 1240px;
+        max-width: 1180px;
         margin: 0 auto;
-        padding: 32px 20px 72px;
+        padding: 28px 18px 64px;
       }}
       .workspace {{
         background: var(--white);
         border: 1px solid rgba(43, 54, 68, 0.10);
-        border-radius: 28px;
+        border-radius: 26px;
         box-shadow: 0 18px 40px var(--shadow);
-        padding: 28px;
+        padding: 24px;
       }}
       .page-header {{
         display: grid;
-        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
-        gap: 24px;
+        grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+        gap: 22px;
         align-items: end;
-        padding-bottom: 22px;
+        padding-bottom: 20px;
         border-bottom: 1px solid rgba(43, 54, 68, 0.10);
-        margin-bottom: 24px;
+        margin-bottom: 22px;
       }}
       .eyebrow {{
         display: inline-block;
-        padding: 12px 18px;
+        padding: 11px 16px;
         border-radius: 6px;
         background: var(--dark-blue);
         color: var(--white);
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 16px;
+        font-size: 15px;
         line-height: 1;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-        margin-bottom: 18px;
+        margin-bottom: 16px;
       }}
       .page-title {{
         margin: 0;
         font-family: "Montserrat", sans-serif;
         font-weight: 800;
-        font-size: 60px;
-        line-height: 0.94;
-        letter-spacing: -0.05em;
+        font-size: 52px;
+        line-height: 0.96;
+        letter-spacing: -0.035em;
         color: var(--dark-blue);
       }}
       .highlight {{
         color: var(--light-blue);
       }}
+      .header-meta {{
+        display: grid;
+        gap: 12px;
+      }}
       .page-copy {{
         font-weight: 300;
-        font-size: 18px;
+        font-size: 17px;
         line-height: 1.5;
         color: var(--dark-blue);
       }}
+      .freshness-strip {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+      .freshness-pill {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(133, 187, 218, 0.16);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }}
+      .freshness-pill strong {{
+        font-size: 12px;
+      }}
       .controls-grid {{
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 18px;
-        margin-bottom: 24px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin-bottom: 22px;
       }}
-      .secondary-tools {{
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 18px;
-        margin-bottom: 24px;
-      }}
-      .panel-card {{
+      .panel-card,
+      .meta-card {{
         background: var(--white);
         border: 2px solid rgba(43, 54, 68, 0.10);
         border-radius: 18px;
@@ -1619,19 +1655,20 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       .card-title-line h2,
       .card-title-line h3 {{
-        margin-bottom: 0;
+        margin: 0;
       }}
-      .panel-card h3 {{
-        margin: 0 0 8px;
+      .panel-card h3,
+      .meta-card h2 {{
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 30px;
+        font-size: 27px;
         color: var(--dark-blue);
       }}
-      .panel-card p {{
-        margin: 0 0 18px;
+      .panel-card p,
+      .meta-card p {{
+        margin: 0 0 16px;
         font-weight: 300;
-        font-size: 18px;
+        font-size: 16px;
         line-height: 1.45;
       }}
       .panel-card button,
@@ -1639,32 +1676,32 @@ def render_dashboard_page(data: DashboardData) -> str:
         width: auto;
         border: 0;
         border-radius: 999px;
-        padding: 14px 24px;
+        padding: 13px 22px;
         background: var(--light-blue);
         color: var(--white);
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 18px;
+        font-size: 16px;
         cursor: pointer;
       }}
       .metrics {{
         display: grid;
         grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 14px;
-        margin-bottom: 24px;
+        gap: 12px;
+        margin-bottom: 22px;
       }}
       .metric {{
         background: var(--white);
         border: 2px solid rgba(43, 54, 68, 0.10);
         border-radius: 18px;
         padding: 18px;
-        min-height: 156px;
+        min-height: 142px;
       }}
       .metric span {{
         display: block;
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 16px;
+        font-size: 14px;
         line-height: 1;
         letter-spacing: 0.04em;
         text-transform: uppercase;
@@ -1675,7 +1712,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         display: block;
         font-family: "Montserrat", sans-serif;
         font-weight: 800;
-        font-size: 40px;
+        font-size: 34px;
         line-height: 1;
         color: var(--dark-blue);
         margin-bottom: 10px;
@@ -1684,166 +1721,38 @@ def render_dashboard_page(data: DashboardData) -> str:
         color: var(--dark-blue);
         display: block;
         font-weight: 300;
-        font-size: 15px;
+        font-size: 14px;
         line-height: 1.45;
       }}
-      .layout {{
+      .snapshot-rows {{
         display: grid;
-        gap: 24px;
-        grid-template-columns: minmax(0, 1.55fr) minmax(320px, .85fr);
-      }}
-      .section-bar {{
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        margin-bottom: 18px;
-      }}
-      .section-title {{
-        margin: 0;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 34px;
-        line-height: 1;
-        color: var(--dark-blue);
-      }}
-      .filters {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        align-items: center;
-      }}
-      .filters select {{
-        min-width: 190px;
-        border: 2px solid rgba(43, 54, 68, 0.14);
-        border-radius: 999px;
-        padding: 12px 16px;
-        font-family: "Roboto", sans-serif;
-        font-size: 16px;
-        background: var(--white);
-        color: var(--dark-blue);
-      }}
-      .filter-buttons {{
-        display: flex;
-        flex-wrap: wrap;
         gap: 8px;
       }}
-      .filter-button {{
-        border: 1px solid rgba(43, 54, 68, 0.14);
-        border-radius: 999px;
-        padding: 10px 14px;
-        background: var(--white);
-        color: var(--dark-blue);
-        font-family: "Montserrat", sans-serif;
-        font-size: 14px;
-        font-weight: 700;
-        cursor: pointer;
-      }}
-      .filter-button.is-active {{
-        background: var(--dark-blue);
-        color: var(--white);
-        border-color: var(--dark-blue);
-      }}
-      .owner-card {{
-        background: var(--white);
-        border: 2px solid rgba(43, 54, 68, 0.10);
-        border-radius: 22px;
-        padding: 20px;
-        margin-bottom: 16px;
-      }}
-      .owner-card header {{
+      .snapshot-row {{
         display: flex;
         justify-content: space-between;
-        gap: 18px;
-        align-items: flex-start;
-        margin-bottom: 16px;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(43, 54, 68, 0.08);
       }}
-      .owner-card h3 {{
-        margin: 0 0 8px;
+      .snapshot-row:last-child {{
+        border-bottom: 0;
+        padding-bottom: 0;
+      }}
+      .snapshot-row span {{
+        font-size: 13px;
+        color: var(--alt-dark-blue);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 28px;
-        line-height: 1;
-        color: var(--dark-blue);
       }}
-      .owner-card p {{
-        margin: 0;
-        color: var(--dark-blue);
-        font-weight: 300;
-        font-size: 16px;
-      }}
-      .owner-stats {{
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-      }}
-      .owner-stats span {{
-        display: inline-flex;
-        align-items: center;
-        border-radius: 999px;
-        padding: 10px 14px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 14px;
-        background: rgba(133, 187, 218, 0.20);
-        color: var(--dark-blue);
-      }}
-      .badge,
-      .source {{
-        display: inline-flex;
-        align-items: center;
-        border-radius: 999px;
-        padding: 7px 12px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 12px;
-        background: rgba(191, 168, 137, 0.22);
-        color: var(--dark-blue);
-      }}
-      .owner-items {{
-        display: grid;
-        gap: 16px;
-      }}
-      .action-item {{
-        background: var(--light-brown);
-        border: 2px solid rgba(43, 54, 68, 0.08);
-        border-left: 8px solid var(--light-blue);
-        border-radius: 18px;
-        padding: 18px;
-      }}
-      .urgency-overdue {{ border-left-color: var(--dark-blue); background: rgba(51, 68, 92, 0.06); }}
-      .urgency-needs_immediate_review {{ border-left-color: var(--brown); }}
-      .urgency-follow_up_due {{ border-left-color: var(--light-blue); background: rgba(133, 187, 218, 0.10); }}
-      .action-top {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        align-items: center;
-        margin-bottom: 14px;
-      }}
-      .date {{
+      .snapshot-row strong {{
+        font-size: 15px;
         color: var(--dark-blue);
         font-family: "Roboto", sans-serif;
-        font-weight: 300;
-        font-size: 14px;
-      }}
-      .action-item h4 {{
-        margin: 0 0 10px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 24px;
-        line-height: 1.02;
-        color: var(--dark-blue);
-      }}
-      .action-item p {{
-        margin: 0 0 10px;
-        font-weight: 300;
-        font-size: 16px;
-        line-height: 1.45;
-      }}
-      .subtitle {{
-        color: var(--alt-dark-blue);
+        font-weight: 400;
       }}
       .notice {{
         border-radius: 12px;
@@ -1851,7 +1760,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         margin-bottom: 14px;
         line-height: 1.35;
         font-weight: 300;
-        font-size: 15px;
+        font-size: 14px;
       }}
       .success {{
         background: rgba(133, 187, 218, 0.14);
@@ -1867,85 +1776,19 @@ def render_dashboard_page(data: DashboardData) -> str:
         font-size: 14px;
         color: var(--dark-blue);
       }}
-      .meta-card {{
-        background: var(--white);
-        border: 2px solid rgba(43, 54, 68, 0.10);
-        border-radius: 22px;
-        padding: 20px;
-      }}
-      .meta-card h2 {{
-        margin: 0 0 14px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 28px;
-        color: var(--dark-blue);
-      }}
-      .meta-card p {{
-        margin: 0 0 18px;
-        font-weight: 300;
-        font-size: 16px;
-        line-height: 1.45;
-      }}
-      .snapshot-rows {{
-        display: grid;
-        gap: 10px;
-      }}
-      .snapshot-row {{
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: center;
-        padding: 10px 0;
-        border-bottom: 1px solid rgba(43, 54, 68, 0.08);
-      }}
-      .snapshot-row:last-child {{
-        border-bottom: 0;
-        padding-bottom: 0;
-      }}
-      .snapshot-row span {{
-        font-size: 14px;
-        color: var(--alt-dark-blue);
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-      }}
-      .snapshot-row strong {{
-        font-size: 16px;
-        color: var(--dark-blue);
-        font-family: "Roboto", sans-serif;
-        font-weight: 400;
-      }}
-      .tools-column {{
-        display: grid;
-        gap: 16px;
-        align-content: start;
-      }}
-      .lead-form {{
-        display: grid;
-        gap: 14px;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }}
+      .lead-form,
       .draft-form {{
         display: grid;
         gap: 14px;
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }}
-      .lead-form label {{
-        display: grid;
-        gap: 8px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 14px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }}
+      .lead-form label,
       .draft-form label {{
         display: grid;
         gap: 8px;
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 14px;
+        font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }}
@@ -1954,13 +1797,13 @@ def render_dashboard_page(data: DashboardData) -> str:
       .draft-form input,
       .draft-form textarea {{
         width: 100%;
-        padding: 18px 20px;
+        padding: 16px 18px;
         border-radius: 10px;
         border: 2px solid rgba(43, 54, 68, 0.16);
         background: var(--white);
         font-family: "Roboto", sans-serif;
         font-weight: 300;
-        font-size: 16px;
+        font-size: 15px;
         color: var(--dark-blue);
       }}
       .lead-form textarea,
@@ -1972,11 +1815,15 @@ def render_dashboard_page(data: DashboardData) -> str:
       .draft-form input[type="file"] {{
         padding: 14px 16px;
       }}
-      .draft-panel {{
-        margin-bottom: 24px;
+      .lead-form .lead-submit,
+      .draft-form .draft-submit {{
+        grid-column: 1 / -1;
+        display: flex;
+        align-items: end;
+        gap: 12px;
+        flex-wrap: wrap;
       }}
       .draft-form .draft-body-field,
-      .draft-form .draft-submit,
       .draft-form .draft-help {{
         grid-column: 1 / -1;
       }}
@@ -1999,7 +1846,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         color: var(--alt-dark-blue);
         font-family: "Roboto", sans-serif;
         font-weight: 300;
-        font-size: 15px;
+        font-size: 14px;
         line-height: 1.45;
       }}
       .draft-results {{
@@ -2017,7 +1864,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         display: block;
         margin-bottom: 8px;
         font-family: "Montserrat", sans-serif;
-        font-size: 15px;
+        font-size: 14px;
         color: var(--dark-blue);
       }}
       .draft-results ul {{
@@ -2028,6 +1875,68 @@ def render_dashboard_page(data: DashboardData) -> str:
         margin-bottom: 6px;
         font-size: 14px;
         line-height: 1.45;
+      }}
+      .button-link {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 13px 22px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 15px;
+        text-decoration: none;
+        cursor: pointer;
+      }}
+      .utility-hub {{
+        margin-bottom: 22px;
+      }}
+      .utility-drawers {{
+        display: grid;
+        gap: 12px;
+      }}
+      .utility-drawer {{
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 16px;
+        background: rgba(249, 247, 243, 0.70);
+        overflow: hidden;
+      }}
+      .utility-drawer[open] {{
+        background: var(--white);
+      }}
+      .utility-drawer summary {{
+        list-style: none;
+        cursor: pointer;
+        padding: 16px 18px;
+        font-family: "Montserrat", sans-serif;
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--dark-blue);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }}
+      .utility-drawer summary::-webkit-details-marker {{
+        display: none;
+      }}
+      .utility-drawer summary::after {{
+        content: "+";
+        font-size: 20px;
+      }}
+      .utility-drawer[open] summary::after {{
+        content: "-";
+      }}
+      .utility-body {{
+        padding: 0 18px 18px;
+      }}
+      .panel-stack {{
+        display: grid;
+        gap: 14px;
       }}
       .deck-capabilities {{
         display: flex;
@@ -2047,10 +1956,6 @@ def render_dashboard_page(data: DashboardData) -> str:
         font-weight: 700;
         font-size: 12px;
         text-decoration: none;
-      }}
-      .panel-stack {{
-        display: grid;
-        gap: 14px;
       }}
       .deck-run-list {{
         display: grid;
@@ -2073,7 +1978,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         display: block;
         margin-bottom: 6px;
         font-family: "Montserrat", sans-serif;
-        font-size: 16px;
+        font-size: 15px;
         color: var(--dark-blue);
       }}
       .deck-run-item p {{
@@ -2086,28 +1991,258 @@ def render_dashboard_page(data: DashboardData) -> str:
         flex-wrap: wrap;
         justify-content: flex-end;
       }}
-      .button-link {{
-        display: inline-flex;
+      .section-bar {{
+        display: flex;
         align-items: center;
-        justify-content: center;
-        width: auto;
-        border: 0;
-        border-radius: 999px;
-        padding: 14px 24px;
-        background: var(--dark-blue);
-        color: var(--white);
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }}
+      .section-title {{
+        margin: 0;
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 16px;
-        text-decoration: none;
+        font-size: 32px;
+        line-height: 1;
+        color: var(--dark-blue);
+      }}
+      .filters {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }}
+      .filters select,
+      .filters input {{
+        min-width: 190px;
+        border: 2px solid rgba(43, 54, 68, 0.14);
+        border-radius: 999px;
+        padding: 12px 16px;
+        font-family: "Roboto", sans-serif;
+        font-size: 15px;
+        background: var(--white);
+        color: var(--dark-blue);
+      }}
+      .filters input {{
+        min-width: 240px;
+      }}
+      .filter-buttons {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
+      .filter-button {{
+        border: 1px solid rgba(43, 54, 68, 0.14);
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: var(--white);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 13px;
+        font-weight: 700;
         cursor: pointer;
       }}
-      .lead-form .lead-submit {{
-        grid-column: 1 / -1;
+      .filter-button.is-active {{
+        background: var(--dark-blue);
+        color: var(--white);
+        border-color: var(--dark-blue);
+      }}
+      .queue-toolbar {{
         display: flex;
-        align-items: end;
-        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
         flex-wrap: wrap;
+        margin-bottom: 18px;
+      }}
+      .urgency-legend {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }}
+      .legend-chip {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 12px;
+        border-radius: 999px;
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }}
+      .legend-chip.overdue {{
+        background: rgba(51, 68, 92, 0.10);
+      }}
+      .legend-chip.review {{
+        background: rgba(191, 168, 137, 0.20);
+      }}
+      .legend-chip.due {{
+        background: rgba(133, 187, 218, 0.16);
+      }}
+      .filter-results {{
+        font-size: 14px;
+        color: var(--alt-dark-blue);
+      }}
+      .filtered-empty {{
+        display: none;
+        margin-bottom: 18px;
+        padding: 16px 18px;
+        border: 1px dashed rgba(43, 54, 68, 0.18);
+        border-radius: 16px;
+        background: rgba(249, 247, 243, 0.75);
+        color: var(--dark-blue);
+      }}
+      .filtered-empty.is-visible {{
+        display: block;
+      }}
+      .owner-card {{
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
+        border-radius: 22px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }}
+      .owner-card header {{
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: flex-start;
+        margin-bottom: 16px;
+      }}
+      .owner-card h3 {{
+        margin: 0 0 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 26px;
+        line-height: 1;
+        color: var(--dark-blue);
+      }}
+      .owner-card p {{
+        margin: 0;
+        color: var(--dark-blue);
+        font-weight: 300;
+        font-size: 15px;
+      }}
+      .owner-stats {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }}
+      .owner-stats span {{
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 9px 12px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        background: rgba(133, 187, 218, 0.20);
+        color: var(--dark-blue);
+      }}
+      .owner-items {{
+        display: grid;
+        gap: 14px;
+      }}
+      .badge,
+      .source {{
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 7px 11px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 11px;
+        background: rgba(191, 168, 137, 0.22);
+        color: var(--dark-blue);
+      }}
+      .action-item {{
+        background: var(--light-brown);
+        border: 2px solid rgba(43, 54, 68, 0.08);
+        border-left: 8px solid var(--light-blue);
+        border-radius: 18px;
+        padding: 16px;
+      }}
+      .action-item.is-collapsed-by-limit {{
+        display: none;
+      }}
+      .urgency-overdue {{
+        border-left-color: var(--dark-blue);
+        background: rgba(51, 68, 92, 0.06);
+      }}
+      .urgency-needs_immediate_review {{
+        border-left-color: var(--brown);
+      }}
+      .urgency-follow_up_due {{
+        border-left-color: var(--light-blue);
+        background: rgba(133, 187, 218, 0.10);
+      }}
+      .action-top {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 12px;
+      }}
+      .date {{
+        color: var(--dark-blue);
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 13px;
+      }}
+      .action-item h4 {{
+        margin: 0 0 10px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 22px;
+        line-height: 1.05;
+        color: var(--dark-blue);
+      }}
+      .action-item p {{
+        margin: 0 0 10px;
+        font-weight: 300;
+        font-size: 15px;
+        line-height: 1.45;
+      }}
+      .subtitle {{
+        color: var(--alt-dark-blue);
+      }}
+      .draft-preview {{
+        margin: 10px 0 12px;
+        border-top: 1px solid rgba(43, 54, 68, 0.08);
+        padding-top: 10px;
+      }}
+      .draft-preview summary {{
+        cursor: pointer;
+        list-style: none;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--alt-dark-blue);
+      }}
+      .draft-preview summary::-webkit-details-marker {{
+        display: none;
+      }}
+      .show-more-button {{
+        margin-top: 14px;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: rgba(133, 187, 218, 0.10);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      .empty {{
+        font-size: 16px;
       }}
       .info-hint {{
         position: relative;
@@ -2173,65 +2308,29 @@ def render_dashboard_page(data: DashboardData) -> str:
         background: var(--alt-dark-blue);
         margin-top: 72px;
       }}
-      .empty {{
-        font-size: 16px;
-      }}
-      @media (max-width: 1280px) {{
-        .topbar {{
-          padding: 18px 24px;
-        }}
-        .shell {{
-          padding: 24px 16px 56px;
-        }}
+      @media (max-width: 1180px) {{
         .page-header,
         .controls-grid,
-        .secondary-tools,
-        .layout,
         .metrics,
         .lead-form,
         .draft-form {{
           grid-template-columns: 1fr;
         }}
         .page-title {{
-          font-size: clamp(38px, 9vw, 60px);
+          font-size: clamp(38px, 8vw, 52px);
         }}
       }}
       @media (max-width: 960px) {{
         .topbar-inner {{
           flex-wrap: wrap;
         }}
-        .topcta {{
-          min-width: 130px;
-        }}
         .brandmark {{
-          font-size: 36px;
+          font-size: 34px;
         }}
-        .eyebrow,
-        .metric span,
-        .lead-form label,
-        .draft-form label {{
-          font-size: 13px;
-        }}
-        .page-copy,
-        .action-item p,
-        .owner-card p,
-        .meta-card p,
-        .panel-card p,
-        .lead-form input,
-        .lead-form textarea,
-        .draft-form input,
-        .draft-form textarea,
-        .deck-run-item p {{
-          font-size: 15px;
-        }}
+        .metric strong,
         .section-title,
-        .metric strong {{
-          font-size: 28px;
-        }}
-        .owner-card h3,
-        .action-item h4,
-        .meta-card h2,
-        .panel-card h3 {{
+        .panel-card h3,
+        .meta-card h2 {{
           font-size: 24px;
         }}
       }}
@@ -2249,175 +2348,195 @@ def render_dashboard_page(data: DashboardData) -> str:
     </header>
     <div class="shell">
       <div class="workspace">
-      <section class="page-header">
-        <div>
-          <div class="eyebrow">Agent dashboard</div>
-          <h1 class="page-title">Sales <span class="highlight">Priorities</span>.</h1>
-        </div>
-        <div class="page-copy">
-          This dashboard keeps owner action items, sync controls, and lead pulls in one place so the team can move quickly and review the queue without extra noise.
-        </div>
-      </section>
-
-      <section class="controls-grid">
-        <div class="panel-card">
-          <div class="card-title-line">
-            <h3>Sync data</h3>
-            {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
+        <section class="page-header">
+          <div>
+            <div class="eyebrow">Agent dashboard</div>
+            <h1 class="page-title">Sales <span class="highlight">Priorities</span>.</h1>
           </div>
-          <p>Refresh the ClickUp mirror and recompute stale priorities before reviewing the board.</p>
-          <button id="sync-dashboard-button" type="button">SYNC DATA</button>
-          <div class="status-line" id="sync-status">Ready.</div>
-        </div>
-        <div class="panel-card" id="lead-pull-panel">
-          <div class="card-title-line">
-            <h3>Run lead pull</h3>
-            {info_hint("Runs the outbound lead pipeline from this dashboard. It sources fresh companies, finds matched contacts, adds accepted leads into Instantly, and then returns the CSV download for review.")}
-          </div>
-          <p>Run the existing lead build pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
-          {lead_builder_notice}
-          <form class="lead-form" id="lead-build-form">
-            <label>
-              Run date
-              <input type="date" name="date" value="{html.escape(today_value)}" required />
-            </label>
-            <label>
-              Max domains
-              <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
-            </label>
-            <div class="lead-submit">
-              <button type="submit">PULL LEADS</button>
+          <div class="header-meta">
+            <div class="page-copy">
+              Keep the board centered on owner actions first, lead pulls second, and hide secondary tools until they are actually needed.
             </div>
-          </form>
-          <div class="status-line" id="run-status">Scrape Status: Ready.</div>
-        </div>
-        <section class="meta-card">
-          <div class="card-title-line">
-            <h2>Ops snapshot</h2>
-            {info_hint("Quick readout of the latest sync and stale-scan activity so you can see whether the board is fresh and whether recent automation runs completed cleanly.")}
-          </div>
-          <div class="snapshot-rows">
-            {''.join(snapshot_rows)}
+            <div class="freshness-strip">
+              <div class="freshness-pill">Queue <strong>{total_queue_items}</strong></div>
+              <div class="freshness-pill">Updated <strong>{html.escape(latest_sync)}</strong></div>
+              <div class="freshness-pill">Mailbox <strong>{data.mailbox_findings}</strong></div>
+            </div>
           </div>
         </section>
-      </section>
 
-      <section class="secondary-tools">
-        <div class="panel-card" id="deck-generator-panel">
-          <div class="card-title-line">
-            <h3>Generate sales deck</h3>
-            {info_hint("Pulls sales metrics from Google Sheets, combines them with your uploaded competitor CSV, and generates a fresh Canva deck from the configured brand template.")}
-          </div>
-          <p>Pull sales metrics from Google Sheets, upload the competitor CSV, and generate a fresh Canva deck copy from the configured brand template.</p>
-          {deck_ready_notice}
-          <div class="panel-stack">
-            <div class="snapshot-rows">
-              {_summary_row("Google sheet range", data.deck_google_source or "Not configured")}
-              {_summary_row("Brand template", data.deck_template_id or "Not configured")}
-              {_summary_row("Canva connection", canva_connection_label)}
+        <section class="controls-grid">
+          <div class="panel-card">
+            <div class="card-title-line">
+              <h3>Sync data</h3>
+              {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
             </div>
-            <div class="deck-capabilities">
-              {deck_capability_bits}
+            <p>Refresh the board before reviews so the queue reflects the latest ClickUp state.</p>
+            <button id="sync-dashboard-button" type="button">SYNC DATA</button>
+            <div class="status-line" id="sync-status">Ready.</div>
+          </div>
+
+          <div class="panel-card" id="lead-pull-panel">
+            <div class="card-title-line">
+              <h3>Run lead pull</h3>
+              {info_hint("Runs the outbound lead pipeline from this dashboard. It sources fresh companies, finds matched contacts, adds accepted leads into Instantly, and then returns the CSV download for review.")}
             </div>
-          </div>
-          <form class="lead-form" id="deck-generator-form">
-            <label>
-              Competitor CSV
-              <input type="file" name="competitor_csv" accept=".csv,text/csv" required />
-            </label>
-            <label>
-              Report date
-              <input type="date" name="report_date" value="{html.escape(today_value)}" />
-            </label>
-            <label>
-              Reporting period
-              <input type="text" name="reporting_period" placeholder="Q1 2026" />
-            </label>
-            <label>
-              Deck title
-              <input type="text" name="run_label" placeholder="Sales Deck | Q1 2026" />
-            </label>
-            <div class="lead-submit">
-              <button type="submit">GENERATE DECK</button>
-              <a class="button-link" id="connect-canva-button" href="/admin/api/canva/connect">CONNECT CANVA</a>
-            </div>
-          </form>
-          <div class="status-line" id="deck-status">Deck status: Ready.</div>
-          <div class="deck-run-list" id="deck-run-list">
-            {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
-          </div>
-        </div>
-      </section>
-
-      <section class="panel-card draft-panel" id="gmail-drafts-panel">
-        <div class="card-title-line">
-          <h3>Create Gmail drafts</h3>
-          {info_hint("Uploads a CSV and creates Gmail drafts in bulk without sending anything. Preview mode lets you inspect the merged rows first so you can catch template or data issues before draft creation.")}
-        </div>
-        <p>Upload a simple CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
-        <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
-          <label>
-            Contacts CSV
-            <input type="file" name="contacts_csv" accept=".csv,text/csv" required />
-          </label>
-          <label>
-            Sales objective
-            <input type="text" name="sales_objective" placeholder="book intro calls with Amazon operators" />
-          </label>
-          <label>
-            Subject template
-            <input type="text" name="subject_template" placeholder="Idea for {{company}}" />
-          </label>
-          <label>
-            Preview mode
-            <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
-          </label>
-          <label class="draft-body-field">
-            Body template
-            <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
-          </label>
-          <div class="draft-help">
-            Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
-          </div>
-          <div class="lead-submit draft-submit">
-            <button type="submit">PREVIEW / CREATE DRAFTS</button>
-            <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
-          </div>
-        </form>
-        <div class="status-line" id="drafts-status">Drafts: Ready.</div>
-        <div class="draft-results" id="drafts-results"></div>
-      </section>
-
-      <section class="metrics">{metric_cards}</section>
-
-      <section class="layout">
-        <div>
-          <div class="section-bar">
-            <h2 class="section-title">Owner priorities.</h2>
-            <div class="filters">
-              <select id="owner-filter" aria-label="Filter by owner">
-                <option value="all">All owners</option>
-                {owner_options}
-              </select>
-              <div class="filter-buttons" id="urgency-filter">
-                <button class="filter-button is-active" type="button" data-urgency="all">All</button>
-                <button class="filter-button" type="button" data-urgency="overdue">Overdue</button>
-                <button class="filter-button" type="button" data-urgency="needs_immediate_review">Review</button>
-                <button class="filter-button" type="button" data-urgency="follow_up_due">Due</button>
+            <p>Run the active lead pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
+            {lead_builder_notice}
+            <form class="lead-form" id="lead-build-form">
+              <label>
+                Run date
+                <input type="date" name="date" value="{html.escape(today_value)}" required />
+              </label>
+              <label>
+                Max domains
+                <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
+              </label>
+              <div class="lead-submit">
+                <button type="submit">PULL LEADS</button>
               </div>
+            </form>
+            <div class="status-line" id="run-status">Scrape Status: Ready.</div>
+          </div>
+
+          <section class="meta-card">
+            <div class="card-title-line">
+              <h2>Board health</h2>
+              {info_hint("Quick readout of the latest sync and stale-scan activity so you can see whether the board is fresh and whether recent automation runs completed cleanly.")}
+            </div>
+            <div class="snapshot-rows">
+              {''.join(headline_snapshot_rows)}
+            </div>
+            <details class="draft-preview">
+              <summary>Show scan details</summary>
+              <div class="snapshot-rows">
+                {''.join(extended_snapshot_rows) or _summary_row("Details", "No extra run details yet")}
+              </div>
+            </details>
+          </section>
+        </section>
+
+        <section class="meta-card utility-hub">
+          <div class="card-title-line">
+            <h2>Optional tools</h2>
+            {info_hint("These workflows are helpful, but they are not required for reviewing priorities. They stay collapsed by default so the queue remains the center of the page.")}
+          </div>
+          <div class="utility-drawers">
+            <details class="utility-drawer" id="gmail-drafts-panel">
+              <summary>Bulk Gmail drafts</summary>
+              <div class="utility-body">
+                <p>Upload a CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
+                <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
+                  <label>
+                    Contacts CSV
+                    <input type="file" name="contacts_csv" accept=".csv,text/csv" required />
+                  </label>
+                  <label>
+                    Sales objective
+                    <input type="text" name="sales_objective" placeholder="book intro calls with Amazon operators" />
+                  </label>
+                  <label>
+                    Subject template
+                    <input type="text" name="subject_template" placeholder="Idea for {{company}}" />
+                  </label>
+                  <label>
+                    Preview mode
+                    <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
+                  </label>
+                  <label class="draft-body-field">
+                    Body template
+                    <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
+                  </label>
+                  <div class="draft-help">
+                    Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
+                  </div>
+                  <div class="draft-submit">
+                    <button type="submit">PREVIEW / CREATE DRAFTS</button>
+                    <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
+                  </div>
+                </form>
+                <div class="status-line" id="drafts-status">Drafts: Ready.</div>
+                <div class="draft-results" id="drafts-results"></div>
+              </div>
+            </details>
+
+            <details class="utility-drawer" id="deck-generator-panel">
+              <summary>Generate sales deck</summary>
+              <div class="utility-body">
+                <p>Pull sales metrics from Google Sheets, upload the competitor CSV, and generate a fresh Canva deck copy from the configured brand template.</p>
+                {deck_ready_notice}
+                <div class="panel-stack">
+                  <div class="snapshot-rows">
+                    {_summary_row("Google sheet range", data.deck_google_source or "Not configured")}
+                    {_summary_row("Brand template", data.deck_template_id or "Not configured")}
+                    {_summary_row("Canva connection", canva_connection_label)}
+                  </div>
+                  <div class="deck-capabilities">
+                    {deck_capability_bits}
+                  </div>
+                </div>
+                <form class="lead-form" id="deck-generator-form">
+                  <label>
+                    Competitor CSV
+                    <input type="file" name="competitor_csv" accept=".csv,text/csv" required />
+                  </label>
+                  <label>
+                    Report date
+                    <input type="date" name="report_date" value="{html.escape(today_value)}" />
+                  </label>
+                  <label>
+                    Reporting period
+                    <input type="text" name="reporting_period" placeholder="Q1 2026" />
+                  </label>
+                  <label>
+                    Deck title
+                    <input type="text" name="run_label" placeholder="Sales Deck | Q1 2026" />
+                  </label>
+                  <div class="lead-submit">
+                    <button type="submit">GENERATE DECK</button>
+                    <a class="button-link" id="connect-canva-button" href="/admin/api/canva/connect">CONNECT CANVA</a>
+                  </div>
+                </form>
+                <div class="status-line" id="deck-status">Deck status: Ready.</div>
+                <div class="deck-run-list" id="deck-run-list">
+                  {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
+                </div>
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section class="metrics">{metric_cards}</section>
+
+        <section class="section-bar">
+          <h2 class="section-title">Owner priorities.</h2>
+          <div class="filters">
+            <select id="owner-filter" aria-label="Filter by owner">
+              <option value="all">All owners</option>
+              {owner_options}
+            </select>
+            <input id="queue-search" type="search" placeholder="Search lead, source, or action" aria-label="Search queue" />
+            <div class="filter-buttons" id="urgency-filter">
+              <button class="filter-button is-active" type="button" data-urgency="all">All</button>
+              <button class="filter-button" type="button" data-urgency="overdue">Overdue {data.stale_counts.get("overdue", 0)}</button>
+              <button class="filter-button" type="button" data-urgency="needs_immediate_review">Review {data.stale_counts.get("needs_immediate_review", 0)}</button>
+              <button class="filter-button" type="button" data-urgency="follow_up_due">Due {data.stale_counts.get("follow_up_due", 0)}</button>
             </div>
           </div>
-          {''.join(owner_sections) or '<section class="owner-card"><p class="empty">No owner queues yet. Run a sync or stale scan to populate the dashboard.</p></section>'}
-        </div>
-        <div class="tools-column">
-          <section class="meta-card">
-            <h2>Queue guide</h2>
-            <p><strong>Overdue</strong> means the follow-up window has passed and should be handled first.</p>
-            <p><strong>Review</strong> flags items that need a decision, response, or status cleanup.</p>
-            <p><strong>Due</strong> covers routine follow-ups that are ready for the next touch.</p>
-          </section>
-        </div>
-      </section>
+        </section>
+
+        <section class="queue-toolbar">
+          <div class="urgency-legend">
+            <span class="legend-chip overdue">Overdue = first touch</span>
+            <span class="legend-chip review">Review = decision needed</span>
+            <span class="legend-chip due">Due = routine follow-up</span>
+          </div>
+          <div class="filter-results" id="filter-results">Showing {total_queue_items} queue items across {len(data.owner_queues)} owners.</div>
+        </section>
+
+        <div class="filtered-empty" id="queue-empty-state">No queue items match the current filters. Try a different owner, urgency, or search term.</div>
+
+        {''.join(owner_sections) or '<section class="owner-card"><p class="empty">No owner queues yet. Run a sync or stale scan to populate the dashboard.</p></section>'}
       </div>
     </div>
     <div class="footer-bar" aria-hidden="true"></div>
@@ -2432,37 +2551,92 @@ def render_dashboard_page(data: DashboardData) -> str:
       const draftsStatus = document.getElementById("drafts-status");
       const draftsResults = document.getElementById("drafts-results");
       const ownerFilter = document.getElementById("owner-filter");
+      const searchInput = document.getElementById("queue-search");
+      const filterResults = document.getElementById("filter-results");
+      const queueEmptyState = document.getElementById("queue-empty-state");
       const urgencyButtons = document.querySelectorAll("#urgency-filter .filter-button");
       let activeUrgency = "all";
 
       function applyQueueFilters() {{
         const selectedOwner = ownerFilter?.value || "all";
+        const searchTerm = (searchInput?.value || "").trim().toLowerCase();
         const ownerCards = document.querySelectorAll(".owner-card[data-owner]");
+        let visibleOwners = 0;
+        let visibleItemsTotal = 0;
 
         ownerCards.forEach((card) => {{
           const ownerName = card.dataset.owner || "";
-          const itemNodes = card.querySelectorAll(".action-item");
-          let visibleItems = 0;
+          const displayLimit = Number(card.dataset.displayLimit || 4);
+          const itemNodes = Array.from(card.querySelectorAll(".action-item"));
+          const showMoreButton = card.querySelector(".show-more-button");
+          const isExpanded = showMoreButton?.dataset.expanded === "true";
+          const matchedItems = [];
 
           itemNodes.forEach((item) => {{
             const matchesOwner = selectedOwner === "all" || ownerName === selectedOwner;
             const matchesUrgency = activeUrgency === "all" || item.dataset.urgency === activeUrgency;
-            const shouldShow = matchesOwner && matchesUrgency;
-            item.style.display = shouldShow ? "" : "none";
-            if (shouldShow) {{
-              visibleItems += 1;
+            const matchesSearch = !searchTerm || (item.dataset.search || "").includes(searchTerm);
+            const shouldMatch = matchesOwner && matchesUrgency && matchesSearch;
+            if (shouldMatch) {{
+              matchedItems.push(item);
             }}
+            item.style.display = "none";
+            item.classList.remove("is-collapsed-by-limit");
           }});
 
+          matchedItems.forEach((item, index) => {{
+            const hiddenByLimit = !isExpanded && index >= displayLimit;
+            item.classList.toggle("is-collapsed-by-limit", hiddenByLimit);
+            item.style.display = hiddenByLimit ? "none" : "";
+          }});
+
+          const visibleItems = isExpanded ? matchedItems.length : Math.min(displayLimit, matchedItems.length);
+          const hiddenItems = Math.max(0, matchedItems.length - displayLimit);
+
+          if (showMoreButton) {{
+            if (matchedItems.length > displayLimit) {{
+              showMoreButton.hidden = false;
+              showMoreButton.textContent = isExpanded ? "Show fewer" : `Show ${{hiddenItems}} more`;
+            }} else {{
+              showMoreButton.hidden = true;
+              showMoreButton.dataset.expanded = "false";
+            }}
+          }}
+
+          const visibleCountNode = card.querySelector(".owner-visible-count");
+          if (visibleCountNode) {{
+            visibleCountNode.textContent = String(visibleItems);
+          }}
+
           card.style.display = visibleItems > 0 ? "" : "none";
+          if (visibleItems > 0) {{
+            visibleOwners += 1;
+            visibleItemsTotal += visibleItems;
+          }}
         }});
+
+        if (filterResults) {{
+          filterResults.textContent = visibleItemsTotal
+            ? `Showing ${{visibleItemsTotal}} queue items across ${{visibleOwners}} owners.`
+            : "No queue items match the current filters.";
+        }}
+        if (queueEmptyState) {{
+          queueEmptyState.classList.toggle("is-visible", visibleItemsTotal === 0);
+        }}
       }}
 
       ownerFilter?.addEventListener("change", applyQueueFilters);
+      searchInput?.addEventListener("input", applyQueueFilters);
       urgencyButtons.forEach((button) => {{
         button.addEventListener("click", () => {{
           activeUrgency = button.dataset.urgency || "all";
           urgencyButtons.forEach((node) => node.classList.toggle("is-active", node === button));
+          applyQueueFilters();
+        }});
+      }});
+      document.querySelectorAll(".show-more-button").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          button.dataset.expanded = button.dataset.expanded === "true" ? "false" : "true";
           applyQueueFilters();
         }});
       }});
@@ -2484,6 +2658,7 @@ def render_dashboard_page(data: DashboardData) -> str:
           syncStatus.textContent = "Dashboard sync failed before a response came back.";
         }}
       }});
+
       form?.addEventListener("submit", async (event) => {{
         event.preventDefault();
         status.textContent = "Running lead build. This can take a minute...";
@@ -2522,6 +2697,7 @@ def render_dashboard_page(data: DashboardData) -> str:
           status.textContent = "Lead build failed before a response came back.";
         }}
       }});
+
       deckForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
         deckStatus.innerHTML = "Generating Canva deck. This can take a minute...";
@@ -2550,6 +2726,7 @@ def render_dashboard_page(data: DashboardData) -> str:
           deckStatus.textContent = "Deck generation failed before a response came back.";
         }}
       }});
+
       draftsForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
         draftsStatus.textContent = "Preparing Gmail drafts...";
@@ -2607,6 +2784,7 @@ def render_dashboard_page(data: DashboardData) -> str:
           draftsStatus.textContent = "Draft creation failed before a response came back.";
         }}
       }});
+
       applyQueueFilters();
     </script>
   </body>
