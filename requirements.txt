@@ -3,3 +3,5 @@ uvicorn
 pydantic
 requests
 SQLAlchemy>=2.0,<3.0
+google-auth
+python-multipart
