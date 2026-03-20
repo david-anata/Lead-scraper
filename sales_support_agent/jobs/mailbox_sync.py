@@ -110,7 +110,12 @@ class GmailMailboxSyncJob:
                     configured_source_domains=self.settings.gmail_source_domains,
                     matched_task=False,
                 )
-                lead = matcher.find_by_candidate_emails(initial.candidate_emails, sync_on_miss=True)
+                lead = matcher.find_mailbox_match(
+                    sender_email=initial.sender_email,
+                    sender_domain=initial.sender_domain,
+                    candidate_emails=initial.candidate_emails,
+                    sync_on_miss=True,
+                )
                 normalized = normalize_gmail_message(
                     message_payload,
                     configured_source_domains=self.settings.gmail_source_domains,

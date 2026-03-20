@@ -46,6 +46,50 @@ class LeadMatchingService:
                 return match
         return None
 
+    def find_mailbox_match(
+        self,
+        *,
+        sender_email: str,
+        sender_domain: str,
+        candidate_emails: tuple[str, ...],
+        sync_on_miss: bool = True,
+    ) -> LeadMirror | None:
+        normalized_sender = (sender_email or "").strip().lower()
+        normalized_candidates = tuple(
+            email.strip().lower()
+            for email in candidate_emails
+            if email and email.strip()
+        )
+
+        sender_match = self._query_by_email(normalized_sender) if normalized_sender else None
+        if sender_match is not None:
+            return sender_match
+
+        source_domains = {domain.strip().lower() for domain in self.settings.gmail_source_domains if domain and domain.strip()}
+        allow_body_fallback = (sender_domain or "").strip().lower() in source_domains
+        fallback_candidates = tuple(candidate for candidate in normalized_candidates if candidate != normalized_sender)
+        if allow_body_fallback:
+            for candidate in fallback_candidates:
+                match = self._query_by_email(candidate)
+                if match is not None:
+                    return match
+
+        if not sync_on_miss:
+            return None
+
+        ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(include_closed=True)
+
+        sender_match = self._query_by_email(normalized_sender) if normalized_sender else None
+        if sender_match is not None:
+            return sender_match
+
+        if allow_body_fallback:
+            for candidate in fallback_candidates:
+                match = self._query_by_email(candidate)
+                if match is not None:
+                    return match
+        return None
+
     def _query_by_email(self, email: str) -> LeadMirror | None:
         query = (
             select(LeadMirror)

@@ -13,7 +13,8 @@ try:
     from sales_support_agent.jobs.daily_digest import DailyDigestJob
     from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
     from sales_support_agent.models.database import create_session_factory, init_database
-    from sales_support_agent.models.entities import MailboxSignal
+    from sales_support_agent.models.entities import LeadMirror, MailboxSignal
+    from sales_support_agent.services.matching import LeadMatchingService
 
     SQLALCHEMY_AVAILABLE = True
 except ModuleNotFoundError as exc:
@@ -296,6 +297,69 @@ class GmailJobTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["stage"], "send_message")
         self.assertEqual(result["error_code"], "insufficient_scope")
+
+    def test_mailbox_match_ignores_body_email_mentions_from_non_source_domains(self) -> None:
+        session = self.session_factory()
+        try:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-123",
+                    list_id=self.settings.clickup_list_id,
+                    task_name="David Narayan | Fulfillment eBook Form | Test",
+                    task_url="https://app.clickup.com/t/task-123",
+                    status="new lead",
+                    email="david@anatainc.com",
+                    created_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            session.commit()
+
+            matcher = LeadMatchingService(self.settings, _FakeClickUpClient(), session)
+            result = matcher.find_mailbox_match(
+                sender_email="alerts@google.com",
+                sender_domain="google.com",
+                candidate_emails=("alerts@google.com", "david@anatainc.com"),
+                sync_on_miss=False,
+            )
+        finally:
+            session.close()
+
+        self.assertIsNone(result)
+
+    def test_mailbox_match_allows_body_email_fallback_for_source_domains(self) -> None:
+        session = self.session_factory()
+        try:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-456",
+                    list_id=self.settings.clickup_list_id,
+                    task_name="Inbound Lead",
+                    task_url="https://app.clickup.com/t/task-456",
+                    status="new lead",
+                    email="buyer@example.com",
+                    created_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            session.commit()
+
+            matcher = LeadMatchingService(self.settings, _FakeClickUpClient(), session)
+            result = matcher.find_mailbox_match(
+                sender_email="notify@fulfil.com",
+                sender_domain="fulfil.com",
+                candidate_emails=("notify@fulfil.com", "buyer@example.com"),
+                sync_on_miss=False,
+            )
+        finally:
+            session.close()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.clickup_task_id, "task-456")
 
 
 if __name__ == "__main__":
