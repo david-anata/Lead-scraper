@@ -13,7 +13,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
-from sales_support_agent.models.entities import AutomationRun, CommunicationEvent, LeadMirror, MailboxSignal
+from sales_support_agent.models.entities import AutomationRun, CanvaConnection, CommunicationEvent, LeadMirror, MailboxSignal
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
 from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
@@ -54,6 +54,14 @@ class DashboardData:
     latest_run_summary: dict
     lead_builder_ready: bool
     lead_builder_missing: list[str]
+    deck_generator_ready: bool
+    deck_generator_missing: list[str]
+    deck_canva_connected: bool
+    deck_canva_display_name: str
+    deck_canva_capabilities: dict[str, bool]
+    deck_google_source: str
+    deck_template_id: str
+    recent_deck_runs: list[dict[str, object]]
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,14 @@ def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
         "latest_run_summary": data.latest_run_summary,
         "lead_builder_ready": data.lead_builder_ready,
         "lead_builder_missing": data.lead_builder_missing,
+        "deck_generator_ready": data.deck_generator_ready,
+        "deck_generator_missing": data.deck_generator_missing,
+        "deck_canva_connected": data.deck_canva_connected,
+        "deck_canva_display_name": data.deck_canva_display_name,
+        "deck_canva_capabilities": data.deck_canva_capabilities,
+        "deck_google_source": data.deck_google_source,
+        "deck_template_id": data.deck_template_id,
+        "recent_deck_runs": data.recent_deck_runs,
     }
 
 
@@ -214,6 +230,14 @@ def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
         latest_run_summary=dict(payload.get("latest_run_summary", {})),
         lead_builder_ready=bool(payload.get("lead_builder_ready")),
         lead_builder_missing=[str(item) for item in payload.get("lead_builder_missing", [])],
+        deck_generator_ready=bool(payload.get("deck_generator_ready")),
+        deck_generator_missing=[str(item) for item in payload.get("deck_generator_missing", [])],
+        deck_canva_connected=bool(payload.get("deck_canva_connected")),
+        deck_canva_display_name=str(payload.get("deck_canva_display_name", "")),
+        deck_canva_capabilities={str(key): bool(value) for key, value in dict(payload.get("deck_canva_capabilities", {})).items()},
+        deck_google_source=str(payload.get("deck_google_source", "")),
+        deck_template_id=str(payload.get("deck_template_id", "")),
+        recent_deck_runs=[dict(item) for item in payload.get("recent_deck_runs", [])],
     )
 
 
@@ -1384,6 +1408,37 @@ def render_dashboard_page(data: DashboardData) -> str:
     if "immediate_alerted" in latest_run_summary:
         snapshot_rows.append(_summary_row("Immediate alerts", latest_run_summary.get("immediate_alerted")))
 
+    deck_ready_notice = (
+        '<div class="notice warning">Deck generator is missing env vars: '
+        + html.escape(", ".join(data.deck_generator_missing))
+        + "</div>"
+        if not data.deck_generator_ready
+        else '<div class="notice success">Deck generator is configured. Connect Canva once, then upload a competitor CSV to generate a fresh deck copy.</div>'
+    )
+    canva_connection_label = data.deck_canva_display_name or "No Canva account connected yet"
+    deck_capability_bits = "".join(
+        f'<span>{html.escape(label)}</span>'
+        for label in (
+            f"Autofill {'ready' if data.deck_canva_capabilities.get('autofill') else 'missing'}",
+            f"Brand template {'ready' if data.deck_canva_capabilities.get('brand_template') else 'missing'}",
+        )
+    )
+    recent_deck_runs_html = "".join(
+        f"""
+        <article class="deck-run-item">
+          <div>
+            <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
+            <p>{html.escape(str(run.get("message") or run.get("status") or ""))}</p>
+          </div>
+          <div class="deck-run-links">
+            {f'<a href="{html.escape(str(run.get("edit_url") or ""))}" target="_blank" rel="noreferrer">Edit</a>' if run.get("edit_url") else ""}
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}" target="_blank" rel="noreferrer">View</a>' if run.get("view_url") else ""}
+          </div>
+        </article>
+        """
+        for run in data.recent_deck_runs
+    )
+
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -1845,6 +1900,11 @@ def render_dashboard_page(data: DashboardData) -> str:
         gap: 14px;
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }}
+      .draft-form {{
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
       .lead-form label {{
         display: grid;
         gap: 8px;
@@ -1854,7 +1914,19 @@ def render_dashboard_page(data: DashboardData) -> str:
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }}
-      .lead-form input {{
+      .draft-form label {{
+        display: grid;
+        gap: 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }}
+      .lead-form input,
+      .lead-form textarea,
+      .draft-form input,
+      .draft-form textarea {{
         width: 100%;
         padding: 18px 20px;
         border-radius: 10px;
@@ -1865,10 +1937,151 @@ def render_dashboard_page(data: DashboardData) -> str:
         font-size: 16px;
         color: var(--dark-blue);
       }}
+      .lead-form textarea,
+      .draft-form textarea {{
+        min-height: 180px;
+        resize: vertical;
+      }}
+      .lead-form input[type="file"],
+      .draft-form input[type="file"] {{
+        padding: 14px 16px;
+      }}
+      .draft-panel {{
+        margin-bottom: 24px;
+      }}
+      .draft-form .draft-body-field,
+      .draft-form .draft-submit,
+      .draft-form .draft-help {{
+        grid-column: 1 / -1;
+      }}
+      .checkbox-label {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 15px;
+        text-transform: none;
+        letter-spacing: 0;
+      }}
+      .checkbox-label input {{
+        width: auto;
+        margin: 0;
+        padding: 0;
+      }}
+      .draft-help {{
+        color: var(--alt-dark-blue);
+        font-family: "Roboto", sans-serif;
+        font-weight: 300;
+        font-size: 15px;
+        line-height: 1.45;
+      }}
+      .draft-results {{
+        margin-top: 14px;
+        display: grid;
+        gap: 12px;
+      }}
+      .draft-results .result-block {{
+        background: rgba(249, 247, 243, 0.9);
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 14px;
+        padding: 14px 16px;
+      }}
+      .draft-results .result-block strong {{
+        display: block;
+        margin-bottom: 8px;
+        font-family: "Montserrat", sans-serif;
+        font-size: 15px;
+        color: var(--dark-blue);
+      }}
+      .draft-results ul {{
+        margin: 0;
+        padding-left: 20px;
+      }}
+      .draft-results li {{
+        margin-bottom: 6px;
+        font-size: 14px;
+        line-height: 1.45;
+      }}
+      .deck-capabilities {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 14px;
+      }}
+      .deck-capabilities span,
+      .deck-run-links a {{
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: rgba(43, 54, 68, 0.08);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 12px;
+        text-decoration: none;
+      }}
+      .panel-stack {{
+        display: grid;
+        gap: 14px;
+      }}
+      .deck-run-list {{
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }}
+      .deck-run-item {{
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 12px 0;
+        border-top: 1px solid rgba(43, 54, 68, 0.08);
+      }}
+      .deck-run-item:first-child {{
+        border-top: 0;
+        padding-top: 0;
+      }}
+      .deck-run-item strong {{
+        display: block;
+        margin-bottom: 6px;
+        font-family: "Montserrat", sans-serif;
+        font-size: 16px;
+        color: var(--dark-blue);
+      }}
+      .deck-run-item p {{
+        margin: 0;
+        font-size: 14px;
+      }}
+      .deck-run-links {{
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }}
+      .button-link {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 14px 24px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 16px;
+        text-decoration: none;
+        cursor: pointer;
+      }}
       .lead-form .lead-submit {{
         grid-column: 1 / -1;
         display: flex;
         align-items: end;
+        gap: 12px;
+        flex-wrap: wrap;
       }}
       .footer-bar {{
         height: 18px;
@@ -1889,7 +2102,8 @@ def render_dashboard_page(data: DashboardData) -> str:
         .controls-grid,
         .layout,
         .metrics,
-        .lead-form {{
+        .lead-form,
+        .draft-form {{
           grid-template-columns: 1fr;
         }}
         .page-title {{
@@ -1908,7 +2122,8 @@ def render_dashboard_page(data: DashboardData) -> str:
         }}
         .eyebrow,
         .metric span,
-        .lead-form label {{
+        .lead-form label,
+        .draft-form label {{
           font-size: 13px;
         }}
         .page-copy,
@@ -1917,6 +2132,9 @@ def render_dashboard_page(data: DashboardData) -> str:
         .meta-card p,
         .panel-card p,
         .lead-form input,
+        .lead-form textarea,
+        .draft-form input,
+        .draft-form textarea,
         .deck-run-item p {{
           font-size: 15px;
         }}
@@ -2030,6 +2248,42 @@ def render_dashboard_page(data: DashboardData) -> str:
         </section>
       </section>
 
+      <section class="panel-card draft-panel" id="gmail-drafts-panel">
+        <h3>Create Gmail drafts</h3>
+        <p>Upload a simple CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
+        <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
+          <label>
+            Contacts CSV
+            <input type="file" name="contacts_csv" accept=".csv,text/csv" required />
+          </label>
+          <label>
+            Sales objective
+            <input type="text" name="sales_objective" placeholder="book intro calls with Amazon operators" />
+          </label>
+          <label>
+            Subject template
+            <input type="text" name="subject_template" placeholder="Idea for {{company}}" />
+          </label>
+          <label>
+            Preview mode
+            <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
+          </label>
+          <label class="draft-body-field">
+            Body template
+            <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
+          </label>
+          <div class="draft-help">
+            Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
+          </div>
+          <div class="lead-submit draft-submit">
+            <button type="submit">PREVIEW / CREATE DRAFTS</button>
+            <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
+          </div>
+        </form>
+        <div class="status-line" id="drafts-status">Drafts: Ready.</div>
+        <div class="draft-results" id="drafts-results"></div>
+      </section>
+
       <section class="metrics">{metric_cards}</section>
 
       <section class="layout">
@@ -2070,6 +2324,9 @@ def render_dashboard_page(data: DashboardData) -> str:
       const status = document.getElementById("run-status");
       const deckForm = document.getElementById("deck-generator-form");
       const deckStatus = document.getElementById("deck-status");
+      const draftsForm = document.getElementById("gmail-drafts-form");
+      const draftsStatus = document.getElementById("drafts-status");
+      const draftsResults = document.getElementById("drafts-results");
       const ownerFilter = document.getElementById("owner-filter");
       const urgencyButtons = document.querySelectorAll("#urgency-filter .filter-button");
       let activeUrgency = "all";
@@ -2159,6 +2416,91 @@ def render_dashboard_page(data: DashboardData) -> str:
           status.textContent = payloadJson.message || payloadJson.detail || payloadJson.error_type || "Lead build did not return a CSV.";
         }} catch (error) {{
           status.textContent = "Lead build failed before a response came back.";
+        }}
+      }});
+      deckForm?.addEventListener("submit", async (event) => {{
+        event.preventDefault();
+        deckStatus.innerHTML = "Generating Canva deck. This can take a minute...";
+        const formData = new FormData(deckForm);
+        try {{
+          const response = await fetch("/admin/api/generate-deck", {{
+            method: "POST",
+            body: formData,
+          }});
+          const payload = await response.json().catch(() => ({{ detail: "Deck generation failed." }}));
+          if (!response.ok) {{
+            deckStatus.textContent = payload.detail || payload.message || "Deck generation failed.";
+            return;
+          }}
+          const details = payload.details || {{}};
+          const links = [];
+          if (details.edit_url) {{
+            links.push(`<a href="${{details.edit_url}}" target="_blank" rel="noreferrer">Open edit link</a>`);
+          }}
+          if (details.view_url) {{
+            links.push(`<a href="${{details.view_url}}" target="_blank" rel="noreferrer">Open view link</a>`);
+          }}
+          deckStatus.innerHTML = `Deck generated. ${{links.join(" | ")}}`;
+          window.setTimeout(() => window.location.reload(), 1200);
+        }} catch (error) {{
+          deckStatus.textContent = "Deck generation failed before a response came back.";
+        }}
+      }});
+      draftsForm?.addEventListener("submit", async (event) => {{
+        event.preventDefault();
+        draftsStatus.textContent = "Preparing Gmail drafts...";
+        draftsResults.innerHTML = "";
+        const formData = new FormData(draftsForm);
+        try {{
+          const response = await fetch("/admin/api/create-gmail-drafts", {{
+            method: "POST",
+            body: formData,
+          }});
+          const payload = await response.json().catch(() => ({{ detail: "Draft creation failed." }}));
+          if (!response.ok) {{
+            draftsStatus.textContent = payload.detail || payload.message || "Draft creation failed.";
+            return;
+          }}
+          const details = payload.details || {{}};
+          const summary = `${{payload.message || "Draft workflow completed."}} Prepared ${{details.prepared || 0}}, created ${{details.created || 0}}, failed ${{details.failed || 0}}.`;
+          draftsStatus.innerHTML = details.drafts_url
+            ? `${{summary}} <a href="${{details.drafts_url}}" target="_blank" rel="noreferrer">Open Gmail drafts</a>`
+            : summary;
+
+          const blocks = [];
+          if (Array.isArray(details.available_placeholders) && details.available_placeholders.length) {{
+            blocks.push(`
+              <div class="result-block">
+                <strong>Available placeholders</strong>
+                <div>${{details.available_placeholders.map((item) => `<span class="source">${{item}}</span>`).join(" ")}}</div>
+              </div>
+            `);
+          }}
+          if (Array.isArray(details.previews) && details.previews.length) {{
+            blocks.push(`
+              <div class="result-block">
+                <strong>${{details.dry_run ? "Preview rows" : "Created drafts"}}</strong>
+                <ul>
+                  ${{details.previews.map((item) => `<li><strong>${{item.email}}</strong> - ${{item.subject}}</li>`).join("")}}
+                </ul>
+              </div>
+            `);
+          }}
+          if (Array.isArray(details.failed_rows) && details.failed_rows.length) {{
+            const failureItems = details.failed_rows.map((item) => {{
+              const emailPart = item.email ? ` (${{item.email}})` : "";
+              return `<li>Row ${{item.row_number}}${{emailPart}}: ${{item.error}}</li>`;
+            }}).join("");
+            blocks.push(`
+              <div class="result-block">
+                <strong>Rows that need fixes</strong>
+                <ul>${{failureItems}}</ul>
+              </div>
+            `);
+          }}
+          draftsResults.innerHTML = blocks.join("");
+        }} catch (error) {{
+          draftsStatus.textContent = "Draft creation failed before a response came back.";
         }}
       }});
       applyQueueFilters();

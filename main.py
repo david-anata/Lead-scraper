@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -500,6 +500,30 @@ def _post_sales_support_job(path: str, payload: dict[str, Any]) -> dict[str, Any
     )
     response.raise_for_status()
     return response.json()
+
+
+def _post_sales_support_multipart(
+    path: str,
+    *,
+    data: dict[str, Any],
+    file_field_name: str,
+    file_name: str,
+    file_bytes: bytes,
+    content_type: str,
+) -> tuple[int, dict[str, Any]]:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
+        raise RuntimeError("Sales support agent URL or internal API key is not configured on this service.")
+
+    response = requests.post(
+        f"{admin_settings.sales_support_agent_url}{path}",
+        headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
+        data=data,
+        files={file_field_name: (file_name, file_bytes, content_type)},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    payload = response.json() if response.content else {}
+    return response.status_code, payload
 
 
 def sync_remote_dashboard_sources() -> dict[str, Any]:
@@ -2801,6 +2825,48 @@ def admin_sync_dashboard(request: Request) -> JSONResponse:
         status_code=200,
         content={"status": "ok", "message": "Dashboard sync completed.", "details": result},
     )
+
+
+@app.post("/admin/api/create-gmail-drafts")
+async def admin_create_gmail_drafts(
+    request: Request,
+    contacts_csv: UploadFile = File(...),
+    sales_objective: str = Form(default=""),
+    subject_template: str = Form(default=""),
+    body_template: str = Form(default=""),
+    dry_run: bool = Form(default=False),
+) -> JSONResponse:
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    file_bytes = await contacts_csv.read()
+    if not file_bytes:
+        return JSONResponse(status_code=400, content={"detail": "Upload a CSV file with at least one contact row."})
+
+    try:
+        status_code, payload = _post_sales_support_multipart(
+            "/api/admin/gmail-drafts",
+            data={
+                "sales_objective": sales_objective,
+                "subject_template": subject_template,
+                "body_template": body_template,
+                "dry_run": "true" if dry_run else "false",
+            },
+            file_field_name="contacts_csv",
+            file_name=contacts_csv.filename or "contacts.csv",
+            file_bytes=file_bytes,
+            content_type=contacts_csv.content_type or "text/csv",
+        )
+    except Exception as exc:
+        logger.exception("[AdminDashboard] gmail draft creation failed")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Bulk draft creation failed.", "error": str(exc)},
+        )
+
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 @app.get("/")

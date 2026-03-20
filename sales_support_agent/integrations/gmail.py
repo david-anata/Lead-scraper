@@ -97,23 +97,38 @@ class GmailClient:
             stage="get_message",
         )
 
+    def create_draft(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> dict[str, Any]:
+        if not to:
+            return {"ok": False, "skipped": True, "reason": "missing_recipients"}
+
+        raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc)
+        return self._request(
+            "POST",
+            f"users/{self.settings.gmail_user_id}/drafts",
+            json_body={"message": {"raw": raw}},
+            stage="create_draft",
+        )
+
     def send_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> dict[str, Any]:
         if not to:
             return {"ok": False, "skipped": True, "reason": "missing_recipients"}
 
-        msg = EmailMessage()
-        msg["To"] = ", ".join(to)
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        msg["Subject"] = subject
-        msg.set_content(text)
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+        raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc)
         return self._request(
             "POST",
             f"users/{self.settings.gmail_user_id}/messages/send",
             json_body={"raw": raw},
             stage="send_message",
         )
+
+    def _build_raw_message(self, *, to: tuple[str, ...], subject: str, text: str, cc: tuple[str, ...] = ()) -> str:
+        msg = EmailMessage()
+        msg["To"] = ", ".join(to)
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+        msg["Subject"] = subject
+        msg.set_content(text)
+        return base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
     def _request(
         self,

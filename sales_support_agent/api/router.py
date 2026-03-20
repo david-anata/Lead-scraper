@@ -19,7 +19,7 @@ from main import (
 from sales_support_agent.config import get_missing_runtime_settings
 from sales_support_agent.integrations.canva import CanvaClient
 from sales_support_agent.integrations.clickup import ClickUpClient
-from sales_support_agent.integrations.gmail import GmailClient
+from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.jobs.daily_digest import DailyDigestJob
 from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
@@ -53,6 +53,8 @@ from sales_support_agent.services.admin_dashboard import (
     render_login_page,
 )
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
+from sales_support_agent.services.deck_generator import DeckGenerationService
+from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
 
@@ -110,6 +112,17 @@ def _admin_cookie_options(request: Request) -> dict[str, object]:
     }
 
 
+def _canva_oauth_cookie_name(request: Request) -> str:
+    return f"{request.app.state.settings.admin_cookie_name}_canva_oauth"
+
+
+def _canva_oauth_cookie_options(request: Request) -> dict[str, object]:
+    return {
+        **_admin_cookie_options(request),
+        "max_age": 900,
+    }
+
+
 def _enforce_instantly_webhook_auth(request: Request) -> None:
     settings = request.app.state.settings
     if settings.instantly_webhook_secret:
@@ -141,6 +154,15 @@ def health(request: Request) -> ApiMessage:
             "clickup_configured": bool(settings.clickup_api_token and settings.clickup_list_id),
             "slack_configured": bool(settings.slack_bot_token and settings.slack_channel_id),
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
+            "deck_generator_configured": bool(
+                settings.google_sheets_spreadsheet_id
+                and settings.google_sheets_sales_range
+                and settings.google_service_account_json
+                and settings.canva_client_id
+                and settings.canva_client_secret
+                and settings.canva_redirect_uri
+                and settings.canva_brand_template_id
+            ),
         },
     )
 
@@ -306,6 +328,96 @@ def admin_sync_dashboard(request: Request) -> JSONResponse:
                 "stale_lead_scan": stale_summary,
                 "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
             },
+        },
+    )
+
+
+@router.post("/api/admin/gmail-drafts", response_model=None)
+async def admin_create_gmail_drafts(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+    contacts_csv: UploadFile = File(...),
+    sales_objective: str = Form(default=""),
+    subject_template: str = Form(default=""),
+    body_template: str = Form(default=""),
+    dry_run: bool = Form(default=False),
+) -> JSONResponse:
+    _enforce_api_key(request, x_internal_api_key)
+    file_bytes = await contacts_csv.read()
+    if not file_bytes:
+        return JSONResponse(status_code=400, content={"detail": "Upload a CSV file with at least one contact row."})
+
+    try:
+        payload = create_bulk_draft_payloads(
+            csv_bytes=file_bytes,
+            sales_objective=sales_objective,
+            subject_template=subject_template,
+            body_template=body_template,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    gmail_client = GmailClient(request.app.state.settings)
+    prepared_rows = payload["prepared_rows"]
+    failed_rows = list(payload["failed_rows"])
+    created_rows: list[dict[str, str]] = []
+
+    if not dry_run:
+        try:
+            for prepared in prepared_rows:
+                draft = gmail_client.create_draft(
+                    to=(prepared["email"],),
+                    subject=prepared["subject"],
+                    text=prepared["body"],
+                )
+                created_rows.append(
+                    {
+                        "row_number": prepared["row_number"],
+                        "email": prepared["email"],
+                        "subject": prepared["subject"],
+                        "draft_id": str(draft.get("id") or ""),
+                        "message_id": str((draft.get("message") or {}).get("id") or ""),
+                    }
+                )
+        except GmailIntegrationError as exc:
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "status": "failed",
+                    "message": "Gmail draft creation failed.",
+                    "details": exc.as_dict(),
+                },
+            )
+
+    preview_rows = [
+        {
+            "row_number": row["row_number"],
+            "email": row["email"],
+            "subject": row["subject"],
+            "body_preview": row["body"][:240],
+            "first_name": row.get("first_name", ""),
+            "company": row.get("company", ""),
+        }
+        for row in prepared_rows[:10]
+    ]
+    details = {
+        "dry_run": dry_run,
+        "rows_total": payload["rows_total"],
+        "prepared": len(prepared_rows),
+        "created": len(created_rows),
+        "failed": len(failed_rows),
+        "available_placeholders": payload["available_placeholders"],
+        "drafts_url": "https://mail.google.com/mail/u/0/#drafts",
+        "previews": preview_rows,
+        "created_rows": created_rows[:25],
+        "failed_rows": failed_rows[:25],
+    }
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ok",
+            "message": "Gmail draft preview completed." if dry_run else "Gmail drafts created.",
+            "details": details,
         },
     )
 

@@ -191,6 +191,35 @@ class GmailClientTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "invalid_client")
         self.assertIn("OAuth client ID and client secret", context.exception.hint)
 
+    def test_create_draft_posts_to_gmail_drafts_endpoint(self) -> None:
+        settings = SimpleNamespace(
+            gmail_access_token="test-access-token",
+            gmail_client_id="client-id",
+            gmail_client_secret="client-secret",
+            gmail_refresh_token="refresh-token",
+            gmail_api_base_url="https://gmail.googleapis.com/gmail/v1",
+            gmail_user_id="me",
+        )
+        client = GmailClient(settings)
+
+        with patch("sales_support_agent.integrations.gmail.requests.request") as mock_request:
+            mock_request.return_value = _Response(
+                ok=True,
+                status_code=200,
+                text='{"id":"draft-123","message":{"id":"message-123"}}',
+                json_payload={"id": "draft-123", "message": {"id": "message-123"}},
+            )
+
+            result = client.create_draft(
+                to=("pat@example.com",),
+                subject="Hello",
+                text="Body copy",
+            )
+
+        self.assertEqual(result["id"], "draft-123")
+        self.assertIn("/users/me/drafts", mock_request.call_args.args[1])
+        self.assertIn("message", mock_request.call_args.kwargs["json"])
+
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for gmail integration job tests")
 class GmailJobTests(unittest.TestCase):
