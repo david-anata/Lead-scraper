@@ -90,6 +90,8 @@ class ExecutiveRiskLead:
     value_label: str
     value_numeric: float | None
     days_since_touch: int | None
+    last_touch_source: str
+    context_summary: str
     next_step: str
     link_url: str
 
@@ -104,6 +106,8 @@ class ExecutiveLeadRecord:
     value_label: str
     value_numeric: float | None
     days_since_touch: int | None
+    last_touch_source: str
+    context_summary: str
     late_stage: bool
     late_stage_stale: bool
     missing_next_action: bool
@@ -283,6 +287,8 @@ def executive_data_to_dict(data: ExecutiveData) -> dict[str, object]:
                 "value_label": item.value_label,
                 "value_numeric": item.value_numeric,
                 "days_since_touch": item.days_since_touch,
+                "last_touch_source": item.last_touch_source,
+                "context_summary": item.context_summary,
                 "next_step": item.next_step,
                 "link_url": item.link_url,
             }
@@ -302,6 +308,8 @@ def executive_data_to_dict(data: ExecutiveData) -> dict[str, object]:
                 "value_label": item.value_label,
                 "value_numeric": item.value_numeric,
                 "days_since_touch": item.days_since_touch,
+                "last_touch_source": item.last_touch_source,
+                "context_summary": item.context_summary,
                 "late_stage": item.late_stage,
                 "late_stage_stale": item.late_stage_stale,
                 "missing_next_action": item.missing_next_action,
@@ -357,6 +365,8 @@ def executive_data_from_dict(payload: dict[str, object]) -> ExecutiveData:
                 value_label=str(item.get("value_label", "")),
                 value_numeric=float(item["value_numeric"]) if item.get("value_numeric") is not None else None,
                 days_since_touch=int(item["days_since_touch"]) if item.get("days_since_touch") is not None else None,
+                last_touch_source=str(item.get("last_touch_source", "")),
+                context_summary=str(item.get("context_summary", "")),
                 next_step=str(item.get("next_step", "")),
                 link_url=str(item.get("link_url", "")),
             )
@@ -382,6 +392,8 @@ def executive_data_from_dict(payload: dict[str, object]) -> ExecutiveData:
                 value_label=str(item.get("value_label", "")),
                 value_numeric=float(item["value_numeric"]) if item.get("value_numeric") is not None else None,
                 days_since_touch=int(item["days_since_touch"]) if item.get("days_since_touch") is not None else None,
+                last_touch_source=str(item.get("last_touch_source", "")),
+                context_summary=str(item.get("context_summary", "")),
                 late_stage=bool(item.get("late_stage")),
                 late_stage_stale=bool(item.get("late_stage_stale")),
                 missing_next_action=bool(item.get("missing_next_action")),
@@ -458,6 +470,107 @@ def _days_since_touch(lead: LeadMirror, effective_date: date) -> int | None:
     if lead.created_at is not None:
         return max((effective_date - lead.created_at.date()).days, 0)
     return None
+
+
+def _days_since_datetime(
+    last_touch_at: datetime | None,
+    *,
+    effective_date: date,
+    fallback_created_at: datetime | None = None,
+) -> int | None:
+    if last_touch_at is not None:
+        return max((effective_date - last_touch_at.date()).days, 0)
+    if fallback_created_at is not None:
+        return max((effective_date - fallback_created_at.date()).days, 0)
+    return None
+
+
+def _clean_context_text(raw_text: str, *, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", (raw_text or "").strip())
+    return trim_for_slack(text, limit=limit) if text else ""
+
+
+def _latest_human_comment(comments: list[dict[str, object]]) -> tuple[datetime | None, str]:
+    latest_at: datetime | None = None
+    latest_text = ""
+    for comment in comments:
+        raw_text = str(comment.get("comment_text") or comment.get("comment") or "")
+        if not raw_text or raw_text.startswith("[Sales Support Agent]"):
+            continue
+        raw_date = comment.get("date") or comment.get("date_created")
+        parsed_at: datetime | None = None
+        if isinstance(raw_date, datetime):
+            parsed_at = raw_date
+        else:
+            raw_value = str(raw_date or "").strip()
+            if raw_value.isdigit():
+                parsed_at = datetime.fromtimestamp(int(raw_value) / 1000, tz=timezone.utc)
+            elif raw_value:
+                try:
+                    parsed_at = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+                except ValueError:
+                    parsed_at = None
+        if parsed_at and (latest_at is None or parsed_at > latest_at):
+            latest_at = parsed_at
+            latest_text = _clean_context_text(raw_text)
+    return latest_at, latest_text
+
+
+def _latest_communication_summary(event: CommunicationEvent | None) -> tuple[datetime | None, str]:
+    if event is None:
+        return None, ""
+    text = _clean_context_text(
+        " | ".join(
+            part
+            for part in [
+                event.summary,
+                event.outcome,
+                event.recommended_next_action,
+            ]
+            if (part or "").strip()
+        )
+    )
+    return event.occurred_at, text
+
+
+def _latest_mailbox_context(signal: MailboxSignal | None) -> tuple[datetime | None, str]:
+    if signal is None:
+        return None, ""
+    parts = [signal.action_summary, signal.snippet, signal.subject]
+    return signal.received_at, _clean_context_text(next((part for part in parts if (part or "").strip()), ""))
+
+
+def _build_executive_context(
+    *,
+    lead: LeadMirror,
+    comments: list[dict[str, object]],
+    latest_event: CommunicationEvent | None,
+    latest_mailbox_signal: MailboxSignal | None,
+) -> tuple[str, str]:
+    comment_at, comment_text = _latest_human_comment(comments)
+    event_at, event_text = _latest_communication_summary(latest_event)
+    mailbox_at, mailbox_text = _latest_mailbox_context(latest_mailbox_signal)
+
+    candidates: list[tuple[datetime, str, str]] = []
+    if comment_at and comment_text:
+        candidates.append((comment_at, "comment", comment_text))
+    if event_at and event_text:
+        candidates.append((event_at, "email", event_text))
+    if mailbox_at and mailbox_text:
+        candidates.append((mailbox_at, "mailbox", mailbox_text))
+    if candidates:
+        _, source, text = max(candidates, key=lambda item: item[0])
+        source_labels = {
+            "comment": "Comment",
+            "email": "Email event",
+            "mailbox": "Mailbox signal",
+        }
+        return source_labels.get(source, source.title()), text
+
+    fallback = _clean_context_text(lead.communication_summary or lead.last_meeting_outcome or lead.recommended_next_action)
+    if fallback:
+        return "ClickUp summary", fallback
+    return "", ""
 
 
 def _distribution_from_counter(counter: Counter[str], *, preferred_order: list[str] | None = None) -> list[ExecutiveDistributionItem]:
@@ -747,12 +860,18 @@ def build_executive_data(
     inbox_reply_events = list(
         session.execute(
             select(CommunicationEvent)
-            .where(
-                CommunicationEvent.event_type == "inbound_reply_received",
-                CommunicationEvent.occurred_at >= mailbox_start,
-            )
+            .where(CommunicationEvent.occurred_at >= mailbox_start)
+            .order_by(CommunicationEvent.occurred_at.desc())
         ).scalars()
     )
+    latest_event_by_task: dict[str, CommunicationEvent] = {}
+    for event in inbox_reply_events:
+        if event.clickup_task_id and event.clickup_task_id not in latest_event_by_task:
+            latest_event_by_task[event.clickup_task_id] = event
+    latest_mailbox_signal_by_task: dict[str, MailboxSignal] = {}
+    for signal in mailbox_signals:
+        if signal.matched_task_id and signal.matched_task_id not in latest_mailbox_signal_by_task:
+            latest_mailbox_signal_by_task[signal.matched_task_id] = signal
 
     lead_records: list[ExecutiveLeadRecord] = []
     status_counter: Counter[str] = Counter()
@@ -761,6 +880,7 @@ def build_executive_data(
     late_stage_counter: Counter[str] = Counter()
     owner_mailbox_counter: Counter[str] = Counter()
     owner_reply_counter: Counter[str] = Counter()
+    comment_cache: dict[str, list[dict[str, object]]] = {}
     owner_stats: dict[str, dict[str, object]] = defaultdict(
         lambda: {
             "active": 0,
@@ -788,7 +908,8 @@ def build_executive_data(
         if not status or status_key not in active_statuses:
             continue
 
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
+        comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)
+        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
         if evaluation is None:
             continue
 
@@ -797,7 +918,17 @@ def build_executive_data(
         lead_owner_map[lead.clickup_task_id] = owner_name
         source_name = _display_source_name(lead.source)
         value_numeric = _safe_numeric_value(lead.value)
-        days_since_touch = _days_since_touch(lead, effective_date)
+        days_since_touch = _days_since_datetime(
+            evaluation.last_meaningful_touch_at,
+            effective_date=effective_date,
+            fallback_created_at=lead.created_at,
+        )
+        last_touch_source, context_summary = _build_executive_context(
+            lead=lead,
+            comments=comments,
+            latest_event=latest_event_by_task.get(lead.clickup_task_id),
+            latest_mailbox_signal=latest_mailbox_signal_by_task.get(lead.clickup_task_id),
+        )
         late_stage = status_key in late_stage_status_keys
         late_stage_stale = status_key in late_stage_stale_status_keys and digest_item.urgency in {"overdue", "needs_immediate_review"}
         missing_next_action = not (lead.recommended_next_action or "").strip()
@@ -814,6 +945,8 @@ def build_executive_data(
                 value_label=lead.value or "",
                 value_numeric=value_numeric,
                 days_since_touch=days_since_touch,
+                last_touch_source=last_touch_source,
+                context_summary=context_summary,
                 late_stage=late_stage,
                 late_stage_stale=late_stage_stale,
                 missing_next_action=missing_next_action,
@@ -864,6 +997,8 @@ def build_executive_data(
         owner_stats[owner_name]["mailbox"] = count
 
     for event in inbox_reply_events:
+        if event.event_type != "inbound_reply_received":
+            continue
         owner_name = lead_owner_map.get(event.clickup_task_id, "Assigned AE")
         owner_reply_counter[owner_name] += 1
 
@@ -907,6 +1042,8 @@ def build_executive_data(
                 value_label=item.value_label,
                 value_numeric=item.value_numeric,
                 days_since_touch=item.days_since_touch,
+                last_touch_source=item.last_touch_source,
+                context_summary=item.context_summary,
                 next_step=item.next_step,
                 link_url=item.link_url,
             )
@@ -3951,7 +4088,8 @@ def render_executive_page(data: ExecutiveData) -> str:
               <span class="pill">${{item.urgency.replaceAll("_", " ")}}</span>
             </div>
             <h3>${{item.task_name}}</h3>
-            <p><strong>Days since last touch:</strong> ${{item.days_since_touch ?? "n/a"}} | <strong>Value:</strong> ${{item.value_numeric !== null && item.value_numeric !== undefined ? formatCurrency(item.value_numeric) : (item.value_label || "n/a")}}</p>
+            <p><strong>Days since last touch:</strong> ${{item.days_since_touch ?? "n/a"}} | <strong>Last-touch source:</strong> ${{item.last_touch_source || "n/a"}} | <strong>Value:</strong> ${{item.value_numeric !== null && item.value_numeric !== undefined ? formatCurrency(item.value_numeric) : (item.value_label || "n/a")}}</p>
+            <p><strong>Latest context:</strong> ${{item.context_summary || "No recent comment or inbox context captured."}}</p>
             <p><strong>Next step:</strong> ${{item.next_step || "Review and define the next action."}}</p>
             ${{item.link_url ? `<p><a href="${{item.link_url}}" target="_blank" rel="noreferrer">Open ClickUp task</a></p>` : ""}}
           </article>

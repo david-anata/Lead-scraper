@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from sales_support_agent.config import Settings
+from sales_support_agent.config import GmailMailboxAccount, Settings
 
 
 class GmailIntegrationError(RuntimeError):
@@ -42,37 +42,50 @@ class GmailIntegrationError(RuntimeError):
 
 
 class GmailClient:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, mailbox_account: GmailMailboxAccount | None = None):
         self.settings = settings
-        self._cached_access_token = settings.gmail_access_token
+        self.mailbox_account = mailbox_account
+        self.account_key = mailbox_account.account_key if mailbox_account else "primary"
+        self.account_label = mailbox_account.label if mailbox_account else "Primary inbox"
+        self.user_id = mailbox_account.user_id if mailbox_account else settings.gmail_user_id
+        self.poll_query = mailbox_account.poll_query if mailbox_account else settings.gmail_poll_query
+        self.poll_max_messages = mailbox_account.poll_max_messages if mailbox_account else settings.gmail_poll_max_messages
+        self.source_domains = mailbox_account.source_domains if mailbox_account else settings.gmail_source_domains
+        self._static_access_token = mailbox_account.access_token if mailbox_account else settings.gmail_access_token
+        self._client_id = mailbox_account.client_id if mailbox_account else settings.gmail_client_id
+        self._client_secret = mailbox_account.client_secret if mailbox_account else settings.gmail_client_secret
+        self._refresh_token = mailbox_account.refresh_token if mailbox_account else settings.gmail_refresh_token
+        self._cached_access_token = self._static_access_token
 
     def is_configured(self) -> bool:
-        if self.settings.gmail_access_token:
+        if self._static_access_token:
             return True
         return not self.missing_configuration()
 
     def missing_configuration(self) -> tuple[str, ...]:
-        if self.settings.gmail_access_token:
+        if self._static_access_token:
             return ()
 
         missing: list[str] = []
-        if not self.settings.gmail_client_id:
+        if not self._client_id:
             missing.append("GMAIL_CLIENT_ID")
-        if not self.settings.gmail_client_secret:
+        if not self._client_secret:
             missing.append("GMAIL_CLIENT_SECRET")
-        if not self.settings.gmail_refresh_token:
+        if not self._refresh_token:
             missing.append("GMAIL_REFRESH_TOKEN")
         return tuple(missing)
 
     def get_profile(self) -> dict[str, Any]:
-        return self._request("GET", f"users/{self.settings.gmail_user_id}/profile", stage="profile_lookup")
+        return self._request("GET", f"users/{self.user_id}/profile", stage="profile_lookup")
 
     def debug_preflight(self) -> dict[str, Any]:
         access_token = self._get_access_token()
         profile = self.get_profile()
         return {
             "auth_ok": True,
-            "token_source": "static_access_token" if self.settings.gmail_access_token else "refresh_token",
+            "account_key": self.account_key,
+            "account_label": self.account_label,
+            "token_source": "static_access_token" if self._static_access_token else "refresh_token",
             "access_token_preview": access_token[:12] + "..." if access_token else "",
             "gmail_address": str(profile.get("emailAddress") or ""),
             "messages_total": int(profile.get("messagesTotal") or 0),
@@ -83,7 +96,7 @@ class GmailClient:
     def list_messages(self, *, query: str, max_results: int) -> list[dict[str, Any]]:
         payload = self._request(
             "GET",
-            f"users/{self.settings.gmail_user_id}/messages",
+            f"users/{self.user_id}/messages",
             params={"q": query, "maxResults": max_results},
             stage="list_messages",
         )
@@ -92,7 +105,7 @@ class GmailClient:
     def get_message(self, message_id: str) -> dict[str, Any]:
         return self._request(
             "GET",
-            f"users/{self.settings.gmail_user_id}/messages/{message_id}",
+            f"users/{self.user_id}/messages/{message_id}",
             params={"format": "full"},
             stage="get_message",
         )
@@ -104,7 +117,7 @@ class GmailClient:
         raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc)
         return self._request(
             "POST",
-            f"users/{self.settings.gmail_user_id}/drafts",
+            f"users/{self.user_id}/drafts",
             json_body={"message": {"raw": raw}},
             stage="create_draft",
         )
@@ -116,7 +129,7 @@ class GmailClient:
         raw = self._build_raw_message(to=to, subject=subject, text=text, cc=cc)
         return self._request(
             "POST",
-            f"users/{self.settings.gmail_user_id}/messages/send",
+            f"users/{self.user_id}/messages/send",
             json_body={"raw": raw},
             stage="send_message",
         )
@@ -180,9 +193,9 @@ class GmailClient:
         response = requests.post(
             self.settings.gmail_oauth_token_url,
             data={
-                "client_id": self.settings.gmail_client_id,
-                "client_secret": self.settings.gmail_client_secret,
-                "refresh_token": self.settings.gmail_refresh_token,
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "refresh_token": self._refresh_token,
                 "grant_type": "refresh_token",
             },
             timeout=30,
