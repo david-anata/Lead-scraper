@@ -63,6 +63,7 @@ from sales_support_agent.services.deck_generator import DeckGenerationService
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
+from sales_support_agent.config import normalize_status_key
 
 
 router = APIRouter()
@@ -251,11 +252,31 @@ def _run_dashboard_sync(app: object, *, trigger: str) -> dict[str, object]:
     with session_scope(app.state.session_factory) as session:
         clickup_summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
         stale_summary = StaleLeadJob(settings, ClickUpClient(settings), SlackClient(settings), session).run(dry_run=True)
+        mirrored_leads = list(
+            session.execute(
+                select(LeadMirror).where(LeadMirror.list_id == settings.clickup_list_id)
+            ).scalars()
+        )
+    active_leads = sum(
+        1
+        for lead in mirrored_leads
+        if normalize_status_key(lead.status or "") in settings.active_statuses
+    )
+    synced_tasks = int(clickup_summary.get("synced_tasks", 0) or 0)
+    if synced_tasks == 0:
+        message = "Dashboard sync finished, but ClickUp returned 0 tasks. Check CLICKUP_LIST_ID and ClickUp token access."
+    elif active_leads == 0:
+        message = "Dashboard sync finished, but 0 tasks are in tracked active statuses. Check your ClickUp status names."
+    else:
+        message = f"Dashboard sync finished. Synced {synced_tasks} tasks and found {active_leads} active leads."
     return {
         "clickup_sync": clickup_summary,
         "stale_lead_scan": stale_summary,
         "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
         "trigger": trigger,
+        "mirrored_leads": len(mirrored_leads),
+        "active_leads": active_leads,
+        "message": message,
     }
 
 
@@ -575,7 +596,7 @@ def admin_sync_dashboard(
         status_code=200,
         content={
             "status": "ok",
-            "message": "Dashboard sync completed.",
+            "message": str(details.get("message", "Dashboard sync completed.")),
             "details": details,
         },
     )
