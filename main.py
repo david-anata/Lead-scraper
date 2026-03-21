@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -82,9 +83,13 @@ HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
 # ========= RUNTIME CONFIG =========
 REQUEST_TIMEOUT_SECONDS = 60
 ADMIN_REMOTE_TIMEOUT_SECONDS = int((os.getenv("ADMIN_REMOTE_TIMEOUT_SECONDS", "8") or "8").strip())
-MAX_APOLLO_ORG_PAGES = int((os.getenv("MAX_APOLLO_ORG_PAGES", "100") or "100").strip())
+MAX_APOLLO_ORG_PAGES = int((os.getenv("MAX_APOLLO_ORG_PAGES", "25") or "25").strip())
 APOLLO_ORG_PAGE_SIZE = min(int((os.getenv("APOLLO_ORG_PAGE_SIZE", "100") or "100").strip()), 100)
-MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "120") or "120").strip())
+MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "60") or "60").strip())
+APOLLO_MIN_DOMAINS_PER_RUN = int((os.getenv("APOLLO_MIN_DOMAINS_PER_RUN", "20") or "20").strip())
+APOLLO_DOMAINS_PER_TARGET_LEAD = float((os.getenv("APOLLO_DOMAINS_PER_TARGET_LEAD", "3.0") or "3.0").strip())
+APOLLO_MIN_ORG_PAGES_PER_RUN = int((os.getenv("APOLLO_MIN_ORG_PAGES_PER_RUN", "4") or "4").strip())
+APOLLO_ORG_PAGES_PER_REQUESTED_PAGE = int((os.getenv("APOLLO_ORG_PAGES_PER_REQUESTED_PAGE", "4") or "4").strip())
 APOLLO_SLEEP_SECONDS = 1.2
 MAX_CONTACTS_PER_DOMAIN = 2
 APOLLO_SEARCH_CANDIDATES_PER_DOMAIN = 10
@@ -1960,6 +1965,7 @@ def collect_domains(
     processed_domains: set[str] | None = None,
 ) -> StoreLeadsCollectionResult:
     start_page = load_apollo_org_cursor()
+    max_pages_this_run = effective_max_apollo_org_pages(max_domains)
     qualified_domains: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
     processed_domains = processed_domains or set()
@@ -1972,7 +1978,15 @@ def collect_domains(
     pages_scanned = 0
     last_scanned_page = start_page
 
-    for page_offset in range(MAX_APOLLO_ORG_PAGES):
+    logger.info(
+        "[ApolloOrg] start_page=%s requested_domains=%s max_pages_this_run=%s page_size=%s",
+        start_page,
+        max_domains,
+        max_pages_this_run,
+        APOLLO_ORG_PAGE_SIZE,
+    )
+
+    for page_offset in range(max_pages_this_run):
         page = ((start_page - 1 + page_offset) % MAX_APOLLO_ORG_PAGES) + 1
         organizations = fetch_apollo_org_page(page, settings)
         pages_scanned += 1
@@ -2318,6 +2332,18 @@ def accepted_lead_target_per_run() -> int:
     return 15
 
 
+def effective_max_apollo_domains_per_run() -> int:
+    target = max(1, accepted_lead_target_per_run())
+    target_based_budget = max(APOLLO_MIN_DOMAINS_PER_RUN, int(math.ceil(target * APOLLO_DOMAINS_PER_TARGET_LEAD)))
+    return max(1, min(MAX_APOLLO_DOMAINS_PER_RUN, target_based_budget))
+
+
+def effective_max_apollo_org_pages(max_domains: int) -> int:
+    requested_pages = max(1, int(math.ceil(max(1, max_domains) / max(APOLLO_ORG_PAGE_SIZE, 1))))
+    target_pages = requested_pages * max(1, APOLLO_ORG_PAGES_PER_REQUESTED_PAGE)
+    return max(1, min(MAX_APOLLO_ORG_PAGES, max(APOLLO_MIN_ORG_PAGES_PER_RUN, target_pages)))
+
+
 def determine_offer(revenue: float | None) -> str:
     if revenue and revenue >= 150000:
         return "Fulfillment"
@@ -2337,12 +2363,13 @@ def build_csv_rows(
     apollo_attempt_rows: list[dict[str, str]] = []
     seen_emails_global: set[str] = set()
     accepted_target = accepted_lead_target_per_run()
+    max_apollo_domains_this_run = effective_max_apollo_domains_per_run()
 
     for store in domains:
         domain = normalize_domain(store.get("name", ""))
         if not domain:
             continue
-        if apollo_domains_attempted >= MAX_APOLLO_DOMAINS_PER_RUN:
+        if apollo_domains_attempted >= max_apollo_domains_this_run:
             break
         if successful_contacts >= accepted_target:
             break
@@ -2478,6 +2505,14 @@ def build_csv_rows(
             apollo_debug_stats["candidates_with_brand_domain_email"],
             accepted_for_domain,
         )
+
+    logger.info(
+        "[ApolloBudget] accepted_target=%s max_apollo_domains_this_run=%s attempted=%s successful_contacts=%s",
+        accepted_target,
+        max_apollo_domains_this_run,
+        apollo_domains_attempted,
+        successful_contacts,
+    )
 
     return LeadBuildRowsResult(
         instantly_rows=instantly_rows,
@@ -2977,6 +3012,8 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str, run_i
         processed_domains,
     )
     accepted_lead_target = accepted_lead_target_per_run()
+    max_apollo_domains_this_run = effective_max_apollo_domains_per_run()
+    max_apollo_org_pages_this_run = effective_max_apollo_org_pages(payload.max_domains)
 
     logger.info(
         "[Run] scheduler_source=%s date=%s max_domains=%s raw_scanned=%s start_page=%s end_page=%s pages_scanned=%s icp_matches=%s new_domains_considered=%s skipped_processed=%s skipped_apollo_cooldown=%s accepted_lead_target=%s max_apollo_domains=%s daily_new_lead_limit=%s weekday_only=%s",
@@ -2992,7 +3029,7 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str, run_i
         collection_result.skipped_processed_domains,
         collection_result.skipped_apollo_cooldown_domains,
         accepted_lead_target,
-        MAX_APOLLO_DOMAINS_PER_RUN,
+        max_apollo_domains_this_run,
         DAILY_NEW_LEAD_LIMIT,
         ENABLE_WEEKDAY_ONLY_IMPORTS,
     )
@@ -3029,7 +3066,7 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str, run_i
     linkedin_rows = [row for row in rows_result.linkedin_rows if row.get("email", "") in allowed_emails]
     successful_contacts = len(instantly_rows)
     logger.info(
-        "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s accepted_lead_target=%s apollo_domains_attempted=%s",
+        "[Scheduler] source=%s run_date=%s max_domains=%s status=%s daily_limit=%s already_imported_today=%s remaining_capacity=%s selected_contacts=%s accepted_lead_target=%s apollo_domains_attempted=%s apollo_org_page_budget=%s",
         scheduler_source,
         payload.date,
         payload.max_domains,
@@ -3040,6 +3077,7 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str, run_i
         successful_contacts,
         accepted_lead_target,
         rows_result.apollo_domains_attempted,
+        max_apollo_org_pages_this_run,
     )
 
     instantly_csv = rows_to_csv(instantly_rows)
