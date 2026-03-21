@@ -18,20 +18,24 @@ except ModuleNotFoundError as exc:
 
 
 class _FakeGoogleSheetsClient:
+    def __init__(self, values: list[list[str]] | None = None) -> None:
+        self.values = values or [
+            ["Metric", "Value"],
+            ["Sales Total", "$12000"],
+            ["Win Rate", "25%"],
+        ]
+
     def get_values(self) -> dict[str, object]:
         return {
             "range": "Sales!A1:B3",
-            "values": [
-                ["Metric", "Value"],
-                ["Sales Total", "$12000"],
-                ["Win Rate", "25%"],
-            ],
+            "values": self.values,
         }
 
 
 class _FakeCanvaClient:
-    def __init__(self, *, include_image_field: bool = False):
+    def __init__(self, *, include_image_field: bool = False, include_top_products_chart: bool = False):
         self.include_image_field = include_image_field
+        self.include_top_products_chart = include_top_products_chart
         self.created_payload: dict[str, object] | None = None
 
     def get_user_capabilities(self, access_token: str) -> dict[str, object]:
@@ -46,6 +50,8 @@ class _FakeCanvaClient:
             "report_generated_date": {"type": "text"},
             "competitor_table": {"type": "chart"},
         }
+        if self.include_top_products_chart:
+            dataset["top_products_by_bsr"] = {"type": "chart"}
         if self.include_image_field:
             dataset["competitor_logo"] = {"type": "image"}
         return {"dataset": dataset}
@@ -167,6 +173,51 @@ class DeckGeneratorTests(unittest.TestCase):
                     competitor_csv_bytes=b"Competitor,Score\nAcme,82\n",
                     competitor_filename="competitors.csv",
                 )
+
+    def test_generate_deck_builds_top_products_by_bsr_chart(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = _build_settings()
+        canva_client = _FakeCanvaClient(include_top_products_chart=True)
+        google_client = _FakeGoogleSheetsClient(
+            values=[
+                ["Product name", "BSR", "Sales", "Units", "Change from previous period"],
+                ["Alpha Serum", "1450", "$12,000", "220", "+8%"],
+                ["Beta Cream", "320", "$9,500", "180", "+4%"],
+                ["Gamma Wash", "980", "$8,100", "160", "-2%"],
+            ]
+        )
+
+        with session_scope(session_factory) as session:
+            session.add(
+                CanvaConnection(
+                    display_name="Deck Ops",
+                    access_token_encrypted=seal_token(settings.canva_token_secret, "access-token"),
+                    refresh_token_encrypted=seal_token(settings.canva_token_secret, "refresh-token"),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    capabilities_json={"autofill": True, "brand_template": True},
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            DeckGenerationService(
+                settings,
+                session,
+                google_client=google_client,
+                canva_client=canva_client,
+            ).generate_deck(
+                competitor_csv_bytes=b"Competitor,Score\nAcme,82\n",
+                competitor_filename="competitors.csv",
+                report_date=date(2026, 3, 16),
+            )
+
+        chart_rows = canva_client.created_payload["top_products_by_bsr"]["chart_data"]["rows"]
+        self.assertEqual(chart_rows[0]["cells"][0]["value"], "Product name")
+        self.assertEqual(chart_rows[1]["cells"][0]["value"], "Beta Cream")
+        self.assertEqual(chart_rows[1]["cells"][1]["value"], 320.0)
+        self.assertEqual(chart_rows[2]["cells"][0]["value"], "Gamma Wash")
+        self.assertEqual(chart_rows[3]["cells"][0]["value"], "Alpha Serum")
 
 
 if __name__ == "__main__":

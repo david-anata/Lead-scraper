@@ -228,6 +228,10 @@ class DeckGenerationService:
         sales_rows, sales_scalar_fields = _normalize_sales_rows(values)
         text_fields.update(sales_scalar_fields)
         chart_fields["sales_table"] = _build_chart_data(sales_rows)
+        top_products_rows = _build_top_products_by_bsr_rows(sales_rows)
+        if top_products_rows is not None:
+            chart_fields["top_products_by_bsr"] = _build_chart_data(top_products_rows)
+            text_fields["top_products_by_bsr_row_count"] = str(max(len(top_products_rows) - 1, 0))
         text_fields["sales_source_range"] = str(sales_payload.get("range") or self.settings.google_sheets_sales_range)
         text_fields["sales_row_count"] = str(max(len(sales_rows) - 1, 0))
 
@@ -500,6 +504,68 @@ def _build_chart_data(rows: list[list[str]]) -> dict[str, Any]:
             for row_index, row in enumerate(clipped_rows)
         ]
     }
+
+
+def _build_top_products_by_bsr_rows(rows: list[list[str]]) -> list[list[str]] | None:
+    if len(rows) < 2:
+        return None
+
+    header_row = rows[0]
+    normalized_headers = [_normalize_key(cell) for cell in header_row]
+
+    def _find_index(*candidates: str) -> int | None:
+        for candidate in candidates:
+            if candidate in normalized_headers:
+                return normalized_headers.index(candidate)
+        return None
+
+    product_idx = _find_index("product_name", "product", "title", "item_name", "name")
+    bsr_idx = _find_index("bsr", "best_seller_rank", "bestseller_rank", "sales_rank")
+    sales_idx = _find_index("sales", "revenue", "sales_total", "sales_amount")
+    units_idx = _find_index("units", "unit_sales", "ordered_units", "qty", "quantity")
+    change_idx = _find_index(
+        "change_from_previous_period",
+        "change_vs_previous_period",
+        "previous_period_change",
+        "period_change",
+        "sales_change",
+        "mom_change",
+        "change",
+    )
+
+    required_indexes = (product_idx, bsr_idx, sales_idx, units_idx, change_idx)
+    if any(index is None for index in required_indexes):
+        return None
+
+    ranked_rows: list[tuple[float, list[str]]] = []
+    for row in rows[1:]:
+        padded = [str(cell or "").strip() for cell in row]
+        max_index = max(index for index in required_indexes if index is not None)
+        if len(padded) <= max_index:
+            continue
+        bsr_value = _coerce_number(padded[bsr_idx]) if bsr_idx is not None else None
+        if bsr_value is None:
+            continue
+        ranked_rows.append(
+            (
+                bsr_value,
+                [
+                    padded[product_idx] if product_idx is not None else "",
+                    padded[bsr_idx] if bsr_idx is not None else "",
+                    padded[sales_idx] if sales_idx is not None else "",
+                    padded[units_idx] if units_idx is not None else "",
+                    padded[change_idx] if change_idx is not None else "",
+                ],
+            )
+        )
+
+    if not ranked_rows:
+        return None
+
+    ranked_rows.sort(key=lambda item: (item[0], item[1][0].lower()))
+    top_rows = [["Product name", "BSR", "Sales", "Units", "Change from previous period"]]
+    top_rows.extend(values for _, values in ranked_rows[:10])
+    return top_rows
 
 
 def _build_chart_cell(value: str, *, is_header: bool) -> dict[str, Any]:
