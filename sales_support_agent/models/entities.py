@@ -41,6 +41,162 @@ class LeadMirror(Base):
     raw_task_payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class Company(Base):
+    __tablename__ = "companies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    normalized_name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    website: Mapped[str] = mapped_column(String(1024), default="")
+    platform: Mapped[str] = mapped_column(String(128), default="")
+    location: Mapped[str] = mapped_column(String(255), default="")
+    market_segment: Mapped[str] = mapped_column(String(255), default="")
+    industry: Mapped[str] = mapped_column(String(255), default="")
+    org_category: Mapped[str] = mapped_column(String(128), default="", index=True)
+    apollo_org_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    source_system: Mapped[str] = mapped_column(String(64), default="apollo")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    last_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    linkedin_url: Mapped[str] = mapped_column(String(1024), default="", index=True)
+    apollo_person_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    first_name: Mapped[str] = mapped_column(String(255), default="")
+    last_name: Mapped[str] = mapped_column(String(255), default="")
+    role: Mapped[str] = mapped_column(String(255), default="")
+    department: Mapped[str] = mapped_column(String(128), default="")
+    source_system: Mapped[str] = mapped_column(String(64), default="apollo")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class LeadRecord(Base):
+    __tablename__ = "lead_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lead_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    company_id: Mapped[int] = mapped_column(Integer, index=True)
+    contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(64), default="email", index=True)
+    status: Mapped[str] = mapped_column(String(64), default="accepted", index=True)
+    source_run_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    last_skip_reason: Mapped[str] = mapped_column(String(255), default="")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    last_qualified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LeadRun(Base):
+    __tablename__ = "lead_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    trigger_source: Mapped[str] = mapped_column(String(64), default="manual", index=True)
+    current_stage: Mapped[str] = mapped_column(String(64), default="queued")
+    run_date: Mapped[str] = mapped_column(String(32), default="", index=True)
+    max_domains: Mapped[int] = mapped_column(Integer, default=150)
+    request_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    csv_content: Mapped[str] = mapped_column(Text, default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class LeadRunItem(Base):
+    __tablename__ = "lead_run_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    domain: Mapped[str] = mapped_column(String(255), default="", index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class CampaignEnrollment(Base):
+    __tablename__ = "campaign_enrollments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    enrollment_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    lead_record_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(64), default="", index=True)
+    campaign_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    campaign_name: Mapped[str] = mapped_column(String(255), default="")
+    external_id: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(64), default="created", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class SourceCursor(Base):
+    __tablename__ = "source_cursors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    next_cursor: Mapped[str] = mapped_column(String(255), default="")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
+class Cooldown(Base):
+    __tablename__ = "cooldowns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String(128), index=True)
+    entity_key: Mapped[str] = mapped_column(String(255), index=True)
+    result: Mapped[str] = mapped_column(String(64), default="")
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class RevenueEvent(Base):
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(128), index=True)
+    subject_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    subject_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    run_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
+class RevenueAction(Base):
+    __tablename__ = "actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action_type: Mapped[str] = mapped_column(String(128), index=True)
+    subject_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    subject_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    run_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
 class CommunicationEvent(Base):
     __tablename__ = "communication_events"
 

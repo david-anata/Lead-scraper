@@ -2821,7 +2821,7 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       form?.addEventListener("submit", async (event) => {{
         event.preventDefault();
-        status.textContent = "Running lead build. This can take a minute...";
+        status.textContent = "Queueing lead build...";
         const formData = new FormData(form);
         const payload = {{
           date: formData.get("date"),
@@ -2833,26 +2833,79 @@ def render_dashboard_page(data: DashboardData) -> str:
             headers: {{ "Content-Type": "application/json" }},
             body: JSON.stringify(payload),
           }});
-          const contentType = response.headers.get("content-type") || "";
-          if (response.ok && contentType.includes("text/csv")) {{
-            const blob = await response.blob();
-            const disposition = response.headers.get("content-disposition") || "";
-            const match = disposition.match(/filename="([^"]+)"/);
-            const filename = match ? match[1] : "instantly_upload.csv";
-            const url = URL.createObjectURL(blob);
-            const anchor = document.createElement("a");
-            anchor.href = url;
-            anchor.download = filename;
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
-            URL.revokeObjectURL(url);
-            status.textContent = "Lead build finished. CSV download started.";
+          const payloadJson = await response.json().catch(() => ({{ detail: "Lead build failed." }}));
+          if (!response.ok) {{
+            status.textContent = payloadJson.message || payloadJson.detail || payloadJson.error_type || "Lead build failed.";
             return;
           }}
 
-          const payloadJson = await response.json().catch(() => ({{ detail: "Lead build failed." }}));
-          status.textContent = payloadJson.message || payloadJson.detail || payloadJson.error_type || "Lead build did not return a CSV.";
+          const runId = payloadJson.details?.run_id;
+          const pollUrl = payloadJson.details?.poll_url;
+          const downloadUrl = payloadJson.details?.download_url;
+          if (!runId || !pollUrl) {{
+            status.textContent = "Lead build queued, but the run ID was missing.";
+            return;
+          }}
+
+          status.textContent = `Lead build queued. Run ID: ${{runId}}. Waiting for completion...`;
+
+          const pollRun = async () => {{
+            const statusResponse = await fetch(pollUrl, {{ method: "GET" }});
+            const statusPayload = await statusResponse.json().catch(() => ({{ detail: "Lead run polling failed." }}));
+            if (!statusResponse.ok) {{
+              status.textContent = statusPayload.detail || "Lead run polling failed.";
+              return true;
+            }}
+
+            const details = statusPayload.details || {{}};
+            const runStatus = details.status || "unknown";
+            const currentStage = details.current_stage || "queued";
+            const summary = details.summary || {{}};
+
+            if (runStatus === "completed") {{
+              const contactsFound = summary.personal_contacts_found || 0;
+              if (details.has_csv && downloadUrl) {{
+                const csvResponse = await fetch(downloadUrl, {{ method: "GET" }});
+                if (csvResponse.ok) {{
+                  const blob = await csvResponse.blob();
+                  const disposition = csvResponse.headers.get("content-disposition") || "";
+                  const match = disposition.match(/filename=\"([^\"]+)\"/);
+                  const filename = match ? match[1] : "instantly_upload.csv";
+                  const url = URL.createObjectURL(blob);
+                  const anchor = document.createElement("a");
+                  anchor.href = url;
+                  anchor.download = filename;
+                  document.body.appendChild(anchor);
+                  anchor.click();
+                  anchor.remove();
+                  URL.revokeObjectURL(url);
+                  status.textContent = `Lead build finished. CSV download started. Contacts selected: ${{contactsFound}}.`;
+                  return true;
+                }}
+              }}
+
+              status.textContent = summary.message || `Lead build finished. No CSV produced. Contacts selected: ${{contactsFound}}.`;
+              return true;
+            }}
+
+            if (runStatus === "failed") {{
+              status.textContent = details.error_message || "Lead build failed.";
+              return true;
+            }}
+
+            status.textContent = `Lead build running. Stage: ${{currentStage}}...`;
+            return false;
+          }};
+
+          for (let attempt = 0; attempt < 180; attempt += 1) {{
+            const done = await pollRun();
+            if (done) {{
+              return;
+            }}
+            await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          }}
+
+          status.textContent = "Lead build is still running. Refresh later to check the run status.";
         }} catch (error) {{
           status.textContent = "Lead build failed before a response came back.";
         }}

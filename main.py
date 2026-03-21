@@ -6,6 +6,7 @@ import os
 import re
 import time
 import unicodedata
+from concurrent.futures import Future, ThreadPoolExecutor
 from urllib.parse import parse_qs
 from base64 import b64decode, b64encode
 from dataclasses import dataclass, replace
@@ -33,11 +34,34 @@ from sales_support_agent.services.admin_dashboard import (
     render_executive_page,
     render_login_page,
 )
+from sales_support_agent.services.revenue_ops import (
+    append_daily_import_count_db,
+    append_processed_domains_db,
+    append_processed_heyreach_leads_db,
+    complete_lead_run,
+    create_lead_run,
+    fail_lead_run,
+    get_lead_run,
+    get_lead_run_csv,
+    load_apollo_attempts_db,
+    load_daily_import_counts_db,
+    load_processed_domains_db,
+    load_processed_heyreach_leads_db,
+    load_source_cursor_db,
+    mark_lead_run_started,
+    record_lead_run_item,
+    save_source_cursor_db,
+    update_lead_run_stage,
+    upsert_apollo_attempts_db,
+    upsert_lead_rows,
+)
 
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+LEAD_RUN_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lead-build")
+ACTIVE_LEAD_RUNS: dict[str, Future[Any]] = {}
 
 
 # ========= EXTERNAL ENDPOINTS =========
@@ -219,6 +243,10 @@ HEYREACH_PROCESSED_LEADS_FILE = os.getenv("HEYREACH_PROCESSED_LEADS_FILE", "heyr
 GITHUB_STATE_HEYREACH_LEADS_PATH = (
     os.getenv("GITHUB_STATE_HEYREACH_LEADS_PATH", "state/heyreach_processed_leads.csv").strip()
     or "state/heyreach_processed_leads.csv"
+)
+LEAD_ENGINE_USE_DB_STATE = os.getenv("LEAD_ENGINE_USE_DB_STATE", "true").strip().lower() in {"1", "true", "yes", "on"}
+LEAD_ENGINE_DB_CONFIGURED = bool(
+    os.getenv("LEAD_ENGINE_DB_URL", "").strip() or os.getenv("SALES_AGENT_DB_URL", "").strip()
 )
 
 
@@ -841,7 +869,11 @@ def apollo_org_cursor_path() -> Path:
     return Path(__file__).resolve().parent / configured_path
 
 
-def load_processed_domains() -> set[str]:
+def db_state_enabled() -> bool:
+    return LEAD_ENGINE_USE_DB_STATE and LEAD_ENGINE_DB_CONFIGURED
+
+
+def _legacy_load_processed_domains() -> set[str]:
     if github_state_enabled():
         try:
             content, _ = load_github_state_file(GITHUB_STATE_PROCESSED_DOMAINS_PATH)
@@ -871,7 +903,21 @@ def load_processed_domains() -> set[str]:
     return processed_domains
 
 
-def append_processed_domains(domains: set[str], run_date: str) -> None:
+def load_processed_domains() -> set[str]:
+    if db_state_enabled():
+        processed_domains = load_processed_domains_db()
+        if processed_domains:
+            logger.info("[State] backend=db processed_domains=%s", len(processed_domains))
+            return processed_domains
+        legacy_domains = _legacy_load_processed_domains()
+        if legacy_domains:
+            append_processed_domains_db(legacy_domains, "legacy-import")
+            logger.info("[State] backend=db migrated_processed_domains=%s", len(legacy_domains))
+        return legacy_domains
+    return _legacy_load_processed_domains()
+
+
+def _legacy_append_processed_domains(domains: set[str], run_date: str) -> None:
     if not domains:
         return
 
@@ -914,7 +960,17 @@ def append_processed_domains(domains: set[str], run_date: str) -> None:
             writer.writerow({"domain": domain, "date_added": run_date})
 
 
-def load_apollo_attempts() -> dict[str, dict[str, str]]:
+def append_processed_domains(domains: set[str], run_date: str) -> None:
+    if not domains:
+        return
+    if db_state_enabled():
+        append_processed_domains_db(domains, run_date)
+        logger.info("[State] backend=db appended_processed_domains=%s", len(domains))
+        return
+    _legacy_append_processed_domains(domains, run_date)
+
+
+def _legacy_load_apollo_attempts() -> dict[str, dict[str, str]]:
     if github_state_enabled():
         try:
             content, _ = load_github_state_file(GITHUB_STATE_APOLLO_ATTEMPTS_PATH)
@@ -944,7 +1000,21 @@ def load_apollo_attempts() -> dict[str, dict[str, str]]:
     return attempts
 
 
-def upsert_apollo_attempts(attempt_rows: list[dict[str, str]]) -> None:
+def load_apollo_attempts() -> dict[str, dict[str, str]]:
+    if db_state_enabled():
+        attempts = load_apollo_attempts_db()
+        if attempts:
+            logger.info("[State] backend=db apollo_attempt_domains=%s", len(attempts))
+            return attempts
+        legacy_attempts = _legacy_load_apollo_attempts()
+        if legacy_attempts:
+            upsert_apollo_attempts_db(list(legacy_attempts.values()))
+            logger.info("[State] backend=db migrated_apollo_attempts=%s", len(legacy_attempts))
+        return legacy_attempts
+    return _legacy_load_apollo_attempts()
+
+
+def _legacy_upsert_apollo_attempts(attempt_rows: list[dict[str, str]]) -> None:
     if not attempt_rows:
         return
 
@@ -999,7 +1069,17 @@ def upsert_apollo_attempts(attempt_rows: list[dict[str, str]]) -> None:
     path.write_text(write_csv_text(ordered_rows, fieldnames), encoding="utf-8")
 
 
-def load_apollo_org_cursor() -> int:
+def upsert_apollo_attempts(attempt_rows: list[dict[str, str]]) -> None:
+    if not attempt_rows:
+        return
+    if db_state_enabled():
+        upsert_apollo_attempts_db(attempt_rows)
+        logger.info("[State] backend=db upserted_apollo_attempts=%s", len(attempt_rows))
+        return
+    _legacy_upsert_apollo_attempts(attempt_rows)
+
+
+def _legacy_load_apollo_org_cursor() -> int:
     default_page = 1
 
     if github_state_enabled():
@@ -1034,7 +1114,22 @@ def load_apollo_org_cursor() -> int:
     return min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
 
 
-def save_apollo_org_cursor(next_page: int) -> None:
+def load_apollo_org_cursor() -> int:
+    default_page = 1
+    if db_state_enabled():
+        next_page = load_source_cursor_db("apollo_org_search", default_page)
+        if next_page != default_page:
+            logger.info("[State] backend=db apollo_org_next_page=%s", next_page)
+            return min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
+        legacy_page = _legacy_load_apollo_org_cursor()
+        if legacy_page != default_page:
+            save_source_cursor_db("apollo_org_search", legacy_page, {"migrated_from": "legacy"})
+            logger.info("[State] backend=db migrated_apollo_org_next_page=%s", legacy_page)
+        return min(max(legacy_page, 1), MAX_APOLLO_ORG_PAGES)
+    return _legacy_load_apollo_org_cursor()
+
+
+def _legacy_save_apollo_org_cursor(next_page: int) -> None:
     normalized_next_page = min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
     rows = [{"next_page": normalized_next_page, "last_updated": current_utc_timestamp()}]
     fieldnames = ["next_page", "last_updated"]
@@ -1054,6 +1149,19 @@ def save_apollo_org_cursor(next_page: int) -> None:
     path = apollo_org_cursor_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(write_csv_text(rows, fieldnames), encoding="utf-8")
+
+
+def save_apollo_org_cursor(next_page: int) -> None:
+    normalized_next_page = min(max(next_page, 1), MAX_APOLLO_ORG_PAGES)
+    if db_state_enabled():
+        save_source_cursor_db(
+            "apollo_org_search",
+            normalized_next_page,
+            {"last_updated": current_utc_timestamp()},
+        )
+        logger.info("[State] backend=db saved_apollo_org_next_page=%s", normalized_next_page)
+        return
+    _legacy_save_apollo_org_cursor(normalized_next_page)
 
 
 def domains_in_apollo_cooldown(apollo_attempts: dict[str, dict[str, str]], current_time: datetime) -> set[str]:
@@ -1097,7 +1205,7 @@ def build_heyreach_lead_key(campaign_id: str, linkedin_url: str) -> str:
     return f"{campaign_id.strip()}::{normalized_url}"
 
 
-def load_processed_heyreach_leads() -> set[str]:
+def _legacy_load_processed_heyreach_leads() -> set[str]:
     if github_state_enabled():
         try:
             content, _ = load_github_state_file(GITHUB_STATE_HEYREACH_LEADS_PATH)
@@ -1127,7 +1235,24 @@ def load_processed_heyreach_leads() -> set[str]:
     return processed_leads
 
 
-def append_processed_heyreach_leads(lead_rows: list[dict[str, str]], run_date: str) -> None:
+def load_processed_heyreach_leads() -> set[str]:
+    if db_state_enabled():
+        processed_leads = load_processed_heyreach_leads_db()
+        if processed_leads:
+            logger.info("[State] backend=db heyreach_processed_leads=%s", len(processed_leads))
+            return processed_leads
+        legacy_leads = _legacy_load_processed_heyreach_leads()
+        if legacy_leads:
+            append_processed_heyreach_leads_db(
+                [{"lead_key": lead_key, "campaign_id": "", "linkedin_url": ""} for lead_key in sorted(legacy_leads)],
+                "legacy-import",
+            )
+            logger.info("[State] backend=db migrated_heyreach_processed_leads=%s", len(legacy_leads))
+        return legacy_leads
+    return _legacy_load_processed_heyreach_leads()
+
+
+def _legacy_append_processed_heyreach_leads(lead_rows: list[dict[str, str]], run_date: str) -> None:
     if not lead_rows:
         return
 
@@ -1187,7 +1312,17 @@ def append_processed_heyreach_leads(lead_rows: list[dict[str, str]], run_date: s
             )
 
 
-def load_daily_import_counts() -> dict[str, int]:
+def append_processed_heyreach_leads(lead_rows: list[dict[str, str]], run_date: str) -> None:
+    if not lead_rows:
+        return
+    if db_state_enabled():
+        append_processed_heyreach_leads_db(lead_rows, run_date)
+        logger.info("[State] backend=db appended_heyreach_processed_leads=%s", len(lead_rows))
+        return
+    _legacy_append_processed_heyreach_leads(lead_rows, run_date)
+
+
+def _legacy_load_daily_import_counts() -> dict[str, int]:
     if github_state_enabled():
         try:
             content, _ = load_github_state_file(GITHUB_STATE_DAILY_IMPORTS_PATH)
@@ -1228,7 +1363,22 @@ def load_daily_import_counts() -> dict[str, int]:
     return counts_by_date
 
 
-def append_daily_import_count(run_date: str, imported_count: int) -> None:
+def load_daily_import_counts() -> dict[str, int]:
+    if db_state_enabled():
+        counts = load_daily_import_counts_db()
+        if counts:
+            logger.info("[State] backend=db daily_import_dates=%s", len(counts))
+            return counts
+        legacy_counts = _legacy_load_daily_import_counts()
+        if legacy_counts:
+            for date_key, imported_count in legacy_counts.items():
+                append_daily_import_count_db(date_key, imported_count)
+            logger.info("[State] backend=db migrated_daily_import_dates=%s", len(legacy_counts))
+        return legacy_counts
+    return _legacy_load_daily_import_counts()
+
+
+def _legacy_append_daily_import_count(run_date: str, imported_count: int) -> None:
     if imported_count <= 0:
         return
 
@@ -1257,6 +1407,16 @@ def append_daily_import_count(run_date: str, imported_count: int) -> None:
             writer.writeheader()
 
         writer.writerow({"date": run_date, "imported_count": imported_count})
+
+
+def append_daily_import_count(run_date: str, imported_count: int, run_id: str = "") -> None:
+    if imported_count <= 0:
+        return
+    if db_state_enabled():
+        append_daily_import_count_db(run_date, imported_count, run_id=run_id)
+        logger.info("[State] backend=db appended_daily_import_count=%s", imported_count)
+        return
+    _legacy_append_daily_import_count(run_date, imported_count)
 
 
 def clean_company_name(company_name: str) -> str:
@@ -2790,11 +2950,13 @@ CSV file attached below.
     response.raise_for_status()
 
 
-def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> LeadBuildExecutionResult:
+def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str, run_id: str = "") -> LeadBuildExecutionResult:
     settings = load_settings()
     validate_required_settings(settings)
 
     processed_domains = load_processed_domains()
+    if run_id:
+        update_lead_run_stage(run_id, "collecting_domains")
     collection_result = collect_domains(
         payload.max_domains,
         settings,
@@ -2821,6 +2983,16 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
         ENABLE_WEEKDAY_ONLY_IMPORTS,
     )
 
+    if run_id:
+        update_lead_run_stage(
+            run_id,
+            "enriching_contacts",
+            summary_patch={
+                "organizations_scanned": collection_result.raw_scanned,
+                "icp_matches": collection_result.qualified_matches_total,
+                "new_domains_considered": len(collection_result.domains),
+            },
+        )
     rows_result = build_csv_rows(
         collection_result.domains,
         payload.date,
@@ -2828,6 +3000,16 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
     )
     upsert_apollo_attempts(rows_result.apollo_attempt_rows)
 
+    if run_id:
+        update_lead_run_stage(
+            run_id,
+            "distributing_leads",
+            summary_patch={
+                "apollo_domains_attempted": rows_result.apollo_domains_attempted,
+                "apollo_contacts_found": rows_result.apollo_hits,
+                "personal_contacts_found": rows_result.successful_contacts,
+            },
+        )
     instantly_rows, scheduler_status = apply_daily_import_limit(rows_result.instantly_rows, payload.date)
     allowed_emails = {row.get("email", "") for row in instantly_rows if row.get("email")}
     linkedin_rows = [row for row in rows_result.linkedin_rows if row.get("email", "") in allowed_emails]
@@ -2850,11 +3032,21 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
     exported_domains = {normalize_domain(row.get("website", "")) for row in instantly_rows if row.get("website")}
     instantly_import_result = import_leads_to_instantly(instantly_rows, settings)
     heyreach_import_result = import_leads_to_heyreach(instantly_rows, payload.date, settings)
+    heyreach_lead_rows = [
+        {
+            "lead_key": build_heyreach_lead_key(settings.heyreach_campaign_id, row.get("linkedin_url", "")),
+            "campaign_id": settings.heyreach_campaign_id,
+            "linkedin_url": row.get("linkedin_url", ""),
+        }
+        for row in instantly_rows
+        if build_heyreach_lead_key(settings.heyreach_campaign_id, row.get("linkedin_url", ""))
+    ]
+    upsert_lead_rows(run_id or f"inline-{payload.date}", instantly_rows, heyreach_lead_rows)
     if instantly_rows and instantly_import_result.get("status") != "error":
         append_processed_domains(exported_domains, payload.date)
     created_count = int(instantly_import_result.get("created_count", 0) or 0)
     if created_count > 0:
-        append_daily_import_count(datetime.now().date().isoformat(), created_count)
+        append_daily_import_count(datetime.now().date().isoformat(), created_count, run_id=run_id)
 
     post_slack_summary(
         run_date=payload.date,
@@ -2899,6 +3091,63 @@ def execute_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> Le
         instantly_import_result=instantly_import_result,
         heyreach_import_result=heyreach_import_result,
     )
+
+
+def lead_run_summary_from_result(result: LeadBuildExecutionResult) -> dict[str, Any]:
+    return {
+        "organizations_scanned": result.raw_scanned,
+        "domains_scanned": result.raw_scanned,
+        "icp_matches": result.qualified_matches_total,
+        "new_domains_considered": result.qualified_domains_count,
+        "previously_processed_domains": result.previously_processed_domains,
+        "skipped_apollo_cooldown_domains": result.skipped_apollo_cooldown_domains,
+        "apollo_org_start_page": result.storeleads_start_page,
+        "apollo_org_end_page": result.storeleads_end_page,
+        "apollo_org_pages_scanned": result.storeleads_pages_scanned,
+        "apollo_domains_attempted": result.apollo_domains_queried,
+        "accepted_lead_target": result.accepted_lead_target,
+        "apollo_contacts_found": result.apollo_hits,
+        "personal_contacts_found": result.successful_contacts,
+        "instantly_import_result": result.instantly_import_result,
+        "heyreach_import_result": result.heyreach_import_result,
+        "scheduler_status": result.scheduler_status,
+        "has_csv": bool(result.instantly_rows),
+    }
+
+
+def enqueue_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> str:
+    run_id = create_lead_run(
+        trigger_source=scheduler_source,
+        run_date=payload.date,
+        max_domains=payload.max_domains,
+        request_payload=payload.model_dump(),
+    )
+
+    def _worker() -> None:
+        try:
+            mark_lead_run_started(run_id, "collecting_domains")
+            result = execute_lead_build(payload, scheduler_source=scheduler_source, run_id=run_id)
+            summary = lead_run_summary_from_result(result)
+            complete_lead_run(run_id, summary=summary, csv_content=result.instantly_csv if result.instantly_rows else "")
+        except Exception as exc:
+            logger.exception("[LeadRun] run failed run_id=%s", run_id)
+            fail_lead_run(
+                run_id,
+                stage="failed",
+                error_message=str(exc),
+                summary_patch={"error_type": type(exc).__name__},
+            )
+            raise
+        finally:
+            ACTIVE_LEAD_RUNS.pop(run_id, None)
+
+    future = LEAD_RUN_EXECUTOR.submit(_worker)
+    ACTIVE_LEAD_RUNS[run_id] = future
+    return run_id
+
+
+def fetch_lead_run_status(run_id: str) -> dict[str, Any] | None:
+    return get_lead_run(run_id)
 
 
 # ========= ROUTES =========
@@ -3094,6 +3343,22 @@ def health() -> dict[str, str]:
 @app.post("/run-lead-build", response_model=None)
 def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingResponse:
     scheduler_source = detect_scheduler_source(request)
+    enqueue_requested = (request.query_params.get("async") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    if enqueue_requested:
+        run_id = enqueue_lead_build(payload, scheduler_source=scheduler_source)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "queued",
+                "message": "Lead build queued.",
+                "details": {
+                    "run_id": run_id,
+                    "poll_url": f"/lead-runs/{run_id}",
+                    "download_url": f"/lead-runs/{run_id}/download",
+                },
+            },
+        )
 
     try:
         result = execute_lead_build(payload, scheduler_source=scheduler_source)
@@ -3138,3 +3403,31 @@ def run(payload: ICPBuildRequest, request: Request) -> JSONResponse | StreamingR
             status_code=500,
             content={"error_type": type(exc).__name__, "detail": str(exc)},
         )
+
+
+@app.get("/lead-runs/{run_id}")
+def lead_run_status(run_id: str) -> JSONResponse:
+    payload = fetch_lead_run_status(run_id)
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
+    return JSONResponse(status_code=200, content={"status": "ok", "message": "Lead run status loaded.", "details": payload})
+
+
+@app.get("/lead-runs/{run_id}/download", response_model=None)
+def lead_run_download(run_id: str) -> Response:
+    payload = fetch_lead_run_status(run_id)
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
+    if payload.get("status") != "completed":
+        return JSONResponse(status_code=409, content={"detail": "Lead run is not complete yet."})
+
+    csv_content = get_lead_run_csv(run_id)
+    if not csv_content:
+        return JSONResponse(status_code=404, content={"detail": "No CSV was produced for this run."})
+
+    filename_date = str(payload.get("run_date") or "lead_run")
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename=\"instantly_upload_{filename_date}.csv\"'},
+    )

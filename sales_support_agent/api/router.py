@@ -11,7 +11,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from main import (
     ICPBuildRequest as LeadBuildRequest,
-    execute_lead_build,
+    enqueue_lead_build,
+    fetch_lead_run_status,
+    get_lead_run_csv,
     get_missing_required_settings as get_missing_lead_builder_settings,
     load_settings as load_lead_builder_settings,
 )
@@ -285,26 +287,54 @@ async def admin_run_lead_build(request: Request) -> Response:
 
     payload = await request.json()
     build_request = LeadBuildRequest(**payload)
-    result = execute_lead_build(build_request, scheduler_source="admin_dashboard")
-    if not result.instantly_rows:
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "ok",
-                "message": "No valid personal contacts found for this run.",
-                "domains_scanned": result.raw_scanned,
-                "icp_matches": result.qualified_domains_count,
-                "apollo_contacts_found": result.apollo_hits,
-                "personal_contacts_found": result.successful_contacts,
+    run_id = enqueue_lead_build(build_request, scheduler_source="admin_dashboard")
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "queued",
+            "message": "Lead build queued.",
+            "details": {
+                "run_id": run_id,
+                "poll_url": f"/admin/api/lead-runs/{run_id}",
+                "download_url": f"/admin/api/lead-runs/{run_id}/download",
             },
-        )
-
-    return Response(
-        content=result.instantly_csv,
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="instantly_upload_{build_request.date}.csv"'
         },
+    )
+
+
+@router.get("/admin/api/lead-runs/{run_id}", response_model=None)
+def admin_lead_run_status(request: Request, run_id: str) -> JSONResponse:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    payload = fetch_lead_run_status(run_id)
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
+    return JSONResponse(status_code=200, content={"status": "ok", "message": "Lead run status loaded.", "details": payload})
+
+
+@router.get("/admin/api/lead-runs/{run_id}/download", response_model=None)
+def admin_lead_run_download(request: Request, run_id: str) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    payload = fetch_lead_run_status(run_id)
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
+    if payload.get("status") != "completed":
+        return JSONResponse(status_code=409, content={"detail": "Lead run is not complete yet."})
+
+    csv_content = get_lead_run_csv(run_id)
+    if not csv_content:
+        return JSONResponse(status_code=404, content={"detail": "No CSV was produced for this run."})
+
+    filename_date = str(payload.get("run_date") or "lead_run")
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename=\"instantly_upload_{filename_date}.csv\"'},
     )
 
 
