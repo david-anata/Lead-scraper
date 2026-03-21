@@ -2801,6 +2801,9 @@ def render_dashboard_page(data: DashboardData) -> str:
           startSyncPolling();
         }} else if (details.status === "skipped" && !syncReloadPending) {{
           syncStatus.textContent = details.message || "Board cache is still fresh.";
+        }} else if (!syncReloadPending) {{
+          syncReloadPending = true;
+          window.setTimeout(() => window.location.reload(), 900);
         }}
         return details;
       }}
