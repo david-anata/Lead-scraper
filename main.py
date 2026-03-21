@@ -81,7 +81,7 @@ HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
 
 # ========= RUNTIME CONFIG =========
 REQUEST_TIMEOUT_SECONDS = 60
-ADMIN_REMOTE_TIMEOUT_SECONDS = int((os.getenv("ADMIN_REMOTE_TIMEOUT_SECONDS", "8") or "8").strip())
+ADMIN_REMOTE_TIMEOUT_SECONDS = int((os.getenv("ADMIN_REMOTE_TIMEOUT_SECONDS", "30") or "30").strip())
 MAX_APOLLO_ORG_PAGES = int((os.getenv("MAX_APOLLO_ORG_PAGES", "100") or "100").strip())
 APOLLO_ORG_PAGE_SIZE = min(int((os.getenv("APOLLO_ORG_PAGE_SIZE", "100") or "100").strip()), 100)
 MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "120") or "120").strip())
@@ -542,27 +542,30 @@ def fetch_remote_dashboard_data() -> DashboardData:
             error_message="Sales support dashboard feed is not configured on this service.",
         )
 
-    try:
-        response = requests.get(
-            f"{admin_settings.sales_support_agent_url}/api/admin/dashboard-data",
-            headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
-            timeout=ADMIN_REMOTE_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        details = payload.get("details") or {}
-        dashboard = dashboard_data_from_dict(details)
-        return replace(
-            dashboard,
-            lead_builder_ready=not lead_builder_missing,
-            lead_builder_missing=lead_builder_missing,
-        )
-    except Exception as exc:
-        logger.exception("[AdminDashboard] remote data fetch failed")
-        return _build_empty_dashboard(
-            lead_builder_missing=lead_builder_missing,
-            error_message=f"Sales support dashboard feed unavailable: {exc}",
-        )
+    last_error: Exception | None = None
+    for timeout_seconds in (ADMIN_REMOTE_TIMEOUT_SECONDS, max(ADMIN_REMOTE_TIMEOUT_SECONDS, 60)):
+        try:
+            response = requests.get(
+                f"{admin_settings.sales_support_agent_url}/api/admin/dashboard-data",
+                headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            details = payload.get("details") or {}
+            dashboard = dashboard_data_from_dict(details)
+            return replace(
+                dashboard,
+                lead_builder_ready=not lead_builder_missing,
+                lead_builder_missing=lead_builder_missing,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.exception("[AdminDashboard] remote data fetch failed")
+    return _build_empty_dashboard(
+        lead_builder_missing=lead_builder_missing,
+        error_message=f"Sales support dashboard feed unavailable: {last_error}",
+    )
 
 
 def fetch_remote_executive_data() -> ExecutiveData:

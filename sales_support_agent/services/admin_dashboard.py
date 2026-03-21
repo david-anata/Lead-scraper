@@ -515,7 +515,6 @@ def build_dashboard_data(
 ) -> DashboardData:
     effective_date = as_of_date or date.today()
     reminder_service = ReminderService(settings, session)
-    comment_cache: dict[str, list[dict[str, object]]] = {}
 
     leads_query: Select[tuple[LeadMirror]] = (
         select(LeadMirror)
@@ -532,8 +531,7 @@ def build_dashboard_data(
     for lead in leads:
         if not (lead.status or "").strip():
             continue
-        comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
+        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
         if evaluation is None:
             continue
         active_lead_count += 1
@@ -700,7 +698,6 @@ def build_executive_data(
     effective_date = as_of_date or date.today()
     reminder_service = ReminderService(settings, session)
     active_statuses = set(settings.active_statuses)
-    comment_cache: dict[str, list[dict[str, object]]] = {}
 
     late_stage_status_keys = {
         "working qualified",
@@ -787,8 +784,7 @@ def build_executive_data(
         if not status or status_key not in active_statuses:
             continue
 
-        comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
+        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
         if evaluation is None:
             continue
 
@@ -1436,6 +1432,14 @@ def render_dashboard_page(data: DashboardData) -> str:
     )
     today_value = data.as_of_date.isoformat()
     latest_run_summary = data.latest_run_summary or {}
+    dashboard_error = str(latest_run_summary.get("dashboard_error", "") or "").strip()
+    dashboard_error_notice = (
+        '<div class="notice warning">Board data is temporarily unavailable. '
+        + html.escape(dashboard_error)
+        + "</div>"
+        if dashboard_error
+        else ""
+    )
     snapshot_rows = [
         _summary_row("Latest ClickUp sync", latest_sync),
         _summary_row("Stale scan status", latest_run_summary.get("status", "No stale scan recorded")),
@@ -2565,6 +2569,8 @@ def render_dashboard_page(data: DashboardData) -> str:
           </section>
         </section>
 
+        {dashboard_error_notice}
+
         <section class="meta-card utility-hub">
           <div class="card-title-line">
             <h2>Optional tools</h2>
@@ -2686,7 +2692,7 @@ def render_dashboard_page(data: DashboardData) -> str:
 
         <div class="filtered-empty" id="queue-empty-state">No queue items match the current filters. Try a different owner, urgency, or search term.</div>
 
-        {''.join(owner_sections) or '<section class="owner-card"><p class="empty">No owner queues yet. Run a sync or stale scan to populate the dashboard.</p></section>'}
+        {''.join(owner_sections) or f'<section class="owner-card"><p class="empty">{html.escape("No owner queues available because the board feed could not be loaded yet." if dashboard_error else "No owner queues yet. Run a sync or stale scan to populate the dashboard.")}</p></section>'}
       </div>
     </div>
     <div class="footer-bar" aria-hidden="true"></div>

@@ -155,57 +155,36 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("/admin/api/create-gmail-drafts", html)
         self.assertIn("OPEN GMAIL DRAFTS", html)
 
-    def test_dashboard_comment_counts_as_meaningful_touch(self) -> None:
+    def test_dashboard_render_shows_feed_error_notice(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
-
-        with session_scope(session_factory) as session:
-            session.add(
-                LeadMirror(
-                    clickup_task_id="task-2",
-                    list_id="list-123",
-                    task_name="Initech",
-                    task_url="https://app.clickup.com/t/task-2",
-                    status="new lead",
-                    assignee_id="owner-2",
-                    assignee_name="Gabe Smedley",
-                    created_at=datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc),
-                    last_sync_at=datetime(2026, 3, 14, 11, 0, tzinfo=timezone.utc),
-                )
-            )
-
-        settings = SimpleNamespace(
-            clickup_list_id="list-123",
-            active_statuses=(normalize_status_key("new lead"),),
-            inactive_statuses=(),
-            status_policies=build_normalized_status_policies(DEFAULT_STATUS_POLICIES),
-            slack_assignee_map={},
-            stale_lead_immediate_alert_urgencies=(),
-            stale_lead_slack_digest_max_items=20,
-            stale_lead_slack_digest_mention_channel=False,
-        )
-        clickup_client = self._FakeClickUpClient(
-            comments_by_task={
-                "task-2": [
-                    {
-                        "comment_text": "Reached out and left a voicemail.",
-                        "date": str(int(datetime(2026, 3, 13, 18, 0, tzinfo=timezone.utc).timestamp() * 1000)),
-                    }
-                ]
+        dashboard = dashboard_data_from_dict(
+            {
+                "as_of_date": "2026-03-14",
+                "total_active_leads": 0,
+                "stale_counts": {"overdue": 0, "needs_immediate_review": 0, "follow_up_due": 0},
+                "mailbox_findings": 0,
+                "owner_queues": [],
+                "latest_sync_at": None,
+                "latest_run_summary": {"dashboard_error": "Sales support dashboard feed unavailable: timed out"},
+                "sync_auto_enabled": False,
+                "sync_stale_after_minutes": 0,
+                "lead_builder_ready": True,
+                "lead_builder_missing": [],
+                "deck_generator_ready": False,
+                "deck_generator_missing": [],
+                "deck_canva_connected": False,
+                "deck_canva_display_name": "",
+                "deck_canva_capabilities": {"autofill": False, "brand_template": False},
+                "deck_google_source": "",
+                "deck_template_id": "",
+                "recent_deck_runs": [],
             }
         )
 
-        with session_scope(session_factory) as session:
-            dashboard = build_dashboard_data(
-                settings=settings,
-                session=session,
-                lead_builder_status={"ready": True, "missing": []},
-                clickup_client=clickup_client,
-                as_of_date=date(2026, 3, 14),
-            )
-
-        self.assertEqual(dashboard.stale_counts["overdue"], 0)
-        self.assertEqual(dashboard.stale_counts["follow_up_due"], 0)
+        html = render_dashboard_page(dashboard)
+        self.assertIn("Board data is temporarily unavailable.", html)
+        self.assertIn("No owner queues available because the board feed could not be loaded yet.", html)
 
 
 if __name__ == "__main__":
