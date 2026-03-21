@@ -162,6 +162,45 @@ class CommunicationServiceTests(unittest.TestCase):
         finally:
             session.close()
 
+    def test_communication_outputs_split_slack_and_clickup_voice(self) -> None:
+        session = self.session_factory()
+        clickup_client = _FakeClickUpClient()
+        slack_client = _FakeSlackClient()
+        payload = CommunicationEventRequest(
+            task_id="task-123",
+            event_type="inbound_reply_received",
+            external_event_key="evt-voice",
+            occurred_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+            summary="Prospect replied and asked for pricing.",
+            recommended_next_action="Send pricing and confirm timeline.",
+            suggested_reply_draft="Thanks for the reply. I can send pricing today.",
+            source="gmail",
+            metadata={"classification": "pricing_or_offer_request"},
+        )
+
+        try:
+            with patch("sales_support_agent.services.communications.ClickUpSyncService") as sync_service_cls:
+                sync_service_cls.return_value.sync_task.return_value = SimpleNamespace(status="CONTACTED WARM")
+
+                service = CommunicationService(self.settings, clickup_client, slack_client, session)
+                service.process_event(payload)
+
+            self.assertEqual(len(clickup_client.created_comments), 1)
+            self.assertEqual(len(slack_client.messages), 1)
+
+            comment_text = clickup_client.created_comments[0][1]
+            slack_text = str(slack_client.messages[0]["text"])
+
+            self.assertIn("[Sales Support Agent] Activity logged.", comment_text)
+            self.assertIn("Recommended next step:", comment_text)
+            self.assertNotIn("Suggested reply:", comment_text)
+
+            self.assertIn("you have a new reply", slack_text.lower())
+            self.assertIn("Best next move:", slack_text)
+            self.assertIn("Draft idea:", slack_text)
+        finally:
+            session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

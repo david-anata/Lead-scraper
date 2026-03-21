@@ -20,7 +20,6 @@ from sales_support_agent.services.field_mapping import (
     resolve_managed_fields,
     serialize_clickup_date,
 )
-from sales_support_agent.services.notification_policy import build_clickup_owner_reference
 from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
 from sales_support_agent.services.sync import ClickUpSyncService
 
@@ -209,22 +208,18 @@ class CommunicationService:
         return None
 
     def _build_comment_text(self, task: dict[str, Any], payload: CommunicationEventRequest, occurred_at: datetime, signature: str) -> str:
-        assignee = (task.get("assignees") or [{}])[0] or {}
-        assignee_name = str(assignee.get("username") or assignee.get("email") or "")
-        owner_reference = build_clickup_owner_reference(assignee_name)
         classification = str(payload.metadata.get("classification") or payload.event_type)
         parts = [
-            f"[Sales Support Agent] {owner_reference} {EVENT_LABELS[payload.event_type].lower()}.",
+            f"[Sales Support Agent] Activity logged.",
             f"Date: {format_date_label(occurred_at)}",
+            f"Event: {EVENT_LABELS[payload.event_type]}",
         ]
         if payload.summary:
-            parts.append(f"Action summary: {payload.summary}")
+            parts.append(f"Summary: {payload.summary}")
         if payload.outcome:
             parts.append(f"Outcome: {payload.outcome}")
         if payload.recommended_next_action:
-            parts.append(f"Next step: {payload.recommended_next_action}")
-        if payload.suggested_reply_draft:
-            parts.append(f"Suggested reply: {payload.suggested_reply_draft}")
+            parts.append(f"Recommended next step: {payload.recommended_next_action}")
         if payload.suggested_status:
             parts.append(f"Suggested status: {payload.suggested_status}")
         parts.append(f"Classification: {classification}")
@@ -254,14 +249,13 @@ class CommunicationService:
         assignee_name = str(assignee.get("username") or assignee.get("email") or "Assigned AE")
         slack_user = self.settings.slack_assignee_map.get(assignee_id) or self.settings.slack_assignee_map.get(assignee_name)
         mention = f"<@{slack_user}>" if slack_user else assignee_name
-        date_label = format_date_label(occurred_at)
         action_summary = payload.summary or payload.recommended_next_action or "Lead activity needs review."
         draft = trim_for_slack(payload.suggested_reply_draft or "", limit=140)
         text = (
-            f"{mention} {date_label} | {task.get('name', 'Lead')} | "
-            f"{trim_for_slack(action_summary, limit=140)} | "
-            f"next: {payload.recommended_next_action or 'Review and respond.'}"
-            f"{f' | draft: {draft}' if draft else ''} "
+            f"{mention} you have a new reply on {task.get('name', 'Lead')}. "
+            f"{trim_for_slack(action_summary, limit=140)} "
+            f"Best next move: {trim_for_slack(payload.recommended_next_action or 'Review and respond.', limit=120)}."
+            f"{f' Draft idea: {draft}.' if draft else ''} "
             f"{task.get('url', '')}"
         )
         return self.slack_client.post_message(text=text)
@@ -273,8 +267,9 @@ class CommunicationService:
         slack_user = self.settings.slack_assignee_map.get(assignee_id) or self.settings.slack_assignee_map.get(assignee_name)
         mention = f"<@{slack_user}>" if slack_user else assignee_name
         text = (
-            f"{mention} {format_date_label(datetime.now(timezone.utc))} | {task.get('name', 'Lead')} | meeting notes still missing. "
-            f"Next step: log the meeting outcome and next follow-up in ClickUp. {task.get('url', '')}"
+            f"{mention} {task.get('name', 'Lead')} still needs meeting notes. "
+            f"Please log the outcome and next follow-up in ClickUp so the queue stays accurate. "
+            f"{task.get('url', '')}"
         )
         return self.slack_client.post_message(text=text)
 

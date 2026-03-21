@@ -17,7 +17,6 @@ from sales_support_agent.services.notification_policy import (
     STALE_URGENCY_LABELS,
     STALE_URGENCY_ORDER,
     classify_stale_assessment_state,
-    build_clickup_owner_reference,
     determine_stale_notification_mode,
 )
 from sales_support_agent.services.reply_templates import (
@@ -117,9 +116,16 @@ class ReminderService:
             next_step=evaluation.assessment.recommended_next_action,
             as_of_date=evaluation.assessment.anchor_date,
         )
+        opener = {
+            "overdue": "needs attention now",
+            "needs_immediate_review": "needs a decision",
+            "follow_up_due": "is ready for follow-up",
+        }.get(self._urgency_key(evaluation), "needs review")
         text = (
-            f"{mention} {format_date_label(evaluation.assessment.anchor_date)} | {lead.task_name} | "
-            f"{trim_for_slack(action_summary)} | draft: {trim_for_slack(suggested_reply)} {lead.task_url}"
+            f"{mention} {lead.task_name} {opener}. "
+            f"{trim_for_slack(action_summary, limit=120)} "
+            f"Next move: {trim_for_slack(evaluation.assessment.recommended_next_action or 'Review and decide the next step.', limit=110)} "
+            f"{lead.task_url}"
         )
         blocks = [
             {
@@ -127,12 +133,13 @@ class ReminderService:
                 "text": {
                     "type": "mrkdwn",
                     "text": (
-                        f"{mention} *{urgency_label}: {lead.task_name}*\n"
-                        f"*Date:* {format_date_label(evaluation.assessment.anchor_date)}\n"
+                        f"{mention} *{lead.task_name}* {opener}.\n"
+                        f"*Priority:* {urgency_label}\n"
                         f"*Status:* {lead.status}\n"
                         f"*Last meaningful touch:* {last_touch}\n"
-                        f"*Action summary:* {action_summary}\n"
-                        f"*Suggested reply:* {suggested_reply}\n"
+                        f"*What matters:* {action_summary}\n"
+                        f"*Best next move:* {evaluation.assessment.recommended_next_action or 'Review and decide the next step.'}\n"
+                        f"*Draft idea:* {suggested_reply}\n"
                         f"<{lead.task_url}|Open ClickUp task>"
                     ),
                 },
@@ -187,7 +194,7 @@ class ReminderService:
         intro_prefix = "<!channel> " if self.settings.stale_lead_slack_digest_mention_channel else ""
         intro = (
             f"{intro_prefix}*SDR Support Digest*\n"
-            f"{total_items} leads need attention from the latest stale scan."
+            f"{total_items} leads currently need action."
         )
         summary_lines = [
             f"*{STALE_URGENCY_LABELS[urgency]}:* {urgency_counts.get(urgency, 0)}"
@@ -220,9 +227,9 @@ class ReminderService:
                 continue
             lines = [
                 (
-                    f"- {item.owner_display} | *{item.evaluation.lead.task_name}* | {item.evaluation.lead.status} | "
-                    f"{format_date_label(item.evaluation.assessment.anchor_date)} | {item.action_summary} | "
-                    f"draft: {trim_for_slack(item.suggested_reply_draft, limit=120)} "
+                    f"- {item.owner_display}: *{item.evaluation.lead.task_name}* needs a move. "
+                    f"{trim_for_slack(item.action_summary, limit=140)} "
+                    f"Next: {trim_for_slack(item.evaluation.assessment.recommended_next_action or 'Review and decide the next step.', limit=120)} "
                     f"<{item.evaluation.lead.task_url}|Open>"
                 )
                 for item in urgency_items
@@ -250,17 +257,17 @@ class ReminderService:
         return {"text": fallback, "blocks": sections}
 
     def build_agent_comment(self, evaluation: LeadEvaluation) -> str:
-        owner_reference = build_clickup_owner_reference(evaluation.lead.assignee_name)
         last_touch = self._last_touch_label(evaluation.last_meaningful_touch_at)
         urgency_label = self._urgency_label(evaluation)
         signature = self.build_agent_comment_signature(evaluation)
         return (
-            f"{AGENT_COMMENT_PREFIX} {owner_reference} {urgency_label.lower()} for this lead.\n"
+            f"{AGENT_COMMENT_PREFIX} Follow-up state updated.\n"
             f"Date: {format_date_label(evaluation.assessment.anchor_date)}\n"
-            f"Why it matters: {evaluation.assessment.reason}\n"
+            f"Priority: {urgency_label}\n"
+            f"Status: {evaluation.lead.status}\n"
+            f"Reason: {evaluation.assessment.reason}\n"
             f"Last meaningful touch: {last_touch}\n"
-            f"Next step: {evaluation.assessment.recommended_next_action}\n"
-            f"Suggested reply: {build_stale_reply_draft(task_name=evaluation.lead.task_name, status=evaluation.lead.status, next_step=evaluation.assessment.recommended_next_action, as_of_date=evaluation.assessment.anchor_date)}\n"
+            f"Recommended next step: {evaluation.assessment.recommended_next_action}\n"
             f"{AGENT_COMMENT_SIGNATURE_PREFIX} {signature}"
         )
 

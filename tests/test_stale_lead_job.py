@@ -258,6 +258,23 @@ class StaleLeadJobTests(unittest.TestCase):
         finally:
             session.close()
 
+    def test_agent_comment_uses_neutral_clickup_voice(self) -> None:
+        self._insert_lead()
+        session = self.session_factory()
+        try:
+            lead = session.query(LeadMirror).filter(LeadMirror.clickup_task_id == "task-123").one()
+            reminder_service = ReminderService(self.settings, session)
+            evaluation = reminder_service.evaluate_lead(lead, as_of_date=date(2026, 3, 13), comments=[])
+            assert evaluation is not None
+
+            comment_text = reminder_service.build_agent_comment(evaluation)
+
+            self.assertIn("[Sales Support Agent] Follow-up state updated.", comment_text)
+            self.assertIn("Recommended next step:", comment_text)
+            self.assertNotIn("Suggested reply:", comment_text)
+        finally:
+            session.close()
+
     def test_run_skips_duplicate_digest_for_same_date(self) -> None:
         self._insert_lead()
         session = self.session_factory()
