@@ -529,12 +529,16 @@ def build_dashboard_data(
     active_lead_count = 0
 
     for lead in leads:
-        if not (lead.status or "").strip():
+        status = (lead.status or "").strip()
+        status_key = normalize_status_key(status)
+        if not status:
             continue
+        if status_key in settings.inactive_statuses or status_key not in settings.active_statuses:
+            continue
+        active_lead_count += 1
         evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
         if evaluation is None:
             continue
-        active_lead_count += 1
         digest_item = reminder_service.build_digest_item(evaluation)
         stale_counts[digest_item.urgency] += 1
         owner_name = digest_item.owner_label or "Assigned AE"
@@ -1439,6 +1443,15 @@ def render_dashboard_page(data: DashboardData) -> str:
         + "</div>"
         if dashboard_error
         else ""
+    )
+    empty_queue_message = (
+        "No owner queues available because the board feed could not be loaded yet."
+        if dashboard_error
+        else (
+            f"{data.total_active_leads} active leads are synced, but none currently require follow-up."
+            if data.total_active_leads
+            else "No owner queues yet. Run a sync or stale scan to populate the dashboard."
+        )
     )
     snapshot_rows = [
         _summary_row("Latest ClickUp sync", latest_sync),
@@ -2692,7 +2705,7 @@ def render_dashboard_page(data: DashboardData) -> str:
 
         <div class="filtered-empty" id="queue-empty-state">No queue items match the current filters. Try a different owner, urgency, or search term.</div>
 
-        {''.join(owner_sections) or f'<section class="owner-card"><p class="empty">{html.escape("No owner queues available because the board feed could not be loaded yet." if dashboard_error else "No owner queues yet. Run a sync or stale scan to populate the dashboard.")}</p></section>'}
+        {''.join(owner_sections) or f'<section class="owner-card"><p class="empty">{html.escape(empty_queue_message)}</p></section>'}
       </div>
     </div>
     <div class="footer-bar" aria-hidden="true"></div>

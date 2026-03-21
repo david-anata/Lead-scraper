@@ -125,6 +125,50 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertEqual(rebuilt.lead_builder_missing, ["STORELEADS_API_KEY"])
         self.assertFalse(rebuilt.deck_canva_connected)
 
+    def test_dashboard_counts_active_leads_even_without_queue_items(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        with session_scope(session_factory) as session:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-3",
+                    list_id="list-123",
+                    task_name="Umbrella",
+                    task_url="https://app.clickup.com/t/task-3",
+                    status="working offered",
+                    assignee_id="owner-3",
+                    assignee_name="Taylor Kent",
+                    created_at=datetime(2026, 3, 14, 12, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 14, 12, 5, tzinfo=timezone.utc),
+                    last_meaningful_touch_at=datetime(2026, 3, 14, 12, 30, tzinfo=timezone.utc),
+                    next_follow_up_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+                )
+            )
+
+        settings = SimpleNamespace(
+            clickup_list_id="list-123",
+            active_statuses=(normalize_status_key("working offered"),),
+            inactive_statuses=(),
+            status_policies=build_normalized_status_policies(DEFAULT_STATUS_POLICIES),
+            slack_assignee_map={},
+            stale_lead_immediate_alert_urgencies=(),
+            stale_lead_slack_digest_max_items=20,
+            stale_lead_slack_digest_mention_channel=False,
+        )
+
+        with session_scope(session_factory) as session:
+            dashboard = build_dashboard_data(
+                settings=settings,
+                session=session,
+                lead_builder_status={"ready": True, "missing": []},
+                clickup_client=self._FakeClickUpClient(),
+                as_of_date=date(2026, 3, 14),
+            )
+
+        self.assertEqual(dashboard.total_active_leads, 1)
+        self.assertEqual(len(dashboard.owner_queues), 0)
+
     def test_dashboard_render_includes_deck_generator_and_gmail_draft_controls(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
