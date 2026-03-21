@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
+from threading import Lock
 
 from fastapi import FastAPI
 
@@ -20,6 +22,12 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Sales Support Agent")
     app.state.settings = settings
     app.state.session_factory = session_factory
+    app.state.dashboard_sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dashboard-sync")
+    app.state.dashboard_sync_lock = Lock()
+    app.state.dashboard_sync_future = None
+    app.state.dashboard_sync_last_started_at = None
+    app.state.dashboard_sync_last_completed_at = None
+    app.state.dashboard_sync_last_error = ""
     app.include_router(router)
     return app
 

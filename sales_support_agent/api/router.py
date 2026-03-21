@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from sqlalchemy import func, select
 
 from main import (
     ICPBuildRequest as LeadBuildRequest,
@@ -27,6 +29,7 @@ from sales_support_agent.jobs.daily_digest import DailyDigestJob
 from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
 from sales_support_agent.jobs.stale_leads import StaleLeadJob
 from sales_support_agent.models.database import session_scope
+from sales_support_agent.models.entities import LeadMirror
 from sales_support_agent.models.schemas import (
     ApiMessage,
     CommunicationEventRequest,
@@ -62,6 +65,7 @@ from sales_support_agent.services.sync import ClickUpSyncService
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _enforce_api_key(request: Request, internal_api_key: str | None) -> None:
@@ -116,6 +120,119 @@ def _admin_cookie_options(request: Request) -> dict[str, object]:
 
 def _canva_oauth_cookie_name(request: Request) -> str:
     return f"{request.app.state.settings.admin_cookie_name}_canva_oauth"
+
+
+def _normalize_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _latest_clickup_sync_at(request: Request) -> datetime | None:
+    with session_scope(request.app.state.session_factory) as session:
+        latest_sync = session.execute(select(func.max(LeadMirror.last_sync_at))).scalar_one_or_none()
+    return _normalize_utc(latest_sync)
+
+
+def _dashboard_sync_is_stale(request: Request, latest_sync_at: datetime | None) -> bool:
+    if latest_sync_at is None:
+        return True
+    max_age = max(1, request.app.state.settings.dashboard_auto_sync_max_age_minutes)
+    return datetime.now(timezone.utc) - latest_sync_at >= timedelta(minutes=max_age)
+
+
+def _dashboard_sync_details(request: Request) -> dict[str, object]:
+    latest_sync_at = _latest_clickup_sync_at(request)
+    with request.app.state.dashboard_sync_lock:
+        future = request.app.state.dashboard_sync_future
+        running = bool(future and not future.done())
+        last_started_at = request.app.state.dashboard_sync_last_started_at
+        last_completed_at = request.app.state.dashboard_sync_last_completed_at
+        last_error = request.app.state.dashboard_sync_last_error
+    stale = _dashboard_sync_is_stale(request, latest_sync_at)
+    message = (
+        f"Sync running in the background. Last full board refresh was {_normalize_utc(last_started_at).isoformat() if last_started_at else 'recently queued'}."
+        if running
+        else (
+            f"Board cache is stale. Auto-refresh kicks in after {request.app.state.settings.dashboard_auto_sync_max_age_minutes} minutes."
+            if stale
+            else "Board cache is fresh."
+        )
+    )
+    if last_error and not running:
+        message = f"Last sync failed: {last_error}"
+    return {
+        "running": running,
+        "stale": stale,
+        "latest_sync_at": latest_sync_at.isoformat() if latest_sync_at else "",
+        "last_started_at": _normalize_utc(last_started_at).isoformat() if last_started_at else "",
+        "last_completed_at": _normalize_utc(last_completed_at).isoformat() if last_completed_at else "",
+        "last_error": last_error,
+        "auto_sync_enabled": request.app.state.settings.dashboard_auto_sync_enabled,
+        "max_age_minutes": max(1, request.app.state.settings.dashboard_auto_sync_max_age_minutes),
+        "message": message,
+    }
+
+
+def _run_dashboard_sync(app: object, *, trigger: str) -> dict[str, object]:
+    settings = app.state.settings
+    with session_scope(app.state.session_factory) as session:
+        clickup_summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
+        stale_summary = StaleLeadJob(settings, ClickUpClient(settings), SlackClient(settings), session).run(dry_run=True)
+    return {
+        "clickup_sync": clickup_summary,
+        "stale_lead_scan": stale_summary,
+        "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
+        "trigger": trigger,
+    }
+
+
+def _dashboard_sync_worker(app: object, *, trigger: str) -> None:
+    try:
+        _run_dashboard_sync(app, trigger=trigger)
+        with app.state.dashboard_sync_lock:
+            app.state.dashboard_sync_last_completed_at = datetime.now(timezone.utc)
+            app.state.dashboard_sync_last_error = ""
+        logger.info("dashboard sync completed trigger=%s", trigger)
+    except Exception as exc:
+        logger.exception("dashboard sync failed trigger=%s", trigger)
+        with app.state.dashboard_sync_lock:
+            app.state.dashboard_sync_last_completed_at = datetime.now(timezone.utc)
+            app.state.dashboard_sync_last_error = str(exc)
+    finally:
+        with app.state.dashboard_sync_lock:
+            app.state.dashboard_sync_future = None
+
+
+def _start_dashboard_sync(request: Request, *, trigger: str, force: bool) -> dict[str, object]:
+    latest_sync_at = _latest_clickup_sync_at(request)
+    stale = _dashboard_sync_is_stale(request, latest_sync_at)
+    status: str
+    message: str
+    with request.app.state.dashboard_sync_lock:
+        future = request.app.state.dashboard_sync_future
+        if future and not future.done():
+            status = "running"
+            message = "Dashboard sync is already running in the background."
+        elif not force and not stale:
+            status = "skipped"
+            message = "Board cache is still fresh. No sync was needed."
+        else:
+            request.app.state.dashboard_sync_last_started_at = datetime.now(timezone.utc)
+            request.app.state.dashboard_sync_last_error = ""
+            request.app.state.dashboard_sync_future = request.app.state.dashboard_sync_executor.submit(
+                _dashboard_sync_worker,
+                request.app,
+                trigger=trigger,
+            )
+            status = "running"
+            message = "Dashboard sync started in the background."
+    details = _dashboard_sync_details(request)
+    details["status"] = status
+    details["message"] = message
+    return details
 
 
 def _canva_oauth_cookie_options(request: Request) -> dict[str, object]:
@@ -214,6 +331,8 @@ def admin_dashboard(request: Request) -> Response:
             lead_builder_status=_lead_builder_status(),
             clickup_client=ClickUpClient(settings),
         )
+    if settings.dashboard_auto_sync_enabled:
+        _start_dashboard_sync(request, trigger="admin_page_load", force=False)
     return HTMLResponse(render_dashboard_page(dashboard))
 
 
@@ -339,25 +458,55 @@ def admin_lead_run_download(request: Request, run_id: str) -> Response:
 
 
 @router.post("/admin/api/sync-dashboard", response_model=None)
-def admin_sync_dashboard(request: Request) -> JSONResponse:
+def admin_sync_dashboard(
+    request: Request,
+    background: bool = True,
+    only_if_stale: bool = False,
+) -> JSONResponse:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
-    settings = request.app.state.settings
-    with session_scope(request.app.state.session_factory) as session:
-        clickup_summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
-        stale_summary = StaleLeadJob(settings, ClickUpClient(settings), SlackClient(settings), session).run(dry_run=True)
+    if background:
+        details = _start_dashboard_sync(
+            request,
+            trigger="admin_manual_sync" if not only_if_stale else "admin_auto_sync",
+            force=not only_if_stale,
+        )
+        status_code = 202 if details.get("running") else 200
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": details.get("status", "ok"),
+                "message": str(details.get("message", "Dashboard sync requested.")),
+                "details": details,
+            },
+        )
+
+    details = _run_dashboard_sync(request.app, trigger="admin_manual_sync")
     return JSONResponse(
         status_code=200,
         content={
             "status": "ok",
             "message": "Dashboard sync completed.",
-            "details": {
-                "clickup_sync": clickup_summary,
-                "stale_lead_scan": stale_summary,
-                "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
-            },
+            "details": details,
+        },
+    )
+
+
+@router.get("/admin/api/sync-dashboard/status", response_model=None)
+def admin_sync_dashboard_status(request: Request) -> JSONResponse:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    details = _dashboard_sync_details(request)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ok",
+            "message": str(details.get("message", "Dashboard sync status loaded.")),
+            "details": details,
         },
     )
 

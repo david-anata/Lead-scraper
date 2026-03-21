@@ -52,6 +52,8 @@ class DashboardData:
     owner_queues: list[DashboardOwnerQueue]
     latest_sync_at: datetime | None
     latest_run_summary: dict
+    sync_auto_enabled: bool
+    sync_stale_after_minutes: int
     lead_builder_ready: bool
     lead_builder_missing: list[str]
     deck_generator_ready: bool
@@ -175,6 +177,8 @@ def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
         ],
         "latest_sync_at": data.latest_sync_at.isoformat() if data.latest_sync_at else "",
         "latest_run_summary": data.latest_run_summary,
+        "sync_auto_enabled": data.sync_auto_enabled,
+        "sync_stale_after_minutes": data.sync_stale_after_minutes,
         "lead_builder_ready": data.lead_builder_ready,
         "lead_builder_missing": data.lead_builder_missing,
         "deck_generator_ready": data.deck_generator_ready,
@@ -228,6 +232,8 @@ def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
         owner_queues=owner_queues,
         latest_sync_at=latest_sync_at,
         latest_run_summary=dict(payload.get("latest_run_summary", {})),
+        sync_auto_enabled=bool(payload.get("sync_auto_enabled", True)),
+        sync_stale_after_minutes=int(payload.get("sync_stale_after_minutes", 30) or 30),
         lead_builder_ready=bool(payload.get("lead_builder_ready")),
         lead_builder_missing=[str(item) for item in payload.get("lead_builder_missing", [])],
         deck_generator_ready=bool(payload.get("deck_generator_ready")),
@@ -665,6 +671,8 @@ def build_dashboard_data(
         owner_queues=owner_queues,
         latest_sync_at=latest_sync_at,
         latest_run_summary=latest_run_summary,
+        sync_auto_enabled=settings.dashboard_auto_sync_enabled,
+        sync_stale_after_minutes=max(1, settings.dashboard_auto_sync_max_age_minutes),
         lead_builder_ready=bool(lead_builder_status.get("ready")),
         lead_builder_missing=[str(item) for item in lead_builder_status.get("missing", [])],
         deck_generator_ready=not deck_generator_missing,
@@ -1413,6 +1421,12 @@ def render_dashboard_page(data: DashboardData) -> str:
         )
 
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
+    latest_sync_iso = data.latest_sync_at.isoformat() if data.latest_sync_at else ""
+    sync_status_initial = (
+        f"Using cached board from {html.escape(latest_sync)}. Auto-refresh runs when the mirror is stale."
+        if data.sync_auto_enabled
+        else "Ready."
+    )
     lead_builder_notice = (
         '<div class="notice warning">Lead builder is missing env vars: '
         + html.escape(", ".join(data.lead_builder_missing))
@@ -2506,9 +2520,9 @@ def render_dashboard_page(data: DashboardData) -> str:
               <h3>Sync data</h3>
               {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
             </div>
-            <p>Refresh the board before reviews so the queue reflects the latest ClickUp state.</p>
-            <button id="sync-dashboard-button" type="button">SYNC DATA</button>
-            <div class="status-line" id="sync-status">Ready.</div>
+            <p>The board loads from the last cached ClickUp sync and refreshes itself when that cache gets stale.</p>
+            <button id="sync-dashboard-button" type="button">REFRESH NOW</button>
+            <div class="status-line" id="sync-status">{sync_status_initial}</div>
           </div>
 
           <div class="panel-card" id="lead-pull-panel">
@@ -2679,6 +2693,9 @@ def render_dashboard_page(data: DashboardData) -> str:
     <script>
       const syncButton = document.getElementById("sync-dashboard-button");
       const syncStatus = document.getElementById("sync-status");
+      const latestSyncIso = {json.dumps(latest_sync_iso)};
+      const dashboardAutoSyncEnabled = {json.dumps(data.sync_auto_enabled)};
+      const dashboardSyncMaxAgeMinutes = {int(data.sync_stale_after_minutes)};
       const form = document.getElementById("lead-build-form");
       const status = document.getElementById("run-status");
       const deckForm = document.getElementById("deck-generator-form");
@@ -2695,6 +2712,79 @@ def render_dashboard_page(data: DashboardData) -> str:
       const queueEmptyState = document.getElementById("queue-empty-state");
       const urgencyButtons = document.querySelectorAll("#urgency-filter .filter-button");
       let activeUrgency = "all";
+      let syncStatusPollHandle = null;
+      let syncReloadPending = false;
+
+      function latestSyncLooksStale() {{
+        if (!latestSyncIso) {{
+          return true;
+        }}
+        const parsed = new Date(latestSyncIso);
+        if (Number.isNaN(parsed.getTime())) {{
+          return true;
+        }}
+        return (Date.now() - parsed.getTime()) > dashboardSyncMaxAgeMinutes * 60 * 1000;
+      }}
+
+      async function fetchSyncStatus() {{
+        const response = await fetch("/admin/api/sync-dashboard/status", {{ method: "GET" }});
+        const payload = await response.json().catch(() => ({{ detail: "Unable to load sync status." }}));
+        if (!response.ok) {{
+          throw new Error(payload.detail || "Unable to load sync status.");
+        }}
+        return payload.details || {{}};
+      }}
+
+      function stopSyncPolling() {{
+        if (syncStatusPollHandle) {{
+          window.clearInterval(syncStatusPollHandle);
+          syncStatusPollHandle = null;
+        }}
+      }}
+
+      function startSyncPolling() {{
+        if (syncStatusPollHandle) {{
+          return;
+        }}
+        syncStatusPollHandle = window.setInterval(async () => {{
+          try {{
+            const details = await fetchSyncStatus();
+            if (details.running) {{
+              syncStatus.textContent = details.message || "Syncing cached board in the background...";
+              return;
+            }}
+            stopSyncPolling();
+            syncStatus.textContent = details.message || "Board sync completed. Reloading...";
+            if (!syncReloadPending) {{
+              syncReloadPending = true;
+              window.setTimeout(() => window.location.reload(), 900);
+            }}
+          }} catch (error) {{
+            stopSyncPolling();
+            syncStatus.textContent = error instanceof Error ? error.message : "Unable to track board sync status.";
+          }}
+        }}, 2500);
+      }}
+
+      async function requestDashboardSync(options = {{}}) {{
+        const background = options.background !== false;
+        const onlyIfStale = options.onlyIfStale === true;
+        const response = await fetch(`/admin/api/sync-dashboard?background=${{background ? "true" : "false"}}&only_if_stale=${{onlyIfStale ? "true" : "false"}}`, {{
+          method: "POST",
+        }});
+        const payload = await response.json().catch(() => ({{ detail: "Dashboard sync failed." }}));
+        if (!response.ok) {{
+          throw new Error(payload.detail || payload.message || "Dashboard sync failed.");
+        }}
+        const details = payload.details || {{}};
+        syncStatus.textContent = details.message || payload.message || "Dashboard sync requested.";
+        if (details.running) {{
+          startSyncPolling();
+        }} else if (details.status === "skipped" && !syncReloadPending) {{
+          syncStatus.textContent = details.message || "Board cache is still fresh.";
+        }}
+        return details;
+      }}
 
       function escapeHtml(value) {{
         return String(value ?? "")
@@ -2802,22 +2892,32 @@ def render_dashboard_page(data: DashboardData) -> str:
       }});
 
       syncButton?.addEventListener("click", async () => {{
-        syncStatus.textContent = "Refreshing sync...";
+        syncStatus.textContent = "Refreshing board cache...";
         try {{
-          const response = await fetch("/admin/api/sync-dashboard", {{
-            method: "POST",
-          }});
-          const payload = await response.json().catch(() => ({{ detail: "Dashboard sync failed." }}));
-          if (!response.ok) {{
-            syncStatus.textContent = payload.detail || "Dashboard sync failed.";
-            return;
-          }}
-          syncStatus.textContent = "Dashboard sync completed. Reloading...";
-          window.setTimeout(() => window.location.reload(), 900);
+          await requestDashboardSync({{ background: true, onlyIfStale: false }});
         }} catch (error) {{
-          syncStatus.textContent = "Dashboard sync failed before a response came back.";
+          syncStatus.textContent = error instanceof Error ? error.message : "Dashboard sync failed before a response came back.";
         }}
       }});
+
+      window.setTimeout(async () => {{
+        if (!dashboardAutoSyncEnabled) {{
+          return;
+        }}
+        try {{
+          const details = await fetchSyncStatus();
+          if (details.running) {{
+            syncStatus.textContent = details.message || "Refreshing stale board in the background...";
+            startSyncPolling();
+            return;
+          }}
+          if (details.stale || latestSyncLooksStale()) {{
+            await requestDashboardSync({{ background: true, onlyIfStale: true }});
+          }}
+        }} catch (error) {{
+          syncStatus.textContent = error instanceof Error ? error.message : "Unable to auto-refresh the board.";
+        }}
+      }}, 150);
 
       form?.addEventListener("submit", async (event) => {{
         event.preventDefault();
