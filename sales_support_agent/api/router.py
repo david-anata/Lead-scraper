@@ -7,6 +7,7 @@ import secrets
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
+import requests
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy import func, select
@@ -83,13 +84,21 @@ def _validate_runtime(request: Request) -> None:
         )
 
 
-def _lead_builder_status() -> dict[str, object]:
+def _lead_builder_status(settings: object | None = None) -> dict[str, object]:
     try:
         lead_settings = load_lead_builder_settings()
         missing = get_missing_lead_builder_settings(lead_settings)
-        return {"ready": not missing, "missing": missing}
+        if not missing:
+            return {"ready": True, "missing": [], "mode": "local"}
+        remote_url = getattr(settings, "lead_build_url", "") if settings is not None else ""
+        if remote_url:
+            return {"ready": True, "missing": missing, "mode": "remote", "lead_build_url": str(remote_url)}
+        return {"ready": False, "missing": missing, "mode": "local"}
     except Exception as exc:
-        return {"ready": False, "missing": [str(exc)]}
+        remote_url = getattr(settings, "lead_build_url", "") if settings is not None else ""
+        if remote_url:
+            return {"ready": True, "missing": [str(exc)], "mode": "remote", "lead_build_url": str(remote_url)}
+        return {"ready": False, "missing": [str(exc)], "mode": "local"}
 
 
 def _require_admin_enabled(request: Request) -> None:
@@ -174,6 +183,67 @@ def _dashboard_sync_details(request: Request) -> dict[str, object]:
         "max_age_minutes": max(1, request.app.state.settings.dashboard_auto_sync_max_age_minutes),
         "message": message,
     }
+
+
+def _remote_lead_builder_url(request: Request) -> str:
+    return str(getattr(request.app.state.settings, "lead_build_url", "") or "").rstrip("/")
+
+
+def _queue_remote_lead_build(request: Request, payload: dict[str, object]) -> dict[str, object]:
+    lead_build_url = _remote_lead_builder_url(request)
+    if not lead_build_url:
+        raise HTTPException(status_code=503, detail="LEAD_BUILD_URL is not configured on this service.")
+    response = requests.post(
+        f"{lead_build_url}/run-lead-build?async=true",
+        headers={"Content-Type": "application/json", "X-Scheduler-Source": "admin_dashboard"},
+        json=payload,
+        timeout=60,
+    )
+    payload_json = response.json()
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=payload_json.get("detail") or payload_json.get("message") or "Remote lead build failed.")
+    details = dict(payload_json.get("details") or {})
+    run_id = str(details.get("run_id") or "")
+    return {
+        "run_id": run_id,
+        "poll_url": f"/admin/api/lead-runs/{run_id}",
+        "download_url": f"/admin/api/lead-runs/{run_id}/download",
+        "remote": True,
+    }
+
+
+def _fetch_remote_lead_run_status(request: Request, run_id: str) -> dict[str, object] | None:
+    lead_build_url = _remote_lead_builder_url(request)
+    if not lead_build_url:
+        return None
+    response = requests.get(f"{lead_build_url}/lead-runs/{run_id}", timeout=30)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    payload = response.json()
+    return dict(payload.get("details") or {})
+
+
+def _download_remote_lead_run(request: Request, run_id: str) -> Response | None:
+    lead_build_url = _remote_lead_builder_url(request)
+    if not lead_build_url:
+        return None
+    response = requests.get(f"{lead_build_url}/lead-runs/{run_id}/download", timeout=60)
+    if response.status_code == 404:
+        return None
+    if response.status_code == 409:
+        return JSONResponse(status_code=409, content={"detail": "Lead run is not complete yet."})
+    if response.status_code >= 400:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {"detail": "Remote lead run download failed."}
+        return JSONResponse(status_code=response.status_code, content=payload)
+    return Response(
+        content=response.content,
+        media_type=response.headers.get("content-type", "text/csv"),
+        headers={"Content-Disposition": response.headers.get("content-disposition", 'attachment; filename="instantly_upload.csv"')},
+    )
 
 
 def _run_dashboard_sync(app: object, *, trigger: str) -> dict[str, object]:
@@ -328,7 +398,7 @@ def admin_dashboard(request: Request) -> Response:
         dashboard = build_dashboard_data(
             settings=settings,
             session=session,
-            lead_builder_status=_lead_builder_status(),
+            lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
         )
     if settings.dashboard_auto_sync_enabled:
@@ -363,7 +433,7 @@ def admin_dashboard_data(
         dashboard = build_dashboard_data(
             settings=settings,
             session=session,
-            lead_builder_status=_lead_builder_status(),
+            lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
         )
     return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=dashboard_data_to_dict(dashboard))
@@ -394,7 +464,7 @@ async def admin_run_lead_build(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
-    lead_builder_status = _lead_builder_status()
+    lead_builder_status = _lead_builder_status(request.app.state.settings)
     if not lead_builder_status.get("ready"):
         return JSONResponse(
             status_code=503,
@@ -406,6 +476,17 @@ async def admin_run_lead_build(request: Request) -> Response:
 
     payload = await request.json()
     build_request = LeadBuildRequest(**payload)
+    if lead_builder_status.get("mode") == "remote":
+        remote_details = _queue_remote_lead_build(request, build_request.model_dump())
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "queued",
+                "message": "Lead build queued on the remote lead engine.",
+                "details": remote_details,
+            },
+        )
+
     run_id = enqueue_lead_build(build_request, scheduler_source="admin_dashboard")
     return JSONResponse(
         status_code=202,
@@ -429,6 +510,8 @@ def admin_lead_run_status(request: Request, run_id: str) -> JSONResponse:
 
     payload = fetch_lead_run_status(run_id)
     if payload is None:
+        payload = _fetch_remote_lead_run_status(request, run_id)
+    if payload is None:
         return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
     return JSONResponse(status_code=200, content={"status": "ok", "message": "Lead run status loaded.", "details": payload})
 
@@ -440,6 +523,10 @@ def admin_lead_run_download(request: Request, run_id: str) -> Response:
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
     payload = fetch_lead_run_status(run_id)
+    if payload is None:
+        remote_response = _download_remote_lead_run(request, run_id)
+        if remote_response is not None:
+            return remote_response
     if payload is None:
         return JSONResponse(status_code=404, content={"detail": "Lead run not found."})
     if payload.get("status") != "completed":

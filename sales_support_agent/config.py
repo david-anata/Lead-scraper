@@ -106,6 +106,7 @@ class Settings:
     gmail_poll_query: str
     gmail_poll_max_messages: int
     gmail_source_domains: tuple[str, ...]
+    lead_build_url: str
     sales_agent_db_url: str
     internal_api_key: str
     discovery_snapshot_path: Path
@@ -229,6 +230,7 @@ def load_settings() -> Settings:
         gmail_poll_query=os.getenv("GMAIL_POLL_QUERY", "newer_than:2d").strip() or "newer_than:2d",
         gmail_poll_max_messages=int((os.getenv("GMAIL_POLL_MAX_MESSAGES", "25") or "25").strip()),
         gmail_source_domains=_parse_csv_tuple(os.getenv("GMAIL_SOURCE_DOMAINS", "fulfil.com"), default=("fulfil.com",)),
+        lead_build_url=os.getenv("LEAD_BUILD_URL", "").strip().rstrip("/"),
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
         discovery_snapshot_path=Path(
