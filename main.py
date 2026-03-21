@@ -443,6 +443,8 @@ def _build_empty_dashboard(*, lead_builder_missing: list[str], error_message: st
         owner_queues=[],
         latest_sync_at=None,
         latest_run_summary=summary,
+        sync_auto_enabled=False,
+        sync_stale_after_minutes=0,
         lead_builder_ready=not lead_builder_missing,
         lead_builder_missing=lead_builder_missing,
         deck_generator_ready=False,
@@ -638,10 +640,22 @@ def sync_remote_dashboard_sources() -> dict[str, Any]:
         "/api/jobs/stale-leads/run",
         {"dry_run": True},
     )
+    clickup_details = clickup_sync.get("details", clickup_sync)
+    stale_details = stale_scan.get("details", stale_scan)
+    synced_tasks = int(clickup_details.get("synced_tasks", 0) or 0)
+    inspected = int(stale_details.get("inspected", 0) or 0)
+    if synced_tasks == 0:
+        message = "Dashboard sync finished, but ClickUp returned 0 tasks. Check CLICKUP_LIST_ID and ClickUp token access."
+    elif inspected == 0:
+        message = "Dashboard sync finished, but 0 synced tasks matched the tracked active statuses."
+    else:
+        message = f"Dashboard sync finished. Synced {synced_tasks} tasks and found {inspected} active leads."
+
     return {
-        "clickup_sync": clickup_sync.get("details", clickup_sync),
-        "stale_lead_scan": stale_scan.get("details", stale_scan),
+        "clickup_sync": clickup_details,
+        "stale_lead_scan": stale_details,
         "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
+        "message": message,
     }
 
 
@@ -3279,7 +3293,7 @@ def admin_sync_dashboard(request: Request) -> JSONResponse:
         )
     return JSONResponse(
         status_code=200,
-        content={"status": "ok", "message": "Dashboard sync completed.", "details": result},
+        content={"status": "ok", "message": str(result.get("message", "Dashboard sync completed.")), "details": result},
     )
 
 
