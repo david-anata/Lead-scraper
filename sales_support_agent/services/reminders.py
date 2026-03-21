@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +29,7 @@ from sales_support_agent.services.reply_templates import (
 
 
 AGENT_COMMENT_PREFIX = "[Sales Support Agent]"
+AGENT_COMMENT_SIGNATURE_PREFIX = "Signature:"
 
 
 @dataclass(frozen=True)
@@ -252,14 +253,58 @@ class ReminderService:
         owner_reference = build_clickup_owner_reference(evaluation.lead.assignee_name)
         last_touch = self._last_touch_label(evaluation.last_meaningful_touch_at)
         urgency_label = self._urgency_label(evaluation)
+        signature = self.build_agent_comment_signature(evaluation)
         return (
             f"{AGENT_COMMENT_PREFIX} {owner_reference} {urgency_label.lower()} for this lead.\n"
             f"Date: {format_date_label(evaluation.assessment.anchor_date)}\n"
             f"Why it matters: {evaluation.assessment.reason}\n"
             f"Last meaningful touch: {last_touch}\n"
             f"Next step: {evaluation.assessment.recommended_next_action}\n"
-            f"Suggested reply: {build_stale_reply_draft(task_name=evaluation.lead.task_name, status=evaluation.lead.status, next_step=evaluation.assessment.recommended_next_action, as_of_date=evaluation.assessment.anchor_date)}"
+            f"Suggested reply: {build_stale_reply_draft(task_name=evaluation.lead.task_name, status=evaluation.lead.status, next_step=evaluation.assessment.recommended_next_action, as_of_date=evaluation.assessment.anchor_date)}\n"
+            f"{AGENT_COMMENT_SIGNATURE_PREFIX} {signature}"
         )
+
+    def build_agent_comment_signature(self, evaluation: LeadEvaluation) -> str:
+        parts = (
+            normalize_status_key(evaluation.lead.status or ""),
+            self._urgency_key(evaluation),
+            " ".join((evaluation.assessment.reason or "").lower().split()),
+            " ".join((evaluation.assessment.recommended_next_action or "").lower().split()),
+        )
+        return " | ".join(parts)
+
+    def should_skip_agent_comment(
+        self,
+        *,
+        evaluation: LeadEvaluation,
+        comments: list[dict[str, Any]] | None,
+        recency_days: int = 5,
+    ) -> bool:
+        candidate_signature = self.build_agent_comment_signature(evaluation)
+        candidate_next_step = " ".join((evaluation.assessment.recommended_next_action or "").lower().split())
+        candidate_reason = " ".join((evaluation.assessment.reason or "").lower().split())
+        cutoff_date = evaluation.assessment.anchor_date - timedelta(days=recency_days)
+
+        for comment in comments or []:
+            raw_text = str(comment.get("comment_text") or comment.get("comment") or "")
+            if not raw_text.startswith(AGENT_COMMENT_PREFIX):
+                continue
+            comment_timestamp = self._parse_comment_timestamp(comment.get("date") or comment.get("date_created"))
+            if comment_timestamp and comment_timestamp.date() < cutoff_date:
+                continue
+
+            signature = self._extract_agent_comment_signature(raw_text)
+            if signature:
+                if signature == candidate_signature:
+                    return True
+                continue
+
+            normalized_text = " ".join(raw_text.lower().split())
+            urgency_phrase = f"{self._urgency_label(evaluation).lower()} for this lead."
+            if urgency_phrase in normalized_text and f"next step: {candidate_next_step}" in normalized_text and candidate_reason in normalized_text:
+                return True
+
+        return False
 
     def _latest_meaningful_event(self, task_id: str) -> datetime | None:
         query = (
@@ -289,13 +334,31 @@ class ReminderService:
             raw_text = str(comment.get("comment_text") or comment.get("comment") or "")
             if not raw_text or raw_text.startswith(AGENT_COMMENT_PREFIX):
                 continue
-            timestamp = comment.get("date") or comment.get("date_created")
-            if timestamp is None:
-                continue
-            parsed = datetime.fromtimestamp(int(str(timestamp)) / 1000) if str(timestamp).isdigit() else None
+            parsed = self._parse_comment_timestamp(comment.get("date") or comment.get("date_created"))
             if parsed and (latest is None or parsed > latest):
                 latest = parsed
         return latest
+
+    def _parse_comment_timestamp(self, raw_value: Any) -> datetime | None:
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, datetime):
+            return raw_value
+        value = str(raw_value).strip()
+        if not value:
+            return None
+        if value.isdigit():
+            return datetime.fromtimestamp(int(value) / 1000)
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _extract_agent_comment_signature(self, raw_text: str) -> str:
+        for line in raw_text.splitlines():
+            if line.startswith(AGENT_COMMENT_SIGNATURE_PREFIX):
+                return line.split(":", 1)[1].strip()
+        return ""
 
     def _max_datetime(self, *values: datetime | None) -> datetime | None:
         filtered = [value for value in values if value is not None]

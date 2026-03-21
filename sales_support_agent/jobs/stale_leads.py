@@ -71,6 +71,7 @@ class StaleLeadJob:
         alerted = 0
         immediate_alerted = 0
         commented = 0
+        comment_skipped_duplicate = 0
         skipped = 0
         failed = 0
         digest_items = []
@@ -117,17 +118,20 @@ class StaleLeadJob:
                         )
 
                 comment_text = self.reminders.build_agent_comment(evaluation)
-                comment_result = self.clickup_client.create_task_comment(lead.clickup_task_id, comment_text)
-                commented += 1
-                self.audit.record_action(
-                    run_id=run.id,
-                    clickup_task_id=lead.clickup_task_id,
-                    system="clickup",
-                    action_type="append_reminder_comment",
-                    dedupe_key=f"{dedupe_key}:comment",
-                    before={"status": lead.status},
-                    after=comment_result,
-                )
+                if self.reminders.should_skip_agent_comment(evaluation=evaluation, comments=comments):
+                    comment_skipped_duplicate += 1
+                else:
+                    comment_result = self.clickup_client.create_task_comment(lead.clickup_task_id, comment_text)
+                    commented += 1
+                    self.audit.record_action(
+                        run_id=run.id,
+                        clickup_task_id=lead.clickup_task_id,
+                        system="clickup",
+                        action_type="append_reminder_comment",
+                        dedupe_key=f"{dedupe_key}:comment",
+                        before={"status": lead.status},
+                        after=comment_result,
+                    )
                 lead.follow_up_state = evaluation.assessment.state
                 self.session.add(lead)
             except Exception as exc:
@@ -203,6 +207,7 @@ class StaleLeadJob:
                 "alerted": alerted,
                 "immediate_alerted": immediate_alerted,
                 "commented": commented,
+                "comment_skipped_duplicate": comment_skipped_duplicate,
                 "skipped_deduped": skipped,
                 "failed": failed,
                 "digest_posted": digest_posted,
@@ -219,6 +224,7 @@ class StaleLeadJob:
             "alerted": alerted,
             "immediate_alerted": immediate_alerted,
             "commented": commented,
+            "comment_skipped_duplicate": comment_skipped_duplicate,
             "skipped_deduped": skipped,
             "failed": failed,
             "digest_posted": digest_posted,

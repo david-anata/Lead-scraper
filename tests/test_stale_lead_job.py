@@ -12,6 +12,7 @@ try:
     from sales_support_agent.jobs.stale_leads import StaleLeadJob
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import LeadMirror
+    from sales_support_agent.services.reminders import ReminderService
     SQLALCHEMY_AVAILABLE = True
 except ModuleNotFoundError as exc:
     if exc.name != "sqlalchemy":
@@ -20,10 +21,15 @@ except ModuleNotFoundError as exc:
 
 
 class _FakeClickUpClient:
+    def __init__(self, comments_by_task: dict[str, list[dict[str, object]]] | None = None) -> None:
+        self.comments_by_task = comments_by_task or {}
+        self.created_comments: list[tuple[str, str]] = []
+
     def get_task_comments(self, task_id: str) -> list[dict[str, object]]:
-        return []
+        return list(self.comments_by_task.get(task_id, []))
 
     def create_task_comment(self, task_id: str, comment_text: str) -> dict[str, object]:
+        self.created_comments.append((task_id, comment_text))
         return {"id": "comment-1"}
 
 
@@ -181,6 +187,46 @@ class StaleLeadJobTests(unittest.TestCase):
             self.assertEqual(result["alerted"], 1)
             self.assertEqual(len(slack_client.messages), 1)
             self.assertIn("<!channel>", str(slack_client.messages[0].get("text", "")))
+        finally:
+            session.close()
+
+    def test_run_skips_duplicate_agent_comment_when_recent_signature_matches(self) -> None:
+        self._insert_lead()
+        seed_session = self.session_factory()
+        try:
+            lead = seed_session.query(LeadMirror).filter(LeadMirror.clickup_task_id == "task-123").one()
+            reminder_service = ReminderService(self.settings, seed_session)
+            evaluation = reminder_service.evaluate_lead(lead, as_of_date=date(2026, 3, 13), comments=[])
+            assert evaluation is not None
+            existing_comment = reminder_service.build_agent_comment(evaluation)
+        finally:
+            seed_session.close()
+
+        existing_comments = {
+            "task-123": [
+                {
+                    "comment_text": existing_comment,
+                    "date": str(int(datetime(2026, 3, 12, 9, 0, 0).timestamp() * 1000)),
+                }
+            ]
+        }
+        clickup_client = _FakeClickUpClient(comments_by_task=existing_comments)
+        session = self.session_factory()
+        try:
+            with patch("sales_support_agent.jobs.stale_leads.ClickUpSyncService") as sync_service_cls:
+                sync_service_cls.return_value.sync_list.return_value = {"synced_tasks": 1}
+
+                result = StaleLeadJob(
+                    self.settings,
+                    clickup_client,
+                    _FakeSlackClient(),
+                    session,
+                ).run(dry_run=False, as_of_date=date(2026, 3, 13))
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["commented"], 0)
+            self.assertEqual(result["comment_skipped_duplicate"], 1)
+            self.assertEqual(clickup_client.created_comments, [])
         finally:
             session.close()
 
