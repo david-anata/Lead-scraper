@@ -124,12 +124,26 @@ APOLLO_TARGET_TITLES = (
     "coo",
     "chief of staff",
     "president",
+    "founding team",
+    "founding member",
     "head of operations",
-    "operations",
+    "head of ecommerce",
+    "head of e-commerce",
+    "head of growth",
+    "head of brand",
+    "vp of ecommerce",
+    "vp of e-commerce",
+    "vp of operations",
+    "director of ecommerce",
+    "director of e-commerce",
+    "director of operations",
+    "ecommerce manager",
+    "e-commerce manager",
+    "operations manager",
+    "general manager",
     "operator",
     "ecommerce",
     "e-commerce",
-    "brand",
 )
 APOLLO_TARGET_SENIORITIES = (
     "c_suite",
@@ -180,6 +194,9 @@ GITHUB_STATE_APOLLO_ORG_CURSOR_PATH = (
     or "state/apollo_org_cursor.csv"
 ).strip()
 INSTANTLY_CAMPAIGN_ROUTING_JSON = os.getenv("INSTANTLY_CAMPAIGN_ROUTING_JSON", "").strip()
+APOLLO_MIN_EMPLOYEE_COUNT = int((os.getenv("APOLLO_MIN_EMPLOYEE_COUNT", "2") or "2").strip())
+APOLLO_MAX_EMPLOYEE_COUNT = int((os.getenv("APOLLO_MAX_EMPLOYEE_COUNT", "80") or "80").strip())
+APOLLO_MAX_ANNUAL_REVENUE = int((os.getenv("APOLLO_MAX_ANNUAL_REVENUE", "35000000") or "35000000").strip())
 APOLLO_ALLOWED_COUNTRIES = {"US", "GB", "UK", "CA", "AU", "UNITED STATES", "UNITED KINGDOM", "CANADA", "AUSTRALIA"}
 APOLLO_EXCLUDED_KEYWORDS = (
     "agency",
@@ -199,10 +216,24 @@ APOLLO_EXCLUDED_KEYWORDS = (
     "hotel",
     "consultant",
     "services",
+    "service",
+    "enterprise",
+    "global",
+    "wholesale",
+    "distributor",
+    "b2b",
+    "manufacturer",
+    "private label",
+    "amazon services",
+    "marketplace services",
     "mail delivery",
     "public relations",
     "printful",
     "printify",
+    "etsy seller",
+    "amazon seller services",
+    "dropshipping",
+    "drop shipping",
 )
 APOLLO_ECOMMERCE_INCLUDE_KEYWORDS = (
     "ecommerce",
@@ -227,6 +258,7 @@ APOLLO_ECOMMERCE_INCLUDE_KEYWORDS = (
     "pet",
     "jewelry",
     "home goods",
+    "home decor",
     "furniture",
     "baby",
     "gift",
@@ -240,6 +272,14 @@ ORG_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "apparel_accessories": ("apparel", "fashion", "clothing", "footwear", "jewelry", "accessories"),
     "home_lifestyle": ("home", "furniture", "decor", "lifestyle", "kitchen", "bedding"),
     "pets": ("pet", "pets", "animal"),
+    "family_gifts": ("baby", "kids", "toys", "gift", "stationery"),
+}
+APOLLO_CATEGORY_SEARCH_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "beauty_wellness": ("beauty", "skincare", "cosmetics", "wellness", "supplement", "personal care"),
+    "food_beverage": ("food", "beverage", "snack", "coffee", "tea"),
+    "apparel_accessories": ("apparel", "fashion", "clothing", "jewelry", "accessories"),
+    "home_lifestyle": ("home goods", "home decor", "furniture", "kitchen", "bedding"),
+    "pets": ("pet", "pets"),
     "family_gifts": ("baby", "kids", "toys", "gift", "stationery"),
 }
 GITHUB_STATE_STORELEADS_CURSOR_PATH = GITHUB_STATE_APOLLO_ORG_CURSOR_PATH
@@ -1738,11 +1778,15 @@ def _extract_revenue_ceiling(value: Any) -> int | None:
 
 
 def build_apollo_org_search_params(page: int) -> dict[str, Any]:
+    categories = list(APOLLO_CATEGORY_SEARCH_KEYWORDS.keys())
+    category_key = categories[(page - 1) % len(categories)] if categories else ""
+    category_terms = APOLLO_CATEGORY_SEARCH_KEYWORDS.get(category_key, ())
     return {
         "page": page,
         "per_page": APOLLO_ORG_PAGE_SIZE,
-        "organization_num_employees_ranges[]": ["1,200"],
+        "organization_num_employees_ranges[]": [f"{APOLLO_MIN_EMPLOYEE_COUNT},{APOLLO_MAX_EMPLOYEE_COUNT}"],
         "organization_locations[]": ["United States", "United Kingdom", "Canada", "Australia"],
+        "q_organization_keyword_tags[]": list(category_terms),
     }
 
 
@@ -1875,11 +1919,13 @@ def matches_apollo_org_icp(org: dict[str, Any]) -> bool:
         return False
 
     employee_count = org.get("employee_count")
-    if employee_count is not None and employee_count > 200:
+    if employee_count is not None and employee_count < APOLLO_MIN_EMPLOYEE_COUNT:
+        return False
+    if employee_count is not None and employee_count > APOLLO_MAX_EMPLOYEE_COUNT:
         return False
 
     annual_revenue = org.get("annual_revenue")
-    if annual_revenue is not None and annual_revenue > 100_000_000:
+    if annual_revenue is not None and annual_revenue > APOLLO_MAX_ANNUAL_REVENUE:
         return False
 
     country_code = _extract_country_code(org.get("country_code", ""))
@@ -1902,6 +1948,10 @@ def matches_apollo_org_icp(org: dict[str, Any]) -> bool:
     ).lower()
     if any(keyword in searchable_text for keyword in APOLLO_EXCLUDED_KEYWORDS):
         return False
+
+    matched_categories = [category for category, keywords in ORG_CATEGORY_KEYWORDS.items() if any(keyword in searchable_text for keyword in keywords)]
+    if matched_categories:
+        return True
 
     return any(keyword in searchable_text for keyword in APOLLO_ECOMMERCE_INCLUDE_KEYWORDS)
 
