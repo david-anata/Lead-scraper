@@ -47,14 +47,14 @@ class GmailClient:
         self.mailbox_account = mailbox_account
         self.account_key = mailbox_account.account_key if mailbox_account else "primary"
         self.account_label = mailbox_account.label if mailbox_account else "Primary inbox"
-        self.user_id = mailbox_account.user_id if mailbox_account else settings.gmail_user_id
-        self.poll_query = mailbox_account.poll_query if mailbox_account else settings.gmail_poll_query
-        self.poll_max_messages = mailbox_account.poll_max_messages if mailbox_account else settings.gmail_poll_max_messages
-        self.source_domains = mailbox_account.source_domains if mailbox_account else settings.gmail_source_domains
-        self._static_access_token = mailbox_account.access_token if mailbox_account else settings.gmail_access_token
-        self._client_id = mailbox_account.client_id if mailbox_account else settings.gmail_client_id
-        self._client_secret = mailbox_account.client_secret if mailbox_account else settings.gmail_client_secret
-        self._refresh_token = mailbox_account.refresh_token if mailbox_account else settings.gmail_refresh_token
+        self.user_id = mailbox_account.user_id if mailbox_account else getattr(settings, "gmail_user_id", "me")
+        self.poll_query = mailbox_account.poll_query if mailbox_account else getattr(settings, "gmail_poll_query", "newer_than:2d")
+        self.poll_max_messages = mailbox_account.poll_max_messages if mailbox_account else int(getattr(settings, "gmail_poll_max_messages", 25) or 25)
+        self.source_domains = mailbox_account.source_domains if mailbox_account else tuple(getattr(settings, "gmail_source_domains", ()) or ())
+        self._static_access_token = mailbox_account.access_token if mailbox_account else getattr(settings, "gmail_access_token", "")
+        self._client_id = mailbox_account.client_id if mailbox_account else getattr(settings, "gmail_client_id", "")
+        self._client_secret = mailbox_account.client_secret if mailbox_account else getattr(settings, "gmail_client_secret", "")
+        self._refresh_token = mailbox_account.refresh_token if mailbox_account else getattr(settings, "gmail_refresh_token", "")
         self._cached_access_token = self._static_access_token
 
     def is_configured(self) -> bool:
