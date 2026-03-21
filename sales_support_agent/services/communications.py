@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -32,6 +33,7 @@ EVENT_LABELS = {
     "offer_sent": "Offer sent",
     "note_logged": "Note logged",
 }
+EVENT_COMMENT_SIGNATURE_PREFIX = "Signature:"
 
 
 class CommunicationService:
@@ -81,35 +83,48 @@ class CommunicationService:
         self.session.add(event)
         self.session.flush()
 
-        comment_text = self._build_comment_text(task, payload, occurred_at)
-        comment_result = self.clickup_client.create_task_comment(payload.task_id, comment_text)
-        self.audit.record_action(
-            run_id=None,
-            clickup_task_id=payload.task_id,
-            system="clickup",
-            action_type="append_comment",
-            before={"task_status": lead.status},
-            after=comment_result,
-        )
+        event_signature = self._build_event_signature(payload)
+        comment_dedupe_key = f"communication_comment:{payload.task_id}:{event_signature}"
+        comment_result: dict[str, Any] = {"ok": True, "skipped": True, "reason": "duplicate_comment_signature"}
+        if not self.audit.has_successful_action(comment_dedupe_key):
+            comment_text = self._build_comment_text(task, payload, occurred_at, event_signature)
+            comment_result = self.clickup_client.create_task_comment(payload.task_id, comment_text)
+            self.audit.record_action(
+                run_id=None,
+                clickup_task_id=payload.task_id,
+                system="clickup",
+                action_type="append_comment",
+                dedupe_key=comment_dedupe_key,
+                before={"task_status": lead.status},
+                after=comment_result,
+            )
 
         update_summary = self._apply_field_updates(task, payload, occurred_at, field_map)
         sync_service.sync_task(self.clickup_client.get_task(payload.task_id))
 
         slack_result: dict[str, Any] = {"ok": False, "skipped": True}
+        slack_dedupe_key = f"event_notification:{payload.task_id}:{event_signature}"
         if payload.event_type == "inbound_reply_received" and self._should_send_immediate_event_alert("inbound_reply_received"):
-            slack_result = self._notify_reply_received(task, payload, occurred_at)
+            if not self.audit.has_successful_action(slack_dedupe_key):
+                slack_result = self._notify_reply_received(task, payload, occurred_at)
+            else:
+                slack_result = {"ok": True, "skipped": True, "reason": "duplicate_event_notification"}
         elif (
             payload.event_type == "meeting_completed"
             and not (payload.summary or payload.outcome)
             and self._should_send_immediate_event_alert("meeting_notes_missing")
         ):
-            slack_result = self._notify_meeting_notes_missing(task)
+            if not self.audit.has_successful_action(slack_dedupe_key):
+                slack_result = self._notify_meeting_notes_missing(task)
+            else:
+                slack_result = {"ok": True, "skipped": True, "reason": "duplicate_event_notification"}
         if not slack_result.get("skipped"):
             self.audit.record_action(
                 run_id=None,
                 clickup_task_id=payload.task_id,
                 system="slack",
                 action_type="event_notification",
+                dedupe_key=slack_dedupe_key,
                 before={"event_type": payload.event_type},
                 after=slack_result,
             )
@@ -117,7 +132,7 @@ class CommunicationService:
         return {
             "task_id": payload.task_id,
             "event_id": event.id,
-            "comment_posted": bool(comment_result),
+            "comment_posted": bool(comment_result and not comment_result.get("skipped")),
             "field_updates": update_summary,
             "slack_notification": slack_result,
         }
@@ -193,7 +208,7 @@ class CommunicationService:
             return add_business_days(occurred_date, policy.due_days)
         return None
 
-    def _build_comment_text(self, task: dict[str, Any], payload: CommunicationEventRequest, occurred_at: datetime) -> str:
+    def _build_comment_text(self, task: dict[str, Any], payload: CommunicationEventRequest, occurred_at: datetime, signature: str) -> str:
         assignee = (task.get("assignees") or [{}])[0] or {}
         assignee_name = str(assignee.get("username") or assignee.get("email") or "")
         owner_reference = build_clickup_owner_reference(assignee_name)
@@ -213,7 +228,25 @@ class CommunicationService:
         if payload.suggested_status:
             parts.append(f"Suggested status: {payload.suggested_status}")
         parts.append(f"Classification: {classification}")
+        parts.append(f"{EVENT_COMMENT_SIGNATURE_PREFIX} {signature}")
         return "\n".join(parts)
+
+    def _build_event_signature(self, payload: CommunicationEventRequest) -> str:
+        def _normalize(value: str) -> str:
+            return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+        classification = str(payload.metadata.get("classification") or payload.event_type)
+        parts = (
+            payload.event_type,
+            _normalize(payload.summary),
+            _normalize(payload.outcome),
+            _normalize(payload.recommended_next_action),
+            _normalize(payload.suggested_reply_draft),
+            _normalize(payload.suggested_status),
+            payload.next_follow_up_date.isoformat() if payload.next_follow_up_date else "",
+            _normalize(classification),
+        )
+        return " | ".join(parts)
 
     def _notify_reply_received(self, task: dict[str, Any], payload: CommunicationEventRequest, occurred_at: datetime) -> dict[str, Any]:
         assignee = (task.get("assignees") or [{}])[0] or {}
