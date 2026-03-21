@@ -1428,6 +1428,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         _summary_row("Inspected leads", latest_run_summary.get("inspected", 0)),
         _summary_row("Alerts prepared", latest_run_summary.get("alerted", 0)),
         _summary_row("Comments posted", latest_run_summary.get("commented", 0)),
+        _summary_row("Comments suppressed", latest_run_summary.get("comment_skipped_duplicate", 0)),
         _summary_row("Tasks synced", latest_run_summary.get("synced_tasks", 0)),
         _summary_row("Failed items", latest_run_summary.get("failed", 0)),
     ]

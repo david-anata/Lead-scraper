@@ -190,6 +190,34 @@ class StaleLeadJobTests(unittest.TestCase):
         finally:
             session.close()
 
+    def test_run_skips_duplicate_immediate_alert_for_same_signature(self) -> None:
+        self._insert_lead()
+        session = self.session_factory()
+        slack_client = _FakeSlackClient()
+        try:
+            with patch("sales_support_agent.jobs.stale_leads.ClickUpSyncService") as sync_service_cls:
+                sync_service_cls.return_value.sync_list.return_value = {"synced_tasks": 1}
+
+                first = StaleLeadJob(
+                    self.settings,
+                    _FakeClickUpClient(),
+                    slack_client,
+                    session,
+                ).run(dry_run=False, as_of_date=date(2026, 3, 17))
+
+                second = StaleLeadJob(
+                    self.settings,
+                    _FakeClickUpClient(),
+                    slack_client,
+                    session,
+                ).run(dry_run=False, as_of_date=date(2026, 3, 17))
+
+            self.assertEqual(first["immediate_alerted"], 1)
+            self.assertEqual(second["immediate_alerted"], 0)
+            self.assertEqual(len(slack_client.messages), 2)
+        finally:
+            session.close()
+
     def test_run_skips_duplicate_agent_comment_when_recent_signature_matches(self) -> None:
         self._insert_lead()
         seed_session = self.session_factory()
@@ -227,6 +255,34 @@ class StaleLeadJobTests(unittest.TestCase):
             self.assertEqual(result["commented"], 0)
             self.assertEqual(result["comment_skipped_duplicate"], 1)
             self.assertEqual(clickup_client.created_comments, [])
+        finally:
+            session.close()
+
+    def test_run_skips_duplicate_digest_for_same_date(self) -> None:
+        self._insert_lead()
+        session = self.session_factory()
+        slack_client = _FakeSlackClient()
+        try:
+            with patch("sales_support_agent.jobs.stale_leads.ClickUpSyncService") as sync_service_cls:
+                sync_service_cls.return_value.sync_list.return_value = {"synced_tasks": 1}
+
+                first = StaleLeadJob(
+                    self.settings,
+                    _FakeClickUpClient(),
+                    slack_client,
+                    session,
+                ).run(dry_run=False, as_of_date=date(2026, 3, 13))
+
+                second = StaleLeadJob(
+                    self.settings,
+                    _FakeClickUpClient(),
+                    slack_client,
+                    session,
+                ).run(dry_run=False, as_of_date=date(2026, 3, 13))
+
+            self.assertTrue(first["digest_posted"])
+            self.assertFalse(second["digest_posted"])
+            self.assertEqual(len(slack_client.messages), 1)
         finally:
             session.close()
 

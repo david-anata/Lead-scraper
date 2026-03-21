@@ -102,20 +102,23 @@ class StaleLeadJob:
                     continue
 
                 if digest_item.notification_mode == "immediate_alert":
-                    slack_payload = self.reminders.build_immediate_stale_slack_message(evaluation)
-                    slack_result = self.slack_client.post_message(**slack_payload)
-                    if not slack_result.get("skipped"):
-                        alerted += 1
-                        immediate_alerted += 1
-                        self.audit.record_action(
-                            run_id=run.id,
-                            clickup_task_id=lead.clickup_task_id,
-                            system="slack",
-                            action_type="stale_lead_immediate_alert",
-                            dedupe_key=dedupe_key,
-                            before={"status": lead.status, "follow_up_state": lead.follow_up_state},
-                            after=slack_result,
-                        )
+                    alert_signature = self.reminders.build_agent_comment_signature(evaluation)
+                    alert_dedupe_key = f"stale_immediate_alert:{lead.clickup_task_id}:{alert_signature}"
+                    if not self.audit.has_successful_action(alert_dedupe_key):
+                        slack_payload = self.reminders.build_immediate_stale_slack_message(evaluation)
+                        slack_result = self.slack_client.post_message(**slack_payload)
+                        if not slack_result.get("skipped"):
+                            alerted += 1
+                            immediate_alerted += 1
+                            self.audit.record_action(
+                                run_id=run.id,
+                                clickup_task_id=lead.clickup_task_id,
+                                system="slack",
+                                action_type="stale_lead_immediate_alert",
+                                dedupe_key=alert_dedupe_key,
+                                before={"status": lead.status, "follow_up_state": lead.follow_up_state},
+                                after=slack_result,
+                            )
 
                 comment_text = self.reminders.build_agent_comment(evaluation)
                 if self.reminders.should_skip_agent_comment(evaluation=evaluation, comments=comments):
@@ -158,7 +161,7 @@ class StaleLeadJob:
             assignee_counts[item.owner_display] = assignee_counts.get(item.owner_display, 0) + 1
 
         if not dry_run and self.settings.stale_lead_slack_digest_enabled and digest_items:
-            digest_dedupe_key = f"stale_lead_digest:{run.id}"
+            digest_dedupe_key = f"stale_lead_digest:{effective_date.isoformat()}"
             if not self.audit.has_successful_action(digest_dedupe_key):
                 try:
                     digest_payload = self.reminders.build_stale_digest_message(digest_items)
