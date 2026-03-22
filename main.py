@@ -2989,53 +2989,62 @@ def post_slack_summary(
     scheduler_status: dict[str, Any],
     settings: Settings,
 ) -> None:
-    contact_rate_per_apollo_domain = (
-        round((successful_contacts / apollo_domains_queried) * 100, 2) if apollo_domains_queried else 0
-    )
-    contact_rate_per_apollo_hit = round((successful_contacts / apollo_hits) * 100, 2) if apollo_hits else 0
-
-    scheduler_lines = ""
+    scheduler_lines: list[str] = []
     if scheduler_status.get("enabled"):
-        scheduler_lines = f"""
-Scheduler status: {scheduler_status.get("status", "unknown")}
-Daily new lead limit: {scheduler_status.get("daily_limit", 0)}
-Already imported today: {scheduler_status.get("already_imported_today", 0)}
-Remaining capacity: {scheduler_status.get("remaining_capacity", 0)}
-"""
+        scheduler_lines = [
+            f"Limit {scheduler_status.get('daily_limit', 0)}",
+            f"Used {scheduler_status.get('already_imported_today', 0)}",
+            f"Remaining {scheduler_status.get('remaining_capacity', 0)}",
+        ]
 
-    message_text = f"""<!channel>
+    sourcing_parts = [
+        f"Scanned {raw_scanned}",
+        f"Qualified {qualified_domains}",
+        f"Fresh {new_domains_considered}",
+    ]
+    if previously_processed_domains:
+        sourcing_parts.append(f"Skipped processed {previously_processed_domains}")
+    if skipped_apollo_cooldown_domains:
+        sourcing_parts.append(f"Skipped cooldown {skipped_apollo_cooldown_domains}")
+    if storeleads_pages_scanned > 1 or storeleads_start_page or storeleads_end_page:
+        sourcing_parts.append(
+            f"Pages {storeleads_start_page}->{storeleads_end_page} ({storeleads_pages_scanned})"
+        )
 
-Lead build completed.
+    contact_parts = [
+        f"Apollo queried {apollo_domains_queried}",
+        f"Positive domains {apollo_hits}",
+        f"Contacts selected {successful_contacts}/{accepted_lead_target}",
+    ]
 
-Run date: {run_date}
-Scheduler source: {scheduler_source}
-Organizations scanned from Apollo: {raw_scanned}
-Apollo org start page: {storeleads_start_page}
-Apollo org end page: {storeleads_end_page}
-Apollo org pages scanned: {storeleads_pages_scanned}
-ICP-qualified organizations: {qualified_domains}
-Previously processed domains skipped: {previously_processed_domains}
-Apollo cooldown domains skipped: {skipped_apollo_cooldown_domains}
-New domains considered: {new_domains_considered}
-Domains queried in Apollo people search: {apollo_domains_queried}
-Accepted lead target: {accepted_lead_target}
-Domains with Apollo candidates: {apollo_hits}
-Final contacts selected: {successful_contacts}
-Instantly import status: {instantly_import_result.get("status", "unknown")}
-Instantly leads created: {instantly_import_result.get("created_count", 0)}
-Instantly leads skipped: {instantly_import_result.get("skipped_count", 0)}
-HeyReach import status: {heyreach_import_result.get("status", "unknown")}
-HeyReach leads attempted: {heyreach_import_result.get("attempted_count", 0)}
-HeyReach leads added: {heyreach_import_result.get("created_count", 0)}
-HeyReach leads skipped: {heyreach_import_result.get("skipped_count", 0)}
-HeyReach missing LinkedIn URLs: {heyreach_import_result.get("missing_linkedin_url_count", 0)}
-{scheduler_lines}
+    instantly_parts = [
+        f"Status {instantly_import_result.get('status', 'unknown')}",
+        f"Created {instantly_import_result.get('created_count', 0)}",
+        f"Skipped {instantly_import_result.get('skipped_count', 0)}",
+    ]
 
-Contacts per Apollo-queried domain: {contact_rate_per_apollo_domain}%
-Contacts per Apollo-positive domain: {contact_rate_per_apollo_hit}%
+    lines = [
+        "<!channel>",
+        f"Lead scrape complete | {run_date} | {scheduler_source}",
+        f"Apollo: {' | '.join(sourcing_parts)}",
+        f"Contacts: {' | '.join(contact_parts)}",
+        f"Instantly: {' | '.join(instantly_parts)}",
+    ]
+    if heyreach_import_result.get("status") not in {None, "disabled"} or heyreach_import_result.get("attempted_count", 0):
+        heyreach_parts = [
+            f"Status {heyreach_import_result.get('status', 'unknown')}",
+            f"Attempted {heyreach_import_result.get('attempted_count', 0)}",
+            f"Added {heyreach_import_result.get('created_count', 0)}",
+        ]
+        missing_linkedin = heyreach_import_result.get("missing_linkedin_url_count", 0)
+        if missing_linkedin:
+            heyreach_parts.append(f"Missing LinkedIn {missing_linkedin}")
+        lines.append(f"HeyReach: {' | '.join(heyreach_parts)}")
+    if scheduler_lines:
+        lines.append(f"Pacing: {' | '.join(scheduler_lines)}")
+    lines.append("CSV attached below.")
 
-CSV file attached below.
-"""
+    message_text = "\n".join(lines)
 
     response = requests.post(
         SLACK_CHAT_POST_MESSAGE_URL,
