@@ -92,6 +92,11 @@ def _enforce_api_key(request: Request, internal_api_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
 
 
+def _enforce_api_key_from_header_or_query(request: Request, internal_api_key: str | None) -> None:
+    provided = internal_api_key or request.query_params.get("token") or ""
+    _enforce_api_key(request, provided)
+
+
 def _validate_runtime(request: Request) -> None:
     missing = get_missing_runtime_settings(request.app.state.settings)
     if missing:
@@ -776,6 +781,53 @@ def admin_canva_connect(request: Request) -> Response:
     return response
 
 
+@router.get("/api/admin/canva/connect", response_model=None)
+def internal_canva_connect(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> Response:
+    _enforce_api_key_from_header_or_query(request, x_internal_api_key)
+
+    settings = request.app.state.settings
+    missing = [
+        env_name
+        for env_name, attr_name in (
+            ("CANVA_CLIENT_ID", "canva_client_id"),
+            ("CANVA_CLIENT_SECRET", "canva_client_secret"),
+            ("CANVA_REDIRECT_URI", "canva_redirect_uri"),
+        )
+        if not getattr(settings, attr_name, "")
+    ]
+    if missing:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"Canva OAuth is missing environment variables: {', '.join(missing)}"},
+        )
+
+    state = secrets.token_urlsafe(18)
+    code_verifier = secrets.token_urlsafe(64)
+    signed_state = create_signed_state_token(
+        settings.admin_session_secret,
+        {
+            "state": state,
+            "code_verifier": code_verifier,
+            "issued_at": str(int(datetime.now(timezone.utc).timestamp())),
+            "return_to": str(request.query_params.get("return_to", "") or "").strip(),
+        },
+    )
+    authorize_url = CanvaClient(settings).build_authorize_url(
+        state=state,
+        code_verifier=code_verifier,
+    )
+    response = RedirectResponse(url=authorize_url, status_code=302)
+    response.set_cookie(
+        key=_canva_oauth_cookie_name(request),
+        value=signed_state,
+        **_canva_oauth_cookie_options(request),
+    )
+    return response
+
+
 @router.get("/admin/api/canva/callback", response_model=None)
 def admin_canva_callback(
     request: Request,
@@ -784,9 +836,6 @@ def admin_canva_callback(
     error: str = "",
     error_description: str = "",
 ) -> Response:
-    _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
     if error:
         return JSONResponse(status_code=400, content={"detail": error_description or error})
 

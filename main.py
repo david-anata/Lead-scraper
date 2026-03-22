@@ -3450,7 +3450,11 @@ def admin_canva_connect_proxy(request: Request) -> Response:
         return JSONResponse(status_code=500, content={"detail": "Sales support agent URL is not configured on this service."})
 
     return_to = str(request.base_url).rstrip("/") + "/admin"
-    redirect_url = f"{admin_settings.sales_support_agent_url}/admin/api/canva/connect?return_to={quote(return_to, safe='')}"
+    redirect_url = (
+        f"{admin_settings.sales_support_agent_url}/api/admin/canva/connect"
+        f"?token={quote(admin_settings.sales_agent_internal_api_key, safe='')}"
+        f"&return_to={quote(return_to, safe='')}"
+    )
     return RedirectResponse(url=redirect_url, status_code=302)
 
 
