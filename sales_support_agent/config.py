@@ -151,6 +151,17 @@ class Settings:
     deck_competitor_required_columns: tuple[str, ...]
     deck_competitor_allowed_columns: tuple[str, ...]
     deck_required_template_fields: tuple[str, ...]
+    shopify_request_timeout_seconds: int
+    shopify_user_agent: str
+    amazon_sp_api_base_url: str
+    amazon_sp_api_region: str
+    amazon_sp_api_marketplace_id: str
+    amazon_sp_api_lwa_client_id: str
+    amazon_sp_api_lwa_client_secret: str
+    amazon_sp_api_refresh_token: str
+    amazon_sp_api_aws_access_key_id: str
+    amazon_sp_api_aws_secret_access_key: str
+    amazon_sp_api_aws_session_token: str
     active_statuses: tuple[str, ...] = field(default_factory=lambda: ACTIVE_FOLLOW_UP_STATUSES)
     inactive_statuses: tuple[str, ...] = field(default_factory=lambda: INACTIVE_STATUSES)
     managed_fields: ManagedFieldSettings = field(default_factory=ManagedFieldSettings)
@@ -415,6 +426,23 @@ def load_settings() -> Settings:
             os.getenv("DECK_REQUIRED_TEMPLATE_FIELDS", ""),
             default=(),
         ),
+        shopify_request_timeout_seconds=int((os.getenv("SHOPIFY_REQUEST_TIMEOUT_SECONDS", "20") or "20").strip()),
+        shopify_user_agent=(
+            os.getenv("SHOPIFY_USER_AGENT", "anata-deck-generator/1.0").strip()
+            or "anata-deck-generator/1.0"
+        ),
+        amazon_sp_api_base_url=(
+            os.getenv("AMAZON_SP_API_BASE_URL", "https://sellingpartnerapi-na.amazon.com").strip()
+            or "https://sellingpartnerapi-na.amazon.com"
+        ),
+        amazon_sp_api_region=(os.getenv("AMAZON_SP_API_REGION", "us-east-1").strip() or "us-east-1"),
+        amazon_sp_api_marketplace_id=(os.getenv("AMAZON_SP_API_MARKETPLACE_ID", "ATVPDKIKX0DER").strip() or "ATVPDKIKX0DER"),
+        amazon_sp_api_lwa_client_id=os.getenv("AMAZON_SP_API_LWA_CLIENT_ID", "").strip(),
+        amazon_sp_api_lwa_client_secret=os.getenv("AMAZON_SP_API_LWA_CLIENT_SECRET", "").strip(),
+        amazon_sp_api_refresh_token=os.getenv("AMAZON_SP_API_REFRESH_TOKEN", "").strip(),
+        amazon_sp_api_aws_access_key_id=os.getenv("AMAZON_SP_API_AWS_ACCESS_KEY_ID", "").strip(),
+        amazon_sp_api_aws_secret_access_key=os.getenv("AMAZON_SP_API_AWS_SECRET_ACCESS_KEY", "").strip(),
+        amazon_sp_api_aws_session_token=os.getenv("AMAZON_SP_API_AWS_SESSION_TOKEN", "").strip(),
         active_statuses=tuple(
             normalize_status_key(status)
             for status in ACTIVE_FOLLOW_UP_STATUSES
@@ -445,14 +473,15 @@ def get_missing_runtime_settings(settings: Settings) -> list[str]:
     return missing
 
 
-def get_missing_deck_generator_settings(settings: Settings) -> list[str]:
+def get_missing_deck_generator_settings(settings: Settings, *, include_google_sheets: bool = True) -> list[str]:
     missing: list[str] = []
-    if not settings.google_sheets_spreadsheet_id:
-        missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
-    if not settings.google_sheets_sales_range:
-        missing.append("GOOGLE_SHEETS_SALES_RANGE")
-    if not settings.google_service_account_json:
-        missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if include_google_sheets:
+        if not settings.google_sheets_spreadsheet_id:
+            missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
+        if not settings.google_sheets_sales_range:
+            missing.append("GOOGLE_SHEETS_SALES_RANGE")
+        if not settings.google_service_account_json:
+            missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not settings.canva_client_id:
         missing.append("CANVA_CLIENT_ID")
     if not settings.canva_client_secret:

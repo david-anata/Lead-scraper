@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import date, datetime, timedelta, timezone
+import re
 from urllib.parse import parse_qs
 
 import requests
@@ -68,6 +69,21 @@ from sales_support_agent.config import normalize_status_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _parse_competitor_inputs(value: str) -> list[str]:
+    items: list[str] = []
+    seen: set[str] = set()
+    for fragment in re.split(r"[\n,]+", str(value or "")):
+        cleaned = fragment.strip()
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        items.append(cleaned)
+    return items
 
 
 def _enforce_api_key(request: Request, internal_api_key: str | None) -> None:
@@ -744,6 +760,7 @@ def admin_canva_connect(request: Request) -> Response:
             "state": state,
             "code_verifier": code_verifier,
             "issued_at": str(int(datetime.now(timezone.utc).timestamp())),
+            "return_to": str(request.query_params.get("return_to", "") or "").strip(),
         },
     )
     authorize_url = CanvaClient(settings).build_authorize_url(
@@ -789,7 +806,8 @@ def admin_canva_callback(
             code_verifier=state_payload.get("code_verifier", ""),
         )
 
-    response = RedirectResponse(url="/admin", status_code=302)
+    redirect_target = str(state_payload.get("return_to", "") or "").strip() or "/admin"
+    response = RedirectResponse(url=redirect_target, status_code=302)
     response.delete_cookie(_canva_oauth_cookie_name(request), path="/")
     return response
 
@@ -797,7 +815,10 @@ def admin_canva_callback(
 @router.post("/admin/api/generate-deck", response_model=ApiMessage)
 async def admin_generate_deck(
     request: Request,
-    competitor_csv: UploadFile = File(...),
+    competitor_csv: UploadFile | None = File(default=None),
+    target_product_input: str = Form(default=""),
+    shopify_product_url: str = Form(default=""),
+    competitor_inputs: str = Form(default=""),
     run_label: str = Form(default=""),
     reporting_period: str = Form(default=""),
     report_date: str = Form(default=""),
@@ -810,16 +831,72 @@ async def admin_generate_deck(
         parsed_report_date = date.fromisoformat(report_date) if report_date else None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Report date must use YYYY-MM-DD format.") from exc
-    competitor_bytes = await competitor_csv.read()
+    competitor_bytes = await competitor_csv.read() if competitor_csv is not None else None
+    competitor_values = _parse_competitor_inputs(competitor_inputs)
     settings = request.app.state.settings
     with session_scope(request.app.state.session_factory) as session:
         result = DeckGenerationService(settings, session).generate_deck(
             competitor_csv_bytes=competitor_bytes,
-            competitor_filename=competitor_csv.filename or "competitor.csv",
+            competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
+            target_product_input=target_product_input,
+            shopify_product_url=shopify_product_url,
+            competitor_inputs=competitor_values,
             run_label=run_label,
             report_date=parsed_report_date,
             reporting_period=reporting_period,
         )
+    return ApiMessage(
+        status="ok",
+        message=result.message,
+        details={
+            "run_id": result.run_id,
+            "status": result.status,
+            "design_id": result.design_id,
+            "design_title": result.design_title,
+            "edit_url": result.edit_url,
+            "view_url": result.view_url,
+            "warnings": result.warnings,
+            "sales_row_count": result.sales_row_count,
+            "competitor_row_count": result.competitor_row_count,
+            "template_fields": result.template_fields,
+        },
+    )
+
+
+@router.post("/api/admin/generate-deck", response_model=ApiMessage)
+async def internal_admin_generate_deck(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+    competitor_csv: UploadFile | None = File(default=None),
+    target_product_input: str = Form(default=""),
+    shopify_product_url: str = Form(default=""),
+    competitor_inputs: str = Form(default=""),
+    run_label: str = Form(default=""),
+    reporting_period: str = Form(default=""),
+    report_date: str = Form(default=""),
+) -> ApiMessage:
+    _enforce_api_key(request, x_internal_api_key)
+
+    try:
+        parsed_report_date = date.fromisoformat(report_date) if report_date else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Report date must use YYYY-MM-DD format.") from exc
+
+    competitor_bytes = await competitor_csv.read() if competitor_csv is not None else None
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        result = DeckGenerationService(settings, session).generate_deck(
+            competitor_csv_bytes=competitor_bytes,
+            competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
+            target_product_input=target_product_input,
+            shopify_product_url=shopify_product_url,
+            competitor_inputs=_parse_competitor_inputs(competitor_inputs),
+            run_label=run_label,
+            report_date=parsed_report_date,
+            reporting_period=reporting_period,
+            trigger="internal_api",
+        )
+
     return ApiMessage(
         status="ok",
         message=result.message,

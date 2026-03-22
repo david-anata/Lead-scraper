@@ -7,6 +7,8 @@ from types import SimpleNamespace
 try:
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
     from sales_support_agent.models.entities import CanvaConnection
+    from sales_support_agent.integrations.amazon_sp_api import AmazonCatalogSnapshot
+    from sales_support_agent.integrations.shopify import ShopifyProductSnapshot
     from sales_support_agent.services.deck_generator import DeckGenerationService
     from sales_support_agent.services.token_seal import seal_token
 
@@ -33,9 +35,16 @@ class _FakeGoogleSheetsClient:
 
 
 class _FakeCanvaClient:
-    def __init__(self, *, include_image_field: bool = False, include_top_products_chart: bool = False):
+    def __init__(
+        self,
+        *,
+        include_image_field: bool = False,
+        include_top_products_chart: bool = False,
+        dataset_override: dict[str, dict[str, object]] | None = None,
+    ):
         self.include_image_field = include_image_field
         self.include_top_products_chart = include_top_products_chart
+        self.dataset_override = dataset_override
         self.created_payload: dict[str, object] | None = None
 
     def get_user_capabilities(self, access_token: str) -> dict[str, object]:
@@ -45,6 +54,8 @@ class _FakeCanvaClient:
         return {"access_token": "fresh-access", "refresh_token": refresh_token, "expires_in": 3600}
 
     def get_brand_template_dataset(self, brand_template_id: str, access_token: str) -> dict[str, object]:
+        if self.dataset_override is not None:
+            return {"dataset": self.dataset_override}
         dataset = {
             "sales_sales_total": {"type": "text"},
             "report_generated_date": {"type": "text"},
@@ -84,6 +95,46 @@ class _FakeCanvaClient:
                 },
             }
         }
+
+
+class _FakeShopifyClient:
+    def fetch_product(self, product_url: str) -> ShopifyProductSnapshot:
+        return ShopifyProductSnapshot(
+            source_url=product_url,
+            domain="bonpatch.com",
+            handle="clarity-patch",
+            brand_name="BonPatch",
+            title="Clarity Patch",
+            description="A short hero description.",
+            price="$34.00",
+            currency="USD",
+            image_url="https://cdn.example.com/clarity-patch.jpg",
+            product_type="Patch",
+            tags=("focus", "energy"),
+            vendor="BonPatch",
+        )
+
+
+class _FakeAmazonClient:
+    def __init__(self, *, configured: bool = True) -> None:
+        self.configured = configured
+
+    def is_configured(self) -> bool:
+        return self.configured
+
+    def get_catalog_item(self, asin: str, *, source_url: str = "") -> AmazonCatalogSnapshot:
+        return AmazonCatalogSnapshot(
+            asin=asin,
+            title=f"Catalog {asin}",
+            brand="Rival Brand",
+            category="Patches",
+            bsr="1250",
+            dimensions="4 in x 3 in x 1 in",
+            package_dimensions="5 in x 4 in x 2 in",
+            marketplace_id="ATVPDKIKX0DER",
+            source_url=source_url or f"https://www.amazon.com/dp/{asin}",
+            raw_payload={},
+        )
 
 
 def _build_settings(**overrides: object) -> SimpleNamespace:
@@ -218,6 +269,114 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertEqual(chart_rows[1]["cells"][1]["value"], 320.0)
         self.assertEqual(chart_rows[2]["cells"][0]["value"], "Gamma Wash")
         self.assertEqual(chart_rows[3]["cells"][0]["value"], "Alpha Serum")
+
+    def test_generate_deck_supports_automation_first_template_inputs(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = _build_settings(
+            google_sheets_spreadsheet_id="",
+            google_sheets_sales_range="",
+            google_service_account_json="",
+        )
+        canva_client = _FakeCanvaClient(
+            dataset_override={
+                "brand_name": {"type": "text"},
+                "hero_product_name": {"type": "text"},
+                "market_summary": {"type": "text"},
+                "competitor_1_name": {"type": "text"},
+                "competitor_table": {"type": "chart"},
+                "top_products_by_bsr": {"type": "chart"},
+            }
+        )
+
+        with session_scope(session_factory) as session:
+            session.add(
+                CanvaConnection(
+                    display_name="Deck Ops",
+                    access_token_encrypted=seal_token(settings.canva_token_secret, "access-token"),
+                    refresh_token_encrypted=seal_token(settings.canva_token_secret, "refresh-token"),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    capabilities_json={"autofill": True, "brand_template": True},
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            result = DeckGenerationService(
+                settings,
+                session,
+                google_client=_FakeGoogleSheetsClient(),
+                canva_client=canva_client,
+                shopify_client=_FakeShopifyClient(),
+                amazon_client=_FakeAmazonClient(),
+            ).generate_deck(
+                shopify_product_url="https://bonpatch.com/products/clarity-patch",
+                competitor_inputs=[
+                    "https://www.amazon.com/dp/B000000001",
+                    "B000000002",
+                ],
+                run_label="Automation Deck",
+                report_date=date(2026, 3, 21),
+            )
+
+        self.assertEqual(result.competitor_row_count, 2)
+        self.assertEqual(canva_client.created_payload["brand_name"]["text"], "BonPatch")
+        self.assertEqual(canva_client.created_payload["hero_product_name"]["text"], "Clarity Patch")
+        self.assertEqual(canva_client.created_payload["competitor_1_name"]["text"], "Catalog B000000001")
+        self.assertEqual(canva_client.created_payload["market_summary"]["text"].startswith("We are benchmarking BonPatch"), True)
+        chart_rows = canva_client.created_payload["competitor_table"]["chart_data"]["rows"]
+        self.assertEqual(chart_rows[0]["cells"][0]["value"], "competitor")
+        self.assertEqual(chart_rows[1]["cells"][0]["value"], "Catalog B000000001")
+        self.assertEqual(chart_rows[1]["cells"][1]["value"], 1250.0)
+
+    def test_generate_deck_supports_amazon_target_product_input(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = _build_settings(
+            google_sheets_spreadsheet_id="",
+            google_sheets_sales_range="",
+            google_service_account_json="",
+        )
+        canva_client = _FakeCanvaClient(
+            dataset_override={
+                "brand_name": {"type": "text"},
+                "hero_product_name": {"type": "text"},
+                "hero_product_input_type": {"type": "text"},
+                "hero_product_dimensions": {"type": "text"},
+                "competitor_table": {"type": "chart"},
+            }
+        )
+
+        with session_scope(session_factory) as session:
+            session.add(
+                CanvaConnection(
+                    display_name="Deck Ops",
+                    access_token_encrypted=seal_token(settings.canva_token_secret, "access-token"),
+                    refresh_token_encrypted=seal_token(settings.canva_token_secret, "refresh-token"),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    capabilities_json={"autofill": True, "brand_template": True},
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            DeckGenerationService(
+                settings,
+                session,
+                google_client=_FakeGoogleSheetsClient(),
+                canva_client=canva_client,
+                shopify_client=_FakeShopifyClient(),
+                amazon_client=_FakeAmazonClient(),
+            ).generate_deck(
+                target_product_input="B08DK5RDJV",
+                competitor_inputs=["B08YRDBFFX"],
+                run_label="Amazon Target Deck",
+                report_date=date(2026, 3, 22),
+            )
+
+        self.assertEqual(canva_client.created_payload["hero_product_input_type"]["text"], "amazon")
+        self.assertEqual(canva_client.created_payload["hero_product_name"]["text"], "Catalog B08DK5RDJV")
+        self.assertEqual(canva_client.created_payload["hero_product_dimensions"]["text"], "4 in x 3 in x 1 in")
 
 
 if __name__ == "__main__":

@@ -1616,7 +1616,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         + html.escape(", ".join(data.deck_generator_missing))
         + "</div>"
         if not data.deck_generator_ready
-        else '<div class="notice success">Deck generator is configured. Connect Canva once, then upload a competitor CSV to generate a fresh deck copy.</div>'
+        else '<div class="notice success">Deck generator is configured. Connect Canva once, then use the automation-first template fields to generate a fresh deck copy.</div>'
     )
     canva_connection_label = data.deck_canva_display_name or "No Canva account connected yet"
     deck_capability_bits = "".join(
@@ -2769,7 +2769,7 @@ def render_dashboard_page(data: DashboardData) -> str:
             <details class="utility-drawer" id="deck-generator-panel">
               <summary>Generate sales deck</summary>
               <div class="utility-body">
-                <p>Pull sales metrics from Google Sheets, upload the competitor CSV, and generate a fresh Canva deck copy from the configured brand template.</p>
+                <p>Use one target product input on the prospect side, then provide the competitor list separately. The target can be a Shopify product URL or an Amazon ASIN/URL. Competitor CSV remains optional as a fallback.</p>
                 {deck_ready_notice}
                 <div class="panel-stack">
                   <div class="snapshot-rows">
@@ -2783,8 +2783,16 @@ def render_dashboard_page(data: DashboardData) -> str:
                 </div>
                 <form class="lead-form" id="deck-generator-form">
                   <label>
-                    Competitor CSV
-                    <input type="file" name="competitor_csv" accept=".csv,text/csv" required />
+                    Target product URL or ASIN
+                    <input type="text" name="target_product_input" placeholder="https://brand.com/products/hero-product or B000000001" />
+                  </label>
+                  <label>
+                    Competitor Amazon links or ASINs
+                    <textarea name="competitor_inputs" placeholder="https://www.amazon.com/dp/B000000001&#10;B000000002&#10;https://www.amazon.com/dp/B000000003"></textarea>
+                  </label>
+                  <label>
+                    Optional competitor CSV fallback
+                    <input type="file" name="competitor_csv" accept=".csv,text/csv" />
                   </label>
                   <label>
                     Report date
@@ -2803,6 +2811,9 @@ def render_dashboard_page(data: DashboardData) -> str:
                     <a class="button-link" id="connect-canva-button" href="/admin/api/canva/connect">CONNECT CANVA</a>
                   </div>
                 </form>
+                <div class="draft-help">
+                  Build the Canva template with text and chart autofill fields only in v1. Use machine names like <strong>brand_name</strong>, <strong>hero_product_name</strong>, <strong>competitor_table</strong>, and <strong>top_products_by_bsr</strong>.
+                </div>
                 <div class="status-line" id="deck-status">Deck status: Ready.</div>
                 <div class="deck-run-list" id="deck-run-list">
                   {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}

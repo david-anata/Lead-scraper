@@ -9,15 +9,19 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings, get_missing_deck_generator_settings
+from sales_support_agent.integrations.amazon_sp_api import AmazonSpApiClient
 from sales_support_agent.integrations.canva import CanvaClient
 from sales_support_agent.integrations.google_sheets import GoogleSheetsClient
+from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection
 from sales_support_agent.services.audit import AuditService
+from sales_support_agent.services.product_research import ProductResearchService
 from sales_support_agent.services.token_seal import seal_token, unseal_token
 
 
@@ -53,12 +57,20 @@ class DeckGenerationService:
         *,
         google_client: GoogleSheetsClient | None = None,
         canva_client: CanvaClient | None = None,
+        shopify_client: ShopifyStorefrontClient | None = None,
+        amazon_client: AmazonSpApiClient | None = None,
     ):
         self.settings = settings
         self.session = session
         self.google_client = google_client or GoogleSheetsClient(settings)
         self.canva_client = canva_client or CanvaClient(settings)
+        self.shopify_client = shopify_client or ShopifyStorefrontClient(settings)
+        self.amazon_client = amazon_client or AmazonSpApiClient(settings)
         self.audit = AuditService(session)
+        self.product_research = ProductResearchService(
+            shopify_client=self.shopify_client,
+            amazon_client=self.amazon_client,
+        )
 
     def connect_canva(self, *, code: str, code_verifier: str) -> CanvaConnection:
         payload = self.canva_client.exchange_code(code=code, code_verifier=code_verifier)
@@ -110,14 +122,23 @@ class DeckGenerationService:
     def generate_deck(
         self,
         *,
-        competitor_csv_bytes: bytes,
-        competitor_filename: str,
+        competitor_csv_bytes: bytes | None = None,
+        competitor_filename: str = "",
+        target_product_input: str = "",
+        shopify_product_url: str = "",
+        competitor_inputs: list[str] | None = None,
         run_label: str = "",
         report_date: date | None = None,
         reporting_period: str = "",
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
-        missing = get_missing_deck_generator_settings(self.settings)
+        effective_target_input = target_product_input.strip() or shopify_product_url.strip()
+        normalized_competitors = _normalize_competitor_inputs(competitor_inputs or [])
+        automation_mode = bool(effective_target_input or normalized_competitors)
+        missing = get_missing_deck_generator_settings(
+            self.settings,
+            include_google_sheets=not automation_mode,
+        )
         if missing:
             raise RuntimeError(f"Deck generator is missing environment variables: {', '.join(missing)}")
 
@@ -125,7 +146,11 @@ class DeckGenerationService:
             "deck_generation",
             trigger=trigger,
             metadata={
+                "generation_mode": "automation_first" if automation_mode else "csv_upload",
                 "competitor_filename": competitor_filename,
+                "target_product_input": effective_target_input,
+                "shopify_product_url": shopify_product_url,
+                "competitor_inputs": normalized_competitors,
                 "report_date": report_date.isoformat() if report_date else "",
                 "reporting_period": reporting_period,
                 "template_id": self.settings.canva_brand_template_id,
@@ -133,13 +158,23 @@ class DeckGenerationService:
             },
         )
         try:
-            sales_payload = self.google_client.get_values()
-            dataset = self._build_dataset(
-                sales_payload=sales_payload,
-                competitor_csv_bytes=competitor_csv_bytes,
-                report_date=report_date,
-                reporting_period=reporting_period,
-            )
+            if automation_mode:
+                dataset = self._build_automation_first_dataset(
+                    target_product_input=effective_target_input,
+                    competitor_inputs=normalized_competitors,
+                    report_date=report_date,
+                    reporting_period=reporting_period,
+                )
+            else:
+                if competitor_csv_bytes is None:
+                    raise RuntimeError("Competitor CSV upload is required when Shopify/Amazon inputs are not provided.")
+                sales_payload = self.google_client.get_values()
+                dataset = self._build_dataset(
+                    sales_payload=sales_payload,
+                    competitor_csv_bytes=competitor_csv_bytes,
+                    report_date=report_date,
+                    reporting_period=reporting_period,
+                )
 
             access_token = self._ensure_canva_access_token()
             template_payload = self.canva_client.get_brand_template_dataset(
@@ -302,6 +337,141 @@ class DeckGenerationService:
             rows = [[cell for cell in row[:20]] for row in rows]
         return rows, text_fields, warnings
 
+    def _build_automation_first_dataset(
+        self,
+        *,
+        target_product_input: str,
+        competitor_inputs: list[str],
+        report_date: date | None,
+        reporting_period: str,
+    ) -> DeckDataset:
+        parsed_target = _parse_target_product_input(target_product_input)
+        if not parsed_target["source_url"]:
+            raise RuntimeError("Target product input is required for the automation-first deck flow.")
+        if not competitor_inputs:
+            raise RuntimeError("Provide at least one competitor Amazon URL or ASIN for the automation-first deck flow.")
+
+        normalized_competitors = [_parse_competitor_reference(value) for value in competitor_inputs[:5]]
+        warnings: list[str] = []
+        if len(competitor_inputs) > 5:
+            warnings.append("Only the first 5 competitor inputs were used in this v1 deck flow.")
+        if len(normalized_competitors) < 5:
+            warnings.append("Fewer than 5 competitor inputs were provided, so some comparison slots will stay blank.")
+
+        hero_product = self.product_research.enrich_target_product(parsed_target)
+        report_label = reporting_period.strip() or f"As of {(report_date or date.today()).isoformat()}"
+        text_fields: dict[str, str] = {
+            "deck_mode": "automation_first",
+            "brand_name": hero_product.brand_name or parsed_target["brand_name"],
+            "brand_domain": parsed_target["domain"],
+            "brand_shopify_url": hero_product.source_url if parsed_target["source_type"] == "shopify" else "",
+            "hero_product_name": hero_product.title or parsed_target["product_name"],
+            "hero_product_handle": parsed_target["product_handle"],
+            "hero_product_source_url": hero_product.source_url or parsed_target["source_url"],
+            "hero_product_input_type": parsed_target["source_type"],
+            "hero_product_price": hero_product.price or "Pending Shopify enrichment",
+            "hero_product_bsr": "Pending SP-API enrichment",
+            "hero_product_dimensions": hero_product.dimensions or "Pending SP-API enrichment",
+            "hero_product_description": hero_product.description,
+            "hero_product_type": hero_product.product_type,
+            "hero_product_tags": ", ".join(hero_product.tags),
+            "hero_product_image_url": hero_product.image_url,
+            "hero_product_snapshot": (
+                f"{hero_product.title or parsed_target['product_name']} anchors this deck as the hero product for {hero_product.brand_name or parsed_target['brand_name']}."
+            ),
+            "report_generated_date": (report_date or date.today()).isoformat(),
+            "reporting_period": report_label,
+            "market_summary": (
+                f"We are benchmarking {hero_product.brand_name or parsed_target['brand_name']} against up to five live competitor listings. "
+                "Use the comparison slides to validate BSR, category pressure, and listing depth before final recommendations."
+            ),
+            "executive_summary": (
+                f"This automation-first deck uses the target product plus competitor Amazon identifiers to frame the market. "
+                "Catalog, BSR, and listing-quality enrichment can be layered in without changing the Canva template."
+            ),
+            "cro_summary": (
+                f"Start with the hero listing for {hero_product.title or parsed_target['product_name']}. "
+                "Refine title hierarchy, bullet clarity, and conversion proof before scaling traffic."
+            ),
+            "seo_summary": (
+                "Map the hero listing against competitor naming patterns, category language, and search-intent coverage. "
+                "The template should leave room for indexing gaps and keyword priorities."
+            ),
+            "creative_summary": (
+                "Use the competitor set to compare image sequencing, claim clarity, and visual proof. "
+                "The deck should call out where design changes will increase click-through and conversion."
+            ),
+            "advertising_summary": (
+                "Advertising recommendations should follow catalog and listing cleanup. "
+                "Once the hero offer is clear, direct spend toward the gaps where competitor pressure is highest."
+            ),
+            "recommended_plan_summary": (
+                "Phase 1: enrich the hero listing and lock the positioning. "
+                "Phase 2: rebuild content and creative. Phase 3: scale acquisition with disciplined advertising."
+            ),
+            "expected_impact_summary": (
+                "The goal of this deck is to move from identifier-based benchmarking to a production-ready growth plan "
+                "without redesigning the Canva workflow."
+            ),
+            "why_anata_summary": (
+                "Anata can turn the opportunity findings into execution across CRO, creative, SEO, and advertising "
+                "without fragmenting ownership between multiple vendors."
+            ),
+            "cta_summary": (
+                f"Use this deck to align on the hero SKU, the five main competitors, and the first implementation sprint for {hero_product.brand_name or parsed_target['brand_name']}."
+            ),
+        }
+        warnings.extend(hero_product.warnings)
+
+        competitor_rows = [["competitor", "bsr", "estimated_sales", "estimated_units", "price", "review_count"]]
+        top_bsr_rows = [["product_name", "bsr", "sales", "units", "change_from_previous_period"]]
+        for slot in range(1, 6):
+            competitor = normalized_competitors[slot - 1] if slot - 1 < len(normalized_competitors) else None
+            if competitor is None:
+                text_fields[f"competitor_{slot}_name"] = ""
+                text_fields[f"competitor_{slot}_identifier"] = ""
+                text_fields[f"competitor_{slot}_source_url"] = ""
+                text_fields[f"competitor_{slot}_bsr"] = ""
+                text_fields[f"competitor_{slot}_estimated_sales"] = ""
+                text_fields[f"competitor_{slot}_units"] = ""
+                text_fields[f"competitor_{slot}_strength"] = ""
+                text_fields[f"competitor_{slot}_gap"] = ""
+                continue
+
+            enriched_competitor = self.product_research.enrich_competitor_product(competitor)
+            warnings.extend(enriched_competitor.warnings)
+            text_fields[f"competitor_{slot}_name"] = enriched_competitor.name
+            text_fields[f"competitor_{slot}_identifier"] = enriched_competitor.identifier
+            text_fields[f"competitor_{slot}_source_url"] = enriched_competitor.source_url
+            text_fields[f"competitor_{slot}_asin"] = enriched_competitor.asin
+            text_fields[f"competitor_{slot}_brand"] = enriched_competitor.brand
+            text_fields[f"competitor_{slot}_category"] = enriched_competitor.category
+            text_fields[f"competitor_{slot}_dimensions"] = enriched_competitor.dimensions
+            text_fields[f"competitor_{slot}_package_dimensions"] = enriched_competitor.package_dimensions
+            text_fields[f"competitor_{slot}_bsr"] = enriched_competitor.bsr
+            text_fields[f"competitor_{slot}_estimated_sales"] = enriched_competitor.estimated_sales
+            text_fields[f"competitor_{slot}_units"] = enriched_competitor.estimated_units
+            text_fields[f"competitor_{slot}_strength"] = enriched_competitor.strength
+            text_fields[f"competitor_{slot}_gap"] = enriched_competitor.gap
+
+            competitor_rows.append([enriched_competitor.name, enriched_competitor.bsr, enriched_competitor.estimated_sales, enriched_competitor.estimated_units, "", ""])
+            top_bsr_rows.append([enriched_competitor.name, enriched_competitor.bsr, enriched_competitor.estimated_sales, enriched_competitor.estimated_units, ""])
+
+        text_fields["competitor_row_count"] = str(len(competitor_rows) - 1)
+        text_fields["top_products_by_bsr_row_count"] = str(len(top_bsr_rows) - 1)
+        text_fields["sales_row_count"] = "0"
+
+        return DeckDataset(
+            text_fields=text_fields,
+            chart_fields={
+                "competitor_table": _build_chart_data(competitor_rows),
+                "top_products_by_bsr": _build_chart_data(top_bsr_rows),
+            },
+            warnings=warnings,
+            sales_row_count=0,
+            competitor_row_count=len(competitor_rows) - 1,
+        )
+
     def _prepare_canva_data(
         self,
         template_dataset: dict[str, dict[str, Any]],
@@ -438,6 +608,135 @@ class DeckGenerationService:
 def _normalize_key(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
     return normalized
+
+
+def _normalize_competitor_inputs(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in values:
+        for fragment in re.split(r"[\n,]+", str(raw_value or "")):
+            cleaned = fragment.strip()
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(cleaned)
+    return normalized
+
+
+def _parse_target_product_input(value: str) -> dict[str, str]:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return {
+            "source_type": "",
+            "source_url": "",
+            "domain": "",
+            "brand_name": "",
+            "product_handle": "",
+            "product_name": "",
+            "asin": "",
+        }
+    shopify_candidate = _parse_shopify_product_url(cleaned)
+    if shopify_candidate["source_url"] and shopify_candidate["product_handle"]:
+        return {
+            "source_type": "shopify",
+            "source_url": shopify_candidate["source_url"],
+            "domain": shopify_candidate["domain"],
+            "brand_name": shopify_candidate["brand_name"],
+            "product_handle": shopify_candidate["product_handle"],
+            "product_name": shopify_candidate["product_name"],
+            "asin": "",
+        }
+    amazon_candidate = _parse_competitor_reference(cleaned)
+    if amazon_candidate["asin"]:
+        return {
+            "source_type": "amazon",
+            "source_url": amazon_candidate["source_url"],
+            "domain": "amazon.com",
+            "brand_name": "",
+            "product_handle": amazon_candidate["asin"],
+            "product_name": amazon_candidate["name"],
+            "asin": amazon_candidate["asin"],
+        }
+    return {
+        "source_type": "",
+        "source_url": "",
+        "domain": "",
+        "brand_name": "",
+        "product_handle": "",
+        "product_name": "",
+        "asin": "",
+    }
+
+
+def _parse_shopify_product_url(value: str) -> dict[str, str]:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return {
+            "source_url": "",
+            "domain": "",
+            "brand_name": "",
+            "product_handle": "",
+            "product_name": "",
+        }
+    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
+    domain = (parsed.netloc or parsed.path).strip().lower().split("/")[0]
+    path = parsed.path or ""
+    handle = ""
+    match = re.search(r"/products/([^/?#]+)", path, flags=re.IGNORECASE)
+    if match:
+        handle = match.group(1).strip()
+    brand_source = domain.split(".")
+    brand_token = brand_source[-2] if len(brand_source) >= 2 else domain
+    brand_name = _titleize_slug(brand_token) or "Brand"
+    product_name = _titleize_slug(handle) or f"{brand_name} Hero Product"
+    canonical_url = cleaned if "://" in cleaned else f"https://{cleaned}"
+    return {
+        "source_url": canonical_url,
+        "domain": domain,
+        "brand_name": brand_name,
+        "product_handle": handle,
+        "product_name": product_name,
+    }
+
+
+def _parse_competitor_reference(value: str) -> dict[str, str]:
+    cleaned = str(value or "").strip()
+    asin_match = re.search(r"\b([A-Z0-9]{10})\b", cleaned.upper())
+    parsed = urlparse(cleaned if "://" in cleaned else "")
+    path = parsed.path if parsed.scheme else ""
+    url_candidate = cleaned if parsed.scheme else ""
+    name = ""
+    if path:
+        for pattern in (r"/dp/([A-Z0-9]{10})", r"/gp/product/([A-Z0-9]{10})", r"/([^/?#]+)/dp/[A-Z0-9]{10}"):
+            path_match = re.search(pattern, path, flags=re.IGNORECASE)
+            if path_match and pattern.startswith("/("):
+                name = _titleize_slug(path_match.group(1))
+                break
+    asin = asin_match.group(1) if asin_match else ""
+    identifier = asin or cleaned
+    if not name:
+        if asin:
+            name = f"ASIN {asin}"
+        else:
+            name = _titleize_slug(cleaned.rsplit("/", 1)[-1]) or cleaned
+    source_url = url_candidate or (f"https://www.amazon.com/dp/{asin}" if asin else cleaned)
+    return {
+        "name": name[:120],
+        "identifier": identifier[:160],
+        "source_url": source_url[:255],
+        "asin": asin,
+    }
+
+
+def _titleize_slug(value: str) -> str:
+    cleaned = re.sub(r"[_\-]+", " ", str(value or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return ""
+    return " ".join(token.capitalize() for token in cleaned.split(" "))
 
 
 def _normalize_capabilities(payload: dict[str, Any]) -> dict[str, bool]:

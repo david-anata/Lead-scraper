@@ -8,7 +8,7 @@ import re
 import time
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from base64 import b64decode, b64encode
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -656,20 +656,24 @@ def _post_sales_support_multipart(
     path: str,
     *,
     data: dict[str, Any],
-    file_field_name: str,
-    file_name: str,
-    file_bytes: bytes,
-    content_type: str,
+    file_field_name: str | None = None,
+    file_name: str = "",
+    file_bytes: bytes | None = None,
+    content_type: str = "application/octet-stream",
 ) -> tuple[int, dict[str, Any]]:
     admin_settings = load_admin_dashboard_settings()
     if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
         raise RuntimeError("Sales support agent URL or internal API key is not configured on this service.")
 
+    files = None
+    if file_field_name and file_bytes is not None:
+        files = {file_field_name: (file_name, file_bytes, content_type)}
+
     response = requests.post(
         f"{admin_settings.sales_support_agent_url}{path}",
         headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
         data=data,
-        files={file_field_name: (file_name, file_bytes, content_type)},
+        files=files,
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     payload = response.json() if response.content else {}
@@ -3431,6 +3435,63 @@ async def admin_create_gmail_drafts(
         return JSONResponse(
             status_code=500,
             content={"detail": "Bulk draft creation failed.", "error": str(exc)},
+        )
+
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.get("/admin/api/canva/connect", response_model=None)
+def admin_canva_connect_proxy(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    if not admin_settings.sales_support_agent_url:
+        return JSONResponse(status_code=500, content={"detail": "Sales support agent URL is not configured on this service."})
+
+    return_to = str(request.base_url).rstrip("/") + "/admin"
+    redirect_url = f"{admin_settings.sales_support_agent_url}/admin/api/canva/connect?return_to={quote(return_to, safe='')}"
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
+@app.post("/admin/api/generate-deck")
+async def admin_generate_deck_proxy(
+    request: Request,
+    competitor_csv: UploadFile | None = File(default=None),
+    target_product_input: str = Form(default=""),
+    shopify_product_url: str = Form(default=""),
+    competitor_inputs: str = Form(default=""),
+    run_label: str = Form(default=""),
+    reporting_period: str = Form(default=""),
+    report_date: str = Form(default=""),
+) -> JSONResponse:
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    file_bytes = await competitor_csv.read() if competitor_csv is not None else None
+    try:
+        status_code, payload = _post_sales_support_multipart(
+            "/api/admin/generate-deck",
+            data={
+                "target_product_input": target_product_input,
+                "shopify_product_url": shopify_product_url,
+                "competitor_inputs": competitor_inputs,
+                "run_label": run_label,
+                "reporting_period": reporting_period,
+                "report_date": report_date,
+            },
+            file_field_name="competitor_csv" if competitor_csv is not None else None,
+            file_name=competitor_csv.filename if competitor_csv is not None else "",
+            file_bytes=file_bytes,
+            content_type=competitor_csv.content_type if competitor_csv is not None else "text/csv",
+        )
+    except Exception as exc:
+        logger.exception("[AdminDashboard] deck generation failed")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Deck generation failed.", "error": str(exc)},
         )
 
     return JSONResponse(status_code=status_code, content=payload)
