@@ -774,9 +774,11 @@ def admin_canva_connect(request: Request) -> Response:
     )
     response = RedirectResponse(url=authorize_url, status_code=302)
     response.set_cookie(
-        key=_canva_oauth_cookie_name(request),
         value=signed_state,
-        **_canva_oauth_cookie_options(request),
+        **{
+            **_canva_oauth_cookie_options(request),
+            "key": _canva_oauth_cookie_name(request),
+        },
     )
     return response
 
@@ -821,9 +823,11 @@ def internal_canva_connect(
     )
     response = RedirectResponse(url=authorize_url, status_code=302)
     response.set_cookie(
-        key=_canva_oauth_cookie_name(request),
         value=signed_state,
-        **_canva_oauth_cookie_options(request),
+        **{
+            **_canva_oauth_cookie_options(request),
+            "key": _canva_oauth_cookie_name(request),
+        },
     )
     return response
 
