@@ -51,7 +51,6 @@ DEFAULT_STATUS_POLICIES: dict[str, StatusPolicy] = {
 DEFAULT_CANVA_SCOPES = (
     "design:content:write",
     "design:meta:read",
-    "brandtemplate:meta:read",
     "brandtemplate:content:read",
     "profile:read",
 )
