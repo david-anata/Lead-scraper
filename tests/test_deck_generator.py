@@ -13,7 +13,11 @@ try:
     from sqlalchemy import select
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
     from sales_support_agent.models.entities import AutomationRun
-    from sales_support_agent.services.deck_generator import DeckGenerationService
+    from sales_support_agent.services.deck_generator import (
+        DeckGenerationService,
+        _extract_listing_copy_points,
+        _normalize_custom_offer_cards,
+    )
     from sales_support_agent.services.product_research import EnrichedHeroProduct
 
     SQLALCHEMY_AVAILABLE = True
@@ -84,6 +88,32 @@ def _keyword_csv() -> bytes:
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck generator tests")
 class DeckGeneratorTests(unittest.TestCase):
+    def test_normalize_custom_offer_cards_prefers_json_payload(self) -> None:
+        cards = _normalize_custom_offer_cards(
+            offer_payload_json="""
+            [
+              {"enabled": true, "title": "Offer A", "description": "Desc", "price": "$1", "price_label": "Fee", "commission": "2%", "commission_label": "Comm", "baseline": "$10", "baseline_label": "Base", "bonus": "Note"},
+              {"enabled": false, "title": "Offer B"}
+            ]
+            """,
+            offers=["channel_management"],
+        )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["title"], "Offer A")
+        self.assertEqual(cards[0]["bonus"], "Note")
+
+    def test_extract_listing_copy_points_summarizes_long_blob(self) -> None:
+        bullets = _extract_listing_copy_points(
+            "About this item CONFIDENCE IN EVERY READING: Monitor your heart health with advanced accuracy technology "
+            "SAFEGUARD YOUR HEART: Detect heartbeat irregularities during routine blood pressure measurements "
+            "TURN NUMBERS INTO INSIGHTS: Connect effortlessly to the app to store readings and share reports"
+        )
+
+        self.assertGreaterEqual(len(bullets), 2)
+        self.assertTrue(any("Confidence In Every Reading" in item for item in bullets))
+        self.assertTrue(all("About this item" not in item for item in bullets))
+
     def test_generate_deck_returns_html_output_and_persists_run_metadata(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
