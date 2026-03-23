@@ -8,7 +8,7 @@ import re
 import time
 import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlparse
 from base64 import b64decode, b64encode
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
