@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 import re
 from urllib.parse import parse_qs
 
@@ -378,6 +379,7 @@ def root() -> ApiMessage:
 @router.get("/health", response_model=ApiMessage)
 def health(request: Request) -> ApiMessage:
     settings = request.app.state.settings
+    brand_package_path = Path(str(getattr(settings, "shared_brand_package_path", "") or "")).expanduser()
     return ApiMessage(
         status="ok",
         message="healthy",
@@ -385,15 +387,8 @@ def health(request: Request) -> ApiMessage:
             "clickup_configured": bool(settings.clickup_api_token and settings.clickup_list_id),
             "slack_configured": bool(settings.slack_bot_token and settings.slack_channel_id),
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
-            "deck_generator_configured": bool(
-                settings.google_sheets_spreadsheet_id
-                and settings.google_sheets_sales_range
-                and settings.google_service_account_json
-                and settings.canva_client_id
-                and settings.canva_client_secret
-                and settings.canva_redirect_uri
-                and settings.canva_brand_template_id
-            ),
+            "deck_generator_configured": brand_package_path.exists(),
+            "deck_brand_package_path": str(brand_package_path),
         },
     )
 
@@ -865,8 +860,7 @@ def admin_canva_callback(
     return response
 
 
-@router.get("/deck-exports/{run_id}/{token}", response_class=HTMLResponse)
-def deck_export_view(request: Request, run_id: int, token: str) -> Response:
+def _render_deck_export(request: Request, run_id: int, token: str) -> Response:
     with session_scope(request.app.state.session_factory) as session:
         run = session.execute(
             select(AutomationRun).where(
@@ -882,42 +876,49 @@ def deck_export_view(request: Request, run_id: int, token: str) -> Response:
         deck_html = str(summary.get("deck_html") or "")
         if not deck_html:
             return HTMLResponse("Deck export not found.", status_code=404)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        summary["view_count"] = int(summary.get("view_count", 0) or 0) + 1
+        if not summary.get("first_viewed_at"):
+            summary["first_viewed_at"] = now_iso
+        summary["last_viewed_at"] = now_iso
+        run.summary_json = summary
+        session.add(run)
         return HTMLResponse(deck_html)
+
+
+@router.get("/deck-exports/{run_id}/{token}", response_class=HTMLResponse)
+def deck_export_view(request: Request, run_id: int, token: str) -> Response:
+    return _render_deck_export(request, run_id, token)
+
+
+@router.get("/decks/{deck_slug}/{run_id}/{token}", response_class=HTMLResponse)
+def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    return _render_deck_export(request, run_id, token)
 
 
 @router.post("/admin/api/generate-deck", response_model=ApiMessage)
 async def admin_generate_deck(
     request: Request,
-    competitor_csv: UploadFile | None = File(default=None),
+    competitor_xray_csv: UploadFile = File(...),
+    keyword_xray_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
-    shopify_product_url: str = Form(default=""),
-    competitor_inputs: str = Form(default=""),
-    run_label: str = Form(default=""),
-    reporting_period: str = Form(default=""),
-    report_date: str = Form(default=""),
+    channels: list[str] = Form(default=[]),
 ) -> ApiMessage:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         raise HTTPException(status_code=401, detail="Admin login required.")
-
-    try:
-        parsed_report_date = date.fromisoformat(report_date) if report_date else None
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Report date must use YYYY-MM-DD format.") from exc
-    competitor_bytes = await competitor_csv.read() if competitor_csv is not None else None
-    competitor_values = _parse_competitor_inputs(competitor_inputs)
+    competitor_bytes = await competitor_xray_csv.read()
+    keyword_bytes = await keyword_xray_csv.read() if keyword_xray_csv is not None else None
     settings = request.app.state.settings
     try:
         with session_scope(request.app.state.session_factory) as session:
             result = DeckGenerationService(settings, session).generate_deck(
-                competitor_csv_bytes=competitor_bytes,
-                competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
+                competitor_xray_csv_bytes=competitor_bytes,
+                competitor_xray_filename=competitor_xray_csv.filename or "competitors.csv",
+                keyword_xray_csv_bytes=keyword_bytes,
+                keyword_xray_filename=keyword_xray_csv.filename if keyword_xray_csv is not None else "",
                 target_product_input=target_product_input,
-                shopify_product_url=shopify_product_url,
-                competitor_inputs=competitor_values,
-                run_label=run_label,
-                report_date=parsed_report_date,
-                reporting_period=reporting_period,
+                channels=channels,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -944,34 +945,24 @@ async def admin_generate_deck(
 async def internal_admin_generate_deck(
     request: Request,
     x_internal_api_key: str | None = Header(default=None),
-    competitor_csv: UploadFile | None = File(default=None),
+    competitor_xray_csv: UploadFile = File(...),
+    keyword_xray_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
-    shopify_product_url: str = Form(default=""),
-    competitor_inputs: str = Form(default=""),
-    run_label: str = Form(default=""),
-    reporting_period: str = Form(default=""),
-    report_date: str = Form(default=""),
+    channels: list[str] = Form(default=[]),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
-
-    try:
-        parsed_report_date = date.fromisoformat(report_date) if report_date else None
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Report date must use YYYY-MM-DD format.") from exc
-
-    competitor_bytes = await competitor_csv.read() if competitor_csv is not None else None
+    competitor_bytes = await competitor_xray_csv.read()
+    keyword_bytes = await keyword_xray_csv.read() if keyword_xray_csv is not None else None
     settings = request.app.state.settings
     try:
         with session_scope(request.app.state.session_factory) as session:
             result = DeckGenerationService(settings, session).generate_deck(
-                competitor_csv_bytes=competitor_bytes,
-                competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
+                competitor_xray_csv_bytes=competitor_bytes,
+                competitor_xray_filename=competitor_xray_csv.filename or "competitors.csv",
+                keyword_xray_csv_bytes=keyword_bytes,
+                keyword_xray_filename=keyword_xray_csv.filename if keyword_xray_csv is not None else "",
                 target_product_input=target_product_input,
-                shopify_product_url=shopify_product_url,
-                competitor_inputs=_parse_competitor_inputs(competitor_inputs),
-                run_label=run_label,
-                report_date=parsed_report_date,
-                reporting_period=reporting_period,
+                channels=channels,
                 trigger="internal_api",
             )
     except Exception as exc:
@@ -1005,10 +996,7 @@ def admin_deck_runs(request: Request) -> ApiMessage:
     settings = request.app.state.settings
     with session_scope(request.app.state.session_factory) as session:
         service = DeckGenerationService(settings, session)
-        details = {
-            "connection": service.get_connection_summary(),
-            "runs": service.list_recent_runs(limit=10),
-        }
+        details = {"runs": service.list_recent_runs(limit=10)}
     return ApiMessage(status="ok", message="Deck generation runs loaded.", details=details)
 
 

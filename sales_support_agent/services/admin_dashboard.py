@@ -58,11 +58,6 @@ class DashboardData:
     lead_builder_missing: list[str]
     deck_generator_ready: bool
     deck_generator_missing: list[str]
-    deck_canva_connected: bool
-    deck_canva_display_name: str
-    deck_canva_capabilities: dict[str, bool]
-    deck_google_source: str
-    deck_template_id: str
     recent_deck_runs: list[dict[str, object]]
 
 
@@ -187,11 +182,6 @@ def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
         "lead_builder_missing": data.lead_builder_missing,
         "deck_generator_ready": data.deck_generator_ready,
         "deck_generator_missing": data.deck_generator_missing,
-        "deck_canva_connected": data.deck_canva_connected,
-        "deck_canva_display_name": data.deck_canva_display_name,
-        "deck_canva_capabilities": data.deck_canva_capabilities,
-        "deck_google_source": data.deck_google_source,
-        "deck_template_id": data.deck_template_id,
         "recent_deck_runs": data.recent_deck_runs,
     }
 
@@ -242,11 +232,6 @@ def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
         lead_builder_missing=[str(item) for item in payload.get("lead_builder_missing", [])],
         deck_generator_ready=bool(payload.get("deck_generator_ready")),
         deck_generator_missing=[str(item) for item in payload.get("deck_generator_missing", [])],
-        deck_canva_connected=bool(payload.get("deck_canva_connected")),
-        deck_canva_display_name=str(payload.get("deck_canva_display_name", "")),
-        deck_canva_capabilities={str(key): bool(value) for key, value in dict(payload.get("deck_canva_capabilities", {})).items()},
-        deck_google_source=str(payload.get("deck_google_source", "")),
-        deck_template_id=str(payload.get("deck_template_id", "")),
         recent_deck_runs=[dict(item) for item in payload.get("recent_deck_runs", [])],
     )
 
@@ -734,25 +719,7 @@ def build_dashboard_data(
 
     latest_run_summary = latest_run.summary_json if latest_run else {}
 
-    deck_generator_missing = [
-        env_name
-        for env_name, attr_name in (
-            ("GOOGLE_SHEETS_SPREADSHEET_ID", "google_sheets_spreadsheet_id"),
-            ("GOOGLE_SHEETS_SALES_RANGE", "google_sheets_sales_range"),
-            ("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"),
-            ("CANVA_CLIENT_ID", "canva_client_id"),
-            ("CANVA_CLIENT_SECRET", "canva_client_secret"),
-            ("CANVA_REDIRECT_URI", "canva_redirect_uri"),
-            ("CANVA_BRAND_TEMPLATE_ID", "canva_brand_template_id"),
-            ("CANVA_TOKEN_SECRET", "canva_token_secret"),
-        )
-        if not getattr(settings, attr_name, "")
-    ]
-    deck_connection = session.execute(
-        select(CanvaConnection)
-        .order_by(CanvaConnection.updated_at.desc(), CanvaConnection.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    deck_generator_missing: list[str] = []
     deck_runs = list(
         session.execute(
             select(AutomationRun)
@@ -771,12 +738,17 @@ def build_dashboard_data(
             "edit_url": dict(run.summary_json or {}).get("edit_url", ""),
             "view_url": dict(run.summary_json or {}).get("view_url", ""),
             "warnings": list(dict(run.summary_json or {}).get("warnings", []) or []),
+            "output_type": dict(run.summary_json or {}).get("output_type", ""),
+            "deck_slug": dict(run.summary_json or {}).get("deck_slug", ""),
+            "channels": list(dict(run.summary_json or {}).get("channels", []) or []),
+            "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
+            "first_viewed_at": dict(run.summary_json or {}).get("first_viewed_at", ""),
+            "last_viewed_at": dict(run.summary_json or {}).get("last_viewed_at", ""),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
         }
         for run in deck_runs
     ]
-    deck_capabilities = dict(deck_connection.capabilities_json) if deck_connection else {}
 
     return DashboardData(
         as_of_date=effective_date,
@@ -790,16 +762,8 @@ def build_dashboard_data(
         sync_stale_after_minutes=max(1, settings.dashboard_auto_sync_max_age_minutes),
         lead_builder_ready=bool(lead_builder_status.get("ready")),
         lead_builder_missing=[str(item) for item in lead_builder_status.get("missing", [])],
-        deck_generator_ready=not deck_generator_missing,
+        deck_generator_ready=True,
         deck_generator_missing=deck_generator_missing,
-        deck_canva_connected=deck_connection is not None,
-        deck_canva_display_name=(deck_connection.display_name if deck_connection else ""),
-        deck_canva_capabilities={
-            "autofill": bool(deck_capabilities.get("autofill")),
-            "brand_template": bool(deck_capabilities.get("brand_template")),
-        },
-        deck_google_source=str(getattr(settings, "google_sheets_sales_range", "")),
-        deck_template_id=str(getattr(settings, "canva_brand_template_id", "")),
         recent_deck_runs=recent_deck_runs,
     )
 
@@ -1614,17 +1578,9 @@ def render_dashboard_page(data: DashboardData) -> str:
     deck_ready_notice = (
         '<div class="notice warning">Deck generator is missing env vars: '
         + html.escape(", ".join(data.deck_generator_missing))
-        + '. Google Sheets is only required for the legacy CSV flow; the automation-first input can still fall back to a first-party HTML deck.</div>'
-        if not data.deck_generator_ready
-        else '<div class="notice success">Deck generator is configured. If Canva is unavailable, the automation-first input will still generate a first-party HTML deck.</div>'
-    )
-    canva_connection_label = data.deck_canva_display_name or "No Canva account connected yet"
-    deck_capability_bits = "".join(
-        f'<span>{html.escape(label)}</span>'
-        for label in (
-            f"Autofill {'ready' if data.deck_canva_capabilities.get('autofill') else 'missing'}",
-            f"Brand template {'ready' if data.deck_canva_capabilities.get('brand_template') else 'missing'}",
-        )
+        + ".</div>"
+        if data.deck_generator_missing
+        else '<div class="notice success">Deck generator is configured for the Amazon-first HTML workflow.</div>'
     )
     recent_deck_runs_html = "".join(
         f"""
@@ -1632,10 +1588,11 @@ def render_dashboard_page(data: DashboardData) -> str:
           <div>
             <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
             <p>{html.escape(str(run.get("message") or run.get("status") or ""))}</p>
+            <p class="muted">Output: {html.escape(str(run.get("output_type") or "html"))} · Views: {html.escape(str(run.get("view_count") or 0))} · Channels: {html.escape(", ".join(run.get("channels") or []) or "amazon")}</p>
+            <p class="muted">First viewed: {html.escape(str(run.get("first_viewed_at") or "Not viewed"))} · Last viewed: {html.escape(str(run.get("last_viewed_at") or "Not viewed"))}</p>
           </div>
           <div class="deck-run-links">
-            {f'<a href="{html.escape(str(run.get("edit_url") or ""))}" target="_blank" rel="noreferrer">Edit</a>' if run.get("edit_url") else ""}
-            {f'<a href="{html.escape(str(run.get("view_url") or ""))}" target="_blank" rel="noreferrer">View</a>' if run.get("view_url") else ""}
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
           </div>
         </article>
         """
@@ -1995,6 +1952,39 @@ def render_dashboard_page(data: DashboardData) -> str:
       .draft-form .draft-body-field,
       .draft-form .draft-help {{
         grid-column: 1 / -1;
+      }}
+      .channel-toggle-group {{
+        grid-column: 1 / -1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        padding: 16px 18px;
+        border-radius: 12px;
+        border: 2px solid rgba(43, 54, 68, 0.12);
+        background: rgba(133, 187, 218, 0.08);
+      }}
+      .channel-toggle-group legend {{
+        padding: 0 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }}
+      .channel-toggle {{
+        display: inline-flex !important;
+        align-items: center;
+        gap: 10px;
+        font-family: "Roboto", sans-serif !important;
+        font-weight: 400 !important;
+        font-size: 15px !important;
+        text-transform: none !important;
+        letter-spacing: 0 !important;
+      }}
+      .channel-toggle input {{
+        width: 18px;
+        height: 18px;
+        margin: 0;
       }}
       .checkbox-label {{
         display: inline-flex;
@@ -2769,50 +2759,33 @@ def render_dashboard_page(data: DashboardData) -> str:
             <details class="utility-drawer" id="deck-generator-panel">
               <summary>Generate sales deck</summary>
               <div class="utility-body">
-                <p>Use one target product input on the prospect side, then provide the competitor list separately. The target can be a Shopify product URL or an Amazon ASIN/URL. Competitor CSV remains optional as a fallback.</p>
+                <p>Upload the Helium 10 exports for the niche, provide the target Amazon listing, and choose which service-offering slides should be included in the deck.</p>
                 {deck_ready_notice}
-                <div class="panel-stack">
-                  <div class="snapshot-rows">
-                    {_summary_row("Google sheet range", data.deck_google_source or "Not configured")}
-                    {_summary_row("Brand template", data.deck_template_id or "Not configured")}
-                    {_summary_row("Canva connection", canva_connection_label)}
-                  </div>
-                  <div class="deck-capabilities">
-                    {deck_capability_bits}
-                  </div>
-                </div>
                 <form class="lead-form" id="deck-generator-form">
                   <label>
-                    Target product URL or ASIN
-                    <input type="text" name="target_product_input" placeholder="https://brand.com/products/hero-product or B000000001" />
+                    Target Amazon ASIN or URL
+                    <input type="text" name="target_product_input" placeholder="B0ABC12345 or https://www.amazon.com/dp/B0ABC12345" />
                   </label>
                   <label>
-                    Competitor Amazon links or ASINs
-                    <textarea name="competitor_inputs" placeholder="https://www.amazon.com/dp/B000000001&#10;B000000002&#10;https://www.amazon.com/dp/B000000003"></textarea>
+                    Competitor Xray CSV
+                    <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" />
                   </label>
                   <label>
-                    Optional competitor CSV fallback
-                    <input type="file" name="competitor_csv" accept=".csv,text/csv" />
+                    Keyword Xray CSV
+                    <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" />
                   </label>
-                  <label>
-                    Report date
-                    <input type="date" name="report_date" value="{html.escape(today_value)}" />
-                  </label>
-                  <label>
-                    Reporting period
-                    <input type="text" name="reporting_period" placeholder="Q1 2026" />
-                  </label>
-                  <label>
-                    Deck title
-                    <input type="text" name="run_label" placeholder="Sales Deck | Q1 2026" />
-                  </label>
+                  <fieldset class="channel-toggle-group">
+                    <legend>Include offering slides</legend>
+                    <label class="channel-toggle"><input type="checkbox" name="channels" value="amazon" checked /> Amazon</label>
+                    <label class="channel-toggle"><input type="checkbox" name="channels" value="shopify" /> Shopify</label>
+                    <label class="channel-toggle"><input type="checkbox" name="channels" value="tiktok_shop" /> TikTok Shop</label>
+                  </fieldset>
                   <div class="lead-submit">
                     <button type="submit">GENERATE DECK</button>
-                    <a class="button-link" id="connect-canva-button" href="/admin/api/canva/connect">CONNECT CANVA</a>
                   </div>
                 </form>
                 <div class="draft-help">
-                  Use the automation-first intake to generate a deck directly. If Canva is connected with the required capabilities, the system will use it. Otherwise it will export a first-party HTML deck from the same dataset.
+                  This workflow creates a first-party HTML deck with Anata branding, persistent URLs, and view tracking. The keyword CSV is optional but recommended for SEO slides.
                 </div>
                 <div class="status-line" id="deck-status">Deck status: Ready.</div>
                 <div class="deck-run-list" id="deck-run-list">

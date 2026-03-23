@@ -1,15 +1,17 @@
-"""Deck generation service for Canva or first-party HTML deck output."""
+"""Deck generation service for the Amazon-first HTML sales deck output."""
 
 from __future__ import annotations
 
-import csv
 import html
 import io
+import json
 import re
 import secrets
 import time
+import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urljoin
 from typing import Any
 from urllib.parse import urlparse
@@ -17,13 +19,22 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings, get_missing_deck_generator_settings
+from sales_support_agent.config import Settings
 from sales_support_agent.integrations.amazon_sp_api import AmazonSpApiClient
 from sales_support_agent.integrations.canva import CanvaClient
 from sales_support_agent.integrations.google_sheets import GoogleSheetsClient
 from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection
 from sales_support_agent.services.audit import AuditService
+from sales_support_agent.services.helium10 import (
+    DistributionSlice,
+    Helium10KeywordReport,
+    Helium10XrayReport,
+    KeywordInsight,
+    XrayProduct,
+    parse_keyword_csv,
+    parse_xray_csv,
+)
 from sales_support_agent.services.product_research import ProductResearchService
 from sales_support_agent.services.token_seal import seal_token, unseal_token
 
@@ -35,6 +46,7 @@ class DeckDataset:
     warnings: list[str]
     sales_row_count: int
     competitor_row_count: int
+    deck_payload: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -126,59 +138,36 @@ class DeckGenerationService:
     def generate_deck(
         self,
         *,
-        competitor_csv_bytes: bytes | None = None,
-        competitor_filename: str = "",
+        competitor_xray_csv_bytes: bytes | None = None,
+        competitor_xray_filename: str = "",
+        keyword_xray_csv_bytes: bytes | None = None,
+        keyword_xray_filename: str = "",
         target_product_input: str = "",
-        shopify_product_url: str = "",
-        competitor_inputs: list[str] | None = None,
-        run_label: str = "",
-        report_date: date | None = None,
-        reporting_period: str = "",
+        channels: list[str] | None = None,
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
-        effective_target_input = target_product_input.strip() or shopify_product_url.strip()
-        normalized_competitors = _normalize_competitor_inputs(competitor_inputs or [])
-        automation_mode = bool(effective_target_input or normalized_competitors)
-        missing = self._required_data_settings(include_google_sheets=not automation_mode)
-        if missing:
-            raise RuntimeError(f"Deck generator is missing environment variables: {', '.join(missing)}")
-
+        effective_target_input = target_product_input.strip()
+        enabled_channels = _normalize_channels(channels or [])
         run = self.audit.start_run(
             "deck_generation",
             trigger=trigger,
             metadata={
-                "generation_mode": "automation_first" if automation_mode else "csv_upload",
-                "competitor_filename": competitor_filename,
+                "generation_mode": "amazon_first_html",
                 "target_product_input": effective_target_input,
-                "shopify_product_url": shopify_product_url,
-                "competitor_inputs": normalized_competitors,
-                "report_date": report_date.isoformat() if report_date else "",
-                "reporting_period": reporting_period,
-                "template_id": self.settings.canva_brand_template_id,
-                "sheet_range": self.settings.google_sheets_sales_range,
+                "competitor_xray_filename": competitor_xray_filename,
+                "keyword_xray_filename": keyword_xray_filename,
+                "channels": enabled_channels,
             },
         )
         try:
-            if automation_mode:
-                dataset = self._build_automation_first_dataset(
-                    target_product_input=effective_target_input,
-                    competitor_inputs=normalized_competitors,
-                    report_date=report_date,
-                    reporting_period=reporting_period,
-                )
-            else:
-                if competitor_csv_bytes is None:
-                    raise RuntimeError("Competitor CSV upload is required when Shopify/Amazon inputs are not provided.")
-                sales_payload = self.google_client.get_values()
-                dataset = self._build_dataset(
-                    sales_payload=sales_payload,
-                    competitor_csv_bytes=competitor_csv_bytes,
-                    report_date=report_date,
-                    reporting_period=reporting_period,
-                )
-
-            title = self._build_design_title(run_label=run_label, report_date=report_date, reporting_period=reporting_period)
-            result = self._generate_deliverable(
+            dataset = self._build_amazon_first_dataset(
+                target_product_input=effective_target_input,
+                competitor_xray_csv_bytes=competitor_xray_csv_bytes,
+                keyword_xray_csv_bytes=keyword_xray_csv_bytes,
+                channels=enabled_channels,
+            )
+            title = str(dataset.deck_payload.get("deck_title") or self._build_design_title(title_hint=effective_target_input)).strip()
+            result = self._generate_html_deck(
                 run=run,
                 title=title,
                 dataset=dataset,
@@ -201,6 +190,12 @@ class DeckGenerationService:
                     "template_fields": result.template_fields,
                     "export_token": run.summary_json.get("export_token") if isinstance(run.summary_json, dict) else "",
                     "deck_html": run.summary_json.get("deck_html") if isinstance(run.summary_json, dict) else "",
+                    "deck_slug": run.summary_json.get("deck_slug") if isinstance(run.summary_json, dict) else "",
+                    "target_product_identifier": run.summary_json.get("target_product_identifier") if isinstance(run.summary_json, dict) else "",
+                    "channels": run.summary_json.get("channels") if isinstance(run.summary_json, dict) else [],
+                    "view_count": run.summary_json.get("view_count") if isinstance(run.summary_json, dict) else 0,
+                    "first_viewed_at": run.summary_json.get("first_viewed_at") if isinstance(run.summary_json, dict) else "",
+                    "last_viewed_at": run.summary_json.get("last_viewed_at") if isinstance(run.summary_json, dict) else "",
                 },
             )
             return result
@@ -215,6 +210,12 @@ class DeckGenerationService:
             )
             raise
 
+    def _build_design_title(self, *, title_hint: str) -> str:
+        cleaned = re.sub(r"\s+", " ", title_hint or "").strip()
+        if cleaned:
+            return f"Anata Sales Deck | {cleaned}"[:255]
+        return f"Anata Sales Deck | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"[:255]
+
     def _generate_deliverable(
         self,
         *,
@@ -223,14 +224,6 @@ class DeckGenerationService:
         dataset: DeckDataset,
         warnings: list[str],
     ) -> DeckGenerationResult:
-        canva_ready = self._canva_delivery_ready()
-        if canva_ready:
-            try:
-                return self._generate_canva_deck(run=run, title=title, dataset=dataset, warnings=warnings)
-            except Exception as exc:
-                warnings.append(f"Canva delivery was unavailable, so the deck was exported as HTML instead. Reason: {exc}")
-        else:
-            warnings.append("Canva delivery is unavailable, so the deck was exported as HTML instead.")
         return self._generate_html_deck(run=run, title=title, dataset=dataset, warnings=warnings)
 
     def _generate_canva_deck(
@@ -293,10 +286,33 @@ class DeckGenerationService:
     ) -> DeckGenerationResult:
         export_token = secrets.token_urlsafe(18)
         html_content = self._render_html_deck(title=title, dataset=dataset, warnings=warnings)
-        view_url = self._build_export_url(run_id=run.id, token=export_token)
+        deck_slug = _slugify(title) or f"deck-{run.id}"
+        view_url = self._build_export_url(run_id=run.id, deck_slug=deck_slug, token=export_token)
+        target_identifier = str(
+            dataset.deck_payload.get("target", {}).get("asin")
+            or dataset.deck_payload.get("target", {}).get("source_url")
+            or ""
+        ).strip()
         run.summary_json = {
+            "status": "success",
+            "message": "Deck generated successfully as an HTML report.",
+            "output_type": "html",
+            "design_id": f"html-deck-{run.id}",
+            "design_title": title,
+            "edit_url": view_url,
+            "view_url": view_url,
+            "warnings": warnings,
+            "sales_row_count": dataset.sales_row_count,
+            "competitor_row_count": dataset.competitor_row_count,
+            "template_fields": 0,
             "export_token": export_token,
             "deck_html": html_content,
+            "deck_slug": deck_slug,
+            "target_product_identifier": target_identifier,
+            "channels": list(dataset.deck_payload.get("channels", [])),
+            "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
+            "first_viewed_at": str(dict(run.summary_json or {}).get("first_viewed_at", "") or ""),
+            "last_viewed_at": str(dict(run.summary_json or {}).get("last_viewed_at", "") or ""),
         }
         self.session.add(run)
         self.session.flush()
@@ -357,6 +373,7 @@ class DeckGenerationService:
             warnings=warnings,
             sales_row_count=max(len(sales_rows) - 1, 0),
             competitor_row_count=max(len(competitor_rows) - 1, 0),
+            deck_payload={},
         )
 
     def _parse_competitor_csv(self, content: bytes) -> tuple[list[list[str]], dict[str, str], list[str]]:
@@ -407,139 +424,168 @@ class DeckGenerationService:
             rows = [[cell for cell in row[:20]] for row in rows]
         return rows, text_fields, warnings
 
-    def _build_automation_first_dataset(
+    def _build_amazon_first_dataset(
         self,
         *,
         target_product_input: str,
-        competitor_inputs: list[str],
-        report_date: date | None,
-        reporting_period: str,
+        competitor_xray_csv_bytes: bytes | None,
+        keyword_xray_csv_bytes: bytes | None,
+        channels: list[str],
     ) -> DeckDataset:
         parsed_target = _parse_target_product_input(target_product_input)
-        if not parsed_target["source_url"]:
-            raise RuntimeError("Target product input is required for the automation-first deck flow.")
-        if not competitor_inputs:
-            raise RuntimeError("Provide at least one competitor Amazon URL or ASIN for the automation-first deck flow.")
+        if parsed_target["source_type"] != "amazon" or not parsed_target["asin"]:
+            raise RuntimeError("Target product must be an Amazon ASIN or Amazon product URL.")
+        if competitor_xray_csv_bytes is None:
+            raise RuntimeError("Competitor Xray CSV is required.")
 
-        normalized_competitors = [_parse_competitor_reference(value) for value in competitor_inputs[:5]]
-        warnings: list[str] = []
-        if len(competitor_inputs) > 5:
-            warnings.append("Only the first 5 competitor inputs were used in this v1 deck flow.")
-        if len(normalized_competitors) < 5:
-            warnings.append("Fewer than 5 competitor inputs were provided, so some comparison slots will stay blank.")
-
+        xray_report = parse_xray_csv(competitor_xray_csv_bytes)
+        keyword_report = parse_keyword_csv(keyword_xray_csv_bytes)
         hero_product = self.product_research.enrich_target_product(parsed_target)
-        report_label = reporting_period.strip() or f"As of {(report_date or date.today()).isoformat()}"
+        warnings: list[str] = [*xray_report.warnings, *hero_product.warnings]
+        if keyword_report:
+            warnings.extend(keyword_report.warnings)
+
+        target_row = xray_report.find_by_asin(parsed_target["asin"])
+        primary_competitors = [product for product in xray_report.products if product.asin.upper() != parsed_target["asin"].upper()][:5]
+        market_cards = _build_market_metric_cards(xray_report, keyword_report)
+        keyword_cards = _build_keyword_metric_cards(keyword_report)
+        seo_recommendations = _build_seo_recommendations(keyword_report, xray_report)
+        cro_recommendations = _build_cro_recommendations(target_row, primary_competitors)
+        creative_recommendations = _build_creative_recommendations(target_row, primary_competitors)
+        channel_sections = _build_channel_sections(channels)
+        competitor_rows = [["Product", "ASIN", "Brand", "Price", "Revenue", "Reviews", "BSR", "Fulfillment"]]
+        for product in xray_report.products[:10]:
+            competitor_rows.append(
+                [
+                    product.title,
+                    product.asin,
+                    product.brand,
+                    product.price_label,
+                    product.revenue_label,
+                    str(product.review_count or ""),
+                    product.bsr_label,
+                    product.fulfillment,
+                ]
+            )
+
+        keyword_rows = [["Keyword", "Search Volume", "Keyword Sales", "Competing Products", "Title Density"]]
+        if keyword_report:
+            for keyword in keyword_report.keywords[:10]:
+                keyword_rows.append(
+                    [
+                        keyword.phrase,
+                        keyword.search_volume_label,
+                        keyword.keyword_sales_label,
+                        str(keyword.competing_products or ""),
+                        str(keyword.title_density or ""),
+                    ]
+                )
+
+        target_title = (hero_product.title or parsed_target["product_name"] or parsed_target["asin"]).strip()
+        target_brand = (
+            hero_product.brand_name
+            or (target_row.brand if target_row else "")
+            or parsed_target.get("brand_name", "")
+            or "Amazon Brand"
+        ).strip()
+        target_image_url = (hero_product.image_url or (target_row.image_url if target_row else "")).strip()
+        target_price_label = (
+            hero_product.price
+            or (target_row.price_label if target_row else "")
+            or "Unavailable"
+        ).strip()
+        target_bsr_label = (target_row.bsr_label if target_row else "").strip()
+        target_review_count = target_row.review_count if target_row else None
+        target_rating_label = (target_row.rating_label if target_row else "").strip()
+        target_revenue_label = (target_row.revenue_label if target_row else "").strip()
+        target_dimensions = (hero_product.dimensions or (target_row.dimensions if target_row else "")).strip()
+
         text_fields: dict[str, str] = {
-            "deck_mode": "automation_first",
-            "brand_name": hero_product.brand_name or parsed_target["brand_name"],
-            "brand_domain": parsed_target["domain"],
-            "brand_shopify_url": hero_product.source_url if parsed_target["source_type"] == "shopify" else "",
-            "hero_product_name": hero_product.title or parsed_target["product_name"],
-            "hero_product_handle": parsed_target["product_handle"],
+            "deck_mode": "amazon_first_html",
+            "brand_name": target_brand,
+            "hero_product_name": target_title,
             "hero_product_source_url": hero_product.source_url or parsed_target["source_url"],
             "hero_product_input_type": parsed_target["source_type"],
-            "hero_product_price": hero_product.price or "Pending Shopify enrichment",
-            "hero_product_bsr": "Pending SP-API enrichment",
-            "hero_product_dimensions": hero_product.dimensions or "Pending SP-API enrichment",
+            "hero_product_price": target_price_label,
+            "hero_product_bsr": target_bsr_label,
+            "hero_product_dimensions": target_dimensions,
             "hero_product_description": hero_product.description,
-            "hero_product_type": hero_product.product_type,
+            "hero_product_type": hero_product.product_type or (target_row.category if target_row else ""),
             "hero_product_tags": ", ".join(hero_product.tags),
-            "hero_product_image_url": hero_product.image_url,
-            "hero_product_snapshot": (
-                f"{hero_product.title or parsed_target['product_name']} anchors this deck as the hero product for {hero_product.brand_name or parsed_target['brand_name']}."
-            ),
-            "report_generated_date": (report_date or date.today()).isoformat(),
-            "reporting_period": report_label,
-            "market_summary": (
-                f"We are benchmarking {hero_product.brand_name or parsed_target['brand_name']} against up to five live competitor listings. "
-                "Use the comparison slides to validate BSR, category pressure, and listing depth before final recommendations."
-            ),
-            "executive_summary": (
-                f"This automation-first deck uses the target product plus competitor Amazon identifiers to frame the market. "
-                "Catalog, BSR, and listing-quality enrichment can be layered in without changing the Canva template."
-            ),
-            "cro_summary": (
-                f"Start with the hero listing for {hero_product.title or parsed_target['product_name']}. "
-                "Refine title hierarchy, bullet clarity, and conversion proof before scaling traffic."
-            ),
-            "seo_summary": (
-                "Map the hero listing against competitor naming patterns, category language, and search-intent coverage. "
-                "The template should leave room for indexing gaps and keyword priorities."
-            ),
-            "creative_summary": (
-                "Use the competitor set to compare image sequencing, claim clarity, and visual proof. "
-                "The deck should call out where design changes will increase click-through and conversion."
-            ),
-            "advertising_summary": (
-                "Advertising recommendations should follow catalog and listing cleanup. "
-                "Once the hero offer is clear, direct spend toward the gaps where competitor pressure is highest."
-            ),
-            "recommended_plan_summary": (
-                "Phase 1: enrich the hero listing and lock the positioning. "
-                "Phase 2: rebuild content and creative. Phase 3: scale acquisition with disciplined advertising."
-            ),
-            "expected_impact_summary": (
-                "The goal of this deck is to move from identifier-based benchmarking to a production-ready growth plan "
-                "without redesigning the Canva workflow."
-            ),
-            "why_anata_summary": (
-                "Anata can turn the opportunity findings into execution across CRO, creative, SEO, and advertising "
-                "without fragmenting ownership between multiple vendors."
-            ),
-            "cta_summary": (
-                f"Use this deck to align on the hero SKU, the five main competitors, and the first implementation sprint for {hero_product.brand_name or parsed_target['brand_name']}."
-            ),
+            "hero_product_image_url": target_image_url,
+            "hero_product_snapshot": _build_target_snapshot_text(target_title, target_brand, target_row),
+            "report_generated_date": datetime.now(timezone.utc).date().isoformat(),
+            "reporting_period": datetime.now(timezone.utc).strftime("%B %d, %Y"),
+            "market_summary": _build_market_summary(target_brand, xray_report, keyword_report),
+            "executive_summary": _build_executive_summary(target_title, target_brand, xray_report, keyword_report),
+            "cro_summary": " ".join(cro_recommendations[:2]),
+            "seo_summary": " ".join(seo_recommendations[:2]),
+            "creative_summary": " ".join(creative_recommendations[:2]),
+            "advertising_summary": _build_advertising_summary(xray_report, keyword_report),
+            "recommended_plan_summary": _build_plan_summary(channels),
+            "expected_impact_summary": _build_expected_impact_summary(xray_report),
+            "why_anata_summary": _build_why_anata_summary(channels),
+            "cta_summary": f"Use this deck to align on the first growth sprint for {target_brand} and track whether the deck was viewed.",
+            "deck_title": f"{target_brand} x anata - {target_title}",
+            "target_asin": parsed_target["asin"],
+            "target_rating": target_rating_label,
+            "target_review_count": str(target_review_count or ""),
+            "target_revenue": target_revenue_label,
         }
-        warnings.extend(hero_product.warnings)
+        for slot, product in enumerate(primary_competitors, start=1):
+            text_fields[f"competitor_{slot}_name"] = product.title
+            text_fields[f"competitor_{slot}_asin"] = product.asin
+            text_fields[f"competitor_{slot}_brand"] = product.brand
+            text_fields[f"competitor_{slot}_source_url"] = product.url
+            text_fields[f"competitor_{slot}_image_url"] = product.image_url
+            text_fields[f"competitor_{slot}_category"] = product.category
+            text_fields[f"competitor_{slot}_bsr"] = product.bsr_label
+            text_fields[f"competitor_{slot}_estimated_sales"] = product.revenue_label
+            text_fields[f"competitor_{slot}_units"] = product.units_label
+            text_fields[f"competitor_{slot}_review_count"] = str(product.review_count or "")
+            text_fields[f"competitor_{slot}_strength"] = _build_competitor_strength(product)
+            text_fields[f"competitor_{slot}_gap"] = _build_competitor_gap(product, target_row)
 
-        competitor_rows = [["competitor", "bsr", "estimated_sales", "estimated_units", "price", "review_count"]]
-        top_bsr_rows = [["product_name", "bsr", "sales", "units", "change_from_previous_period"]]
-        for slot in range(1, 6):
-            competitor = normalized_competitors[slot - 1] if slot - 1 < len(normalized_competitors) else None
-            if competitor is None:
-                text_fields[f"competitor_{slot}_name"] = ""
-                text_fields[f"competitor_{slot}_identifier"] = ""
-                text_fields[f"competitor_{slot}_source_url"] = ""
-                text_fields[f"competitor_{slot}_bsr"] = ""
-                text_fields[f"competitor_{slot}_estimated_sales"] = ""
-                text_fields[f"competitor_{slot}_units"] = ""
-                text_fields[f"competitor_{slot}_strength"] = ""
-                text_fields[f"competitor_{slot}_gap"] = ""
-                continue
-
-            enriched_competitor = self.product_research.enrich_competitor_product(competitor)
-            warnings.extend(enriched_competitor.warnings)
-            text_fields[f"competitor_{slot}_name"] = enriched_competitor.name
-            text_fields[f"competitor_{slot}_identifier"] = enriched_competitor.identifier
-            text_fields[f"competitor_{slot}_source_url"] = enriched_competitor.source_url
-            text_fields[f"competitor_{slot}_asin"] = enriched_competitor.asin
-            text_fields[f"competitor_{slot}_brand"] = enriched_competitor.brand
-            text_fields[f"competitor_{slot}_category"] = enriched_competitor.category
-            text_fields[f"competitor_{slot}_dimensions"] = enriched_competitor.dimensions
-            text_fields[f"competitor_{slot}_package_dimensions"] = enriched_competitor.package_dimensions
-            text_fields[f"competitor_{slot}_bsr"] = enriched_competitor.bsr
-            text_fields[f"competitor_{slot}_estimated_sales"] = enriched_competitor.estimated_sales
-            text_fields[f"competitor_{slot}_units"] = enriched_competitor.estimated_units
-            text_fields[f"competitor_{slot}_strength"] = enriched_competitor.strength
-            text_fields[f"competitor_{slot}_gap"] = enriched_competitor.gap
-
-            competitor_rows.append([enriched_competitor.name, enriched_competitor.bsr, enriched_competitor.estimated_sales, enriched_competitor.estimated_units, "", ""])
-            top_bsr_rows.append([enriched_competitor.name, enriched_competitor.bsr, enriched_competitor.estimated_sales, enriched_competitor.estimated_units, ""])
-
-        text_fields["competitor_row_count"] = str(len(competitor_rows) - 1)
-        text_fields["top_products_by_bsr_row_count"] = str(len(top_bsr_rows) - 1)
-        text_fields["sales_row_count"] = "0"
-
+        text_fields["competitor_row_count"] = str(max(len(competitor_rows) - 1, 0))
+        text_fields["sales_row_count"] = str(len(xray_report.products))
         return DeckDataset(
             text_fields=text_fields,
             chart_fields={
                 "competitor_table": _build_chart_data(competitor_rows),
-                "top_products_by_bsr": _build_chart_data(top_bsr_rows),
+                "keyword_table": _build_chart_data(keyword_rows),
             },
             warnings=warnings,
-            sales_row_count=0,
-            competitor_row_count=len(competitor_rows) - 1,
+            sales_row_count=len(xray_report.products),
+            competitor_row_count=max(len(competitor_rows) - 1, 0),
+            deck_payload={
+                "deck_title": text_fields["deck_title"],
+                "target": {
+                    "asin": parsed_target["asin"],
+                    "source_url": text_fields["hero_product_source_url"],
+                    "title": target_title,
+                    "brand_name": target_brand,
+                    "image_url": target_image_url,
+                    "price": target_price_label,
+                    "bsr": target_bsr_label,
+                    "rating": target_rating_label,
+                    "review_count": target_review_count or 0,
+                    "revenue": target_revenue_label,
+                    "dimensions": target_dimensions,
+                    "description": hero_product.description,
+                    "type": text_fields["hero_product_type"],
+                },
+                "market_cards": market_cards,
+                "keyword_cards": keyword_cards,
+                "xray_report": xray_report,
+                "keyword_report": keyword_report,
+                "primary_competitors": primary_competitors,
+                "seo_recommendations": seo_recommendations,
+                "cro_recommendations": cro_recommendations,
+                "creative_recommendations": creative_recommendations,
+                "channel_sections": channel_sections,
+                "channels": channels,
+                "niche_keyword": keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else parsed_target["asin"],
+            },
         )
 
     def _prepare_canva_data(
@@ -643,15 +689,6 @@ class DeckGenerationService:
                 time.sleep(max(self.settings.deck_canva_poll_interval_seconds, 1))
         raise RuntimeError(f"Canva autofill job did not complete in time: {last_payload}")
 
-    def _build_design_title(self, *, run_label: str, report_date: date | None, reporting_period: str) -> str:
-        if run_label.strip():
-            return run_label.strip()[:255]
-        if reporting_period.strip():
-            return f"Sales Deck | {reporting_period.strip()}"[:255]
-        if report_date:
-            return f"Sales Deck | {report_date.isoformat()}"[:255]
-        return f"Sales Deck | {date.today().isoformat()}"[:255]
-
     def _latest_canva_connection(self) -> CanvaConnection | None:
         return self.session.execute(
             select(CanvaConnection).order_by(CanvaConnection.updated_at.desc(), CanvaConnection.id.desc()).limit(1)
@@ -669,148 +706,262 @@ class DeckGenerationService:
         return missing
 
     def _canva_delivery_ready(self) -> bool:
-        if get_missing_deck_generator_settings(self.settings, include_google_sheets=False):
-            return False
-        connection = self._latest_canva_connection()
-        if connection is None:
-            return False
-        capabilities = dict(connection.capabilities_json or {})
-        if capabilities and (not capabilities.get("autofill") or not capabilities.get("brand_template")):
-            return False
         return True
 
-    def _build_export_url(self, *, run_id: int, token: str) -> str:
+    def _build_export_url(self, *, run_id: int, deck_slug: str, token: str) -> str:
+        public_base_url = str(getattr(self.settings, "deck_public_base_url", "") or "").strip()
+        relative_path = f"/decks/{deck_slug}/{run_id}/{token}"
+        if public_base_url:
+            parsed = urlparse(public_base_url)
+            if parsed.scheme and parsed.netloc:
+                return urljoin(f"{parsed.scheme}://{parsed.netloc}", relative_path)
         redirect_uri = str(getattr(self.settings, "canva_redirect_uri", "") or "").strip()
         if redirect_uri:
             parsed = urlparse(redirect_uri)
             if parsed.scheme and parsed.netloc:
-                return urljoin(f"{parsed.scheme}://{parsed.netloc}", f"/deck-exports/{run_id}/{token}")
-        return f"/deck-exports/{run_id}/{token}"
+                return urljoin(f"{parsed.scheme}://{parsed.netloc}", relative_path)
+        return relative_path
 
     def _render_html_deck(self, *, title: str, dataset: DeckDataset, warnings: list[str]) -> str:
-        text = dataset.text_fields
-        competitor_rows = self._table_rows(dataset.chart_fields.get("competitor_table"))
-        bsr_rows = self._table_rows(dataset.chart_fields.get("top_products_by_bsr"))
-        hero_name = text.get("hero_product_name") or "Hero product"
-        brand_name = text.get("brand_name") or "Brand"
+        payload = dataset.deck_payload
+        target = dict(payload.get("target", {}))
+        xray_report = payload.get("xray_report")
+        keyword_report = payload.get("keyword_report")
+        if not isinstance(xray_report, Helium10XrayReport):
+            raise RuntimeError("Deck payload is missing the Xray report.")
+        if keyword_report is not None and not isinstance(keyword_report, Helium10KeywordReport):
+            keyword_report = None
+        market_cards = list(payload.get("market_cards", []))
+        keyword_cards = list(payload.get("keyword_cards", []))
+        primary_competitors = list(payload.get("primary_competitors", []))
+        seo_recommendations = list(payload.get("seo_recommendations", []))
+        cro_recommendations = list(payload.get("cro_recommendations", []))
+        creative_recommendations = list(payload.get("creative_recommendations", []))
+        channel_sections = list(payload.get("channel_sections", []))
+        brand_wordmark = self._load_brand_asset("assets/wordmark.svg")
+        monogram = self._load_brand_asset("assets/monogram.svg")
+        stylesheet = self._load_brand_stylesheet()
         warning_items = "".join(f"<li>{html.escape(item)}</li>" for item in warnings if item)
-        competitor_cards = "".join(self._render_competitor_card(text, slot) for slot in range(1, 6))
+        competitor_cards = "".join(_render_competitor_card(product) for product in primary_competitors)
+        keyword_rows = "".join(_render_keyword_row(keyword) for keyword in (keyword_report.keywords[:10] if keyword_report else []))
+        revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:6])
+        channel_html = "".join(_render_channel_section(section) for section in channel_sections)
+        gallery_items = [target] + [_product_to_gallery_item(product) for product in primary_competitors[:4]]
+        gallery_html = "".join(_render_gallery_card(item) for item in gallery_items if item)
+        market_summary_html = "".join(_render_metric_card(card) for card in market_cards)
+        keyword_summary_html = "".join(_render_metric_card(card) for card in keyword_cards)
+        country_donut = _render_distribution_card("Seller country of origin", xray_report.seller_country_distribution)
+        size_donut = _render_distribution_card("Size tier", xray_report.size_tier_distribution)
+        fulfillment_donut = _render_distribution_card("Fulfillment", xray_report.fulfillment_distribution)
+        niche_keyword = str(payload.get("niche_keyword") or target.get("asin") or "the niche").strip()
+        niche_table_rows = "".join(
+            _render_niche_summary_row(product, xray_report.total_revenue)
+            for product in xray_report.products[:10]
+        )
+        target_summary_meter = _render_meter_group(
+            [
+                ("Review base", _bounded_ratio(target.get("review_count", 0), 300), f"{target.get('review_count', 0)} reviews"),
+                ("Rating signal", _bounded_ratio(_coerce_number(str(target.get("rating", ""))) or 0, 5), target.get("rating") or "n/a"),
+                ("Market presence", _inverse_bounded_ratio(_coerce_number(str(target.get("bsr", ""))) or 0, 150000), target.get("bsr") or "n/a"),
+            ]
+        )
         return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
-  <style>
-    :root {{
-      --ink: #0f172a;
-      --muted: #475569;
-      --line: #d9e2ec;
-      --soft: #f8fafc;
-      --accent: #0f3b66;
-      --accent-2: #8ec6eb;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font-family: "Helvetica Neue", Arial, sans-serif; color: var(--ink); background: linear-gradient(180deg, #eef6fb 0%, #ffffff 22%); }}
-    .deck {{ width: min(1200px, calc(100vw - 32px)); margin: 24px auto 48px; }}
-    .slide {{ background: white; border: 1px solid var(--line); border-radius: 24px; padding: 40px; margin-bottom: 24px; box-shadow: 0 16px 40px rgba(15, 23, 42, 0.06); page-break-after: always; }}
-    .eyebrow {{ font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }}
-    h1 {{ font-size: 56px; line-height: 0.98; margin: 12px 0; max-width: 12ch; }}
-    h2 {{ font-size: 34px; margin: 0 0 18px; }}
-    p {{ font-size: 18px; line-height: 1.55; margin: 0 0 14px; color: var(--ink); }}
-    .muted {{ color: var(--muted); }}
-    .hero-grid, .two-col {{ display: grid; gap: 24px; }}
-    .hero-grid {{ grid-template-columns: 1.5fr 1fr; align-items: end; }}
-    .two-col {{ grid-template-columns: 1fr 1fr; }}
-    .metric-grid {{ display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 24px; }}
-    .metric {{ border: 1px solid var(--line); border-radius: 18px; padding: 18px; background: var(--soft); }}
-    .metric span {{ display:block; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }}
-    .metric strong {{ font-size: 28px; }}
-    .table-wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 18px; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ padding: 14px 16px; border-bottom: 1px solid var(--line); text-align: left; font-size: 15px; vertical-align: top; }}
-    th {{ background: #eff6ff; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }}
-    tr:last-child td {{ border-bottom: 0; }}
-    .card-grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
-    .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 18px; background: white; }}
-    .card h3 {{ margin: 0 0 10px; font-size: 20px; }}
-    ul {{ margin: 12px 0 0 20px; color: var(--muted); }}
-    .tag {{ display:inline-block; margin: 0 8px 8px 0; padding: 8px 12px; border-radius: 999px; background: #ebf5ff; color: var(--accent); font-size: 13px; }}
-    .warning {{ border-left: 4px solid #f59e0b; padding-left: 14px; color: var(--muted); }}
-    @media (max-width: 860px) {{
-      .hero-grid, .two-col, .metric-grid, .card-grid {{ grid-template-columns: 1fr; }}
-      .slide {{ padding: 24px; }}
-      h1 {{ font-size: 40px; }}
-    }}
-  </style>
+  <style>{stylesheet}</style>
 </head>
 <body>
   <main class="deck">
-    <section class="slide">
-      <div class="eyebrow">Anata Opportunity Deck</div>
-      <div class="hero-grid">
+    <section class="deck-toolbar">
+      <div class="brand-toolbar">
+        <div class="brand-monogram">{monogram}</div>
+        <div class="brand-wordmark">{brand_wordmark}</div>
+      </div>
+      <button class="print-button" onclick="window.print()">Print / Save PDF</button>
+    </section>
+
+    <section class="slide slide-cover">
+      <div class="cover-grid">
         <div>
-          <h1>{html.escape(brand_name)}.<br>{html.escape(hero_name)}</h1>
-          <p>{html.escape(text.get("executive_summary") or text.get("hero_product_snapshot") or "")}</p>
+          <p class="eyebrow">Amazon-first strategy deck</p>
+          <h1>{html.escape(title)}</h1>
+          <p class="lead">{html.escape(dataset.text_fields.get("executive_summary") or "")}</p>
+          <div class="pill-row">
+            <span class="pill">ASIN {html.escape(str(target.get("asin", "")))}</span>
+            <span class="pill">{html.escape(dataset.text_fields.get("report_generated_date") or "")}</span>
+            <span class="pill">{html.escape(", ".join(payload.get("channels", [])) or "amazon")}</span>
+          </div>
         </div>
-        <div class="card">
-          <p class="eyebrow">Reporting Period</p>
-          <p><strong>{html.escape(text.get("reporting_period") or text.get("report_generated_date") or "")}</strong></p>
-          <p class="muted">{html.escape(text.get("hero_product_source_url") or "")}</p>
+        <div class="cover-card">
+          {_render_hero_media(target, monogram)}
         </div>
       </div>
-      <div class="metric-grid">
-        <div class="metric"><span>Brand</span><strong>{html.escape(brand_name)}</strong></div>
-        <div class="metric"><span>Hero Product</span><strong>{html.escape(hero_name)}</strong></div>
-        <div class="metric"><span>Competitors</span><strong>{html.escape(text.get("competitor_row_count") or "0")}</strong></div>
-        <div class="metric"><span>Input Type</span><strong>{html.escape(text.get("hero_product_input_type") or "shopify")}</strong></div>
-      </div>
     </section>
+
     <section class="slide">
-      <div class="eyebrow">Market Opportunity</div>
-      <h2>Opportunity framing</h2>
-      <p>{html.escape(text.get("market_summary") or "")}</p>
-      <div class="table-wrap">{self._render_table_html(bsr_rows)}</div>
-    </section>
-    <section class="slide">
-      <div class="eyebrow">Hero Product</div>
-      <h2>{html.escape(hero_name)}</h2>
-      <div class="two-col">
+      <div class="slide-head">
         <div>
-          <p>{html.escape(text.get("hero_product_description") or "")}</p>
-          <p><strong>Price:</strong> {html.escape(text.get("hero_product_price") or "")}</p>
-          <p><strong>Dimensions:</strong> {html.escape(text.get("hero_product_dimensions") or "")}</p>
-          <p><strong>Type:</strong> {html.escape(text.get("hero_product_type") or "")}</p>
+          <p class="eyebrow">Keyword niche summary</p>
+          <h2>Page 1 summary for "{html.escape(niche_keyword)}"</h2>
         </div>
+        <p class="muted">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
+      </div>
+      <div class="metric-grid">{market_summary_html}</div>
+      <div class="dashboard-grid">
+        <div class="dashboard-card niche-table-card">
+          <div class="card-head">
+            <h3>Organic page 1 revenue breakdown</h3>
+            <span class="muted">Top listings from the uploaded Helium 10 Xray export</span>
+          </div>
+          <div class="table-wrap niche-table-wrap">
+            <table class="niche-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Product</th>
+                  <th>Price</th>
+                  <th>Revenue</th>
+                  <th>Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {niche_table_rows}
+              </tbody>
+            </table>
+          </div>
+          <div class="revenue-bars">{revenue_bars}</div>
+        </div>
+        <div class="donut-grid">
+          {country_donut}
+          {size_donut}
+          {fulfillment_donut}
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
         <div>
-          <p><strong>Tags</strong></p>
-          {self._render_tags(text.get("hero_product_tags", ""))}
+          <p class="eyebrow">Target listing</p>
+          <h2>{html.escape(str(target.get("title", "Target listing")))}</h2>
+        </div>
+        <p class="muted">{html.escape(dataset.text_fields.get("hero_product_snapshot") or "")}</p>
+      </div>
+      <div class="target-grid">
+        <div class="target-panel">
+          {_render_hero_media(target, monogram)}
+        </div>
+        <div class="target-panel">
+          <div class="target-meta">
+            <div><span>Brand</span><strong>{html.escape(str(target.get("brand_name", "")))}</strong></div>
+            <div><span>Price</span><strong>{html.escape(str(target.get("price", "")))}</strong></div>
+            <div><span>BSR</span><strong>{html.escape(str(target.get("bsr", "")))}</strong></div>
+            <div><span>Revenue</span><strong>{html.escape(str(target.get("revenue", "")))}</strong></div>
+            <div><span>Rating</span><strong>{html.escape(str(target.get("rating", "")) or "n/a")}</strong></div>
+            <div><span>Reviews</span><strong>{html.escape(str(target.get("review_count", "")) or "n/a")}</strong></div>
+          </div>
+          <p>{html.escape(str(target.get("description", "")) or "No listing description was captured from the product page.")}</p>
+          <p class="muted">{html.escape(str(target.get("dimensions", "")) or "Dimensions unavailable.")}</p>
+          <div class="meter-group">{target_summary_meter}</div>
         </div>
       </div>
     </section>
+
     <section class="slide">
-      <div class="eyebrow">Competitors</div>
-      <h2>Comparison set</h2>
-      <div class="table-wrap">{self._render_table_html(competitor_rows)}</div>
-      <div class="card-grid" style="margin-top: 20px;">{competitor_cards}</div>
+      <div class="slide-head">
+        <div>
+          <p class="eyebrow">Competitor landscape</p>
+          <h2>Who owns the page one real estate</h2>
+        </div>
+        <p class="muted">This table is sourced from the Helium 10 Xray export, with the first five non-target listings featured as benchmark cards.</p>
+      </div>
+      <div class="table-wrap">{self._render_table_html(self._table_rows(dataset.chart_fields.get("competitor_table")))}</div>
+      <div class="competitor-grid">{competitor_cards}</div>
     </section>
+
     <section class="slide">
-      <div class="eyebrow">Execution</div>
-      <h2>What we would do</h2>
-      <div class="card-grid">
-        <div class="card"><h3>CRO</h3><p>{html.escape(text.get("cro_summary") or "")}</p></div>
-        <div class="card"><h3>SEO</h3><p>{html.escape(text.get("seo_summary") or "")}</p></div>
-        <div class="card"><h3>Creative</h3><p>{html.escape(text.get("creative_summary") or "")}</p></div>
-        <div class="card"><h3>Advertising</h3><p>{html.escape(text.get("advertising_summary") or "")}</p></div>
+      <div class="slide-head">
+        <div>
+          <p class="eyebrow">Search behavior</p>
+          <h2>Keyword and customer search objective</h2>
+        </div>
+        <p class="muted">{html.escape(dataset.text_fields.get("seo_summary") or "")}</p>
+      </div>
+      <div class="metric-grid">{keyword_summary_html}</div>
+      <div class="two-col split-top">
+        <div class="dashboard-card">
+          <div class="card-head">
+            <h3>Top keyword opportunities</h3>
+            <span class="muted">Highest search volume from the keyword export</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Keyword</th><th>Search volume</th><th>Sales</th><th>Competing products</th><th>Title density</th></tr>
+              </thead>
+              <tbody>
+                {keyword_rows or "<tr><td colspan='5' class='muted'>No keyword CSV uploaded.</td></tr>"}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="recommendation-card">
+          <h3>SEO actions</h3>
+          <ul>{''.join(f"<li>{html.escape(item)}</li>" for item in seo_recommendations)}</ul>
+        </div>
       </div>
     </section>
+
     <section class="slide">
-      <div class="eyebrow">Plan</div>
-      <h2>Recommended path</h2>
-      <p>{html.escape(text.get("recommended_plan_summary") or "")}</p>
-      <p>{html.escape(text.get("expected_impact_summary") or "")}</p>
-      <p>{html.escape(text.get("why_anata_summary") or "")}</p>
-      <p><strong>{html.escape(text.get("cta_summary") or "")}</strong></p>
+      <div class="slide-head">
+        <div>
+          <p class="eyebrow">Conversion and PDP</p>
+          <h2>Where the listing needs to improve</h2>
+        </div>
+        <p class="muted">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
+      </div>
+      <div class="two-col split-top">
+        <div class="recommendation-card">
+          <h3>CRO recommendations</h3>
+          <ul>{''.join(f"<li>{html.escape(item)}</li>" for item in cro_recommendations)}</ul>
+        </div>
+        <div class="recommendation-card">
+          <h3>Creative recommendations</h3>
+          <ul>{''.join(f"<li>{html.escape(item)}</li>" for item in creative_recommendations)}</ul>
+        </div>
+      </div>
+      <div class="gallery-grid">{gallery_html}</div>
+    </section>
+
+    {channel_html}
+
+    <section class="slide">
+      <div class="slide-head">
+        <div>
+          <p class="eyebrow">Recommended plan</p>
+          <h2>What happens next</h2>
+        </div>
+      </div>
+      <div class="plan-grid">
+        <div class="plan-card">
+          <h3>Recommended plan</h3>
+          <p>{html.escape(dataset.text_fields.get("recommended_plan_summary") or "")}</p>
+        </div>
+        <div class="plan-card">
+          <h3>Expected impact</h3>
+          <p>{html.escape(dataset.text_fields.get("expected_impact_summary") or "")}</p>
+        </div>
+        <div class="plan-card">
+          <h3>Why anata</h3>
+          <p>{html.escape(dataset.text_fields.get("why_anata_summary") or "")}</p>
+        </div>
+      </div>
+      <div class="closing-card">
+        <p>{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
+      </div>
       {"<div class='warning'><strong>Generation notes</strong><ul>" + warning_items + "</ul></div>" if warning_items else ""}
     </section>
   </main>
@@ -840,34 +991,6 @@ class DeckGenerationService:
         )
         return f"<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>"
 
-    def _render_tags(self, value: str) -> str:
-        tags = [item.strip() for item in str(value or "").split(",") if item.strip()]
-        if not tags:
-            return "<p class='muted'>No tags captured.</p>"
-        return "".join(f"<span class='tag'>{html.escape(tag)}</span>" for tag in tags)
-
-    def _render_competitor_card(self, text_fields: dict[str, str], slot: int) -> str:
-        name = text_fields.get(f"competitor_{slot}_name", "")
-        if not name:
-            return ""
-        brand = text_fields.get(f"competitor_{slot}_brand", "")
-        category = text_fields.get(f"competitor_{slot}_category", "")
-        bsr = text_fields.get(f"competitor_{slot}_bsr", "")
-        sales = text_fields.get(f"competitor_{slot}_estimated_sales", "")
-        units = text_fields.get(f"competitor_{slot}_units", "")
-        strength = text_fields.get(f"competitor_{slot}_strength", "")
-        gap = text_fields.get(f"competitor_{slot}_gap", "")
-        return (
-            "<article class='card'>"
-            f"<h3>{html.escape(name)}</h3>"
-            f"<p><strong>Brand:</strong> {html.escape(brand)}</p>"
-            f"<p><strong>Category:</strong> {html.escape(category)}</p>"
-            f"<p><strong>BSR:</strong> {html.escape(bsr)} | <strong>Sales:</strong> {html.escape(sales)} | <strong>Units:</strong> {html.escape(units)}</p>"
-            f"<p><strong>Strength:</strong> {html.escape(strength)}</p>"
-            f"<p><strong>Gap:</strong> {html.escape(gap)}</p>"
-            "</article>"
-        )
-
     def _run_summary(self, run: AutomationRun) -> dict[str, Any]:
         summary = dict(run.summary_json or {})
         return {
@@ -879,6 +1002,12 @@ class DeckGenerationService:
             "edit_url": summary.get("edit_url", ""),
             "view_url": summary.get("view_url", ""),
             "warnings": list(summary.get("warnings", []) or []),
+            "output_type": summary.get("output_type", ""),
+            "deck_slug": summary.get("deck_slug", ""),
+            "view_count": int(summary.get("view_count", 0) or 0),
+            "first_viewed_at": summary.get("first_viewed_at", ""),
+            "last_viewed_at": summary.get("last_viewed_at", ""),
+            "channels": list(summary.get("channels", []) or []),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
         }
@@ -887,6 +1016,453 @@ class DeckGenerationService:
         if isinstance(value, (list, tuple)):
             return " ".join(str(item).strip() for item in value if str(item).strip())
         return str(value or "").strip()
+
+    def _load_brand_stylesheet(self) -> str:
+        for path in _candidate_brand_paths(self.settings, "style.css"):
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        return "body{font-family:Arial,sans-serif;background:#fff;color:#172033;}"
+
+    def _load_brand_asset(self, relative_path: str) -> str:
+        for path in _candidate_brand_paths(self.settings, relative_path):
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        return ""
+
+
+def _candidate_brand_paths(settings: Settings, relative_path: str) -> list[Path]:
+    configured_root = Path(str(getattr(settings, "shared_brand_package_path", "") or "")).expanduser()
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates: list[Path] = []
+    if str(configured_root):
+        candidates.append(configured_root / relative_path)
+    candidates.append(repo_root / "shared" / "anata_brand" / relative_path)
+    return candidates
+
+
+def _normalize_channels(channels: list[str]) -> list[str]:
+    allowed = {
+        "amazon": "amazon",
+        "shopify": "shopify",
+        "tiktok_shop": "tiktok_shop",
+        "tiktok": "tiktok_shop",
+    }
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in channels:
+        key = _normalize_key(str(value or ""))
+        mapped = allowed.get(key)
+        if not mapped or mapped in seen:
+            continue
+        seen.add(mapped)
+        normalized.append(mapped)
+    if "amazon" not in seen:
+        normalized.insert(0, "amazon")
+    return normalized
+
+
+def _slugify(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _build_target_snapshot_text(target_title: str, brand_name: str, target_row: XrayProduct | None) -> str:
+    if target_row and target_row.revenue:
+        return (
+            f"{target_title} is the hero listing for {brand_name}. "
+            f"In the current niche export it shows {target_row.revenue_label} in revenue and {target_row.bsr_label} BSR."
+        )
+    return (
+        f"{target_title} is the hero listing for {brand_name}. "
+        "Use this deck to compare the PDP against the niche leaders and tighten the initial go-to-market offer."
+    )
+
+
+def _build_market_summary(
+    brand_name: str,
+    xray_report: Helium10XrayReport,
+    keyword_report: Helium10KeywordReport | None,
+) -> str:
+    lead_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the niche"
+    search_volume = keyword_report.top_search_volume if keyword_report and keyword_report.top_search_volume else None
+    search_text = f" The top keyword in the upload is {lead_keyword} with {search_volume:,} monthly searches." if search_volume else ""
+    return (
+        f"The current {lead_keyword} market shows {xray_report.search_results_count} comparable listings and "
+        f"{_label_money_value(xray_report.total_revenue)} in 30-day competitor revenue across the uploaded Xray set."
+        f"{search_text}"
+    )
+
+
+def _build_executive_summary(
+    target_title: str,
+    brand_name: str,
+    xray_report: Helium10XrayReport,
+    keyword_report: Helium10KeywordReport | None,
+) -> str:
+    keyword_text = ""
+    if keyword_report and keyword_report.keywords:
+        keyword_text = f" The keyword export highlights {keyword_report.keywords[0].phrase} as the leading search objective."
+    return (
+        f"This deck benchmarks {target_title} against the live Amazon market captured in the Xray export and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
+        f"{keyword_text}"
+    )
+
+
+def _build_advertising_summary(xray_report: Helium10XrayReport, keyword_report: Helium10KeywordReport | None) -> str:
+    top_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the primary search terms"
+    return (
+        f"Advertising should follow listing cleanup. Once the PDP is aligned, lean into {top_keyword} and the adjacent high-volume terms while exploiting low-review competitors in the category."
+    )
+
+
+def _build_plan_summary(channels: list[str]) -> str:
+    services = []
+    if "amazon" in channels:
+        services.append("fix the Amazon PDP, imagery, and search coverage")
+    if "shopify" in channels:
+        services.append("align the Shopify storefront and conversion flow")
+    if "tiktok_shop" in channels:
+        services.append("package the TikTok Shop offer and creative")
+    return "Phase 1: " + "; ".join(services[:3]) + ". Phase 2: launch the first measurement sprint and tune against live market response."
+
+
+def _build_expected_impact_summary(xray_report: Helium10XrayReport) -> str:
+    return (
+        f"The niche is large enough to justify a tighter positioning and conversion sprint. {xray_report.under_75_reviews_count} listings are still competing with under 75 reviews, which leaves room for differentiated creative and offer design."
+    )
+
+
+def _build_why_anata_summary(channels: list[str]) -> str:
+    scope = []
+    if "amazon" in channels:
+        scope.append("Amazon growth execution")
+    if "shopify" in channels:
+        scope.append("Shopify conversion systems")
+    if "tiktok_shop" in channels:
+        scope.append("TikTok Shop go-to-market support")
+    return "Anata can own " + ", ".join(scope) + " without splitting CRO, creative, and acquisition across separate vendors."
+
+
+def _build_market_metric_cards(
+    xray_report: Helium10XrayReport,
+    keyword_report: Helium10KeywordReport | None,
+) -> list[dict[str, str]]:
+    return [
+        {"label": "30-day revenue", "value": _label_money_value(xray_report.total_revenue), "meta": f"Across {xray_report.search_results_count} products"},
+        {"label": "30-day units sold", "value": _label_integer(xray_report.total_units_sold), "meta": "Summed from the Xray export"},
+        {"label": "Average BSR", "value": _label_float(xray_report.average_bsr, 0), "meta": "Lower is stronger"},
+        {"label": "Average price", "value": _label_money_value(xray_report.average_price or 0.0), "meta": "From the uploaded competitor set"},
+        {"label": "Average rating", "value": _label_float(xray_report.average_rating, 1), "meta": "Competitive review signal"},
+        {
+            "label": "Open opportunity",
+            "value": f"{xray_report.under_75_reviews_count}/{xray_report.search_results_count}",
+            "meta": f"{xray_report.revenue_over_5000_count} listings clear $5k revenue while {xray_report.under_75_reviews_count} stay under 75 reviews.",
+        },
+    ]
+
+
+def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) -> list[dict[str, str]]:
+    if keyword_report is None:
+        return [
+            {"label": "Keyword coverage", "value": "Missing", "meta": "Upload the Xray keyword CSV to populate this slide"},
+        ]
+    return [
+        {"label": "Keywords parsed", "value": str(len(keyword_report.keywords)), "meta": "Rows loaded from the keyword export"},
+        {"label": "Total search volume", "value": _label_integer(keyword_report.total_search_volume), "meta": "Summed across the uploaded keywords"},
+        {"label": "Average competing products", "value": _label_float(keyword_report.average_competing_products, 0), "meta": "Competitive density"},
+        {"label": "Average title density", "value": _label_float(keyword_report.average_title_density, 0), "meta": "How crowded the SERP language is"},
+    ]
+
+
+def _build_seo_recommendations(
+    keyword_report: Helium10KeywordReport | None,
+    xray_report: Helium10XrayReport,
+) -> list[str]:
+    recommendations = [
+        "Rewrite the listing title and first bullets around the highest-intent keyword cluster rather than generic supplement language.",
+        "Use the lowest-title-density terms as the first indexing gap to attack before scaling paid traffic.",
+    ]
+    if keyword_report and keyword_report.keywords:
+        recommendations.insert(
+            0,
+            f"Lead the SEO rewrite with {keyword_report.keywords[0].phrase} and the adjacent long-tail terms with meaningful search volume.",
+        )
+    if xray_report.under_75_reviews_count:
+        recommendations.append("Push harder into keyword relevance while review barriers are still low across several competitors.")
+    return recommendations[:4]
+
+
+def _build_cro_recommendations(target_row: XrayProduct | None, competitors: list[XrayProduct]) -> list[str]:
+    recommendations = [
+        "Simplify the above-the-fold value proposition so the primary outcome is readable in under five seconds.",
+        "Tighten the PDP information hierarchy: hero image, proof, ingredient context, usage, and trust markers should read in that order.",
+    ]
+    if target_row and (target_row.review_count or 0) < 75:
+        recommendations.append("Compensate for the lighter review base with stronger proof blocks, FAQ coverage, and comparison framing.")
+    if competitors:
+        recommendations.append(f"Benchmark the first image stack against {competitors[0].title} and the other top revenue leaders, then close the gap on clarity and proof.")
+    return recommendations[:4]
+
+
+def _build_creative_recommendations(target_row: XrayProduct | None, competitors: list[XrayProduct]) -> list[str]:
+    recommendations = [
+        "Rebuild the hero image sequence so each panel communicates one claim, one proof point, or one use case.",
+        "Add visual comparison and product-context frames instead of relying only on clinical or generic packaging shots.",
+    ]
+    if competitors:
+        recommendations.append("Use the top competitor image stacks as a reference set for claim sequencing and CTA placement.")
+    if target_row and not target_row.image_url:
+        recommendations.append("Capture a clean primary listing image before the creative refresh so the deck has a stable hero asset.")
+    return recommendations[:4]
+
+
+def _build_competitor_strength(product: XrayProduct) -> str:
+    return f"{product.title} converts enough demand to produce {product.revenue_label} in 30-day revenue with {product.bsr_label} BSR."
+
+
+def _build_competitor_gap(product: XrayProduct, target_row: XrayProduct | None) -> str:
+    if (product.review_count or 0) < 75:
+        return "This listing is still winning with a relatively thin review moat, which makes it a useful target for differentiation."
+    if target_row and product.price and target_row.price and product.price > target_row.price:
+        return "The price anchor is higher than the target listing, which creates room for a sharper value story."
+    return "Use this listing as a benchmark for claim clarity, review depth, and imagery sequence."
+
+
+def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    if "amazon" in channels:
+        sections.append(
+            {
+                "eyebrow": "Amazon offering",
+                "title": "What we would execute on Amazon",
+                "summary": "Amazon is the fully wired channel in v1, so this slide pairs the market data with the actual delivery scope.",
+                "items": [
+                    "PDP conversion optimization and image sequencing",
+                    "Search coverage, title rewrite, and indexing priorities",
+                    "Offer positioning, competitive pricing, and launch messaging",
+                    "Advertising handoff once the PDP is conversion-ready",
+                ],
+            }
+        )
+    if "shopify" in channels:
+        sections.append(
+            {
+                "eyebrow": "Shopify offering",
+                "title": "How Shopify support would layer on",
+                "summary": "Shopify is outlined as a service path in v1. It does not yet pull storefront data into the deck.",
+                "items": [
+                    "Landing-page and product-page CRO",
+                    "Offer design and merchandising structure",
+                    "Lifecycle capture and retention flow",
+                    "Storefront positioning to match the Amazon narrative",
+                ],
+            }
+        )
+    if "tiktok_shop" in channels:
+        sections.append(
+            {
+                "eyebrow": "TikTok Shop offering",
+                "title": "How TikTok Shop support would layer on",
+                "summary": "TikTok Shop is outlined as a service path in v1. It does not yet pull TikTok operational data into the deck.",
+                "items": [
+                    "Creator-first offer and hook strategy",
+                    "Short-form creative packaging for conversion",
+                    "Shop merchandising and SKU presentation",
+                    "Paid / organic testing loop for scaling winners",
+                ],
+            }
+        )
+    return sections
+
+
+def _render_metric_card(card: dict[str, str]) -> str:
+    return (
+        "<article class='metric-card'>"
+        f"<span>{html.escape(card.get('label', ''))}</span>"
+        f"<strong>{html.escape(card.get('value', ''))}</strong>"
+        f"<small>{html.escape(card.get('meta', ''))}</small>"
+        "</article>"
+    )
+
+
+def _render_competitor_card(product: XrayProduct) -> str:
+    image = f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />" if product.image_url else "<div class='image-fallback'>No image</div>"
+    return (
+        "<article class='competitor-card'>"
+        f"<div class='competitor-media'>{image}</div>"
+        "<div class='competitor-body'>"
+        f"<h3>{html.escape(product.title)}</h3>"
+        f"<p class='muted'>{html.escape(product.brand)} · {html.escape(product.asin)}</p>"
+        f"<p><strong>{html.escape(product.revenue_label)}</strong> revenue · <strong>{html.escape(product.bsr_label)}</strong> BSR</p>"
+        f"<p>{html.escape(_build_competitor_gap(product, None))}</p>"
+        "</div>"
+        "</article>"
+    )
+
+
+def _render_keyword_row(keyword: KeywordInsight) -> str:
+    return (
+        "<tr>"
+        f"<td>{html.escape(keyword.phrase)}</td>"
+        f"<td>{html.escape(keyword.search_volume_label)}</td>"
+        f"<td>{html.escape(keyword.keyword_sales_label)}</td>"
+        f"<td>{html.escape(str(keyword.competing_products or ''))}</td>"
+        f"<td>{html.escape(str(keyword.title_density or ''))}</td>"
+        "</tr>"
+    )
+
+
+def _render_revenue_bar(product: XrayProduct, total_revenue: float) -> str:
+    share = 0.0 if total_revenue <= 0 else ((product.revenue or 0.0) / total_revenue)
+    width = max(6, min(int(round(share * 100)), 100))
+    return (
+        "<article class='revenue-row'>"
+        "<div class='revenue-labels'>"
+        f"<strong>{html.escape(product.title)}</strong>"
+        f"<span>{html.escape(product.revenue_label)}</span>"
+        "</div>"
+        f"<div class='revenue-track'><div class='revenue-fill' style='width:{width}%'></div></div>"
+        "</article>"
+    )
+
+
+def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str:
+    share = 0.0 if total_revenue <= 0 else ((product.revenue or 0.0) / total_revenue) * 100
+    image_html = (
+        f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
+        if product.image_url
+        else "<div class='image-fallback compact'>No image</div>"
+    )
+    return (
+        "<tr>"
+        f"<td>{html.escape(str(product.display_order))}</td>"
+        "<td>"
+        "<div class='niche-product-cell'>"
+        f"<div class='niche-product-thumb'>{image_html}</div>"
+        "<div>"
+        f"<strong>{html.escape(product.title)}</strong>"
+        f"<div class='muted'>{html.escape(product.asin)} · {html.escape(product.brand)}</div>"
+        "</div>"
+        "</div>"
+        "</td>"
+        f"<td>{html.escape(product.price_label)}</td>"
+        f"<td>{html.escape(product.revenue_label)}</td>"
+        f"<td>{share:.1f}%</td>"
+        "</tr>"
+    )
+
+
+def _render_distribution_card(title: str, slices: list[DistributionSlice]) -> str:
+    donut = _render_donut(slices)
+    items = "".join(
+        f"<li><span>{html.escape(item.label)}</span><strong>{item.count}</strong></li>"
+        for item in slices[:6]
+    )
+    return (
+        "<article class='distribution-card'>"
+        f"<h3>{html.escape(title)}</h3>"
+        f"{donut}"
+        f"<ul>{items}</ul>"
+        "</article>"
+    )
+
+
+def _render_donut(slices: list[DistributionSlice]) -> str:
+    palette = ["#244d87", "#4f84c4", "#85bbda", "#bfa889", "#9e6d66", "#d9e8f4"]
+    stops: list[str] = []
+    start = 0.0
+    for index, item in enumerate(slices[:6]):
+        end = start + (item.share * 100)
+        stops.append(f"{palette[index % len(palette)]} {start:.2f}% {end:.2f}%")
+        start = end
+    if start < 100:
+        stops.append(f"#edf2f7 {start:.2f}% 100%")
+    style = f"background: conic-gradient({', '.join(stops)});"
+    return f"<div class='donut-chart'><div class='donut-visual' style=\"{style}\"></div></div>"
+
+
+def _render_channel_section(section: dict[str, Any]) -> str:
+    items = "".join(f"<li>{html.escape(str(item))}</li>" for item in section.get("items", []))
+    return (
+        "<section class='slide'>"
+        f"<div class='slide-head'><div><p class='eyebrow'>{html.escape(str(section.get('eyebrow', '')))}</p><h2>{html.escape(str(section.get('title', '')))}</h2></div>"
+        f"<p class='muted'>{html.escape(str(section.get('summary', '')))}</p></div>"
+        f"<div class='recommendation-card'><ul>{items}</ul></div>"
+        "</section>"
+    )
+
+
+def _render_hero_media(target: dict[str, Any], monogram: str) -> str:
+    image_url = str(target.get("image_url", "") or "").strip()
+    if image_url:
+        return (
+            "<div class='hero-media'>"
+            f"<img src='{html.escape(image_url)}' alt='{html.escape(str(target.get('title', 'Target product')))}' />"
+            "</div>"
+        )
+    return f"<div class='hero-media fallback'>{monogram}<span>No product image available</span></div>"
+
+
+def _product_to_gallery_item(product: XrayProduct) -> dict[str, str]:
+    return {
+        "title": product.title,
+        "subtitle": product.brand,
+        "image_url": product.image_url,
+        "meta": f"{product.revenue_label} revenue · {product.bsr_label} BSR",
+    }
+
+
+def _render_gallery_card(item: dict[str, Any]) -> str:
+    image_url = str(item.get("image_url", "") or "").strip()
+    media = f"<img src='{html.escape(image_url)}' alt='{html.escape(str(item.get('title', 'Listing image')))}' />" if image_url else "<div class='image-fallback'>Image unavailable</div>"
+    return (
+        "<article class='gallery-card'>"
+        f"<div class='gallery-media'>{media}</div>"
+        f"<strong>{html.escape(str(item.get('title', '')))}</strong>"
+        f"<p>{html.escape(str(item.get('subtitle', '')))}</p>"
+        f"<small>{html.escape(str(item.get('meta', '')))}</small>"
+        "</article>"
+    )
+
+
+def _render_meter_group(items: list[tuple[str, float, str]]) -> str:
+    return "".join(
+        "<div class='meter-item'>"
+        f"<span>{html.escape(label)}</span>"
+        f"<div class='meter-track'><div class='meter-fill' style='width:{max(0, min(int(round(value * 100)), 100))}%'></div></div>"
+        f"<small>{html.escape(meta)}</small>"
+        "</div>"
+        for label, value, meta in items
+    )
+
+
+def _bounded_ratio(value: float, ceiling: float) -> float:
+    if ceiling <= 0:
+        return 0.0
+    return max(0.0, min(value / ceiling, 1.0))
+
+
+def _inverse_bounded_ratio(value: float, ceiling: float) -> float:
+    if ceiling <= 0:
+        return 0.0
+    return max(0.0, min(1.0 - (min(value, ceiling) / ceiling), 1.0))
+
+
+def _label_integer(value: float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{int(round(value)):,}"
+
+
+def _label_float(value: float | None, digits: int) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:,.{digits}f}"
+
+
+def _label_money_value(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"${value:,.2f}"
 
 
 def _normalize_key(value: str) -> str:

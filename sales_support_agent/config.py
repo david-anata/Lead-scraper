@@ -150,6 +150,8 @@ class Settings:
     deck_competitor_required_columns: tuple[str, ...]
     deck_competitor_allowed_columns: tuple[str, ...]
     deck_required_template_fields: tuple[str, ...]
+    shared_brand_package_path: Path
+    deck_public_base_url: str
     shopify_request_timeout_seconds: int
     shopify_user_agent: str
     amazon_sp_api_base_url: str
@@ -425,6 +427,14 @@ def load_settings() -> Settings:
             os.getenv("DECK_REQUIRED_TEMPLATE_FIELDS", ""),
             default=(),
         ),
+        shared_brand_package_path=Path(
+            os.getenv(
+                "SHARED_BRAND_PACKAGE_PATH",
+                str(Path(__file__).resolve().parents[1] / "shared" / "anata_brand"),
+            ).strip()
+            or str(Path(__file__).resolve().parents[1] / "shared" / "anata_brand")
+        ),
+        deck_public_base_url=os.getenv("DECK_PUBLIC_BASE_URL", "").strip().rstrip("/"),
         shopify_request_timeout_seconds=int((os.getenv("SHOPIFY_REQUEST_TIMEOUT_SECONDS", "20") or "20").strip()),
         shopify_user_agent=(
             os.getenv("SHOPIFY_USER_AGENT", "anata-deck-generator/1.0").strip()
@@ -473,22 +483,5 @@ def get_missing_runtime_settings(settings: Settings) -> list[str]:
 
 
 def get_missing_deck_generator_settings(settings: Settings, *, include_google_sheets: bool = True) -> list[str]:
-    missing: list[str] = []
-    if include_google_sheets:
-        if not settings.google_sheets_spreadsheet_id:
-            missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
-        if not settings.google_sheets_sales_range:
-            missing.append("GOOGLE_SHEETS_SALES_RANGE")
-        if not settings.google_service_account_json:
-            missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not settings.canva_client_id:
-        missing.append("CANVA_CLIENT_ID")
-    if not settings.canva_client_secret:
-        missing.append("CANVA_CLIENT_SECRET")
-    if not settings.canva_redirect_uri:
-        missing.append("CANVA_REDIRECT_URI")
-    if not settings.canva_brand_template_id:
-        missing.append("CANVA_BRAND_TEMPLATE_ID")
-    if not settings.canva_token_secret:
-        missing.append("CANVA_TOKEN_SECRET")
-    return missing
+    del settings, include_google_sheets
+    return []

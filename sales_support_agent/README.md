@@ -9,6 +9,8 @@ This FastAPI app handles post-creation sales support inside your existing ClickU
 - Manual communication event ingest for outbound, inbound, call, meeting, offer, and note events
 - Native Instantly webhook ingest for email, reply, and meeting events
 - Gmail mailbox polling for reply and lead-source signal intake
+- Amazon-first sales deck generation from one target Amazon ASIN/URL plus Helium 10 Xray exports
+- First-party HTML deck export with shared Anata branding, stable URLs, and basic deck view tracking
 - Status-aware stale-lead scanning for active `new`, `contacted`, and `working` statuses
 - Concise Slack alerts for high-signal events only
 - Daily SDR email digest with grouped action items and draft replies
@@ -75,6 +77,43 @@ Operational:
 - `INSTANTLY_WEBHOOK_SECRET`
 - `INSTANTLY_WEBHOOK_SECRET_HEADER`
 
+Deck generator:
+
+- `SHARED_BRAND_PACKAGE_PATH`
+- `DECK_PUBLIC_BASE_URL`
+
+Amazon-first deck intake:
+
+- one target product input
+  - Amazon ASIN, or
+  - Amazon product URL
+- one Helium 10 Xray competitor CSV
+- one optional Helium 10 Xray keyword CSV
+- offering toggles
+  - `amazon`
+  - `shopify`
+  - `tiktok_shop`
+
+Optional deck generator tuning:
+
+- `DECK_COMPETITOR_REQUIRED_COLUMNS`
+- `DECK_COMPETITOR_ALLOWED_COLUMNS`
+- `DECK_REQUIRED_TEMPLATE_FIELDS`
+- `SHOPIFY_REQUEST_TIMEOUT_SECONDS`
+- `SHOPIFY_USER_AGENT`
+- `AMAZON_SP_API_BASE_URL`
+- `AMAZON_SP_API_REGION`
+- `AMAZON_SP_API_MARKETPLACE_ID`
+- `AMAZON_SP_API_LWA_CLIENT_ID`
+- `AMAZON_SP_API_LWA_CLIENT_SECRET`
+- `AMAZON_SP_API_REFRESH_TOKEN`
+
+Legacy / currently unused:
+
+- `AMAZON_SP_API_AWS_ACCESS_KEY_ID`
+- `AMAZON_SP_API_AWS_SECRET_ACCESS_KEY`
+- `AMAZON_SP_API_AWS_SESSION_TOKEN`
+
 Optional existing-field overrides:
 
 - `CLICKUP_NEXT_FOLLOW_UP_FIELD_ID`
@@ -115,6 +154,10 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `POST /api/jobs/daily-digest/run`
 - `POST /api/communications/events`
 - `POST /api/integrations/instantly/webhook`
+- `POST /admin/api/generate-deck`
+- `GET /admin/api/deck-runs`
+- `GET /decks/{deck_slug}/{run_id}/{token}`
+- `GET /deck-exports/{run_id}/{token}`
 
 Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API_KEY` is configured.
 
@@ -184,6 +227,33 @@ curl -X POST http://127.0.0.1:8010/api/integrations/instantly/webhook \
   }'
 ```
 
+Deck generation:
+
+```bash
+curl -X POST http://127.0.0.1:8010/api/admin/generate-deck \
+  -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+  -F "target_product_input=https://www.amazon.com/dp/B0ABC12345" \
+  -F "channels=amazon" \
+  -F "channels=shopify" \
+  -F "competitor_xray_csv=@/path/to/Helium_10_Xray.csv" \
+  -F "keyword_xray_csv=@/path/to/Xray_Keyword.csv"
+```
+
+## Deck Output Notes
+
+- The current deck workflow is Amazon-first.
+- Canva and Google Sheets are no longer required for deck generation.
+- Generated decks are fixed-layout HTML exports that reuse the shared Anata brand package.
+- Public deck routes use the named slug format:
+  - `GET /decks/{deck_slug}/{run_id}/{token}`
+- Deck run metadata is stored in `automation_runs.summary_json`, including:
+  - output type
+  - stable deck URL
+  - selected channels
+  - total views
+  - first viewed at
+  - last viewed at
+
 ## System Diagram
 
 ```mermaid
@@ -220,3 +290,5 @@ flowchart LR
 See the implementation and rollout playbook in [`sales_support_agent/TEAM_SOP.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/TEAM_SOP.md).
 
 For a click-by-click production launch guide using the same stack pattern as the lead builder app, see [`sales_support_agent/LIVE_ROLLOUT_GUIDE.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/LIVE_ROLLOUT_GUIDE.md).
+
+For the Amazon-first deck workflow and shared brand package usage, see [`sales_support_agent/docs/amazon_first_sales_deck.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/docs/amazon_first_sales_deck.md).

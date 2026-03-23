@@ -25,6 +25,16 @@ The sales support agent powers an internal sales support automation flow that en
 - `README.md`: repo-level instructions
 - `sales_support_agent/README.md`: sales support agent setup and architecture
 - `AGENTS.md`: guidance for future coding agents
+- `shared/anata_brand/`: repo-bundled fallback for shared Anata brand assets
+
+## Shared Brand Assets
+
+- Preferred cross-project brand package path:
+  - `/Users/davidnarayan/Documents/Playground/shared/anata_brand`
+- Repo fallback path:
+  - `/Users/davidnarayan/Documents/Playground/Lead-scraper/shared/anata_brand`
+- Projects should read `SHARED_BRAND_PACKAGE_PATH` first and only fall back to the repo copy when the shared package is unavailable.
+- Add global brand primitives to the shared package, not directly into individual project templates, unless the asset is clearly project-specific.
 
 ## How To Run The API
 

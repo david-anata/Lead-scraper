@@ -494,11 +494,6 @@ def _build_empty_dashboard(*, lead_builder_missing: list[str], error_message: st
         lead_builder_missing=lead_builder_missing,
         deck_generator_ready=False,
         deck_generator_missing=[],
-        deck_canva_connected=False,
-        deck_canva_display_name="",
-        deck_canva_capabilities={"autofill": False, "brand_template": False},
-        deck_google_source="",
-        deck_template_id="",
         recent_deck_runs=[],
     )
 
@@ -655,25 +650,18 @@ def _post_sales_support_job(path: str, payload: dict[str, Any]) -> dict[str, Any
 def _post_sales_support_multipart(
     path: str,
     *,
-    data: dict[str, Any],
-    file_field_name: str | None = None,
-    file_name: str = "",
-    file_bytes: bytes | None = None,
-    content_type: str = "application/octet-stream",
+    data_items: list[tuple[str, Any]],
+    files_payload: list[tuple[str, tuple[str, bytes, str]]] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     admin_settings = load_admin_dashboard_settings()
     if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
         raise RuntimeError("Sales support agent URL or internal API key is not configured on this service.")
 
-    files = None
-    if file_field_name and file_bytes is not None:
-        files = {file_field_name: (file_name, file_bytes, content_type)}
-
     response = requests.post(
         f"{admin_settings.sales_support_agent_url}{path}",
         headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
-        data=data,
-        files=files,
+        data=data_items,
+        files=files_payload,
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     if response.content:
@@ -3425,16 +3413,22 @@ async def admin_create_gmail_drafts(
     try:
         status_code, payload = _post_sales_support_multipart(
             "/api/admin/gmail-drafts",
-            data={
-                "sales_objective": sales_objective,
-                "subject_template": subject_template,
-                "body_template": body_template,
-                "dry_run": "true" if dry_run else "false",
-            },
-            file_field_name="contacts_csv",
-            file_name=contacts_csv.filename or "contacts.csv",
-            file_bytes=file_bytes,
-            content_type=contacts_csv.content_type or "text/csv",
+            data_items=[
+                ("sales_objective", sales_objective),
+                ("subject_template", subject_template),
+                ("body_template", body_template),
+                ("dry_run", "true" if dry_run else "false"),
+            ],
+            files_payload=[
+                (
+                    "contacts_csv",
+                    (
+                        contacts_csv.filename or "contacts.csv",
+                        file_bytes,
+                        contacts_csv.content_type or "text/csv",
+                    ),
+                )
+            ],
         )
     except Exception as exc:
         logger.exception("[AdminDashboard] gmail draft creation failed")
@@ -3467,35 +3461,49 @@ def admin_canva_connect_proxy(request: Request) -> Response:
 @app.post("/admin/api/generate-deck")
 async def admin_generate_deck_proxy(
     request: Request,
-    competitor_csv: UploadFile | None = File(default=None),
+    competitor_xray_csv: UploadFile = File(...),
+    keyword_xray_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
-    shopify_product_url: str = Form(default=""),
-    competitor_inputs: str = Form(default=""),
-    run_label: str = Form(default=""),
-    reporting_period: str = Form(default=""),
-    report_date: str = Form(default=""),
+    channels: list[str] = Form(default=[]),
 ) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
-    file_bytes = await competitor_csv.read() if competitor_csv is not None else None
+    competitor_file_bytes = await competitor_xray_csv.read()
+    keyword_file_bytes = await keyword_xray_csv.read() if keyword_xray_csv is not None else None
     try:
         status_code, payload = _post_sales_support_multipart(
             "/api/admin/generate-deck",
-            data={
-                "target_product_input": target_product_input,
-                "shopify_product_url": shopify_product_url,
-                "competitor_inputs": competitor_inputs,
-                "run_label": run_label,
-                "reporting_period": reporting_period,
-                "report_date": report_date,
-            },
-            file_field_name="competitor_csv" if competitor_csv is not None else None,
-            file_name=competitor_csv.filename if competitor_csv is not None else "",
-            file_bytes=file_bytes,
-            content_type=competitor_csv.content_type if competitor_csv is not None else "text/csv",
+            data_items=[
+                ("target_product_input", target_product_input),
+                *[("channels", channel) for channel in channels],
+            ],
+            files_payload=[
+                (
+                    "competitor_xray_csv",
+                    (
+                        competitor_xray_csv.filename or "competitors.csv",
+                        competitor_file_bytes,
+                        competitor_xray_csv.content_type or "text/csv",
+                    ),
+                ),
+                *(
+                    [
+                        (
+                            "keyword_xray_csv",
+                            (
+                                keyword_xray_csv.filename or "keywords.csv",
+                                keyword_file_bytes or b"",
+                                keyword_xray_csv.content_type or "text/csv",
+                            ),
+                        )
+                    ]
+                    if keyword_xray_csv is not None
+                    else []
+                ),
+            ],
         )
     except Exception as exc:
         logger.exception("[AdminDashboard] deck generation failed")

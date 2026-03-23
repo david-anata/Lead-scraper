@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import html as html_lib
+import json
+import re
 from dataclasses import dataclass
 from typing import Any
+
+import requests
 
 from sales_support_agent.integrations.amazon_sp_api import AmazonCatalogSnapshot, AmazonSpApiClient
 from sales_support_agent.integrations.shopify import ShopifyProductSnapshot, ShopifyStorefrontClient
@@ -139,25 +144,47 @@ class ProductResearchService:
         asin = target.get("asin", "")
         if not asin:
             raise RuntimeError("Amazon target product input did not include a valid ASIN.")
-        if not self.amazon_client.is_configured():
-            raise RuntimeError("Amazon SP-API is not configured, so Amazon target-product intake is unavailable.")
+        catalog: AmazonCatalogSnapshot | None = None
+        page_data = _fetch_amazon_page_data(target.get("source_url", "") or f"https://www.amazon.com/dp/{asin}")
+        warnings.extend(page_data.get("warnings", []))
+        if self.amazon_client.is_configured():
+            try:
+                catalog = self.amazon_client.get_catalog_item(asin, source_url=target.get("source_url", ""))
+            except Exception as exc:
+                warnings.append(f"Amazon catalog enrichment failed for {asin}: {exc}")
         try:
-            catalog = self.amazon_client.get_catalog_item(asin, source_url=target.get("source_url", ""))
+            source_url = (catalog.source_url if catalog else "") or page_data.get("source_url", "") or target.get("source_url", "")
+            title = (page_data.get("title", "") or (catalog.title if catalog else "") or target.get("product_name", "")).strip()
+            brand_name = (page_data.get("brand_name", "") or (catalog.brand if catalog else "") or target.get("brand_name", "")).strip()
+            description = (page_data.get("description", "") or "").strip()
+            price = (page_data.get("price", "") or "").strip()
+            dimensions = (
+                (catalog.dimensions if catalog else "")
+                or (catalog.package_dimensions if catalog else "")
+                or page_data.get("dimensions", "")
+                or ""
+            ).strip()
+            image_url = (page_data.get("image_url", "") or "").strip()
+            product_type = ((catalog.category if catalog else "") or page_data.get("category", "") or "").strip()
         except Exception as exc:
             raise RuntimeError(f"Amazon target-product enrichment failed for {asin}: {exc}") from exc
 
-        if not catalog.bsr:
+        if catalog and not catalog.bsr:
             warnings.append("Amazon target product returned no BSR.")
+        if not image_url:
+            warnings.append("Amazon target product image was unavailable from the product page.")
+        if not price:
+            warnings.append("Amazon target product price was unavailable from the product page.")
 
         return EnrichedHeroProduct(
-            brand_name=catalog.brand or target.get("brand_name", ""),
-            title=catalog.title or target.get("product_name", ""),
-            source_url=catalog.source_url,
-            description="",
-            price="",
-            dimensions=catalog.dimensions or catalog.package_dimensions,
-            image_url="",
-            product_type=catalog.category,
+            brand_name=brand_name,
+            title=title,
+            source_url=source_url,
+            description=description,
+            price=price,
+            dimensions=dimensions,
+            image_url=image_url,
+            product_type=product_type,
             tags=(),
             warnings=tuple(warnings),
         )
@@ -199,3 +226,84 @@ def _build_gap(catalog: AmazonCatalogSnapshot | None) -> str:
     if not catalog.dimensions:
         return "Catalog dimensions are missing. Validate pack size, positioning, and PDP content manually."
     return "Use the catalog details to compare claim clarity, content depth, and conversion proof against the hero product."
+
+
+def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
+    if not source_url:
+        return {"warnings": ["Amazon target product URL was missing."]}
+    warnings: list[str] = []
+    try:
+        response = requests.get(
+            source_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        return {
+            "source_url": source_url,
+            "warnings": [f"Amazon product-page enrichment failed for {source_url}: {exc}"],
+        }
+
+    content = response.text or ""
+    title = _extract_first(
+        content,
+        r'id="productTitle"[^>]*>\s*(.*?)\s*</span>',
+        r"<title>\s*(.*?)\s*</title>",
+    )
+    title = html_lib.unescape(re.sub(r"\s+", " ", title)).replace(": Amazon.com", "").strip()
+    image_url = _extract_first(
+        content,
+        r'<meta\s+property="og:image"\s+content="([^"]+)"',
+        r'"hiRes":"([^"]+)"',
+        r'"large":"([^"]+)"',
+    ).replace("\\u0026", "&").replace("\\/", "/")
+    price = _extract_first(
+        content,
+        r'<span class="a-offscreen">\s*([$][^<]+)\s*</span>',
+        r'"priceAmount":"([^"]+)"',
+    ).strip()
+    if price and not price.startswith("$") and re.fullmatch(r"\d+(\.\d+)?", price):
+        price = f"${price}"
+    description = html_lib.unescape(
+        _extract_first(
+            content,
+            r'<div id="feature-bullets"[^>]*>(.*?)</div>',
+            r'<meta\s+name="description"\s+content="([^"]+)"',
+        )
+    )
+    description = re.sub(r"<[^>]+>", " ", description)
+    description = re.sub(r"\s+", " ", description).strip()
+    brand_name = html_lib.unescape(
+        _extract_first(
+            content,
+            r'id="bylineInfo"[^>]*>\s*(.*?)\s*</a>',
+            r'"brand":"([^"]+)"',
+        )
+    ).replace("Visit the ", "").replace(" Store", "").strip()
+    category = html_lib.unescape(_extract_first(content, r'"productGroup":"([^"]+)"')).strip()
+    dimensions = html_lib.unescape(_extract_first(content, r'"itemDimensions":"([^"]+)"')).strip()
+    if not title:
+        warnings.append("Amazon product page did not expose a parseable title.")
+    return {
+        "source_url": source_url,
+        "title": title,
+        "image_url": image_url,
+        "price": price,
+        "description": description,
+        "brand_name": brand_name,
+        "category": category,
+        "dimensions": dimensions,
+        "warnings": warnings,
+    }
+
+
+def _extract_first(content: str, *patterns: str) -> str:
+    for pattern in patterns:
+        match = re.search(pattern, content, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
