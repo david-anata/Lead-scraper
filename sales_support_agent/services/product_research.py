@@ -74,7 +74,21 @@ class ProductResearchService:
     def enrich_target_product(self, target: dict[str, str]) -> EnrichedHeroProduct:
         source_type = target.get("source_type", "")
         if source_type == "shopify":
-            return self.enrich_hero_product(target.get("source_url", ""))
+            try:
+                return self.enrich_hero_product(target.get("source_url", ""))
+            except Exception as exc:
+                return EnrichedHeroProduct(
+                    brand_name=target.get("brand_name", ""),
+                    title=target.get("product_name", ""),
+                    source_url=target.get("source_url", ""),
+                    description="",
+                    price="",
+                    dimensions="",
+                    image_url="",
+                    product_type="",
+                    tags=(),
+                    warnings=(f"Shopify enrichment failed for {target.get('source_url', '')}: {exc}",),
+                )
         if source_type == "amazon":
             return self._enrich_amazon_target(target)
         raise RuntimeError("Target product must be a Shopify product URL or an Amazon ASIN/URL.")

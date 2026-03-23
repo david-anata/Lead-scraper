@@ -907,17 +907,20 @@ async def admin_generate_deck(
     competitor_bytes = await competitor_csv.read() if competitor_csv is not None else None
     competitor_values = _parse_competitor_inputs(competitor_inputs)
     settings = request.app.state.settings
-    with session_scope(request.app.state.session_factory) as session:
-        result = DeckGenerationService(settings, session).generate_deck(
-            competitor_csv_bytes=competitor_bytes,
-            competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
-            target_product_input=target_product_input,
-            shopify_product_url=shopify_product_url,
-            competitor_inputs=competitor_values,
-            run_label=run_label,
-            report_date=parsed_report_date,
-            reporting_period=reporting_period,
-        )
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            result = DeckGenerationService(settings, session).generate_deck(
+                competitor_csv_bytes=competitor_bytes,
+                competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
+                target_product_input=target_product_input,
+                shopify_product_url=shopify_product_url,
+                competitor_inputs=competitor_values,
+                run_label=run_label,
+                report_date=parsed_report_date,
+                reporting_period=reporting_period,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return ApiMessage(
         status="ok",
         message=result.message,
@@ -958,18 +961,21 @@ async def internal_admin_generate_deck(
 
     competitor_bytes = await competitor_csv.read() if competitor_csv is not None else None
     settings = request.app.state.settings
-    with session_scope(request.app.state.session_factory) as session:
-        result = DeckGenerationService(settings, session).generate_deck(
-            competitor_csv_bytes=competitor_bytes,
-            competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
-            target_product_input=target_product_input,
-            shopify_product_url=shopify_product_url,
-            competitor_inputs=_parse_competitor_inputs(competitor_inputs),
-            run_label=run_label,
-            report_date=parsed_report_date,
-            reporting_period=reporting_period,
-            trigger="internal_api",
-        )
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            result = DeckGenerationService(settings, session).generate_deck(
+                competitor_csv_bytes=competitor_bytes,
+                competitor_filename=competitor_csv.filename if competitor_csv is not None else "",
+                target_product_input=target_product_input,
+                shopify_product_url=shopify_product_url,
+                competitor_inputs=_parse_competitor_inputs(competitor_inputs),
+                run_label=run_label,
+                report_date=parsed_report_date,
+                reporting_period=reporting_period,
+                trigger="internal_api",
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return ApiMessage(
         status="ok",

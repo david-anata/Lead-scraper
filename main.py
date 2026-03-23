@@ -676,7 +676,13 @@ def _post_sales_support_multipart(
         files=files,
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    payload = response.json() if response.content else {}
+    if response.content:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"detail": (response.text or "Sales support agent returned a non-JSON response.").strip()}
+    else:
+        payload = {}
     return response.status_code, payload
 
 
