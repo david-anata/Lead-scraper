@@ -599,7 +599,10 @@ class DeckGenerationService:
             raise RuntimeError("Canva is not connected yet. Connect Canva from the admin dashboard first.")
 
         now = datetime.now(timezone.utc)
-        if connection.expires_at is None or connection.expires_at <= now + timedelta(minutes=2):
+        expires_at = connection.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at is None or expires_at <= now + timedelta(minutes=2):
             refresh_token = unseal_token(self.settings.canva_token_secret, connection.refresh_token_encrypted)
             payload = self.canva_client.refresh_access_token(refresh_token)
             refreshed_access_token = str(payload.get("access_token") or "").strip()
@@ -666,7 +669,15 @@ class DeckGenerationService:
         return missing
 
     def _canva_delivery_ready(self) -> bool:
-        return not get_missing_deck_generator_settings(self.settings, include_google_sheets=False)
+        if get_missing_deck_generator_settings(self.settings, include_google_sheets=False):
+            return False
+        connection = self._latest_canva_connection()
+        if connection is None:
+            return False
+        capabilities = dict(connection.capabilities_json or {})
+        if capabilities and (not capabilities.get("autofill") or not capabilities.get("brand_template")):
+            return False
+        return True
 
     def _build_export_url(self, *, run_id: int, token: str) -> str:
         redirect_uri = str(getattr(self.settings, "canva_redirect_uri", "") or "").strip()
