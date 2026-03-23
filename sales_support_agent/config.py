@@ -434,7 +434,9 @@ def load_settings() -> Settings:
             ).strip()
             or str(Path(__file__).resolve().parents[1] / "shared" / "anata_brand")
         ),
-        deck_public_base_url=os.getenv("DECK_PUBLIC_BASE_URL", "").strip().rstrip("/"),
+        deck_public_base_url=(
+            os.getenv("DECK_PUBLIC_BASE_URL", "https://agent.anatainc.com").strip().rstrip("/")
+        ),
         shopify_request_timeout_seconds=int((os.getenv("SHOPIFY_REQUEST_TIMEOUT_SECONDS", "20") or "20").strip()),
         shopify_user_agent=(
             os.getenv("SHOPIFY_USER_AGENT", "anata-deck-generator/1.0").strip()
