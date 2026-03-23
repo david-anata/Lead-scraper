@@ -1,13 +1,16 @@
-"""Deck generation service for Google Sheets + Canva brand templates."""
+"""Deck generation service for Canva or first-party HTML deck output."""
 
 from __future__ import annotations
 
 import csv
+import html
 import io
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urljoin
 from typing import Any
 from urllib.parse import urlparse
 
@@ -39,6 +42,7 @@ class DeckGenerationResult:
     run_id: int
     status: str
     message: str
+    output_type: str
     design_id: str
     design_title: str
     edit_url: str
@@ -135,10 +139,7 @@ class DeckGenerationService:
         effective_target_input = target_product_input.strip() or shopify_product_url.strip()
         normalized_competitors = _normalize_competitor_inputs(competitor_inputs or [])
         automation_mode = bool(effective_target_input or normalized_competitors)
-        missing = get_missing_deck_generator_settings(
-            self.settings,
-            include_google_sheets=not automation_mode,
-        )
+        missing = self._required_data_settings(include_google_sheets=not automation_mode)
         if missing:
             raise RuntimeError(f"Deck generator is missing environment variables: {', '.join(missing)}")
 
@@ -176,46 +177,12 @@ class DeckGenerationService:
                     reporting_period=reporting_period,
                 )
 
-            access_token = self._ensure_canva_access_token()
-            template_payload = self.canva_client.get_brand_template_dataset(
-                self.settings.canva_brand_template_id,
-                access_token,
-            )
-            template_dataset = dict(template_payload.get("dataset", {}) or {})
-            canva_data, warnings = self._prepare_canva_data(template_dataset, dataset)
-            warnings = [*dataset.warnings, *warnings]
-
             title = self._build_design_title(run_label=run_label, report_date=report_date, reporting_period=reporting_period)
-            job_payload = self.canva_client.create_autofill_job(
-                access_token=access_token,
-                brand_template_id=self.settings.canva_brand_template_id,
+            result = self._generate_deliverable(
+                run=run,
                 title=title,
-                data=canva_data,
-            )
-            job_id = str(dict(job_payload.get("job", {})).get("id") or job_payload.get("id") or "").strip()
-            if not job_id:
-                raise RuntimeError(f"Canva autofill did not return a job id: {job_payload}")
-
-            final_payload = self._wait_for_autofill(job_id=job_id, access_token=access_token)
-            job_details = dict(final_payload.get("job", {}) or {})
-            if job_details.get("status") != "success":
-                error_details = dict(job_details.get("error", {}) or {})
-                raise RuntimeError(error_details.get("message") or f"Canva autofill failed: {job_details}")
-
-            design = dict(dict(job_details.get("result", {}) or {}).get("design", {}) or {})
-            urls = dict(design.get("urls", {}) or {})
-            result = DeckGenerationResult(
-                run_id=run.id,
-                status="success",
-                message="Deck generated successfully.",
-                design_id=str(design.get("id") or "").strip(),
-                design_title=str(design.get("title") or title).strip(),
-                edit_url=str(urls.get("edit_url") or design.get("url") or "").strip(),
-                view_url=str(urls.get("view_url") or design.get("url") or "").strip(),
-                warnings=warnings,
-                sales_row_count=dataset.sales_row_count,
-                competitor_row_count=dataset.competitor_row_count,
-                template_fields=len(template_dataset),
+                dataset=dataset,
+                warnings=list(dataset.warnings),
             )
             self.audit.finish_run(
                 run,
@@ -223,6 +190,7 @@ class DeckGenerationService:
                 summary={
                     "status": "success",
                     "message": result.message,
+                    "output_type": result.output_type,
                     "design_id": result.design_id,
                     "design_title": result.design_title,
                     "edit_url": result.edit_url,
@@ -231,6 +199,8 @@ class DeckGenerationService:
                     "sales_row_count": result.sales_row_count,
                     "competitor_row_count": result.competitor_row_count,
                     "template_fields": result.template_fields,
+                    "export_token": run.summary_json.get("export_token") if isinstance(run.summary_json, dict) else "",
+                    "deck_html": run.summary_json.get("deck_html") if isinstance(run.summary_json, dict) else "",
                 },
             )
             return result
@@ -244,6 +214,106 @@ class DeckGenerationService:
                 },
             )
             raise
+
+    def _generate_deliverable(
+        self,
+        *,
+        run: AutomationRun,
+        title: str,
+        dataset: DeckDataset,
+        warnings: list[str],
+    ) -> DeckGenerationResult:
+        canva_ready = self._canva_delivery_ready()
+        if canva_ready:
+            try:
+                return self._generate_canva_deck(run=run, title=title, dataset=dataset, warnings=warnings)
+            except Exception as exc:
+                warnings.append(f"Canva delivery was unavailable, so the deck was exported as HTML instead. Reason: {exc}")
+        else:
+            warnings.append("Canva delivery is unavailable, so the deck was exported as HTML instead.")
+        return self._generate_html_deck(run=run, title=title, dataset=dataset, warnings=warnings)
+
+    def _generate_canva_deck(
+        self,
+        *,
+        run: AutomationRun,
+        title: str,
+        dataset: DeckDataset,
+        warnings: list[str],
+    ) -> DeckGenerationResult:
+        access_token = self._ensure_canva_access_token()
+        template_payload = self.canva_client.get_brand_template_dataset(
+            self.settings.canva_brand_template_id,
+            access_token,
+        )
+        template_dataset = dict(template_payload.get("dataset", {}) or {})
+        canva_data, canva_warnings = self._prepare_canva_data(template_dataset, dataset)
+        warnings = [*warnings, *canva_warnings]
+
+        job_payload = self.canva_client.create_autofill_job(
+            access_token=access_token,
+            brand_template_id=self.settings.canva_brand_template_id,
+            title=title,
+            data=canva_data,
+        )
+        job_id = str(dict(job_payload.get("job", {})).get("id") or job_payload.get("id") or "").strip()
+        if not job_id:
+            raise RuntimeError(f"Canva autofill did not return a job id: {job_payload}")
+
+        final_payload = self._wait_for_autofill(job_id=job_id, access_token=access_token)
+        job_details = dict(final_payload.get("job", {}) or {})
+        if job_details.get("status") != "success":
+            error_details = dict(job_details.get("error", {}) or {})
+            raise RuntimeError(error_details.get("message") or f"Canva autofill failed: {job_details}")
+
+        design = dict(dict(job_details.get("result", {}) or {}).get("design", {}) or {})
+        urls = dict(design.get("urls", {}) or {})
+        return DeckGenerationResult(
+            run_id=run.id,
+            status="success",
+            message="Deck generated successfully.",
+            output_type="canva",
+            design_id=str(design.get("id") or "").strip(),
+            design_title=str(design.get("title") or title).strip(),
+            edit_url=str(urls.get("edit_url") or design.get("url") or "").strip(),
+            view_url=str(urls.get("view_url") or design.get("url") or "").strip(),
+            warnings=warnings,
+            sales_row_count=dataset.sales_row_count,
+            competitor_row_count=dataset.competitor_row_count,
+            template_fields=len(template_dataset),
+        )
+
+    def _generate_html_deck(
+        self,
+        *,
+        run: AutomationRun,
+        title: str,
+        dataset: DeckDataset,
+        warnings: list[str],
+    ) -> DeckGenerationResult:
+        export_token = secrets.token_urlsafe(18)
+        html_content = self._render_html_deck(title=title, dataset=dataset, warnings=warnings)
+        view_url = self._build_export_url(run_id=run.id, token=export_token)
+        run.summary_json = {
+            "export_token": export_token,
+            "deck_html": html_content,
+        }
+        self.session.add(run)
+        self.session.flush()
+        return DeckGenerationResult(
+            run_id=run.id,
+            status="success",
+            message="Deck generated successfully as an HTML report.",
+            output_type="html",
+            design_id=f"html-deck-{run.id}",
+            design_title=title,
+            edit_url=view_url,
+            view_url=view_url,
+            warnings=warnings,
+            sales_row_count=dataset.sales_row_count,
+            competitor_row_count=dataset.competitor_row_count,
+            template_fields=0,
+        )
 
     def _build_dataset(
         self,
@@ -583,6 +653,209 @@ class DeckGenerationService:
         return self.session.execute(
             select(CanvaConnection).order_by(CanvaConnection.updated_at.desc(), CanvaConnection.id.desc()).limit(1)
         ).scalar_one_or_none()
+
+    def _required_data_settings(self, *, include_google_sheets: bool) -> list[str]:
+        missing: list[str] = []
+        if include_google_sheets:
+            if not self.settings.google_sheets_spreadsheet_id:
+                missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
+            if not self.settings.google_sheets_sales_range:
+                missing.append("GOOGLE_SHEETS_SALES_RANGE")
+            if not self.settings.google_service_account_json:
+                missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
+        return missing
+
+    def _canva_delivery_ready(self) -> bool:
+        return not get_missing_deck_generator_settings(self.settings, include_google_sheets=False)
+
+    def _build_export_url(self, *, run_id: int, token: str) -> str:
+        redirect_uri = str(getattr(self.settings, "canva_redirect_uri", "") or "").strip()
+        if redirect_uri:
+            parsed = urlparse(redirect_uri)
+            if parsed.scheme and parsed.netloc:
+                return urljoin(f"{parsed.scheme}://{parsed.netloc}", f"/deck-exports/{run_id}/{token}")
+        return f"/deck-exports/{run_id}/{token}"
+
+    def _render_html_deck(self, *, title: str, dataset: DeckDataset, warnings: list[str]) -> str:
+        text = dataset.text_fields
+        competitor_rows = self._table_rows(dataset.chart_fields.get("competitor_table"))
+        bsr_rows = self._table_rows(dataset.chart_fields.get("top_products_by_bsr"))
+        hero_name = text.get("hero_product_name") or "Hero product"
+        brand_name = text.get("brand_name") or "Brand"
+        warning_items = "".join(f"<li>{html.escape(item)}</li>" for item in warnings if item)
+        competitor_cards = "".join(self._render_competitor_card(text, slot) for slot in range(1, 6))
+        return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    :root {{
+      --ink: #0f172a;
+      --muted: #475569;
+      --line: #d9e2ec;
+      --soft: #f8fafc;
+      --accent: #0f3b66;
+      --accent-2: #8ec6eb;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; font-family: "Helvetica Neue", Arial, sans-serif; color: var(--ink); background: linear-gradient(180deg, #eef6fb 0%, #ffffff 22%); }}
+    .deck {{ width: min(1200px, calc(100vw - 32px)); margin: 24px auto 48px; }}
+    .slide {{ background: white; border: 1px solid var(--line); border-radius: 24px; padding: 40px; margin-bottom: 24px; box-shadow: 0 16px 40px rgba(15, 23, 42, 0.06); page-break-after: always; }}
+    .eyebrow {{ font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }}
+    h1 {{ font-size: 56px; line-height: 0.98; margin: 12px 0; max-width: 12ch; }}
+    h2 {{ font-size: 34px; margin: 0 0 18px; }}
+    p {{ font-size: 18px; line-height: 1.55; margin: 0 0 14px; color: var(--ink); }}
+    .muted {{ color: var(--muted); }}
+    .hero-grid, .two-col {{ display: grid; gap: 24px; }}
+    .hero-grid {{ grid-template-columns: 1.5fr 1fr; align-items: end; }}
+    .two-col {{ grid-template-columns: 1fr 1fr; }}
+    .metric-grid {{ display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 24px; }}
+    .metric {{ border: 1px solid var(--line); border-radius: 18px; padding: 18px; background: var(--soft); }}
+    .metric span {{ display:block; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }}
+    .metric strong {{ font-size: 28px; }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 18px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ padding: 14px 16px; border-bottom: 1px solid var(--line); text-align: left; font-size: 15px; vertical-align: top; }}
+    th {{ background: #eff6ff; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .card-grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
+    .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 18px; background: white; }}
+    .card h3 {{ margin: 0 0 10px; font-size: 20px; }}
+    ul {{ margin: 12px 0 0 20px; color: var(--muted); }}
+    .tag {{ display:inline-block; margin: 0 8px 8px 0; padding: 8px 12px; border-radius: 999px; background: #ebf5ff; color: var(--accent); font-size: 13px; }}
+    .warning {{ border-left: 4px solid #f59e0b; padding-left: 14px; color: var(--muted); }}
+    @media (max-width: 860px) {{
+      .hero-grid, .two-col, .metric-grid, .card-grid {{ grid-template-columns: 1fr; }}
+      .slide {{ padding: 24px; }}
+      h1 {{ font-size: 40px; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <section class="slide">
+      <div class="eyebrow">Anata Opportunity Deck</div>
+      <div class="hero-grid">
+        <div>
+          <h1>{html.escape(brand_name)}.<br>{html.escape(hero_name)}</h1>
+          <p>{html.escape(text.get("executive_summary") or text.get("hero_product_snapshot") or "")}</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">Reporting Period</p>
+          <p><strong>{html.escape(text.get("reporting_period") or text.get("report_generated_date") or "")}</strong></p>
+          <p class="muted">{html.escape(text.get("hero_product_source_url") or "")}</p>
+        </div>
+      </div>
+      <div class="metric-grid">
+        <div class="metric"><span>Brand</span><strong>{html.escape(brand_name)}</strong></div>
+        <div class="metric"><span>Hero Product</span><strong>{html.escape(hero_name)}</strong></div>
+        <div class="metric"><span>Competitors</span><strong>{html.escape(text.get("competitor_row_count") or "0")}</strong></div>
+        <div class="metric"><span>Input Type</span><strong>{html.escape(text.get("hero_product_input_type") or "shopify")}</strong></div>
+      </div>
+    </section>
+    <section class="slide">
+      <div class="eyebrow">Market Opportunity</div>
+      <h2>Opportunity framing</h2>
+      <p>{html.escape(text.get("market_summary") or "")}</p>
+      <div class="table-wrap">{self._render_table_html(bsr_rows)}</div>
+    </section>
+    <section class="slide">
+      <div class="eyebrow">Hero Product</div>
+      <h2>{html.escape(hero_name)}</h2>
+      <div class="two-col">
+        <div>
+          <p>{html.escape(text.get("hero_product_description") or "")}</p>
+          <p><strong>Price:</strong> {html.escape(text.get("hero_product_price") or "")}</p>
+          <p><strong>Dimensions:</strong> {html.escape(text.get("hero_product_dimensions") or "")}</p>
+          <p><strong>Type:</strong> {html.escape(text.get("hero_product_type") or "")}</p>
+        </div>
+        <div>
+          <p><strong>Tags</strong></p>
+          {self._render_tags(text.get("hero_product_tags", ""))}
+        </div>
+      </div>
+    </section>
+    <section class="slide">
+      <div class="eyebrow">Competitors</div>
+      <h2>Comparison set</h2>
+      <div class="table-wrap">{self._render_table_html(competitor_rows)}</div>
+      <div class="card-grid" style="margin-top: 20px;">{competitor_cards}</div>
+    </section>
+    <section class="slide">
+      <div class="eyebrow">Execution</div>
+      <h2>What we would do</h2>
+      <div class="card-grid">
+        <div class="card"><h3>CRO</h3><p>{html.escape(text.get("cro_summary") or "")}</p></div>
+        <div class="card"><h3>SEO</h3><p>{html.escape(text.get("seo_summary") or "")}</p></div>
+        <div class="card"><h3>Creative</h3><p>{html.escape(text.get("creative_summary") or "")}</p></div>
+        <div class="card"><h3>Advertising</h3><p>{html.escape(text.get("advertising_summary") or "")}</p></div>
+      </div>
+    </section>
+    <section class="slide">
+      <div class="eyebrow">Plan</div>
+      <h2>Recommended path</h2>
+      <p>{html.escape(text.get("recommended_plan_summary") or "")}</p>
+      <p>{html.escape(text.get("expected_impact_summary") or "")}</p>
+      <p>{html.escape(text.get("why_anata_summary") or "")}</p>
+      <p><strong>{html.escape(text.get("cta_summary") or "")}</strong></p>
+      {"<div class='warning'><strong>Generation notes</strong><ul>" + warning_items + "</ul></div>" if warning_items else ""}
+    </section>
+  </main>
+</body>
+</html>"""
+
+    def _table_rows(self, chart_payload: dict[str, Any] | None) -> list[list[str]]:
+        rows: list[list[str]] = []
+        for row in list(dict(chart_payload or {}).get("rows", []) or []):
+            cells = []
+            for cell in list(dict(row).get("cells", []) or []):
+                value = dict(cell).get("value")
+                cells.append("" if value is None else str(value))
+            if cells:
+                rows.append(cells)
+        return rows
+
+    def _render_table_html(self, rows: list[list[str]]) -> str:
+        if not rows:
+            return "<p class='muted' style='padding:16px;'>No data available.</p>"
+        header = rows[0]
+        body = rows[1:]
+        thead = "".join(f"<th>{html.escape(cell)}</th>" for cell in header)
+        tbody = "".join(
+            "<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>"
+            for row in body
+        )
+        return f"<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>"
+
+    def _render_tags(self, value: str) -> str:
+        tags = [item.strip() for item in str(value or "").split(",") if item.strip()]
+        if not tags:
+            return "<p class='muted'>No tags captured.</p>"
+        return "".join(f"<span class='tag'>{html.escape(tag)}</span>" for tag in tags)
+
+    def _render_competitor_card(self, text_fields: dict[str, str], slot: int) -> str:
+        name = text_fields.get(f"competitor_{slot}_name", "")
+        if not name:
+            return ""
+        brand = text_fields.get(f"competitor_{slot}_brand", "")
+        category = text_fields.get(f"competitor_{slot}_category", "")
+        bsr = text_fields.get(f"competitor_{slot}_bsr", "")
+        sales = text_fields.get(f"competitor_{slot}_estimated_sales", "")
+        units = text_fields.get(f"competitor_{slot}_units", "")
+        strength = text_fields.get(f"competitor_{slot}_strength", "")
+        gap = text_fields.get(f"competitor_{slot}_gap", "")
+        return (
+            "<article class='card'>"
+            f"<h3>{html.escape(name)}</h3>"
+            f"<p><strong>Brand:</strong> {html.escape(brand)}</p>"
+            f"<p><strong>Category:</strong> {html.escape(category)}</p>"
+            f"<p><strong>BSR:</strong> {html.escape(bsr)} | <strong>Sales:</strong> {html.escape(sales)} | <strong>Units:</strong> {html.escape(units)}</p>"
+            f"<p><strong>Strength:</strong> {html.escape(strength)}</p>"
+            f"<p><strong>Gap:</strong> {html.escape(gap)}</p>"
+            "</article>"
+        )
 
     def _run_summary(self, run: AutomationRun) -> dict[str, Any]:
         summary = dict(run.summary_json or {})

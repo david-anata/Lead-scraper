@@ -5,8 +5,9 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 try:
+    from sqlalchemy import select
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
-    from sales_support_agent.models.entities import CanvaConnection
+    from sales_support_agent.models.entities import AutomationRun, CanvaConnection
     from sales_support_agent.integrations.amazon_sp_api import AmazonCatalogSnapshot
     from sales_support_agent.integrations.shopify import ShopifyProductSnapshot
     from sales_support_agent.services.deck_generator import DeckGenerationService
@@ -41,14 +42,16 @@ class _FakeCanvaClient:
         include_image_field: bool = False,
         include_top_products_chart: bool = False,
         dataset_override: dict[str, dict[str, object]] | None = None,
+        capabilities: dict[str, bool] | None = None,
     ):
         self.include_image_field = include_image_field
         self.include_top_products_chart = include_top_products_chart
         self.dataset_override = dataset_override
+        self.capabilities = capabilities or {"autofill": True, "brand_template": True}
         self.created_payload: dict[str, object] | None = None
 
     def get_user_capabilities(self, access_token: str) -> dict[str, object]:
-        return {"capabilities": {"autofill": True, "brand_template": True}}
+        return {"capabilities": self.capabilities}
 
     def refresh_access_token(self, refresh_token: str) -> dict[str, object]:
         return {"access_token": "fresh-access", "refresh_token": refresh_token, "expires_in": 3600}
@@ -377,6 +380,51 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertEqual(canva_client.created_payload["hero_product_input_type"]["text"], "amazon")
         self.assertEqual(canva_client.created_payload["hero_product_name"]["text"], "Catalog B08DK5RDJV")
         self.assertEqual(canva_client.created_payload["hero_product_dimensions"]["text"], "4 in x 3 in x 1 in")
+
+    def test_generate_deck_falls_back_to_html_when_canva_capabilities_are_missing(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = _build_settings(
+            google_sheets_spreadsheet_id="",
+            google_sheets_sales_range="",
+            google_service_account_json="",
+        )
+
+        with session_scope(session_factory) as session:
+            session.add(
+                CanvaConnection(
+                    display_name="Deck Ops",
+                    access_token_encrypted=seal_token(settings.canva_token_secret, "access-token"),
+                    refresh_token_encrypted=seal_token(settings.canva_token_secret, "refresh-token"),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    capabilities_json={"autofill": False, "brand_template": False},
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        with session_scope(session_factory) as session:
+            result = DeckGenerationService(
+                settings,
+                session,
+                canva_client=_FakeCanvaClient(capabilities={"autofill": False, "brand_template": False}),
+                shopify_client=_FakeShopifyClient(),
+                amazon_client=_FakeAmazonClient(),
+            ).generate_deck(
+                shopify_product_url="https://bonpatch.com/products/clarity-patch",
+                competitor_inputs=["B000000001"],
+                run_label="Fallback Deck",
+                report_date=date(2026, 3, 23),
+            )
+            run = session.execute(
+                select(AutomationRun)
+                .where(AutomationRun.id == result.run_id)
+            ).scalar_one()
+
+        self.assertEqual(result.output_type, "html")
+        self.assertIn("/deck-exports/", result.view_url)
+        self.assertTrue(any("HTML" in warning for warning in result.warnings))
+        self.assertTrue(run.summary_json.get("deck_html"))
+        self.assertTrue(run.summary_json.get("export_token"))
 
 
 if __name__ == "__main__":

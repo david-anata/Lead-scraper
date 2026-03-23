@@ -31,7 +31,7 @@ from sales_support_agent.jobs.daily_digest import DailyDigestJob
 from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
 from sales_support_agent.jobs.stale_leads import StaleLeadJob
 from sales_support_agent.models.database import session_scope
-from sales_support_agent.models.entities import LeadMirror
+from sales_support_agent.models.entities import AutomationRun, LeadMirror
 from sales_support_agent.models.schemas import (
     ApiMessage,
     CommunicationEventRequest,
@@ -865,6 +865,26 @@ def admin_canva_callback(
     return response
 
 
+@router.get("/deck-exports/{run_id}/{token}", response_class=HTMLResponse)
+def deck_export_view(request: Request, run_id: int, token: str) -> Response:
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.execute(
+            select(AutomationRun).where(
+                AutomationRun.id == run_id,
+                AutomationRun.run_type == "deck_generation",
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            return HTMLResponse("Deck export not found.", status_code=404)
+        summary = dict(run.summary_json or {})
+        if summary.get("export_token") != token:
+            return HTMLResponse("Deck export not found.", status_code=404)
+        deck_html = str(summary.get("deck_html") or "")
+        if not deck_html:
+            return HTMLResponse("Deck export not found.", status_code=404)
+        return HTMLResponse(deck_html)
+
+
 @router.post("/admin/api/generate-deck", response_model=ApiMessage)
 async def admin_generate_deck(
     request: Request,
@@ -904,6 +924,7 @@ async def admin_generate_deck(
         details={
             "run_id": result.run_id,
             "status": result.status,
+            "output_type": result.output_type,
             "design_id": result.design_id,
             "design_title": result.design_title,
             "edit_url": result.edit_url,
@@ -956,6 +977,7 @@ async def internal_admin_generate_deck(
         details={
             "run_id": result.run_id,
             "status": result.status,
+            "output_type": result.output_type,
             "design_id": result.design_id,
             "design_title": result.design_title,
             "edit_url": result.edit_url,

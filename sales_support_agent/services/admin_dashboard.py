@@ -1614,9 +1614,9 @@ def render_dashboard_page(data: DashboardData) -> str:
     deck_ready_notice = (
         '<div class="notice warning">Deck generator is missing env vars: '
         + html.escape(", ".join(data.deck_generator_missing))
-        + "</div>"
+        + '. Google Sheets is only required for the legacy CSV flow; the automation-first input can still fall back to a first-party HTML deck.</div>'
         if not data.deck_generator_ready
-        else '<div class="notice success">Deck generator is configured. Connect Canva once, then use the automation-first template fields to generate a fresh deck copy.</div>'
+        else '<div class="notice success">Deck generator is configured. If Canva is unavailable, the automation-first input will still generate a first-party HTML deck.</div>'
     )
     canva_connection_label = data.deck_canva_display_name or "No Canva account connected yet"
     deck_capability_bits = "".join(
@@ -2812,7 +2812,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                   </div>
                 </form>
                 <div class="draft-help">
-                  Build the Canva template with text and chart autofill fields only in v1. Use machine names like <strong>brand_name</strong>, <strong>hero_product_name</strong>, <strong>competitor_table</strong>, and <strong>top_products_by_bsr</strong>.
+                  Use the automation-first intake to generate a deck directly. If Canva is connected with the required capabilities, the system will use it. Otherwise it will export a first-party HTML deck from the same dataset.
                 </div>
                 <div class="status-line" id="deck-status">Deck status: Ready.</div>
                 <div class="deck-run-list" id="deck-run-list">
@@ -3183,7 +3183,7 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       deckForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
-        deckStatus.innerHTML = "Generating Canva deck. This can take a minute...";
+        deckStatus.innerHTML = "Generating deck. This can take a minute...";
         const formData = new FormData(deckForm);
         try {{
           const response = await fetch("/admin/api/generate-deck", {{
