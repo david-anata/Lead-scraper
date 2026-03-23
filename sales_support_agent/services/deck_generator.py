@@ -1875,7 +1875,7 @@ def _parse_target_product_input(value: str) -> dict[str, str]:
             "asin": "",
         }
     amazon_candidate = _parse_competitor_reference(cleaned)
-    if amazon_candidate["asin"]:
+    if _looks_like_amazon_target(cleaned, amazon_candidate["asin"]):
         return {
             "source_type": "amazon",
             "source_url": amazon_candidate["source_url"],
@@ -1900,6 +1900,17 @@ def _parse_target_product_input(value: str) -> dict[str, str]:
             "product_name": inferred_name,
             "asin": "",
         }
+    if cleaned:
+        inferred_name = cleaned.replace("-", " ").replace("_", " ").strip().title()
+        return {
+            "source_type": "website",
+            "source_url": cleaned if "://" in cleaned else f"https://{cleaned}",
+            "domain": "",
+            "brand_name": "",
+            "product_handle": "",
+            "product_name": inferred_name,
+            "asin": "",
+        }
     return {
         "source_type": "",
         "source_url": "",
@@ -1909,6 +1920,18 @@ def _parse_target_product_input(value: str) -> dict[str, str]:
         "product_name": "",
         "asin": "",
     }
+
+
+def _looks_like_amazon_target(raw_value: str, asin: str) -> bool:
+    cleaned = str(raw_value or "").strip()
+    if not cleaned or not asin:
+        return False
+    upper = cleaned.upper()
+    if re.fullmatch(r"[A-Z0-9]{10}", upper):
+        return True
+    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
+    host = (parsed.netloc or "").lower()
+    return "amazon." in host or host.endswith("amzn.to")
 
 
 def _parse_shopify_product_url(value: str) -> dict[str, str]:
