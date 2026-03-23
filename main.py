@@ -3483,6 +3483,7 @@ async def admin_generate_deck_proxy(
     creative_mockup_url: str = Form(default=""),
     case_study_url: str = Form(default=""),
     offers: list[str] = Form(default=[]),
+    offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
 ) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()
@@ -3501,6 +3502,7 @@ async def admin_generate_deck_proxy(
                 ("creative_mockup_url", creative_mockup_url),
                 ("case_study_url", case_study_url),
                 *[("offers", offer) for offer in offers],
+                ("offer_payload_json", offer_payload_json),
                 ("include_recommended_plan", "true" if include_recommended_plan else "false"),
             ],
             files_payload=[

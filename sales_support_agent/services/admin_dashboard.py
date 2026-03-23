@@ -2003,10 +2003,62 @@ def render_dashboard_page(data: DashboardData) -> str:
         border: 2px solid rgba(43, 54, 68, 0.12);
         background: rgba(191, 168, 137, 0.08);
       }}
-      .offer-toggle-group .toggle-row {{
-        display: flex;
-        flex-wrap: wrap;
+      .offer-builder {{
+        display: grid;
         gap: 14px;
+      }}
+      .offer-builder-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }}
+      .offer-builder-head p {{
+        margin: 0;
+        color: var(--alt-dark-blue);
+      }}
+      .offer-builder-actions {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }}
+      .offer-builder-actions button {{
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: rgba(43, 54, 68, 0.10);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      .offer-editor-list {{
+        display: grid;
+        gap: 14px;
+      }}
+      .offer-editor {{
+        display: grid;
+        gap: 14px;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        background: rgba(255, 255, 255, 0.8);
+      }}
+      .offer-editor-top {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }}
+      .offer-editor-grid {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }}
+      .offer-editor-grid .full-width {{
+        grid-column: 1 / -1;
       }}
       .checkbox-label {{
         display: inline-flex;
@@ -2813,9 +2865,102 @@ def render_dashboard_page(data: DashboardData) -> str:
                   <fieldset class="offer-toggle-group">
                     <legend>Recommended plan options</legend>
                     <label class="checkbox-label"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /> Include recommended plan slide</label>
-                    <div class="toggle-row">
-                      <label class="channel-toggle"><input type="checkbox" name="offers" value="channel_management" checked /> Channel management</label>
-                      <label class="channel-toggle"><input type="checkbox" name="offers" value="commission_model_shipping_os" /> Commission Model + Shipping OS</label>
+                    <div class="offer-builder">
+                      <div class="offer-builder-head">
+                        <p>Edit the offer cards directly. These values feed the deck as written here.</p>
+                        <div class="offer-builder-actions">
+                          <button type="button" id="deck-add-offer">ADD OFFER</button>
+                        </div>
+                      </div>
+                      <input type="hidden" name="offer_payload_json" id="deck-offer-payload-json" value="" />
+                      <div class="offer-editor-list" id="deck-offer-list">
+                        <div class="offer-editor" data-offer-index="0">
+                          <div class="offer-editor-top">
+                            <label class="checkbox-label"><input type="checkbox" class="offer-enabled" checked /> Include this offer</label>
+                          </div>
+                          <div class="offer-editor-grid">
+                            <label class="full-width">
+                              Offer title
+                              <input type="text" class="offer-title" value="Channel management" />
+                            </label>
+                            <label class="full-width">
+                              Description
+                              <textarea class="offer-description">Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.</textarea>
+                            </label>
+                            <label>
+                              Price
+                              <input type="text" class="offer-price" value="$3,000" />
+                            </label>
+                            <label>
+                              Price label
+                              <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                            </label>
+                            <label>
+                              Commission
+                              <input type="text" class="offer-commission" value="5%" />
+                            </label>
+                            <label>
+                              Commission label
+                              <input type="text" class="offer-commission-label" value="Commission on growth" />
+                            </label>
+                            <label>
+                              Baseline
+                              <input type="text" class="offer-baseline" value="$10,000" />
+                            </label>
+                            <label>
+                              Baseline label
+                              <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                            </label>
+                            <label class="full-width">
+                              Bonus / note
+                              <input type="text" class="offer-bonus" value="+TikTok Shop Support" />
+                            </label>
+                          </div>
+                        </div>
+                        <div class="offer-editor" data-offer-index="1">
+                          <div class="offer-editor-top">
+                            <label class="checkbox-label"><input type="checkbox" class="offer-enabled" checked /> Include this offer</label>
+                          </div>
+                          <div class="offer-editor-grid">
+                            <label class="full-width">
+                              Offer title
+                              <input type="text" class="offer-title" value="Commission Model + Shipping OS" />
+                            </label>
+                            <label class="full-width">
+                              Description
+                              <textarea class="offer-description">A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.</textarea>
+                            </label>
+                            <label>
+                              Price
+                              <input type="text" class="offer-price" value="$0" />
+                            </label>
+                            <label>
+                              Price label
+                              <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                            </label>
+                            <label>
+                              Commission
+                              <input type="text" class="offer-commission" value="10%" />
+                            </label>
+                            <label>
+                              Commission label
+                              <input type="text" class="offer-commission-label" value="Commission over baseline" />
+                            </label>
+                            <label>
+                              Baseline
+                              <input type="text" class="offer-baseline" value="$TBD" />
+                            </label>
+                            <label>
+                              Baseline label
+                              <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                            </label>
+                            <label class="full-width">
+                              Bonus / note
+                              <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </fieldset>
                   <div class="lead-submit">
@@ -2880,6 +3025,9 @@ def render_dashboard_page(data: DashboardData) -> str:
       const deckStatus = document.getElementById("deck-status");
       const deckSubmitButton = document.getElementById("deck-submit-button");
       const deckIncludePlanCheckbox = document.getElementById("deck-include-plan");
+      const deckOfferList = document.getElementById("deck-offer-list");
+      const deckOfferPayloadInput = document.getElementById("deck-offer-payload-json");
+      const deckAddOfferButton = document.getElementById("deck-add-offer");
       const draftsForm = document.getElementById("gmail-drafts-form");
       const draftsStatus = document.getElementById("drafts-status");
       const draftsResults = document.getElementById("drafts-results");
@@ -2976,6 +3124,70 @@ def render_dashboard_page(data: DashboardData) -> str:
           .replaceAll(">", "&gt;")
           .replaceAll('"', "&quot;")
           .replaceAll("'", "&#39;");
+      }}
+
+      function collectOfferPayload() {{
+        return Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).map((editor) => ({{
+          enabled: Boolean(editor.querySelector(".offer-enabled")?.checked),
+          title: editor.querySelector(".offer-title")?.value || "",
+          description: editor.querySelector(".offer-description")?.value || "",
+          price: editor.querySelector(".offer-price")?.value || "",
+          price_label: editor.querySelector(".offer-price-label")?.value || "",
+          commission: editor.querySelector(".offer-commission")?.value || "",
+          commission_label: editor.querySelector(".offer-commission-label")?.value || "",
+          baseline: editor.querySelector(".offer-baseline")?.value || "",
+          baseline_label: editor.querySelector(".offer-baseline-label")?.value || "",
+          bonus: editor.querySelector(".offer-bonus")?.value || "",
+        }}));
+      }}
+
+      function buildOfferEditor(index) {{
+        const wrapper = document.createElement("div");
+        wrapper.className = "offer-editor";
+        wrapper.dataset.offerIndex = String(index);
+        wrapper.innerHTML = `
+          <div class="offer-editor-top">
+            <label class="checkbox-label"><input type="checkbox" class="offer-enabled" checked /> Include this offer</label>
+          </div>
+          <div class="offer-editor-grid">
+            <label class="full-width">
+              Offer title
+              <input type="text" class="offer-title" value="Custom offer ${{index + 1}}" />
+            </label>
+            <label class="full-width">
+              Description
+              <textarea class="offer-description">Describe the scope, operating model, and why this offer fits the prospect.</textarea>
+            </label>
+            <label>
+              Price
+              <input type="text" class="offer-price" value="$TBD" />
+            </label>
+            <label>
+              Price label
+              <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+            </label>
+            <label>
+              Commission
+              <input type="text" class="offer-commission" value="TBD" />
+            </label>
+            <label>
+              Commission label
+              <input type="text" class="offer-commission-label" value="Commission" />
+            </label>
+            <label>
+              Baseline
+              <input type="text" class="offer-baseline" value="TBD" />
+            </label>
+            <label>
+              Baseline label
+              <input type="text" class="offer-baseline-label" value="Baseline" />
+            </label>
+            <label class="full-width">
+              Bonus / note
+              <input type="text" class="offer-bonus" value="" />
+            </label>
+          </div>`;
+        return wrapper;
       }}
 
       function updateDraftModeUi() {{
@@ -3201,6 +3413,9 @@ def render_dashboard_page(data: DashboardData) -> str:
           deckSubmitButton.textContent = "GENERATING...";
         }}
         deckStatus.innerHTML = "Generating deck. This can take a minute...";
+        if (deckOfferPayloadInput) {{
+          deckOfferPayloadInput.value = JSON.stringify(collectOfferPayload());
+        }}
         const formData = new FormData(deckForm);
         formData.delete("include_recommended_plan");
         formData.append("include_recommended_plan", deckIncludePlanCheckbox?.checked ? "true" : "false");
@@ -3235,6 +3450,14 @@ def render_dashboard_page(data: DashboardData) -> str:
             deckSubmitButton.textContent = "GENERATE DECK";
           }}
         }}
+      }});
+
+      deckAddOfferButton?.addEventListener("click", () => {{
+        if (!deckOfferList) {{
+          return;
+        }}
+        const nextIndex = deckOfferList.querySelectorAll(".offer-editor").length;
+        deckOfferList.appendChild(buildOfferEditor(nextIndex));
       }});
 
       draftsForm?.addEventListener("submit", async (event) => {{

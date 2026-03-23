@@ -113,10 +113,16 @@ body {
 
 .market-summary-grid {
   grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  align-items: start;
 }
 
 .compact-donut-grid .distribution-card {
   padding: 14px 16px;
+}
+
+.compact-donut-grid {
+  grid-template-columns: 1fr;
+  align-content: start;
 }
 
 .eyebrow {
@@ -273,6 +279,15 @@ h3 {
 .revenue-row {
   display: grid;
   gap: 8px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  transition: background 120ms ease, transform 120ms ease;
+  cursor: help;
+}
+
+.revenue-row:hover {
+  background: rgba(133, 187, 218, 0.14);
+  transform: translateY(-1px);
 }
 
 .revenue-labels {
@@ -310,6 +325,31 @@ h3 {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  transition: background 120ms ease, transform 120ms ease;
+  cursor: help;
+}
+
+.distribution-card li:hover {
+  background: rgba(133, 187, 218, 0.14);
+  transform: translateY(-1px);
+}
+
+.distribution-card li span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.distribution-card li span::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--legend-color, var(--anata-sky));
+  flex: 0 0 auto;
 }
 
 .donut-chart {
@@ -323,6 +363,13 @@ h3 {
   height: 140px;
   border-radius: 50%;
   position: relative;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+  cursor: help;
+}
+
+.donut-visual:hover {
+  transform: scale(1.02);
+  box-shadow: 0 10px 24px rgba(29, 45, 68, 0.14);
 }
 
 .donut-visual::after {
@@ -672,38 +719,6 @@ th {
   padding: 18px;
 }
 
-.cta-card {
-  margin-left: auto;
-  max-width: 380px;
-  background: #ccb390;
-  color: white;
-  border-radius: 24px;
-  padding: 22px;
-}
-
-.cta-card strong {
-  display: block;
-  font-size: 28px;
-  line-height: 1;
-  margin-bottom: 8px;
-}
-
-.cta-card p {
-  margin-bottom: 18px;
-}
-
-.cta-card span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 180px;
-  border-radius: 999px;
-  background: var(--anata-sky);
-  color: white;
-  padding: 12px 18px;
-  font-weight: 800;
-}
-
 .competitor-body p,
 .gallery-card p,
 .gallery-card small {
@@ -715,16 +730,6 @@ th {
   padding-left: 18px;
   display: grid;
   gap: 10px;
-}
-
-.closing-card {
-  margin-top: 18px;
-  background: linear-gradient(135deg, #10233d 0%, #294566 100%);
-  color: white;
-}
-
-.inline-cta-card {
-  margin-top: 16px;
 }
 
 .warning {

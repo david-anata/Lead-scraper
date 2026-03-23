@@ -67,6 +67,32 @@ class DeckGenerationResult:
     template_fields: int
 
 
+DEFAULT_CUSTOM_OFFERS: tuple[dict[str, str], ...] = (
+    {
+        "title": "Channel management",
+        "description": "Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.",
+        "price": "$3,000",
+        "price_label": "Monthly retainer fee",
+        "commission": "5%",
+        "commission_label": "Commission on growth",
+        "baseline": "$10,000",
+        "baseline_label": "Commission baseline",
+        "bonus": "+TikTok Shop Support",
+    },
+    {
+        "title": "Commission Model + Shipping OS",
+        "description": "A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.",
+        "price": "$0",
+        "price_label": "Monthly retainer fee",
+        "commission": "10%",
+        "commission_label": "Commission over baseline",
+        "baseline": "$TBD",
+        "baseline_label": "Commission baseline",
+        "bonus": "Shipping OS | Required (* Order Min.)",
+    },
+)
+
+
 class DeckGenerationService:
     def __init__(
         self,
@@ -149,12 +175,14 @@ class DeckGenerationService:
         creative_mockup_url: str = "",
         case_study_url: str = "",
         offers: list[str] | None = None,
+        offer_payload_json: str = "",
         include_recommended_plan: bool = True,
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
         effective_target_input = target_product_input.strip()
         enabled_channels = _normalize_channels(channels or [])
         enabled_offers = _normalize_offers(offers or [])
+        offer_cards = _normalize_custom_offer_cards(offer_payload_json=offer_payload_json, offers=enabled_offers)
         run = self.audit.start_run(
             "deck_generation",
             trigger=trigger,
@@ -166,7 +194,7 @@ class DeckGenerationService:
                 "channels": enabled_channels,
                 "creative_mockup_url": creative_mockup_url.strip(),
                 "case_study_url": case_study_url.strip(),
-                "offers": enabled_offers,
+                "offers": [str(card.get("title", "")).strip() for card in offer_cards],
                 "include_recommended_plan": bool(include_recommended_plan),
             },
         )
@@ -179,6 +207,7 @@ class DeckGenerationService:
                 creative_mockup_url=creative_mockup_url.strip(),
                 case_study_url=case_study_url.strip(),
                 offers=enabled_offers,
+                offer_cards=offer_cards,
                 include_recommended_plan=bool(include_recommended_plan),
             )
             title = str(dataset.deck_payload.get("deck_title") or self._build_design_title(title_hint=effective_target_input)).strip()
@@ -449,6 +478,7 @@ class DeckGenerationService:
         creative_mockup_url: str,
         case_study_url: str,
         offers: list[str],
+        offer_cards: list[dict[str, str]],
         include_recommended_plan: bool,
     ) -> DeckDataset:
         parsed_target = _parse_target_product_input(target_product_input)
@@ -529,17 +559,20 @@ class DeckGenerationService:
         target_revenue_label = (target_row.revenue_label if target_row else "").strip()
         target_dimensions = (hero_product.dimensions or (target_row.dimensions if target_row else "")).strip()
         target_strengths, target_gaps = _build_target_opportunities(
-            target_title=target_title,
+            brand_name=target_brand,
             target_row=target_row,
             hero_product=hero_product,
             search_insights=search_insights,
+            market_average_price=xray_report.average_price or 0.0,
+            best_seller=xray_report.products[0] if xray_report.products else None,
         )
         default_case_study_url = "https://www.canva.com/design/DAHEy6FPsSw/3suEo_Uau4H7E23FwFKBxA/view?utm_content=DAHEy6FPsSw&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h99092fa64e"
+        display_title = _clean_listing_title(target_title)
 
         text_fields: dict[str, str] = {
             "deck_mode": "amazon_first_html",
             "brand_name": target_brand,
-            "hero_product_name": target_title,
+            "hero_product_name": _brand_product_reference(target_brand),
             "hero_product_source_url": hero_product.source_url or parsed_target["source_url"],
             "hero_product_input_type": parsed_target["source_type"],
             "hero_product_price": target_price_label,
@@ -549,20 +582,19 @@ class DeckGenerationService:
             "hero_product_type": hero_product.product_type or (target_row.category if target_row else ""),
             "hero_product_tags": ", ".join(hero_product.tags),
             "hero_product_image_url": target_image_url,
-            "hero_product_snapshot": _build_target_snapshot_text(target_title, target_brand, target_row),
+            "hero_product_snapshot": _build_target_snapshot_text(display_title, target_brand, target_row),
             "report_generated_date": datetime.now(timezone.utc).date().isoformat(),
             "reporting_period": datetime.now(timezone.utc).strftime("%B %d, %Y"),
             "market_summary": _build_market_summary(target_brand, xray_report, keyword_report),
-            "executive_summary": _build_executive_summary(target_title, target_brand, xray_report, keyword_report),
+            "executive_summary": _build_executive_summary(display_title, target_brand, xray_report, keyword_report),
             "cro_summary": " ".join(cro_recommendations[:2]),
             "seo_summary": " ".join(seo_recommendations[:2]),
             "creative_summary": " ".join(creative_recommendations[:2]),
             "advertising_summary": _build_advertising_summary(xray_report, keyword_report),
-            "recommended_plan_summary": _build_plan_summary(offers, channels),
+            "recommended_plan_summary": _build_plan_summary(offer_cards, channels),
             "expected_impact_summary": _build_expected_impact_summary(xray_report),
             "why_anata_summary": _build_why_anata_summary(channels),
-            "cta_summary": f"Use this deck to align on the first growth sprint for {target_brand} and track whether the deck was viewed.",
-            "deck_title": f"{target_brand} x anata - {target_title}".strip(" -"),
+            "deck_title": f"{target_brand} x anata strategy deck".strip(" -"),
             "target_asin": parsed_target["asin"],
             "target_rating": target_rating_label,
             "target_review_count": str(target_review_count or ""),
@@ -626,7 +658,7 @@ class DeckGenerationService:
                 "target_gaps": target_gaps,
                 "creative_mockup_url": creative_mockup_url,
                 "case_study_url": case_study_url or default_case_study_url,
-                "offers": offers,
+                "offer_cards": offer_cards,
                 "include_recommended_plan": include_recommended_plan,
             },
         )
@@ -786,7 +818,7 @@ class DeckGenerationService:
         target_gaps = list(payload.get("target_gaps", []))
         creative_mockup_url = str(payload.get("creative_mockup_url", "") or "").strip()
         case_study_url = str(payload.get("case_study_url", "") or "").strip()
-        offer_cards = list(_build_offer_cards(list(payload.get("offers", []))))
+        offer_cards = list(payload.get("offer_cards", []))
         include_recommended_plan = bool(payload.get("include_recommended_plan", True))
         brand_wordmark = self._load_brand_asset("assets/wordmark.svg")
         monogram = self._load_brand_asset("assets/monogram.svg")
@@ -813,6 +845,7 @@ class DeckGenerationService:
         best_seller = xray_report.products[0] if xray_report.products else None
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller)
+        copy_snapshot_html = _render_listing_copy_snapshot(str(target.get("description", "") or ""))
         resource_cards = []
         if creative_mockup_url:
             resource_cards.append(_render_resource_card("Listing mockup", "Open the proposed creative direction.", creative_mockup_url))
@@ -821,6 +854,7 @@ class DeckGenerationService:
         resources_html = "".join(resource_cards)
         target_identifier = str(target.get("asin") or "").strip()
         target_reference_label = f"ASIN {target_identifier}" if target_identifier else _target_reference_label(target)
+        cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 30)
         recommended_plan_html = ""
         if include_recommended_plan:
             offer_html = "".join(_render_offer_card(card) for card in offer_cards)
@@ -831,25 +865,21 @@ class DeckGenerationService:
           <p class="eyebrow">Recommended plan</p>
           <h2>Recommended engagement and next step</h2>
         </div>
-        <p class="muted">{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
       </div>
       {f"<div class='offer-grid'>{offer_html}</div>" if offer_html else ""}
       <div class="plan-grid">
+        <div class="plan-card">
+          <h3>Offer structure</h3>
+          <p>{html.escape(dataset.text_fields.get("recommended_plan_summary") or "")}</p>
+        </div>
         <div class="plan-card">
           <h3>Expected impact</h3>
           <p>{html.escape(dataset.text_fields.get("expected_impact_summary") or "")}</p>
         </div>
         <div class="plan-card">
-          <h3>Why anata</h3>
+          <h3>Recommended next step</h3>
           <p>{html.escape(dataset.text_fields.get("why_anata_summary") or "")}</p>
         </div>
-        <div class="plan-card">
-          <h3>Recommended plan</h3>
-          <p>{html.escape(dataset.text_fields.get("recommended_plan_summary") or "")}</p>
-        </div>
-      </div>
-      <div class="closing-card inline-cta-card">
-        <p>{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
       </div>
     </section>"""
         target_summary_meter = _render_meter_group(
@@ -881,7 +911,7 @@ class DeckGenerationService:
       <div class="cover-grid">
         <div>
           <p class="eyebrow">Amazon-first strategy deck</p>
-          <h1>{html.escape(title)}</h1>
+          <h1>{html.escape(cover_title)}</h1>
           <p class="lead">{html.escape(dataset.text_fields.get("executive_summary") or "")}</p>
           <div class="pill-row">
             <span class="pill">{html.escape(target_reference_label)}</span>
@@ -950,7 +980,7 @@ class DeckGenerationService:
         </div>
         <div class="target-panel">
           {comparison_table_html}
-          <p>{html.escape(str(target.get("description", "")) or "No listing description was captured from the product page.")}</p>
+          {copy_snapshot_html}
           <p class="muted">{html.escape(str(target.get("dimensions", "")) or "Dimensions unavailable.")}</p>
           <div class="meter-group">{target_summary_meter}</div>
         </div>
@@ -999,7 +1029,7 @@ class DeckGenerationService:
         <div class="dashboard-card">
           <div class="card-head">
             <h3>Top keyword opportunities</h3>
-            <span class="muted">Highest search volume from the uploaded keyword set</span>
+            <span class="muted">Highest search volume from the current keyword dataset</span>
           </div>
           <div class="table-wrap">
             <table>
@@ -1007,7 +1037,7 @@ class DeckGenerationService:
                 <tr><th>Keyword</th><th>Search volume</th><th>Sales</th><th>Competing products</th><th>Title density</th></tr>
               </thead>
               <tbody>
-                {keyword_rows or "<tr><td colspan='5' class='muted'>No keyword CSV uploaded.</td></tr>"}
+                {keyword_rows or "<tr><td colspan='5' class='muted'>No keyword data available.</td></tr>"}
               </tbody>
             </table>
           </div>
@@ -1043,12 +1073,6 @@ class DeckGenerationService:
 
     {channel_html}
       {recommended_plan_html}
-
-    <section class="slide">
-      <div class="closing-card">
-        <p>{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
-      </div>
-    </section>
   </main>
 </body>
 </html>"""
@@ -1186,11 +1210,11 @@ def _slugify(value: str) -> str:
 def _build_target_snapshot_text(target_title: str, brand_name: str, target_row: XrayProduct | None) -> str:
     if target_row and target_row.revenue:
         return (
-            f"{target_title} is the hero listing for {brand_name}. "
+            f"{_brand_product_reference(brand_name)} is the benchmark listing for this prospect. "
             f"In the current niche export it shows {target_row.revenue_label} in revenue and {target_row.bsr_label} BSR."
         )
     return (
-        f"{target_title} is the hero listing for {brand_name}. "
+        f"{_brand_product_reference(brand_name)} is the benchmark listing for this prospect. "
         "Use this deck to compare the PDP against the niche leaders and tighten the initial go-to-market offer."
     )
 
@@ -1202,10 +1226,10 @@ def _build_market_summary(
 ) -> str:
     lead_keyword = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else "the niche"
     search_volume = keyword_report.top_search_volume if keyword_report and keyword_report.top_search_volume else None
-    search_text = f" The top keyword in the upload is {lead_keyword} with {search_volume:,} monthly searches." if search_volume else ""
+    search_text = f" The leading search term in the current dataset is {lead_keyword} with {search_volume:,} monthly searches." if search_volume else ""
     return (
         f"The current {lead_keyword} market shows {xray_report.search_results_count} comparable listings and "
-        f"{_label_money_value(xray_report.total_revenue)} in 30-day competitor revenue across the uploaded market set."
+        f"{_label_money_value(xray_report.total_revenue)} in 30-day competitor revenue across the visible market set."
         f"{search_text}"
     )
 
@@ -1218,9 +1242,9 @@ def _build_executive_summary(
 ) -> str:
     keyword_text = ""
     if keyword_report and keyword_report.keywords:
-        keyword_text = f" The keyword export highlights {keyword_report.keywords[0].phrase} as the leading search objective."
+        keyword_text = f" The leading search objective in the dataset is {keyword_report.keywords[0].phrase}."
     return (
-        f"This deck benchmarks {target_title} against the live market set and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
+        f"This deck benchmarks {_brand_product_reference(brand_name)} against the live market set and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
         f"{keyword_text}"
     )
 
@@ -1232,10 +1256,9 @@ def _build_advertising_summary(xray_report: Helium10XrayReport, keyword_report: 
     )
 
 
-def _build_plan_summary(offers: list[str], channels: list[str]) -> str:
-    selected = _build_offer_cards(offers)
-    if selected:
-        return " / ".join(card["title"] for card in selected)
+def _build_plan_summary(offer_cards: list[dict[str, str]], channels: list[str]) -> str:
+    if offer_cards:
+        return " / ".join(str(card.get("title", "")).strip() for card in offer_cards if str(card.get("title", "")).strip())
     services = []
     if "amazon" in channels:
         services.append("fix the Amazon PDP, imagery, and search coverage")
@@ -1284,11 +1307,11 @@ def _build_market_metric_cards(
 def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) -> list[dict[str, str]]:
     if keyword_report is None:
         return [
-            {"label": "Keyword coverage", "value": "Missing", "meta": "Upload a keyword export to populate this slide"},
+            {"label": "Keyword coverage", "value": "Missing", "meta": "Add keyword data to populate this slide"},
         ]
     return [
-        {"label": "Keywords parsed", "value": str(len(keyword_report.keywords)), "meta": "Rows loaded from the keyword export"},
-        {"label": "Total search volume", "value": _label_integer(keyword_report.total_search_volume), "meta": "Summed across the uploaded keywords"},
+        {"label": "Keywords parsed", "value": str(len(keyword_report.keywords)), "meta": "Rows loaded from the current keyword dataset"},
+        {"label": "Total search volume", "value": _label_integer(keyword_report.total_search_volume), "meta": "Summed across the current keyword dataset"},
         {"label": "Average competing products", "value": _label_float(keyword_report.average_competing_products, 0), "meta": "Competitive density"},
         {"label": "Average title density", "value": _label_float(keyword_report.average_title_density, 0), "meta": "How crowded the SERP language is"},
     ]
@@ -1358,7 +1381,6 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
         {"label": "Amazon", "key": "amazon"},
         {"label": "TikTok Shop", "key": "tiktok_shop"},
         {"label": "Shopify (DTC)", "key": "shopify"},
-        {"label": "anata Intelligence", "key": "intelligence"},
     ]
     sections: list[dict[str, Any]] = []
     if "amazon" in channels:
@@ -1376,7 +1398,6 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
                     {"title": "Brand Registry & IP Protection", "description": "Protect the listing from copycats, bad actors, and content theft as it scales."},
                     {"title": "Marketing Strategy", "description": "Use niche data and category intelligence to prioritize the next 90 days of execution."},
                 ],
-                "cta": {"title": "FREE Marketing Analysis", "subtitle": "Get your brand analysis and mockup.", "button_label": "GET ANALYSIS"},
             }
         )
     if "tiktok_shop" in channels:
@@ -1394,7 +1415,6 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
                     {"title": "TikTok Fulfillment Strategy", "description": "Implement compliant fulfillment workflows so orders ship correctly and on time."},
                     {"title": "Inventory & Replenishment", "description": "Forecast and manage inventory before paid demand outruns operational capacity."},
                 ],
-                "cta": {"title": "FREE Marketing Analysis", "subtitle": "Get your brand analysis and mockup.", "button_label": "GET ANALYSIS"},
             }
         )
     if "shopify" in channels:
@@ -1412,7 +1432,6 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
                     {"title": "Shopify ↔ Amazon Integration", "description": "Connect Shopify and Amazon to streamline inventory, fulfillment, and order routing."},
                     {"title": "Landing Pages & Funnels", "description": "Design focused landing pages and funnels that increase conversion rate and average order value."},
                 ],
-                "cta": {"title": "FREE Marketing Analysis", "subtitle": "Get your brand analysis and mockup.", "button_label": "GET ANALYSIS"},
             }
         )
     return sections
@@ -1421,26 +1440,10 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
 def _build_offer_cards(offers: list[str]) -> list[dict[str, Any]]:
     catalog = {
         "channel_management": {
-            "title": "Channel management",
-            "description": "Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.",
-            "price": "$3,000",
-            "price_label": "Monthly retainer fee",
-            "commission": "5%",
-            "commission_label": "Commission on growth",
-            "baseline": "$10,000",
-            "baseline_label": "Commission baseline",
-            "bonus": "+TikTok Shop Support",
+            **DEFAULT_CUSTOM_OFFERS[0],
         },
         "commission_model_shipping_os": {
-            "title": "Commission Model + Shipping OS",
-            "description": "A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system.",
-            "price": "$0",
-            "price_label": "Monthly retainer fee",
-            "commission": "10%",
-            "commission_label": "Commission over baseline",
-            "baseline": "$TBD",
-            "baseline_label": "Commission baseline",
-            "bonus": "Shipping OS | Required (* Order Min.)",
+            **DEFAULT_CUSTOM_OFFERS[1],
         },
     }
     return [catalog[key] for key in offers if key in catalog]
@@ -1465,23 +1468,30 @@ def _build_search_insights(
 
 def _build_target_opportunities(
     *,
-    target_title: str,
+    brand_name: str,
     target_row: XrayProduct | None,
     hero_product: EnrichedHeroProduct,
     search_insights: dict[str, list[str]],
+    market_average_price: float,
+    best_seller: XrayProduct | None,
 ) -> tuple[list[str], list[str]]:
     strengths: list[str] = []
     gaps: list[str] = []
     if hero_product.image_url:
         strengths.append("The listing already has a usable primary image, so the creative refresh can focus on sequencing and proof.")
-    if hero_product.price:
-        strengths.append(f"The current price point is visible at {hero_product.price}, which gives us an anchor for value-story framing.")
+    price_summary = _build_price_comparison_summary(
+        hero_price=hero_product.price,
+        market_average_price=market_average_price,
+        best_seller_price=(best_seller.price_label if best_seller else ""),
+    )
+    if price_summary:
+        strengths.append(price_summary)
     if target_row and (target_row.rating or 0) >= 4.2:
         strengths.append(f"The listing already carries a credible review signal at {target_row.rating_label}.")
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
     if target_row is None:
-        gaps.append("The prospect listing was not present in the uploaded market set, so positioning is benchmarked against competitors only.")
+        gaps.append("The prospect listing was not present in the current market set, so positioning is benchmarked against competitors only.")
     if not hero_product.description:
         gaps.append("The current listing copy does not expose enough product-story detail; bullets and support content need to be rebuilt.")
     if search_insights.get("title_misses"):
@@ -1491,7 +1501,7 @@ def _build_target_opportunities(
     if target_row and (target_row.review_count or 0) < 75:
         gaps.append("The review moat is still light, so the PDP needs stronger proof blocks and comparison framing.")
     if not strengths:
-        strengths.append(f"{target_title} already gives us a clear product to benchmark against the current niche leaders.")
+        strengths.append(f"{_brand_product_reference(brand_name)} already gives us a clear product to benchmark against the current niche leaders.")
     if not gaps:
         gaps.append("The next gap is to tighten the claim hierarchy, comparison frames, and conversion proof above the fold.")
     return strengths[:4], gaps[:4]
@@ -1542,7 +1552,7 @@ def _render_revenue_bar(product: XrayProduct, total_revenue: float) -> str:
     share = 0.0 if total_revenue <= 0 else ((product.revenue or 0.0) / total_revenue)
     width = max(6, min(int(round(share * 100)), 100))
     return (
-        "<article class='revenue-row'>"
+        f"<article class='revenue-row' title='{html.escape(f'{product.title}: {product.revenue_label} ({share * 100:.1f}% share)')}' >"
         "<div class='revenue-labels'>"
         f"<strong>{html.escape(_trim_text(product.title, 40))}</strong>"
         f"<span>{html.escape(product.revenue_label)}</span>"
@@ -1566,7 +1576,7 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
         "<div class='niche-product-cell'>"
         f"<div class='niche-product-thumb'>{image_html}</div>"
         "<div>"
-        f"<strong>{html.escape(product.title)}</strong>"
+        f"<strong>{html.escape(_trim_text(product.title, 40))}</strong>"
         f"<div class='muted'>{html.escape(product.asin)} · {html.escape(product.brand)}</div>"
         "</div>"
         "</div>"
@@ -1635,9 +1645,10 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
 
 def _render_distribution_card(title: str, slices: list[DistributionSlice]) -> str:
     donut = _render_donut(slices)
+    palette = ["#244d87", "#4f84c4", "#85bbda", "#bfa889", "#9e6d66", "#d9e8f4"]
     items = "".join(
-        f"<li><span>{html.escape(item.label)}</span><strong>{item.count}</strong></li>"
-        for item in slices[:6]
+        f"<li title='{html.escape(f'{item.label}: {item.count} listings ({item.share * 100:.1f}%)')}' style='--legend-color:{palette[index % len(palette)]}'><span>{html.escape(item.label)}</span><strong>{item.count}</strong></li>"
+        for index, item in enumerate(slices[:6])
     )
     return (
         "<article class='distribution-card'>"
@@ -1659,7 +1670,8 @@ def _render_donut(slices: list[DistributionSlice]) -> str:
     if start < 100:
         stops.append(f"#edf2f7 {start:.2f}% 100%")
     style = f"background: conic-gradient({', '.join(stops)});"
-    return f"<div class='donut-chart'><div class='donut-visual' style=\"{style}\"></div></div>"
+    tooltip = ", ".join(f"{item.label}: {item.count} ({item.share * 100:.1f}%)" for item in slices[:6])
+    return f"<div class='donut-chart'><div class='donut-visual' title=\"{html.escape(tooltip)}\" style=\"{style}\"></div></div>"
 
 
 def _render_channel_section(section: dict[str, Any]) -> str:
@@ -1674,7 +1686,6 @@ def _render_channel_section(section: dict[str, Any]) -> str:
         "</article>"
         for item in section.get("items", [])
     )
-    cta = dict(section.get("cta", {}))
     return (
         "<section class='slide'>"
         f"<div class='slide-head'><div><p class='eyebrow'>{html.escape(str(section.get('eyebrow', '')))}</p><h2>{html.escape(str(section.get('title', '')))}</h2></div>"
@@ -1683,7 +1694,6 @@ def _render_channel_section(section: dict[str, Any]) -> str:
         f"<aside class='channel-rail'>{rail}</aside>"
         "<div class='channel-main'>"
         f"<div class='service-grid'>{items}</div>"
-        f"<div class='cta-card'><strong>{html.escape(str(cta.get('title', '')))}</strong><p>{html.escape(str(cta.get('subtitle', '')))}</p><span>{html.escape(str(cta.get('button_label', '')))}</span></div>"
         "</div>"
         "</div>"
         "</section>"
@@ -1725,7 +1735,7 @@ def _render_gallery_card(item: dict[str, Any]) -> str:
 
 def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_label: str) -> str:
     hit_items = "".join(f"<li>{html.escape(item)}</li>" for item in hits[:5]) or "<li>None identified yet.</li>"
-    miss_items = "".join(f"<li>{html.escape(item)}</li>" for item in misses[:5]) or "<li>No immediate gaps from the uploaded keywords.</li>"
+    miss_items = "".join(f"<li>{html.escape(item)}</li>" for item in misses[:5]) or "<li>No immediate gaps from the current keyword dataset.</li>"
     return (
         f"<h3>{html.escape(title)}</h3>"
         f"<div class='signal-list'><strong>Already covered</strong><ul>{hit_items}</ul></div>"
@@ -1757,6 +1767,14 @@ def _render_offer_card(card: dict[str, Any]) -> str:
         f"<small>{html.escape(str(card.get('bonus', '')))}</small>"
         "</article>"
     )
+
+
+def _render_listing_copy_snapshot(description: str) -> str:
+    bullets = _extract_listing_copy_points(description)
+    if not bullets:
+        return "<p>No product-story summary was captured from the target page.</p>"
+    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets)
+    return f"<div class='signal-list'><strong>Listing copy snapshot</strong><ul>{items}</ul></div>"
 
 
 def _render_meter_group(items: list[tuple[str, float, str]]) -> str:
@@ -1811,6 +1829,115 @@ def _trim_text(value: str, limit: int) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: max(limit - 1, 1)].rstrip() + "…"
+
+
+def _clean_listing_title(value: str) -> str:
+    cleaned = re.sub(r"<!--.*?-->", " ", str(value or ""), flags=re.DOTALL)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _brand_possessive(brand_name: str) -> str:
+    cleaned = _trim_text(re.sub(r"\s+", " ", str(brand_name or "")).strip(), 40)
+    if not cleaned:
+        return "The prospect's"
+    if cleaned.lower().endswith("s"):
+        return f"{cleaned}'"
+    return f"{cleaned}'s"
+
+
+def _brand_product_reference(brand_name: str) -> str:
+    return f"{_brand_possessive(brand_name)} product"
+
+
+def _normalize_offer_text(value: Any, default: str = "") -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or default)).strip()
+    return cleaned
+
+
+def _default_offer_cards() -> list[dict[str, str]]:
+    return [dict(card) for card in DEFAULT_CUSTOM_OFFERS]
+
+
+def _normalize_custom_offer_cards(*, offer_payload_json: str, offers: list[str]) -> list[dict[str, str]]:
+    payload = str(offer_payload_json or "").strip()
+    if payload:
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            parsed = []
+        cards: list[dict[str, str]] = []
+        for raw_card in parsed if isinstance(parsed, list) else []:
+            if not isinstance(raw_card, dict):
+                continue
+            enabled = bool(raw_card.get("enabled", True))
+            if not enabled:
+                continue
+            title = _normalize_offer_text(raw_card.get("title"))
+            description = _normalize_offer_text(raw_card.get("description"))
+            if not title and not description:
+                continue
+            cards.append(
+                {
+                    "title": title or "Recommended offer",
+                    "description": description,
+                    "price": _normalize_offer_text(raw_card.get("price"), "$TBD"),
+                    "price_label": _normalize_offer_text(raw_card.get("price_label"), "Monthly retainer fee"),
+                    "commission": _normalize_offer_text(raw_card.get("commission"), "TBD"),
+                    "commission_label": _normalize_offer_text(raw_card.get("commission_label"), "Commission"),
+                    "baseline": _normalize_offer_text(raw_card.get("baseline"), "TBD"),
+                    "baseline_label": _normalize_offer_text(raw_card.get("baseline_label"), "Baseline"),
+                    "bonus": _normalize_offer_text(raw_card.get("bonus")),
+                }
+            )
+        if cards:
+            return cards
+    fallback = _build_offer_cards(offers)
+    return fallback or _default_offer_cards()
+
+
+def _extract_listing_copy_points(description: str, *, limit: int = 4) -> list[str]:
+    cleaned = _clean_listing_title(description)
+    cleaned = re.sub(r"(?i)^about this item[:\s-]*", "", cleaned)
+    cleaned = re.sub(r"(?<!^)(?=(?:[A-Z][A-Z0-9 '&/\\-]{4,}:))", "\n", cleaned)
+    parts = re.split(r"\n+|[•●▪]+", cleaned)
+    bullets: list[str] = []
+    for part in parts:
+        fragment = part.strip(" -;")
+        if not fragment:
+            continue
+        if ":" in fragment:
+            prefix, remainder = fragment.split(":", 1)
+            if prefix.isupper() and len(prefix) > 4:
+                fragment = f"{prefix.title()}: {remainder.strip()}"
+        fragment = _trim_text(fragment, 170)
+        if fragment not in bullets:
+            bullets.append(fragment)
+        if len(bullets) >= limit:
+            break
+    return bullets
+
+
+def _build_price_comparison_summary(*, hero_price: str, market_average_price: float, best_seller_price: str) -> str:
+    hero_value = _coerce_number(hero_price or "")
+    if hero_value is None:
+        return ""
+    benchmark_bits: list[str] = []
+    if market_average_price and market_average_price > 0:
+        delta = ((hero_value - market_average_price) / market_average_price) * 100
+        direction = "above" if delta > 0 else "below"
+        if abs(delta) < 5:
+            benchmark_bits.append(f"roughly in line with the market average at {_label_money_value(market_average_price)}")
+        else:
+            benchmark_bits.append(f"{abs(delta):.0f}% {direction} the market average of {_label_money_value(market_average_price)}")
+    best_value = _coerce_number(best_seller_price or "")
+    if best_value is not None:
+        benchmark_bits.append(f"against the best seller at {_label_money_value(best_value)}")
+    if not benchmark_bits:
+        return ""
+    return f"The current price point is {hero_price} and sits {' '.join(benchmark_bits)}."
 
 
 def _normalize_offers(values: list[str]) -> list[str]:

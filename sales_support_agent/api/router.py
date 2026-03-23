@@ -906,6 +906,7 @@ async def admin_generate_deck(
     creative_mockup_url: str = Form(default=""),
     case_study_url: str = Form(default=""),
     offers: list[str] = Form(default=[]),
+    offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _require_admin_enabled(request)
@@ -926,6 +927,7 @@ async def admin_generate_deck(
                 creative_mockup_url=creative_mockup_url,
                 case_study_url=case_study_url,
                 offers=offers,
+                offer_payload_json=offer_payload_json,
                 include_recommended_plan=include_recommended_plan,
             )
     except Exception as exc:
@@ -960,6 +962,7 @@ async def internal_admin_generate_deck(
     creative_mockup_url: str = Form(default=""),
     case_study_url: str = Form(default=""),
     offers: list[str] = Form(default=[]),
+    offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
@@ -978,6 +981,7 @@ async def internal_admin_generate_deck(
                 creative_mockup_url=creative_mockup_url,
                 case_study_url=case_study_url,
                 offers=offers,
+                offer_payload_json=offer_payload_json,
                 include_recommended_plan=include_recommended_plan,
                 trigger="internal_api",
             )
