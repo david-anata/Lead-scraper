@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import csv
 import html
 import io
 import json
+import mimetypes
 import re
 import secrets
 import time
-import csv
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -817,6 +819,8 @@ class DeckGenerationService:
         if case_study_url:
             resource_cards.append(_render_resource_card("Case studies", "Reference proof points and past public work.", case_study_url))
         resources_html = "".join(resource_cards)
+        target_identifier = str(target.get("asin") or "").strip()
+        target_reference_label = f"ASIN {target_identifier}" if target_identifier else _target_reference_label(target)
         recommended_plan_html = ""
         if include_recommended_plan:
             offer_html = "".join(_render_offer_card(card) for card in offer_cards)
@@ -825,9 +829,9 @@ class DeckGenerationService:
       <div class="slide-head">
         <div>
           <p class="eyebrow">Recommended plan</p>
-          <h2>Offer structure and next step</h2>
+          <h2>Recommended engagement and next step</h2>
         </div>
-        <p class="muted">{html.escape(dataset.text_fields.get("recommended_plan_summary") or "")}</p>
+        <p class="muted">{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
       </div>
       {f"<div class='offer-grid'>{offer_html}</div>" if offer_html else ""}
       <div class="plan-grid">
@@ -840,9 +844,12 @@ class DeckGenerationService:
           <p>{html.escape(dataset.text_fields.get("why_anata_summary") or "")}</p>
         </div>
         <div class="plan-card">
-          <h3>Next action</h3>
-          <p>{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
+          <h3>Recommended plan</h3>
+          <p>{html.escape(dataset.text_fields.get("recommended_plan_summary") or "")}</p>
         </div>
+      </div>
+      <div class="closing-card inline-cta-card">
+        <p>{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
       </div>
     </section>"""
         target_summary_meter = _render_meter_group(
@@ -877,7 +884,7 @@ class DeckGenerationService:
           <h1>{html.escape(title)}</h1>
           <p class="lead">{html.escape(dataset.text_fields.get("executive_summary") or "")}</p>
           <div class="pill-row">
-            <span class="pill">ASIN {html.escape(str(target.get("asin", "")))}</span>
+            <span class="pill">{html.escape(target_reference_label)}</span>
             <span class="pill">{html.escape(dataset.text_fields.get("report_generated_date") or "")}</span>
             <span class="pill">{html.escape(", ".join(payload.get("channels", [])) or "amazon")}</span>
           </div>
@@ -1102,9 +1109,13 @@ class DeckGenerationService:
         return "body{font-family:Arial,sans-serif;background:#fff;color:#172033;}"
 
     def _load_brand_asset(self, relative_path: str) -> str:
-        for path in _candidate_brand_paths(self.settings, relative_path):
+        for path in _candidate_brand_asset_paths(self.settings, relative_path):
             if path.exists():
-                return path.read_text(encoding="utf-8")
+                if path.suffix.lower() == ".svg":
+                    return path.read_text(encoding="utf-8")
+                mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                return f"<img src='data:{mime_type};base64,{encoded}' alt='Anata brand asset' />"
         return ""
 
 
@@ -1115,6 +1126,21 @@ def _candidate_brand_paths(settings: Settings, relative_path: str) -> list[Path]
     if str(configured_root):
         candidates.append(configured_root / relative_path)
     candidates.append(repo_root / "shared" / "anata_brand" / relative_path)
+    return candidates
+
+
+def _candidate_brand_asset_paths(settings: Settings, relative_path: str) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for base_path in _candidate_brand_paths(settings, relative_path):
+        stem_path = base_path.with_suffix("")
+        for suffix in (".png", ".svg", ".webp", ".jpg", ".jpeg"):
+            candidate = stem_path.with_suffix(suffix)
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
     return candidates
 
 
@@ -1137,6 +1163,20 @@ def _normalize_channels(channels: list[str]) -> list[str]:
     if "amazon" not in seen:
         normalized.insert(0, "amazon")
     return normalized
+
+
+def _target_reference_label(target: dict[str, Any]) -> str:
+    source_url = str(target.get("source_url") or "").strip()
+    if source_url:
+        parsed = urlparse(source_url)
+        host = (parsed.netloc or "").strip()
+        if host:
+            return host
+        return "Prospect URL"
+    title = str(target.get("title") or "").strip()
+    if title:
+        return _trim_text(title, 36)
+    return "Prospect product"
 
 
 def _slugify(value: str) -> str:
@@ -1229,7 +1269,7 @@ def _build_market_metric_cards(
 ) -> list[dict[str, str]]:
     return [
         {"label": "30-day revenue", "value": _label_money_value(xray_report.total_revenue), "meta": f"Across {xray_report.search_results_count} products"},
-        {"label": "30-day units sold", "value": _label_integer(xray_report.total_units_sold), "meta": "Summed from the Xray export"},
+        {"label": "30-day units sold", "value": _label_integer(xray_report.total_units_sold), "meta": "Summed from the current market set"},
         {"label": "Average BSR", "value": _label_float(xray_report.average_bsr, 0), "meta": "Lower is stronger"},
         {"label": "Average price", "value": _label_money_value(xray_report.average_price or 0.0), "meta": "From the uploaded competitor set"},
         {"label": "Average rating", "value": _label_float(xray_report.average_rating, 1), "meta": "Competitive review signal"},
@@ -1244,7 +1284,7 @@ def _build_market_metric_cards(
 def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) -> list[dict[str, str]]:
     if keyword_report is None:
         return [
-            {"label": "Keyword coverage", "value": "Missing", "meta": "Upload the Xray keyword CSV to populate this slide"},
+            {"label": "Keyword coverage", "value": "Missing", "meta": "Upload a keyword export to populate this slide"},
         ]
     return [
         {"label": "Keywords parsed", "value": str(len(keyword_report.keywords)), "meta": "Rows loaded from the keyword export"},

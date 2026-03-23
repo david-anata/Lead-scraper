@@ -49,8 +49,16 @@ body {
 }
 
 .brand-monogram svg,
-.brand-wordmark svg {
+.brand-wordmark svg,
+.brand-monogram img,
+.brand-wordmark img {
   display: block;
+}
+
+.brand-monogram img,
+.brand-wordmark img {
+  max-height: 44px;
+  width: auto;
 }
 
 .print-button {
@@ -713,6 +721,10 @@ th {
   margin-top: 18px;
   background: linear-gradient(135deg, #10233d 0%, #294566 100%);
   color: white;
+}
+
+.inline-cta-card {
+  margin-top: 16px;
 }
 
 .warning {

@@ -3554,7 +3554,16 @@ def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str)
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
-    return Response(content=response.content, status_code=response.status_code, media_type=content_type.split(";")[0], headers={"Content-Type": content_type})
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=content_type.split(";")[0],
+        headers={
+            "Content-Type": content_type,
+            "Cache-Control": "private, max-age=300",
+            "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: https:; img-src 'self' data: https:; media-src https: data:; frame-ancestors *;",
+        },
+    )
 
 
 @app.get("/")
