@@ -23,8 +23,17 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     engine = session_factory.kw.get("bind")
     if engine is None:
         raise RuntimeError("Session factory is missing an engine binding.")
-    Base.metadata.create_all(bind=engine)
-    _apply_sqlite_compat_migrations(engine)
+    if engine.dialect.name == "sqlite":
+        Base.metadata.create_all(bind=engine)
+        _apply_sqlite_compat_migrations(engine)
+        return
+
+    # Production deployments use a persistent Postgres database. Running
+    # `create_all` on every boot slows startup enough to interfere with
+    # Render's promotion health checks, so we do a lightweight connectivity
+    # probe instead.
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
 
 
 @contextmanager
