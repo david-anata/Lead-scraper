@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings
+from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection, CommunicationEvent, LeadMirror, MailboxSignal
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
