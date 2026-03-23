@@ -903,6 +903,10 @@ async def admin_generate_deck(
     keyword_xray_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
+    creative_mockup_url: str = Form(default=""),
+    case_study_url: str = Form(default=""),
+    offers: list[str] = Form(default=[]),
+    include_recommended_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -919,6 +923,10 @@ async def admin_generate_deck(
                 keyword_xray_filename=keyword_xray_csv.filename if keyword_xray_csv is not None else "",
                 target_product_input=target_product_input,
                 channels=channels,
+                creative_mockup_url=creative_mockup_url,
+                case_study_url=case_study_url,
+                offers=offers,
+                include_recommended_plan=include_recommended_plan,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -949,6 +957,10 @@ async def internal_admin_generate_deck(
     keyword_xray_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
+    creative_mockup_url: str = Form(default=""),
+    case_study_url: str = Form(default=""),
+    offers: list[str] = Form(default=[]),
+    include_recommended_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     competitor_bytes = await competitor_xray_csv.read()
@@ -963,6 +975,10 @@ async def internal_admin_generate_deck(
                 keyword_xray_filename=keyword_xray_csv.filename if keyword_xray_csv is not None else "",
                 target_product_input=target_product_input,
                 channels=channels,
+                creative_mockup_url=creative_mockup_url,
+                case_study_url=case_study_url,
+                offers=offers,
+                include_recommended_plan=include_recommended_plan,
                 trigger="internal_api",
             )
     except Exception as exc:

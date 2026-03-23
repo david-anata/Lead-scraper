@@ -1986,6 +1986,28 @@ def render_dashboard_page(data: DashboardData) -> str:
         height: 18px;
         margin: 0;
       }}
+      .lead-form button[disabled] {{
+        opacity: 0.68;
+        background: var(--brown);
+        cursor: wait;
+      }}
+      .lead-form .full-width {{
+        grid-column: 1 / -1;
+      }}
+      .offer-toggle-group {{
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 12px;
+        padding: 16px 18px;
+        border-radius: 12px;
+        border: 2px solid rgba(43, 54, 68, 0.12);
+        background: rgba(191, 168, 137, 0.08);
+      }}
+      .offer-toggle-group .toggle-row {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+      }}
       .checkbox-label {{
         display: inline-flex;
         align-items: center;
@@ -2759,12 +2781,12 @@ def render_dashboard_page(data: DashboardData) -> str:
             <details class="utility-drawer" id="deck-generator-panel">
               <summary>Generate sales deck</summary>
               <div class="utility-body">
-                <p>Upload the Helium 10 exports for the niche, provide the target Amazon listing, and choose which service-offering slides should be included in the deck.</p>
+                <p>Upload the Helium 10 exports for the niche, provide the prospect product URL or ASIN, and choose which service-offering slides should be included in the deck.</p>
                 {deck_ready_notice}
                 <form class="lead-form" id="deck-generator-form">
                   <label>
-                    Target Amazon ASIN or URL
-                    <input type="text" name="target_product_input" placeholder="B0ABC12345 or https://www.amazon.com/dp/B0ABC12345" />
+                    Target product URL or ASIN
+                    <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
                   </label>
                   <label>
                     Competitor Xray CSV
@@ -2774,18 +2796,34 @@ def render_dashboard_page(data: DashboardData) -> str:
                     Keyword Xray CSV
                     <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" />
                   </label>
+                  <label>
+                    Creative mockup URL
+                    <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
+                  </label>
+                  <label class="full-width">
+                    Case study URL
+                    <input type="url" name="case_study_url" placeholder="https://www.canva.com/design/..." />
+                  </label>
                   <fieldset class="channel-toggle-group">
                     <legend>Include offering slides</legend>
                     <label class="channel-toggle"><input type="checkbox" name="channels" value="amazon" checked /> Amazon</label>
                     <label class="channel-toggle"><input type="checkbox" name="channels" value="shopify" /> Shopify</label>
                     <label class="channel-toggle"><input type="checkbox" name="channels" value="tiktok_shop" /> TikTok Shop</label>
                   </fieldset>
+                  <fieldset class="offer-toggle-group">
+                    <legend>Recommended plan options</legend>
+                    <label class="checkbox-label"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /> Include recommended plan slide</label>
+                    <div class="toggle-row">
+                      <label class="channel-toggle"><input type="checkbox" name="offers" value="channel_management" checked /> Channel management</label>
+                      <label class="channel-toggle"><input type="checkbox" name="offers" value="commission_model_shipping_os" /> Commission Model + Shipping OS</label>
+                    </div>
+                  </fieldset>
                   <div class="lead-submit">
-                    <button type="submit">GENERATE DECK</button>
+                    <button type="submit" id="deck-submit-button">GENERATE DECK</button>
                   </div>
                 </form>
                 <div class="draft-help">
-                  This workflow creates a first-party HTML deck with Anata branding, persistent URLs, and view tracking. The keyword CSV is optional but recommended for SEO slides.
+                  This workflow creates a first-party HTML deck with Anata branding, persistent URLs, view tracking, and optional mockup / case-study links. The keyword CSV is optional but recommended for SEO slides.
                 </div>
                 <div class="status-line" id="deck-status">Deck status: Ready.</div>
                 <div class="deck-run-list" id="deck-run-list">
@@ -2840,6 +2878,8 @@ def render_dashboard_page(data: DashboardData) -> str:
       const status = document.getElementById("run-status");
       const deckForm = document.getElementById("deck-generator-form");
       const deckStatus = document.getElementById("deck-status");
+      const deckSubmitButton = document.getElementById("deck-submit-button");
+      const deckIncludePlanCheckbox = document.getElementById("deck-include-plan");
       const draftsForm = document.getElementById("gmail-drafts-form");
       const draftsStatus = document.getElementById("drafts-status");
       const draftsResults = document.getElementById("drafts-results");
@@ -3156,8 +3196,14 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       deckForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
+        if (deckSubmitButton) {{
+          deckSubmitButton.disabled = true;
+          deckSubmitButton.textContent = "GENERATING...";
+        }}
         deckStatus.innerHTML = "Generating deck. This can take a minute...";
         const formData = new FormData(deckForm);
+        formData.delete("include_recommended_plan");
+        formData.append("include_recommended_plan", deckIncludePlanCheckbox?.checked ? "true" : "false");
         try {{
           const response = await fetch("/admin/api/generate-deck", {{
             method: "POST",
@@ -3166,6 +3212,10 @@ def render_dashboard_page(data: DashboardData) -> str:
           const payload = await response.json().catch(() => ({{ detail: "Deck generation failed." }}));
           if (!response.ok) {{
             deckStatus.textContent = payload.detail || payload.message || "Deck generation failed.";
+            if (deckSubmitButton) {{
+              deckSubmitButton.disabled = false;
+              deckSubmitButton.textContent = "GENERATE DECK";
+            }}
             return;
           }}
           const details = payload.details || {{}};
@@ -3180,6 +3230,10 @@ def render_dashboard_page(data: DashboardData) -> str:
           window.setTimeout(() => window.location.reload(), 1200);
         }} catch (error) {{
           deckStatus.textContent = "Deck generation failed before a response came back.";
+          if (deckSubmitButton) {{
+            deckSubmitButton.disabled = false;
+            deckSubmitButton.textContent = "GENERATE DECK";
+          }}
         }}
       }});
 

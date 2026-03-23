@@ -3465,6 +3465,10 @@ async def admin_generate_deck_proxy(
     keyword_xray_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
+    creative_mockup_url: str = Form(default=""),
+    case_study_url: str = Form(default=""),
+    offers: list[str] = Form(default=[]),
+    include_recommended_plan: bool = Form(default=True),
 ) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
@@ -3479,6 +3483,10 @@ async def admin_generate_deck_proxy(
             data_items=[
                 ("target_product_input", target_product_input),
                 *[("channels", channel) for channel in channels],
+                ("creative_mockup_url", creative_mockup_url),
+                ("case_study_url", case_study_url),
+                *[("offers", offer) for offer in offers],
+                ("include_recommended_plan", "true" if include_recommended_plan else "false"),
             ],
             files_payload=[
                 (

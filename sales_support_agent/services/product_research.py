@@ -94,9 +94,11 @@ class ProductResearchService:
                     tags=(),
                     warnings=(f"Shopify enrichment failed for {target.get('source_url', '')}: {exc}",),
                 )
+        if source_type == "website":
+            return self._enrich_generic_target(target)
         if source_type == "amazon":
             return self._enrich_amazon_target(target)
-        raise RuntimeError("Target product must be a Shopify product URL or an Amazon ASIN/URL.")
+        raise RuntimeError("Target product must be a website URL, Shopify product URL, or Amazon ASIN/URL.")
 
     def enrich_competitor_product(self, competitor: dict[str, str]) -> EnrichedCompetitorProduct:
         warnings: list[str] = []
@@ -189,6 +191,25 @@ class ProductResearchService:
             warnings=tuple(warnings),
         )
 
+    def _enrich_generic_target(self, target: dict[str, str]) -> EnrichedHeroProduct:
+        source_url = target.get("source_url", "")
+        if not source_url:
+            raise RuntimeError("Target product URL was missing.")
+        page_data = _fetch_generic_page_data(source_url)
+        warnings = list(page_data.get("warnings", []))
+        return EnrichedHeroProduct(
+            brand_name=(page_data.get("brand_name", "") or target.get("brand_name", "")).strip(),
+            title=(page_data.get("title", "") or target.get("product_name", "")).strip(),
+            source_url=page_data.get("source_url", "") or source_url,
+            description=(page_data.get("description", "") or "").strip(),
+            price=(page_data.get("price", "") or "").strip(),
+            dimensions="",
+            image_url=(page_data.get("image_url", "") or "").strip(),
+            product_type=(page_data.get("category", "") or "").strip(),
+            tags=(),
+            warnings=tuple(warnings),
+        )
+
 
 def _estimate_units_from_bsr(bsr: str) -> str:
     if not bsr:
@@ -254,7 +275,7 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         r'id="productTitle"[^>]*>\s*(.*?)\s*</span>',
         r"<title>\s*(.*?)\s*</title>",
     )
-    title = html_lib.unescape(re.sub(r"\s+", " ", title)).replace(": Amazon.com", "").strip()
+    title = _clean_scraped_text(title).replace(": Amazon.com", "").strip()
     image_url = _extract_first(
         content,
         r'<meta\s+property="og:image"\s+content="([^"]+)"',
@@ -275,17 +296,16 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
             r'<meta\s+name="description"\s+content="([^"]+)"',
         )
     )
-    description = re.sub(r"<[^>]+>", " ", description)
-    description = re.sub(r"\s+", " ", description).strip()
-    brand_name = html_lib.unescape(
+    description = _clean_scraped_text(description)
+    brand_name = _clean_scraped_text(
         _extract_first(
             content,
             r'id="bylineInfo"[^>]*>\s*(.*?)\s*</a>',
             r'"brand":"([^"]+)"',
         )
     ).replace("Visit the ", "").replace(" Store", "").strip()
-    category = html_lib.unescape(_extract_first(content, r'"productGroup":"([^"]+)"')).strip()
-    dimensions = html_lib.unescape(_extract_first(content, r'"itemDimensions":"([^"]+)"')).strip()
+    category = _clean_scraped_text(_extract_first(content, r'"productGroup":"([^"]+)"'))
+    dimensions = _clean_scraped_text(_extract_first(content, r'"itemDimensions":"([^"]+)"'))
     if not title:
         warnings.append("Amazon product page did not expose a parseable title.")
     return {
@@ -301,9 +321,91 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     }
 
 
+def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
+    warnings: list[str] = []
+    try:
+        response = requests.get(
+            source_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        return {
+            "source_url": source_url,
+            "warnings": [f"Website target-page enrichment failed for {source_url}: {exc}"],
+        }
+
+    content = response.text or ""
+    title = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'<meta\s+property="og:title"\s+content="([^"]+)"',
+            r"<title>\s*(.*?)\s*</title>",
+            r"<h1[^>]*>\s*(.*?)\s*</h1>",
+        )
+    )
+    image_url = _extract_first(
+        content,
+        r'<meta\s+property="og:image"\s+content="([^"]+)"',
+        r'"image":"([^"]+)"',
+    ).replace("\\u0026", "&").replace("\\/", "/")
+    description = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'<meta\s+name="description"\s+content="([^"]+)"',
+            r'<meta\s+property="og:description"\s+content="([^"]+)"',
+            r'"description":"([^"]+)"',
+        )
+    )
+    brand_name = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'<meta\s+property="og:site_name"\s+content="([^"]+)"',
+            r'"brand"\s*:\s*"([^"]+)"',
+        )
+    )
+    price = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'<meta\s+property="product:price:amount"\s+content="([^"]+)"',
+            r'"price"\s*:\s*"([^"]+)"',
+            r'[$]\s?(\d+(?:\.\d{2})?)',
+        )
+    )
+    if price and not price.startswith("$") and re.fullmatch(r"\d+(?:\.\d{2})?", price):
+        price = f"${price}"
+    category = _clean_scraped_text(_extract_first(content, r'"category"\s*:\s*"([^"]+)"'))
+    if not title:
+        warnings.append("Website target page did not expose a parseable title.")
+    return {
+        "source_url": source_url,
+        "title": title,
+        "image_url": image_url,
+        "price": price,
+        "description": description,
+        "brand_name": brand_name,
+        "category": category,
+        "warnings": warnings,
+    }
+
+
 def _extract_first(content: str, *patterns: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, content, flags=re.IGNORECASE | re.DOTALL)
         if match:
             return str(match.group(1) or "").strip()
     return ""
+
+
+def _clean_scraped_text(value: str) -> str:
+    cleaned = html_lib.unescape(str(value or ""))
+    cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<script[^>]*>.*?</script>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<style[^>]*>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned

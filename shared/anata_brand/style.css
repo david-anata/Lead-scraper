@@ -103,6 +103,14 @@ body {
   gap: 16px;
 }
 
+.market-summary-grid {
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+}
+
+.compact-donut-grid .distribution-card {
+  padding: 14px 16px;
+}
+
 .eyebrow {
   margin: 0 0 10px;
   font-size: 12px;
@@ -476,7 +484,7 @@ th {
 }
 
 .competitor-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .gallery-grid {
@@ -492,6 +500,161 @@ th {
 .gallery-card {
   display: grid;
   gap: 12px;
+}
+
+.competitor-body {
+  display: grid;
+  gap: 8px;
+}
+
+.competitor-body h3,
+.competitor-body p {
+  margin: 0;
+}
+
+.signal-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.signal-list strong {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--anata-muted);
+}
+
+.signal-list ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.resource-grid,
+.offer-grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.resource-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.offer-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
+.resource-card,
+.offer-card {
+  background: white;
+  border: 1px solid var(--anata-line);
+  border-radius: 22px;
+  padding: 18px;
+}
+
+.resource-card a {
+  display: inline-flex;
+  margin-top: 10px;
+  font-weight: 700;
+}
+
+.offer-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.offer-stats span {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--anata-muted);
+}
+
+.offer-stats strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 20px;
+}
+
+.channel-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 20px;
+}
+
+.channel-rail {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.channel-rail-item {
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid var(--anata-line);
+  background: rgba(247, 243, 236, 0.6);
+  font-weight: 800;
+}
+
+.channel-rail-item.is-active {
+  background: white;
+  color: var(--anata-ink);
+  box-shadow: 0 10px 24px var(--anata-shadow);
+}
+
+.channel-main {
+  display: grid;
+  gap: 18px;
+}
+
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.service-card {
+  background: white;
+  border: 1px solid var(--anata-line);
+  border-radius: 22px;
+  padding: 18px;
+}
+
+.cta-card {
+  margin-left: auto;
+  max-width: 380px;
+  background: #ccb390;
+  color: white;
+  border-radius: 24px;
+  padding: 22px;
+}
+
+.cta-card strong {
+  display: block;
+  font-size: 28px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.cta-card p {
+  margin-bottom: 18px;
+}
+
+.cta-card span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 180px;
+  border-radius: 999px;
+  background: var(--anata-sky);
+  color: white;
+  padding: 12px 18px;
+  font-weight: 800;
 }
 
 .competitor-body p,
@@ -533,7 +696,11 @@ th {
   .metric-grid,
   .competitor-grid,
   .gallery-grid,
-  .plan-grid {
+  .plan-grid,
+  .resource-grid,
+  .offer-grid,
+  .channel-layout,
+  .service-grid {
     grid-template-columns: 1fr;
   }
 
@@ -543,6 +710,10 @@ th {
 
   .slide-head > :last-child {
     max-width: none;
+  }
+
+  .offer-stats {
+    grid-template-columns: 1fr;
   }
 }
 
