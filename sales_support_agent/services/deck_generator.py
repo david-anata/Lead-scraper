@@ -789,8 +789,6 @@ class DeckGenerationService:
         brand_wordmark = self._load_brand_asset("assets/wordmark.svg")
         monogram = self._load_brand_asset("assets/monogram.svg")
         stylesheet = self._load_brand_stylesheet()
-        warning_items = "".join(f"<li>{html.escape(item)}</li>" for item in warnings if item)
-        competitor_cards = "".join(_render_competitor_card(product, xray_report.total_revenue) for product in primary_competitors[:10])
         keyword_rows = "".join(_render_keyword_row(keyword) for keyword in (keyword_report.keywords[:10] if keyword_report else []))
         revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
         channel_html = "".join(_render_channel_section(section) for section in channel_sections)
@@ -810,6 +808,9 @@ class DeckGenerationService:
         search_copy_html = _render_signal_list("Bullet / copy coverage", search_insights.get("copy_hits", []), search_insights.get("copy_misses", []), "Missing copy targets")
         target_strength_html = "".join(f"<li>{html.escape(item)}</li>" for item in target_strengths)
         target_gap_html = "".join(f"<li>{html.escape(item)}</li>" for item in target_gaps)
+        best_seller = xray_report.products[0] if xray_report.products else None
+        competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
+        comparison_table_html = _render_target_comparison_table(target, best_seller)
         resource_cards = []
         if creative_mockup_url:
             resource_cards.append(_render_resource_card("Listing mockup", "Open the proposed creative direction.", creative_mockup_url))
@@ -891,7 +892,7 @@ class DeckGenerationService:
       <div class="slide-head">
         <div>
           <p class="eyebrow">Market summary</p>
-          <h2>Market Summary</h2>
+          <h2>Summary of "{html.escape(niche_keyword)}"</h2>
         </div>
         <p class="muted">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
       </div>
@@ -900,7 +901,7 @@ class DeckGenerationService:
         <div class="dashboard-card niche-table-card">
           <div class="card-head">
             <h3>Competitor revenue breakdown</h3>
-            <span class="muted">Top listings from the uploaded Helium 10 Xray export</span>
+            <span class="muted">Top listings from the current page-one market set</span>
           </div>
           <div class="table-wrap niche-table-wrap">
             <table class="niche-table">
@@ -941,14 +942,7 @@ class DeckGenerationService:
           {_render_hero_media(target, monogram)}
         </div>
         <div class="target-panel">
-          <div class="target-meta">
-            <div><span>Brand</span><strong>{html.escape(str(target.get("brand_name", "")))}</strong></div>
-            <div><span>Price</span><strong>{html.escape(str(target.get("price", "")))}</strong></div>
-            <div><span>BSR</span><strong>{html.escape(str(target.get("bsr", "")))}</strong></div>
-            <div><span>Revenue</span><strong>{html.escape(str(target.get("revenue", "")))}</strong></div>
-            <div><span>Rating</span><strong>{html.escape(str(target.get("rating", "")) or "n/a")}</strong></div>
-            <div><span>Reviews</span><strong>{html.escape(str(target.get("review_count", "")) or "n/a")}</strong></div>
-          </div>
+          {comparison_table_html}
           <p>{html.escape(str(target.get("description", "")) or "No listing description was captured from the product page.")}</p>
           <p class="muted">{html.escape(str(target.get("dimensions", "")) or "Dimensions unavailable.")}</p>
           <div class="meter-group">{target_summary_meter}</div>
@@ -972,10 +966,9 @@ class DeckGenerationService:
           <p class="eyebrow">Competitor landscape</p>
           <h2>Who owns the page one real estate</h2>
         </div>
-        <p class="muted">This table is sourced from the Helium 10 Xray export, with the first five non-target listings featured as benchmark cards.</p>
+        <p class="muted">This view compares the top page-one listings across price, revenue, reviews, and share of the visible market.</p>
       </div>
-      <div class="table-wrap">{self._render_table_html(self._table_rows(dataset.chart_fields.get("competitor_table")))}</div>
-      <div class="competitor-grid">{competitor_cards}</div>
+      <div class="table-wrap">{competitor_landscape_table}</div>
     </section>
 
     <section class="slide">
@@ -999,7 +992,7 @@ class DeckGenerationService:
         <div class="dashboard-card">
           <div class="card-head">
             <h3>Top keyword opportunities</h3>
-            <span class="muted">Highest search volume from the keyword export</span>
+            <span class="muted">Highest search volume from the uploaded keyword set</span>
           </div>
           <div class="table-wrap">
             <table>
@@ -1042,13 +1035,12 @@ class DeckGenerationService:
     </section>
 
     {channel_html}
-    {recommended_plan_html}
+      {recommended_plan_html}
 
     <section class="slide">
       <div class="closing-card">
         <p>{html.escape(dataset.text_fields.get("cta_summary") or "")}</p>
       </div>
-      {"<div class='warning'><strong>Generation notes</strong><ul>" + warning_items + "</ul></div>" if warning_items else ""}
     </section>
   </main>
 </body>
@@ -1173,7 +1165,7 @@ def _build_market_summary(
     search_text = f" The top keyword in the upload is {lead_keyword} with {search_volume:,} monthly searches." if search_volume else ""
     return (
         f"The current {lead_keyword} market shows {xray_report.search_results_count} comparable listings and "
-        f"{_label_money_value(xray_report.total_revenue)} in 30-day competitor revenue across the uploaded Xray set."
+        f"{_label_money_value(xray_report.total_revenue)} in 30-day competitor revenue across the uploaded market set."
         f"{search_text}"
     )
 
@@ -1188,7 +1180,7 @@ def _build_executive_summary(
     if keyword_report and keyword_report.keywords:
         keyword_text = f" The keyword export highlights {keyword_report.keywords[0].phrase} as the leading search objective."
     return (
-        f"This deck benchmarks {target_title} against the live Amazon market captured in the Xray export and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
+        f"This deck benchmarks {target_title} against the live market set and translates the data into an offer, PDP, SEO, and service plan for {brand_name}."
         f"{keyword_text}"
     )
 
@@ -1449,7 +1441,7 @@ def _build_target_opportunities(
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
     if target_row is None:
-        gaps.append("The prospect listing was not present in the uploaded Xray market set, so positioning is benchmarked against competitors only.")
+        gaps.append("The prospect listing was not present in the uploaded market set, so positioning is benchmarked against competitors only.")
     if not hero_product.description:
         gaps.append("The current listing copy does not expose enough product-story detail; bullets and support content need to be rebuilt.")
     if search_insights.get("title_misses"):
@@ -1543,6 +1535,61 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
         f"<td>{html.escape(product.revenue_label)}</td>"
         f"<td>{share:.1f}%</td>"
         "</tr>"
+    )
+
+
+def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None) -> str:
+    rows = [
+        ("Price", str(target.get("price", "") or "n/a"), best_seller.price_label if best_seller else "n/a"),
+        ("BSR", str(target.get("bsr", "") or "n/a"), best_seller.bsr_label if best_seller else "n/a"),
+        ("Revenue", str(target.get("revenue", "") or "n/a"), best_seller.revenue_label if best_seller else "n/a"),
+        ("Rating", str(target.get("rating", "") or "n/a"), best_seller.rating_label if best_seller else "n/a"),
+        ("Reviews", str(target.get("review_count", "") or "n/a"), str(best_seller.review_count or "n/a") if best_seller else "n/a"),
+    ]
+    body = "".join(
+        "<tr>"
+        f"<td>{html.escape(label)}</td>"
+        f"<td>{html.escape(target_value)}</td>"
+        f"<td>{html.escape(best_value)}</td>"
+        "</tr>"
+        for label, target_value, best_value in rows
+    )
+    best_title = _trim_text(best_seller.title, 40) if best_seller else "Best seller"
+    return (
+        "<div class='comparison-table-wrap'>"
+        "<table class='comparison-table'>"
+        "<thead><tr><th>Metric</th><th>Target listing</th><th>Best seller</th></tr></thead>"
+        f"<tbody>{body}</tbody>"
+        "</table>"
+        f"<p class='muted'>Best seller benchmark: {html.escape(best_title)}</p>"
+        "</div>"
+    )
+
+
+def _render_competitor_landscape_table(products: list[XrayProduct], total_revenue: float) -> str:
+    rows = []
+    for product in products:
+        image_html = (
+            f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
+            if product.image_url
+            else "<div class='image-fallback compact'>No image</div>"
+        )
+        rows.append(
+            "<tr>"
+            f"<td><div class='table-product-cell'><div class='table-product-thumb'>{image_html}</div><div><strong>{html.escape(_trim_text(product.title, 40))}</strong><div class='muted'>{html.escape(product.asin)}</div></div></div></td>"
+            f"<td>{html.escape(product.price_label)}</td>"
+            f"<td>{html.escape(product.revenue_label)}</td>"
+            f"<td>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
+            f"<td>{html.escape(product.bsr_label)}</td>"
+            f"<td>{html.escape(product.rating_label)}</td>"
+            f"<td>{html.escape(str(product.review_count or ''))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table class='landscape-table'>"
+        "<thead><tr><th>Product</th><th>Price</th><th>Revenue</th><th>Market share</th><th>BSR</th><th>Rating</th><th>Reviews</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
     )
 
 

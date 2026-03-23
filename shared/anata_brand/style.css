@@ -376,6 +376,19 @@ h3 {
   margin-bottom: 16px;
 }
 
+.comparison-table-wrap {
+  margin-bottom: 16px;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.comparison-table td:first-child {
+  font-weight: 700;
+}
+
 .target-meta div {
   display: grid;
   gap: 4px;
@@ -505,6 +518,32 @@ th {
 .competitor-body {
   display: grid;
   gap: 8px;
+}
+
+.table-product-cell {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 12px;
+  align-items: center;
+  min-width: 250px;
+}
+
+.table-product-thumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f3f6fa;
+  border: 1px solid var(--anata-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-product-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .competitor-body h3,

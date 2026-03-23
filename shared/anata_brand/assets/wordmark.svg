@@ -1,11 +1,4 @@
-<svg width="188" height="42" viewBox="0 0 188 42" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="1" y="1" width="40" height="40" rx="12" fill="#85BBDA"/>
-  <path d="M12 29V13H17.4L22.2 22.2L27 13H32.4V29H27.9V20.1L24.3 27H20.1L16.5 20.1V29H12Z" fill="#1D2D44"/>
-  <path d="M56.3 29L62.7 13H68.1L74.5 29H69.5L68.2 25.4H62.4L61.1 29H56.3ZM63.6 21.7H67L65.3 16.9L63.6 21.7Z" fill="#1D2D44"/>
-  <path d="M79.2 29V13H85.9C89.8 13 92.1 15 92.1 18.2C92.1 20.4 91 21.8 89 22.6L92.6 29H87.3L84.3 23.4H83.9V29H79.2ZM83.9 19.8H85.4C86.8 19.8 87.6 19.2 87.6 18.1C87.6 17 86.8 16.4 85.4 16.4H83.9V19.8Z" fill="#1D2D44"/>
-  <path d="M97.7 29V13H102.5V19.2L107.6 13H113.3L107.2 20.1L113.6 29H107.7L103.9 23.5L102.5 25.1V29H97.7Z" fill="#1D2D44"/>
-  <path d="M117.9 29V13H130.3V16.8H122.7V19.2H129.5V22.8H122.7V25.2H130.4V29H117.9Z" fill="#1D2D44"/>
-  <path d="M139 29V16.9H134.5V13H148.3V16.9H143.8V29H139Z" fill="#1D2D44"/>
-  <path d="M152.4 29V13H157.2V29H152.4Z" fill="#1D2D44"/>
-  <path d="M163.3 29V13H168L175 21.6V13H179.8V29H175.4L168.1 20.1V29H163.3Z" fill="#1D2D44"/>
+<svg width="286" height="44" viewBox="0 0 286 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <text x="0" y="28" fill="#1D2D44" font-family="Inter, Segoe UI, sans-serif" font-size="28" font-weight="800" letter-spacing="-0.02em">anata</text>
+  <text x="92" y="28" fill="#85BBDA" font-family="Inter, Segoe UI, sans-serif" font-size="28" font-weight="800" letter-spacing="-0.02em">Intelligence</text>
 </svg>

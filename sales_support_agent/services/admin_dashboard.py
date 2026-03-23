@@ -2781,7 +2781,7 @@ def render_dashboard_page(data: DashboardData) -> str:
             <details class="utility-drawer" id="deck-generator-panel">
               <summary>Generate sales deck</summary>
               <div class="utility-body">
-                <p>Upload the Helium 10 exports for the niche, provide the prospect product URL or ASIN, and choose which service-offering slides should be included in the deck.</p>
+                <p>Upload the competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and choose which service-offering slides should be included in the deck.</p>
                 {deck_ready_notice}
                 <form class="lead-form" id="deck-generator-form">
                   <label>
@@ -2789,11 +2789,11 @@ def render_dashboard_page(data: DashboardData) -> str:
                     <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
                   </label>
                   <label>
-                    Competitor Xray CSV
+                    Competitor CSV
                     <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" />
                   </label>
                   <label>
-                    Keyword Xray CSV
+                    Keyword CSV
                     <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" />
                   </label>
                   <label>

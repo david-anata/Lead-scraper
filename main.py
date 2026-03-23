@@ -674,6 +674,21 @@ def _post_sales_support_multipart(
     return response.status_code, payload
 
 
+def _rewrite_sales_support_url_for_agent(request: Request, value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    request_base = urlparse(str(request.base_url))
+    admin_settings = load_admin_dashboard_settings()
+    backend_base = urlparse(admin_settings.sales_support_agent_url)
+    if backend_base.netloc and parsed.netloc == backend_base.netloc:
+        return parsed._replace(scheme=request_base.scheme, netloc=request_base.netloc).geturl()
+    return raw
+
+
 def sync_remote_dashboard_sources() -> dict[str, Any]:
     clickup_sync = _post_sales_support_job(
         "/api/clickup/sync",
@@ -3520,7 +3535,26 @@ async def admin_generate_deck_proxy(
             content={"detail": "Deck generation failed.", "error": str(exc)},
         )
 
+    details = payload.get("details") if isinstance(payload, dict) else None
+    if isinstance(details, dict):
+        for key in ("edit_url", "view_url"):
+            if key in details:
+                details[key] = _rewrite_sales_support_url_for_agent(request, str(details.get(key) or ""))
+
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.get("/decks/{deck_slug}/{run_id}/{token}")
+def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_settings.sales_support_agent_url:
+        return JSONResponse(status_code=500, content={"detail": "Sales support agent URL is not configured on this service."})
+    response = requests.get(
+        f"{admin_settings.sales_support_agent_url}/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}",
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
+    return Response(content=response.content, status_code=response.status_code, media_type=content_type.split(";")[0], headers={"Content-Type": content_type})
 
 
 @app.get("/")
