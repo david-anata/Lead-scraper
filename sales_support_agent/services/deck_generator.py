@@ -514,7 +514,21 @@ class DeckGenerationService:
             description=hero_product.description,
             keyword_report=keyword_report,
         )
-        seo_recommendations = _build_seo_recommendations(keyword_report, xray_report, search_insights)
+        target_title = (hero_product.title or parsed_target["product_name"] or parsed_target["asin"]).strip()
+        target_brand = (
+            hero_product.brand_name
+            or (target_row.brand if target_row else "")
+            or parsed_target.get("brand_name", "")
+            or "Amazon Brand"
+        ).strip()
+        display_title = _clean_listing_title(target_title)
+        seo_recommendations = _build_seo_recommendations(
+            keyword_report,
+            xray_report,
+            search_insights,
+            brand_name=target_brand,
+            target_title=display_title,
+        )
         cro_recommendations = _build_cro_recommendations(target_row, primary_competitors)
         creative_recommendations = _build_creative_recommendations(target_row, primary_competitors)
         channel_sections = _build_channel_sections(enabled_channels)
@@ -547,13 +561,6 @@ class DeckGenerationService:
                     ]
                 )
 
-        target_title = (hero_product.title or parsed_target["product_name"] or parsed_target["asin"]).strip()
-        target_brand = (
-            hero_product.brand_name
-            or (target_row.brand if target_row else "")
-            or parsed_target.get("brand_name", "")
-            or "Amazon Brand"
-        ).strip()
         target_image_url = (hero_product.image_url or (target_row.image_url if target_row else "")).strip()
         target_price_label = (
             hero_product.price
@@ -573,7 +580,6 @@ class DeckGenerationService:
             market_average_price=xray_report.average_price or 0.0,
             best_seller=xray_report.products[0] if xray_report.products else None,
         )
-        display_title = _clean_listing_title(target_title)
         effective_date = datetime.now(timezone.utc).date()
 
         text_fields: dict[str, str] = {
@@ -1366,27 +1372,35 @@ def _build_seo_recommendations(
     keyword_report: Helium10KeywordReport | None,
     xray_report: Helium10XrayReport,
     search_insights: dict[str, list[str]],
+    *,
+    brand_name: str,
+    target_title: str,
 ) -> list[str]:
+    branded_reference = _brand_product_reference(brand_name)
+    cleaned_title = _trim_text(_clean_listing_title(target_title), 60) or branded_reference
     recommendations = [
-        "Rewrite the listing title and first bullets around the highest-intent keyword cluster rather than generic category language.",
-        "Use the lowest-title-density terms as the first indexing gap to attack before scaling paid traffic.",
+        f"Rewrite the title and first bullets around the highest-intent keyword cluster instead of broad category language. Current title direction: '{cleaned_title}'.",
+        "Use the lowest-title-density terms as the first indexing gap before scaling paid traffic or broadening the PDP message.",
     ]
     if keyword_report and keyword_report.keywords:
+        top_term = keyword_report.keywords[0].phrase
         recommendations.insert(
             0,
-            f"Lead the SEO rewrite with '{keyword_report.keywords[0].phrase}' and the adjacent long-tail terms with meaningful search volume.",
+            f"Lead the SEO rewrite with '{top_term}' and adjacent long-tail terms with meaningful search volume. Example title direction: '{top_term}' + core benefit + format / pack detail.",
         )
     if search_insights.get("title_misses"):
+        example_title_terms = ", ".join(f"'{item}'" for item in search_insights["title_misses"][:3])
         recommendations.append(
             "Add missing title keywords first: "
-            + ", ".join(f"'{item}'" for item in search_insights["title_misses"][:3])
-            + "."
+            + example_title_terms
+            + f". Suggested result: move those terms into the first 80-100 characters of {branded_reference} so the listing states the use case earlier."
         )
     if search_insights.get("copy_misses"):
+        example_copy_terms = ", ".join(f"'{item}'" for item in search_insights["copy_misses"][:3])
         recommendations.append(
             "Use bullets / description to pick up the next keyword layer: "
-            + ", ".join(f"'{item}'" for item in search_insights["copy_misses"][:3])
-            + "."
+            + example_copy_terms
+            + ". Suggested result: dedicate one bullet to problem / solution language and another to proof so those targets index without stuffing."
         )
     if xray_report.under_75_reviews_count:
         recommendations.append("Push harder into keyword relevance while review barriers are still low across several competitors.")
@@ -1731,7 +1745,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
         (
             "Listing copy snapshot",
             _render_comparison_copy_snapshot(str(target.get("description", "") or "")),
-            _render_comparison_copy_snapshot(str(best_seller.title if best_seller else "")),
+            _render_benchmark_copy_snapshot(best_seller),
         ),
         (
             "Dims",
@@ -1985,6 +1999,24 @@ def _render_comparison_copy_snapshot(text: str) -> str:
     bullets = _extract_listing_copy_points(text)
     if not bullets:
         return "<div class='comparison-copy muted'>Copy snapshot unavailable.</div>"
+    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
+    return f"<div class='comparison-copy'><ul>{items}</ul></div>"
+
+
+def _render_benchmark_copy_snapshot(product: XrayProduct | None) -> str:
+    if product is None:
+        return "<div class='comparison-copy muted'>Benchmark copy snapshot unavailable.</div>"
+    bullets = [
+        f"{_trim_text(product.title, 42)} is the current page-one benchmark for this niche.",
+    ]
+    if product.price_label != "n/a":
+        bullets.append(f"It anchors the market at {product.price_label} while sustaining {product.revenue_label} in 30-day revenue.")
+    if product.rating_label != "n/a" or product.review_count:
+        bullets.append(
+            f"It pairs a {product.rating_label if product.rating_label != 'n/a' else 'visible'} rating signal with {product.review_count or 0} reviews to reinforce trust."
+        )
+    if product.dimensions:
+        bullets.append(f"Current size / pack context reads as {product.dimensions}.")
     items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
     return f"<div class='comparison-copy'><ul>{items}</ul></div>"
 
