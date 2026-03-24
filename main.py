@@ -3551,10 +3551,10 @@ def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str)
     admin_settings = load_admin_dashboard_settings()
     if not admin_settings.sales_support_agent_url:
         return JSONResponse(status_code=500, content={"detail": "Sales support agent URL is not configured on this service."})
-    response = requests.get(
-        f"{admin_settings.sales_support_agent_url}/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}",
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
+    backend_url = f"{admin_settings.sales_support_agent_url}/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}"
+    if request.url.query:
+        backend_url = f"{backend_url}?{request.url.query}"
+    response = requests.get(backend_url, timeout=REQUEST_TIMEOUT_SECONDS)
     content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
     return Response(
         content=response.content,

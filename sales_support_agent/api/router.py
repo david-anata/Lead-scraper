@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import hashlib
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
@@ -860,6 +861,51 @@ def admin_canva_callback(
     return response
 
 
+def _hash_deck_visitor_key(request: Request) -> str:
+    client_host = (request.client.host if request.client else "") or ""
+    user_agent = request.headers.get("user-agent", "") or ""
+    source = f"{client_host}|{user_agent}"
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _summarize_deck_view_events(events: list[dict[str, str]]) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    grouped: dict[str, dict[str, object]] = {}
+    for viewer_type in ("internal", "external"):
+        filtered = [event for event in events if str(event.get("viewer_type") or "external") == viewer_type]
+        unique_visitors = {str(event.get("visitor_key") or "") for event in filtered if str(event.get("visitor_key") or "")}
+        parsed_dates: list[datetime] = []
+        daily_rows: list[tuple[datetime, str]] = []
+        for event in filtered:
+            raw = str(event.get("viewed_at") or "").strip()
+            if not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            parsed_dates.append(parsed)
+            daily_rows.append((parsed, parsed.date().isoformat()))
+
+        daily_counts: dict[str, dict[str, int]] = {}
+        for window_name, days in (("7", 7), ("30", 30), ("90", 90), ("all", None)):
+            counter: dict[str, int] = {}
+            for parsed, day_key in daily_rows:
+                if days is not None and (now - parsed).days >= days:
+                    continue
+                counter[day_key] = counter.get(day_key, 0) + 1
+            daily_counts[window_name] = dict(sorted(counter.items()))
+
+        grouped[viewer_type] = {
+            "unique_visitors": len(unique_visitors),
+            "total_visits": len(filtered),
+            "first_viewed_at": min(parsed_dates).isoformat() if parsed_dates else "",
+            "last_viewed_at": max(parsed_dates).isoformat() if parsed_dates else "",
+            "daily_counts": daily_counts,
+        }
+    return grouped
+
+
 def _render_deck_export(request: Request, run_id: int, token: str) -> Response:
     with session_scope(request.app.state.session_factory) as session:
         run = session.execute(
@@ -877,10 +923,23 @@ def _render_deck_export(request: Request, run_id: int, token: str) -> Response:
         if not deck_html:
             return HTMLResponse("Deck export not found.", status_code=404)
         now_iso = datetime.now(timezone.utc).isoformat()
-        summary["view_count"] = int(summary.get("view_count", 0) or 0) + 1
-        if not summary.get("first_viewed_at"):
-            summary["first_viewed_at"] = now_iso
-        summary["last_viewed_at"] = now_iso
+        viewer_type = "internal" if str(request.query_params.get("viewer") or "").strip().lower() == "internal" else "external"
+        view_events = list(summary.get("view_events", []) or [])
+        view_events.append(
+            {
+                "viewed_at": now_iso,
+                "viewer_type": viewer_type,
+                "visitor_key": _hash_deck_visitor_key(request),
+                "path": str(request.url.path),
+            }
+        )
+        summary["view_events"] = view_events[-500:]
+        analytics = _summarize_deck_view_events(summary["view_events"])
+        summary["view_analytics"] = analytics
+        external_summary = dict(analytics.get("external", {}) or {})
+        summary["view_count"] = int(external_summary.get("total_visits", 0) or 0)
+        summary["first_viewed_at"] = str(external_summary.get("first_viewed_at", "") or "")
+        summary["last_viewed_at"] = str(external_summary.get("last_viewed_at", "") or "")
         run.summary_json = summary
         session.add(run)
         return HTMLResponse(deck_html)

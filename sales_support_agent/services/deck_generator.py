@@ -92,6 +92,13 @@ DEFAULT_CUSTOM_OFFERS: tuple[dict[str, str], ...] = (
     },
 )
 
+DEFAULT_CASE_STUDY_URL = (
+    "https://www.canva.com/design/DAHEy6FPsSw/3suEo_Uau4H7E23FwFKBxA/view"
+    "?utm_content=DAHEy6FPsSw&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h99092fa64e"
+)
+
+DEFAULT_SERVICE_TABS: tuple[str, ...] = ("amazon", "tiktok_shop", "shopify", "3pl", "shipping_os")
+
 
 class DeckGenerationService:
     def __init__(
@@ -510,7 +517,7 @@ class DeckGenerationService:
         seo_recommendations = _build_seo_recommendations(keyword_report, xray_report, search_insights)
         cro_recommendations = _build_cro_recommendations(target_row, primary_competitors)
         creative_recommendations = _build_creative_recommendations(target_row, primary_competitors)
-        channel_sections = _build_channel_sections(channels)
+        channel_sections = _build_channel_sections(enabled_channels)
         competitor_rows = [["Product", "ASIN", "Brand", "Price", "Revenue", "Market share", "Reviews", "BSR", "Fulfillment"]]
         for product in xray_report.products[:10]:
             competitor_rows.append(
@@ -566,8 +573,8 @@ class DeckGenerationService:
             market_average_price=xray_report.average_price or 0.0,
             best_seller=xray_report.products[0] if xray_report.products else None,
         )
-        default_case_study_url = "https://www.canva.com/design/DAHEy6FPsSw/3suEo_Uau4H7E23FwFKBxA/view?utm_content=DAHEy6FPsSw&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h99092fa64e"
         display_title = _clean_listing_title(target_title)
+        effective_date = datetime.now(timezone.utc).date()
 
         text_fields: dict[str, str] = {
             "deck_mode": "amazon_first_html",
@@ -583,8 +590,8 @@ class DeckGenerationService:
             "hero_product_tags": ", ".join(hero_product.tags),
             "hero_product_image_url": target_image_url,
             "hero_product_snapshot": _build_target_snapshot_text(display_title, target_brand, target_row),
-            "report_generated_date": datetime.now(timezone.utc).date().isoformat(),
-            "reporting_period": datetime.now(timezone.utc).strftime("%B %d, %Y"),
+            "report_generated_date": _format_display_date(effective_date),
+            "reporting_period": _format_display_date(effective_date),
             "market_summary": _build_market_summary(target_brand, xray_report, keyword_report),
             "executive_summary": _build_executive_summary(display_title, target_brand, xray_report, keyword_report),
             "cro_summary": " ".join(cro_recommendations[:2]),
@@ -593,7 +600,7 @@ class DeckGenerationService:
             "advertising_summary": _build_advertising_summary(xray_report, keyword_report),
             "recommended_plan_summary": _build_plan_summary(offer_cards, channels),
             "expected_impact_summary": _build_expected_impact_summary(xray_report),
-            "why_anata_summary": _build_why_anata_summary(channels),
+            "why_anata_summary": _build_why_anata_summary(enabled_channels),
             "deck_title": f"{target_brand} x anata strategy deck".strip(" -"),
             "target_asin": parsed_target["asin"],
             "target_rating": target_rating_label,
@@ -650,14 +657,14 @@ class DeckGenerationService:
                 "seo_recommendations": seo_recommendations,
                 "cro_recommendations": cro_recommendations,
                 "creative_recommendations": creative_recommendations,
-                "channel_sections": channel_sections,
-                "channels": channels,
+                "offering_sections": channel_sections,
+                "channels": enabled_channels,
                 "niche_keyword": keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else (parsed_target["product_name"] or target_title),
                 "search_insights": search_insights,
                 "target_strengths": target_strengths,
                 "target_gaps": target_gaps,
                 "creative_mockup_url": creative_mockup_url,
-                "case_study_url": case_study_url or default_case_study_url,
+                "case_study_url": case_study_url or DEFAULT_CASE_STUDY_URL,
                 "offer_cards": offer_cards,
                 "include_recommended_plan": include_recommended_plan,
             },
@@ -812,7 +819,7 @@ class DeckGenerationService:
         seo_recommendations = list(payload.get("seo_recommendations", []))
         cro_recommendations = list(payload.get("cro_recommendations", []))
         creative_recommendations = list(payload.get("creative_recommendations", []))
-        channel_sections = list(payload.get("channel_sections", []))
+        offering_sections = list(payload.get("offering_sections", []))
         search_insights = dict(payload.get("search_insights", {}))
         target_strengths = list(payload.get("target_strengths", []))
         target_gaps = list(payload.get("target_gaps", []))
@@ -820,12 +827,11 @@ class DeckGenerationService:
         case_study_url = str(payload.get("case_study_url", "") or "").strip()
         offer_cards = list(payload.get("offer_cards", []))
         include_recommended_plan = bool(payload.get("include_recommended_plan", True))
-        brand_wordmark = self._load_brand_asset("assets/wordmark.svg")
         monogram = self._load_brand_asset("assets/monogram.svg")
         stylesheet = self._load_brand_stylesheet()
         keyword_rows = "".join(_render_keyword_row(keyword) for keyword in (keyword_report.keywords[:10] if keyword_report else []))
         revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
-        channel_html = "".join(_render_channel_section(section) for section in channel_sections)
+        offering_html = _render_offering_tabs(offering_sections)
         gallery_items = [target] + [_product_to_gallery_item(product) for product in primary_competitors[:4]]
         gallery_html = "".join(_render_gallery_card(item) for item in gallery_items if item)
         market_summary_html = "".join(_render_metric_card(card) for card in market_cards)
@@ -846,15 +852,8 @@ class DeckGenerationService:
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller)
         copy_snapshot_html = _render_listing_copy_snapshot(str(target.get("description", "") or ""))
-        resource_cards = []
-        if creative_mockup_url:
-            resource_cards.append(_render_resource_card("Listing mockup", "Open the proposed creative direction.", creative_mockup_url))
-        if case_study_url:
-            resource_cards.append(_render_resource_card("Case studies", "Reference proof points and past public work.", case_study_url))
-        resources_html = "".join(resource_cards)
         target_identifier = str(target.get("asin") or "").strip()
         target_reference_label = f"ASIN {target_identifier}" if target_identifier else _target_reference_label(target)
-        cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 30)
         recommended_plan_html = ""
         if include_recommended_plan:
             offer_html = "".join(_render_offer_card(card) for card in offer_cards)
@@ -868,9 +867,10 @@ class DeckGenerationService:
       </div>
       {f"<div class='offer-grid'>{offer_html}</div>" if offer_html else ""}
       <div class="plan-grid">
-        <div class="plan-card">
-          <h3>Offer structure</h3>
-          <p>{html.escape(dataset.text_fields.get("recommended_plan_summary") or "")}</p>
+        <div class="plan-card plan-card-cta">
+          <h3>Schedule a meeting</h3>
+          <p>Review the engagement options, align on the first sprint, and map the next execution window.</p>
+          <a class="plan-link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Schedule a meeting</a>
         </div>
         <div class="plan-card">
           <h3>Expected impact</h3>
@@ -882,12 +882,11 @@ class DeckGenerationService:
         </div>
       </div>
     </section>"""
-        target_summary_meter = _render_meter_group(
-            [
-                ("Review base", _bounded_ratio(target.get("review_count", 0), 300), f"{target.get('review_count', 0)} reviews"),
-                ("Rating signal", _bounded_ratio(_coerce_number(str(target.get("rating", ""))) or 0, 5), target.get("rating") or "n/a"),
-                ("Market presence", _inverse_bounded_ratio(_coerce_number(str(target.get("bsr", ""))) or 0, 150000), target.get("bsr") or "n/a"),
-            ]
+        target_brand_display = str(target.get("brand_name") or target.get("brand") or "Prospect brand").strip()
+        cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 50)
+        resource_embed_html = _render_embedded_resource_tabs(
+            case_study_url=case_study_url,
+            creative_mockup_url=creative_mockup_url,
         )
         return f"""<!doctype html>
 <html lang="en">
@@ -902,7 +901,6 @@ class DeckGenerationService:
     <section class="deck-toolbar">
       <div class="brand-toolbar">
         <div class="brand-monogram">{monogram}</div>
-        <div class="brand-wordmark">{brand_wordmark}</div>
       </div>
       <button class="print-button" onclick="window.print()">Print / Save PDF</button>
     </section>
@@ -916,7 +914,7 @@ class DeckGenerationService:
           <div class="pill-row">
             <span class="pill">{html.escape(target_reference_label)}</span>
             <span class="pill">{html.escape(dataset.text_fields.get("report_generated_date") or "")}</span>
-            <span class="pill">{html.escape(", ".join(payload.get("channels", [])) or "amazon")}</span>
+            <span class="pill">{html.escape(" • ".join(_format_channel_label(value) for value in (payload.get("channels", []) or [])) or "Amazon")}</span>
           </div>
         </div>
         <div class="cover-card">
@@ -982,7 +980,6 @@ class DeckGenerationService:
           {comparison_table_html}
           {copy_snapshot_html}
           <p class="muted">{html.escape(str(target.get("dimensions", "")) or "Dimensions unavailable.")}</p>
-          <div class="meter-group">{target_summary_meter}</div>
         </div>
       </div>
       <div class="two-col split-top">
@@ -1043,8 +1040,8 @@ class DeckGenerationService:
           </div>
         </div>
         <div class="recommendation-card">
-          <h3>SEO actions</h3>
-          <ul>{''.join(f"<li>{html.escape(item)}</li>" for item in seo_recommendations)}</ul>
+          <h3>SEO actions {_render_help_badge("These are directional keyword and copy suggestions based on the current category set. Final indexing and conversion results will vary.")}</h3>
+          <ul class="emphasis-list">{''.join(_render_emphasis_list_item(item) for item in seo_recommendations)}</ul>
         </div>
       </div>
     </section>
@@ -1059,21 +1056,51 @@ class DeckGenerationService:
       </div>
       <div class="two-col split-top">
         <div class="recommendation-card">
-          <h3>CRO recommendations</h3>
-          <ul>{''.join(f"<li>{html.escape(item)}</li>" for item in cro_recommendations)}</ul>
+          <h3>CRO recommendations {_render_help_badge("CRO recommendations focus on PDP clarity, proof, and the path to purchase.")}</h3>
+          <ul>{''.join(_render_recommendation_item(item) for item in cro_recommendations)}</ul>
         </div>
         <div class="recommendation-card">
-          <h3>Creative recommendations</h3>
-          <ul>{''.join(f"<li>{html.escape(item)}</li>" for item in creative_recommendations)}</ul>
+          <h3>Creative recommendations {_render_help_badge("Creative recommendations focus on imagery, comparison frames, and visual proof.")}</h3>
+          <ul>{''.join(_render_recommendation_item(item) for item in creative_recommendations)}</ul>
         </div>
       </div>
       <div class="gallery-grid">{gallery_html}</div>
-      {f"<div class='resource-grid'>{resources_html}</div>" if resources_html else ""}
+      {resource_embed_html}
     </section>
 
-    {channel_html}
+    {offering_html}
       {recommended_plan_html}
   </main>
+  <script>
+    document.querySelectorAll(".offering-tabs").forEach((tabsRoot) => {{
+      tabsRoot.querySelectorAll(".offering-tab").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const target = button.dataset.tab;
+          const section = tabsRoot.closest(".slide");
+          section?.querySelectorAll(".offering-tab").forEach((node) => node.classList.toggle("is-active", node === button));
+          section?.querySelectorAll(".offering-panel").forEach((panel) => {{
+            const isActive = panel.dataset.panel === target;
+            panel.classList.toggle("is-active", isActive);
+            panel.hidden = !isActive;
+          }});
+        }});
+      }});
+    }});
+    document.querySelectorAll(".embedded-tabs").forEach((tabsRoot) => {{
+      tabsRoot.querySelectorAll(".embedded-tab").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const target = button.dataset.tab;
+          const section = tabsRoot.closest(".embedded-resource-section");
+          section?.querySelectorAll(".embedded-tab").forEach((node) => node.classList.toggle("is-active", node === button));
+          section?.querySelectorAll(".embedded-panel").forEach((panel) => {{
+            const isActive = panel.dataset.panel === target;
+            panel.classList.toggle("is-active", isActive);
+            panel.hidden = !isActive;
+          }});
+        }});
+      }});
+    }});
+  </script>
 </body>
 </html>"""
 
@@ -1117,6 +1144,7 @@ class DeckGenerationService:
             "first_viewed_at": summary.get("first_viewed_at", ""),
             "last_viewed_at": summary.get("last_viewed_at", ""),
             "channels": list(summary.get("channels", []) or []),
+            "view_analytics": dict(summary.get("view_analytics", {}) or {}),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
         }
@@ -1174,6 +1202,9 @@ def _normalize_channels(channels: list[str]) -> list[str]:
         "shopify": "shopify",
         "tiktok_shop": "tiktok_shop",
         "tiktok": "tiktok_shop",
+        "3pl": "3pl",
+        "shipping_os": "shipping_os",
+        "shipping-os": "shipping_os",
     }
     normalized: list[str] = []
     seen: set[str] = set()
@@ -1184,9 +1215,9 @@ def _normalize_channels(channels: list[str]) -> list[str]:
             continue
         seen.add(mapped)
         normalized.append(mapped)
-    if "amazon" not in seen:
-        normalized.insert(0, "amazon")
-    return normalized
+    if normalized:
+        return normalized
+    return list(DEFAULT_SERVICE_TABS)
 
 
 def _target_reference_label(target: dict[str, Any]) -> str:
@@ -1283,18 +1314,32 @@ def _build_why_anata_summary(channels: list[str]) -> str:
         scope.append("Shopify conversion systems")
     if "tiktok_shop" in channels:
         scope.append("TikTok Shop go-to-market support")
-    return "Anata can own " + ", ".join(scope) + " without splitting CRO, creative, and acquisition across separate vendors."
+    if "3pl" in channels:
+        scope.append("3PL operations")
+    if "shipping_os" in channels:
+        scope.append("Shipping OS")
+    return "Anata can own " + ", ".join(scope) + " without splitting CRO, creative, fulfillment, and acquisition across separate vendors."
 
 
 def _build_market_metric_cards(
     xray_report: Helium10XrayReport,
     keyword_report: Helium10KeywordReport | None,
 ) -> list[dict[str, str]]:
+    average_revenue_per_listing = (xray_report.total_revenue / xray_report.search_results_count) if xray_report.search_results_count else 0.0
+    average_units_per_listing = (xray_report.total_units_sold / xray_report.search_results_count) if xray_report.search_results_count else 0.0
     return [
-        {"label": "30-day revenue", "value": _label_money_value(xray_report.total_revenue), "meta": f"Across {xray_report.search_results_count} products"},
-        {"label": "30-day units sold", "value": _label_integer(xray_report.total_units_sold), "meta": "Summed from the current market set"},
+        {
+            "label": "30-day revenue",
+            "value": _label_money_value(xray_report.total_revenue),
+            "meta": f"Avg per listing { _label_money_value(average_revenue_per_listing) }",
+        },
+        {
+            "label": "30-day units sold",
+            "value": _label_integer(xray_report.total_units_sold),
+            "meta": f"Avg per listing { _label_integer(average_units_per_listing) }",
+        },
         {"label": "Average BSR", "value": _label_float(xray_report.average_bsr, 0), "meta": "Lower is stronger"},
-        {"label": "Average price", "value": _label_money_value(xray_report.average_price or 0.0), "meta": "From the uploaded competitor set"},
+        {"label": "Average price", "value": _label_money_value(xray_report.average_price or 0.0), "meta": "From the current market set"},
         {"label": "Average rating", "value": _label_float(xray_report.average_rating, 1), "meta": "Competitive review signal"},
         {
             "label": "Open opportunity",
@@ -1329,12 +1374,20 @@ def _build_seo_recommendations(
     if keyword_report and keyword_report.keywords:
         recommendations.insert(
             0,
-            f"Lead the SEO rewrite with {keyword_report.keywords[0].phrase} and the adjacent long-tail terms with meaningful search volume.",
+            f"Lead the SEO rewrite with '{keyword_report.keywords[0].phrase}' and the adjacent long-tail terms with meaningful search volume.",
         )
     if search_insights.get("title_misses"):
-        recommendations.append("Add missing title keywords first: " + ", ".join(search_insights["title_misses"][:3]) + ".")
+        recommendations.append(
+            "Add missing title keywords first: "
+            + ", ".join(f"'{item}'" for item in search_insights["title_misses"][:3])
+            + "."
+        )
     if search_insights.get("copy_misses"):
-        recommendations.append("Use bullets / description to pick up the next keyword layer: " + ", ".join(search_insights["copy_misses"][:3]) + ".")
+        recommendations.append(
+            "Use bullets / description to pick up the next keyword layer: "
+            + ", ".join(f"'{item}'" for item in search_insights["copy_misses"][:3])
+            + "."
+        )
     if xray_report.under_75_reviews_count:
         recommendations.append("Push harder into keyword relevance while review barriers are still low across several competitors.")
     return recommendations[:4]
@@ -1348,7 +1401,7 @@ def _build_cro_recommendations(target_row: XrayProduct | None, competitors: list
     if target_row and (target_row.review_count or 0) < 75:
         recommendations.append("Compensate for the lighter review base with stronger proof blocks, FAQ coverage, and comparison framing.")
     if competitors:
-        recommendations.append(f"Benchmark the first image stack against {competitors[0].title} and the other top revenue leaders, then close the gap on clarity and proof.")
+        recommendations.append(f"{_trim_text(competitors[0].title, 30)} does a better job of showing proof and hierarchy early; replicate that clarity in the first image stack.")
     return recommendations[:4]
 
 
@@ -1358,7 +1411,7 @@ def _build_creative_recommendations(target_row: XrayProduct | None, competitors:
         "Add visual comparison and product-context frames instead of relying only on clinical or generic packaging shots.",
     ]
     if competitors:
-        recommendations.append("Use the top competitor image stacks as a reference set for claim sequencing and CTA placement.")
+        recommendations.append(f"{_trim_text(competitors[0].title, 30)} uses a stronger visual proof sequence; mirror that pacing in the refreshed creative set.")
     if target_row and not target_row.image_url:
         recommendations.append("Capture a clean primary listing image before the creative refresh so the deck has a stable hero asset.")
     return recommendations[:4]
@@ -1381,6 +1434,8 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
         {"label": "Amazon", "key": "amazon"},
         {"label": "TikTok Shop", "key": "tiktok_shop"},
         {"label": "Shopify (DTC)", "key": "shopify"},
+        {"label": "3PL", "key": "3pl"},
+        {"label": "Shipping OS", "key": "shipping_os"},
     ]
     sections: list[dict[str, Any]] = []
     if "amazon" in channels:
@@ -1431,6 +1486,40 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
                     {"title": "Email & SMS Automation", "description": "Create automated flows that increase repeat purchases, retention, and lifetime value."},
                     {"title": "Shopify ↔ Amazon Integration", "description": "Connect Shopify and Amazon to streamline inventory, fulfillment, and order routing."},
                     {"title": "Landing Pages & Funnels", "description": "Design focused landing pages and funnels that increase conversion rate and average order value."},
+                ],
+            }
+        )
+    if "3pl" in channels:
+        sections.append(
+            {
+                "eyebrow": "3PL offering",
+                "title": "3PL support",
+                "summary": "Warehouse, replenishment, and downstream execution support for brands that need tighter order accuracy and throughput.",
+                "active_key": "3pl",
+                "rail": rail,
+                "items": [
+                    {"title": "Warehouse onboarding", "description": "Map SKUs, receiving flows, storage logic, and SOPs before volume ramps."},
+                    {"title": "Inventory controls", "description": "Set reorder logic, variance checks, and exception handling before stockouts become a growth blocker."},
+                    {"title": "Order accuracy", "description": "Reduce mis-picks, label issues, and preventable support tickets with better operational controls."},
+                    {"title": "Returns workflow", "description": "Tighten return disposition and feedback loops so damaged margin is visible and recoverable."},
+                    {"title": "Client reporting", "description": "Keep the brand team close to fulfillment performance with practical weekly reporting."},
+                ],
+            }
+        )
+    if "shipping_os" in channels:
+        sections.append(
+            {
+                "eyebrow": "Shipping OS offering",
+                "title": "Shipping OS",
+                "summary": "A margin-first shipping operating system that brings routing, cost control, and service levels under one model.",
+                "active_key": "shipping_os",
+                "rail": rail,
+                "items": [
+                    {"title": "Carrier optimization", "description": "Route orders against service-level goals and margin thresholds instead of defaulting to static rules."},
+                    {"title": "Rate visibility", "description": "Surface shipping cost leakage by order profile, carrier, and region before it compounds."},
+                    {"title": "Operational scorecards", "description": "Track SLA performance, exception rates, and shipping cost trends in one operating view."},
+                    {"title": "Workflow automation", "description": "Automate repetitive fulfillment decisions so support, warehouse, and finance stay aligned."},
+                    {"title": "Margin guardrails", "description": "Keep growth channels profitable by matching promo strategy with fulfillment economics."},
                 ],
             }
         )
@@ -1491,7 +1580,7 @@ def _build_target_opportunities(
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
     if target_row is None:
-        gaps.append("The prospect listing was not present in the current market set, so positioning is benchmarked against competitors only.")
+        gaps.append("The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor instead.")
     if not hero_product.description:
         gaps.append("The current listing copy does not expose enough product-story detail; bullets and support content need to be rebuilt.")
     if search_insights.get("title_misses"):
@@ -1508,9 +1597,13 @@ def _build_target_opportunities(
 
 
 def _render_metric_card(card: dict[str, str]) -> str:
+    label = str(card.get("label", "") or "")
+    label_html = html.escape(label)
+    if _normalize_key(label) == "open_opportunity":
+        label_html += " " + _render_help_badge("This compares low-review listings against those already generating meaningful revenue to estimate how much whitespace is still available in the niche.")
     return (
         "<article class='metric-card'>"
-        f"<span>{html.escape(card.get('label', ''))}</span>"
+        f"<span>{label_html}</span>"
         f"<strong>{html.escape(card.get('value', ''))}</strong>"
         f"<small>{html.escape(card.get('meta', ''))}</small>"
         "</article>"
@@ -1589,29 +1682,77 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
 
 
 def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None) -> str:
+    target_price_number = _coerce_number(str(target.get("price", "") or ""))
+    target_bsr_number = _coerce_number(str(target.get("bsr", "") or ""))
+    target_revenue_number = _coerce_number(str(target.get("revenue", "") or ""))
+    target_rating_number = _coerce_number(str(target.get("rating", "") or ""))
+    target_reviews_number = _coerce_number(str(target.get("review_count", "") or ""))
     rows = [
-        ("Price", str(target.get("price", "") or "n/a"), best_seller.price_label if best_seller else "n/a"),
-        ("BSR", str(target.get("bsr", "") or "n/a"), best_seller.bsr_label if best_seller else "n/a"),
-        ("Revenue", str(target.get("revenue", "") or "n/a"), best_seller.revenue_label if best_seller else "n/a"),
-        ("Rating", str(target.get("rating", "") or "n/a"), best_seller.rating_label if best_seller else "n/a"),
-        ("Reviews", str(target.get("review_count", "") or "n/a"), str(best_seller.review_count or "n/a") if best_seller else "n/a"),
+        (
+            "Listing",
+            _render_comparison_listing_cell(
+                image_url=str(target.get("image_url", "") or ""),
+                title=_trim_text(str(target.get("title", "") or "Target listing"), 40),
+                brand=str(target.get("brand_name", "") or "Prospect brand"),
+                emphasized=True,
+            ),
+            _render_comparison_listing_cell(
+                image_url=str(best_seller.image_url or "") if best_seller else "",
+                title=_trim_text(best_seller.title, 40) if best_seller else "Best seller",
+                brand=str(best_seller.brand or "Benchmark") if best_seller else "Benchmark",
+                emphasized=False,
+            ),
+        ),
+        (
+            "Price",
+            _render_metric_with_delta(str(target.get("price", "") or "n/a"), target_price_number, best_seller.price if best_seller else None, inverse=False),
+            _render_plain_metric(best_seller.price_label if best_seller else "n/a"),
+        ),
+        (
+            "BSR",
+            _render_metric_with_delta(str(target.get("bsr", "") or "n/a"), target_bsr_number, best_seller.bsr if best_seller else None, inverse=True),
+            _render_plain_metric(best_seller.bsr_label if best_seller else "n/a"),
+        ),
+        (
+            "Revenue",
+            _render_metric_with_delta(str(target.get("revenue", "") or "n/a"), target_revenue_number, best_seller.revenue if best_seller else None, inverse=False),
+            _render_plain_metric(best_seller.revenue_label if best_seller else "n/a"),
+        ),
+        (
+            "Rating",
+            _render_metric_with_delta(str(target.get("rating", "") or "n/a"), target_rating_number, best_seller.rating if best_seller else None, inverse=False),
+            _render_plain_metric(best_seller.rating_label if best_seller else "n/a"),
+        ),
+        (
+            "Reviews",
+            _render_metric_with_delta(str(target.get("review_count", "") or "n/a"), target_reviews_number, float(best_seller.review_count or 0) if best_seller else None, inverse=False),
+            _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
+        ),
+        (
+            "Listing copy snapshot",
+            _render_comparison_copy_snapshot(str(target.get("description", "") or "")),
+            _render_comparison_copy_snapshot(str(best_seller.title if best_seller else "")),
+        ),
+        (
+            "Dims",
+            _render_plain_metric(str(target.get("dimensions", "") or "Unavailable")),
+            _render_plain_metric(str(best_seller.dimensions or "Unavailable") if best_seller else "Unavailable"),
+        ),
     ]
     body = "".join(
         "<tr>"
         f"<td>{html.escape(label)}</td>"
-        f"<td>{html.escape(target_value)}</td>"
-        f"<td>{html.escape(best_value)}</td>"
+        f"<td class='target-column'>{target_value}</td>"
+        f"<td class='benchmark-column'>{best_value}</td>"
         "</tr>"
         for label, target_value, best_value in rows
     )
-    best_title = _trim_text(best_seller.title, 40) if best_seller else "Best seller"
     return (
         "<div class='comparison-table-wrap'>"
-        "<table class='comparison-table'>"
+        "<table class='comparison-table comparison-table-structured'>"
         "<thead><tr><th>Metric</th><th>Target listing</th><th>Best seller</th></tr></thead>"
         f"<tbody>{body}</tbody>"
         "</table>"
-        f"<p class='muted'>Best seller benchmark: {html.escape(best_title)}</p>"
         "</div>"
     )
 
@@ -1645,7 +1786,7 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
 
 def _render_distribution_card(title: str, slices: list[DistributionSlice]) -> str:
     donut = _render_donut(slices)
-    palette = ["#244d87", "#4f84c4", "#85bbda", "#bfa889", "#9e6d66", "#d9e8f4"]
+    palette = ["#d39a49", "#8d4e54", "#85bbda", "#c3a46d", "#d26b36", "#cdd7e3"]
     items = "".join(
         f"<li title='{html.escape(f'{item.label}: {item.count} listings ({item.share * 100:.1f}%)')}' style='--legend-color:{palette[index % len(palette)]}'><span>{html.escape(item.label)}</span><strong>{item.count}</strong></li>"
         for index, item in enumerate(slices[:6])
@@ -1660,7 +1801,7 @@ def _render_distribution_card(title: str, slices: list[DistributionSlice]) -> st
 
 
 def _render_donut(slices: list[DistributionSlice]) -> str:
-    palette = ["#244d87", "#4f84c4", "#85bbda", "#bfa889", "#9e6d66", "#d9e8f4"]
+    palette = ["#d39a49", "#8d4e54", "#85bbda", "#c3a46d", "#d26b36", "#cdd7e3"]
     stops: list[str] = []
     start = 0.0
     for index, item in enumerate(slices[:6]):
@@ -1674,28 +1815,38 @@ def _render_donut(slices: list[DistributionSlice]) -> str:
     return f"<div class='donut-chart'><div class='donut-visual' title=\"{html.escape(tooltip)}\" style=\"{style}\"></div></div>"
 
 
-def _render_channel_section(section: dict[str, Any]) -> str:
-    rail = "".join(
-        f"<div class='channel-rail-item{' is-active' if item.get('key') == section.get('active_key') else ''}'>{html.escape(str(item.get('label', '')))}</div>"
-        for item in section.get("rail", [])
-    )
-    items = "".join(
-        "<article class='service-card'>"
-        f"<h3>{html.escape(str(item.get('title', '')))}</h3>"
-        f"<p>{html.escape(str(item.get('description', '')))}</p>"
-        "</article>"
-        for item in section.get("items", [])
-    )
+def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
+    if not sections:
+        return ""
+    tabs = []
+    panels = []
+    for index, section in enumerate(sections):
+        active_class = " is-active" if index == 0 else ""
+        hidden_attr = "" if index == 0 else " hidden"
+        key = html.escape(str(section.get("active_key", "")))
+        tabs.append(
+            f"<button class='offering-tab{active_class}' type='button' data-tab='{key}'>{html.escape(_format_channel_label(str(section.get('active_key', ''))))}</button>"
+        )
+        items = "".join(
+            "<article class='service-card'>"
+            f"<h3>{html.escape(str(item.get('title', '')))}</h3>"
+            f"<p>{html.escape(str(item.get('description', '')))}</p>"
+            "</article>"
+            for item in section.get("items", [])
+        )
+        panels.append(
+            "<div class='offering-panel{active_class}' data-panel='{key}'{hidden_attr}>"
+            .format(active_class=active_class, key=key, hidden_attr=hidden_attr)
+            + f"<div class='slide-head'><div><p class='eyebrow'>{html.escape(str(section.get('eyebrow', '')))}</p><h2>{html.escape(str(section.get('title', '')))}</h2></div>"
+            + f"<p class='muted'>{html.escape(str(section.get('summary', '')))}</p></div>"
+            + f"<div class='service-grid'>{items}</div></div>"
+        )
     return (
         "<section class='slide'>"
-        f"<div class='slide-head'><div><p class='eyebrow'>{html.escape(str(section.get('eyebrow', '')))}</p><h2>{html.escape(str(section.get('title', '')))}</h2></div>"
-        f"<p class='muted'>{html.escape(str(section.get('summary', '')))}</p></div>"
-        "<div class='channel-layout'>"
-        f"<aside class='channel-rail'>{rail}</aside>"
-        "<div class='channel-main'>"
-        f"<div class='service-grid'>{items}</div>"
-        "</div>"
-        "</div>"
+        "<div class='slide-head'><div><p class='eyebrow'>Service offerings</p><h2>Integrated support model</h2></div>"
+        "<p class='muted'>Amazon is open first, but the full operating model is available across marketplace, DTC, fulfillment, and shipping workflows.</p></div>"
+        f"<div class='offering-tabs'>{''.join(tabs)}</div>"
+        f"<div class='offering-panels'>{''.join(panels)}</div>"
         "</section>"
     )
 
@@ -1734,12 +1885,18 @@ def _render_gallery_card(item: dict[str, Any]) -> str:
 
 
 def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_label: str) -> str:
-    hit_items = "".join(f"<li>{html.escape(item)}</li>" for item in hits[:5]) or "<li>None identified yet.</li>"
-    miss_items = "".join(f"<li>{html.escape(item)}</li>" for item in misses[:5]) or "<li>No immediate gaps from the current keyword dataset.</li>"
+    hit_items = "".join(
+        f"<li><span class='signal-icon positive'>+</span><span>{html.escape(item)}</span></li>"
+        for item in hits[:5]
+    ) or "<li><span class='signal-icon positive'>+</span><span>None identified yet.</span></li>"
+    miss_items = "".join(
+        f"<li><span class='signal-icon negative'>+</span><span>{html.escape(item)}</span></li>"
+        for item in misses[:5]
+    ) or "<li><span class='signal-icon negative'>+</span><span>No immediate gaps from the current keyword dataset.</span></li>"
     return (
-        f"<h3>{html.escape(title)}</h3>"
-        f"<div class='signal-list'><strong>Already covered</strong><ul>{hit_items}</ul></div>"
-        f"<div class='signal-list'><strong>{html.escape(miss_label)}</strong><ul>{miss_items}</ul></div>"
+        f"<h3>{html.escape(title)} {_render_help_badge('This section checks whether the highest-priority search targets are already visible in the listing language.')}</h3>"
+        f"<div class='signal-list'><strong>Already covered</strong><ul class='signal-bullets'>{hit_items}</ul></div>"
+        f"<div class='signal-list'><strong>{html.escape(miss_label)}</strong><ul class='signal-bullets'>{miss_items}</ul></div>"
     )
 
 
@@ -1752,6 +1909,29 @@ def _render_resource_card(title: str, description: str, url: str) -> str:
         f"<a href='{safe_url}' target='_blank' rel='noreferrer'>Open link</a>"
         "</article>"
     )
+
+
+def _render_embedded_resource_tabs(*, case_study_url: str, creative_mockup_url: str) -> str:
+    resources: list[tuple[str, str, str]] = []
+    if case_study_url:
+        resources.append(("case-studies", "Case studies", case_study_url))
+    if creative_mockup_url:
+        resources.append(("listing-mockup", "Creative mockup", creative_mockup_url))
+    if not resources:
+        return ""
+    tabs: list[str] = []
+    panels: list[str] = []
+    for index, (key, label, url) in enumerate(resources):
+        active_class = " is-active" if index == 0 else ""
+        hidden_attr = "" if index == 0 else " hidden"
+        tabs.append(f"<button class='embedded-tab{active_class}' type='button' data-tab='{html.escape(key)}'>{html.escape(label)}</button>")
+        panels.append(
+            f"<div class='embedded-panel{active_class}' data-panel='{html.escape(key)}'{hidden_attr}>"
+            f"<iframe src='{html.escape(url, quote=True)}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
+            f"<p class='muted'>If the embed is blocked, <a href='{html.escape(url, quote=True)}' target='_blank' rel='noreferrer'>open it in a new tab</a>.</p>"
+            "</div>"
+        )
+    return "<div class='embedded-resource-section'><div class='embedded-tabs'>" + "".join(tabs) + "</div><div class='embedded-panels'>" + "".join(panels) + "</div></div>"
 
 
 def _render_offer_card(card: dict[str, Any]) -> str:
@@ -1777,15 +1957,73 @@ def _render_listing_copy_snapshot(description: str) -> str:
     return f"<div class='signal-list'><strong>Listing copy snapshot</strong><ul>{items}</ul></div>"
 
 
-def _render_meter_group(items: list[tuple[str, float, str]]) -> str:
-    return "".join(
-        "<div class='meter-item'>"
-        f"<span>{html.escape(label)}</span>"
-        f"<div class='meter-track'><div class='meter-fill' style='width:{max(0, min(int(round(value * 100)), 100))}%'></div></div>"
-        f"<small>{html.escape(meta)}</small>"
-        "</div>"
-        for label, value, meta in items
+def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, emphasized: bool) -> str:
+    media = (
+        f"<img src='{html.escape(image_url, quote=True)}' alt='{html.escape(title)}' />"
+        if image_url
+        else "<div class='image-fallback compact'>No image</div>"
     )
+    return (
+        f"<div class='comparison-listing{' is-target' if emphasized else ''}'>"
+        f"<div class='comparison-thumb'>{media}</div>"
+        f"<div><strong>{html.escape(title)}</strong><div class='muted'>{html.escape(brand)}</div></div>"
+        "</div>"
+    )
+
+
+def _render_plain_metric(value: str) -> str:
+    return f"<div class='comparison-metric'><strong>{html.escape(value)}</strong></div>"
+
+
+def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
+    delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse)
+    delta_html = f"<span class='metric-delta'>{html.escape(delta)}</span>" if delta else ""
+    return f"<div class='comparison-metric'><strong>{html.escape(display_value)}</strong>{delta_html}</div>"
+
+
+def _render_comparison_copy_snapshot(text: str) -> str:
+    bullets = _extract_listing_copy_points(text)
+    if not bullets:
+        return "<div class='comparison-copy muted'>Copy snapshot unavailable.</div>"
+    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
+    return f"<div class='comparison-copy'><ul>{items}</ul></div>"
+
+
+def _format_metric_delta(target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
+    if target_value is None or benchmark_value is None:
+        return "Benchmark only"
+    delta = target_value - benchmark_value
+    if inverse:
+        delta *= -1
+    if abs(delta) < 0.01:
+        return "In line"
+    prefix = "+" if delta > 0 else "-"
+    abs_delta = abs(delta)
+    if abs_delta >= 1000:
+        value = f"{abs_delta:,.0f}"
+    elif abs_delta >= 10:
+        value = f"{abs_delta:,.1f}"
+    else:
+        value = f"{abs_delta:,.2f}"
+    return f"{prefix}{value} vs best seller"
+
+
+def _render_help_badge(text: str) -> str:
+    return f"<span class='help-badge' title='{html.escape(text, quote=True)}'>?</span>"
+
+
+def _render_emphasis_list_item(text: str) -> str:
+    highlighted = html.escape(text)
+    highlighted = re.sub(r"'([^']+)'", r"<mark>\1</mark>", highlighted)
+    return f"<li>{highlighted}</li>"
+
+
+def _render_recommendation_item(text: str) -> str:
+    return f"<li>{_highlight_competitor_names(html.escape(text))}</li>"
+
+
+def _highlight_competitor_names(text: str) -> str:
+    return re.sub(r"([A-Z][A-Za-z0-9&' -]{2,})", r"<strong>\1</strong>", text, count=1)
 
 
 def _bounded_ratio(value: float, ceiling: float) -> float:
@@ -1822,6 +2060,36 @@ def _label_share(value: float | None, total: float) -> str:
     if value is None or total <= 0:
         return "n/a"
     return f"{((value / total) * 100):.1f}%"
+
+
+def _format_channel_label(value: str) -> str:
+    mapping = {
+        "amazon": "Amazon",
+        "shopify": "Shopify",
+        "tiktok_shop": "TikTok Shop",
+        "3pl": "3PL",
+        "shipping_os": "Shipping OS",
+    }
+    key = _normalize_key(value)
+    return mapping.get(key, value.replace("_", " ").title())
+
+
+def _format_display_date(value: date | datetime | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).strftime("%m/%d/%Y")
+    if isinstance(value, date):
+        return value.strftime("%m/%d/%Y")
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    try:
+        if "T" in raw:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%m/%d/%Y")
+        return date.fromisoformat(raw).strftime("%m/%d/%Y")
+    except ValueError:
+        return raw
 
 
 def _trim_text(value: str, limit: int) -> str:
@@ -1937,7 +2205,7 @@ def _build_price_comparison_summary(*, hero_price: str, market_average_price: fl
         benchmark_bits.append(f"against the best seller at {_label_money_value(best_value)}")
     if not benchmark_bits:
         return ""
-    return f"The current price point is {hero_price} and sits {' '.join(benchmark_bits)}."
+    return f"The current price point is {hero_price} and compares {' '.join(benchmark_bits)}."
 
 
 def _normalize_offers(values: list[str]) -> list[str]:

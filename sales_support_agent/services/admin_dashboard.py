@@ -144,6 +144,46 @@ class ExecutiveData:
     lead_records: list[ExecutiveLeadRecord]
 
 
+def _format_dashboard_date(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        if "T" in raw:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%m/%d/%Y")
+        return date.fromisoformat(raw).strftime("%m/%d/%Y")
+    except ValueError:
+        return raw
+
+
+def _format_deck_channel_label(value: str) -> str:
+    mapping = {
+        "amazon": "Amazon",
+        "shopify": "Shopify",
+        "tiktok_shop": "TikTok Shop",
+        "3pl": "3PL",
+        "shipping_os": "Shipping OS",
+    }
+    key = str(value or "").strip().lower()
+    return mapping.get(key, str(value or "").replace("_", " ").title())
+
+
+def _build_deck_view_analytics(summary: dict[str, object]) -> dict[str, object]:
+    analytics = dict(summary.get("view_analytics", {}) or {})
+    if analytics:
+        return analytics
+    return {
+        "internal": {"unique_visitors": 0, "total_visits": 0, "first_viewed_at": "", "last_viewed_at": "", "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}}},
+        "external": {
+            "unique_visitors": int(summary.get("view_count", 0) or 0),
+            "total_visits": int(summary.get("view_count", 0) or 0),
+            "first_viewed_at": str(summary.get("first_viewed_at", "") or ""),
+            "last_viewed_at": str(summary.get("last_viewed_at", "") or ""),
+            "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
+        },
+    }
+
+
 def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
     return {
         "as_of_date": data.as_of_date.isoformat(),
@@ -744,6 +784,7 @@ def build_dashboard_data(
             "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
             "first_viewed_at": dict(run.summary_json or {}).get("first_viewed_at", ""),
             "last_viewed_at": dict(run.summary_json or {}).get("last_viewed_at", ""),
+            "view_analytics": _build_deck_view_analytics(dict(run.summary_json or {})),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
         }
@@ -1587,12 +1628,14 @@ def render_dashboard_page(data: DashboardData) -> str:
         <article class="deck-run-item">
           <div>
             <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
-            <p>{html.escape(str(run.get("message") or run.get("status") or ""))}</p>
-            <p class="muted">Output: {html.escape(str(run.get("output_type") or "html"))} · Views: {html.escape(str(run.get("view_count") or 0))} · Channels: {html.escape(", ".join(run.get("channels") or []) or "amazon")}</p>
-            <p class="muted">First viewed: {html.escape(str(run.get("first_viewed_at") or "Not viewed"))} · Last viewed: {html.escape(str(run.get("last_viewed_at") or "Not viewed"))}</p>
+            <p class="muted">Created {html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</p>
+            <ul class="deck-run-bullets">
+              {''.join(f"<li>{html.escape(_format_deck_channel_label(channel))}</li>" for channel in (run.get("channels") or []))}
+            </ul>
           </div>
           <div class="deck-run-links">
-            {f'<a href="{html.escape(str(run.get("view_url") or ""))}" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
+            <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>View analytics</button>
           </div>
         </article>
         """
@@ -1953,39 +1996,6 @@ def render_dashboard_page(data: DashboardData) -> str:
       .draft-form .draft-help {{
         grid-column: 1 / -1;
       }}
-      .channel-toggle-group {{
-        grid-column: 1 / -1;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 14px;
-        padding: 16px 18px;
-        border-radius: 12px;
-        border: 2px solid rgba(43, 54, 68, 0.12);
-        background: rgba(133, 187, 218, 0.08);
-      }}
-      .channel-toggle-group legend {{
-        padding: 0 8px;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }}
-      .channel-toggle {{
-        display: inline-flex !important;
-        align-items: center;
-        gap: 10px;
-        font-family: "Roboto", sans-serif !important;
-        font-weight: 400 !important;
-        font-size: 15px !important;
-        text-transform: none !important;
-        letter-spacing: 0 !important;
-      }}
-      .channel-toggle input {{
-        width: 18px;
-        height: 18px;
-        margin: 0;
-      }}
       .lead-form button[disabled] {{
         opacity: 0.68;
         background: var(--brown);
@@ -2052,6 +2062,29 @@ def render_dashboard_page(data: DashboardData) -> str:
         gap: 12px;
         flex-wrap: wrap;
       }}
+      .offer-editor-toggle {{
+        border: 0;
+        background: transparent;
+        padding: 0;
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .offer-editor-toggle::after {{
+        content: "▾";
+        font-size: 12px;
+      }}
+      .offer-editor-toggle[aria-expanded="true"]::after {{
+        content: "▴";
+      }}
+      .offer-editor-body[hidden] {{
+        display: none;
+      }}
       .offer-editor-grid {{
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2074,6 +2107,44 @@ def render_dashboard_page(data: DashboardData) -> str:
         width: auto;
         margin: 0;
         padding: 0;
+      }}
+      .toggle-switch {{
+        position: relative;
+        width: 46px;
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+      }}
+      .toggle-switch input {{
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+      }}
+      .toggle-switch span {{
+        width: 46px;
+        height: 26px;
+        border-radius: 999px;
+        background: rgba(43, 54, 68, 0.16);
+        position: relative;
+        transition: background 140ms ease;
+      }}
+      .toggle-switch span::after {{
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.16);
+        transition: transform 140ms ease;
+      }}
+      .toggle-switch input:checked + span {{
+        background: var(--light-blue);
+      }}
+      .toggle-switch input:checked + span::after {{
+        transform: translateX(20px);
       }}
       .draft-help {{
         color: var(--alt-dark-blue);
@@ -2218,11 +2289,105 @@ def render_dashboard_page(data: DashboardData) -> str:
         margin: 0;
         font-size: 14px;
       }}
+      .deck-run-bullets {{
+        margin: 8px 0 0;
+        padding-left: 18px;
+        display: grid;
+        gap: 4px;
+        color: var(--alt-dark-blue);
+      }}
       .deck-run-links {{
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
         justify-content: flex-end;
+      }}
+      .deck-run-links button,
+      .analytics-button {{
+        display: inline-flex;
+        align-items: center;
+        border: 0;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: rgba(43, 54, 68, 0.08);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 12px;
+        cursor: pointer;
+      }}
+      .analytics-modal {{
+        position: fixed;
+        inset: 0;
+        background: rgba(43, 54, 68, 0.55);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 30;
+      }}
+      .analytics-modal.is-visible {{
+        display: flex;
+      }}
+      .analytics-dialog {{
+        width: min(920px, 100%);
+        max-height: 88vh;
+        overflow: auto;
+        background: white;
+        border-radius: 18px;
+        padding: 22px;
+        box-shadow: 0 28px 60px rgba(43, 54, 68, 0.26);
+      }}
+      .analytics-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }}
+      .analytics-head button {{
+        border: 0;
+        background: transparent;
+        font-size: 22px;
+        cursor: pointer;
+      }}
+      .analytics-grid {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 18px;
+      }}
+      .analytics-card {{
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 14px;
+        padding: 14px 16px;
+        background: rgba(249, 247, 243, 0.84);
+      }}
+      .analytics-card ul {{
+        margin: 10px 0 0;
+        padding-left: 18px;
+        display: grid;
+        gap: 6px;
+      }}
+      .analytics-tabs {{
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }}
+      .analytics-tabs button {{
+        border: 0;
+        border-radius: 999px;
+        padding: 8px 12px;
+        cursor: pointer;
+        background: rgba(43, 54, 68, 0.08);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 12px;
+      }}
+      .analytics-tabs button.is-active {{
+        background: var(--light-blue);
+        color: var(--dark-blue);
       }}
       .section-bar {{
         display: flex;
@@ -2694,6 +2859,10 @@ def render_dashboard_page(data: DashboardData) -> str:
         .brandmark {{
           font-size: 34px;
         }}
+        .offer-editor-grid,
+        .analytics-grid {{
+          grid-template-columns: 1fr;
+        }}
         .metric strong,
         .section-title,
         .panel-card h3,
@@ -2833,7 +3002,7 @@ def render_dashboard_page(data: DashboardData) -> str:
             <details class="utility-drawer" id="deck-generator-panel">
               <summary>Generate sales deck</summary>
               <div class="utility-body">
-                <p>Upload the competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and choose which service-offering slides should be included in the deck.</p>
+                <p>Upload the competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
                 {deck_ready_notice}
                 <form class="lead-form" id="deck-generator-form">
                   <label>
@@ -2852,19 +3021,13 @@ def render_dashboard_page(data: DashboardData) -> str:
                     Creative mockup URL
                     <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
                   </label>
-                  <label class="full-width">
-                    Case study URL
-                    <input type="url" name="case_study_url" placeholder="https://www.canva.com/design/..." />
-                  </label>
-                  <fieldset class="channel-toggle-group">
-                    <legend>Include offering slides</legend>
-                    <label class="channel-toggle"><input type="checkbox" name="channels" value="amazon" checked /> Amazon</label>
-                    <label class="channel-toggle"><input type="checkbox" name="channels" value="shopify" /> Shopify</label>
-                    <label class="channel-toggle"><input type="checkbox" name="channels" value="tiktok_shop" /> TikTok Shop</label>
-                  </fieldset>
+                  <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. The service-offering section always includes Amazon, TikTok Shop, Shopify, 3PL, and Shipping OS.</div>
                   <fieldset class="offer-toggle-group">
                     <legend>Recommended plan options</legend>
-                    <label class="checkbox-label"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /> Include recommended plan slide</label>
+                    <label class="checkbox-label">
+                      <span>Include recommended plan slide</span>
+                      <span class="toggle-switch"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /><span aria-hidden="true"></span></span>
+                    </label>
                     <div class="offer-builder">
                       <div class="offer-builder-head">
                         <p>Edit the offer cards directly. These values feed the deck as written here.</p>
@@ -2876,8 +3039,10 @@ def render_dashboard_page(data: DashboardData) -> str:
                       <div class="offer-editor-list" id="deck-offer-list">
                         <div class="offer-editor" data-offer-index="0">
                           <div class="offer-editor-top">
-                            <label class="checkbox-label"><input type="checkbox" class="offer-enabled" checked /> Include this offer</label>
+                            <button type="button" class="offer-editor-toggle" aria-expanded="false">Channel management</button>
+                            <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
                           </div>
+                          <div class="offer-editor-body" hidden>
                           <div class="offer-editor-grid">
                             <label class="full-width">
                               Offer title
@@ -2916,11 +3081,14 @@ def render_dashboard_page(data: DashboardData) -> str:
                               <input type="text" class="offer-bonus" value="+TikTok Shop Support" />
                             </label>
                           </div>
+                          </div>
                         </div>
                         <div class="offer-editor" data-offer-index="1">
                           <div class="offer-editor-top">
-                            <label class="checkbox-label"><input type="checkbox" class="offer-enabled" checked /> Include this offer</label>
+                            <button type="button" class="offer-editor-toggle" aria-expanded="false">Commission Model + Shipping OS</button>
+                            <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
                           </div>
+                          <div class="offer-editor-body" hidden>
                           <div class="offer-editor-grid">
                             <label class="full-width">
                               Offer title
@@ -2959,6 +3127,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                               <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
                             </label>
                           </div>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -2968,11 +3137,31 @@ def render_dashboard_page(data: DashboardData) -> str:
                   </div>
                 </form>
                 <div class="draft-help">
-                  This workflow creates a first-party HTML deck with Anata branding, persistent URLs, view tracking, and optional mockup / case-study links. The keyword CSV is optional but recommended for SEO slides.
+                  This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.
                 </div>
                 <div class="status-line" id="deck-status">Deck status: Ready.</div>
                 <div class="deck-run-list" id="deck-run-list">
                   {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
+                </div>
+                <div class="analytics-modal" id="deck-analytics-modal" aria-hidden="true">
+                  <div class="analytics-dialog">
+                    <div class="analytics-head">
+                      <h3>Deck analytics</h3>
+                      <button type="button" id="deck-analytics-close" aria-label="Close analytics">×</button>
+                    </div>
+                    <div class="analytics-grid" id="deck-analytics-summary"></div>
+                    <div class="analytics-tabs" id="deck-analytics-tabs">
+                      <button type="button" class="is-active" data-window="7">7 days</button>
+                      <button type="button" data-window="30">30 days</button>
+                      <button type="button" data-window="90">90 days</button>
+                      <button type="button" data-window="all">All time</button>
+                    </div>
+                    <div class="analytics-card">
+                      <h4>Visits by day</h4>
+                      <div id="deck-analytics-daily"></div>
+                    </div>
+                    <p class="draft-help">Detailed visit-length and per-section time tracking are not enabled yet. This view separates internal vs external visits and shows visit counts by day.</p>
+                  </div>
                 </div>
               </div>
             </details>
@@ -3028,6 +3217,12 @@ def render_dashboard_page(data: DashboardData) -> str:
       const deckOfferList = document.getElementById("deck-offer-list");
       const deckOfferPayloadInput = document.getElementById("deck-offer-payload-json");
       const deckAddOfferButton = document.getElementById("deck-add-offer");
+      const deckRunList = document.getElementById("deck-run-list");
+      const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
+      const deckAnalyticsClose = document.getElementById("deck-analytics-close");
+      const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
+      const deckAnalyticsDaily = document.getElementById("deck-analytics-daily");
+      const deckAnalyticsTabs = document.getElementById("deck-analytics-tabs");
       const draftsForm = document.getElementById("gmail-drafts-form");
       const draftsStatus = document.getElementById("drafts-status");
       const draftsResults = document.getElementById("drafts-results");
@@ -3042,6 +3237,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       let activeUrgency = "all";
       let syncStatusPollHandle = null;
       let syncReloadPending = false;
+      let activeDeckAnalytics = null;
 
       function latestSyncLooksStale() {{
         if (!latestSyncIso) {{
@@ -3147,8 +3343,10 @@ def render_dashboard_page(data: DashboardData) -> str:
         wrapper.dataset.offerIndex = String(index);
         wrapper.innerHTML = `
           <div class="offer-editor-top">
-            <label class="checkbox-label"><input type="checkbox" class="offer-enabled" checked /> Include this offer</label>
+            <button type="button" class="offer-editor-toggle" aria-expanded="false">Custom offer ${{index + 1}}</button>
+            <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
           </div>
+          <div class="offer-editor-body" hidden>
           <div class="offer-editor-grid">
             <label class="full-width">
               Offer title
@@ -3186,8 +3384,112 @@ def render_dashboard_page(data: DashboardData) -> str:
               Bonus / note
               <input type="text" class="offer-bonus" value="" />
             </label>
+          </div>
           </div>`;
         return wrapper;
+      }}
+
+      function syncOfferEditorTitles() {{
+        Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).forEach((editor, index) => {{
+          const titleInput = editor.querySelector(".offer-title");
+          const toggle = editor.querySelector(".offer-editor-toggle");
+          if (titleInput && toggle) {{
+            toggle.textContent = titleInput.value.trim() || `Custom offer ${{index + 1}}`;
+          }}
+        }});
+      }}
+
+      function toggleOfferEditor(editor, forceOpen = null) {{
+        const body = editor?.querySelector(".offer-editor-body");
+        const toggle = editor?.querySelector(".offer-editor-toggle");
+        if (!body || !toggle) {{
+          return;
+        }}
+        const nextOpen = forceOpen == null ? Boolean(body.hidden) : Boolean(forceOpen);
+        body.hidden = !nextOpen;
+        toggle.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+      }}
+
+      function formatDeckChannelLabel(value) {{
+        const labels = {{
+          amazon: "Amazon",
+          shopify: "Shopify",
+          tiktok_shop: "TikTok Shop",
+          "3pl": "3PL",
+          shipping_os: "Shipping OS",
+        }};
+        return labels[String(value || "").toLowerCase()] || String(value || "").replaceAll("_", " ");
+      }}
+
+      function formatDeckDate(value) {{
+        if (!value) return "Not available";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return String(value);
+        const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+        const day = String(parsed.getUTCDate()).padStart(2, "0");
+        const year = parsed.getUTCFullYear();
+        return `${{month}}/${{day}}/${{year}}`;
+      }}
+
+      function buildDeckRunHtml(run) {{
+        const channels = Array.isArray(run.channels) && run.channels.length ? run.channels : ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"];
+        const viewUrl = run.view_url || "";
+        const safeTitle = escapeHtml(run.design_title || `Run ${{run.id || ""}}`);
+        const bulletHtml = channels.map((channel) => `<li>${{escapeHtml(formatDeckChannelLabel(channel))}}</li>`).join("");
+        const analyticsPayload = escapeHtml(JSON.stringify(run.view_analytics || {{}}));
+        return `
+          <article class="deck-run-item">
+            <div>
+              <strong>${{safeTitle}}</strong>
+              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}}</p>
+              <ul class="deck-run-bullets">${{bulletHtml}}</ul>
+            </div>
+            <div class="deck-run-links">
+              ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
+              <button type="button" class="analytics-button" data-analytics='${{analyticsPayload}}'>View analytics</button>
+            </div>
+          </article>`;
+      }}
+
+      function renderDeckAnalyticsDaily(windowKey) {{
+        if (!deckAnalyticsDaily || !activeDeckAnalytics) return;
+        const internalDaily = activeDeckAnalytics.internal?.daily_counts?.[windowKey] || {{}};
+        const externalDaily = activeDeckAnalytics.external?.daily_counts?.[windowKey] || {{}};
+        const allDays = Array.from(new Set([...Object.keys(internalDaily), ...Object.keys(externalDaily)])).sort().reverse();
+        if (!allDays.length) {{
+          deckAnalyticsDaily.innerHTML = "<p class='muted'>No visits recorded for this window yet.</p>";
+          return;
+        }}
+        deckAnalyticsDaily.innerHTML = `<table><thead><tr><th>Date</th><th>Internal</th><th>External</th></tr></thead><tbody>${{allDays.map((day) => `<tr><td>${{escapeHtml(formatDeckDate(day))}}</td><td>${{escapeHtml(String(internalDaily[day] || 0))}}</td><td>${{escapeHtml(String(externalDaily[day] || 0))}}</td></tr>`).join("")}}</tbody></table>`;
+      }}
+
+      function openDeckAnalytics(payload) {{
+        activeDeckAnalytics = payload || {{}};
+        if (deckAnalyticsSummary) {{
+          const internal = activeDeckAnalytics.internal || {{}};
+          const external = activeDeckAnalytics.external || {{}};
+          deckAnalyticsSummary.innerHTML = `
+            <article class="analytics-card">
+              <h4>Internal views</h4>
+              <ul>
+                <li>Unique visitors: ${{escapeHtml(String(internal.unique_visitors || 0))}}</li>
+                <li>Total visits: ${{escapeHtml(String(internal.total_visits || 0))}}</li>
+                <li>Last visited: ${{escapeHtml(formatDeckDate(internal.last_viewed_at || ""))}}</li>
+              </ul>
+            </article>
+            <article class="analytics-card">
+              <h4>External views</h4>
+              <ul>
+                <li>Unique visitors: ${{escapeHtml(String(external.unique_visitors || 0))}}</li>
+                <li>Total visits: ${{escapeHtml(String(external.total_visits || 0))}}</li>
+                <li>Last visited: ${{escapeHtml(formatDeckDate(external.last_viewed_at || ""))}}</li>
+              </ul>
+            </article>`;
+        }}
+        deckAnalyticsTabs?.querySelectorAll("button").forEach((button) => button.classList.toggle("is-active", button.dataset.window === "7"));
+        renderDeckAnalyticsDaily("7");
+        deckAnalyticsModal?.classList.add("is-visible");
+        deckAnalyticsModal?.setAttribute("aria-hidden", "false");
       }}
 
       function updateDraftModeUi() {{
@@ -3419,6 +3721,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         const formData = new FormData(deckForm);
         formData.delete("include_recommended_plan");
         formData.append("include_recommended_plan", deckIncludePlanCheckbox?.checked ? "true" : "false");
+        ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"].forEach((channel) => formData.append("channels", channel));
         try {{
           const response = await fetch("/admin/api/generate-deck", {{
             method: "POST",
@@ -3434,15 +3737,31 @@ def render_dashboard_page(data: DashboardData) -> str:
             return;
           }}
           const details = payload.details || {{}};
-          const links = [];
-          if (details.edit_url) {{
-            links.push(`<a href="${{details.edit_url}}" target="_blank" rel="noreferrer">Open edit link</a>`);
+          const openUrl = details.view_url ? `${{details.view_url}}?viewer=internal` : "";
+          const createdRun = {{
+            id: details.run_id,
+            design_title: details.design_title,
+            view_url: details.view_url,
+            channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
+            started_at: new Date().toISOString(),
+            view_analytics: {{
+              internal: {{ unique_visitors: 0, total_visits: 0, last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
+              external: {{ unique_visitors: 0, total_visits: 0, last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
+            }},
+          }};
+          if (deckRunList) {{
+            const empty = deckRunList.querySelector(".empty");
+            if (empty) empty.remove();
+            deckRunList.insertAdjacentHTML("afterbegin", buildDeckRunHtml(createdRun));
           }}
-          if (details.view_url) {{
-            links.push(`<a href="${{details.view_url}}" target="_blank" rel="noreferrer">Open view link</a>`);
+          if (openUrl) {{
+            window.open(openUrl, "_blank", "noopener,noreferrer");
           }}
-          deckStatus.innerHTML = `Deck generated. ${{links.join(" | ")}}`;
-          window.setTimeout(() => window.location.reload(), 1200);
+          deckStatus.innerHTML = `Deck generated. ${{openUrl ? `<a href="${{openUrl}}" target="_blank" rel="noreferrer">Open deck</a>` : ""}}`;
+          if (deckSubmitButton) {{
+            deckSubmitButton.disabled = false;
+            deckSubmitButton.textContent = "GENERATE DECK";
+          }}
         }} catch (error) {{
           deckStatus.textContent = "Deck generation failed before a response came back.";
           if (deckSubmitButton) {{
@@ -3458,7 +3777,59 @@ def render_dashboard_page(data: DashboardData) -> str:
         }}
         const nextIndex = deckOfferList.querySelectorAll(".offer-editor").length;
         deckOfferList.appendChild(buildOfferEditor(nextIndex));
+        syncOfferEditorTitles();
       }});
+
+      deckOfferList?.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const toggle = target.closest(".offer-editor-toggle");
+        if (!toggle) return;
+        const editor = toggle.closest(".offer-editor");
+        toggleOfferEditor(editor);
+      }});
+
+      deckOfferList?.addEventListener("input", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.classList.contains("offer-title")) {{
+          syncOfferEditorTitles();
+        }}
+      }});
+
+      document.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const analyticsButton = target.closest(".analytics-button");
+        if (analyticsButton) {{
+          try {{
+            openDeckAnalytics(JSON.parse(analyticsButton.getAttribute("data-analytics") || "{{}}"));
+          }} catch (_error) {{
+            openDeckAnalytics({{}});
+          }}
+        }}
+      }});
+
+      deckAnalyticsClose?.addEventListener("click", () => {{
+        deckAnalyticsModal?.classList.remove("is-visible");
+        deckAnalyticsModal?.setAttribute("aria-hidden", "true");
+      }});
+
+      deckAnalyticsModal?.addEventListener("click", (event) => {{
+        if (event.target === deckAnalyticsModal) {{
+          deckAnalyticsModal.classList.remove("is-visible");
+          deckAnalyticsModal.setAttribute("aria-hidden", "true");
+        }}
+      }});
+
+      deckAnalyticsTabs?.querySelectorAll("button").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          deckAnalyticsTabs.querySelectorAll("button").forEach((node) => node.classList.toggle("is-active", node === button));
+          renderDeckAnalyticsDaily(button.dataset.window || "7");
+        }});
+      }});
+
+      syncOfferEditorTitles();
 
       draftsForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
