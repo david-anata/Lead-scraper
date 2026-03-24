@@ -1,14 +1,14 @@
 Anata brand assets for shared deck/UI use.
 
 Canonical asset paths:
-- `assets/wordmark.svg`
-- `assets/monogram.svg`
+- `assets/wordmark.png`
+- `assets/monogram.png`
 - `style.css`
 
 Usage rules:
 - Keep reusable brand files here and mirror them to `/Users/davidnarayan/Documents/Playground/shared/anata_brand/` for cross-project use.
-- `wordmark.svg` should be the primary Anata wordmark used in deck headers.
-- `monogram.svg` should be the compact badge used for avatars, placeholders, and hero fallbacks.
+- `wordmark.png` should be the provided primary Anata wordmark asset.
+- `monogram.png` should be the provided compact logo icon used in the deck header and fallbacks.
 - `style.css` should contain only reusable brand and layout primitives, not deck-specific one-off hacks.
 
 Deck loading behavior:

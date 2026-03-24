@@ -99,8 +99,8 @@ The shared brand package contains:
 - `style.css`
 - `tokens.json`
 - `components.md`
-- `assets/wordmark.svg`
-- `assets/monogram.svg`
+- `assets/wordmark.png`
+- `assets/monogram.png`
 
 Use `SHARED_BRAND_PACKAGE_PATH` to override the brand root when needed.
 
