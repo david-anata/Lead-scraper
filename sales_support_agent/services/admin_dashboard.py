@@ -3160,7 +3160,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                       <h4>Visits by day</h4>
                       <div id="deck-analytics-daily"></div>
                     </div>
-                    <p class="draft-help">Detailed visit-length and per-section time tracking are not enabled yet. This view separates internal vs external visits and shows visit counts by day.</p>
+                    <p class="draft-help">Visit counts, first and last visits, and daily trend windows are available here. Visit-length and per-section time tracking are not enabled yet.</p>
                   </div>
                 </div>
               </div>
@@ -3474,7 +3474,9 @@ def render_dashboard_page(data: DashboardData) -> str:
               <ul>
                 <li>Unique visitors: ${{escapeHtml(String(internal.unique_visitors || 0))}}</li>
                 <li>Total visits: ${{escapeHtml(String(internal.total_visits || 0))}}</li>
+                <li>First visited: ${{escapeHtml(formatDeckDate(internal.first_viewed_at || ""))}}</li>
                 <li>Last visited: ${{escapeHtml(formatDeckDate(internal.last_viewed_at || ""))}}</li>
+                <li>Visit length: Not tracked yet</li>
               </ul>
             </article>
             <article class="analytics-card">
@@ -3482,7 +3484,9 @@ def render_dashboard_page(data: DashboardData) -> str:
               <ul>
                 <li>Unique visitors: ${{escapeHtml(String(external.unique_visitors || 0))}}</li>
                 <li>Total visits: ${{escapeHtml(String(external.total_visits || 0))}}</li>
+                <li>First visited: ${{escapeHtml(formatDeckDate(external.first_viewed_at || ""))}}</li>
                 <li>Last visited: ${{escapeHtml(formatDeckDate(external.last_viewed_at || ""))}}</li>
+                <li>Visit length: Not tracked yet</li>
               </ul>
             </article>`;
         }}
@@ -3745,8 +3749,8 @@ def render_dashboard_page(data: DashboardData) -> str:
             channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
             started_at: new Date().toISOString(),
             view_analytics: {{
-              internal: {{ unique_visitors: 0, total_visits: 0, last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
-              external: {{ unique_visitors: 0, total_visits: 0, last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
+              internal: {{ unique_visitors: 0, total_visits: 0, first_viewed_at: "", last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
+              external: {{ unique_visitors: 0, total_visits: 0, first_viewed_at: "", last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
             }},
           }};
           if (deckRunList) {{

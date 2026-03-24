@@ -833,7 +833,7 @@ class DeckGenerationService:
         case_study_url = str(payload.get("case_study_url", "") or "").strip()
         offer_cards = list(payload.get("offer_cards", []))
         include_recommended_plan = bool(payload.get("include_recommended_plan", True))
-        monogram = self._load_brand_asset("assets/monogram.svg")
+        monogram = self._load_brand_asset("assets/monogram.png")
         stylesheet = self._load_brand_stylesheet()
         keyword_rows = "".join(_render_keyword_row(keyword) for keyword in (keyword_report.keywords[:10] if keyword_report else []))
         revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
@@ -857,7 +857,6 @@ class DeckGenerationService:
         best_seller = xray_report.products[0] if xray_report.products else None
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller)
-        copy_snapshot_html = _render_listing_copy_snapshot(str(target.get("description", "") or ""))
         target_identifier = str(target.get("asin") or "").strip()
         target_reference_label = f"ASIN {target_identifier}" if target_identifier else _target_reference_label(target)
         recommended_plan_html = ""
@@ -984,8 +983,6 @@ class DeckGenerationService:
         </div>
         <div class="target-panel">
           {comparison_table_html}
-          {copy_snapshot_html}
-          <p class="muted">{html.escape(str(target.get("dimensions", "")) or "Dimensions unavailable.")}</p>
         </div>
       </div>
       <div class="two-col split-top">
