@@ -1,20 +1,28 @@
 Anata brand assets for shared deck/UI use.
 
-Canonical asset paths:
-- `assets/wordmark.png`
+Source of truth for deployed deck assets:
+- `/Users/davidnarayan/Documents/Playground/Lead-scraper/shared/anata_brand/assets`
+
+Only update these approved files if you want a new deploy to use them:
+- `1.png`
+  - deck header icon
+- `anata wordmark logo - black.png`
+  - shared wordmark source
+- `no-product-image-available.png`
+  - fallback image when the target product image cannot be resolved
+
+Canonical filenames used by code:
 - `assets/monogram.png`
-- `style.css`
+- `assets/wordmark.png`
+- `assets/no-product-image-available.png`
 
-Usage rules:
-- Keep reusable brand files here and mirror them to `/Users/davidnarayan/Documents/Playground/shared/anata_brand/` for cross-project use.
-- `wordmark.png` should be the provided primary Anata wordmark asset.
-- `monogram.png` should be the provided compact logo icon used in the deck header and fallbacks.
-- `style.css` should contain only reusable brand and layout primitives, not deck-specific one-off hacks.
+Current loading behavior:
+- the deck generator first checks the original approved filenames above
+- then falls back to the canonical filenames
+- this allows you to update the approved files directly without changing code
 
-Deck loading behavior:
-- The deck generator reads `SHARED_BRAND_PACKAGE_PATH` first.
-- If that is unset, it falls back to this repo-local package.
+Important:
+- Render only serves files committed in this repo
+- updating files outside this repo does not change the deployed deck until those files are copied or committed here
 
-Recommended setup:
-- Point `SHARED_BRAND_PACKAGE_PATH` at `/Users/davidnarayan/Documents/Playground/shared/anata_brand`
-- Replace the SVG assets above whenever the official logo package changes.
+`style.css` should contain only reusable brand and layout primitives, not deck-specific one-off hacks.

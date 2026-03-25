@@ -94,8 +94,8 @@ DEFAULT_CUSTOM_OFFERS: tuple[dict[str, str], ...] = (
 )
 
 DEFAULT_CASE_STUDY_URL = (
-    "https://www.canva.com/design/DAHEy6FPsSw/3suEo_Uau4H7E23FwFKBxA/view"
-    "?utm_content=DAHEy6FPsSw&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h99092fa64e"
+    "https://www.canva.com/design/DAHEy6FPsSw/NDWUOqpKXYu4YPxNWfieUg/view"
+    "?utm_content=DAHEy6FPsSw&utm_campaign=designshare&utm_medium=embeds&utm_source=link"
 )
 
 DEFAULT_SERVICE_TABS: tuple[str, ...] = ("amazon", "tiktok_shop", "shopify", "3pl", "shipping_os")
@@ -527,6 +527,18 @@ class DeckGenerationService:
             parsed_target.get("brand_name", ""),
         )
         display_title = _clean_listing_title(target_title)
+        if _looks_like_raw_asin_label(display_title):
+            fallback_phrase = keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else ""
+            if fallback_phrase:
+                display_title = f"{_titleize_slug(fallback_phrase)} product"
+            elif not _is_generic_brand_name(target_brand):
+                display_title = f"{target_brand} product"
+            else:
+                display_title = "Target product"
+        if _is_generic_brand_name(target_brand):
+            inferred_brand = _infer_brand_from_title(display_title)
+            if inferred_brand:
+                target_brand = inferred_brand
         seo_recommendations = _build_seo_recommendations(
             keyword_report,
             xray_report,
@@ -858,8 +870,8 @@ class DeckGenerationService:
         )
         search_title_html = _render_signal_list("Title coverage", search_insights.get("title_hits", []), search_insights.get("title_misses", []), "Missing title targets")
         search_copy_html = _render_signal_list("Bullet / copy coverage", search_insights.get("copy_hits", []), search_insights.get("copy_misses", []), "Missing copy targets")
-        target_strength_html = "".join(f"<li>{html.escape(item)}</li>" for item in target_strengths)
-        target_gap_html = "".join(f"<li>{html.escape(item)}</li>" for item in target_gaps)
+        target_strength_html = "".join(_render_action_item(item) for item in target_strengths)
+        target_gap_html = "".join(_render_action_item(item) for item in target_gaps)
         best_seller = xray_report.products[0] if xray_report.products else None
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)
@@ -1986,12 +1998,19 @@ def _render_embedded_resource_tabs(*, case_study_url: str, creative_mockup_url: 
         active_class = " is-active" if index == 0 else ""
         hidden_attr = "" if index == 0 else " hidden"
         tabs.append(f"<button class='embedded-tab{active_class}' type='button' data-tab='{html.escape(key)}'>{html.escape(label)}</button>")
-        preview = _fetch_embed_preview(url)
-        panels.append(
-            f"<div class='embedded-panel{active_class}' data-panel='{html.escape(key)}'{hidden_attr}>"
-            + _render_resource_embed(label=label, url=url, preview=preview)
-            + "</div>"
-        )
+        if key == "case-studies" and "canva.com" in urlparse(url).netloc.lower():
+            panels.append(
+                f"<div class='embedded-panel{active_class}' data-panel='{html.escape(key)}'{hidden_attr}>"
+                + _render_canva_embed(label=label, url=url)
+                + "</div>"
+            )
+        else:
+            preview = _fetch_embed_preview(url)
+            panels.append(
+                f"<div class='embedded-panel{active_class}' data-panel='{html.escape(key)}'{hidden_attr}>"
+                + _render_resource_embed(label=label, url=url, preview=preview)
+                + "</div>"
+            )
     return "<div class='embedded-resource-section'><div class='embedded-tabs'>" + "".join(tabs) + "</div><div class='embedded-panels'>" + "".join(panels) + "</div></div>"
 
 
@@ -2045,6 +2064,21 @@ def _render_resource_embed(*, label: str, url: str, preview: dict[str, str]) -> 
             "</div>"
         )
     return f"<iframe src='{safe_url}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
+
+
+def _render_canva_embed(*, label: str, url: str) -> str:
+    safe_url = html.escape(url, quote=True)
+    parsed = urlparse(url)
+    embed_src = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?embed"
+    safe_embed = html.escape(embed_src, quote=True)
+    return (
+        "<div class='canva-embed-wrap'>"
+        "<div class='canva-embed-frame'>"
+        f"<iframe loading='lazy' src='{safe_embed}' title='{html.escape(label)}' allowfullscreen='allowfullscreen' allow='fullscreen'></iframe>"
+        "</div>"
+        f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noopener'>Open in Canva</a>"
+        "</div>"
+    )
 
 
 def _extract_first(content: str, *patterns: str) -> str:
@@ -2170,6 +2204,13 @@ def _render_emphasis_list_item(text: str) -> str:
 
 def _render_recommendation_item(text: str) -> str:
     return f"<li>{_highlight_competitor_names(html.escape(text))}</li>"
+
+
+def _render_action_item(text: str) -> str:
+    safe = html.escape(text)
+    safe = re.sub(r"^([^:;]{3,80}[:;])", r"<strong>\1</strong>", safe)
+    safe = re.sub(r"(Important title keywords are still missing:|The bullets / description are not covering:|The prospect is not currently visible in the Amazon market set, so|The current listing copy does not expose enough product-story detail;|The review moat is still light, so)", r"<strong>\1</strong>", safe)
+    return f"<li>{safe}</li>"
 
 
 def _highlight_competitor_names(text: str) -> str:
