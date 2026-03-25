@@ -2035,6 +2035,14 @@ def _render_resource_embed(*, label: str, url: str, preview: dict[str, str]) -> 
     return f"<iframe src='{safe_url}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
 
 
+def _extract_first(content: str, *patterns: str) -> str:
+    for pattern in patterns:
+        match = re.search(pattern, content, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return str(match.group(1) or "").strip()
+    return ""
+
+
 def _render_offer_card(card: dict[str, Any]) -> str:
     return (
         "<article class='offer-card'>"
