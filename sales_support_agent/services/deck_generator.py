@@ -187,7 +187,7 @@ class DeckGenerationService:
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
         effective_target_input = target_product_input.strip()
-        enabled_channels = _normalize_channels(channels or [])
+        enabled_channels = list(DEFAULT_SERVICE_TABS)
         enabled_offers = _normalize_offers(offers or [])
         offer_cards = _normalize_custom_offer_cards(offer_payload_json=offer_payload_json, offers=enabled_offers)
         run = self.audit.start_run(
@@ -514,7 +514,12 @@ class DeckGenerationService:
             description=hero_product.description,
             keyword_report=keyword_report,
         )
-        target_title = (hero_product.title or parsed_target["product_name"] or parsed_target["asin"]).strip()
+        target_title = (
+            hero_product.title
+            or (target_row.title if target_row else "")
+            or parsed_target["product_name"]
+            or parsed_target["asin"]
+        ).strip()
         target_brand = (
             hero_product.brand_name
             or (target_row.brand if target_row else "")
@@ -858,7 +863,13 @@ class DeckGenerationService:
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller)
         target_identifier = str(target.get("asin") or "").strip()
-        target_reference_label = f"ASIN {target_identifier}" if target_identifier else _target_reference_label(target)
+        resolved_target_title = _clean_listing_title(str(target.get("title", "") or ""))
+        if resolved_target_title and not re.fullmatch(r"ASIN\s+[A-Z0-9]{10}", resolved_target_title, flags=re.IGNORECASE):
+            target_reference_label = _trim_text(resolved_target_title, 40)
+        elif target_identifier:
+            target_reference_label = f"ASIN {target_identifier}"
+        else:
+            target_reference_label = _target_reference_label(target)
         recommended_plan_html = ""
         if include_recommended_plan:
             offer_html = "".join(_render_offer_card(card) for card in offer_cards)
@@ -1939,7 +1950,6 @@ def _render_embedded_resource_tabs(*, case_study_url: str, creative_mockup_url: 
         panels.append(
             f"<div class='embedded-panel{active_class}' data-panel='{html.escape(key)}'{hidden_attr}>"
             f"<iframe src='{html.escape(url, quote=True)}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
-            f"<p class='muted'>If the embed is blocked, <a href='{html.escape(url, quote=True)}' target='_blank' rel='noreferrer'>open it in a new tab</a>.</p>"
             "</div>"
         )
     return "<div class='embedded-resource-section'><div class='embedded-tabs'>" + "".join(tabs) + "</div><div class='embedded-panels'>" + "".join(panels) + "</div></div>"
