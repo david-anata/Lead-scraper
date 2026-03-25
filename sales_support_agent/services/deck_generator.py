@@ -660,7 +660,7 @@ class DeckGenerationService:
                 "target": {
                     "asin": parsed_target["asin"],
                     "source_url": text_fields["hero_product_source_url"],
-                    "title": target_title,
+                    "title": display_title,
                     "brand_name": target_brand,
                     "image_url": target_image_url,
                     "price": target_price_label,
@@ -2462,13 +2462,16 @@ def _parse_target_product_input(value: str) -> dict[str, str]:
         }
     amazon_candidate = _parse_competitor_reference(cleaned)
     if _looks_like_amazon_target(cleaned, amazon_candidate["asin"]):
+        amazon_name = amazon_candidate["name"]
+        if _looks_like_raw_asin_label(amazon_name):
+            amazon_name = ""
         return {
             "source_type": "amazon",
             "source_url": amazon_candidate["source_url"],
             "domain": "amazon.com",
             "brand_name": "",
             "product_handle": amazon_candidate["asin"],
-            "product_name": amazon_candidate["name"],
+            "product_name": amazon_name,
             "asin": amazon_candidate["asin"],
         }
     parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")

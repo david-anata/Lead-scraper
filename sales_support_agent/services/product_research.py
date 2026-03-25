@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 
@@ -149,6 +150,7 @@ class ProductResearchService:
         catalog: AmazonCatalogSnapshot | None = None
         page_data = _fetch_amazon_page_data(target.get("source_url", "") or f"https://www.amazon.com/dp/{asin}")
         search_data = _fetch_amazon_search_data(asin)
+        public_data = _fetch_public_asin_fallback(asin)
         warnings.extend(page_data.get("warnings", []))
         if self.amazon_client.is_configured():
             try:
@@ -156,17 +158,25 @@ class ProductResearchService:
             except Exception as exc:
                 warnings.append(f"Amazon catalog enrichment failed for {asin}: {exc}")
         try:
-            source_url = (catalog.source_url if catalog else "") or page_data.get("source_url", "") or target.get("source_url", "")
+            resolved_catalog_title = _clean_scraped_text(catalog.title if catalog else "")
+            source_url = (
+                (catalog.source_url if catalog else "")
+                or page_data.get("source_url", "")
+                or public_data.get("source_url", "")
+                or target.get("source_url", "")
+            )
             title = (
-                page_data.get("title", "")
+                resolved_catalog_title
+                or page_data.get("title", "")
                 or search_data.get("title", "")
-                or (catalog.title if catalog else "")
+                or public_data.get("title", "")
                 or target.get("product_name", "")
             ).strip()
             brand_name = (
-                page_data.get("brand_name", "")
+                _clean_scraped_text(catalog.brand if catalog else "")
+                or page_data.get("brand_name", "")
                 or search_data.get("brand_name", "")
-                or (catalog.brand if catalog else "")
+                or public_data.get("brand_name", "")
                 or target.get("brand_name", "")
                 or _infer_brand_from_title(title)
             ).strip()
@@ -282,6 +292,11 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         }
 
     content = response.text or ""
+    if _is_amazon_block_page(content):
+        return {
+            "source_url": source_url,
+            "warnings": ["Amazon product page returned an anti-bot response, so public-page enrichment was skipped."],
+        }
     title = _extract_first(
         content,
         r'<meta\s+property="og:title"\s+content="([^"]+)"',
@@ -352,6 +367,8 @@ def _fetch_amazon_search_data(asin: str) -> dict[str, str]:
     except Exception:
         return {}
     content = response.text or ""
+    if _is_amazon_block_page(content):
+        return {}
     title = _clean_scraped_text(
         _extract_first(
             content,
@@ -379,6 +396,92 @@ def _infer_brand_from_title(title: str) -> str:
     if not token or len(token) <= 1:
         return ""
     return token
+
+
+def _fetch_public_asin_fallback(asin: str) -> dict[str, str]:
+    if not asin:
+        return {}
+    try:
+        response = requests.get(
+            f"https://duckduckgo.com/html/?q={asin}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+    except Exception:
+        return {}
+
+    best_title = ""
+    best_url = ""
+    for raw_href, raw_title in re.findall(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>', response.text or ""):
+        resolved_url = _resolve_duckduckgo_link(raw_href)
+        if "amazon." not in resolved_url:
+            continue
+        title = _clean_public_amazon_result_title(raw_title)
+        if not title:
+            continue
+        if not best_title or _title_score(title) > _title_score(best_title):
+            best_title = title
+            best_url = resolved_url
+    if not best_title:
+        return {}
+    return {
+        "title": best_title,
+        "brand_name": _infer_brand_from_title(best_title),
+        "source_url": best_url,
+    }
+
+
+def _resolve_duckduckgo_link(value: str) -> str:
+    raw = html_lib.unescape(str(value or "")).strip()
+    if not raw:
+        return ""
+    if raw.startswith("//"):
+        raw = f"https:{raw}"
+    parsed = urlparse(raw)
+    if "duckduckgo.com" in (parsed.netloc or ""):
+        redirect = parse_qs(parsed.query).get("uddg", [""])[0]
+        if redirect:
+            return unquote(redirect)
+    return raw
+
+
+def _clean_public_amazon_result_title(value: str) -> str:
+    cleaned = _clean_scraped_text(re.sub(r"<.*?>", " ", html_lib.unescape(str(value or ""))))
+    cleaned = re.sub(r"^\s*Amazon\.com:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*-\s*Amazon(?:\.[A-Za-z.]+)?\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -")
+    if re.fullmatch(r"(ASIN\s+)?[A-Z0-9]{10}", cleaned, flags=re.IGNORECASE):
+        return ""
+    return cleaned
+
+
+def _title_score(value: str) -> int:
+    cleaned = _clean_scraped_text(value)
+    if not cleaned:
+        return 0
+    score = len(cleaned)
+    if "Amazon.com:" in value:
+        score -= 25
+    if re.search(r"\b[A-Z][A-Za-z0-9&'-]{2,}\b", cleaned):
+        score += 10
+    if "..." in cleaned:
+        score -= 5
+    return score
+
+
+def _is_amazon_block_page(content: str) -> bool:
+    cleaned = str(content or "")
+    lower = cleaned.lower()
+    return (
+        "opfcaptcha" in lower
+        or "automated access to amazon data" in lower
+        or "sorry! something went wrong!" in lower
+        or "<title dir=\"ltr\">amazon.com</title>" in lower
+    )
 
 
 def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
