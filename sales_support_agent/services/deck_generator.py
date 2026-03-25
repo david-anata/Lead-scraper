@@ -2043,6 +2043,16 @@ def _extract_first(content: str, *patterns: str) -> str:
     return ""
 
 
+def _clean_scraped_text(value: str) -> str:
+    cleaned = html.unescape(str(value or ""))
+    cleaned = re.sub(r"<!--.*?-->", " ", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<script[^>]*>.*?</script>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<style[^>]*>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _render_offer_card(card: dict[str, Any]) -> str:
     return (
         "<article class='offer-card'>"
