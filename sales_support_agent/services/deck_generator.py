@@ -1294,6 +1294,17 @@ def _preferred_brand_name(*candidates: str) -> str:
     return cleaned_candidates[0] if cleaned_candidates else "Prospect brand"
 
 
+def _infer_brand_from_title(title: str) -> str:
+    cleaned = _clean_listing_title(str(title or ""))
+    if not cleaned:
+        return ""
+    token = cleaned.split()[0]
+    token = re.sub(r"[^A-Za-z0-9&'-]", "", token).strip()
+    if not token or len(token) <= 1:
+        return ""
+    return token
+
+
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
