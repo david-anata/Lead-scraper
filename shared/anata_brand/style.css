@@ -884,14 +884,33 @@ mark {
   background: rgba(247, 243, 236, 0.78);
 }
 
+.comparison-table-structured {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.comparison-table-structured .comparison-metric-col {
+  width: 12%;
+}
+
+.comparison-table-structured .comparison-target-col,
+.comparison-table-structured .comparison-benchmark-col {
+  width: 44%;
+}
+
+.comparison-table-structured td {
+  vertical-align: top;
+}
+
 .comparison-listing {
   display: grid;
   gap: 10px;
-  justify-items: start;
+  justify-items: stretch;
 }
 
 .comparison-thumb {
   width: min(220px, 100%);
+  max-width: 100%;
   aspect-ratio: 1 / 1;
   border-radius: 16px;
   overflow: hidden;
@@ -915,10 +934,20 @@ mark {
   gap: 6px;
 }
 
+.comparison-metric-missing strong {
+  color: var(--anata-text);
+}
+
 .metric-delta {
   color: var(--anata-muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.comparison-copy,
+.comparison-metric,
+.comparison-listing > div:last-child {
+  max-width: 100%;
 }
 
 .comparison-copy ul {

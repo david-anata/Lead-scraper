@@ -912,7 +912,7 @@ class DeckGenerationService:
       </div>
     </section>"""
         target_brand_display = str(target.get("brand_name") or target.get("brand") or "Prospect brand").strip()
-        cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 50)
+        cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 40)
         resource_embed_html = _render_embedded_resource_tabs(
             case_study_url=case_study_url,
             creative_mockup_url=creative_mockup_url,
@@ -1775,27 +1775,57 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
         ),
         (
             "Price",
-            _render_metric_with_delta(str(target.get("price", "") or "n/a"), target_price_number, best_seller.price if best_seller else None, inverse=False),
+            _render_target_metric(
+                str(target.get("price", "") or ""),
+                target_price_number,
+                best_seller.price if best_seller else None,
+                inverse=False,
+                missing_reason="Unavailable from the target page.",
+            ),
             _render_plain_metric(best_seller.price_label if best_seller else "n/a"),
         ),
         (
             "BSR",
-            _render_metric_with_delta(str(target.get("bsr", "") or "n/a"), target_bsr_number, best_seller.bsr if best_seller else None, inverse=True),
+            _render_target_metric(
+                str(target.get("bsr", "") or ""),
+                target_bsr_number,
+                best_seller.bsr if best_seller else None,
+                inverse=True,
+                missing_reason="Not present in the current niche export.",
+            ),
             _render_plain_metric(best_seller.bsr_label if best_seller else "n/a"),
         ),
         (
             "Revenue",
-            _render_metric_with_delta(str(target.get("revenue", "") or "n/a"), target_revenue_number, best_seller.revenue if best_seller else None, inverse=False),
+            _render_target_metric(
+                str(target.get("revenue", "") or ""),
+                target_revenue_number,
+                best_seller.revenue if best_seller else None,
+                inverse=False,
+                missing_reason="Not present in the current niche export.",
+            ),
             _render_plain_metric(best_seller.revenue_label if best_seller else "n/a"),
         ),
         (
             "Rating",
-            _render_metric_with_delta(str(target.get("rating", "") or "n/a"), target_rating_number, best_seller.rating if best_seller else None, inverse=False),
+            _render_target_metric(
+                str(target.get("rating", "") or ""),
+                target_rating_number,
+                best_seller.rating if best_seller else None,
+                inverse=False,
+                missing_reason="Not present in the current niche export.",
+            ),
             _render_plain_metric(best_seller.rating_label if best_seller else "n/a"),
         ),
         (
             "Reviews",
-            _render_metric_with_delta(str(target.get("review_count", "") or "n/a"), target_reviews_number, float(best_seller.review_count or 0) if best_seller else None, inverse=False),
+            _render_target_metric(
+                str(target.get("review_count", "") or ""),
+                target_reviews_number,
+                float(best_seller.review_count or 0) if best_seller else None,
+                inverse=False,
+                missing_reason="Not present in the current niche export.",
+            ),
             _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
         ),
         (
@@ -1805,7 +1835,10 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
         ),
         (
             "Dims",
-            _render_plain_metric(str(target.get("dimensions", "") or "Unavailable")),
+            _render_target_plain_metric(
+                str(target.get("dimensions", "") or ""),
+                missing_reason="Unavailable from the target page.",
+            ),
             _render_plain_metric(str(best_seller.dimensions or "Unavailable") if best_seller else "Unavailable"),
         ),
     ]
@@ -1820,6 +1853,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
     return (
         "<div class='comparison-table-wrap'>"
         "<table class='comparison-table comparison-table-structured'>"
+        "<colgroup><col class='comparison-metric-col'><col class='comparison-target-col'><col class='comparison-benchmark-col'></colgroup>"
         "<thead><tr><th>Metric</th><th>Target listing</th><th>Best seller</th></tr></thead>"
         f"<tbody>{body}</tbody>"
         "</table>"
@@ -2141,10 +2175,41 @@ def _render_plain_metric(value: str) -> str:
     return f"<div class='comparison-metric'><strong>{html.escape(value)}</strong></div>"
 
 
+def _render_target_plain_metric(value: str, *, missing_reason: str) -> str:
+    cleaned = str(value or "").strip()
+    if cleaned and cleaned.lower() not in {"n/a", "na", "unavailable"}:
+        return _render_plain_metric(cleaned)
+    return (
+        "<div class='comparison-metric comparison-metric-missing'>"
+        "<strong>Unavailable</strong>"
+        f"<span class='metric-delta'>{html.escape(missing_reason)}</span>"
+        "</div>"
+    )
+
+
 def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
     delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse)
     delta_html = f"<span class='metric-delta'>{html.escape(delta)}</span>" if delta else ""
     return f"<div class='comparison-metric'><strong>{html.escape(display_value)}</strong>{delta_html}</div>"
+
+
+def _render_target_metric(
+    display_value: str,
+    target_value: float | None,
+    benchmark_value: float | None,
+    *,
+    inverse: bool,
+    missing_reason: str,
+) -> str:
+    cleaned = str(display_value or "").strip()
+    if cleaned and cleaned.lower() not in {"n/a", "na", "unavailable"}:
+        return _render_metric_with_delta(cleaned, target_value, benchmark_value, inverse=inverse)
+    return (
+        "<div class='comparison-metric comparison-metric-missing'>"
+        "<strong>Unavailable</strong>"
+        f"<span class='metric-delta'>{html.escape(missing_reason)}</span>"
+        "</div>"
+    )
 
 
 def _render_comparison_copy_snapshot(text: str) -> str:
