@@ -18,6 +18,7 @@ from urllib.parse import urljoin
 from typing import Any
 from urllib.parse import urlparse
 
+import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -514,18 +515,17 @@ class DeckGenerationService:
             description=hero_product.description,
             keyword_report=keyword_report,
         )
-        target_title = (
-            hero_product.title
-            or (target_row.title if target_row else "")
-            or parsed_target["product_name"]
-            or parsed_target["asin"]
-        ).strip()
-        target_brand = (
-            hero_product.brand_name
-            or (target_row.brand if target_row else "")
-            or parsed_target.get("brand_name", "")
-            or "Amazon Brand"
-        ).strip()
+        target_title = _preferred_target_title(
+            hero_product.title,
+            target_row.title if target_row else "",
+            parsed_target["product_name"],
+            parsed_target["asin"],
+        )
+        target_brand = _preferred_brand_name(
+            hero_product.brand_name,
+            target_row.brand if target_row else "",
+            parsed_target.get("brand_name", ""),
+        )
         display_title = _clean_listing_title(target_title)
         seo_recommendations = _build_seo_recommendations(
             keyword_report,
@@ -839,6 +839,7 @@ class DeckGenerationService:
         offer_cards = list(payload.get("offer_cards", []))
         include_recommended_plan = bool(payload.get("include_recommended_plan", True))
         monogram = self._load_brand_asset("assets/monogram.png")
+        no_product_image = self._load_brand_asset("assets/no-product-image-available.png")
         stylesheet = self._load_brand_stylesheet()
         keyword_rows = "".join(_render_keyword_row(keyword) for keyword in (keyword_report.keywords[:10] if keyword_report else []))
         revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
@@ -861,7 +862,7 @@ class DeckGenerationService:
         target_gap_html = "".join(f"<li>{html.escape(item)}</li>" for item in target_gaps)
         best_seller = xray_report.products[0] if xray_report.products else None
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
-        comparison_table_html = _render_target_comparison_table(target, best_seller)
+        comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)
         target_identifier = str(target.get("asin") or "").strip()
         resolved_target_title = _clean_listing_title(str(target.get("title", "") or ""))
         if resolved_target_title and not re.fullmatch(r"ASIN\s+[A-Z0-9]{10}", resolved_target_title, flags=re.IGNORECASE):
@@ -934,7 +935,7 @@ class DeckGenerationService:
           </div>
         </div>
         <div class="cover-card">
-          {_render_hero_media(target, monogram)}
+          {_render_hero_media(target, no_product_image)}
         </div>
       </div>
     </section>
@@ -988,13 +989,8 @@ class DeckGenerationService:
         </div>
         <p class="muted">{html.escape(dataset.text_fields.get("hero_product_snapshot") or "")}</p>
       </div>
-      <div class="target-grid">
-        <div class="target-panel">
-          {_render_hero_media(target, monogram)}
-        </div>
-        <div class="target-panel">
-          {comparison_table_html}
-        </div>
+      <div class="target-panel target-panel-full">
+        {comparison_table_html}
       </div>
       <div class="two-col split-top">
         <div class="recommendation-card">
@@ -1246,6 +1242,32 @@ def _target_reference_label(target: dict[str, Any]) -> str:
     if title:
         return _trim_text(title, 36)
     return "Prospect product"
+
+
+def _looks_like_raw_asin_label(value: str) -> bool:
+    cleaned = str(value or "").strip()
+    return bool(re.fullmatch(r"(ASIN\s+)?[A-Z0-9]{10}", cleaned, flags=re.IGNORECASE))
+
+
+def _preferred_target_title(*candidates: str) -> str:
+    cleaned_candidates = [str(value or "").strip() for value in candidates if str(value or "").strip()]
+    for candidate in cleaned_candidates:
+        if not _looks_like_raw_asin_label(candidate):
+            return candidate
+    return cleaned_candidates[0] if cleaned_candidates else "Prospect product"
+
+
+def _is_generic_brand_name(value: str) -> bool:
+    cleaned = _normalize_key(str(value or ""))
+    return cleaned in {"amazon", "amazon_brand", "brand", "prospect_brand"}
+
+
+def _preferred_brand_name(*candidates: str) -> str:
+    cleaned_candidates = [str(value or "").strip() for value in candidates if str(value or "").strip()]
+    for candidate in cleaned_candidates:
+        if not _is_generic_brand_name(candidate):
+            return candidate
+    return cleaned_candidates[0] if cleaned_candidates else "Prospect brand"
 
 
 def _slugify(value: str) -> str:
@@ -1703,7 +1725,7 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
     )
 
 
-def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None) -> str:
+def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None, missing_image_asset: str = "") -> str:
     target_price_number = _coerce_number(str(target.get("price", "") or ""))
     target_bsr_number = _coerce_number(str(target.get("bsr", "") or ""))
     target_revenue_number = _coerce_number(str(target.get("revenue", "") or ""))
@@ -1717,12 +1739,14 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 title=_trim_text(str(target.get("title", "") or "Target listing"), 40),
                 brand=str(target.get("brand_name", "") or "Prospect brand"),
                 emphasized=True,
+                missing_image_asset=missing_image_asset,
             ),
             _render_comparison_listing_cell(
                 image_url=str(best_seller.image_url or "") if best_seller else "",
                 title=_trim_text(best_seller.title, 40) if best_seller else "Best seller",
                 brand=str(best_seller.brand or "Benchmark") if best_seller else "Benchmark",
                 emphasized=False,
+                missing_image_asset=missing_image_asset,
             ),
         ),
         (
@@ -1859,21 +1883,23 @@ def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
         panels.append(
             "<div class='offering-panel{active_class}' data-panel='{key}'{hidden_attr}>"
             .format(active_class=active_class, key=key, hidden_attr=hidden_attr)
-            + f"<div class='slide-head'><div><p class='eyebrow'>{html.escape(str(section.get('eyebrow', '')))}</p><h2>{html.escape(str(section.get('title', '')))}</h2></div>"
-            + f"<p class='muted'>{html.escape(str(section.get('summary', '')))}</p></div>"
+            + "<div class='offering-panel-head'>"
+            + f"<h3>{html.escape(str(section.get('title', '')))}</h3>"
+            + f"<p class='muted'>{html.escape(str(section.get('summary', '')))}</p>"
+            + "</div>"
             + f"<div class='service-grid'>{items}</div></div>"
         )
     return (
         "<section class='slide'>"
         "<div class='slide-head'><div><p class='eyebrow'>Service offerings</p><h2>Integrated support model</h2></div>"
-        "<p class='muted'>Amazon is open first, but the full operating model is available across marketplace, DTC, fulfillment, and shipping workflows.</p></div>"
+        "<p class='muted'>Marketplace, DTC, fulfillment, and shipping support are organized into one operating model with service-specific workstreams.</p></div>"
         f"<div class='offering-tabs'>{''.join(tabs)}</div>"
         f"<div class='offering-panels'>{''.join(panels)}</div>"
         "</section>"
     )
 
 
-def _render_hero_media(target: dict[str, Any], monogram: str) -> str:
+def _render_hero_media(target: dict[str, Any], missing_image_asset: str) -> str:
     image_url = str(target.get("image_url", "") or "").strip()
     if image_url:
         return (
@@ -1881,7 +1907,8 @@ def _render_hero_media(target: dict[str, Any], monogram: str) -> str:
             f"<img src='{html.escape(image_url)}' alt='{html.escape(str(target.get('title', 'Target product')))}' />"
             "</div>"
         )
-    return f"<div class='hero-media fallback'>{monogram}<span>No product image available</span></div>"
+    fallback_media = missing_image_asset if missing_image_asset else "<span class='image-fallback-label'>No product image available</span>"
+    return f"<div class='hero-media fallback'>{fallback_media}<span>No product image available</span></div>"
 
 
 def _product_to_gallery_item(product: XrayProduct) -> dict[str, str]:
@@ -1947,12 +1974,65 @@ def _render_embedded_resource_tabs(*, case_study_url: str, creative_mockup_url: 
         active_class = " is-active" if index == 0 else ""
         hidden_attr = "" if index == 0 else " hidden"
         tabs.append(f"<button class='embedded-tab{active_class}' type='button' data-tab='{html.escape(key)}'>{html.escape(label)}</button>")
+        preview = _fetch_embed_preview(url)
         panels.append(
             f"<div class='embedded-panel{active_class}' data-panel='{html.escape(key)}'{hidden_attr}>"
-            f"<iframe src='{html.escape(url, quote=True)}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
-            "</div>"
+            + _render_resource_embed(label=label, url=url, preview=preview)
+            + "</div>"
         )
     return "<div class='embedded-resource-section'><div class='embedded-tabs'>" + "".join(tabs) + "</div><div class='embedded-panels'>" + "".join(panels) + "</div></div>"
+
+
+def _fetch_embed_preview(url: str) -> dict[str, str]:
+    safe_url = str(url or "").strip()
+    if not safe_url:
+        return {}
+    try:
+        response = requests.get(
+            safe_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            },
+            timeout=12,
+        )
+        response.raise_for_status()
+    except Exception:
+        return {}
+    content = response.text or ""
+    title = _extract_first(
+        content,
+        r'<meta\s+property="og:title"\s+content="([^"]+)"',
+        r"<title>\s*(.*?)\s*</title>",
+    ).strip()
+    image_url = _extract_first(
+        content,
+        r'<meta\s+property="og:image"\s+content="([^"]+)"',
+        r'<meta\s+name="twitter:image"\s+content="([^"]+)"',
+    ).replace("\\u0026", "&").replace("\\/", "/").strip()
+    return {
+        "title": _clean_scraped_text(title),
+        "image_url": image_url,
+    }
+
+
+def _render_resource_embed(*, label: str, url: str, preview: dict[str, str]) -> str:
+    image_url = str(preview.get("image_url", "") or "").strip()
+    preview_title = str(preview.get("title", "") or label).strip()
+    safe_url = html.escape(url, quote=True)
+    if "canva.com" in urlparse(url).netloc.lower():
+        media = (
+            f"<img src='{html.escape(image_url, quote=True)}' alt='{html.escape(preview_title)}' />"
+            if image_url
+            else "<div class='image-fallback'>Preview unavailable</div>"
+        )
+        return (
+            "<div class='resource-preview-card'>"
+            f"<div class='resource-preview-media'>{media}</div>"
+            f"<div class='resource-preview-copy'><h3>{html.escape(label)}</h3><p>{html.escape(preview_title)}</p>"
+            f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noreferrer'>Open in Canva</a></div>"
+            "</div>"
+        )
+    return f"<iframe src='{safe_url}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
 
 
 def _render_offer_card(card: dict[str, Any]) -> str:
@@ -1966,6 +2046,7 @@ def _render_offer_card(card: dict[str, Any]) -> str:
         f"<div><span>{html.escape(str(card.get('baseline_label', '')))}</span><strong>{html.escape(str(card.get('baseline', '')))}</strong></div>"
         "</div>"
         f"<small>{html.escape(str(card.get('bonus', '')))}</small>"
+        "<a class='offer-link' href='https://anatainc.com/contact' target='_blank' rel='noreferrer'>Get started</a>"
         "</article>"
     )
 
@@ -1978,11 +2059,11 @@ def _render_listing_copy_snapshot(description: str) -> str:
     return f"<div class='signal-list'><strong>Listing copy snapshot</strong><ul>{items}</ul></div>"
 
 
-def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, emphasized: bool) -> str:
+def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, emphasized: bool, missing_image_asset: str = "") -> str:
     media = (
         f"<img src='{html.escape(image_url, quote=True)}' alt='{html.escape(title)}' />"
         if image_url
-        else "<div class='image-fallback compact'>No image</div>"
+        else (missing_image_asset if missing_image_asset else "<div class='image-fallback compact'>No image</div>")
     )
     return (
         f"<div class='comparison-listing{' is-target' if emphasized else ''}'>"
