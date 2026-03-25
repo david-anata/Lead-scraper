@@ -536,7 +536,7 @@ class DeckGenerationService:
         )
         cro_recommendations = _build_cro_recommendations(target_row, primary_competitors)
         creative_recommendations = _build_creative_recommendations(target_row, primary_competitors)
-        channel_sections = _build_channel_sections(enabled_channels)
+        channel_sections = _build_channel_sections(channels)
         competitor_rows = [["Product", "ASIN", "Brand", "Price", "Revenue", "Market share", "Reviews", "BSR", "Fulfillment"]]
         for product in xray_report.products[:10]:
             competitor_rows.append(
@@ -611,7 +611,7 @@ class DeckGenerationService:
             "advertising_summary": _build_advertising_summary(xray_report, keyword_report),
             "recommended_plan_summary": _build_plan_summary(offer_cards, channels),
             "expected_impact_summary": _build_expected_impact_summary(xray_report),
-            "why_anata_summary": _build_why_anata_summary(enabled_channels),
+            "why_anata_summary": _build_why_anata_summary(channels),
             "deck_title": f"{target_brand} x anata strategy deck".strip(" -"),
             "target_asin": parsed_target["asin"],
             "target_rating": target_rating_label,
@@ -669,7 +669,7 @@ class DeckGenerationService:
                 "cro_recommendations": cro_recommendations,
                 "creative_recommendations": creative_recommendations,
                 "offering_sections": channel_sections,
-                "channels": enabled_channels,
+                "channels": channels,
                 "niche_keyword": keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else (parsed_target["product_name"] or target_title),
                 "search_insights": search_insights,
                 "target_strengths": target_strengths,
