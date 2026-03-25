@@ -148,6 +148,7 @@ class ProductResearchService:
             raise RuntimeError("Amazon target product input did not include a valid ASIN.")
         catalog: AmazonCatalogSnapshot | None = None
         page_data = _fetch_amazon_page_data(target.get("source_url", "") or f"https://www.amazon.com/dp/{asin}")
+        search_data = _fetch_amazon_search_data(asin)
         warnings.extend(page_data.get("warnings", []))
         if self.amazon_client.is_configured():
             try:
@@ -156,8 +157,19 @@ class ProductResearchService:
                 warnings.append(f"Amazon catalog enrichment failed for {asin}: {exc}")
         try:
             source_url = (catalog.source_url if catalog else "") or page_data.get("source_url", "") or target.get("source_url", "")
-            title = (page_data.get("title", "") or (catalog.title if catalog else "") or target.get("product_name", "")).strip()
-            brand_name = (page_data.get("brand_name", "") or (catalog.brand if catalog else "") or target.get("brand_name", "")).strip()
+            title = (
+                page_data.get("title", "")
+                or search_data.get("title", "")
+                or (catalog.title if catalog else "")
+                or target.get("product_name", "")
+            ).strip()
+            brand_name = (
+                page_data.get("brand_name", "")
+                or search_data.get("brand_name", "")
+                or (catalog.brand if catalog else "")
+                or target.get("brand_name", "")
+                or _infer_brand_from_title(title)
+            ).strip()
             description = (page_data.get("description", "") or "").strip()
             price = (page_data.get("price", "") or "").strip()
             dimensions = (
@@ -166,7 +178,7 @@ class ProductResearchService:
                 or page_data.get("dimensions", "")
                 or ""
             ).strip()
-            image_url = (page_data.get("image_url", "") or "").strip()
+            image_url = (page_data.get("image_url", "") or search_data.get("image_url", "") or "").strip()
             product_type = ((catalog.category if catalog else "") or page_data.get("category", "") or "").strip()
         except Exception as exc:
             raise RuntimeError(f"Amazon target-product enrichment failed for {asin}: {exc}") from exc
@@ -272,6 +284,9 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     content = response.text or ""
     title = _extract_first(
         content,
+        r'<meta\s+property="og:title"\s+content="([^"]+)"',
+        r'"title"\s*:\s*"([^"]+)"',
+        r'"name"\s*:\s*"([^"]+)"',
         r'id="productTitle"[^>]*>\s*(.*?)\s*</span>',
         r"<title>\s*(.*?)\s*</title>",
     )
@@ -319,6 +334,51 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         "dimensions": dimensions,
         "warnings": warnings,
     }
+
+
+def _fetch_amazon_search_data(asin: str) -> dict[str, str]:
+    if not asin:
+        return {}
+    try:
+        response = requests.get(
+            f"https://www.amazon.com/s?k={asin}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+    except Exception:
+        return {}
+    content = response.text or ""
+    title = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'<img[^>]+class="s-image"[^>]+alt="([^"]+)"',
+            r'<h2[^>]*>\s*<a[^>]*>\s*<span[^>]*>(.*?)</span>',
+        )
+    )
+    image_url = _extract_first(
+        content,
+        r'<img[^>]+class="s-image"[^>]+src="([^"]+)"',
+    ).replace("\\u0026", "&").replace("\\/", "/")
+    return {
+        "title": title,
+        "brand_name": _infer_brand_from_title(title),
+        "image_url": image_url,
+    }
+
+
+def _infer_brand_from_title(title: str) -> str:
+    cleaned = _clean_scraped_text(title)
+    if not cleaned:
+        return ""
+    token = cleaned.split()[0]
+    token = re.sub(r"[^A-Za-z0-9&'-]", "", token).strip()
+    if not token or len(token) <= 1:
+        return ""
+    return token
 
 
 def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:

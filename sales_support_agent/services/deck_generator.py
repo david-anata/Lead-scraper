@@ -1196,6 +1196,18 @@ def _candidate_brand_asset_paths(settings: Settings, relative_path: str) -> list
     seen: set[str] = set()
     for base_path in _candidate_brand_paths(settings, relative_path):
         stem_path = base_path.with_suffix("")
+        prioritized: list[Path] = []
+        normalized = str(relative_path).replace("\\", "/")
+        if normalized.endswith("assets/monogram.png"):
+            prioritized.append(base_path.with_name("1.png"))
+        if normalized.endswith("assets/wordmark.png"):
+            prioritized.append(base_path.with_name("anata wordmark logo - black.png"))
+        for candidate in prioritized:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
         for suffix in (".png", ".svg", ".webp", ".jpg", ".jpeg"):
             candidate = stem_path.with_suffix(suffix)
             key = str(candidate)
@@ -1885,7 +1897,6 @@ def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
             .format(active_class=active_class, key=key, hidden_attr=hidden_attr)
             + "<div class='offering-panel-head'>"
             + f"<h3>{html.escape(str(section.get('title', '')))}</h3>"
-            + f"<p class='muted'>{html.escape(str(section.get('summary', '')))}</p>"
             + "</div>"
             + f"<div class='service-grid'>{items}</div></div>"
         )
@@ -1907,8 +1918,9 @@ def _render_hero_media(target: dict[str, Any], missing_image_asset: str) -> str:
             f"<img src='{html.escape(image_url)}' alt='{html.escape(str(target.get('title', 'Target product')))}' />"
             "</div>"
         )
-    fallback_media = missing_image_asset if missing_image_asset else "<span class='image-fallback-label'>No product image available</span>"
-    return f"<div class='hero-media fallback'>{fallback_media}<span>No product image available</span></div>"
+    fallback_media = missing_image_asset if missing_image_asset else ""
+    label = "" if fallback_media else "<span class='image-fallback-label'>No product image available</span>"
+    return f"<div class='hero-media fallback'>{fallback_media}{label}</div>"
 
 
 def _product_to_gallery_item(product: XrayProduct) -> dict[str, str]:
