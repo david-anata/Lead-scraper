@@ -880,6 +880,7 @@ class DeckGenerationService:
         target_strength_html = "".join(_render_action_item(item) for item in target_strengths)
         target_gap_html = "".join(_render_action_item(item) for item in target_gaps)
         best_seller = xray_report.products[0] if xray_report.products else None
+        launch_mode = best_seller is not None and not bool(target.get("bsr") or target.get("revenue") or target.get("rating") or target.get("review_count"))
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)
         target_identifier = str(target.get("asin") or "").strip()
@@ -900,19 +901,23 @@ class DeckGenerationService:
           <p class="eyebrow">Recommended plan</p>
           <h2>Recommended engagement and next step</h2>
         </div>
+        <p class="muted">Choose the operating model, then move directly into the first growth sprint with clear ownership and the next action already mapped.</p>
       </div>
       {f"<div class='offer-grid'>{offer_html}</div>" if offer_html else ""}
       <div class="plan-grid">
         <div class="plan-card plan-card-cta">
+          <p class="eyebrow-subtle">Next action</p>
           <h3>Schedule a meeting</h3>
           <p>Review the engagement options, align on the first sprint, and map the next execution window.</p>
           <a class="plan-link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Schedule a meeting</a>
         </div>
         <div class="plan-card">
+          <p class="eyebrow-subtle">Why now</p>
           <h3>Expected impact</h3>
           <p>{html.escape(dataset.text_fields.get("expected_impact_summary") or "")}</p>
         </div>
         <div class="plan-card">
+          <p class="eyebrow-subtle">What happens next</p>
           <h3>Recommended next step</h3>
           <p>{html.escape(dataset.text_fields.get("why_anata_summary") or "")}</p>
         </div>
@@ -1003,8 +1008,8 @@ class DeckGenerationService:
     <section class="slide">
       <div class="slide-head">
         <div>
-          <p class="eyebrow">Target listing</p>
-          <h2>Target listing opportunities</h2>
+          <p class="eyebrow">{'Market entry benchmark' if launch_mode else 'Target listing'}</p>
+          <h2>{'Launch benchmark opportunities' if launch_mode else 'Target listing opportunities'}</h2>
         </div>
         <p class="muted">{html.escape(dataset.text_fields.get("hero_product_snapshot") or "")}</p>
       </div>
@@ -1013,11 +1018,11 @@ class DeckGenerationService:
       </div>
       <div class="two-col split-top">
         <div class="recommendation-card">
-          <h3>What the listing is already doing well</h3>
+          <h3>{'What the product already signals well' if launch_mode else 'What the listing is already doing well'}</h3>
           <ul>{target_strength_html}</ul>
         </div>
         <div class="recommendation-card">
-          <h3>What is missing right now</h3>
+          <h3>{'What needs to be built before launch' if launch_mode else 'What is missing right now'}</h3>
           <ul>{target_gap_html}</ul>
         </div>
       </div>
@@ -1387,8 +1392,8 @@ def _build_target_snapshot_text(target_title: str, brand_name: str, target_row: 
             f"In the current niche export it shows {target_row.revenue_label} in revenue and {target_row.bsr_label} BSR."
         )
     return (
-        f"{_brand_product_reference(brand_name)} is the benchmark listing for this prospect. "
-        "Use this deck to compare the PDP against the niche leaders and tighten the initial go-to-market offer."
+        f"{_brand_product_reference(brand_name)} is not yet established in the current market set. "
+        "Use this deck to benchmark the product concept against niche leaders and shape the launch-ready PDP, offer, and positioning."
     )
 
 
@@ -1832,6 +1837,7 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
 
 
 def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None, missing_image_asset: str = "") -> str:
+    launch_mode = not bool(target.get("bsr") or target.get("revenue") or target.get("rating") or target.get("review_count"))
     target_price_number = _coerce_number(str(target.get("price", "") or ""))
     target_bsr_number = _coerce_number(str(target.get("bsr", "") or ""))
     target_revenue_number = _coerce_number(str(target.get("revenue", "") or ""))
@@ -1842,7 +1848,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
             "Listing",
             _render_comparison_listing_cell(
                 image_url=str(target.get("image_url", "") or ""),
-                title=_trim_text(str(target.get("title", "") or "Target listing"), 40),
+                title=_trim_text(str(target.get("title", "") or ("Target product" if launch_mode else "Target listing")), 40),
                 brand=str(target.get("brand_name", "") or "Prospect brand"),
                 emphasized=True,
                 missing_image_asset=missing_image_asset,
@@ -1936,7 +1942,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
         "<div class='comparison-table-wrap'>"
         "<table class='comparison-table comparison-table-structured'>"
         "<colgroup><col class='comparison-metric-col'><col class='comparison-target-col'><col class='comparison-benchmark-col'></colgroup>"
-        "<thead><tr><th>Metric</th><th>Target listing</th><th>Best seller</th></tr></thead>"
+        f"<thead><tr><th>Metric</th><th>{'Target product' if launch_mode else 'Target listing'}</th><th>Best seller</th></tr></thead>"
         f"<tbody>{body}</tbody>"
         "</table>"
         "</div>"
