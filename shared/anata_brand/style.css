@@ -722,6 +722,7 @@ mark {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .embedded-tab,
@@ -739,6 +740,31 @@ mark {
 .offering-tab.is-active {
   background: var(--anata-sand);
   color: white;
+}
+
+.offering-tabs {
+  margin-bottom: 14px;
+}
+
+.offering-panel-head {
+  margin: 8px 0 14px;
+}
+
+.offering-panel-head h3 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.service-card {
+  min-height: 148px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.service-card h3 {
+  margin: 0;
 }
 
 .embedded-panel iframe {
@@ -890,12 +916,12 @@ mark {
 }
 
 .comparison-table-structured .comparison-metric-col {
-  width: 12%;
+  width: 11%;
 }
 
 .comparison-table-structured .comparison-target-col,
 .comparison-table-structured .comparison-benchmark-col {
-  width: 44%;
+  width: 44.5%;
 }
 
 .comparison-table-structured td {
@@ -908,8 +934,14 @@ mark {
   justify-items: stretch;
 }
 
+.comparison-listing.is-target {
+  background: rgba(133, 187, 218, 0.1);
+  border-radius: 18px;
+  padding: 14px;
+}
+
 .comparison-thumb {
-  width: min(220px, 100%);
+  width: min(210px, 100%);
   max-width: 100%;
   aspect-ratio: 1 / 1;
   border-radius: 16px;
@@ -938,6 +970,13 @@ mark {
   color: var(--anata-text);
 }
 
+.comparison-metric-missing .metric-delta,
+.comparison-copy.muted,
+.comparison-listing .muted {
+  color: var(--anata-muted);
+  font-weight: 700;
+}
+
 .metric-delta {
   color: var(--anata-muted);
   font-size: 12px;
@@ -961,10 +1000,10 @@ mark {
   background: linear-gradient(135deg, #10233d 0%, #294566 100%);
   color: white;
   display: grid;
-  gap: 10px;
+  gap: 12px;
   padding: 28px;
   box-shadow: 0 18px 36px rgba(16, 35, 61, 0.18);
-  align-content: start;
+  align-content: stretch;
 }
 
 .plan-card-cta .plan-link {
@@ -982,6 +1021,16 @@ mark {
   background: rgba(255, 255, 255, 0.82);
 }
 
+.plan-card:not(.plan-card-cta) {
+  display: grid;
+  gap: 10px;
+}
+
+.plan-card-cta .plan-link {
+  margin-top: auto;
+  align-self: start;
+}
+
 .plan-card h3,
 .plan-card p {
   margin-bottom: 0;
@@ -992,6 +1041,21 @@ mark {
   border: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.target-panel-full .comparison-table-wrap {
+  border-radius: 22px;
+  overflow: hidden;
+}
+
+.comparison-table-structured td.target-column,
+.comparison-table-structured td.benchmark-column {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+.comparison-table-structured .comparison-listing > div:last-child {
+  min-width: 0;
 }
 
 .warning {

@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 
@@ -17,6 +17,7 @@ from sales_support_agent.integrations.shopify import ShopifyProductSnapshot, Sho
 
 @dataclass(frozen=True)
 class EnrichedHeroProduct:
+    asin: str
     brand_name: str
     title: str
     source_url: str
@@ -60,11 +61,13 @@ class ProductResearchService:
     def enrich_hero_product(self, product_url: str) -> EnrichedHeroProduct:
         warnings: list[str] = []
         snapshot = self.shopify_client.fetch_product(product_url)
+        amazon_reference = _fetch_public_amazon_reference(_build_public_product_query(snapshot.title, snapshot.brand_name))
         if not snapshot.description:
             warnings.append("Shopify description was empty, so the hero-product slide will need a manually written summary.")
         if not snapshot.price:
             warnings.append("Shopify price was unavailable from storefront data.")
         return EnrichedHeroProduct(
+            asin=amazon_reference.get("asin", ""),
             brand_name=snapshot.brand_name,
             title=snapshot.title,
             source_url=snapshot.source_url,
@@ -84,6 +87,7 @@ class ProductResearchService:
                 return self.enrich_hero_product(target.get("source_url", ""))
             except Exception as exc:
                 return EnrichedHeroProduct(
+                    asin="",
                     brand_name=target.get("brand_name", ""),
                     title=target.get("product_name", ""),
                     source_url=target.get("source_url", ""),
@@ -201,6 +205,7 @@ class ProductResearchService:
             warnings.append("Amazon target product price was unavailable from the product page.")
 
         return EnrichedHeroProduct(
+            asin=asin,
             brand_name=brand_name,
             title=title,
             source_url=source_url,
@@ -218,8 +223,15 @@ class ProductResearchService:
         if not source_url:
             raise RuntimeError("Target product URL was missing.")
         page_data = _fetch_generic_page_data(source_url)
+        amazon_reference = _fetch_public_amazon_reference(
+            _build_public_product_query(
+                page_data.get("title", "") or target.get("product_name", ""),
+                page_data.get("brand_name", "") or target.get("brand_name", ""),
+            )
+        )
         warnings = list(page_data.get("warnings", []))
         return EnrichedHeroProduct(
+            asin=amazon_reference.get("asin", ""),
             brand_name=(page_data.get("brand_name", "") or target.get("brand_name", "")).strip(),
             title=(page_data.get("title", "") or target.get("product_name", "")).strip(),
             source_url=page_data.get("source_url", "") or source_url,
@@ -399,11 +411,16 @@ def _infer_brand_from_title(title: str) -> str:
 
 
 def _fetch_public_asin_fallback(asin: str) -> dict[str, str]:
-    if not asin:
+    return _fetch_public_amazon_reference(asin)
+
+
+def _fetch_public_amazon_reference(query: str) -> dict[str, str]:
+    cleaned_query = _clean_scraped_text(query)
+    if not cleaned_query:
         return {}
     try:
         response = requests.get(
-            f"https://duckduckgo.com/html/?q={asin}",
+            f"https://duckduckgo.com/html/?q={quote_plus(cleaned_query)}",
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
@@ -414,8 +431,8 @@ def _fetch_public_asin_fallback(asin: str) -> dict[str, str]:
     except Exception:
         return {}
 
-    best_title = ""
-    best_url = ""
+    best: dict[str, str] = {}
+    best_score = -10**9
     for raw_href, raw_title in re.findall(r'<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)</a>', response.text or ""):
         resolved_url = _resolve_duckduckgo_link(raw_href)
         if "amazon." not in resolved_url:
@@ -423,16 +440,20 @@ def _fetch_public_asin_fallback(asin: str) -> dict[str, str]:
         title = _clean_public_amazon_result_title(raw_title)
         if not title:
             continue
-        if not best_title or _title_score(title) > _title_score(best_title):
-            best_title = title
-            best_url = resolved_url
-    if not best_title:
-        return {}
-    return {
-        "title": best_title,
-        "brand_name": _infer_brand_from_title(best_title),
-        "source_url": best_url,
-    }
+        asin = _extract_asin_from_text(resolved_url)
+        score = _title_score(title) + _query_match_score(cleaned_query, title)
+        if asin:
+            score += 25
+        if score <= best_score:
+            continue
+        best_score = score
+        best = {
+            "asin": asin,
+            "title": title,
+            "brand_name": _infer_brand_from_title(title),
+            "source_url": resolved_url,
+        }
+    return best
 
 
 def _resolve_duckduckgo_link(value: str) -> str:
@@ -447,6 +468,13 @@ def _resolve_duckduckgo_link(value: str) -> str:
         if redirect:
             return unquote(redirect)
     return raw
+
+
+def _build_public_product_query(title: str, brand_name: str) -> str:
+    pieces = [piece.strip() for piece in (brand_name, title) if piece and piece.strip()]
+    if not pieces:
+        return ""
+    return f"{' '.join(pieces)} site:amazon.com"
 
 
 def _clean_public_amazon_result_title(value: str) -> str:
@@ -471,6 +499,20 @@ def _title_score(value: str) -> int:
     if "..." in cleaned:
         score -= 5
     return score
+
+
+def _query_match_score(query: str, title: str) -> int:
+    query_tokens = {token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) > 2 and token != "amazon"}
+    title_tokens = {token for token in re.findall(r"[a-z0-9]+", title.lower()) if len(token) > 2}
+    if not query_tokens or not title_tokens:
+        return 0
+    shared = len(query_tokens & title_tokens)
+    return shared * 8
+
+
+def _extract_asin_from_text(value: str) -> str:
+    match = re.search(r"\b([A-Z0-9]{10})\b", str(value or "").upper())
+    return match.group(1) if match else ""
 
 
 def _is_amazon_block_page(content: str) -> bool:

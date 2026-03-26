@@ -502,11 +502,18 @@ class DeckGenerationService:
         if keyword_report:
             warnings.extend(keyword_report.warnings)
 
-        target_row = xray_report.find_by_asin(parsed_target["asin"]) if parsed_target["asin"] else None
+        resolved_target_asin = (hero_product.asin or parsed_target["asin"]).strip()
+        target_row = _find_target_row(
+            xray_report,
+            asin=resolved_target_asin,
+            source_url=hero_product.source_url or parsed_target["source_url"],
+            title=hero_product.title or parsed_target["product_name"],
+            brand_name=hero_product.brand_name or parsed_target.get("brand_name", ""),
+        )
         primary_competitors = [
             product
             for product in xray_report.products
-            if not parsed_target["asin"] or product.asin.upper() != parsed_target["asin"].upper()
+            if not resolved_target_asin or product.asin.upper() != resolved_target_asin.upper()
         ][:10]
         market_cards = _build_market_metric_cards(xray_report, keyword_report)
         keyword_cards = _build_keyword_metric_cards(keyword_report)
@@ -625,7 +632,7 @@ class DeckGenerationService:
             "expected_impact_summary": _build_expected_impact_summary(xray_report),
             "why_anata_summary": _build_why_anata_summary(channels),
             "deck_title": f"{target_brand} x anata strategy deck".strip(" -"),
-            "target_asin": parsed_target["asin"],
+            "target_asin": resolved_target_asin,
             "target_rating": target_rating_label,
             "target_review_count": str(target_review_count or ""),
             "target_revenue": target_revenue_label,
@@ -658,7 +665,7 @@ class DeckGenerationService:
             deck_payload={
                 "deck_title": text_fields["deck_title"],
                 "target": {
-                    "asin": parsed_target["asin"],
+                    "asin": resolved_target_asin,
                     "source_url": text_fields["hero_product_source_url"],
                     "title": display_title,
                     "brand_name": target_brand,
@@ -682,7 +689,7 @@ class DeckGenerationService:
                 "creative_recommendations": creative_recommendations,
                 "offering_sections": channel_sections,
                 "channels": channels,
-                "niche_keyword": keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else (parsed_target["product_name"] or target_title),
+                "niche_keyword": keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else (parsed_target["product_name"] or display_title),
                 "search_insights": search_insights,
                 "target_strengths": target_strengths,
                 "target_gaps": target_gaps,
@@ -1294,6 +1301,48 @@ def _preferred_brand_name(*candidates: str) -> str:
     return cleaned_candidates[0] if cleaned_candidates else "Prospect brand"
 
 
+def _find_target_row(
+    xray_report: Helium10XrayReport,
+    *,
+    asin: str,
+    source_url: str,
+    title: str,
+    brand_name: str,
+) -> XrayProduct | None:
+    if asin:
+        exact = xray_report.find_by_asin(asin)
+        if exact:
+            return exact
+
+    normalized_url = _normalize_product_url(source_url)
+    normalized_title = _normalize_key(_clean_listing_title(title))
+    normalized_brand = _normalize_key(brand_name)
+    title_tokens = _title_token_set(title)
+    best_match: XrayProduct | None = None
+    best_score = 0
+
+    for product in xray_report.products:
+        score = 0
+        if normalized_url and normalized_url == _normalize_product_url(product.url):
+            score += 120
+        product_title = _normalize_key(_clean_listing_title(product.title))
+        product_brand = _normalize_key(product.brand)
+        if normalized_title and normalized_title == product_title:
+            score += 90
+        if normalized_brand and normalized_brand == product_brand:
+            score += 25
+        product_tokens = _title_token_set(product.title)
+        if title_tokens and product_tokens:
+            overlap = len(title_tokens & product_tokens)
+            if overlap:
+                score += overlap * 6
+        if score > best_score:
+            best_score = score
+            best_match = product
+
+    return best_match if best_score >= 55 else None
+
+
 def _infer_brand_from_title(title: str) -> str:
     cleaned = _clean_listing_title(str(title or ""))
     if not cleaned:
@@ -1307,6 +1356,28 @@ def _infer_brand_from_title(title: str) -> str:
 
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _normalize_product_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = re.sub(r"^www\.", "", (parsed.netloc or "").lower())
+    path = (parsed.path or "").rstrip("/").lower()
+    if "amazon." in host:
+        asin_match = re.search(r"/(?:dp|gp/product)/([a-z0-9]{10})", path, flags=re.IGNORECASE)
+        if asin_match:
+            return f"amazon:{asin_match.group(1).upper()}"
+    return f"{host}{path}"
+
+
+def _title_token_set(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", _clean_listing_title(value).lower())
+        if len(token) > 2 and token not in {"with", "from", "pack", "product", "amazon", "brand"}
+    }
 
 
 def _build_target_snapshot_text(target_title: str, brand_name: str, target_row: XrayProduct | None) -> str:
