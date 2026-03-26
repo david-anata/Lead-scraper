@@ -1334,6 +1334,8 @@ def _find_target_row(
         product_brand = _normalize_key(product.brand)
         if normalized_title and normalized_title == product_title:
             score += 90
+        elif normalized_title and product_title and (normalized_title in product_title or product_title in normalized_title):
+            score += 70
         if normalized_brand and normalized_brand == product_brand:
             score += 25
         product_tokens = _title_token_set(product.title)
@@ -1341,11 +1343,14 @@ def _find_target_row(
             overlap = len(title_tokens & product_tokens)
             if overlap:
                 score += overlap * 6
+            overlap_ratio = overlap / max(1, min(len(title_tokens), len(product_tokens)))
+            if overlap_ratio >= 0.6:
+                score += 25
         if score > best_score:
             best_score = score
             best_match = product
 
-    return best_match if best_score >= 55 else None
+    return best_match if best_score >= 45 else None
 
 
 def _infer_brand_from_title(title: str) -> str:
@@ -1699,14 +1704,17 @@ def _build_search_insights(
     description: str,
     keyword_report: Helium10KeywordReport | None,
 ) -> dict[str, list[str]]:
-    keywords = [keyword.phrase.strip() for keyword in (keyword_report.keywords[:8] if keyword_report else []) if keyword.phrase.strip()]
-    title_lc = title.lower()
-    description_lc = description.lower()
+    keywords = [keyword.phrase.strip() for keyword in (keyword_report.keywords[:10] if keyword_report else []) if keyword.phrase.strip()]
+    title_lc = _clean_listing_title(title).lower()
+    description_lc = _clean_listing_title(description).lower()
+    title_terms = _coverage_terms(title_lc)
+    copy_terms = _coverage_terms(description_lc)
+    ranked_terms = _rank_keyword_terms(keywords)
     return {
         "title_hits": [phrase for phrase in keywords if phrase.lower() in title_lc],
         "title_misses": [phrase for phrase in keywords if phrase.lower() not in title_lc],
-        "copy_hits": [phrase for phrase in keywords if phrase.lower() in description_lc],
-        "copy_misses": [phrase for phrase in keywords if phrase.lower() not in description_lc],
+        "copy_hits": [term for term in ranked_terms if term in copy_terms],
+        "copy_misses": [term for term in ranked_terms if term not in copy_terms],
     }
 
 
@@ -2088,8 +2096,13 @@ def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_lab
         f"<li><span class='signal-icon negative'>+</span><span>{html.escape(item)}</span></li>"
         for item in misses[:5]
     ) or "<li><span class='signal-icon negative'>+</span><span>No immediate gaps from the current keyword dataset.</span></li>"
+    help_text = (
+        "Title coverage checks whether exact high-intent keyword phrases are already present in the title."
+        if "title" in title.lower()
+        else "Bullet / copy coverage checks whether the supporting keyword terms and modifiers appear across bullets and descriptive copy."
+    )
     return (
-        f"<h3>{html.escape(title)} {_render_help_badge('This section checks whether the highest-priority search targets are already visible in the listing language.')}</h3>"
+        f"<h3>{html.escape(title)} {_render_help_badge(help_text)}</h3>"
         f"<div class='signal-list'><strong>Already covered</strong><ul class='signal-bullets'>{hit_items}</ul></div>"
         f"<div class='signal-list'><strong>{html.escape(miss_label)}</strong><ul class='signal-bullets'>{miss_items}</ul></div>"
     )
@@ -2260,7 +2273,7 @@ def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, e
 
 
 def _render_plain_metric(value: str) -> str:
-    return f"<div class='comparison-metric'><strong>{html.escape(value)}</strong></div>"
+    return f"<div class='comparison-metric'><strong>{html.escape(_format_metric_display(value))}</strong></div>"
 
 
 def _render_target_plain_metric(value: str, *, missing_reason: str) -> str:
@@ -2278,7 +2291,7 @@ def _render_target_plain_metric(value: str, *, missing_reason: str) -> str:
 def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
     delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse)
     delta_html = f"<span class='metric-delta'>{html.escape(delta)}</span>" if delta else ""
-    return f"<div class='comparison-metric'><strong>{html.escape(display_value)}</strong>{delta_html}</div>"
+    return f"<div class='comparison-metric'><strong>{html.escape(_format_metric_display(display_value))}</strong>{delta_html}</div>"
 
 
 def _render_target_metric(
@@ -2404,6 +2417,37 @@ def _label_share(value: float | None, total: float) -> str:
     if value is None or total <= 0:
         return "n/a"
     return f"{((value / total) * 100):.1f}%"
+
+
+def _format_metric_display(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if re.fullmatch(r"\d{4,}", cleaned):
+        try:
+            return f"{int(cleaned):,}"
+        except ValueError:
+            return cleaned
+    return cleaned
+
+
+def _coverage_terms(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+        if len(token) > 2 and token not in {"with", "from", "that", "this", "your", "into", "pack", "product"}
+    }
+
+
+def _rank_keyword_terms(phrases: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    for phrase in phrases:
+        seen: set[str] = set()
+        for token in _coverage_terms(phrase):
+            if token in seen:
+                continue
+            counts[token] = counts.get(token, 0) + 1
+            seen.add(token)
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [term for term, _ in ranked[:8]]
 
 
 def _format_channel_label(value: str) -> str:
