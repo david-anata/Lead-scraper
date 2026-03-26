@@ -173,10 +173,13 @@ class ProductResearchService:
         if not asin:
             raise RuntimeError("Amazon target product input did not include a valid ASIN.")
         catalog: AmazonCatalogSnapshot | None = None
+        remote_catalog = _fetch_remote_catalog_data(asin)
         page_data = _fetch_amazon_page_data(target.get("source_url", "") or f"https://www.amazon.com/dp/{asin}")
         search_data = _fetch_amazon_search_data(asin)
         public_data = _fetch_public_asin_fallback(asin)
+        public_page_data = _fetch_amazon_page_data(public_data.get("source_url", "")) if public_data.get("source_url") else {}
         warnings.extend(page_data.get("warnings", []))
+        warnings.extend(public_page_data.get("warnings", []))
         if self.amazon_client.is_configured():
             try:
                 catalog = self.amazon_client.get_catalog_item(asin, source_url=target.get("source_url", ""))
@@ -190,37 +193,57 @@ class ProductResearchService:
                 or public_data.get("source_url", "")
                 or target.get("source_url", "")
             )
-            title = (
-                resolved_catalog_title
-                or page_data.get("title", "")
-                or search_data.get("title", "")
-                or public_data.get("title", "")
-                or target.get("product_name", "")
-            ).strip()
+            title = ""
+            identity_source = ""
+            for value, source_name in (
+                (resolved_catalog_title, "amazon_catalog"),
+                (remote_catalog.get("title", ""), "remote_catalog"),
+                (page_data.get("title", ""), "amazon_page"),
+                (search_data.get("title", ""), "amazon_search"),
+                (public_data.get("title", ""), "public_result"),
+                (target.get("product_name", ""), "input"),
+            ):
+                if str(value or "").strip():
+                    title = str(value).strip()
+                    identity_source = source_name
+                    break
             brand_name = (
                 _clean_scraped_text(catalog.brand if catalog else "")
+                or remote_catalog.get("brand_name", "")
                 or page_data.get("brand_name", "")
                 or search_data.get("brand_name", "")
                 or public_data.get("brand_name", "")
                 or target.get("brand_name", "")
                 or _infer_brand_from_title(title)
             ).strip()
-            description = (page_data.get("description", "") or "").strip()
-            price = (page_data.get("price", "") or "").strip()
+            description = (page_data.get("description", "") or public_page_data.get("description", "") or "").strip()
+            price = (page_data.get("price", "") or remote_catalog.get("price", "") or public_page_data.get("price", "") or "").strip()
             dimensions = (
                 (catalog.dimensions if catalog else "")
                 or (catalog.package_dimensions if catalog else "")
                 or page_data.get("dimensions", "")
+                or remote_catalog.get("dimensions", "")
+                or public_page_data.get("dimensions", "")
                 or ""
             ).strip()
-            image_url = (page_data.get("image_url", "") or search_data.get("image_url", "") or "").strip()
-            product_type = ((catalog.category if catalog else "") or page_data.get("category", "") or "").strip()
+            image_url = (page_data.get("image_url", "") or search_data.get("image_url", "") or remote_catalog.get("image_url", "") or public_page_data.get("image_url", "") or "").strip()
+            product_type = ((catalog.category if catalog else "") or page_data.get("category", "") or remote_catalog.get("category", "") or public_page_data.get("category", "") or "").strip()
             bsr = _parse_numeric_value((catalog.bsr if catalog else "") or page_data.get("bsr", ""))
             rating = _parse_numeric_value(page_data.get("rating", ""))
             review_count = _parse_int_value(page_data.get("review_count", ""))
+            if identity_source == "remote_catalog" and not page_data.get("title", ""):
+                rating = None
+                review_count = None
         except Exception as exc:
             raise RuntimeError(f"Amazon target-product enrichment failed for {asin}: {exc}") from exc
 
+        if title and image_url and price:
+            warnings = [
+                warning
+                for warning in warnings
+                if "Amazon product page returned an anti-bot response" not in warning
+                and "Amazon product page did not expose a parseable title." not in warning
+            ]
         if catalog and not catalog.bsr:
             warnings.append("Amazon target product returned no BSR.")
         if not image_url:
@@ -228,6 +251,12 @@ class ProductResearchService:
         if not price:
             warnings.append("Amazon target product price was unavailable from the product page.")
 
+        deduped_warnings = tuple(dict.fromkeys(warnings))
+        metric_sources: list[str] = []
+        if catalog and catalog.bsr and bsr is not None:
+            metric_sources.append("amazon_catalog")
+        if any(value is not None for value in (rating, review_count)):
+            metric_sources.append("amazon_page")
         return EnrichedHeroProduct(
             asin=asin,
             candidate_asin="",
@@ -242,10 +271,10 @@ class ProductResearchService:
             bsr=bsr,
             rating=rating,
             review_count=review_count,
-            identity_source="amazon",
-            market_metrics_source="amazon_page" if any(value is not None for value in (bsr, rating, review_count)) else "",
+            identity_source=identity_source or "amazon",
+            market_metrics_source="+".join(metric_sources),
             tags=(),
-            warnings=tuple(warnings),
+            warnings=deduped_warnings,
         )
 
     def _enrich_generic_target(self, target: dict[str, str]) -> EnrichedHeroProduct:
@@ -388,7 +417,7 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
             r'id="bylineInfo"[^>]*>\s*(.*?)\s*</a>',
             r'"brand":"([^"]+)"',
         )
-    ).replace("Visit the ", "").replace(" Store", "").strip()
+    ).replace("Visit the ", "").replace(" Store", "").replace("Brand:", "").strip()
     category = _clean_scraped_text(_extract_first(content, r'"productGroup":"([^"]+)"'))
     dimensions = _clean_scraped_text(_extract_first(content, r'"itemDimensions":"([^"]+)"'))
     bsr = _clean_scraped_text(
@@ -428,6 +457,47 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         "rating": rating,
         "review_count": review_count,
         "warnings": warnings,
+    }
+
+
+def _fetch_remote_catalog_data(asin: str) -> dict[str, str]:
+    if not asin:
+        return {}
+    try:
+        response = requests.get(
+            f"https://amazon-sp-api-platform.onrender.com/api/amazon/catalog/{asin}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+    except Exception:
+        return {}
+    dimensions = payload.get("dimensions") or {}
+    dimension_parts = []
+    for key in ("length", "width", "height"):
+        value = dimensions.get(key)
+        if value in (None, ""):
+            continue
+        unit = dimensions.get("unit") or ""
+        dimension_parts.append(f"{value} {unit}".strip())
+    price = payload.get("buy_box_price") or payload.get("price")
+    price_label = ""
+    if isinstance(price, (int, float)):
+        price_label = f"${price:,.2f}"
+    elif price not in (None, ""):
+        price_label = str(price).strip()
+    images = payload.get("images") or []
+    return {
+        "title": _clean_scraped_text(str(payload.get("title", "") or "")),
+        "brand_name": _clean_scraped_text(str(payload.get("brand", "") or "")),
+        "price": price_label,
+        "image_url": str(images[0] if images else ""),
+        "category": _clean_scraped_text(str(payload.get("category_label", "") or "")),
+        "dimensions": " x ".join(dimension_parts),
     }
 
 
