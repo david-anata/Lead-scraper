@@ -150,6 +150,10 @@ def normalize_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", normalize_text(value).lower()).strip()
 
 
+def normalize_url(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
 def slugify(value: Any) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", normalize_key(value)).strip("-")
     return slug or "report"
@@ -371,6 +375,7 @@ def make_issue(
 
 def detect_page_issues(observation: Mapping[str, Any]) -> List[Dict[str, Any]]:
     url = str(observation.get("url") or "")
+    final_url = normalize_text(observation.get("final_url", ""))
     issues: List[Dict[str, Any]] = []
     status_code = observation.get("status_code")
     response_error = normalize_text(observation.get("response_error", ""))
@@ -401,6 +406,18 @@ def detect_page_issues(observation: Mapping[str, Any]) -> List[Dict[str, Any]]:
                 summary=f"The page returned HTTP {status_code}.",
                 recommendation="Restore a 2xx response or redirect the URL to the current canonical page.",
                 details={"status_code": status_code, "response_error": response_error},
+            )
+        )
+
+    if final_url and normalize_url(final_url) and normalize_url(final_url) != normalize_url(url):
+        issues.append(
+            make_issue(
+                code="REDIRECTED_URL",
+                priority="P2",
+                page_url=url,
+                summary="The monitored URL redirects to a different live URL.",
+                recommendation="Monitor and internally link to the final preferred URL, or standardize the redirect target as the canonical route.",
+                details={"final_url": final_url},
             )
         )
 
@@ -458,6 +475,17 @@ def detect_page_issues(observation: Mapping[str, Any]) -> List[Dict[str, Any]]:
                 page_url=url,
                 summary="The page does not declare a canonical URL.",
                 recommendation="Add a canonical link tag so search engines can identify the preferred version.",
+            )
+        )
+    elif normalize_url(canonical_url) != normalize_url(final_url or url):
+        issues.append(
+            make_issue(
+                code="CANONICAL_MISMATCH",
+                priority="P2",
+                page_url=url,
+                summary="The canonical URL points to a different route than the live page.",
+                recommendation="Align the canonical tag, monitored URL, and redirect target to one preferred route.",
+                details={"canonical_url": canonical_url, "final_url": final_url or url},
             )
         )
 
@@ -620,6 +648,30 @@ def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "## Goal",
+            "",
+            f"- Primary goal: {report.get('goal', {}).get('primary', 'Not defined.')}",
+        ]
+    )
+    for metric in report.get("goal", {}).get("success_metrics", []):
+        lines.append(f"- Success metric: {metric}")
+
+    analytics_status = report.get("analytics_status", {})
+    lines.extend(
+        [
+            "",
+            "## Analytics Status",
+            "",
+            f"- Search Console connected: `{analytics_status.get('search_console', False)}`",
+            f"- GA4 connected: `{analytics_status.get('ga4', False)}`",
+        ]
+    )
+    for note in analytics_status.get("notes", []):
+        lines.append(f"- Note: {note}")
+
+    lines.extend(
+        [
+            "",
             "## Feedback Loop",
             "",
             f"- Feedback received: `{report.get('feedback_received', 0)}`",
@@ -672,6 +724,39 @@ def render_daily_report_markdown(report: Mapping[str, Any]) -> str:
         lines.extend(f"- {item}" for item in report["recommendations"])
     else:
         lines.append("- None.")
+
+    lines.extend(["", "## Action Queue"])
+    if report.get("action_queue"):
+        for action in report["action_queue"]:
+            lines.extend(
+                [
+                    f"- `{action.get('action_type', 'action')}` on `{action.get('page_url', '')}`",
+                    f"  - section: {action.get('section_name', '')}",
+                    f"  - before: {action.get('before_state', '')}",
+                    f"  - after: {action.get('after_state', '')}",
+                    f"  - why: {action.get('reason', '')}",
+                    f"  - source: {action.get('insight_source', '')}",
+                    f"  - expected impact: {action.get('expected_impact', '')}",
+                    f"  - confidence: `{action.get('confidence', '')}`",
+                ]
+            )
+    else:
+        lines.append("- None.")
+
+    lines.extend(["", "## Team Support Needed"])
+    if report.get("support_requests"):
+        lines.extend(f"- {item}" for item in report["support_requests"])
+    else:
+        lines.append("- None.")
+
+    lines.extend(["", "## System Guidance"])
+    for label, key in [("Start doing", "start_doing"), ("Stop doing", "stop_doing"), ("Do more of", "do_more_of")]:
+        lines.append(f"- {label}:")
+        values = report.get(key) or []
+        if values:
+            lines.extend(f"  - {item}" for item in values)
+        else:
+            lines.append("  - None.")
 
     lines.extend(["", "## Changes Applied"])
     if report.get("executed_actions"):
@@ -749,6 +834,40 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
         + "</li>"
         for item in report.get("executed_actions", [])
     )
+    action_queue_rows = "".join(
+        "<li>"
+        f"<strong>{esc(item.get('action_type', 'action'))}</strong> on <code>{esc(item.get('page_url', ''))}</code>"
+        f"<br><span class=\"muted\">Section:</span> {esc(item.get('section_name', ''))}"
+        f"<br><span class=\"muted\">Before:</span> {esc(item.get('before_state', ''))}"
+        f"<br><span class=\"muted\">After:</span> {esc(item.get('after_state', ''))}"
+        f"<br><span class=\"muted\">Why:</span> {esc(item.get('reason', ''))}"
+        f"<br><span class=\"muted\">Insight source:</span> {esc(item.get('insight_source', ''))}"
+        f"<br><span class=\"muted\">Expected impact:</span> {esc(item.get('expected_impact', ''))}"
+        f"<br><span class=\"muted\">Confidence:</span> {esc(item.get('confidence', ''))}"
+        + "</li>"
+        for item in report.get("action_queue", [])
+    )
+    support_rows = "".join(f"<li>{esc(item)}</li>" for item in report.get("support_requests", []))
+    guidance_blocks = "".join(
+        f"<div><strong>{esc(label)}</strong><ul>{''.join(f'<li>{esc(item)}</li>' for item in report.get(key, [])) or '<li>None.</li>'}</ul></div>"
+        for label, key in [("Start doing", "start_doing"), ("Stop doing", "stop_doing"), ("Do more of", "do_more_of")]
+    )
+    analytics_notes = "".join(f"<li>{esc(item)}</li>" for item in report.get("analytics_status", {}).get("notes", []))
+    page_insight_rows = "".join(
+        "<li>"
+        f"<strong><code>{esc(item.get('page_url', ''))}</code></strong>"
+        f"<br>Bucket: {esc(item.get('bucket', ''))} · Score: {esc(item.get('score', ''))}"
+        f"<br>GSC: {esc(int((item.get('search_console') or {}).get('impressions', 0)))} impressions, {esc(round(float((item.get('search_console') or {}).get('ctr', 0) or 0) * 100, 2))}% CTR"
+        f"<br>GA4: {esc(int((item.get('ga4') or {}).get('sessions', 0)))} sessions, {esc(int((item.get('ga4') or {}).get('conversions', 0)))} conversions"
+        + (
+            "<br><span class=\"muted\">Insights:</span> "
+            + esc(" | ".join(item.get("insights", [])))
+            if item.get("insights")
+            else ""
+        )
+        + "</li>"
+        for item in report.get("page_insights", [])[:10]
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -821,6 +940,19 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
       <ul>{issue_counts}</ul>
     </div>
     <div class="panel">
+      <h2>Goal</h2>
+      <p>{esc(report.get('goal', {}).get('primary', 'Not defined.'))}</p>
+      <ul>{''.join(f'<li>{esc(item)}</li>' for item in report.get('goal', {}).get('success_metrics', [])) or '<li>No success metrics defined.</li>'}</ul>
+    </div>
+    <div class="panel">
+      <h2>Analytics Status</h2>
+      <div class="grid">
+        <div><strong>Search Console</strong><br>{esc(report.get('analytics_status', {}).get('search_console', False))}</div>
+        <div><strong>GA4</strong><br>{esc(report.get('analytics_status', {}).get('ga4', False))}</div>
+      </div>
+      <ul>{analytics_notes if analytics_notes else '<li>No analytics warnings.</li>'}</ul>
+    </div>
+    <div class="panel">
       <h2>Feedback Loop</h2>
       <div class="grid">
         <div><strong>Feedback received</strong><br>{esc(report.get('feedback_received', 0))}</div>
@@ -828,6 +960,22 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
         <div><strong>Changes applied</strong><br>{esc(report.get('changes_applied', 0))}</div>
       </div>
       <ul>{feedback_rows if feedback_rows else '<li>No feedback records yet.</li>'}</ul>
+    </div>
+    <div class="panel">
+      <h2>Priority Action Queue</h2>
+      <ul>{action_queue_rows if action_queue_rows else '<li>No priority actions generated in this run.</li>'}</ul>
+    </div>
+    <div class="panel">
+      <h2>Page Insights</h2>
+      <ul>{page_insight_rows if page_insight_rows else '<li>No page insights generated.</li>'}</ul>
+    </div>
+    <div class="panel">
+      <h2>Team Support Needed</h2>
+      <ul>{support_rows if support_rows else '<li>No support prompts generated.</li>'}</ul>
+    </div>
+    <div class="panel">
+      <h2>System Guidance</h2>
+      <div class="grid">{guidance_blocks}</div>
     </div>
     <div class="panel">
       <h2>Changes Applied</h2>

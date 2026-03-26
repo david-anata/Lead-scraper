@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from sales_support_agent.config import Settings
+from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
 from sales_support_agent.services import website_ops_vendor as website_ops
 
 
@@ -104,6 +105,16 @@ def _report_entries(settings: Settings, *, mode: str | None = None) -> list[dict
             }
         )
     return entries
+
+
+def _report_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    json_path = Path(entry["path"]).with_suffix(".json")
+    if not json_path.exists():
+        return {}
+    try:
+        return json.loads(json_path.read_text())
+    except json.JSONDecodeError:
+        return {}
 
 
 def latest_report_entry(settings: Settings) -> dict[str, Any] | None:
@@ -268,10 +279,20 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         report_date=datetime.now(timezone.utc).date().isoformat(),
         executed_actions=executed_actions,
     )
+    enriched_report = dict(pipeline["report"])
+    enriched_report.update(
+        build_autonomy_overlay(
+            settings=settings,
+            report=enriched_report,
+            observations=list(pipeline.get("observations") or []),
+            feedback_entries=feedback_entries,
+        )
+    )
+    artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     return WebsiteOpsActionResult(
         ok=True,
         message=f"{mode.title()} website ops run completed.",
-        report=pipeline["report"],
+        report=enriched_report,
     )
 
 
@@ -427,10 +448,18 @@ def _feedback_cards(entries: list[dict[str, Any]], *, with_actions: bool = False
 def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str:
     reports = _report_entries(settings)
     latest = reports[0] if reports else None
+    latest_payload = _report_payload(latest) if latest else {}
     feedback = load_feedback_records(settings)
     status_counts: dict[str, int] = {}
     for item in feedback:
         status_counts[item["status"]] = status_counts.get(item["status"], 0) + 1
+    action_queue = list(latest_payload.get("action_queue") or [])[:6]
+    support_requests = list(latest_payload.get("support_requests") or [])[:5]
+    start_doing = list(latest_payload.get("start_doing") or [])[:3]
+    stop_doing = list(latest_payload.get("stop_doing") or [])[:3]
+    do_more_of = list(latest_payload.get("do_more_of") or [])[:3]
+    page_insights = list(latest_payload.get("page_insights") or [])[:5]
+    analytics_status = latest_payload.get("analytics_status") or {}
     body = f"""
       {_nav()}
       <main class="shell">
@@ -450,6 +479,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
             <p class="eyebrow">Current scope</p>
             <p class="lead">Monitoring <strong>{len(settings.website_ops_site_urls)}</strong> live URLs under <code>{html.escape(str(settings.website_ops_root))}</code>.</p>
             <p class="lead">Auto-execution is <strong>{'enabled' if settings.website_ops_execute_approved else 'disabled'}</strong>.</p>
+            <p class="lead">Search Console: <strong>{'connected' if analytics_status.get('search_console') else 'not connected'}</strong> · GA4: <strong>{'connected' if analytics_status.get('ga4') else 'not connected'}</strong>.</p>
           </div>
         </section>
         <section class="stats">
@@ -457,6 +487,19 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           <div class="card stat"><p class="eyebrow">Awaiting review</p><strong>{status_counts.get('new', 0)}</strong><p class="muted">Needs a decision</p></div>
           <div class="card stat"><p class="eyebrow">Approved</p><strong>{status_counts.get('approved', 0)}</strong><p class="muted">Ready for action</p></div>
           <div class="card stat"><p class="eyebrow">Done</p><strong>{status_counts.get('done', 0)}</strong><p class="muted">Completed safely</p></div>
+        </section>
+        <section class="grid-2">
+          <div class="card stack">
+            <p class="eyebrow">Primary goal</p>
+            <h2>{html.escape(str((latest_payload.get('goal') or {}).get('primary', 'Increase qualified organic leads with less manual website work.')))}</h2>
+            <p class="lead">This is the system objective the dashboard should optimize against, not just a list of page checks.</p>
+          </div>
+          <div class="card stack">
+            <p class="eyebrow">How the team helps</p>
+            <ul>
+              {''.join(f"<li>{html.escape(item)}</li>" for item in support_requests) if support_requests else '<li>No support prompts generated yet.</li>'}
+            </ul>
+          </div>
         </section>
         <section class="grid-2">
           <div class="card stack">
@@ -477,8 +520,52 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           </div>
         </section>
         <section class="grid-2">
+          <div class="card stack">
+            <h2>Priority action queue</h2>
+            {
+                ''.join(
+                    f'''
+                    <article class="list-card">
+                      <p class="eyebrow">{html.escape(str(item.get("insight_source", "")))}</p>
+                      <h3>{html.escape(str(item.get("page_url", "")))}</h3>
+                      <p><strong>Section:</strong> {html.escape(str(item.get("section_name", "")))}</p>
+                      <p><strong>Before:</strong> {html.escape(str(item.get("before_state", "")))}</p>
+                      <p><strong>After:</strong> {html.escape(str(item.get("after_state", "")))}</p>
+                      <p class="muted">{html.escape(str(item.get("reason", "")))}</p>
+                    </article>
+                    '''
+                    for item in action_queue
+                ) if action_queue else "<div class='list-card'><p class='muted'>No action queue generated yet.</p></div>"
+            }
+          </div>
+          <div class="card stack">
+            <h2>Insight snapshots</h2>
+            {
+                ''.join(
+                    f'''
+                    <article class="list-card">
+                      <h3>{html.escape(str(item.get("page_url", "")))}</h3>
+                      <p class="muted">Bucket: {html.escape(str(item.get("bucket", "")))} · Score: {html.escape(str(item.get("score", "")))}</p>
+                      <p class="muted">GSC: {int((item.get("search_console") or {}).get("impressions", 0))} impressions · {round(float((item.get("search_console") or {}).get("ctr", 0) or 0) * 100, 2)}% CTR</p>
+                      <p class="muted">GA4: {int((item.get("ga4") or {}).get("sessions", 0))} sessions · {int((item.get("ga4") or {}).get("conversions", 0))} conversions</p>
+                    </article>
+                    '''
+                    for item in page_insights
+                ) if page_insights else "<div class='list-card'><p class='muted'>No analytics insights generated yet.</p></div>"
+            }
+          </div>
+        </section>
+        <section class="grid-2">
+          <div class="card stack"><h2>Start doing</h2><ul>{''.join(f'<li>{html.escape(item)}</li>' for item in start_doing) if start_doing else '<li>No guidance yet.</li>'}</ul></div>
+          <div class="card stack"><h2>Stop doing</h2><ul>{''.join(f'<li>{html.escape(item)}</li>' for item in stop_doing) if stop_doing else '<li>No guidance yet.</li>'}</ul></div>
+        </section>
+        <section class="grid-2">
+          <div class="card stack"><h2>Do more of</h2><ul>{''.join(f'<li>{html.escape(item)}</li>' for item in do_more_of) if do_more_of else '<li>No guidance yet.</li>'}</ul></div>
           <div class="card stack"><h2>Open queue</h2>{_feedback_cards(feedback[:6], with_actions=True)}</div>
+        </section>
+        <section class="grid-2">
           <div class="card stack"><h2>Recent reports</h2>{_report_cards(reports[:6])}</div>
+          <div class="card stack"><h2>Analytics notes</h2><ul>{''.join(f'<li>{html.escape(str(item))}</li>' for item in analytics_status.get('notes', [])) if analytics_status.get('notes') else '<li>No analytics warnings.</li>'}</ul></div>
         </section>
       </main>
     """

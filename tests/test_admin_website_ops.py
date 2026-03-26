@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,29 @@ from sales_support_agent.services.website_ops import (
 
 
 class AdminWebsiteOpsTests(unittest.TestCase):
+    def _fake_report(self) -> dict[str, object]:
+        return {
+            "date": "2026-03-26",
+            "generated_at": "2026-03-26T00:00:00Z",
+            "title": "Anata Website Ops Daily Report",
+            "scope": "agent-admin daily sweep",
+            "status": "healthy",
+            "pages_reviewed": 0,
+            "pages_healthy": 0,
+            "pages_with_issues": 0,
+            "issues_found": 0,
+            "issue_counts_by_priority": {"P0": 0, "P1": 0, "P2": 0, "P3": 0},
+            "pages": [],
+            "issues": [],
+            "recommendations": [],
+            "notes": [],
+            "feedback_received": 0,
+            "feedback_open": 0,
+            "recent_feedback": [],
+            "changes_applied": 0,
+            "executed_actions": [],
+        }
+
     def _settings(self, root: Path, *, execute_approved: bool = False) -> SimpleNamespace:
         return SimpleNamespace(
             website_ops_root=root,
@@ -41,6 +65,52 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("control tower", html)
             self.assertIn("/admin/api/website-ops/run", html)
             self.assertIn("/admin/api/website-ops/feedback", html)
+
+    def test_dashboard_render_uses_latest_report_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            reports_dir = settings.website_ops_root / "reports" / "daily"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            report_md = reports_dir / "2026-03-26-autonomy-report.md"
+            report_json = reports_dir / "2026-03-26-autonomy-report.json"
+            report_md.write_text("# Autonomy Report\n\nDate: 2026-03-26\nScope: agent-admin daily sweep\n\nSummary paragraph.\n")
+            report_json.write_text(
+                json.dumps(
+                    {
+                        "goal": {"primary": "Increase qualified leads."},
+                        "action_queue": [
+                            {
+                                "page_url": "https://anatainc.com/services/shipping/",
+                                "section_name": "Hero heading",
+                                "before_state": "Old heading",
+                                "after_state": "New heading",
+                                "reason": "CTR is weak.",
+                                "insight_source": "Google Search Console",
+                            }
+                        ],
+                        "support_requests": ["Provide proof assets for shipping."],
+                        "start_doing": ["Approve high-confidence structural fixes quickly."],
+                        "stop_doing": ["Stop editing healthy pages without evidence."],
+                        "do_more_of": ["Provide stronger proof assets."],
+                        "page_insights": [
+                            {
+                                "page_url": "https://anatainc.com/services/shipping/",
+                                "bucket": "repair",
+                                "score": 61,
+                                "search_console": {"impressions": 120, "ctr": 0.01},
+                                "ga4": {"sessions": 22, "conversions": 0},
+                            }
+                        ],
+                        "analytics_status": {"search_console": True, "ga4": False, "notes": ["GA4 unavailable"]},
+                    }
+                )
+            )
+            html = render_dashboard_page(settings)
+            self.assertIn("Primary goal", html)
+            self.assertIn("Increase qualified leads.", html)
+            self.assertIn("New heading", html)
+            self.assertIn("Provide proof assets for shipping.", html)
+            self.assertIn("GA4 unavailable", html)
 
     def test_review_feedback_round_trip_saves_execution_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -102,12 +172,42 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 },
             )
             with mock.patch.object(website_ops, "execute_feedback_action", side_effect=website_ops.ExecutionError("boom")):
-                with mock.patch.object(website_ops, "run_daily_report_pipeline", return_value={"report": {"date": "2026-03-26"}, "artifacts": {}}):
+                with mock.patch.object(
+                    website_ops,
+                    "run_daily_report_pipeline",
+                    return_value={"report": self._fake_report(), "observations": [], "artifacts": {}},
+                ):
                     result = run_website_ops(settings, mode="daily")
             self.assertTrue(result.ok)
             updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == record["feedback_id"])
             self.assertEqual(updated["status"], "error")
             self.assertIn("boom", updated["execution_error"])
+
+    def test_run_website_ops_enriches_report_with_autonomy_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            fake_pipeline = {
+                "report": self._fake_report(),
+                "observations": [{"url": "https://anatainc.com/services/shipping/", "issues": []}],
+                "artifacts": {},
+            }
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [{"page_url": "https://anatainc.com/services/shipping/"}],
+                "analytics_status": {"search_console": False, "ga4": False, "notes": []},
+                "support_requests": [],
+                "start_doing": [],
+                "stop_doing": [],
+                "do_more_of": [],
+                "page_insights": [],
+            }
+            with mock.patch("sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline", return_value=fake_pipeline):
+                with mock.patch("sales_support_agent.services.website_ops.build_autonomy_overlay", return_value=fake_overlay):
+                    result = run_website_ops(settings, mode="daily")
+            self.assertTrue(result.ok)
+            assert result.report is not None
+            self.assertEqual(result.report["goal"]["primary"], "Increase qualified leads.")
+            self.assertEqual(result.report["action_queue"][0]["page_url"], "https://anatainc.com/services/shipping/")
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
