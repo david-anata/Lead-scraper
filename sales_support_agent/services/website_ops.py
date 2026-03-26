@@ -300,6 +300,148 @@ def _status_chip(value: str) -> str:
     return f'<span class="status-chip status-{html.escape(_feedback_status(value), quote=True)}">{html.escape(_feedback_status_label(value))}</span>'
 
 
+def _summary_chip(label: str, value: Any, *, tone: str = "neutral") -> str:
+    return (
+        f'<div class="summary-chip summary-{html.escape(tone, quote=True)}">'
+        f'<span>{html.escape(label)}</span>'
+        f"<strong>{html.escape(str(value))}</strong>"
+        "</div>"
+    )
+
+
+def _short_page_label(value: str) -> str:
+    cleaned = re.sub(r"^https?://", "", str(value or "")).strip()
+    return cleaned or "Unspecified page"
+
+
+def _action_source_chip(source: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(source or "").strip().lower()).strip("-") or "system"
+    return f'<span class="source-chip source-{html.escape(normalized, quote=True)}">{html.escape(source or "System")}</span>'
+
+
+def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
+    notes = [str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()]
+    cards = [
+        f"""
+        <article class="setup-card {'is-connected' if analytics_status.get('search_console') else 'is-blocked'}">
+          <div class="row-actions">
+            <h3>Search Console</h3>
+            <span class="status-pill {'status-ok' if analytics_status.get('search_console') else 'status-warn'}">{'Connected' if analytics_status.get('search_console') else 'Needs setup'}</span>
+          </div>
+          <p class="muted">{html.escape(next((note for note in notes if 'Search Console' in note), 'Search Console data is available for Website Ops decisions.'))}</p>
+        </article>
+        """,
+        f"""
+        <article class="setup-card {'is-connected' if analytics_status.get('ga4') else 'is-blocked'}">
+          <div class="row-actions">
+            <h3>GA4</h3>
+            <span class="status-pill {'status-ok' if analytics_status.get('ga4') else 'status-warn'}">{'Connected' if analytics_status.get('ga4') else 'Needs setup'}</span>
+          </div>
+          <p class="muted">{html.escape(next((note for note in notes if 'GA4' in note), 'GA4 landing-page and conversion data is available for Website Ops decisions.'))}</p>
+        </article>
+        """,
+    ]
+    return "".join(cards)
+
+
+def _team_help_cards(support_requests: list[str], analytics_status: dict[str, Any]) -> str:
+    analytics_notes = {str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()}
+    team_items = [str(item).strip() for item in support_requests if str(item).strip() and str(item).strip() not in analytics_notes]
+    if not team_items:
+        return """
+        <article class="task-card">
+          <div class="row-actions">
+            <h3>No manual blockers</h3>
+            <span class="status-pill status-ok">Clear</span>
+          </div>
+          <p class="muted">Website Ops does not need a team intervention from the latest run beyond normal approval review.</p>
+        </article>
+        """
+    return "".join(
+        f"""
+        <article class="task-card">
+          <div class="row-actions">
+            <h3>Team action</h3>
+            <span class="status-pill status-warn">Needed</span>
+          </div>
+          <p>{html.escape(item)}</p>
+        </article>
+        """
+        for item in team_items[:4]
+    )
+
+
+def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) -> str:
+    if not entry:
+        return """
+        <div class="card stack">
+          <h2>Latest report</h2>
+          <p class="lead">No report has been generated yet.</p>
+        </div>
+        """
+    status = str(payload.get("status") or entry.get("mode") or "unknown")
+    stats = [
+        ("Pages reviewed", payload.get("pages_reviewed", "0"), "neutral"),
+        ("Healthy", payload.get("pages_healthy", "0"), "good"),
+        ("Needs work", payload.get("pages_with_issues", "0"), "warn" if int(payload.get("pages_with_issues", 0) or 0) else "neutral"),
+        ("Issues found", payload.get("issues_found", "0"), "warn" if int(payload.get("issues_found", 0) or 0) else "neutral"),
+        ("Status", status.replace("-", " "), "bad" if status == "needs-attention" else "good"),
+    ]
+    return f"""
+    <div class="card stack">
+      <div class="row-actions">
+        <h2>Latest report</h2>
+        <span class="status-pill {'status-warn' if status == 'needs-attention' else 'status-ok'}">{html.escape(status.replace('-', ' '))}</span>
+      </div>
+      <div class="summary-grid">
+        {''.join(_summary_chip(label, value, tone=tone) for label, value, tone in stats)}
+      </div>
+      <p class="lead">{html.escape(entry.get('excerpt', '') or 'Latest Website Ops summary is ready for review.')}</p>
+      <div class="button-row">
+        <a href="/admin/website-ops/reports/{html.escape(entry['mode'], quote=True)}/{html.escape(entry['slug'], quote=True)}" class="text-link">Open {html.escape(entry['title'])}</a>
+      </div>
+    </div>
+    """
+
+
+def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
+    if not action_queue:
+        return "<div class='list-card'><p class='muted'>No action queue generated yet.</p></div>"
+    cards = []
+    for item in action_queue:
+        confidence = str(item.get("confidence", "medium")).strip().lower() or "medium"
+        requires_approval = bool(item.get("requires_approval"))
+        cards.append(
+            f"""
+            <article class="action-card">
+              <div class="row-actions">
+                {_action_source_chip(str(item.get("insight_source", "System")))}
+                <div class="chip-row">
+                  <span class="status-pill {'status-warn' if requires_approval else 'status-ok'}">{'Approval required' if requires_approval else 'Safe to apply'}</span>
+                  <span class="status-pill status-neutral">{html.escape(confidence.title())} confidence</span>
+                </div>
+              </div>
+              <h3>{html.escape(str(item.get("page_title") or _short_page_label(str(item.get("page_url", "")))))}</h3>
+              <p class="muted">{html.escape(_short_page_label(str(item.get("page_url", ""))))}</p>
+              <p><strong>Section:</strong> {html.escape(str(item.get("section_name", "Unspecified section")))}</p>
+              <div class="diff-grid">
+                <div class="diff-block">
+                  <p class="eyebrow">Before</p>
+                  <p>{html.escape(str(item.get("before_state", "Not captured")))}</p>
+                </div>
+                <div class="diff-block">
+                  <p class="eyebrow">After</p>
+                  <p>{html.escape(str(item.get("after_state", "No proposed state")))}</p>
+                </div>
+              </div>
+              <p><strong>Why this matters:</strong> {html.escape(str(item.get("reason", "No rationale supplied.")))}</p>
+              <p class="muted"><strong>Expected impact:</strong> {html.escape(str(item.get("expected_impact", "Improves performance against the current goal.")))}</p>
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
 def _page_shell(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -359,12 +501,36 @@ def _page_shell(title: str, body: str) -> str:
       .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }}
       .span-2 {{ grid-column: 1 / -1; }}
       .detail-layout {{ display: grid; grid-template-columns: minmax(260px,.75fr) minmax(0,1.25fr); gap: 18px; align-items: start; }}
+      .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 10px; }}
+      .summary-chip {{ border: 1px solid var(--line); border-radius: 18px; padding: 14px; background: #fcfbf8; display: grid; gap: 6px; }}
+      .summary-chip span {{ font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }}
+      .summary-chip strong {{ font-size: 22px; line-height: 1.05; }}
+      .summary-good strong {{ color: var(--good); }}
+      .summary-warn strong, .summary-bad strong {{ color: var(--warn); }}
+      .summary-bad strong {{ color: var(--bad); }}
+      .setup-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }}
+      .setup-card, .task-card, .action-card {{ display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }}
+      .setup-card.is-blocked {{ border-color: rgba(161,98,7,.28); background: #fffaf0; }}
+      .setup-card.is-connected {{ border-color: rgba(15,118,110,.18); background: #f8fffc; }}
+      .status-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }}
+      .status-ok {{ background: rgba(15,118,110,.1); color: var(--good); }}
+      .status-warn {{ background: rgba(161,98,7,.12); color: var(--warn); }}
+      .status-neutral {{ background: #eef2f7; color: var(--ink); }}
+      .chip-row {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+      .text-link {{ font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
+      .action-card {{ background: linear-gradient(180deg, #fff 0%, #fdfbf7 100%); }}
+      .source-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #edf5ff; color: #25577a; }}
+      .source-google-search-console, .source-google-search-console-source, .source-google-search-console-audit {{ background: #edf7ff; color: #275e83; }}
+      .source-google-analytics-4 {{ background: #fff6ea; color: #8f5d0f; }}
+      .source-structural-audit {{ background: #f2f7f4; color: #1e6259; }}
+      .diff-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }}
+      .diff-block {{ padding: 14px; border-radius: 16px; background: #f7f4ef; border: 1px solid rgba(29,45,68,0.08); }}
       .report-frame {{ border: 1px solid var(--line); border-radius: 18px; overflow: hidden; min-height: 640px; background: #fff; }}
       .report-frame iframe {{ width: 100%; min-height: 640px; border: 0; }}
       .flash {{ padding: 14px 16px; border-radius: 16px; background: rgba(133,187,218,.18); border: 1px solid rgba(133,187,218,.35); }}
       code {{ background: #f3efe6; padding: 2px 6px; border-radius: 6px; }}
       @media (max-width: 900px) {{
-        .hero, .grid-2, .detail-layout, .stats, .form-grid {{ grid-template-columns: 1fr; }}
+        .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid {{ grid-template-columns: 1fr; }}
       }}
     </style>
   </head>
@@ -479,7 +645,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
             <p class="eyebrow">Current scope</p>
             <p class="lead">Monitoring <strong>{len(settings.website_ops_site_urls)}</strong> live URLs under <code>{html.escape(str(settings.website_ops_root))}</code>.</p>
             <p class="lead">Auto-execution is <strong>{'enabled' if settings.website_ops_execute_approved else 'disabled'}</strong>.</p>
-            <p class="lead">Search Console: <strong>{'connected' if analytics_status.get('search_console') else 'not connected'}</strong> · GA4: <strong>{'connected' if analytics_status.get('ga4') else 'not connected'}</strong>.</p>
+            <div class="setup-grid">
+              {_analytics_connection_cards(analytics_status)}
+            </div>
           </div>
         </section>
         <section class="stats">
@@ -496,17 +664,12 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           </div>
           <div class="card stack">
             <p class="eyebrow">How the team helps</p>
-            <ul>
-              {''.join(f"<li>{html.escape(item)}</li>" for item in support_requests) if support_requests else '<li>No support prompts generated yet.</li>'}
-            </ul>
+            <p class="lead">These are the manual decisions or assets Website Ops still needs from the team.</p>
+            {_team_help_cards(support_requests, analytics_status)}
           </div>
         </section>
         <section class="grid-2">
-          <div class="card stack">
-            <h2>Latest report</h2>
-            <p class="lead">{html.escape(latest.get('excerpt', '') if latest else 'No report has been generated yet.')}</p>
-            {f"<p><a href='/admin/website-ops/reports/{latest['mode']}/{latest['slug']}'>Open {html.escape(latest['title'])}</a></p>" if latest else ""}
-          </div>
+          {_latest_report_panel(latest, latest_payload)}
           <div class="card stack">
             <h2>Submit a new issue</h2>
             <form action="/admin/api/website-ops/feedback" method="post" class="form-grid">
@@ -522,21 +685,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
         <section class="grid-2">
           <div class="card stack">
             <h2>Priority action queue</h2>
-            {
-                ''.join(
-                    f'''
-                    <article class="list-card">
-                      <p class="eyebrow">{html.escape(str(item.get("insight_source", "")))}</p>
-                      <h3>{html.escape(str(item.get("page_url", "")))}</h3>
-                      <p><strong>Section:</strong> {html.escape(str(item.get("section_name", "")))}</p>
-                      <p><strong>Before:</strong> {html.escape(str(item.get("before_state", "")))}</p>
-                      <p><strong>After:</strong> {html.escape(str(item.get("after_state", "")))}</p>
-                      <p class="muted">{html.escape(str(item.get("reason", "")))}</p>
-                    </article>
-                    '''
-                    for item in action_queue
-                ) if action_queue else "<div class='list-card'><p class='muted'>No action queue generated yet.</p></div>"
-            }
+            <p class="lead">Each card shows the page, exact section, current state, proposed state, and why the change supports the goal.</p>
+            {_action_queue_cards(action_queue)}
           </div>
           <div class="card stack">
             <h2>Insight snapshots</h2>
@@ -565,7 +715,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
         </section>
         <section class="grid-2">
           <div class="card stack"><h2>Recent reports</h2>{_report_cards(reports[:6])}</div>
-          <div class="card stack"><h2>Analytics notes</h2><ul>{''.join(f'<li>{html.escape(str(item))}</li>' for item in analytics_status.get('notes', [])) if analytics_status.get('notes') else '<li>No analytics warnings.</li>'}</ul></div>
+          <div class="card stack"><h2>Data connection notes</h2><p class="lead">Website Ops uses these signals to decide what to change next.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
         </section>
       </main>
     """

@@ -89,6 +89,32 @@ def analytics_config_from_settings(settings: Any) -> AnalyticsConfig:
     )
 
 
+def _search_console_failure_note(status_code: int, property_name: str) -> str:
+    if status_code == 403:
+        return (
+            "Search Console access is blocked. Grant the Website Ops service account Full access "
+            f"to {property_name or 'the verified property'}, or update WEBSITE_OPS_GSC_PROPERTY to the exact verified property."
+        )
+    if status_code == 404:
+        return (
+            "Search Console property was not found. Verify WEBSITE_OPS_GSC_PROPERTY matches the verified domain or URL-prefix property."
+        )
+    return f"Search Console request failed ({status_code})."
+
+
+def _ga4_failure_note(status_code: int, property_id: str) -> str:
+    if status_code == 403:
+        return (
+            "GA4 access is blocked. Grant the Website Ops service account access to the configured GA4 property "
+            f"({property_id or 'missing property id'})."
+        )
+    if status_code == 404:
+        return (
+            "GA4 property was not found. Verify WEBSITE_OPS_GA4_PROPERTY_ID matches the numeric property ID in Google Analytics."
+        )
+    return f"GA4 request failed ({status_code})."
+
+
 def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     config = analytics_config_from_settings(settings)
     if not config.service_account_json:
@@ -119,7 +145,7 @@ def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[
         timeout=30,
     )
     if not page_response.ok:
-        return {}, [f"Search Console request failed ({page_response.status_code})."]
+        return {}, [_search_console_failure_note(page_response.status_code, config.search_console_property)]
 
     query_response = requests.post(
         base_url,
@@ -178,7 +204,7 @@ def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[s
     if not config.service_account_json:
         return {}, ["GA4 unavailable: GOOGLE_SERVICE_ACCOUNT_JSON is not configured."]
     if not config.ga4_property_id:
-        return {}, ["GA4 unavailable: WEBSITE_OPS_GA4_PROPERTY_ID is not configured."]
+        return {}, ["GA4 property ID is missing. Set WEBSITE_OPS_GA4_PROPERTY_ID in the agent service environment."]
 
     try:
         token = _google_access_token(config.service_account_json, [GA4_SCOPE])
@@ -197,7 +223,7 @@ def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[s
         timeout=30,
     )
     if not response.ok:
-        return {}, [f"GA4 request failed ({response.status_code})."]
+        return {}, [_ga4_failure_note(response.status_code, config.ga4_property_id)]
 
     monitored_paths = {_path_from_url(url): _normalize_url(url) for url in urls}
     metrics_by_url: dict[str, dict[str, Any]] = {}
@@ -498,4 +524,3 @@ def build_autonomy_overlay(
         "action_queue": action_queue[:25],
         "approved_action_count": len(approved_actions),
     }
-

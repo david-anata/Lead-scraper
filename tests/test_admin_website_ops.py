@@ -78,9 +78,15 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 json.dumps(
                     {
                         "goal": {"primary": "Increase qualified leads."},
+                        "pages_reviewed": 7,
+                        "pages_healthy": 6,
+                        "pages_with_issues": 1,
+                        "issues_found": 1,
+                        "status": "needs-attention",
                         "action_queue": [
                             {
                                 "page_url": "https://anatainc.com/services/shipping/",
+                                "page_title": "Shipping services",
                                 "section_name": "Hero heading",
                                 "before_state": "Old heading",
                                 "after_state": "New heading",
@@ -108,9 +114,13 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             html = render_dashboard_page(settings)
             self.assertIn("Primary goal", html)
             self.assertIn("Increase qualified leads.", html)
+            self.assertIn("Pages reviewed", html)
+            self.assertIn("needs attention", html)
             self.assertIn("New heading", html)
             self.assertIn("Provide proof assets for shipping.", html)
             self.assertIn("GA4 unavailable", html)
+            self.assertIn("Why this matters", html)
+            self.assertIn("Needs setup", html)
 
     def test_review_feedback_round_trip_saves_execution_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
