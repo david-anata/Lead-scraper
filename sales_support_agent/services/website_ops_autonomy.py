@@ -84,12 +84,27 @@ def analytics_config_from_settings(settings: Any) -> AnalyticsConfig:
     return AnalyticsConfig(
         service_account_json=_setting(settings, "google_service_account_json", "GOOGLE_SERVICE_ACCOUNT_JSON"),
         search_console_property=_setting(settings, "website_ops_gsc_property", "WEBSITE_OPS_GSC_PROPERTY", "sc-domain:anatainc.com"),
-        ga4_property_id=_setting(settings, "website_ops_ga4_property_id", "WEBSITE_OPS_GA4_PROPERTY_ID"),
+        ga4_property_id=_setting(settings, "website_ops_ga4_property_id", "WEBSITE_OPS_GA4_PROPERTY_ID", "372887830"),
         lookback_days=max(int(_setting(settings, "website_ops_lookback_days", "WEBSITE_OPS_LOOKBACK_DAYS", "28") or "28"), 7),
     )
 
 
-def _search_console_failure_note(status_code: int, property_name: str) -> str:
+def _service_disabled_note(service_name: str, project_name: str) -> str:
+    return f"{service_name} API is disabled in Google Cloud project {project_name}. Enable it in Google Cloud, then rerun Website Ops."
+
+
+def _response_text(response: requests.Response) -> str:
+    try:
+        return response.text
+    except Exception:
+        return ""
+
+
+def _search_console_failure_note(response: requests.Response, property_name: str, project_name: str) -> str:
+    status_code = response.status_code
+    body = _response_text(response)
+    if "SERVICE_DISABLED" in body or "accessNotConfigured" in body:
+        return _service_disabled_note("Search Console", project_name)
     if status_code == 403:
         return (
             "Search Console access is blocked. Grant the Website Ops service account Full access "
@@ -102,7 +117,11 @@ def _search_console_failure_note(status_code: int, property_name: str) -> str:
     return f"Search Console request failed ({status_code})."
 
 
-def _ga4_failure_note(status_code: int, property_id: str) -> str:
+def _ga4_failure_note(response: requests.Response, property_id: str, project_name: str) -> str:
+    status_code = response.status_code
+    body = _response_text(response)
+    if "SERVICE_DISABLED" in body or "accessNotConfigured" in body:
+        return _service_disabled_note("Google Analytics Data", project_name)
     if status_code == 403:
         return (
             "GA4 access is blocked. Grant the Website Ops service account access to the configured GA4 property "
@@ -117,6 +136,7 @@ def _ga4_failure_note(status_code: int, property_id: str) -> str:
 
 def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     config = analytics_config_from_settings(settings)
+    project_name = _load_service_account_info(config.service_account_json).get("project_id", "the configured project") if config.service_account_json else "the configured project"
     if not config.service_account_json:
         return {}, ["Search Console unavailable: GOOGLE_SERVICE_ACCOUNT_JSON is not configured."]
     if not config.search_console_property:
@@ -145,7 +165,7 @@ def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[
         timeout=30,
     )
     if not page_response.ok:
-        return {}, [_search_console_failure_note(page_response.status_code, config.search_console_property)]
+        return {}, [_search_console_failure_note(page_response, config.search_console_property, str(project_name))]
 
     query_response = requests.post(
         base_url,
@@ -201,6 +221,7 @@ def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[
 
 def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     config = analytics_config_from_settings(settings)
+    project_name = _load_service_account_info(config.service_account_json).get("project_id", "the configured project") if config.service_account_json else "the configured project"
     if not config.service_account_json:
         return {}, ["GA4 unavailable: GOOGLE_SERVICE_ACCOUNT_JSON is not configured."]
     if not config.ga4_property_id:
@@ -223,7 +244,7 @@ def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[s
         timeout=30,
     )
     if not response.ok:
-        return {}, [_ga4_failure_note(response.status_code, config.ga4_property_id)]
+        return {}, [_ga4_failure_note(response, config.ga4_property_id, str(project_name))]
 
     monitored_paths = {_path_from_url(url): _normalize_url(url) for url in urls}
     metrics_by_url: dict[str, dict[str, Any]] = {}
