@@ -68,6 +68,13 @@ class DeckGenerationResult:
     template_fields: int
 
 
+@dataclass(frozen=True)
+class TargetRowMatch:
+    product: XrayProduct | None
+    provenance: str
+    confidence: int
+
+
 DEFAULT_CUSTOM_OFFERS: tuple[dict[str, str], ...] = (
     {
         "title": "Channel management",
@@ -502,18 +509,25 @@ class DeckGenerationService:
         if keyword_report:
             warnings.extend(keyword_report.warnings)
 
-        resolved_target_asin = (hero_product.asin or parsed_target["asin"]).strip()
-        target_row = _find_target_row(
+        verified_target_asin = (parsed_target["asin"] or hero_product.asin).strip()
+        target_match = _find_target_row(
             xray_report,
-            asin=resolved_target_asin,
+            asin=verified_target_asin,
+            candidate_asin=hero_product.candidate_asin,
             source_url=hero_product.source_url or parsed_target["source_url"],
             title=hero_product.title or parsed_target["product_name"],
             brand_name=hero_product.brand_name or parsed_target.get("brand_name", ""),
         )
+        target_row = target_match.product
+        resolved_target_asin = (
+            verified_target_asin
+            or (target_row.asin if target_row else "")
+        ).strip()
         primary_competitors = [
             product
             for product in xray_report.products
-            if not resolved_target_asin or product.asin.upper() != resolved_target_asin.upper()
+            if (not resolved_target_asin or product.asin.upper() != resolved_target_asin.upper())
+            and (not target_row or product.asin.upper() != target_row.asin.upper())
         ][:10]
         market_cards = _build_market_metric_cards(xray_report, keyword_report)
         keyword_cards = _build_keyword_metric_cards(keyword_report)
@@ -591,12 +605,22 @@ class DeckGenerationService:
             or (target_row.price_label if target_row else "")
             or "Unavailable"
         ).strip()
-        target_bsr_label = (target_row.bsr_label if target_row else "").strip()
-        target_review_count = target_row.review_count if target_row else None
-        target_rating_label = (target_row.rating_label if target_row else "").strip()
-        target_revenue_label = (target_row.revenue_label if target_row else "").strip()
+        target_bsr_label = (
+            (target_row.bsr_label if target_row and target_row.bsr_label != "n/a" else "")
+            or _label_float(hero_product.bsr, 0)
+        ).strip()
+        target_review_count = target_row.review_count if target_row and target_row.review_count is not None else hero_product.review_count
+        target_rating_label = (
+            (target_row.rating_label if target_row and target_row.rating_label != "n/a" else "")
+            or _label_float(hero_product.rating, 1)
+        ).strip()
+        target_revenue_label = (
+            (target_row.revenue_label if target_row and target_row.revenue_label != "n/a" else "")
+        ).strip()
         target_dimensions = (hero_product.dimensions or (target_row.dimensions if target_row else "")).strip()
+        target_state = _resolve_target_state(parsed_target["source_type"], target_row=target_row, hero_product=hero_product)
         target_strengths, target_gaps = _build_target_opportunities(
+            comparison_mode=target_state,
             brand_name=target_brand,
             target_row=target_row,
             hero_product=hero_product,
@@ -619,7 +643,13 @@ class DeckGenerationService:
             "hero_product_type": hero_product.product_type or (target_row.category if target_row else ""),
             "hero_product_tags": ", ".join(hero_product.tags),
             "hero_product_image_url": target_image_url,
-            "hero_product_snapshot": _build_target_snapshot_text(display_title, target_brand, target_row),
+            "hero_product_snapshot": _build_target_snapshot_text(
+                display_title,
+                target_brand,
+                target_row,
+                comparison_mode=target_state,
+                hero_product=hero_product,
+            ),
             "report_generated_date": _format_display_date(effective_date),
             "reporting_period": _format_display_date(effective_date),
             "market_summary": _build_market_summary(target_brand, xray_report, keyword_report),
@@ -636,6 +666,7 @@ class DeckGenerationService:
             "target_rating": target_rating_label,
             "target_review_count": str(target_review_count or ""),
             "target_revenue": target_revenue_label,
+            "target_comparison_mode": target_state,
         }
         for slot, product in enumerate(primary_competitors, start=1):
             text_fields[f"competitor_{slot}_name"] = product.title
@@ -678,6 +709,10 @@ class DeckGenerationService:
                     "dimensions": target_dimensions,
                     "description": hero_product.description,
                     "type": text_fields["hero_product_type"],
+                    "comparison_mode": target_state,
+                    "match_provenance": target_match.provenance,
+                    "match_confidence": target_match.confidence,
+                    "market_metrics_source": hero_product.market_metrics_source or ("xray" if target_row else ""),
                 },
                 "market_cards": market_cards,
                 "keyword_cards": keyword_cards,
@@ -880,7 +915,8 @@ class DeckGenerationService:
         target_strength_html = "".join(_render_action_item(item) for item in target_strengths)
         target_gap_html = "".join(_render_action_item(item) for item in target_gaps)
         best_seller = xray_report.products[0] if xray_report.products else None
-        launch_mode = best_seller is not None and not bool(target.get("bsr") or target.get("revenue") or target.get("rating") or target.get("review_count"))
+        comparison_mode = str(target.get("comparison_mode", "") or "")
+        launch_mode = comparison_mode == "concept_only"
         competitor_landscape_table = _render_competitor_landscape_table(xray_report.products[:10], xray_report.total_revenue)
         comparison_table_html = _render_target_comparison_table(target, best_seller, no_product_image)
         target_identifier = str(target.get("asin") or "").strip()
@@ -1310,47 +1346,85 @@ def _find_target_row(
     xray_report: Helium10XrayReport,
     *,
     asin: str,
+    candidate_asin: str,
     source_url: str,
     title: str,
     brand_name: str,
-) -> XrayProduct | None:
+) -> TargetRowMatch:
     if asin:
         exact = xray_report.find_by_asin(asin)
         if exact:
-            return exact
+            return TargetRowMatch(product=exact, provenance="verified_asin", confidence=100)
 
     normalized_url = _normalize_product_url(source_url)
     normalized_title = _normalize_key(_clean_listing_title(title))
     normalized_brand = _normalize_key(brand_name)
     title_tokens = _title_token_set(title)
-    best_match: XrayProduct | None = None
+    best_match: TargetRowMatch | None = None
     best_score = 0
 
+    if candidate_asin:
+        candidate = xray_report.find_by_asin(candidate_asin)
+        if candidate:
+            candidate_score = _score_target_match(
+                candidate,
+                normalized_url=normalized_url,
+                normalized_title=normalized_title,
+                normalized_brand=normalized_brand,
+                title_tokens=title_tokens,
+            )
+            if candidate_score >= 75:
+                return TargetRowMatch(product=candidate, provenance="candidate_asin_verified", confidence=candidate_score)
+
     for product in xray_report.products:
-        score = 0
-        if normalized_url and normalized_url == _normalize_product_url(product.url):
-            score += 120
-        product_title = _normalize_key(_clean_listing_title(product.title))
-        product_brand = _normalize_key(product.brand)
-        if normalized_title and normalized_title == product_title:
-            score += 90
-        elif normalized_title and product_title and (normalized_title in product_title or product_title in normalized_title):
-            score += 70
-        if normalized_brand and normalized_brand == product_brand:
-            score += 25
-        product_tokens = _title_token_set(product.title)
-        if title_tokens and product_tokens:
-            overlap = len(title_tokens & product_tokens)
-            if overlap:
-                score += overlap * 6
-            overlap_ratio = overlap / max(1, min(len(title_tokens), len(product_tokens)))
-            if overlap_ratio >= 0.6:
-                score += 25
+        score = _score_target_match(
+            product,
+            normalized_url=normalized_url,
+            normalized_title=normalized_title,
+            normalized_brand=normalized_brand,
+            title_tokens=title_tokens,
+        )
         if score > best_score:
             best_score = score
-            best_match = product
+            best_match = TargetRowMatch(product=product, provenance="identity_match", confidence=score)
 
-    return best_match if best_score >= 45 else None
+    return best_match if best_match and best_score >= 75 else TargetRowMatch(product=None, provenance="", confidence=0)
+
+
+def _score_target_match(
+    product: XrayProduct,
+    *,
+    normalized_url: str,
+    normalized_title: str,
+    normalized_brand: str,
+    title_tokens: set[str],
+) -> int:
+    score = 0
+    product_title = _normalize_key(_clean_listing_title(product.title))
+    product_brand = _normalize_key(product.brand)
+    product_tokens = _title_token_set(product.title)
+    input_variants = _variant_tokens(normalized_title)
+    product_variants = _variant_tokens(product.title)
+    if normalized_url and normalized_url == _normalize_product_url(product.url):
+        score += 120
+    if normalized_title and normalized_title == product_title:
+        score += 100
+    elif normalized_title and product_title and (normalized_title in product_title or product_title in normalized_title):
+        score += 55
+    if normalized_brand and normalized_brand == product_brand:
+        score += 30
+    if title_tokens and product_tokens:
+        overlap = len(title_tokens & product_tokens)
+        if overlap:
+            score += overlap * 6
+        overlap_ratio = overlap / max(1, min(len(title_tokens), len(product_tokens)))
+        if overlap_ratio >= 0.8:
+            score += 30
+        elif overlap_ratio >= 0.6:
+            score += 18
+    if input_variants != product_variants and (input_variants or product_variants):
+        score -= 35
+    return score
 
 
 def _infer_brand_from_title(title: str) -> str:
@@ -1390,11 +1464,55 @@ def _title_token_set(value: str) -> set[str]:
     }
 
 
-def _build_target_snapshot_text(target_title: str, brand_name: str, target_row: XrayProduct | None) -> str:
-    if target_row and target_row.revenue:
+def _variant_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"(?:\d+(?:\.\d+)?(?:oz|ml|lb|ct|pack|pk|count|inch|in)|\d+)", _clean_listing_title(value).lower())
+        if token
+    }
+
+
+def _resolve_target_state(source_type: str, *, target_row: XrayProduct | None, hero_product: EnrichedHeroProduct) -> str:
+    if target_row:
+        return "matched_market"
+    if source_type == "amazon" or hero_product.asin:
+        return "live_unmatched"
+    if hero_product.source_url:
+        return "concept_only"
+    return "concept_only"
+
+
+def _build_target_snapshot_text(
+    target_title: str,
+    brand_name: str,
+    target_row: XrayProduct | None,
+    *,
+    comparison_mode: str,
+    hero_product: EnrichedHeroProduct,
+) -> str:
+    if comparison_mode == "matched_market" and target_row:
+        revenue_text = target_row.revenue_label if target_row.revenue_label and target_row.revenue_label != "n/a" else ""
+        bsr_text = target_row.bsr_label if target_row.bsr_label and target_row.bsr_label != "n/a" else ""
+        metrics_clause = ""
+        if revenue_text or bsr_text:
+            metrics_parts = [part for part in (f"{revenue_text} in revenue" if revenue_text else "", f"{bsr_text} BSR" if bsr_text else "") if part]
+            metrics_clause = f" In the current niche export it shows {' and '.join(metrics_parts)}."
+        return f"{_brand_product_reference(brand_name)} is the benchmark listing for this prospect.{metrics_clause}"
+    if comparison_mode == "live_unmatched":
+        bsr_text = _label_float(hero_product.bsr, 0) if hero_product.bsr is not None else ""
+        rating_text = _label_float(hero_product.rating, 1) if hero_product.rating is not None else ""
+        review_text = _label_integer(hero_product.review_count) if hero_product.review_count is not None else ""
+        details = []
+        if bsr_text and bsr_text != "n/a":
+            details.append(f"{bsr_text} BSR")
+        if rating_text and rating_text != "n/a":
+            details.append(f"{rating_text} rating")
+        if review_text and review_text != "n/a":
+            details.append(f"{review_text} reviews")
+        metrics_clause = f" Current direct target data shows {' / '.join(details)}." if details else ""
         return (
-            f"{_brand_product_reference(brand_name)} is the benchmark listing for this prospect. "
-            f"In the current niche export it shows {target_row.revenue_label} in revenue and {target_row.bsr_label} BSR."
+            f"{_brand_product_reference(brand_name)} is live, but it was not matched to the current niche export.{metrics_clause} "
+            "Use this deck to compare the PDP and offer against page-one leaders while the market benchmark is refined."
         )
     return (
         f"{_brand_product_reference(brand_name)} is not yet established in the current market set. "
@@ -1707,19 +1825,18 @@ def _build_search_insights(
     keywords = [keyword.phrase.strip() for keyword in (keyword_report.keywords[:10] if keyword_report else []) if keyword.phrase.strip()]
     title_lc = _clean_listing_title(title).lower()
     description_lc = _clean_listing_title(description).lower()
-    title_terms = _coverage_terms(title_lc)
-    copy_terms = _coverage_terms(description_lc)
-    ranked_terms = _rank_keyword_terms(keywords)
+    copy_targets = _build_copy_targets(keywords)
     return {
         "title_hits": [phrase for phrase in keywords if phrase.lower() in title_lc],
         "title_misses": [phrase for phrase in keywords if phrase.lower() not in title_lc],
-        "copy_hits": [term for term in ranked_terms if term in copy_terms],
-        "copy_misses": [term for term in ranked_terms if term not in copy_terms],
+        "copy_hits": [target["label"] for target in copy_targets if _copy_target_is_present(target, description_lc)],
+        "copy_misses": [target["label"] for target in copy_targets if not _copy_target_is_present(target, description_lc)],
     }
 
 
 def _build_target_opportunities(
     *,
+    comparison_mode: str,
     brand_name: str,
     target_row: XrayProduct | None,
     hero_product: EnrichedHeroProduct,
@@ -1742,7 +1859,9 @@ def _build_target_opportunities(
         strengths.append(f"The listing already carries a credible review signal at {target_row.rating_label}.")
     if search_insights.get("title_hits"):
         strengths.append("The title already captures some high-intent search terms: " + ", ".join(search_insights["title_hits"][:3]) + ".")
-    if target_row is None:
+    if comparison_mode == "live_unmatched":
+        gaps.append("The live Amazon target was not matched in the current niche export, so the benchmark column uses the top page-one competitor while direct target data fills identity, BSR, rating, and review signals where available.")
+    elif comparison_mode == "concept_only":
         gaps.append("The prospect is not currently visible in the Amazon market set, so the benchmark column uses the top page-one competitor instead.")
     if not hero_product.description:
         gaps.append("The current listing copy does not expose enough product-story detail; bullets and support content need to be rebuilt.")
@@ -1845,7 +1964,12 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
 
 
 def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None, missing_image_asset: str = "") -> str:
-    launch_mode = not bool(target.get("bsr") or target.get("revenue") or target.get("rating") or target.get("review_count"))
+    comparison_mode = str(target.get("comparison_mode", "") or "")
+    launch_mode = comparison_mode == "concept_only"
+    direct_metric_reason = "Unavailable from direct target data."
+    benchmark_metric_reason = "Not present in the current niche export."
+    if comparison_mode == "live_unmatched":
+        benchmark_metric_reason = "Not matched in the current niche export."
     target_price_number = _coerce_number(str(target.get("price", "") or ""))
     target_bsr_number = _coerce_number(str(target.get("bsr", "") or ""))
     target_revenue_number = _coerce_number(str(target.get("revenue", "") or ""))
@@ -1887,7 +2011,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 target_bsr_number,
                 best_seller.bsr if best_seller else None,
                 inverse=True,
-                missing_reason="Not present in the current niche export.",
+                missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
             ),
             _render_plain_metric(best_seller.bsr_label if best_seller else "n/a"),
         ),
@@ -1898,7 +2022,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 target_revenue_number,
                 best_seller.revenue if best_seller else None,
                 inverse=False,
-                missing_reason="Not present in the current niche export.",
+                missing_reason=benchmark_metric_reason,
             ),
             _render_plain_metric(best_seller.revenue_label if best_seller else "n/a"),
         ),
@@ -1909,7 +2033,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 target_rating_number,
                 best_seller.rating if best_seller else None,
                 inverse=False,
-                missing_reason="Not present in the current niche export.",
+                missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
             ),
             _render_plain_metric(best_seller.rating_label if best_seller else "n/a"),
         ),
@@ -1920,7 +2044,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 target_reviews_number,
                 float(best_seller.review_count or 0) if best_seller else None,
                 inverse=False,
-                missing_reason="Not present in the current niche export.",
+                missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
             ),
             _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
         ),
@@ -2099,7 +2223,7 @@ def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_lab
     help_text = (
         "Title coverage checks whether exact high-intent keyword phrases are already present in the title."
         if "title" in title.lower()
-        else "Bullet / copy coverage checks whether the supporting keyword terms and modifiers appear across bullets and descriptive copy."
+        else "Bullet / copy coverage checks whether the supporting concepts, modifiers, and use-case terms appear across bullets and descriptive copy."
     )
     return (
         f"<h3>{html.escape(title)} {_render_help_badge(help_text)}</h3>"
@@ -2426,6 +2550,21 @@ def _format_metric_display(value: str) -> str:
             return f"{int(cleaned):,}"
         except ValueError:
             return cleaned
+    if re.fullmatch(r"\d{4,}\.0+", cleaned):
+        try:
+            return f"{int(float(cleaned)):,}"
+        except ValueError:
+            return cleaned
+    if re.fullmatch(r"\$?\d{4,}(?:\.\d+)?", cleaned):
+        prefix = "$" if cleaned.startswith("$") else ""
+        numeric = cleaned.lstrip("$")
+        try:
+            value_number = float(numeric)
+        except ValueError:
+            return cleaned
+        if value_number.is_integer():
+            return f"{prefix}{int(value_number):,}"
+        return f"{prefix}{value_number:,.2f}"
     return cleaned
 
 
@@ -2448,6 +2587,32 @@ def _rank_keyword_terms(phrases: list[str]) -> list[str]:
             seen.add(token)
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return [term for term, _ in ranked[:8]]
+
+
+def _build_copy_targets(phrases: list[str]) -> list[dict[str, Any]]:
+    head_terms = {term for term in _rank_keyword_terms(phrases)[:2]}
+    targets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        ordered_terms = [token for token in re.findall(r"[a-z0-9]+", phrase.lower()) if token in _coverage_terms(phrase)]
+        support_terms = [token for token in ordered_terms if token not in head_terms]
+        chosen_terms = support_terms or ordered_terms
+        if not chosen_terms:
+            continue
+        label = " ".join(chosen_terms)
+        if label in seen:
+            continue
+        seen.add(label)
+        targets.append({"label": label, "terms": tuple(chosen_terms)})
+    return targets[:8]
+
+
+def _copy_target_is_present(target: dict[str, Any], description_lc: str) -> bool:
+    terms = [str(term) for term in target.get("terms", ()) if str(term)]
+    if not terms:
+        return False
+    description_terms = _coverage_terms(description_lc)
+    return all(term in description_terms for term in terms)
 
 
 def _format_channel_label(value: str) -> str:
@@ -2659,16 +2824,13 @@ def _parse_target_product_input(value: str) -> dict[str, str]:
         }
     amazon_candidate = _parse_competitor_reference(cleaned)
     if _looks_like_amazon_target(cleaned, amazon_candidate["asin"]):
-        amazon_name = amazon_candidate["name"]
-        if _looks_like_raw_asin_label(amazon_name):
-            amazon_name = ""
         return {
             "source_type": "amazon",
             "source_url": amazon_candidate["source_url"],
             "domain": "amazon.com",
             "brand_name": "",
             "product_handle": amazon_candidate["asin"],
-            "product_name": amazon_name,
+            "product_name": "",
             "asin": amazon_candidate["asin"],
         }
     parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")

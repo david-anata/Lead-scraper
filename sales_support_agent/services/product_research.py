@@ -18,6 +18,7 @@ from sales_support_agent.integrations.shopify import ShopifyProductSnapshot, Sho
 @dataclass(frozen=True)
 class EnrichedHeroProduct:
     asin: str
+    candidate_asin: str
     brand_name: str
     title: str
     source_url: str
@@ -26,6 +27,11 @@ class EnrichedHeroProduct:
     dimensions: str
     image_url: str
     product_type: str
+    bsr: float | None
+    rating: float | None
+    review_count: int | None
+    identity_source: str
+    market_metrics_source: str
     tags: tuple[str, ...]
     warnings: tuple[str, ...]
 
@@ -62,12 +68,16 @@ class ProductResearchService:
         warnings: list[str] = []
         snapshot = self.shopify_client.fetch_product(product_url)
         amazon_reference = _fetch_public_amazon_reference(_build_public_product_query(snapshot.title, snapshot.brand_name))
+        candidate_asin = ""
+        if _is_verified_public_reference(amazon_reference, title=snapshot.title, brand_name=snapshot.brand_name):
+            candidate_asin = amazon_reference.get("asin", "")
         if not snapshot.description:
             warnings.append("Shopify description was empty, so the hero-product slide will need a manually written summary.")
         if not snapshot.price:
             warnings.append("Shopify price was unavailable from storefront data.")
         return EnrichedHeroProduct(
-            asin=amazon_reference.get("asin", ""),
+            asin="",
+            candidate_asin=candidate_asin,
             brand_name=snapshot.brand_name,
             title=snapshot.title,
             source_url=snapshot.source_url,
@@ -76,6 +86,11 @@ class ProductResearchService:
             dimensions="Pending SP-API enrichment",
             image_url=snapshot.image_url,
             product_type=snapshot.product_type,
+            bsr=None,
+            rating=None,
+            review_count=None,
+            identity_source="shopify",
+            market_metrics_source="",
             tags=snapshot.tags,
             warnings=tuple(warnings),
         )
@@ -88,6 +103,7 @@ class ProductResearchService:
             except Exception as exc:
                 return EnrichedHeroProduct(
                     asin="",
+                    candidate_asin="",
                     brand_name=target.get("brand_name", ""),
                     title=target.get("product_name", ""),
                     source_url=target.get("source_url", ""),
@@ -96,6 +112,11 @@ class ProductResearchService:
                     dimensions="",
                     image_url="",
                     product_type="",
+                    bsr=None,
+                    rating=None,
+                    review_count=None,
+                    identity_source="shopify_fallback",
+                    market_metrics_source="",
                     tags=(),
                     warnings=(f"Shopify enrichment failed for {target.get('source_url', '')}: {exc}",),
                 )
@@ -194,6 +215,9 @@ class ProductResearchService:
             ).strip()
             image_url = (page_data.get("image_url", "") or search_data.get("image_url", "") or "").strip()
             product_type = ((catalog.category if catalog else "") or page_data.get("category", "") or "").strip()
+            bsr = _parse_numeric_value((catalog.bsr if catalog else "") or page_data.get("bsr", ""))
+            rating = _parse_numeric_value(page_data.get("rating", ""))
+            review_count = _parse_int_value(page_data.get("review_count", ""))
         except Exception as exc:
             raise RuntimeError(f"Amazon target-product enrichment failed for {asin}: {exc}") from exc
 
@@ -206,6 +230,7 @@ class ProductResearchService:
 
         return EnrichedHeroProduct(
             asin=asin,
+            candidate_asin="",
             brand_name=brand_name,
             title=title,
             source_url=source_url,
@@ -214,6 +239,11 @@ class ProductResearchService:
             dimensions=dimensions,
             image_url=image_url,
             product_type=product_type,
+            bsr=bsr,
+            rating=rating,
+            review_count=review_count,
+            identity_source="amazon",
+            market_metrics_source="amazon_page" if any(value is not None for value in (bsr, rating, review_count)) else "",
             tags=(),
             warnings=tuple(warnings),
         )
@@ -230,8 +260,16 @@ class ProductResearchService:
             )
         )
         warnings = list(page_data.get("warnings", []))
+        candidate_asin = ""
+        if _is_verified_public_reference(
+            amazon_reference,
+            title=page_data.get("title", "") or target.get("product_name", ""),
+            brand_name=page_data.get("brand_name", "") or target.get("brand_name", ""),
+        ):
+            candidate_asin = amazon_reference.get("asin", "")
         return EnrichedHeroProduct(
-            asin=amazon_reference.get("asin", ""),
+            asin="",
+            candidate_asin=candidate_asin,
             brand_name=(page_data.get("brand_name", "") or target.get("brand_name", "")).strip(),
             title=(page_data.get("title", "") or target.get("product_name", "")).strip(),
             source_url=page_data.get("source_url", "") or source_url,
@@ -240,6 +278,11 @@ class ProductResearchService:
             dimensions="",
             image_url=(page_data.get("image_url", "") or "").strip(),
             product_type=(page_data.get("category", "") or "").strip(),
+            bsr=None,
+            rating=None,
+            review_count=None,
+            identity_source="website",
+            market_metrics_source="",
             tags=(),
             warnings=tuple(warnings),
         )
@@ -348,6 +391,28 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     ).replace("Visit the ", "").replace(" Store", "").strip()
     category = _clean_scraped_text(_extract_first(content, r'"productGroup":"([^"]+)"'))
     dimensions = _clean_scraped_text(_extract_first(content, r'"itemDimensions":"([^"]+)"'))
+    bsr = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'"rank"\s*:\s*"?(?:#)?([\d,]+)"?',
+            r'Best Sellers Rank[^#]*#([\d,]+)',
+        )
+    )
+    rating = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'id="acrPopover"[^>]+title="([^"]+)"',
+            r'"rating"\s*:\s*"([^"]+)"',
+        )
+    )
+    rating = _extract_first(rating, r"(\d+(?:\.\d+)?)")
+    review_count = _clean_scraped_text(
+        _extract_first(
+            content,
+            r'id="acrCustomerReviewText"[^>]*>\s*([\d,]+)',
+            r'"reviewCount"\s*:\s*"([^"]+)"',
+        )
+    )
     if not title:
         warnings.append("Amazon product page did not expose a parseable title.")
     return {
@@ -359,6 +424,9 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         "brand_name": brand_name,
         "category": category,
         "dimensions": dimensions,
+        "bsr": bsr,
+        "rating": rating,
+        "review_count": review_count,
         "warnings": warnings,
     }
 
@@ -513,6 +581,66 @@ def _query_match_score(query: str, title: str) -> int:
 def _extract_asin_from_text(value: str) -> str:
     match = re.search(r"\b([A-Z0-9]{10})\b", str(value or "").upper())
     return match.group(1) if match else ""
+
+
+def _parse_numeric_value(value: str) -> float | None:
+    cleaned = _clean_scraped_text(value)
+    if not cleaned:
+        return None
+    match = re.search(r"(\d+(?:,\d{3})*(?:\.\d+)?)", cleaned)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _parse_int_value(value: str) -> int | None:
+    numeric = _parse_numeric_value(value)
+    if numeric is None:
+        return None
+    return int(round(numeric))
+
+
+def _normalized_identity_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", _clean_scraped_text(value).lower())
+        if len(token) > 2 and token not in {"with", "from", "pack", "amazon", "site", "com"}
+    }
+
+
+def _variant_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"(?:\d+(?:\.\d+)?(?:oz|ml|lb|ct|pack|pk|count|inch|in)|\d+)", _clean_scraped_text(value).lower())
+        if token
+    }
+
+
+def _is_verified_public_reference(reference: dict[str, str], *, title: str, brand_name: str) -> bool:
+    asin = str(reference.get("asin", "") or "").strip()
+    ref_title = str(reference.get("title", "") or "").strip()
+    ref_brand = str(reference.get("brand_name", "") or "").strip()
+    if not asin or not ref_title:
+        return False
+    input_brand = _clean_scraped_text(brand_name).lower()
+    if input_brand:
+        normalized_reference_brand = _clean_scraped_text(ref_brand).lower()
+        if normalized_reference_brand and normalized_reference_brand != input_brand:
+            return False
+    input_tokens = _normalized_identity_tokens(title)
+    reference_tokens = _normalized_identity_tokens(ref_title)
+    if not input_tokens or not reference_tokens:
+        return False
+    input_variants = _variant_tokens(title)
+    reference_variants = _variant_tokens(ref_title)
+    if input_variants != reference_variants and (input_variants or reference_variants):
+        return False
+    overlap = len(input_tokens & reference_tokens)
+    required_overlap = max(2, min(len(input_tokens), len(reference_tokens)) // 2)
+    return overlap >= required_overlap
 
 
 def _is_amazon_block_page(content: str) -> bool:
