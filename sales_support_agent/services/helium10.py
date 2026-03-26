@@ -74,11 +74,12 @@ class Helium10XrayReport:
     warnings: list[str]
 
     def find_by_asin(self, asin: str) -> XrayProduct | None:
-        normalized = asin.strip().upper()
+        normalized = _extract_asin(asin)
         if not normalized:
             return None
         for product in self.products:
-            if product.asin.upper() == normalized:
+            product_asin = _extract_asin(product.asin) or _extract_asin(product.url)
+            if product_asin == normalized:
                 return product
         return None
 
@@ -122,7 +123,7 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
     warnings: list[str] = []
     for index, row in enumerate(reader, start=1):
         title = _clean_text(row.get(headers["product details"], ""))
-        asin = _clean_text(row.get(headers["asin"], "")).upper()
+        asin = _extract_asin(row.get(headers["asin"], "")) or _extract_asin(row.get(headers["url"], ""))
         if not title or not asin:
             continue
         products.append(
@@ -294,3 +295,8 @@ def _label_money(value: str) -> str:
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _extract_asin(value: object) -> str:
+    match = re.search(r"\b([A-Z0-9]{10})\b", str(value or "").upper())
+    return match.group(1) if match else ""
