@@ -199,6 +199,7 @@ class ProductResearchService:
                 (resolved_catalog_title, "amazon_catalog"),
                 (remote_catalog.get("title", ""), "remote_catalog"),
                 (page_data.get("title", ""), "amazon_page"),
+                (public_page_data.get("title", ""), "public_page"),
                 (search_data.get("title", ""), "amazon_search"),
                 (public_data.get("title", ""), "public_result"),
                 (target.get("product_name", ""), "input"),
@@ -211,6 +212,7 @@ class ProductResearchService:
                 _clean_scraped_text(catalog.brand if catalog else "")
                 or remote_catalog.get("brand_name", "")
                 or page_data.get("brand_name", "")
+                or public_page_data.get("brand_name", "")
                 or search_data.get("brand_name", "")
                 or public_data.get("brand_name", "")
                 or target.get("brand_name", "")
@@ -228,10 +230,42 @@ class ProductResearchService:
             ).strip()
             image_url = (page_data.get("image_url", "") or search_data.get("image_url", "") or remote_catalog.get("image_url", "") or public_page_data.get("image_url", "") or "").strip()
             product_type = ((catalog.category if catalog else "") or page_data.get("category", "") or remote_catalog.get("category", "") or public_page_data.get("category", "") or "").strip()
-            bsr = _parse_numeric_value((catalog.bsr if catalog else "") or page_data.get("bsr", ""))
-            rating = _parse_numeric_value(page_data.get("rating", ""))
-            review_count = _parse_int_value(page_data.get("review_count", ""))
-            if identity_source == "remote_catalog" and not page_data.get("title", ""):
+            bsr_raw = ""
+            bsr_source = ""
+            for value, source_name in (
+                ((catalog.bsr if catalog else ""), "amazon_catalog"),
+                (page_data.get("bsr", ""), "amazon_page"),
+                (remote_catalog.get("bsr", ""), "remote_catalog"),
+                (public_page_data.get("bsr", ""), "public_page"),
+            ):
+                if str(value or "").strip():
+                    bsr_raw = str(value).strip()
+                    bsr_source = source_name
+                    break
+            bsr = _parse_numeric_value(bsr_raw)
+            rating_raw = ""
+            rating_source = ""
+            for value, source_name in (
+                (page_data.get("rating", ""), "amazon_page"),
+                (public_page_data.get("rating", ""), "public_page"),
+            ):
+                if str(value or "").strip():
+                    rating_raw = str(value).strip()
+                    rating_source = source_name
+                    break
+            rating = _parse_numeric_value(rating_raw)
+            review_raw = ""
+            review_source = ""
+            for value, source_name in (
+                (page_data.get("review_count", ""), "amazon_page"),
+                (public_page_data.get("review_count", ""), "public_page"),
+            ):
+                if str(value or "").strip():
+                    review_raw = str(value).strip()
+                    review_source = source_name
+                    break
+            review_count = _parse_int_value(review_raw)
+            if identity_source == "remote_catalog" and not page_data.get("title", "") and not any(public_page_data.get(key) for key in ("rating", "review_count")):
                 rating = None
                 review_count = None
         except Exception as exc:
@@ -253,10 +287,9 @@ class ProductResearchService:
 
         deduped_warnings = tuple(dict.fromkeys(warnings))
         metric_sources: list[str] = []
-        if catalog and catalog.bsr and bsr is not None:
-            metric_sources.append("amazon_catalog")
-        if any(value is not None for value in (rating, review_count)):
-            metric_sources.append("amazon_page")
+        for source_name in (bsr_source, rating_source, review_source):
+            if source_name and source_name not in metric_sources:
+                metric_sources.append(source_name)
         return EnrichedHeroProduct(
             asin=asin,
             candidate_asin="",
@@ -384,6 +417,7 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     title = _extract_first(
         content,
         r'<meta\s+property="og:title"\s+content="([^"]+)"',
+        r'<span[^>]+id="productTitle"[^>]*>\s*(.*?)\s*</span>',
         r'"title"\s*:\s*"([^"]+)"',
         r'"name"\s*:\s*"([^"]+)"',
         r'id="productTitle"[^>]*>\s*(.*?)\s*</span>',
@@ -400,6 +434,7 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         content,
         r'<span class="a-offscreen">\s*([$][^<]+)\s*</span>',
         r'"priceAmount":"([^"]+)"',
+        r'"priceAmount":\s*([0-9]+(?:\.[0-9]+)?)',
     ).strip()
     if price and not price.startswith("$") and re.fullmatch(r"\d+(\.\d+)?", price):
         price = f"${price}"
@@ -439,6 +474,8 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         _extract_first(
             content,
             r'id="acrCustomerReviewText"[^>]*>\s*([\d,]+)',
+            r'acrCustomerReviewText"[^>]+aria-label="([\d,]+)\s+ratings"',
+            r'([\d,]+)\s+ratings',
             r'"reviewCount"\s*:\s*"([^"]+)"',
         )
     )
@@ -495,6 +532,7 @@ def _fetch_remote_catalog_data(asin: str) -> dict[str, str]:
         "title": _clean_scraped_text(str(payload.get("title", "") or "")),
         "brand_name": _clean_scraped_text(str(payload.get("brand", "") or "")),
         "price": price_label,
+        "bsr": str(payload.get("bsr") or "").strip(),
         "image_url": str(images[0] if images else ""),
         "category": _clean_scraped_text(str(payload.get("category_label", "") or "")),
         "dimensions": " x ".join(dimension_parts),
