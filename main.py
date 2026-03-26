@@ -35,6 +35,17 @@ from sales_support_agent.services.admin_dashboard import (
     render_executive_page,
     render_login_page,
 )
+from sales_support_agent.services.website_ops import (
+    latest_report_entry as latest_website_ops_report_entry,
+    render_dashboard_page as render_website_ops_dashboard_page,
+    render_feedback_detail_page as render_website_ops_feedback_detail_page,
+    render_queue_page as render_website_ops_queue_page,
+    render_report_page as render_website_ops_report_page,
+    render_reports_page as render_website_ops_reports_page,
+    review_feedback_record as review_website_ops_feedback_record,
+    run_website_ops as run_website_ops_pipeline,
+    save_feedback_record as save_website_ops_feedback_record,
+)
 from sales_support_agent.services.revenue_ops import (
     append_daily_import_count_db,
     append_processed_domains_db,
@@ -325,6 +336,13 @@ class AdminDashboardSettings:
 
 
 @dataclass(frozen=True)
+class WebsiteOpsHostSettings:
+    website_ops_root: Path
+    website_ops_site_urls: tuple[str, ...]
+    website_ops_execute_approved: bool
+
+
+@dataclass(frozen=True)
 class LeadBuildExecutionResult:
     instantly_csv: str
     instantly_rows: list[dict[str, Any]]
@@ -412,6 +430,40 @@ def load_admin_dashboard_settings() -> AdminDashboardSettings:
         admin_auto_sync_max_age_minutes=int((os.getenv("ADMIN_DASHBOARD_AUTO_SYNC_MAX_AGE_MINUTES", "30") or "30").strip()),
         sales_support_agent_url=os.getenv("SALES_SUPPORT_AGENT_URL", "https://sales-support-agent.onrender.com").strip().rstrip("/"),
         sales_agent_internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
+    )
+
+
+def _parse_bool(value: str, *, default: bool = False) -> bool:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return default
+    return normalized in {"1", "true", "yes", "on"}
+
+
+def _parse_csv_tuple(value: str, *, default: tuple[str, ...]) -> tuple[str, ...]:
+    items = tuple(part.strip() for part in (value or "").split(",") if part.strip())
+    return items or default
+
+
+def load_website_ops_settings() -> WebsiteOpsHostSettings:
+    return WebsiteOpsHostSettings(
+        website_ops_root=Path(os.getenv("WEBSITE_OPS_ROOT", "runtime/website_ops").strip() or "runtime/website_ops"),
+        website_ops_site_urls=_parse_csv_tuple(
+            os.getenv(
+                "WEBSITE_OPS_URLS",
+                "https://anatainc.com/,https://anatainc.com/services/,https://anatainc.com/services/fulfillment/,https://anatainc.com/services/shipping/,https://anatainc.com/services/ai/,https://anatainc.com/services/advertising/,https://anatainc.com/contact/",
+            ),
+            default=(
+                "https://anatainc.com/",
+                "https://anatainc.com/services/",
+                "https://anatainc.com/services/fulfillment/",
+                "https://anatainc.com/services/shipping/",
+                "https://anatainc.com/services/ai/",
+                "https://anatainc.com/services/advertising/",
+                "https://anatainc.com/contact/",
+            ),
+        ),
+        website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "false"), default=False),
     )
 
 
@@ -3338,6 +3390,76 @@ def admin_executive_dashboard(request: Request) -> Response:
     return HTMLResponse(render_executive_page(executive))
 
 
+@app.get("/admin/website-ops", response_class=HTMLResponse)
+def admin_website_ops(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_dashboard_page(load_website_ops_settings()))
+
+
+@app.get("/admin/website-ops/queue", response_class=HTMLResponse)
+def admin_website_ops_queue(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_queue_page(load_website_ops_settings()))
+
+
+@app.get("/admin/website-ops/reports", response_class=HTMLResponse)
+def admin_website_ops_reports(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_reports_page(load_website_ops_settings()))
+
+
+@app.get("/admin/website-ops/reports/latest")
+def admin_website_ops_reports_latest(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    settings = load_website_ops_settings()
+    latest = latest_website_ops_report_entry(settings)
+    if not latest:
+        return RedirectResponse(url="/admin/website-ops/reports", status_code=302)
+    return RedirectResponse(url=f"/admin/website-ops/reports/{latest['mode']}/{latest['slug']}", status_code=302)
+
+
+@app.get("/admin/website-ops/reports/{mode}/{slug}", response_class=HTMLResponse)
+def admin_website_ops_report_detail(request: Request, mode: str, slug: str) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_report_page(load_website_ops_settings(), mode, slug))
+
+
+@app.get("/admin/website-ops/feedback/{feedback_id}", response_class=HTMLResponse)
+def admin_website_ops_feedback_detail(request: Request, feedback_id: str) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_feedback_detail_page(load_website_ops_settings(), feedback_id))
+
+
 @app.post("/admin/api/run-lead-build", response_model=None)
 async def admin_run_lead_build(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
@@ -3405,6 +3527,96 @@ def admin_sync_dashboard(request: Request) -> JSONResponse:
         status_code=200,
         content={"status": "ok", "message": str(result.get("message", "Dashboard sync completed.")), "details": result},
     )
+
+
+@app.post("/admin/api/website-ops/run")
+async def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    normalized_mode = (mode or "daily").strip().lower()
+    if normalized_mode not in {"daily", "weekly", "monthly"}:
+        return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
+    run_website_ops_pipeline(load_website_ops_settings(), mode=normalized_mode)
+    return RedirectResponse(url="/admin/website-ops", status_code=302)
+
+
+@app.post("/admin/api/website-ops/feedback")
+async def admin_website_ops_feedback_submit(
+    request: Request,
+    category: str = Form(default="SEO"),
+    priority: str = Form(default="Medium"),
+    page_url: str = Form(default=""),
+    page_title: str = Form(default=""),
+    summary: str = Form(default=""),
+    details: str = Form(default=""),
+    desired_outcome: str = Form(default=""),
+    recommended_fix: str = Form(default=""),
+    reporter_name: str = Form(default=""),
+    reporter_email: str = Form(default=""),
+) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    record = save_website_ops_feedback_record(
+        load_website_ops_settings(),
+        {
+            "category": category,
+            "priority": priority,
+            "page_url": page_url,
+            "page_title": page_title,
+            "summary": summary,
+            "details": details,
+            "desired_outcome": desired_outcome,
+            "recommended_fix": recommended_fix,
+            "reporter_name": reporter_name,
+            "reporter_email": reporter_email,
+        },
+    )
+    return RedirectResponse(url=f"/admin/website-ops/feedback/{record['feedback_id']}", status_code=302)
+
+
+@app.post("/admin/api/website-ops/feedback/{feedback_id}/review")
+async def admin_website_ops_feedback_review(
+    request: Request,
+    feedback_id: str,
+    status: str = Form(default="new"),
+    reviewer_name: str = Form(default=""),
+    review_notes: str = Form(default=""),
+    action_type: str = Form(default=""),
+    action_value: str = Form(default=""),
+    target_post_id: str = Form(default=""),
+) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    result = review_website_ops_feedback_record(
+        load_website_ops_settings(),
+        feedback_id,
+        {
+            "status": status,
+            "reviewer_name": reviewer_name,
+            "review_notes": review_notes,
+            "action_type": action_type,
+            "action_value": action_value,
+            "target_post_id": target_post_id,
+        },
+    )
+    if not result.ok and not result.record:
+        return JSONResponse(status_code=404, content={"detail": result.message})
+    return RedirectResponse(url=f"/admin/website-ops/feedback/{feedback_id}", status_code=302)
 
 
 @app.post("/admin/api/create-gmail-drafts")
