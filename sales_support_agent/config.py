@@ -126,6 +126,9 @@ class Settings:
     sales_agent_db_url: str
     internal_api_key: str
     discovery_snapshot_path: Path
+    website_ops_root: Path
+    website_ops_site_urls: tuple[str, ...]
+    website_ops_execute_approved: bool
     use_due_date_for_follow_up: bool
     openai_api_key: str
     openai_model: str
@@ -372,6 +375,26 @@ def load_settings() -> Settings:
             os.getenv("CLICKUP_DISCOVERY_SNAPSHOT_PATH", "runtime/clickup_schema_snapshot.json").strip()
             or "runtime/clickup_schema_snapshot.json"
         ),
+        website_ops_root=Path(
+            os.getenv("WEBSITE_OPS_ROOT", "runtime/website_ops").strip()
+            or "runtime/website_ops"
+        ),
+        website_ops_site_urls=_parse_csv_tuple(
+            os.getenv(
+                "WEBSITE_OPS_URLS",
+                "https://anatainc.com/,https://anatainc.com/services/,https://anatainc.com/services/fulfillment/,https://anatainc.com/services/shipping/,https://anatainc.com/services/ai/,https://anatainc.com/services/advertising/,https://anatainc.com/contact/",
+            ),
+            default=(
+                "https://anatainc.com/",
+                "https://anatainc.com/services/",
+                "https://anatainc.com/services/fulfillment/",
+                "https://anatainc.com/services/shipping/",
+                "https://anatainc.com/services/ai/",
+                "https://anatainc.com/services/advertising/",
+                "https://anatainc.com/contact/",
+            ),
+        ),
+        website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "false"), default=False),
         use_due_date_for_follow_up=_parse_bool(os.getenv("CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",

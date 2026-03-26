@@ -66,6 +66,18 @@ from sales_support_agent.services.deck_generator import DeckGenerationService
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
+from sales_support_agent.services.website_ops import (
+    get_feedback_record,
+    latest_report_entry,
+    render_dashboard_page as render_website_ops_dashboard_page,
+    render_feedback_detail_page,
+    render_queue_page as render_website_ops_queue_page,
+    render_report_page,
+    render_reports_page,
+    review_feedback_record,
+    run_website_ops,
+    save_feedback_record,
+)
 from sales_support_agent.config import normalize_status_key
 
 
@@ -460,6 +472,57 @@ def admin_executive_dashboard(request: Request) -> Response:
     return HTMLResponse(render_executive_page(executive))
 
 
+@router.get("/admin/website-ops", response_class=HTMLResponse)
+def admin_website_ops(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_dashboard_page(request.app.state.settings))
+
+
+@router.get("/admin/website-ops/queue", response_class=HTMLResponse)
+def admin_website_ops_queue(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_website_ops_queue_page(request.app.state.settings))
+
+
+@router.get("/admin/website-ops/reports", response_class=HTMLResponse)
+def admin_website_ops_reports(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_reports_page(request.app.state.settings))
+
+
+@router.get("/admin/website-ops/reports/latest")
+def admin_website_ops_reports_latest(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    latest = latest_report_entry(request.app.state.settings)
+    if not latest:
+        return RedirectResponse(url="/admin/website-ops/reports", status_code=302)
+    return RedirectResponse(url=f"/admin/website-ops/reports/{latest['mode']}/{latest['slug']}", status_code=302)
+
+
+@router.get("/admin/website-ops/reports/{mode}/{slug}", response_class=HTMLResponse)
+def admin_website_ops_report_detail(request: Request, mode: str, slug: str) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_report_page(request.app.state.settings, mode, slug))
+
+
+@router.get("/admin/website-ops/feedback/{feedback_id}", response_class=HTMLResponse)
+def admin_website_ops_feedback_detail(request: Request, feedback_id: str) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return HTMLResponse(render_feedback_detail_page(request.app.state.settings, feedback_id))
+
+
 @router.get("/api/admin/dashboard-data", response_model=ApiMessage)
 def admin_dashboard_data(
     request: Request,
@@ -475,6 +538,84 @@ def admin_dashboard_data(
             clickup_client=ClickUpClient(settings),
         )
     return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=dashboard_data_to_dict(dashboard))
+
+
+@router.post("/admin/api/website-ops/run")
+def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    normalized_mode = (mode or "daily").strip().lower()
+    if normalized_mode not in {"daily", "weekly", "monthly"}:
+        return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
+    result = run_website_ops(request.app.state.settings, mode=normalized_mode)
+    return RedirectResponse(url="/admin/website-ops", status_code=302)
+
+
+@router.post("/admin/api/website-ops/feedback")
+def admin_website_ops_feedback_submit(
+    request: Request,
+    category: str = Form(default="SEO"),
+    priority: str = Form(default="Medium"),
+    page_url: str = Form(default=""),
+    page_title: str = Form(default=""),
+    summary: str = Form(default=""),
+    details: str = Form(default=""),
+    desired_outcome: str = Form(default=""),
+    recommended_fix: str = Form(default=""),
+    reporter_name: str = Form(default=""),
+    reporter_email: str = Form(default=""),
+) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    record = save_feedback_record(
+        request.app.state.settings,
+        {
+            "category": category,
+            "priority": priority,
+            "page_url": page_url,
+            "page_title": page_title,
+            "summary": summary,
+            "details": details,
+            "desired_outcome": desired_outcome,
+            "recommended_fix": recommended_fix,
+            "reporter_name": reporter_name,
+            "reporter_email": reporter_email,
+        },
+    )
+    return RedirectResponse(url=f"/admin/website-ops/feedback/{record['feedback_id']}", status_code=302)
+
+
+@router.post("/admin/api/website-ops/feedback/{feedback_id}/review")
+def admin_website_ops_feedback_review(
+    request: Request,
+    feedback_id: str,
+    status: str = Form(default="new"),
+    reviewer_name: str = Form(default=""),
+    review_notes: str = Form(default=""),
+    action_type: str = Form(default=""),
+    action_value: str = Form(default=""),
+    target_post_id: str = Form(default=""),
+) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    result = review_feedback_record(
+        request.app.state.settings,
+        feedback_id,
+        {
+            "status": status,
+            "reviewer_name": reviewer_name,
+            "review_notes": review_notes,
+            "action_type": action_type,
+            "action_value": action_value,
+            "target_post_id": target_post_id,
+        },
+    )
+    if not result.ok and not result.record:
+        return JSONResponse(status_code=404, content={"detail": result.message})
+    return RedirectResponse(url=f"/admin/website-ops/feedback/{feedback_id}", status_code=302)
 
 
 @router.get("/api/admin/executive-data", response_model=ApiMessage)

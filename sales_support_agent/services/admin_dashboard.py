@@ -2878,6 +2878,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         <div class="brandmark">agent<span class="dot">.</span></div>
         <div class="top-actions">
           <a class="toplink" href="/admin/executive">EXECUTIVE SUMMARY</a>
+          <a class="toplink" href="/admin/website-ops">WEBSITE OPS</a>
           <a class="topcta" href="/admin/logout">LOG OUT</a>
         </div>
       </div>
@@ -4405,6 +4406,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         <div class="brandmark">agent<span class="dot">.</span></div>
         <div class="top-actions">
           <a class="top-link" href="/admin">FOLLOW-UP BOARD</a>
+          <a class="top-link" href="/admin/website-ops">WEBSITE OPS</a>
           <a class="top-link primary" href="/admin/logout">LOG OUT</a>
         </div>
       </div>

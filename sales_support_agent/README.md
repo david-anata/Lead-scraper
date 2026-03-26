@@ -114,6 +114,23 @@ Legacy / currently unused:
 - `AMAZON_SP_API_AWS_SECRET_ACCESS_KEY`
 - `AMAZON_SP_API_AWS_SESSION_TOKEN`
 
+Website ops:
+
+- `WEBSITE_OPS_ROOT`
+- `WEBSITE_OPS_URLS`
+- `WEBSITE_OPS_EXECUTE_APPROVED`
+- `WP_SITE_URL`
+- `WP_USERNAME`
+- `WP_APPLICATION_PASSWORD`
+
+The agent admin now includes an internal website-ops section at:
+
+- `/admin/website-ops`
+- `/admin/website-ops/queue`
+- `/admin/website-ops/reports`
+
+This surface lets the team review SEO reports, submit page issues, approve safe actions, and optionally execute deterministic WordPress changes directly from the agent dashboard when `WEBSITE_OPS_EXECUTE_APPROVED=true`.
+
 Optional existing-field overrides:
 
 - `CLICKUP_NEXT_FOLLOW_UP_FIELD_ID`
