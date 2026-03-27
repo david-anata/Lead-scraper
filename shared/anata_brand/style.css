@@ -674,6 +674,83 @@ th {
   background: rgba(191, 67, 75, 0.16);
 }
 
+.rank-summary-list,
+.bubble-cloud {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rank-summary-list {
+  display: grid;
+  gap: 12px;
+}
+
+.rank-summary-list li {
+  display: grid;
+  gap: 6px;
+}
+
+.rank-summary-list li > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.rank-summary-list li small,
+.rank-summary-list li span {
+  color: var(--anata-muted);
+}
+
+.rank-track {
+  height: 10px;
+  background: rgba(29, 45, 68, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.rank-track span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--anata-sand) 0%, var(--anata-sky) 100%);
+}
+
+.bubble-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-end;
+}
+
+.term-bubble {
+  width: var(--bubble-size);
+  height: var(--bubble-size);
+  min-width: 72px;
+  min-height: 72px;
+  border-radius: 50%;
+  background: radial-gradient(circle at top, rgba(133, 187, 218, 0.32), rgba(29, 45, 68, 0.10));
+  border: 1px solid var(--anata-line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  text-align: center;
+}
+
+.term-bubble strong {
+  font-size: 13px;
+  line-height: 1.1;
+}
+
+.term-bubble span {
+  color: var(--anata-muted);
+  font-size: 12px;
+}
+
 .help-badge {
   display: inline-flex;
   width: 18px;
