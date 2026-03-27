@@ -1671,59 +1671,6 @@ def render_dashboard_page(data: DashboardData) -> str:
         font-family: "Roboto", sans-serif;
       }}
       a {{ color: var(--dark-blue); }}
-      .topbar {{
-        padding: 16px 24px;
-        border-bottom: 1px solid rgba(43, 54, 68, 0.12);
-        background: rgba(255,255,255,0.92);
-        backdrop-filter: blur(12px);
-        position: sticky;
-        top: 0;
-        z-index: 20;
-      }}
-      .topbar-inner {{
-        max-width: 1180px;
-        margin: 0 auto;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 20px;
-      }}
-      .brandmark {{
-        display: inline-flex;
-        align-items: center;
-        gap: 0;
-        font-family: "Montserrat", sans-serif;
-        font-weight: 800;
-        font-size: 38px;
-        line-height: 1;
-        letter-spacing: -0.05em;
-        color: var(--dark-blue);
-      }}
-      .brandmark .dot {{
-        color: var(--light-blue);
-      }}
-      .top-actions {{
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
-      }}
-      .topcta,
-      .toplink {{
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 42px;
-        padding: 0 14px;
-        border-radius: 999px;
-        color: var(--dark-blue);
-        background: var(--white);
-        border: 1px solid rgba(43, 54, 68, 0.12);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 13px;
-        text-decoration: none;
-      }}
       {render_agent_nav_styles()}
       .shell {{
         max-width: 1180px;
@@ -4011,50 +3958,6 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-family: "Roboto", sans-serif;
       }}
       a {{ color: var(--dark-blue); text-decoration: none; }}
-      .topbar {{
-        background: var(--alt-dark-blue);
-        color: var(--white);
-        padding: 18px 32px;
-      }}
-      .topbar-inner {{
-        max-width: 1280px;
-        margin: 0 auto;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 18px;
-      }}
-      .brandmark {{
-        font-family: "Montserrat", sans-serif;
-        font-weight: 800;
-        font-size: 42px;
-        line-height: 1;
-        letter-spacing: -0.04em;
-      }}
-      .brandmark .dot {{
-        color: var(--light-blue);
-      }}
-      .top-actions {{
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-      }}
-      .top-link {{
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 150px;
-        padding: 14px 22px;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.12);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 16px;
-      }}
-      .top-link.primary {{
-        background: var(--light-blue);
-      }}
       {render_agent_nav_styles()}
       .shell {{
         max-width: 1280px;
@@ -4384,9 +4287,6 @@ def render_executive_page(data: ExecutiveData) -> str:
         }}
       }}
       @media (max-width: 860px) {{
-        .topbar {{
-          padding: 18px 20px;
-        }}
         .shell {{
           padding: 24px 14px 56px;
         }}
@@ -4395,9 +4295,6 @@ def render_executive_page(data: ExecutiveData) -> str:
         }}
         .page-title {{
           font-size: 42px;
-        }}
-        .brandmark {{
-          font-size: 36px;
         }}
       }}
     </style>

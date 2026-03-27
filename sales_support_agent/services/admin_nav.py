@@ -9,12 +9,13 @@ def render_agent_nav_styles() -> str:
     return """
       .topbar {
         padding: 16px 24px;
-        border-bottom: 1px solid rgba(43, 54, 68, 0.12);
-        background: rgba(255, 253, 249, 0.92);
+        border-bottom: 1px solid rgba(43, 54, 68, 0.10);
+        background: rgba(249, 247, 243, 0.94);
         backdrop-filter: blur(12px);
         position: sticky;
         top: 0;
         z-index: 20;
+        box-shadow: 0 8px 24px rgba(43, 54, 68, 0.05);
       }
       .topbar-inner {
         max-width: 1180px;
@@ -49,7 +50,8 @@ def render_agent_nav_styles() -> str:
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 10px 14px;
+        min-height: 42px;
+        padding: 0 16px;
         border-radius: 999px;
         background: #fff;
         border: 1px solid rgba(43, 54, 68, 0.12);
@@ -58,14 +60,31 @@ def render_agent_nav_styles() -> str:
         font-weight: 700;
         font-size: 13px;
         text-decoration: none;
+        transition: background 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
       }
       .top-link:hover {
-        background: #f7f3ec;
+        background: #ffffff;
+        border-color: rgba(43, 54, 68, 0.22);
+        box-shadow: 0 8px 18px rgba(43, 54, 68, 0.08);
+        transform: translateY(-1px);
       }
       .top-link.active {
-        background: #ffffff;
-        border-color: rgba(43, 54, 68, 0.12);
-        color: #2B3644;
+        background: #2B3644;
+        border-color: #2B3644;
+        color: #fff;
+        box-shadow: 0 10px 22px rgba(43, 54, 68, 0.16);
+      }
+      .top-link.logout {
+        background: rgba(133, 187, 218, 0.18);
+        border-color: rgba(133, 187, 218, 0.38);
+      }
+      .top-link.logout:hover {
+        background: rgba(133, 187, 218, 0.24);
+        border-color: rgba(133, 187, 218, 0.52);
+      }
+      .top-link.active.logout {
+        background: #2B3644;
+        border-color: #2B3644;
       }
       @media (max-width: 960px) {
         .topbar-inner {

@@ -856,12 +856,44 @@ def _page_shell(title: str, body: str) -> str:
   </head>
   <body>
     {body}
-  </body>
+</body>
 </html>"""
 
 
 def _nav(active: str = "website_ops") -> str:
     return render_agent_nav(active)
+
+
+def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "reports") -> str:
+    nav_styles = render_agent_nav_styles()
+    shell_styles = """
+    <style>
+      .admin-report-shell {
+        width: min(1200px, calc(100vw - 40px));
+        margin: 0 auto;
+        padding: 24px 0 48px;
+      }
+      @media (max-width: 900px) {
+        .admin-report-shell {
+          width: min(100vw - 24px, 1200px);
+        }
+      }
+    </style>
+    """
+    injected = report_html
+    if "</head>" in injected:
+        injected = injected.replace("</head>", f"{nav_styles}{shell_styles}</head>", 1)
+    if "<body" in injected:
+        injected = re.sub(
+            r"(<body[^>]*>)",
+            r"\1" + render_agent_nav(active) + '<div class="admin-report-shell">',
+            injected,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if "</body>" in injected:
+            injected = injected.replace("</body>", "</div></body>", 1)
+    return injected
 
 
 def _report_cards(entries: list[dict[str, Any]]) -> str:
@@ -1131,7 +1163,7 @@ def render_report_page(settings: Settings, mode: str, slug: str) -> str:
         return _page_shell("Not Found", f"{_nav('reports')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
     html_path = entry["html_path"]
     if html_path.exists():
-        return html_path.read_text()
+        return _inject_admin_nav_into_report_html(html_path.read_text(), active="reports")
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
