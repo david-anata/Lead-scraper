@@ -557,9 +557,9 @@ def build_autonomy_overlay(
     if ga4_notes:
         support_requests.extend(ga4_notes)
     if ga4_metrics and all(float(item.get("conversions", 0) or 0) == 0 for item in ga4_metrics.values()):
-        support_requests.append("Define or verify lead conversion events in GA4 so Website Ops can prioritize conversion fixes with confidence.")
+        support_requests.append("Define one primary GA4 lead event, ideally generate lead, and validate it on real contact, quote, and free analysis submits so Website Ops can prioritize conversion fixes with confidence.")
     if any(action.get("action_type") == "resolve_canonical_route" for action in action_queue):
-        support_requests.append("Resolve legacy versus current service routes so Website Ops can consolidate authority on one canonical page family.")
+        support_requests.append("Standardize all active commercial services under /services/, then redirect legacy /ecommerce-services/ routes so Website Ops can consolidate authority on one canonical page family.")
 
     approved_actions = [item for item in feedback_entries if str(item.get("status", "")).strip().lower() == "approved"]
     start_doing = [
