@@ -1789,6 +1789,12 @@ def _build_seo_recommendations(
 ) -> list[str]:
     branded_reference = _brand_product_reference(brand_name)
     cleaned_title = _trim_text(_clean_listing_title(target_title), 60) or branded_reference
+    title_misses = list(search_insights.get("title_misses", []))
+    copy_misses = list(search_insights.get("copy_misses", []))
+    if keyword_report and keyword_report.keywords:
+        keyword_phrases = [keyword.phrase.strip() for keyword in keyword_report.keywords[:10] if keyword.phrase.strip()]
+        title_misses = [phrase for phrase in keyword_phrases if phrase.lower() not in cleaned_title.lower()]
+        copy_misses = [target["label"] for target in _build_copy_targets(keyword_phrases, keyword_report=keyword_report, word_frequency_report=None)]
     recommendations = [
         f"Rewrite the title and first bullets around the highest-intent keyword cluster instead of broad category language. Current title direction: '{cleaned_title}'.",
         "Use the lowest-title-density terms as the first indexing gap before scaling paid traffic or broadening the PDP message.",
@@ -1805,15 +1811,15 @@ def _build_seo_recommendations(
             0,
             f"Lead the SEO rewrite with '{top_term.phrase}' and adjacent long-tail terms. In Cerebro this term carries {_label_integer(top_term.search_volume)} search volume and the target currently ranks {_label_integer(top_term.target_rank)}.",
         )
-    if search_insights.get("title_misses"):
-        example_title_terms = ", ".join(f"'{item}'" for item in search_insights["title_misses"][:3])
+    if title_misses:
+        example_title_terms = ", ".join(f"'{item}'" for item in title_misses[:3])
         recommendations.append(
             "Add missing title keywords first: "
             + example_title_terms
             + f". Suggested result: move those terms into the first 80-100 characters of {branded_reference} so the listing states the use case earlier."
         )
-    if search_insights.get("copy_misses"):
-        example_copy_terms = ", ".join(f"'{item}'" for item in search_insights["copy_misses"][:3])
+    if copy_misses:
+        example_copy_terms = ", ".join(f"'{item}'" for item in copy_misses[:3])
         recommendations.append(
             "Use bullets / description to pick up the next keyword layer: "
             + example_copy_terms
