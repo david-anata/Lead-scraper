@@ -1228,7 +1228,7 @@ def render_login_page(*, error_message: str = "") -> str:
         border-radius: 28px;
         box-shadow: 0 18px 40px var(--shadow);
         padding: 34px;
-        min-height: min(680px, calc(100vh - 98px));
+        min-height: calc(100vh - 98px);
         display: grid;
         align-content: center;
       }}

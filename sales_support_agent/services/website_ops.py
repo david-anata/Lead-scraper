@@ -739,6 +739,9 @@ def _page_shell(title: str, body: str) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{html.escape(title)}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <style>
       :root {{
         --anata-ink: #2b3644;
@@ -768,7 +771,7 @@ def _page_shell(title: str, body: str) -> str:
       .shell {{ max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; display: grid; gap: 20px; }}
       .hero {{ display: grid; gap: 20px; grid-template-columns: minmax(0,1.2fr) minmax(300px,.8fr); align-items: start; }}
       .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 26px; padding: 24px; box-shadow: 0 18px 40px var(--anata-shadow); }}
-      .eyebrow {{ margin: 0; text-transform: uppercase; letter-spacing: .18em; font-size: 12px; font-weight: 800; color: var(--accent); }}
+      .eyebrow {{ margin: 0; text-transform: uppercase; letter-spacing: .18em; font-size: 12px; font-weight: 800; color: var(--accent); font-family: "Montserrat", sans-serif; }}
       h1,h2,h3,p {{ margin: 0; }}
       h1, h2, h3 {{ font-family: "Montserrat", sans-serif; color: var(--anata-ink); }}
       h1 {{ font-size: clamp(2.2rem, 4vw, 3.8rem); line-height: .98; letter-spacing: -0.03em; }}
@@ -802,21 +805,21 @@ def _page_shell(title: str, body: str) -> str:
       .detail-layout {{ display: grid; grid-template-columns: minmax(260px,.75fr) minmax(0,1.25fr); gap: 18px; align-items: start; }}
       .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 10px; }}
       .summary-chip {{ border: 1px solid var(--line); border-radius: 18px; padding: 14px; background: #fcfbf8; display: grid; gap: 6px; }}
-      .summary-chip span {{ font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }}
+      .summary-chip span {{ font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-family: "Montserrat", sans-serif; font-weight: 700; }}
       .summary-chip strong {{ font-size: 22px; line-height: 1.05; }}
       .summary-good strong {{ color: var(--good); }}
       .summary-warn strong, .summary-bad strong {{ color: var(--warn); }}
       .summary-bad strong {{ color: var(--bad); }}
       .mini-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 10px; }}
       .mini-chip {{ display: grid; gap: 4px; padding: 12px 14px; border-radius: 16px; background: rgba(247,243,236,.8); border: 1px solid rgba(29,45,68,0.08); }}
-      .mini-chip span {{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }}
+      .mini-chip span {{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-family: "Montserrat", sans-serif; }}
       .mini-chip strong {{ font-size: 14px; line-height: 1.4; }}
       .setup-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }}
       .setup-card, .task-card, .action-card {{ display: grid; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }}
       .identity-grid {{ display: grid; gap: 10px; grid-template-columns: 1fr; padding-top: 4px; }}
       .identity-grid code {{ word-break: break-word; }}
       .meta-pair {{ display: grid; gap: 4px; }}
-      .meta-pair span {{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }}
+      .meta-pair span {{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-family: "Montserrat", sans-serif; }}
       .meta-pair code {{ width: fit-content; max-width: 100%; }}
       .setup-card.is-blocked {{ border-color: rgba(161,98,7,.28); background: #fffaf0; }}
       .setup-card.is-connected {{ border-color: rgba(15,118,110,.18); background: linear-gradient(180deg, #fbfffd 0%, #f4fbf8 100%); }}
@@ -866,8 +869,22 @@ def _nav(active: str = "website_ops", *, website_ops_section: str = "") -> str:
 
 def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "reports") -> str:
     nav_styles = render_agent_nav_styles()
+    font_links = """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    """
     shell_styles = """
     <style>
+      body {
+        background: #f9f7f3;
+        color: #2b3644;
+        font-family: "Inter", "Segoe UI", sans-serif;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        font-family: "Montserrat", sans-serif;
+        color: #2b3644;
+      }
       .admin-report-shell {
         max-width: 1180px;
         margin: 0 auto;
@@ -883,7 +900,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     """
     injected = report_html
     if "</head>" in injected:
-        injected = injected.replace("</head>", f"{nav_styles}{shell_styles}</head>", 1)
+        injected = injected.replace("</head>", f"{font_links}{nav_styles}{shell_styles}</head>", 1)
     if "<body" in injected:
         injected = re.sub(
             r"(<body[^>]*>)",
