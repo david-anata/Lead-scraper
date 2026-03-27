@@ -859,8 +859,8 @@ def _page_shell(title: str, body: str) -> str:
 </html>"""
 
 
-def _nav(active: str = "website_ops") -> str:
-    return render_agent_nav(active)
+def _nav(active: str = "website_ops", *, website_ops_section: str = "") -> str:
+    return render_agent_nav(active, website_ops_section=website_ops_section)
 
 
 def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "reports") -> str:
