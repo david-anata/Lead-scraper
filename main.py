@@ -3402,14 +3402,14 @@ def admin_website_ops(request: Request) -> Response:
 
 
 @app.get("/admin/website-ops/queue", response_class=HTMLResponse)
-def admin_website_ops_queue(request: Request) -> Response:
+def admin_website_ops_queue(request: Request, status: str = "") -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
         raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_website_ops_queue_page(load_website_ops_settings()))
+    return HTMLResponse(render_website_ops_queue_page(load_website_ops_settings(), status_filter=status))
 
 
 @app.get("/admin/website-ops/reports", response_class=HTMLResponse)

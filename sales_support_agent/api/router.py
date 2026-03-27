@@ -481,11 +481,11 @@ def admin_website_ops(request: Request) -> Response:
 
 
 @router.get("/admin/website-ops/queue", response_class=HTMLResponse)
-def admin_website_ops_queue(request: Request) -> Response:
+def admin_website_ops_queue(request: Request, status: str = "") -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_website_ops_queue_page(request.app.state.settings))
+    return HTMLResponse(render_website_ops_queue_page(request.app.state.settings, status_filter=status))
 
 
 @router.get("/admin/website-ops/reports", response_class=HTMLResponse)

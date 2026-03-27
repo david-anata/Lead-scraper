@@ -7,11 +7,12 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sales_support_agent.config import Settings
+from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
 from sales_support_agent.services import website_ops_vendor as website_ops
 
@@ -60,6 +61,12 @@ def _feedback_status_label(value: str) -> str:
         "error": "Error",
     }
     return labels.get(_feedback_status(value), _feedback_status(value).replace("-", " ").title())
+
+
+def _humanize_label(value: str) -> str:
+    cleaned = re.sub(r"[_\-]+", " ", str(value or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned.title() if cleaned else ""
 
 
 def _extract_report_metadata(text: str, path: Path) -> dict[str, str]:
@@ -454,14 +461,14 @@ def _action_source_chip(source: str) -> str:
     return f'<span class="source-chip source-{html.escape(normalized, quote=True)}">{html.escape(source or "System")}</span>'
 
 
-def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
+def _analytics_connection_cards(analytics_status: dict[str, Any], *, include_identity: bool = False) -> str:
     notes = [str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()]
     project_id = str(analytics_status.get("project_id", "") or "").strip()
     client_email = str(analytics_status.get("client_email", "") or "").strip()
     search_console_property = str(analytics_status.get("search_console_property", "") or "").strip()
     ga4_property_id = str(analytics_status.get("ga4_property_id", "") or "").strip()
     identity_block = ""
-    if project_id or client_email:
+    if include_identity and (project_id or client_email):
         identity_lines = []
         if project_id:
             identity_lines.append(
@@ -497,6 +504,15 @@ def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
         """,
     ]
     return "".join(cards)
+
+
+def _connection_summary_chips(analytics_status: dict[str, Any]) -> str:
+    return "".join(
+        [
+            _summary_chip("Search Console", "Connected" if analytics_status.get("search_console") else "Needs Setup", tone="good" if analytics_status.get("search_console") else "warn"),
+            _summary_chip("GA4", "Connected" if analytics_status.get("ga4") else "Needs Setup", tone="good" if analytics_status.get("ga4") else "warn"),
+        ]
+    )
 
 
 def _team_help_cards(support_requests: list[str], analytics_status: dict[str, Any]) -> str:
@@ -544,10 +560,7 @@ def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) 
     ]
     return f"""
     <div class="card stack">
-      <div class="row-actions">
-        <h2>Latest report</h2>
-        <span class="status-pill {'status-warn' if status == 'needs-attention' else 'status-ok'}">{html.escape(status.replace('-', ' '))}</span>
-      </div>
+      <h2>Latest report</h2>
       <div class="summary-grid">
         {''.join(_summary_chip(label, value, tone=tone) for label, value, tone in stats)}
       </div>
@@ -556,6 +569,87 @@ def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) 
         <a href="/admin/website-ops/reports/{html.escape(entry['mode'], quote=True)}/{html.escape(entry['slug'], quote=True)}" class="text-link">Open {html.escape(entry['title'])}</a>
       </div>
     </div>
+    """
+
+
+def _dashboard_stat_card(title: str, value: int, note: str, href: str) -> str:
+    return (
+        '<div class="card stat">'
+        f'<p class="eyebrow">{html.escape(title)}</p>'
+        f"<strong>{html.escape(str(value))}</strong>"
+        f"<p class='muted'>{html.escape(note)}</p>"
+        f"<a class='stat-link' href='{html.escape(href, quote=True)}'>View</a>"
+        "</div>"
+    )
+
+
+def _issue_help_block() -> str:
+    return """
+    <details class="help-details">
+      <summary aria-label="How to use this form">?</summary>
+      <div class="help-copy">
+        <p>Use this form when you see a page issue, UX problem, conversion gap, or SEO opportunity that is not already in the queue.</p>
+        <p><strong>Examples:</strong> “Shipping page headline is vague.” “Contact page form has no proof.” “AI page needs clearer offer framing.”</p>
+      </div>
+    </details>
+    """
+
+
+def _system_details_panel(settings: Settings, analytics_status: dict[str, Any]) -> str:
+    project_id = str(analytics_status.get("project_id", "") or "").strip()
+    client_email = str(analytics_status.get("client_email", "") or "").strip()
+    search_console_property = str(analytics_status.get("search_console_property", "") or "").strip()
+    ga4_property_id = str(analytics_status.get("ga4_property_id", "") or "").strip()
+    return f"""
+    <section class="card stack card-muted">
+      <p class="eyebrow">System details</p>
+      <div class="mini-grid">
+        {_mini_chip("Monitored Pages", len(settings.website_ops_site_urls))}
+        {_mini_chip("Workspace", _humanize_label(settings.website_ops_root.name))}
+        {_mini_chip("Search Console Property", search_console_property or "Not set")}
+        {_mini_chip("GA4 Property", ga4_property_id or "Not set")}
+      </div>
+      <details class="system-details">
+        <summary>Developer details</summary>
+        <div class="identity-grid">
+          {f"<div class='meta-pair'><span>Google Project</span><code>{html.escape(project_id)}</code></div>" if project_id else ""}
+          {f"<div class='meta-pair'><span>Service Account</span><code>{html.escape(client_email)}</code></div>" if client_email else ""}
+        </div>
+      </details>
+    </section>
+    """
+
+
+def _dashboard_auto_run_script(latest: dict[str, Any] | None) -> str:
+    latest_date = str((latest or {}).get("date", "") or "")
+    today = date.today().isoformat()
+    if latest_date == today:
+        return ""
+    return f"""
+    <script>
+      (function () {{
+        const todayKey = "website-ops-auto-run-{today}";
+        if (window.localStorage && window.localStorage.getItem(todayKey) === "done") {{
+          return;
+        }}
+        const body = new URLSearchParams({{mode: "daily"}});
+        fetch("/admin/api/website-ops/run", {{
+          method: "POST",
+          headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
+          body: body.toString(),
+          credentials: "same-origin"
+        }}).then(function () {{
+          if (window.localStorage) {{
+            window.localStorage.setItem(todayKey, "done");
+          }}
+          window.location.reload();
+        }}).catch(function () {{
+          if (window.localStorage) {{
+            window.localStorage.setItem(todayKey, "failed");
+          }}
+        }});
+      }})();
+    </script>
     """
 
 
@@ -671,12 +765,7 @@ def _page_shell(title: str, body: str) -> str:
       * {{ box-sizing: border-box; }}
       body {{ margin: 0; background: linear-gradient(180deg, #eef5fb 0%, #f7f3ec 100%); color: var(--ink); font-family: "Inter", "Segoe UI", sans-serif; }}
       a {{ color: inherit; }}
-      .topbar {{ padding: 16px 24px; border-bottom: 1px solid var(--line); background: rgba(255,253,249,0.92); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 20; }}
-      .topbar-inner {{ max-width: 1180px; margin: 0 auto; display: flex; justify-content: space-between; gap: 16px; align-items: center; }}
-      .brandmark {{ font-size: 28px; font-weight: 900; letter-spacing: -0.03em; }}
-      .brandmark .dot {{ color: var(--accent); }}
-      .navlinks {{ display: flex; flex-wrap: wrap; gap: 10px; }}
-      .navlinks a {{ text-decoration: none; padding: 10px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-size: 13px; font-weight: 700; }}
+      {render_agent_nav_styles()}
       .shell {{ width: min(1200px, calc(100vw - 40px)); margin: 0 auto; padding: 24px 0 48px; display: grid; gap: 20px; }}
       .hero {{ display: grid; gap: 20px; grid-template-columns: minmax(0,1.2fr) minmax(300px,.8fr); align-items: start; }}
       .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 28px; padding: 22px; box-shadow: 0 14px 32px var(--anata-shadow); }}
@@ -689,9 +778,11 @@ def _page_shell(title: str, body: str) -> str:
       .lead-sm {{ color: var(--anata-ink-soft); line-height: 1.45; font-size: 14px; }}
       .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; }}
       .stat strong {{ display: block; font-size: 28px; line-height: 1.05; margin-top: 8px; }}
+      .stat-link {{ margin-top: 10px; font-size: 13px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
       .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; }}
       .stack {{ display: grid; gap: 12px; }}
       .list-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }}
+      .card-muted {{ opacity: 0.96; }}
       .muted {{ color: var(--muted); }}
       .status-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #f3f4f6; }}
       .status-approved, .status-done {{ background: rgba(15,118,110,.1); color: var(--good); }}
@@ -737,6 +828,14 @@ def _page_shell(title: str, body: str) -> str:
       .text-link {{ font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
       .action-card {{ background: linear-gradient(180deg, #fff 0%, #fdfbf7 100%); }}
       .insight-card {{ display: grid; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(180deg, #fff 0%, #fbfcfe 100%); align-content: start; }}
+      .widget-scroll {{ display: grid; gap: 12px; max-height: 560px; overflow: auto; padding-right: 4px; }}
+      .compact-scroll {{ max-height: 420px; }}
+      .help-details {{ position: relative; }}
+      .help-details summary {{ list-style: none; width: 28px; height: 28px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(133, 187, 218, 0.16); border: 1px solid rgba(29,45,68,0.08); cursor: pointer; font-weight: 800; }}
+      .help-details summary::-webkit-details-marker {{ display: none; }}
+      .help-copy {{ position: absolute; top: calc(100% + 8px); right: 0; z-index: 15; width: min(320px, 75vw); padding: 12px 14px; border-radius: 16px; background: #fff; border: 1px solid var(--line); box-shadow: 0 18px 32px rgba(29,45,68,0.12); display: grid; gap: 8px; }}
+      .help-copy p {{ font-size: 14px; line-height: 1.45; }}
+      .system-details summary {{ cursor: pointer; font-weight: 700; color: var(--anata-ink-soft); }}
       .source-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #edf5ff; color: #25577a; }}
       .source-google-search-console, .source-google-search-console-source, .source-google-search-console-audit {{ background: #edf7ff; color: #275e83; }}
       .source-google-analytics-4 {{ background: #fff6ea; color: #8f5d0f; }}
@@ -751,6 +850,7 @@ def _page_shell(title: str, body: str) -> str:
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid {{ grid-template-columns: 1fr; }}
         .shell {{ width: min(100vw - 24px, 1200px); }}
+        .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
       }}
     </style>
   </head>
@@ -760,22 +860,8 @@ def _page_shell(title: str, body: str) -> str:
 </html>"""
 
 
-def _nav() -> str:
-    return """
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brandmark">agent<span class="dot">.</span></div>
-        <nav class="navlinks">
-          <a href="/admin">Sales Priorities</a>
-          <a href="/admin/executive">Executive</a>
-          <a href="/admin/website-ops">Website Ops</a>
-          <a href="/admin/website-ops/queue">Queue</a>
-          <a href="/admin/website-ops/reports">Reports</a>
-          <a href="/admin/logout">Log out</a>
-        </nav>
-      </div>
-    </header>
-    """
+def _nav(active: str = "website_ops") -> str:
+    return render_agent_nav(active)
 
 
 def _report_cards(entries: list[dict[str, Any]]) -> str:
@@ -841,13 +927,17 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
         status_counts[item["status"]] = status_counts.get(item["status"], 0) + 1
     action_queue = list(latest_payload.get("action_queue") or [])[:6]
     support_requests = list(latest_payload.get("support_requests") or [])[:5]
-    start_doing = list(latest_payload.get("start_doing") or [])[:3]
-    stop_doing = list(latest_payload.get("stop_doing") or [])[:3]
-    do_more_of = list(latest_payload.get("do_more_of") or [])[:3]
     page_insights = list(latest_payload.get("page_insights") or [])[:5]
     analytics_status = latest_payload.get("analytics_status") or {}
+    today = date.today().isoformat()
+    latest_date = str(latest.get("date", "") if latest else "")
+    auto_refresh_note = (
+        "<p class='muted'>Refreshing today’s Website Ops signals automatically on load.</p>"
+        if latest_date != today
+        else ""
+    )
     body = f"""
-      {_nav()}
+      {_nav("website_ops")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="hero">
@@ -860,24 +950,23 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>
               <a href="/admin/website-ops/reports/latest" style="text-decoration:none;"><button class="ghost" type="button">Open Latest Report</button></a>
             </div>
+            {auto_refresh_note}
           </div>
           <div class="card stack">
             <p class="eyebrow">Current scope</p>
             <div class="summary-grid">
-              {_summary_chip("Live URLs", len(settings.website_ops_site_urls), tone="neutral")}
-              {_summary_chip("Workspace", settings.website_ops_root.name, tone="neutral")}
+              {_summary_chip("Monitored Pages", len(settings.website_ops_site_urls), tone="neutral")}
               {_summary_chip("Auto execution", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
+              {_connection_summary_chips(analytics_status)}
             </div>
-            <div class="setup-grid">
-              {_analytics_connection_cards(analytics_status)}
-            </div>
+            <p class="muted">Core system status only. Full connection and developer details are lower on the page.</p>
           </div>
         </section>
         <section class="stats">
-          <div class="card stat"><p class="eyebrow">Reports</p><strong>{len(reports)}</strong><p class="muted">Daily, weekly, monthly</p></div>
-          <div class="card stat"><p class="eyebrow">Awaiting review</p><strong>{status_counts.get('new', 0)}</strong><p class="muted">Needs a decision</p></div>
-          <div class="card stat"><p class="eyebrow">Approved</p><strong>{status_counts.get('approved', 0)}</strong><p class="muted">Ready for action</p></div>
-          <div class="card stat"><p class="eyebrow">Done</p><strong>{status_counts.get('done', 0)}</strong><p class="muted">Completed safely</p></div>
+          {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
+          {_dashboard_stat_card("Awaiting Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
+          {_dashboard_stat_card("Approved", status_counts.get('approved', 0), "Ready for action", "/admin/website-ops/queue?status=approved")}
+          {_dashboard_stat_card("Done", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
         </section>
         <section class="grid-2">
           <div class="card stack">
@@ -894,7 +983,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
         <section class="grid-2">
           {_latest_report_panel(latest, latest_payload)}
           <div class="card stack">
-            <h2>Submit a new issue</h2>
+            <div class="row-actions"><h2>Submit a new issue</h2>{_issue_help_block()}</div>
             <form action="/admin/api/website-ops/feedback" method="post" class="form-grid">
               <div><label>Category</label><select name="category"><option>SEO</option><option>Content</option><option>UX</option><option>Conversion</option><option>Technical</option><option>Strategy</option></select></div>
               <div><label>Priority</label><select name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Urgent</option></select></div>
@@ -913,41 +1002,44 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
               <a href="/admin/website-ops/queue" class="text-link">Open approval queue</a>
               <span class="muted">Approve tasks there, then the next run executes the approved safe actions.</span>
             </div>
-            {_action_queue_cards(action_queue)}
+            <div class="widget-scroll">{_action_queue_cards(action_queue)}</div>
           </div>
           <div class="card stack">
             <h2>Insight snapshots</h2>
             <p class="lead">Compact page snapshots for quick triage across search demand, traffic, and conversion performance.</p>
-            {_insight_snapshot_cards(page_insights)}
+            <div class="widget-scroll">{_insight_snapshot_cards(page_insights)}</div>
           </div>
         </section>
         <section class="grid-2">
-          <div class="card stack"><h2>Start doing</h2><ul>{''.join(f'<li>{html.escape(item)}</li>' for item in start_doing) if start_doing else '<li>No guidance yet.</li>'}</ul></div>
-          <div class="card stack"><h2>Stop doing</h2><ul>{''.join(f'<li>{html.escape(item)}</li>' for item in stop_doing) if stop_doing else '<li>No guidance yet.</li>'}</ul></div>
+          <div class="card stack"><h2>Open queue</h2><div class="widget-scroll compact-scroll">{_feedback_cards(feedback[:8], with_actions=True)}</div></div>
+          <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
         </section>
         <section class="grid-2">
-          <div class="card stack"><h2>Do more of</h2><ul>{''.join(f'<li>{html.escape(item)}</li>' for item in do_more_of) if do_more_of else '<li>No guidance yet.</li>'}</ul></div>
-          <div class="card stack"><h2>Open queue</h2>{_feedback_cards(feedback[:6], with_actions=True)}</div>
-        </section>
-        <section class="grid-2">
-          <div class="card stack"><h2>Recent reports</h2>{_report_cards(reports[:6])}</div>
           <div class="card stack"><h2>Data connection notes</h2><p class="lead">Website Ops uses these signals to decide what to change next.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
+          {_system_details_panel(settings, analytics_status)}
         </section>
       </main>
+      {_dashboard_auto_run_script(latest)}
     """
     return _page_shell("Agent Website Ops", body)
 
 
-def render_queue_page(settings: Settings, *, flash_message: str = "") -> str:
-    entries = [item for item in load_feedback_records(settings) if item.get("status") not in {"done", "rejected"}]
+def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "") -> str:
+    normalized_filter = _feedback_status(status_filter) if status_filter else ""
+    entries = load_feedback_records(settings)
+    if normalized_filter:
+        entries = [item for item in entries if item.get("status") == normalized_filter]
+    else:
+        entries = [item for item in entries if item.get("status") not in {"done", "rejected"}]
+    queue_title = _humanize_label(normalized_filter) if normalized_filter else "Active"
     body = f"""
-      {_nav()}
+      {_nav("queue")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="card stack">
           <p class="eyebrow">Website Ops queue</p>
           <h1>Review <span style="color:var(--accent)">and approve</span>.</h1>
-          <p class="lead">Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
+          <p class="lead">Showing: {html.escape(queue_title)} items. Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
         </section>
         <section class="card stack">
           {_feedback_cards(entries, with_actions=True)}
@@ -960,7 +1052,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "") -> str:
 def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_message: str = "") -> str:
     record = get_feedback_record(settings, feedback_id)
     if not record:
-        return _page_shell("Not Found", f"{_nav()}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
+        return _page_shell("Not Found", f"{_nav('queue')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
     is_auto_generated = bool(record.get("auto_generated"))
     confidence = str(record.get("confidence", "")).strip()
     suggested_action_type = str(record.get("suggested_action_type", "")).strip()
@@ -972,7 +1064,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
         else "This recommendation will move into the approved queue. Use the form below only if you want to override or add execution details."
     )
     body = f"""
-      {_nav()}
+      {_nav("queue")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="detail-layout">
@@ -990,7 +1082,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
             <p class="lead"><strong>Desired outcome:</strong> {html.escape(str(record.get('desired_outcome', '') or 'Not specified.'))}</p>
             <p class="lead"><strong>Recommended fix:</strong> {html.escape(str(record.get('recommended_fix', '') or 'Not specified.'))}</p>
             {f"<div class='diff-grid'><div class='diff-block'><p class='eyebrow'>Current state</p><p>{html.escape(str(record.get('before_state', '') or 'Not captured.'))}</p></div><div class='diff-block'><p class='eyebrow'>Proposed update</p><p>{html.escape(str(record.get('after_state', '') or record.get('desired_outcome', '') or 'Not specified.'))}</p></div></div>" if record.get('before_state') or record.get('after_state') else ""}
-            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', suggested_action_type or 'Manual review', tone='neutral')}{_summary_chip('Execution', 'Auto-executable' if is_auto_executable else 'Approval only', tone='neutral')}</div>" if is_auto_generated else ""}
+            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', _humanize_label(suggested_action_type) or 'Manual review', tone='neutral')}{_summary_chip('Execution', 'Auto-executable' if is_auto_executable else 'Approval only', tone='neutral')}</div>" if is_auto_generated else ""}
             {f"<div class='button-row'><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='approved'><button type='submit'>{recommendation_cta}</button></form><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='rejected'><button class='ghost' type='submit'>Reject Recommendation</button></form><span class='muted'>{html.escape(recommendation_note)}</span></div>" if is_auto_generated else ""}
             <form action="/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review" method="post" class="form-grid">
               <div><label>Status</label><select name="status">
@@ -1018,7 +1110,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
 def render_reports_page(settings: Settings) -> str:
     reports = _report_entries(settings)
     body = f"""
-      {_nav()}
+      {_nav("reports")}
       <main class="shell">
         <section class="card stack">
           <p class="eyebrow">Website Ops reports</p>
@@ -1036,12 +1128,12 @@ def render_reports_page(settings: Settings) -> str:
 def render_report_page(settings: Settings, mode: str, slug: str) -> str:
     entry = get_report_entry(settings, mode, slug)
     if not entry:
-        return _page_shell("Not Found", f"{_nav()}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
+        return _page_shell("Not Found", f"{_nav('reports')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
     html_path = entry["html_path"]
     if html_path.exists():
         return html_path.read_text()
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
-        f"{_nav()}<main class='shell'><section class='card stack'><p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
+        f"{_nav('reports')}<main class='shell'><section class='card stack'><p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
     )

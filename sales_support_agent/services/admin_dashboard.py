@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings, normalize_status_key
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection, CommunicationEvent, LeadMirror, MailboxSignal
+from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
 from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
@@ -1671,9 +1672,13 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       a {{ color: var(--dark-blue); }}
       .topbar {{
-        background: var(--alt-dark-blue);
-        color: var(--white);
-        padding: 16px 28px;
+        padding: 16px 24px;
+        border-bottom: 1px solid rgba(43, 54, 68, 0.12);
+        background: rgba(255,255,255,0.92);
+        backdrop-filter: blur(12px);
+        position: sticky;
+        top: 0;
+        z-index: 20;
       }}
       .topbar-inner {{
         max-width: 1180px;
@@ -1692,7 +1697,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         font-size: 38px;
         line-height: 1;
         letter-spacing: -0.05em;
-        color: var(--white);
+        color: var(--dark-blue);
       }}
       .brandmark .dot {{
         color: var(--light-blue);
@@ -1708,21 +1713,18 @@ def render_dashboard_page(data: DashboardData) -> str:
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 150px;
-        padding: 12px 18px;
+        min-height: 42px;
+        padding: 0 14px;
         border-radius: 999px;
-        color: var(--white);
+        color: var(--dark-blue);
+        background: var(--white);
+        border: 1px solid rgba(43, 54, 68, 0.12);
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 15px;
+        font-size: 13px;
         text-decoration: none;
       }}
-      .topcta {{
-        background: var(--light-blue);
-      }}
-      .toplink {{
-        background: rgba(255, 255, 255, 0.12);
-      }}
+      {render_agent_nav_styles()}
       .shell {{
         max-width: 1180px;
         margin: 0 auto;
@@ -2873,16 +2875,7 @@ def render_dashboard_page(data: DashboardData) -> str:
     </style>
   </head>
   <body>
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brandmark">agent<span class="dot">.</span></div>
-        <div class="top-actions">
-          <a class="toplink" href="/admin/executive">EXECUTIVE SUMMARY</a>
-          <a class="toplink" href="/admin/website-ops">WEBSITE OPS</a>
-          <a class="topcta" href="/admin/logout">LOG OUT</a>
-        </div>
-      </div>
-    </header>
+    {render_agent_nav("sales")}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">
@@ -4062,6 +4055,7 @@ def render_executive_page(data: ExecutiveData) -> str:
       .top-link.primary {{
         background: var(--light-blue);
       }}
+      {render_agent_nav_styles()}
       .shell {{
         max-width: 1280px;
         margin: 0 auto;
@@ -4409,16 +4403,7 @@ def render_executive_page(data: ExecutiveData) -> str:
     </style>
   </head>
   <body>
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brandmark">agent<span class="dot">.</span></div>
-        <div class="top-actions">
-          <a class="top-link" href="/admin">FOLLOW-UP BOARD</a>
-          <a class="top-link" href="/admin/website-ops">WEBSITE OPS</a>
-          <a class="top-link primary" href="/admin/logout">LOG OUT</a>
-        </div>
-      </div>
-    </header>
+    {render_agent_nav("executive")}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">
