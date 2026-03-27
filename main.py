@@ -507,6 +507,12 @@ def startup() -> None:
     configure_logging()
     settings = load_settings()
     app.state.settings = settings
+    app.state.admin_dashboard_last_auto_sync_at = None
+    app.state.admin_dashboard_last_auto_sync_result = {
+        "status": "idle",
+        "running": False,
+        "message": "Dashboard sync has not run in this session yet.",
+    }
     validate_settings_on_startup(settings)
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
@@ -769,8 +775,35 @@ def sync_remote_dashboard_sources() -> dict[str, Any]:
     }
 
 
-def should_run_auto_dashboard_sync(request: Request, dashboard: DashboardData, admin_settings: AdminDashboardSettings) -> bool:
-    if not latest_sync_is_stale(dashboard.latest_sync_at, admin_settings):
+def _dashboard_has_sync_gap(dashboard: DashboardData) -> bool:
+    latest_run_summary = dict(dashboard.latest_run_summary or {})
+    return bool(str(latest_run_summary.get("dashboard_error", "") or "").strip())
+
+
+def _executive_has_sync_gap(executive: ExecutiveData, *, dashboard: DashboardData) -> bool:
+    latest_run_summary = dict(executive.latest_run_summary or {})
+    if str(latest_run_summary.get("executive_error", "") or "").strip():
+        return True
+    if executive.latest_sync_at is None:
+        return True
+    return dashboard.total_active_leads > 0 and int(executive.kpis.get("active_leads", 0) or 0) == 0
+
+
+def should_run_auto_dashboard_sync(
+    request: Request,
+    dashboard: DashboardData,
+    admin_settings: AdminDashboardSettings,
+    *,
+    max_age_minutes_override: int | None = None,
+) -> bool:
+    effective_settings = admin_settings
+    if max_age_minutes_override is not None:
+        effective_settings = replace(
+            admin_settings,
+            admin_auto_sync_max_age_minutes=max(0, int(max_age_minutes_override)),
+        )
+
+    if not latest_sync_is_stale(dashboard.latest_sync_at, effective_settings) and not _dashboard_has_sync_gap(dashboard):
         return False
 
     last_attempt = getattr(request.app.state, "admin_dashboard_last_auto_sync_at", None)
@@ -782,6 +815,34 @@ def should_run_auto_dashboard_sync(request: Request, dashboard: DashboardData, a
             return False
 
     return True
+
+
+def _refresh_remote_dashboard_cache(request: Request, *, force: bool = False) -> dict[str, Any]:
+    admin_settings = load_admin_dashboard_settings()
+    current_time = datetime.now(timezone.utc)
+    last_attempt = getattr(request.app.state, "admin_dashboard_last_auto_sync_at", None)
+    if not force and isinstance(last_attempt, datetime):
+        normalized_last_attempt = last_attempt if last_attempt.tzinfo else last_attempt.replace(tzinfo=timezone.utc)
+        if current_time - normalized_last_attempt < timedelta(minutes=5):
+            result = {"status": "skipped", "running": False, "message": "Dashboard sync was attempted recently."}
+            request.app.state.admin_dashboard_last_auto_sync_result = result
+            return result
+
+    request.app.state.admin_dashboard_last_auto_sync_at = current_time
+    request.app.state.admin_dashboard_last_auto_sync_result = {
+        "status": "running",
+        "running": True,
+        "message": "Syncing dashboard data now...",
+    }
+    result = sync_remote_dashboard_sources()
+    request.app.state.admin_dashboard_last_auto_sync_at = datetime.now(timezone.utc)
+    final_result = {
+        "status": "ok",
+        "running": False,
+        **result,
+    }
+    request.app.state.admin_dashboard_last_auto_sync_result = final_result
+    return final_result
 
 
 # ========= GENERAL HELPERS =========
@@ -3353,6 +3414,10 @@ async def admin_login_submit(request: Request) -> Response:
         value=create_admin_session_token(admin_settings),
         **_admin_cookie_options(request, admin_settings),
     )
+    try:
+        _refresh_remote_dashboard_cache(request, force=True)
+    except Exception:
+        logger.exception("[AdminDashboard] login-triggered sync failed")
     return response
 
 
@@ -3373,6 +3438,12 @@ def admin_dashboard(request: Request) -> Response:
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
     dashboard = fetch_remote_dashboard_data()
+    if should_run_auto_dashboard_sync(request, dashboard, admin_settings):
+        try:
+            _refresh_remote_dashboard_cache(request, force=False)
+            dashboard = fetch_remote_dashboard_data()
+        except Exception:
+            logger.exception("[AdminDashboard] auto sync on page load failed")
     return HTMLResponse(render_dashboard_page(dashboard))
 
 
@@ -3385,8 +3456,23 @@ def admin_executive_dashboard(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-
+    dashboard = fetch_remote_dashboard_data()
     executive = fetch_remote_executive_data()
+    should_refresh_executive = should_run_auto_dashboard_sync(
+        request,
+        dashboard,
+        admin_settings,
+        max_age_minutes_override=max(admin_settings.admin_auto_sync_max_age_minutes, 60),
+    )
+    if not should_refresh_executive and _executive_has_sync_gap(executive, dashboard=dashboard):
+        should_refresh_executive = True
+    if should_refresh_executive:
+        try:
+            _refresh_remote_dashboard_cache(request, force=False)
+            dashboard = fetch_remote_dashboard_data()
+            executive = fetch_remote_executive_data()
+        except Exception:
+            logger.exception("[ExecutiveDashboard] auto sync on page load failed")
     return HTMLResponse(render_executive_page(executive))
 
 
@@ -3508,6 +3594,21 @@ async def admin_run_lead_build(request: Request) -> Response:
     )
 
 
+@app.get("/admin/api/sync-dashboard/status")
+def admin_sync_dashboard_status(request: Request) -> JSONResponse:
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    details = getattr(request.app.state, "admin_dashboard_last_auto_sync_result", None) or {
+        "status": "idle",
+        "running": False,
+        "message": "Dashboard sync has not run in this session yet.",
+    }
+    return JSONResponse(status_code=200, content={"status": "ok", "details": details})
+
+
 @app.post("/admin/api/sync-dashboard")
 def admin_sync_dashboard(request: Request) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()
@@ -3515,17 +3616,36 @@ def admin_sync_dashboard(request: Request) -> JSONResponse:
     if not validate_admin_session_token(admin_settings, token):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
+    background = str(request.query_params.get("background", "false")).strip().lower() == "true"
+    only_if_stale = str(request.query_params.get("only_if_stale", "false")).strip().lower() == "true"
+    if only_if_stale:
+        dashboard = fetch_remote_dashboard_data()
+        if not should_run_auto_dashboard_sync(request, dashboard, admin_settings):
+            result = {"status": "skipped", "running": False, "message": "Board cache is still fresh."}
+            request.app.state.admin_dashboard_last_auto_sync_result = result
+            return JSONResponse(status_code=200, content={"status": "ok", "message": result["message"], "details": result})
+
     try:
-        result = sync_remote_dashboard_sources()
+        result = _refresh_remote_dashboard_cache(request, force=not only_if_stale)
     except Exception as exc:
         logger.exception("[AdminDashboard] sync failed")
+        request.app.state.admin_dashboard_last_auto_sync_result = {
+            "status": "error",
+            "running": False,
+            "message": "Dashboard sync failed.",
+            "error": str(exc),
+        }
         return JSONResponse(
             status_code=500,
             content={"detail": "Dashboard sync failed.", "error": str(exc)},
         )
     return JSONResponse(
         status_code=200,
-        content={"status": "ok", "message": str(result.get("message", "Dashboard sync completed.")), "details": result},
+        content={
+            "status": "ok",
+            "message": str(result.get("message", "Dashboard sync completed.")),
+            "details": {**result, "requested_background": background},
+        },
     )
 
 

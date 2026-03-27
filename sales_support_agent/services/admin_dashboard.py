@@ -1190,7 +1190,7 @@ def render_login_page(*, error_message: str = "") -> str:
     <title>anata | Agent Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -1209,49 +1209,12 @@ def render_login_page(*, error_message: str = "") -> str:
         min-height: 100vh;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Roboto", sans-serif;
-      }}
-      .topbar {{
-        background: var(--alt-dark-blue);
-        color: var(--white);
-        padding: 18px 32px;
-      }}
-      .topbar-inner {{
-        max-width: 1160px;
-        margin: 0 auto;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 24px;
-      }}
-      .brand {{
-        font-family: "Montserrat", sans-serif;
-        font-weight: 800;
-        font-size: 42px;
-        line-height: 1;
-        letter-spacing: -0.06em;
-      }}
-      .brand .dot {{
-        color: var(--light-blue);
-      }}
-      .cta {{
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 180px;
-        padding: 14px 24px;
-        border-radius: 999px;
-        background: var(--light-blue);
-        color: var(--white);
-        font-family: "Montserrat", sans-serif;
-        font-weight: 700;
-        font-size: 18px;
-        text-decoration: none;
+        font-family: "Inter", "Segoe UI", sans-serif;
       }}
       .shell {{
         max-width: 1160px;
         margin: 0 auto;
-        padding: 44px 24px 72px;
+        padding: 64px 24px 72px;
       }}
       .workspace {{
         background: var(--white);
@@ -1293,7 +1256,7 @@ def render_login_page(*, error_message: str = "") -> str:
         color: var(--light-blue);
       }}
       .copy {{
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 18px;
         line-height: 1.5;
@@ -1317,7 +1280,7 @@ def render_login_page(*, error_message: str = "") -> str:
       }}
       .login-card p {{
         margin: 0 0 26px;
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 18px;
         line-height: 1.5;
@@ -1338,7 +1301,7 @@ def render_login_page(*, error_message: str = "") -> str:
         border-radius: 10px;
         border: 2px solid rgba(43, 54, 68, 0.16);
         background: var(--white);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 18px;
         margin-bottom: 22px;
@@ -1361,7 +1324,7 @@ def render_login_page(*, error_message: str = "") -> str:
         border-radius: 10px;
         padding: 16px 18px;
         margin-bottom: 20px;
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 16px;
       }}
@@ -1376,9 +1339,6 @@ def render_login_page(*, error_message: str = "") -> str:
         margin-top: 64px;
       }}
       @media (max-width: 1200px) {{
-        .topbar {{
-          padding: 18px 24px;
-        }}
         .shell {{
           padding: 32px 20px 60px;
         }}
@@ -1386,20 +1346,11 @@ def render_login_page(*, error_message: str = "") -> str:
           grid-template-columns: 1fr;
           gap: 28px;
         }}
-        .brand {{
-          font-size: 38px;
-        }}
         h1 {{
           font-size: clamp(40px, 10vw, 58px);
         }}
       }}
       @media (max-width: 920px) {{
-        .topbar-inner {{
-          flex-wrap: wrap;
-        }}
-        .cta {{
-          min-width: 160px;
-        }}
         .copy,
         .login-card p,
         input,
@@ -1411,12 +1362,6 @@ def render_login_page(*, error_message: str = "") -> str:
     </style>
   </head>
   <body>
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand">agent<span class="dot">.</span></div>
-        <div class="cta">AGENT LOGIN</div>
-      </div>
-    </header>
     <main class="shell">
       <div class="workspace">
       <div class="split">
@@ -1651,7 +1596,7 @@ def render_dashboard_page(data: DashboardData) -> str:
     <title>agent | Admin Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -1668,7 +1613,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         margin: 0;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
       }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
@@ -1869,7 +1814,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       .snapshot-row strong {{
         font-size: 15px;
         color: var(--dark-blue);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 400;
       }}
       .notice {{
@@ -1919,7 +1864,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         border-radius: 10px;
         border: 2px solid rgba(43, 54, 68, 0.16);
         background: var(--white);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 15px;
         color: var(--dark-blue);
@@ -2046,7 +1991,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         display: inline-flex;
         align-items: center;
         gap: 10px;
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 15px;
         text-transform: none;
@@ -2097,7 +2042,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       .draft-help {{
         color: var(--alt-dark-blue);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 14px;
         line-height: 1.45;
@@ -2366,7 +2311,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         border: 2px solid rgba(43, 54, 68, 0.14);
         border-radius: 999px;
         padding: 12px 16px;
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-size: 15px;
         background: var(--white);
         color: var(--dark-blue);
@@ -2537,7 +2482,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       .date {{
         color: var(--dark-blue);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 13px;
       }}
@@ -3937,7 +3882,7 @@ def render_executive_page(data: ExecutiveData) -> str:
     <title>agent | Executive Summary</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@300;400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -3955,7 +3900,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         margin: 0;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
       }}
       a {{ color: var(--dark-blue); text-decoration: none; }}
       {render_agent_nav_styles()}
@@ -4058,7 +4003,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         border-radius: 12px;
         background: var(--alt-dark-blue);
         color: var(--white);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-size: 13px;
         line-height: 1.45;
         box-shadow: 0 10px 24px rgba(43, 54, 68, 0.18);
@@ -4110,7 +4055,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         padding: 12px 14px;
         border-radius: 12px;
         border: 2px solid rgba(43, 54, 68, 0.14);
-        font-family: "Roboto", sans-serif;
+        font-family: "Inter", "Segoe UI", sans-serif;
         font-size: 15px;
         color: var(--dark-blue);
         background: var(--white);
@@ -4683,6 +4628,7 @@ def render_executive_page(data: ExecutiveData) -> str:
 
       initFilters();
       renderExecutiveView();
+      window.setTimeout(() => window.location.reload(), 60 * 60 * 1000);
     </script>
   </body>
 </html>"""
