@@ -1210,11 +1210,17 @@ def render_login_page(*, error_message: str = "") -> str:
         background: var(--light-brown);
         color: var(--text);
         font-family: "Inter", "Segoe UI", sans-serif;
+        display: flex;
+        flex-direction: column;
       }}
       .shell {{
         max-width: 1160px;
         margin: 0 auto;
-        padding: 64px 24px 72px;
+        padding: 32px 24px 48px;
+        width: 100%;
+        flex: 1 0 auto;
+        display: grid;
+        align-items: center;
       }}
       .workspace {{
         background: var(--white);
@@ -1222,6 +1228,9 @@ def render_login_page(*, error_message: str = "") -> str:
         border-radius: 28px;
         box-shadow: 0 18px 40px var(--shadow);
         padding: 34px;
+        min-height: min(680px, calc(100vh - 98px));
+        display: grid;
+        align-content: center;
       }}
       .split {{
         display: grid;
@@ -1336,11 +1345,11 @@ def render_login_page(*, error_message: str = "") -> str:
       .footer-bar {{
         height: 18px;
         background: var(--alt-dark-blue);
-        margin-top: 64px;
+        margin-top: 0;
       }}
       @media (max-width: 1200px) {{
         .shell {{
-          padding: 32px 20px 60px;
+          padding: 24px 20px 36px;
         }}
         .split {{
           grid-template-columns: 1fr;
@@ -1351,6 +1360,9 @@ def render_login_page(*, error_message: str = "") -> str:
         }}
       }}
       @media (max-width: 920px) {{
+        .workspace {{
+          min-height: auto;
+        }}
         .copy,
         .login-card p,
         input,

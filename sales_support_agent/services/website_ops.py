@@ -741,15 +741,15 @@ def _page_shell(title: str, body: str) -> str:
     <title>{html.escape(title)}</title>
     <style>
       :root {{
-        --anata-ink: #1d2d44;
-        --anata-ink-soft: #314664;
+        --anata-ink: #2b3644;
+        --anata-ink-soft: #4b5668;
         --anata-sky: #85bbda;
         --anata-sky-deep: #4f84c4;
         --anata-sand: #bfa889;
-        --anata-sand-soft: #f7f3ec;
-        --anata-paper: #fffdf9;
-        --anata-line: rgba(29, 45, 68, 0.12);
-        --anata-shadow: rgba(29, 45, 68, 0.10);
+        --anata-sand-soft: #f9f7f3;
+        --anata-paper: #ffffff;
+        --anata-line: rgba(43, 54, 68, 0.10);
+        --anata-shadow: rgba(43, 54, 68, 0.10);
         --anata-muted: #6b7688;
         --panel: var(--anata-paper);
         --ink: var(--anata-ink);
@@ -762,16 +762,17 @@ def _page_shell(title: str, body: str) -> str:
         --bad: #b91c1c;
       }}
       * {{ box-sizing: border-box; }}
-      body {{ margin: 0; background: linear-gradient(180deg, #eef5fb 0%, #f7f3ec 100%); color: var(--ink); font-family: "Inter", "Segoe UI", sans-serif; }}
-      a {{ color: inherit; }}
+      body {{ margin: 0; background: var(--anata-sand-soft); color: var(--ink); font-family: "Inter", "Segoe UI", sans-serif; }}
+      a {{ color: var(--anata-ink); }}
       {render_agent_nav_styles()}
-      .shell {{ width: min(1200px, calc(100vw - 40px)); margin: 0 auto; padding: 24px 0 48px; display: grid; gap: 20px; }}
+      .shell {{ max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; display: grid; gap: 20px; }}
       .hero {{ display: grid; gap: 20px; grid-template-columns: minmax(0,1.2fr) minmax(300px,.8fr); align-items: start; }}
-      .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 28px; padding: 22px; box-shadow: 0 14px 32px var(--anata-shadow); }}
+      .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 26px; padding: 24px; box-shadow: 0 18px 40px var(--anata-shadow); }}
       .eyebrow {{ margin: 0; text-transform: uppercase; letter-spacing: .18em; font-size: 12px; font-weight: 800; color: var(--accent); }}
       h1,h2,h3,p {{ margin: 0; }}
-      h1 {{ font-size: clamp(2.2rem, 4vw, 3.8rem); line-height: .98; }}
-      h2 {{ font-size: 30px; line-height: 1.05; }}
+      h1, h2, h3 {{ font-family: "Montserrat", sans-serif; color: var(--anata-ink); }}
+      h1 {{ font-size: clamp(2.2rem, 4vw, 3.8rem); line-height: .98; letter-spacing: -0.03em; }}
+      h2 {{ font-size: 30px; line-height: 1.05; letter-spacing: -0.02em; }}
       h3 {{ font-size: 18px; line-height: 1.25; }}
       .lead {{ color: var(--anata-ink-soft); line-height: 1.55; font-size: 18px; }}
       .lead-sm {{ color: var(--anata-ink-soft); line-height: 1.45; font-size: 14px; }}
@@ -848,7 +849,7 @@ def _page_shell(title: str, body: str) -> str:
       .compact-list {{ margin: 0; padding-left: 18px; color: var(--muted); display: grid; gap: 4px; }}
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid {{ grid-template-columns: 1fr; }}
-        .shell {{ width: min(100vw - 24px, 1200px); }}
+        .shell {{ width: auto; padding: 24px 12px 48px; }}
         .help-copy {{ right: auto; left: 0; width: min(300px, 70vw); }}
       }}
     </style>
@@ -868,13 +869,14 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     shell_styles = """
     <style>
       .admin-report-shell {
-        width: min(1200px, calc(100vw - 40px));
+        max-width: 1180px;
         margin: 0 auto;
-        padding: 24px 0 48px;
+        padding: 28px 18px 64px;
       }
       @media (max-width: 900px) {
         .admin-report-shell {
-          width: min(100vw - 24px, 1200px);
+          width: auto;
+          padding: 24px 12px 48px;
         }
       }
     </style>
