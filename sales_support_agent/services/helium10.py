@@ -128,6 +128,17 @@ class WordFrequencyReport:
     warnings: list[str]
 
 
+LOWER_IS_BETTER_NUMERIC_HEADERS: frozenset[str] = frozenset(
+    {
+        "bsr",
+        "display order",
+        "competing products",
+        "title density",
+        "competitor rank avg",
+    }
+)
+
+
 def parse_xray_csvs(contents: list[bytes]) -> Helium10XrayReport:
     merged = _merge_xray_csvs(contents)
     return parse_xray_csv(merged)
@@ -442,7 +453,11 @@ def _prefer_richer_row(existing: dict[str, str] | None, candidate: dict[str, str
         current_num = _parse_number(current)
         incoming_num = _parse_number(incoming)
         if current_num is not None and incoming_num is not None:
-            merged[header] = incoming if incoming_num > current_num else current
+            header_key = _normalize_row_key(header)
+            if header_key in LOWER_IS_BETTER_NUMERIC_HEADERS:
+                merged[header] = incoming if incoming_num < current_num else current
+            else:
+                merged[header] = incoming if incoming_num > current_num else current
             continue
         merged[header] = incoming if len(incoming) > len(current) else current
     return merged

@@ -554,10 +554,20 @@ class DeckGenerationService:
 
         xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
         keyword_report = parse_keyword_csvs([content for _, content in keyword_xray_csv_payloads])
-        cerebro_report = parse_cerebro_csv(cerebro_csv_bytes)
-        word_frequency_report = parse_word_frequency_csv(word_frequency_csv_bytes)
+        try:
+            cerebro_report = parse_cerebro_csv(cerebro_csv_bytes)
+        except RuntimeError as exc:
+            warnings = [str(exc)]
+            cerebro_report = None
+        else:
+            warnings = []
+        try:
+            word_frequency_report = parse_word_frequency_csv(word_frequency_csv_bytes)
+        except RuntimeError as exc:
+            warnings.append(str(exc))
+            word_frequency_report = None
         hero_product = self.product_research.enrich_target_product(parsed_target)
-        warnings: list[str] = [*xray_report.warnings, *hero_product.warnings]
+        warnings = [*warnings, *xray_report.warnings, *hero_product.warnings]
         if keyword_report:
             warnings.extend(keyword_report.warnings)
         if cerebro_report:
@@ -621,6 +631,7 @@ class DeckGenerationService:
                 target_brand = inferred_brand
         seo_recommendations = _build_seo_recommendations(
             keyword_report,
+            cerebro_report,
             xray_report,
             search_insights,
             brand_name=target_brand,
@@ -1769,6 +1780,7 @@ def _build_keyword_rows(
 
 def _build_seo_recommendations(
     keyword_report: Helium10KeywordReport | None,
+    cerebro_report: Helium10CerebroReport | None,
     xray_report: Helium10XrayReport,
     search_insights: dict[str, list[str]],
     *,
@@ -1786,6 +1798,12 @@ def _build_seo_recommendations(
         recommendations.insert(
             0,
             f"Lead the SEO rewrite with '{top_term}' and adjacent long-tail terms with meaningful search volume. Example title direction: '{top_term}' + core benefit + format / pack detail.",
+        )
+    elif cerebro_report and cerebro_report.keywords:
+        top_term = cerebro_report.keywords[0]
+        recommendations.insert(
+            0,
+            f"Lead the SEO rewrite with '{top_term.phrase}' and adjacent long-tail terms. In Cerebro this term carries {_label_integer(top_term.search_volume)} search volume and the target currently ranks {_label_integer(top_term.target_rank)}.",
         )
     if search_insights.get("title_misses"):
         example_title_terms = ", ".join(f"'{item}'" for item in search_insights["title_misses"][:3])
