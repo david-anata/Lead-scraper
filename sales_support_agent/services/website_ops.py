@@ -435,6 +435,15 @@ def _summary_chip(label: str, value: Any, *, tone: str = "neutral") -> str:
     )
 
 
+def _mini_chip(label: str, value: Any) -> str:
+    return (
+        '<div class="mini-chip">'
+        f'<span>{html.escape(label)}</span>'
+        f"<strong>{html.escape(str(value))}</strong>"
+        "</div>"
+    )
+
+
 def _short_page_label(value: str) -> str:
     cleaned = re.sub(r"^https?://", "", str(value or "")).strip()
     return cleaned or "Unspecified page"
@@ -569,7 +578,10 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
               </div>
               <h3>{html.escape(str(item.get("page_title") or _short_page_label(str(item.get("page_url", "")))))}</h3>
               <p class="muted">{html.escape(_short_page_label(str(item.get("page_url", ""))))}</p>
-              <p><strong>Section:</strong> {html.escape(str(item.get("section_name", "Unspecified section")))}</p>
+              <div class="mini-grid">
+                {_mini_chip("Section", str(item.get("section_name", "Unspecified section")))}
+                {_mini_chip("Impact", str(item.get("expected_impact", "Improves performance against the current goal.")))}
+              </div>
               <div class="diff-grid">
                 <div class="diff-block">
                   <p class="eyebrow">Before</p>
@@ -581,8 +593,7 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
                 </div>
               </div>
               <p><strong>Why this matters:</strong> {html.escape(str(item.get("reason", "No rationale supplied.")))}</p>
-              <p class="muted"><strong>Expected impact:</strong> {html.escape(str(item.get("expected_impact", "Improves performance against the current goal.")))}</p>
-              {f"<p><a class='text-link' href='/admin/website-ops/feedback/{html.escape(str(item.get('feedback_id', '')), quote=True)}'>Open review item</a></p>" if item.get('feedback_id') else ""}
+              {f"<div class='button-row'><a class='text-link' href='/admin/website-ops/feedback/{html.escape(str(item.get('feedback_id', '')), quote=True)}'>Open review item</a></div>" if item.get('feedback_id') else ""}
             </article>
             """
         )
@@ -613,12 +624,12 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
                 <span class="status-pill status-neutral">Score {html.escape(str(item.get("score", "")))}</span>
               </div>
               <p class="muted">{html.escape(_short_page_label(str(item.get("page_url", ""))))}</p>
-              <div class="chip-row">
-                <span class="status-pill status-neutral">Bucket: {html.escape(str(item.get("bucket", "hold")).title())}</span>
-                <span class="status-pill status-neutral">GSC: {int((item.get("search_console") or {}).get("impressions", 0))} impressions</span>
-                <span class="status-pill status-neutral">CTR: {round(float((item.get("search_console") or {}).get("ctr", 0) or 0) * 100, 2)}%</span>
-                <span class="status-pill status-neutral">GA4: {int((item.get("ga4") or {}).get("sessions", 0))} sessions</span>
-                <span class="status-pill status-neutral">Conv: {int((item.get("ga4") or {}).get("conversions", 0))}</span>
+              <div class="mini-grid">
+                {_mini_chip("Bucket", str(item.get("bucket", "hold")).title())}
+                {_mini_chip("Impressions", int((item.get("search_console") or {}).get("impressions", 0)))}
+                {_mini_chip("CTR", f"{round(float((item.get('search_console') or {}).get('ctr', 0) or 0) * 100, 2)}%")}
+                {_mini_chip("Sessions", int((item.get("ga4") or {}).get("sessions", 0)))}
+                {_mini_chip("Conversions", int((item.get("ga4") or {}).get("conversions", 0)))}
               </div>
               {top_query}
               {insights}
@@ -637,40 +648,50 @@ def _page_shell(title: str, body: str) -> str:
     <title>{html.escape(title)}</title>
     <style>
       :root {{
-        --bg: #f7f3eb;
-        --panel: #fff;
-        --ink: #1d2d44;
-        --muted: #6f7b88;
-        --line: rgba(29,45,68,0.12);
-        --accent: #85bbda;
-        --accent-2: #bea889;
+        --anata-ink: #1d2d44;
+        --anata-ink-soft: #314664;
+        --anata-sky: #85bbda;
+        --anata-sky-deep: #4f84c4;
+        --anata-sand: #bfa889;
+        --anata-sand-soft: #f7f3ec;
+        --anata-paper: #fffdf9;
+        --anata-line: rgba(29, 45, 68, 0.12);
+        --anata-shadow: rgba(29, 45, 68, 0.10);
+        --anata-muted: #6b7688;
+        --panel: var(--anata-paper);
+        --ink: var(--anata-ink);
+        --muted: var(--anata-muted);
+        --line: var(--anata-line);
+        --accent: var(--anata-sky);
+        --accent-2: var(--anata-sand);
         --good: #0f766e;
         --warn: #a16207;
         --bad: #b91c1c;
       }}
       * {{ box-sizing: border-box; }}
-      body {{ margin: 0; background: linear-gradient(180deg, #f9f6f0 0%, #f3efe6 100%); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }}
+      body {{ margin: 0; background: linear-gradient(180deg, #eef5fb 0%, #f7f3ec 100%); color: var(--ink); font-family: "Inter", "Segoe UI", sans-serif; }}
       a {{ color: inherit; }}
-      .topbar {{ padding: 18px 24px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.88); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 20; }}
+      .topbar {{ padding: 16px 24px; border-bottom: 1px solid var(--line); background: rgba(255,253,249,0.92); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 20; }}
       .topbar-inner {{ max-width: 1180px; margin: 0 auto; display: flex; justify-content: space-between; gap: 16px; align-items: center; }}
       .brandmark {{ font-size: 28px; font-weight: 900; letter-spacing: -0.03em; }}
       .brandmark .dot {{ color: var(--accent); }}
       .navlinks {{ display: flex; flex-wrap: wrap; gap: 10px; }}
       .navlinks a {{ text-decoration: none; padding: 10px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-size: 13px; font-weight: 700; }}
-      .shell {{ max-width: 1180px; margin: 0 auto; padding: 28px 20px 48px; display: grid; gap: 18px; }}
-      .hero {{ display: grid; gap: 14px; grid-template-columns: minmax(0,1.2fr) minmax(280px,.8fr); align-items: start; }}
-      .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 24px; padding: 20px; box-shadow: 0 14px 38px rgba(15, 23, 42, 0.06); }}
-      .eyebrow {{ margin: 0; text-transform: uppercase; letter-spacing: .14em; font-size: 12px; color: var(--muted); }}
+      .shell {{ width: min(1200px, calc(100vw - 40px)); margin: 0 auto; padding: 24px 0 48px; display: grid; gap: 20px; }}
+      .hero {{ display: grid; gap: 20px; grid-template-columns: minmax(0,1.2fr) minmax(300px,.8fr); align-items: start; }}
+      .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 28px; padding: 22px; box-shadow: 0 14px 32px var(--anata-shadow); }}
+      .eyebrow {{ margin: 0; text-transform: uppercase; letter-spacing: .18em; font-size: 12px; font-weight: 800; color: var(--accent); }}
       h1,h2,h3,p {{ margin: 0; }}
-      h1 {{ font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1.02; }}
-      h2 {{ font-size: 24px; }}
-      .lead {{ color: var(--muted); line-height: 1.6; }}
-      .lead-sm {{ color: var(--muted); line-height: 1.35; font-size: 14px; }}
+      h1 {{ font-size: clamp(2.2rem, 4vw, 3.8rem); line-height: .98; }}
+      h2 {{ font-size: 30px; line-height: 1.05; }}
+      h3 {{ font-size: 18px; line-height: 1.25; }}
+      .lead {{ color: var(--anata-ink-soft); line-height: 1.55; font-size: 18px; }}
+      .lead-sm {{ color: var(--anata-ink-soft); line-height: 1.45; font-size: 14px; }}
       .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; }}
       .stat strong {{ display: block; font-size: 28px; line-height: 1.05; margin-top: 8px; }}
-      .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }}
-      .stack {{ display: grid; gap: 14px; }}
-      .list-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }}
+      .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 20px; }}
+      .stack {{ display: grid; gap: 12px; }}
+      .list-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }}
       .muted {{ color: var(--muted); }}
       .status-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #f3f4f6; }}
       .status-approved, .status-done {{ background: rgba(15,118,110,.1); color: var(--good); }}
@@ -688,15 +709,19 @@ def _page_shell(title: str, body: str) -> str:
       .form-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }}
       .span-2 {{ grid-column: 1 / -1; }}
       .detail-layout {{ display: grid; grid-template-columns: minmax(260px,.75fr) minmax(0,1.25fr); gap: 18px; align-items: start; }}
-      .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px,1fr)); gap: 10px; }}
+      .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 10px; }}
       .summary-chip {{ border: 1px solid var(--line); border-radius: 18px; padding: 14px; background: #fcfbf8; display: grid; gap: 6px; }}
       .summary-chip span {{ font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }}
       .summary-chip strong {{ font-size: 22px; line-height: 1.05; }}
       .summary-good strong {{ color: var(--good); }}
       .summary-warn strong, .summary-bad strong {{ color: var(--warn); }}
       .summary-bad strong {{ color: var(--bad); }}
-      .setup-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }}
-      .setup-card, .task-card, .action-card {{ display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }}
+      .mini-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap: 10px; }}
+      .mini-chip {{ display: grid; gap: 4px; padding: 12px 14px; border-radius: 16px; background: rgba(247,243,236,.8); border: 1px solid rgba(29,45,68,0.08); }}
+      .mini-chip span {{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }}
+      .mini-chip strong {{ font-size: 14px; line-height: 1.4; }}
+      .setup-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }}
+      .setup-card, .task-card, .action-card {{ display: grid; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: #fff; }}
       .identity-grid {{ display: grid; gap: 10px; grid-template-columns: 1fr; padding-top: 4px; }}
       .identity-grid code {{ word-break: break-word; }}
       .meta-pair {{ display: grid; gap: 4px; }}
@@ -707,24 +732,25 @@ def _page_shell(title: str, body: str) -> str:
       .status-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }}
       .status-ok {{ background: rgba(15,118,110,.1); color: var(--good); }}
       .status-warn {{ background: rgba(161,98,7,.12); color: var(--warn); }}
-      .status-neutral {{ background: #eef2f7; color: var(--ink); }}
+      .status-neutral {{ background: rgba(133, 187, 218, 0.14); color: var(--ink); border-color: rgba(79,132,196,0.12); }}
       .chip-row {{ display: flex; flex-wrap: wrap; gap: 8px; }}
       .text-link {{ font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
       .action-card {{ background: linear-gradient(180deg, #fff 0%, #fdfbf7 100%); }}
-      .insight-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, #fff 0%, #fbfcfe 100%); }}
+      .insight-card {{ display: grid; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(180deg, #fff 0%, #fbfcfe 100%); align-content: start; }}
       .source-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #edf5ff; color: #25577a; }}
       .source-google-search-console, .source-google-search-console-source, .source-google-search-console-audit {{ background: #edf7ff; color: #275e83; }}
       .source-google-analytics-4 {{ background: #fff6ea; color: #8f5d0f; }}
       .source-structural-audit {{ background: #f2f7f4; color: #1e6259; }}
-      .diff-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }}
-      .diff-block {{ padding: 14px; border-radius: 16px; background: #f7f4ef; border: 1px solid rgba(29,45,68,0.08); }}
+      .diff-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; align-items: start; }}
+      .diff-block {{ padding: 14px; border-radius: 18px; background: var(--anata-sand-soft); border: 1px solid rgba(29,45,68,0.08); min-height: 100%; }}
       .report-frame {{ border: 1px solid var(--line); border-radius: 18px; overflow: hidden; min-height: 640px; background: #fff; }}
       .report-frame iframe {{ width: 100%; min-height: 640px; border: 0; }}
       .flash {{ padding: 14px 16px; border-radius: 16px; background: rgba(133,187,218,.18); border: 1px solid rgba(133,187,218,.35); }}
       code {{ background: #f3efe6; padding: 2px 6px; border-radius: 6px; }}
       .compact-list {{ margin: 0; padding-left: 18px; color: var(--muted); display: grid; gap: 4px; }}
       @media (max-width: 900px) {{
-        .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid {{ grid-template-columns: 1fr; }}
+        .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid, .mini-grid {{ grid-template-columns: 1fr; }}
+        .shell {{ width: min(100vw - 24px, 1200px); }}
       }}
     </style>
   </head>
