@@ -329,9 +329,13 @@ def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
     if project_id or client_email:
         identity_lines = []
         if project_id:
-            identity_lines.append(f"<div><strong>Project</strong><br><code>{html.escape(project_id)}</code></div>")
+            identity_lines.append(
+                f"<div class='meta-pair'><span>Project</span><code>{html.escape(project_id)}</code></div>"
+            )
         if client_email:
-            identity_lines.append(f"<div><strong>Service account</strong><br><code>{html.escape(client_email)}</code></div>")
+            identity_lines.append(
+                f"<div class='meta-pair'><span>Service account</span><code>{html.escape(client_email)}</code></div>"
+            )
         identity_block = f"<div class='identity-grid'>{''.join(identity_lines)}</div>"
     cards = [
         f"""
@@ -340,8 +344,8 @@ def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
             <h3>Search Console</h3>
             <span class="status-pill {'status-ok' if analytics_status.get('search_console') else 'status-warn'}">{'Connected' if analytics_status.get('search_console') else 'Needs setup'}</span>
           </div>
-          <p class="muted">{html.escape(next((note for note in notes if 'Search Console' in note), 'Search Console data is available for Website Ops decisions.'))}</p>
-          {f"<p class='muted'><strong>Property:</strong> <code>{html.escape(search_console_property)}</code></p>" if search_console_property else ""}
+          <p class="lead-sm">{html.escape(next((note for note in notes if 'Search Console' in note), 'Live search query data is available for Website Ops decisions.'))}</p>
+          {f"<div class='meta-pair'><span>Property</span><code>{html.escape(search_console_property)}</code></div>" if search_console_property else ""}
           {identity_block}
         </article>
         """,
@@ -351,8 +355,8 @@ def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
             <h3>GA4</h3>
             <span class="status-pill {'status-ok' if analytics_status.get('ga4') else 'status-warn'}">{'Connected' if analytics_status.get('ga4') else 'Needs setup'}</span>
           </div>
-          <p class="muted">{html.escape(next((note for note in notes if 'GA4' in note), 'GA4 landing-page and conversion data is available for Website Ops decisions.'))}</p>
-          {f"<p class='muted'><strong>Property ID:</strong> <code>{html.escape(ga4_property_id)}</code></p>" if ga4_property_id else ""}
+          <p class="lead-sm">{html.escape(next((note for note in notes if 'GA4' in note), 'Landing-page and conversion data is available for Website Ops decisions.'))}</p>
+          {f"<div class='meta-pair'><span>Property ID</span><code>{html.escape(ga4_property_id)}</code></div>" if ga4_property_id else ""}
           {identity_block}
         </article>
         """,
@@ -495,6 +499,7 @@ def _page_shell(title: str, body: str) -> str:
       h1 {{ font-size: clamp(2rem, 4vw, 3.4rem); line-height: 1.02; }}
       h2 {{ font-size: 24px; }}
       .lead {{ color: var(--muted); line-height: 1.6; }}
+      .lead-sm {{ color: var(--muted); line-height: 1.35; font-size: 14px; }}
       .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; }}
       .stat strong {{ display: block; font-size: 28px; line-height: 1.05; margin-top: 8px; }}
       .grid-2 {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }}
@@ -528,8 +533,11 @@ def _page_shell(title: str, body: str) -> str:
       .setup-card, .task-card, .action-card {{ display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }}
       .identity-grid {{ display: grid; gap: 10px; grid-template-columns: 1fr; padding-top: 4px; }}
       .identity-grid code {{ word-break: break-word; }}
+      .meta-pair {{ display: grid; gap: 4px; }}
+      .meta-pair span {{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }}
+      .meta-pair code {{ width: fit-content; max-width: 100%; }}
       .setup-card.is-blocked {{ border-color: rgba(161,98,7,.28); background: #fffaf0; }}
-      .setup-card.is-connected {{ border-color: rgba(15,118,110,.18); background: #f8fffc; }}
+      .setup-card.is-connected {{ border-color: rgba(15,118,110,.18); background: linear-gradient(180deg, #fbfffd 0%, #f4fbf8 100%); }}
       .status-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }}
       .status-ok {{ background: rgba(15,118,110,.1); color: var(--good); }}
       .status-warn {{ background: rgba(161,98,7,.12); color: var(--warn); }}
@@ -661,8 +669,11 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           </div>
           <div class="card stack">
             <p class="eyebrow">Current scope</p>
-            <p class="lead">Monitoring <strong>{len(settings.website_ops_site_urls)}</strong> live URLs under <code>{html.escape(str(settings.website_ops_root))}</code>.</p>
-            <p class="lead">Auto-execution is <strong>{'enabled' if settings.website_ops_execute_approved else 'disabled'}</strong>.</p>
+            <div class="summary-grid">
+              {_summary_chip("Live URLs", len(settings.website_ops_site_urls), tone="neutral")}
+              {_summary_chip("Workspace", settings.website_ops_root.name, tone="neutral")}
+              {_summary_chip("Auto execution", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
+            </div>
             <div class="setup-grid">
               {_analytics_connection_cards(analytics_status)}
             </div>
