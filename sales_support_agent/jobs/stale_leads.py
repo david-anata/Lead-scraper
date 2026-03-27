@@ -8,7 +8,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings, normalize_status_key
+from sales_support_agent.config import Settings, is_active_pipeline_status, normalize_status_key
 from sales_support_agent.integrations.clickup import ClickUpClient
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.models.entities import LeadMirror
@@ -81,8 +81,11 @@ class StaleLeadJob:
         for lead in leads:
             if processing_limit and inspected >= processing_limit:
                 break
-            status_key = normalize_status_key(lead.status or "")
-            if status_key not in self.settings.active_statuses:
+            if not is_active_pipeline_status(
+                lead.status or "",
+                active_statuses=self.settings.active_statuses,
+                inactive_statuses=self.settings.inactive_statuses,
+            ):
                 continue
             inspected += 1
             try:

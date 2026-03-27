@@ -11,7 +11,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 try:
-    from sales_support_agent.config import DEFAULT_STATUS_POLICIES, build_normalized_status_policies, normalize_status_key
+    from sales_support_agent.config import (
+        DEFAULT_STATUS_POLICIES,
+        build_normalized_status_policies,
+        is_active_pipeline_status,
+        normalize_status_key,
+        status_policy_for,
+    )
     from sales_support_agent.models.database import create_session_factory, init_database, session_scope
     from sales_support_agent.models.entities import AutomationRun, LeadMirror, MailboxSignal
     from sales_support_agent.services.admin_dashboard import (
@@ -104,6 +110,62 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertNotIn("CONNECT CANVA", html)
         self.assertNotIn("Google sheet range", html)
         self.assertNotIn("Competitor Amazon links or ASINs", html)
+
+    def test_unknown_non_terminal_statuses_are_treated_as_active(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        settings = self._settings()
+        with session_scope(session_factory) as session:
+            session.add(
+                LeadMirror(
+                    clickup_task_id="task-1",
+                    list_id=settings.clickup_list_id,
+                    task_name="Prospect One",
+                    task_url="https://app.clickup.com/t/task-1",
+                    status="FOLLOW UP",
+                    created_at=datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc),
+                    updated_at=datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc),
+                    last_sync_at=datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc),
+                    raw_task_payload={},
+                )
+            )
+            dashboard = build_dashboard_data(
+                settings=settings,
+                session=session,
+                lead_builder_status={"ready": True, "missing": []},
+                clickup_client=self._FakeClickUpClient(),
+                as_of_date=date(2026, 3, 14),
+            )
+
+        self.assertEqual(dashboard.total_active_leads, 1)
+
+
+class AdminStatusPolicyTests(unittest.TestCase):
+    def test_is_active_pipeline_status_excludes_closed_and_includes_unknown_open(self) -> None:
+        active_statuses = (normalize_status_key("new lead"),)
+        inactive_statuses = (normalize_status_key("lost"), normalize_status_key("won - active"))
+
+        self.assertTrue(
+            is_active_pipeline_status(
+                "FOLLOW UP",
+                active_statuses=active_statuses,
+                inactive_statuses=inactive_statuses,
+            )
+        )
+        self.assertFalse(
+            is_active_pipeline_status(
+                "WON - ACTIVE",
+                active_statuses=active_statuses,
+                inactive_statuses=inactive_statuses,
+            )
+        )
+
+    def test_status_policy_for_falls_back_to_follow_up_policy(self) -> None:
+        policies = build_normalized_status_policies(DEFAULT_STATUS_POLICIES)
+        self.assertEqual(
+            status_policy_for("FOLLOW UP", policies),
+            policies[normalize_status_key("FOLLOW UP")],
+        )
 
 
 if __name__ == "__main__":

@@ -282,6 +282,47 @@ def build_normalized_status_policies(status_policies: dict[str, StatusPolicy]) -
     return {normalize_status_key(status): policy for status, policy in status_policies.items()}
 
 
+def is_closed_pipeline_status(status_key: str, inactive_statuses: tuple[str, ...]) -> bool:
+    normalized = normalize_status_key(status_key)
+    if not normalized:
+        return False
+    if normalized in inactive_statuses:
+        return True
+    closed_markers = ("won", "lost", "canceled", "cancelled", "closed", "archive", "archived")
+    return any(marker in normalized for marker in closed_markers)
+
+
+def is_active_pipeline_status(status: str, *, active_statuses: tuple[str, ...], inactive_statuses: tuple[str, ...]) -> bool:
+    normalized = normalize_status_key(status)
+    if not normalized:
+        return False
+    if normalized in active_statuses:
+        return True
+    return not is_closed_pipeline_status(normalized, inactive_statuses)
+
+
+def status_policy_for(status: str, status_policies: dict[str, StatusPolicy]) -> StatusPolicy:
+    normalized = normalize_status_key(status)
+    if normalized in status_policies:
+        return status_policies[normalized]
+
+    if "follow up" in normalized:
+        return status_policies[normalize_status_key("FOLLOW UP")]
+    if "negoti" in normalized:
+        return status_policies[normalize_status_key("WORKING NEGOTIATING")]
+    if "needs offer" in normalized or ("offer" in normalized and "need" in normalized):
+        return status_policies[normalize_status_key("WORKING NEEDS OFFER")]
+    if "offered" in normalized or "offer sent" in normalized:
+        return status_policies[normalize_status_key("WORKING OFFERED")]
+    if "qualif" in normalized:
+        return status_policies[normalize_status_key("WORKING QUALIFIED")]
+    if "contacted" in normalized or "contact" in normalized:
+        return status_policies[normalize_status_key("CONTACTED COLD")]
+    if "new" in normalized or "lead" in normalized:
+        return status_policies[normalize_status_key("new lead")]
+    return StatusPolicy(due_days=2, overdue_days=3)
+
+
 def _default_db_url() -> str:
     runtime_dir = Path("runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)

@@ -78,7 +78,7 @@ from sales_support_agent.services.website_ops import (
     run_website_ops,
     save_feedback_record,
 )
-from sales_support_agent.config import normalize_status_key
+from sales_support_agent.config import is_active_pipeline_status, normalize_status_key
 
 
 router = APIRouter()
@@ -295,13 +295,17 @@ def _run_dashboard_sync(app: object, *, trigger: str) -> dict[str, object]:
     active_leads = sum(
         1
         for lead in mirrored_leads
-        if normalize_status_key(lead.status or "") in settings.active_statuses
+        if is_active_pipeline_status(
+            lead.status or "",
+            active_statuses=settings.active_statuses,
+            inactive_statuses=settings.inactive_statuses,
+        )
     )
     synced_tasks = int(clickup_summary.get("synced_tasks", 0) or 0)
     if synced_tasks == 0:
         message = "Dashboard sync finished, but ClickUp returned 0 tasks. Check CLICKUP_LIST_ID and ClickUp token access."
     elif active_leads == 0:
-        message = "Dashboard sync finished, but 0 tasks are in tracked active statuses. Check your ClickUp status names."
+        message = "Dashboard sync finished, but 0 tasks are still classified as in-flight opportunities. Check your ClickUp status names."
     else:
         message = f"Dashboard sync finished. Synced {synced_tasks} tasks and found {active_leads} active leads."
     return {

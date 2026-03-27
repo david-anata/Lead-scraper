@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings, normalize_status_key
+from sales_support_agent.config import Settings, is_active_pipeline_status, normalize_status_key
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection, CommunicationEvent, LeadMirror, MailboxSignal
 from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
@@ -672,7 +672,11 @@ def build_dashboard_data(
         status_key = normalize_status_key(status)
         if not status:
             continue
-        if status_key in settings.inactive_statuses or status_key not in settings.active_statuses:
+        if not is_active_pipeline_status(
+            status,
+            active_statuses=settings.active_statuses,
+            inactive_statuses=settings.inactive_statuses,
+        ):
             continue
         active_lead_count += 1
         evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
@@ -911,7 +915,11 @@ def build_executive_data(
     for lead in leads:
         status = (lead.status or "").strip()
         status_key = " ".join(status.lower().split())
-        if not status or status_key not in active_statuses:
+        if not is_active_pipeline_status(
+            status,
+            active_statuses=settings.active_statuses,
+            inactive_statuses=settings.inactive_statuses,
+        ):
             continue
 
         comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)

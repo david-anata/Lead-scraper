@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings, normalize_status_key
+from sales_support_agent.config import Settings, is_active_pipeline_status, normalize_status_key, status_policy_for
 from sales_support_agent.models.entities import CommunicationEvent, LeadMirror
 from sales_support_agent.rules.follow_up import FollowUpAssessment, assess_status_follow_up
 from sales_support_agent.services.notification_policy import (
@@ -69,7 +69,11 @@ class ReminderService:
     ) -> LeadEvaluation | None:
         status = (lead.status or "").strip()
         status_key = normalize_status_key(status)
-        if status_key in self.settings.inactive_statuses or status_key not in self.settings.active_statuses:
+        if not is_active_pipeline_status(
+            status,
+            active_statuses=self.settings.active_statuses,
+            inactive_statuses=self.settings.inactive_statuses,
+        ):
             return None
 
         last_event = self._latest_meaningful_event(lead.clickup_task_id)
@@ -79,7 +83,7 @@ class ReminderService:
             last_touch
             or ((lead.next_follow_up_at is not None) and (lead.communication_summary or lead.recommended_next_action))
         )
-        policy = self.settings.status_policies[status_key]
+        policy = status_policy_for(status, self.settings.status_policies)
         created_at = lead.created_at or lead.last_sync_at or datetime.utcnow()
         assessment = assess_status_follow_up(
             status=status,
