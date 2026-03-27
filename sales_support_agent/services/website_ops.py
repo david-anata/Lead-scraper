@@ -462,6 +462,45 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
     return "".join(cards)
 
 
+def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
+    if not page_insights:
+        return "<div class='list-card'><p class='muted'>No analytics insights generated yet.</p></div>"
+    cards = []
+    for item in page_insights:
+        top_query = ""
+        queries = list(item.get("top_queries") or [])
+        if queries:
+            top_query = f"<p class='muted'><strong>Top query:</strong> {html.escape(str(queries[0].get('query', '')))}</p>"
+        insights = ""
+        if item.get("insights"):
+            insights = (
+                "<ul class='compact-list'>"
+                + "".join(f"<li>{html.escape(str(note))}</li>" for note in item.get("insights", [])[:2])
+                + "</ul>"
+            )
+        cards.append(
+            f"""
+            <article class="insight-card">
+              <div class="row-actions">
+                <h3>{html.escape(str(item.get("page_title") or _short_page_label(str(item.get("page_url", "")))))}</h3>
+                <span class="status-pill status-neutral">Score {html.escape(str(item.get("score", "")))}</span>
+              </div>
+              <p class="muted">{html.escape(_short_page_label(str(item.get("page_url", ""))))}</p>
+              <div class="chip-row">
+                <span class="status-pill status-neutral">Bucket: {html.escape(str(item.get("bucket", "hold")).title())}</span>
+                <span class="status-pill status-neutral">GSC: {int((item.get("search_console") or {}).get("impressions", 0))} impressions</span>
+                <span class="status-pill status-neutral">CTR: {round(float((item.get("search_console") or {}).get("ctr", 0) or 0) * 100, 2)}%</span>
+                <span class="status-pill status-neutral">GA4: {int((item.get("ga4") or {}).get("sessions", 0))} sessions</span>
+                <span class="status-pill status-neutral">Conv: {int((item.get("ga4") or {}).get("conversions", 0))}</span>
+              </div>
+              {top_query}
+              {insights}
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
 def _page_shell(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -545,6 +584,7 @@ def _page_shell(title: str, body: str) -> str:
       .chip-row {{ display: flex; flex-wrap: wrap; gap: 8px; }}
       .text-link {{ font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
       .action-card {{ background: linear-gradient(180deg, #fff 0%, #fdfbf7 100%); }}
+      .insight-card {{ display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, #fff 0%, #fbfcfe 100%); }}
       .source-chip {{ display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #edf5ff; color: #25577a; }}
       .source-google-search-console, .source-google-search-console-source, .source-google-search-console-audit {{ background: #edf7ff; color: #275e83; }}
       .source-google-analytics-4 {{ background: #fff6ea; color: #8f5d0f; }}
@@ -555,6 +595,7 @@ def _page_shell(title: str, body: str) -> str:
       .report-frame iframe {{ width: 100%; min-height: 640px; border: 0; }}
       .flash {{ padding: 14px 16px; border-radius: 16px; background: rgba(133,187,218,.18); border: 1px solid rgba(133,187,218,.35); }}
       code {{ background: #f3efe6; padding: 2px 6px; border-radius: 6px; }}
+      .compact-list {{ margin: 0; padding-left: 18px; color: var(--muted); display: grid; gap: 4px; }}
       @media (max-width: 900px) {{
         .hero, .grid-2, .detail-layout, .stats, .form-grid, .setup-grid, .diff-grid {{ grid-template-columns: 1fr; }}
       }}
@@ -715,23 +756,16 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           <div class="card stack">
             <h2>Priority action queue</h2>
             <p class="lead">Each card shows the page, exact section, current state, proposed state, and why the change supports the goal.</p>
+            <div class="button-row">
+              <a href="/admin/website-ops/queue" class="text-link">Open approval queue</a>
+              <span class="muted">Approve tasks there, then the next run executes the approved safe actions.</span>
+            </div>
             {_action_queue_cards(action_queue)}
           </div>
           <div class="card stack">
             <h2>Insight snapshots</h2>
-            {
-                ''.join(
-                    f'''
-                    <article class="list-card">
-                      <h3>{html.escape(str(item.get("page_url", "")))}</h3>
-                      <p class="muted">Bucket: {html.escape(str(item.get("bucket", "")))} · Score: {html.escape(str(item.get("score", "")))}</p>
-                      <p class="muted">GSC: {int((item.get("search_console") or {}).get("impressions", 0))} impressions · {round(float((item.get("search_console") or {}).get("ctr", 0) or 0) * 100, 2)}% CTR</p>
-                      <p class="muted">GA4: {int((item.get("ga4") or {}).get("sessions", 0))} sessions · {int((item.get("ga4") or {}).get("conversions", 0))} conversions</p>
-                    </article>
-                    '''
-                    for item in page_insights
-                ) if page_insights else "<div class='list-card'><p class='muted'>No analytics insights generated yet.</p></div>"
-            }
+            <p class="lead">Compact page snapshots for quick triage across search demand, traffic, and conversion performance.</p>
+            {_insight_snapshot_cards(page_insights)}
           </div>
         </section>
         <section class="grid-2">

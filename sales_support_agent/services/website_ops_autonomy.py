@@ -540,7 +540,7 @@ def build_autonomy_overlay(
 
     return {
         "goal": {
-            "primary": "Increase qualified organic leads by improving service pages with the strongest search opportunity and weakest conversion efficiency.",
+            "primary": "Increase qualified organic leads by improving the service pages with the strongest search opportunity, weakest conversion efficiency, and highest upside for Google and AI search visibility.",
             "success_metrics": [
                 "More clicks from Search Console on priority service pages",
                 "Higher landing-page conversion rate in GA4",
