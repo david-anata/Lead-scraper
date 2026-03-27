@@ -37,6 +37,7 @@ from sales_support_agent.services.admin_dashboard import (
     render_login_page,
 )
 from sales_support_agent.services.website_ops import (
+    get_website_ops_run_state,
     latest_report_entry as latest_website_ops_report_entry,
     render_dashboard_page as render_website_ops_dashboard_page,
     render_feedback_detail_page as render_website_ops_feedback_detail_page,
@@ -46,6 +47,8 @@ from sales_support_agent.services.website_ops import (
     review_feedback_record as review_website_ops_feedback_record,
     run_website_ops as run_website_ops_pipeline,
     save_feedback_record as save_website_ops_feedback_record,
+    website_ops_run_is_due,
+    write_website_ops_run_state,
 )
 from sales_support_agent.services.revenue_ops import (
     append_daily_import_count_db,
@@ -516,6 +519,9 @@ def startup() -> None:
         "message": "Dashboard sync has not run in this session yet.",
     }
     app.state.admin_dashboard_sync_future = None
+    app.state.website_ops_run_lock = threading.Lock()
+    app.state.website_ops_run_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="website-ops")
+    app.state.website_ops_run_futures = {}
     validate_settings_on_startup(settings)
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
@@ -3518,6 +3524,119 @@ def admin_executive_dashboard(request: Request) -> Response:
     return HTMLResponse(render_executive_page(executive))
 
 
+def _website_ops_run_status(request: Request, *, mode: str = "daily") -> dict[str, Any]:
+    settings = load_website_ops_settings()
+    state = get_website_ops_run_state(settings, mode)
+    with request.app.state.website_ops_run_lock:
+        future = request.app.state.website_ops_run_futures.get(mode)
+        running = bool(future and not future.done())
+    if state.get("status") in {"queued", "running"} and not running:
+        state = write_website_ops_run_state(
+            settings,
+            mode,
+            {
+                "status": "failed",
+                "last_completed_at": datetime.now(timezone.utc).isoformat(),
+                "last_error": state.get("last_error") or "Background run was interrupted before completion.",
+            },
+        )
+    return {
+        **state,
+        "running": running,
+        "due": website_ops_run_is_due(settings, mode),
+    }
+
+
+def _website_ops_run_worker(app_instance: FastAPI, settings: WebsiteOpsHostSettings, *, mode: str, trigger: str) -> None:
+    now = datetime.now(timezone.utc)
+    run_date = now.date().isoformat()
+    write_website_ops_run_state(
+        settings,
+        mode,
+        {
+            "mode": mode,
+            "status": "running",
+            "run_date": run_date,
+            "trigger": trigger,
+            "last_started_at": now.isoformat(),
+            "last_error": "",
+        },
+    )
+    try:
+        run_website_ops_pipeline(settings, mode=mode)
+    except Exception as exc:
+        logger.exception("[WebsiteOps] %s run failed trigger=%s", mode, trigger)
+        write_website_ops_run_state(
+            settings,
+            mode,
+            {
+                "mode": mode,
+                "status": "failed",
+                "run_date": run_date,
+                "trigger": trigger,
+                "last_completed_at": datetime.now(timezone.utc).isoformat(),
+                "last_error": str(exc),
+            },
+        )
+    else:
+        write_website_ops_run_state(
+            settings,
+            mode,
+            {
+                "mode": mode,
+                "status": "succeeded",
+                "run_date": run_date,
+                "trigger": trigger,
+                "last_completed_at": datetime.now(timezone.utc).isoformat(),
+                "last_successful_date": run_date,
+                "last_error": "",
+            },
+        )
+    finally:
+        with app_instance.state.website_ops_run_lock:
+            app_instance.state.website_ops_run_futures.pop(mode, None)
+
+
+def _start_website_ops_run(request: Request, *, mode: str, force: bool, trigger: str) -> dict[str, Any]:
+    settings = load_website_ops_settings()
+    with request.app.state.website_ops_run_lock:
+        future = request.app.state.website_ops_run_futures.get(mode)
+        if future and not future.done():
+            status = "running"
+            message = f"{mode.title()} Website Ops run is already running."
+        elif not force and not website_ops_run_is_due(settings, mode):
+            status = "skipped"
+            message = f"{mode.title()} Website Ops run already completed for today."
+        else:
+            now = datetime.now(timezone.utc)
+            write_website_ops_run_state(
+                settings,
+                mode,
+                {
+                    "mode": mode,
+                    "status": "queued",
+                    "run_date": now.date().isoformat(),
+                    "trigger": trigger,
+                    "last_started_at": now.isoformat(),
+                    "last_error": "",
+                },
+            )
+            request.app.state.website_ops_run_futures[mode] = request.app.state.website_ops_run_executor.submit(
+                _website_ops_run_worker,
+                request.app,
+                settings,
+                mode=mode,
+                trigger=trigger,
+            )
+            status = "queued"
+            message = f"{mode.title()} Website Ops run queued."
+    return {
+        **_website_ops_run_status(request, mode=mode),
+        "status": status,
+        "message": message,
+    }
+
+
 @app.get("/admin/website-ops", response_class=HTMLResponse)
 def admin_website_ops(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
@@ -3526,6 +3645,11 @@ def admin_website_ops(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
+    if website_ops_run_is_due(load_website_ops_settings(), "daily"):
+        try:
+            _start_website_ops_run(request, mode="daily", force=False, trigger="visit")
+        except Exception:
+            logger.exception("[WebsiteOps] auto daily sweep on page load failed")
     return HTMLResponse(render_website_ops_dashboard_page(load_website_ops_settings()))
 
 
@@ -3708,8 +3832,23 @@ async def admin_website_ops_run(request: Request, mode: str = Form(default="dail
     normalized_mode = (mode or "daily").strip().lower()
     if normalized_mode not in {"daily", "weekly", "monthly"}:
         return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
-    run_website_ops_pipeline(load_website_ops_settings(), mode=normalized_mode)
+    _start_website_ops_run(request, mode=normalized_mode, force=True, trigger="manual")
     return RedirectResponse(url="/admin/website-ops", status_code=302)
+
+
+@app.get("/admin/api/website-ops/status")
+def admin_website_ops_status(request: Request, mode: str = "daily") -> JSONResponse:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    normalized_mode = (mode or "daily").strip().lower()
+    if normalized_mode not in {"daily", "weekly", "monthly"}:
+        return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
+    return JSONResponse(status_code=200, content={"status": "ok", "details": _website_ops_run_status(request, mode=normalized_mode)})
 
 
 @app.post("/admin/api/website-ops/feedback")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -14,13 +15,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops import (
+    get_website_ops_run_state,
     latest_report_entry,
     load_feedback_records,
+    load_website_ops_run_state,
     render_dashboard_page,
     render_feedback_detail_page,
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
+    website_ops_run_is_due,
+    write_website_ops_run_state,
 )
 
 
@@ -266,6 +271,110 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             records = load_feedback_records(settings)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["automation_key"][:5], "auto-")
+
+    def test_run_state_persists_daily_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            state = write_website_ops_run_state(
+                settings,
+                "daily",
+                {
+                    "status": "succeeded",
+                    "run_date": "2026-03-27",
+                    "last_started_at": "2026-03-27T00:00:00Z",
+                    "last_completed_at": "2026-03-27T00:01:00Z",
+                    "last_successful_date": "2026-03-27",
+                    "trigger": "visit",
+                },
+            )
+            self.assertEqual(state["status"], "succeeded")
+            loaded = load_website_ops_run_state(settings)
+            self.assertEqual(loaded["runs"]["daily"]["last_successful_date"], "2026-03-27")
+            self.assertFalse(website_ops_run_is_due(settings, "daily", today=date(2026, 3, 27)))
+            self.assertTrue(website_ops_run_is_due(settings, "daily", today=date(2026, 3, 28)))
+
+    def test_run_website_ops_preserves_approved_auto_generated_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            existing = save_feedback_record(
+                settings,
+                {
+                    "summary": "Review shipping title",
+                    "status": "approved",
+                    "automation_key": "auto-keep-approved",
+                    "auto_generated": True,
+                    "source_report_date": "2026-03-27",
+                    "reviewer_name": "SEO Lead",
+                },
+            )
+            fake_pipeline = {"report": self._fake_report(), "observations": [], "artifacts": {}}
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [
+                    {
+                        "page_url": "https://anatainc.com/services/shipping/",
+                        "page_title": "Shipping services",
+                        "section_name": "Title",
+                        "after_state": "Tighten the commercial title.",
+                        "reason": "CTR is weak.",
+                        "insight_source": "Google Search Console",
+                    }
+                ],
+                "analytics_status": {"search_console": True, "ga4": True, "notes": []},
+                "support_requests": [],
+                "page_insights": [],
+            }
+            with mock.patch("sales_support_agent.services.website_ops._automation_key", return_value="auto-keep-approved"):
+                with mock.patch("sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline", return_value=fake_pipeline):
+                    with mock.patch("sales_support_agent.services.website_ops.build_autonomy_overlay", return_value=fake_overlay):
+                        result = run_website_ops(settings, mode="daily")
+            self.assertTrue(result.ok)
+            updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == existing["feedback_id"])
+            self.assertEqual(updated["status"], "approved")
+            self.assertEqual(updated["reviewer_name"], "SEO Lead")
+
+    def test_run_website_ops_reopens_terminal_auto_generated_item_on_later_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            original = save_feedback_record(
+                settings,
+                {
+                    "summary": "Review contact CTA",
+                    "status": "done",
+                    "automation_key": "auto-reopen",
+                    "auto_generated": True,
+                    "source_report_date": "2026-03-26",
+                },
+            )
+            fake_pipeline = {"report": self._fake_report(), "observations": [], "artifacts": {}}
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [
+                    {
+                        "page_url": "https://anatainc.com/contact/",
+                        "page_title": "Contact",
+                        "section_name": "Hero CTA",
+                        "after_state": "Strengthen contact proof block.",
+                        "reason": "Traffic is not converting.",
+                        "insight_source": "Google Analytics 4",
+                    }
+                ],
+                "analytics_status": {"search_console": True, "ga4": True, "notes": []},
+                "support_requests": [],
+                "page_insights": [],
+            }
+            with mock.patch("sales_support_agent.services.website_ops._automation_key", return_value="auto-reopen"):
+                with mock.patch("sales_support_agent.services.website_ops._utc_now", return_value=datetime(2026, 3, 27, 12, 0, tzinfo=timezone.utc)):
+                    with mock.patch("sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline", return_value=fake_pipeline):
+                        with mock.patch("sales_support_agent.services.website_ops.build_autonomy_overlay", return_value=fake_overlay):
+                            result = run_website_ops(settings, mode="daily")
+            self.assertTrue(result.ok)
+            records = load_feedback_records(settings)
+            self.assertEqual(len(records), 2)
+            reopened = next(item for item in records if item["feedback_id"] != original["feedback_id"])
+            self.assertEqual(reopened["status"], "new")
+            self.assertEqual(reopened["reopened_from_feedback_id"], original["feedback_id"])
+            self.assertEqual(reopened["reopened_reason"], "recommendation_reappeared")
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

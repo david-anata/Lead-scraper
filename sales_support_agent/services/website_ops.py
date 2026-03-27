@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from sales_support_agent.config import Settings
 from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
@@ -23,6 +23,132 @@ class WebsiteOpsActionResult:
     message: str
     report: dict[str, Any] | None = None
     record: dict[str, Any] | None = None
+
+
+RUN_MODES = ("daily", "weekly", "monthly")
+RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
+WORKFLOW_OWNED_FEEDBACK_FIELDS = {
+    "status",
+    "reviewer_name",
+    "review_notes",
+    "action_type",
+    "action_value",
+    "target_post_id",
+    "reviewed_at",
+    "last_execution_at",
+    "execution_result",
+    "execution_error",
+}
+SYSTEM_OWNED_FEEDBACK_FIELDS = {
+    "category",
+    "priority",
+    "page_url",
+    "page_title",
+    "summary",
+    "details",
+    "desired_outcome",
+    "recommended_fix",
+    "automation_key",
+    "auto_generated",
+    "source_report_slug",
+    "source_report_date",
+    "source_insight",
+    "section_name",
+    "before_state",
+    "after_state",
+    "expected_impact",
+    "confidence",
+    "requires_approval",
+    "suggested_action_type",
+    "suggested_action_value",
+}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _state_dir(settings: Settings) -> Path:
+    return settings.website_ops_root / "state"
+
+
+def _run_state_path(settings: Settings) -> Path:
+    return _state_dir(settings) / "website_ops_run_state.json"
+
+
+def _default_mode_run_state(mode: str) -> dict[str, str]:
+    normalized_mode = mode if mode in RUN_MODES else "daily"
+    return {
+        "mode": normalized_mode,
+        "status": "idle",
+        "run_date": "",
+        "trigger": "",
+        "last_started_at": "",
+        "last_completed_at": "",
+        "last_successful_date": "",
+        "last_error": "",
+    }
+
+
+def load_website_ops_run_state(settings: Settings) -> dict[str, Any]:
+    _ensure_storage(settings)
+    path = _run_state_path(settings)
+    payload: dict[str, Any] = {}
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            payload = {}
+    runs_payload = payload.get("runs") if isinstance(payload.get("runs"), dict) else {}
+    runs: dict[str, dict[str, str]] = {}
+    for mode in RUN_MODES:
+        raw = runs_payload.get(mode) if isinstance(runs_payload, dict) else {}
+        merged = _default_mode_run_state(mode)
+        if isinstance(raw, dict):
+            for key in merged:
+                value = str(raw.get(key, "") or "").strip()
+                if key == "status" and value not in RUN_STATUSES:
+                    continue
+                merged[key] = value
+        runs[mode] = merged
+    return {
+        "runs": runs,
+        "updated_at": str(payload.get("updated_at", "") or "").strip(),
+    }
+
+
+def get_website_ops_run_state(settings: Settings, mode: str = "daily") -> dict[str, str]:
+    state = load_website_ops_run_state(settings)
+    return dict(state["runs"].get(mode, _default_mode_run_state(mode)))
+
+
+def write_website_ops_run_state(settings: Settings, mode: str, updates: Mapping[str, Any]) -> dict[str, str]:
+    normalized_mode = mode if mode in RUN_MODES else "daily"
+    state = load_website_ops_run_state(settings)
+    current = dict(state["runs"].get(normalized_mode, _default_mode_run_state(normalized_mode)))
+    for key, value in updates.items():
+        if key not in current:
+            continue
+        cleaned = str(value or "").strip()
+        if key == "status" and cleaned not in RUN_STATUSES:
+            continue
+        current[key] = cleaned
+    state["runs"][normalized_mode] = current
+    state["updated_at"] = _utc_now().isoformat()
+    path = _run_state_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+    return current
+
+
+def website_ops_run_is_due(settings: Settings, mode: str = "daily", *, today: date | None = None) -> bool:
+    if mode != "daily":
+        return True
+    current_day = (today or date.today()).isoformat()
+    state = get_website_ops_run_state(settings, mode)
+    if state.get("status") in {"queued", "running"} and state.get("run_date") == current_day:
+        return False
+    return state.get("last_successful_date") != current_day
 
 
 def _config(settings: Settings) -> website_ops.WebsiteOpsConfig:
@@ -44,6 +170,7 @@ def _ensure_storage(settings: Settings) -> None:
     (root / "reports" / "monthly").mkdir(parents=True, exist_ok=True)
     (root / "feedback").mkdir(parents=True, exist_ok=True)
     (root / "backups").mkdir(parents=True, exist_ok=True)
+    (root / "state").mkdir(parents=True, exist_ok=True)
 
 
 def _feedback_status(value: str) -> str:
@@ -204,12 +331,13 @@ def _sync_action_queue_feedback(
     *,
     report_slug: str = "",
 ) -> list[dict[str, Any]]:
-    existing_by_key = {
-        str(record.get("automation_key", "")).strip(): record
-        for record in existing_records
-        if str(record.get("automation_key", "")).strip()
-    }
+    existing_by_key: dict[str, dict[str, Any]] = {}
+    for record in existing_records:
+        key = str(record.get("automation_key", "")).strip()
+        if key and key not in existing_by_key:
+            existing_by_key[key] = record
     synced_items: list[dict[str, Any]] = []
+    report_date = _utc_now().date().isoformat()
     for item in action_queue:
         synced = dict(item)
         automation_key = _automation_key(item)
@@ -229,6 +357,7 @@ def _sync_action_queue_feedback(
             "automation_key": automation_key,
             "auto_generated": True,
             "source_report_slug": report_slug,
+            "source_report_date": report_date,
             "source_insight": str(item.get("insight_source", "")).strip(),
             "section_name": str(item.get("section_name", "")).strip(),
             "before_state": str(item.get("before_state", "")).strip(),
@@ -240,13 +369,24 @@ def _sync_action_queue_feedback(
             "suggested_action_value": str(item.get("action_value", "")).strip(),
         }
         existing = existing_by_key.get(automation_key)
-        if existing:
-            record = website_ops.update_feedback_entry(existing, base_payload)
+        if existing and existing.get("status") in {"done", "rejected"} and str(existing.get("source_report_date", "")).strip() not in {"", report_date}:
+            reopened_payload = dict(base_payload)
+            reopened_payload["reopened_from_feedback_id"] = existing.get("feedback_id") or Path(str(existing.get("_path", ""))).stem
+            reopened_payload["reopened_reason"] = "recommendation_reappeared"
+            record = save_feedback_record(settings, reopened_payload)
+            existing_by_key[automation_key] = record
+        elif existing:
+            preserved = {key: existing.get(key) for key in WORKFLOW_OWNED_FEEDBACK_FIELDS if key in existing}
+            updates = dict(base_payload)
+            updates.update(preserved)
+            record = website_ops.update_feedback_entry(existing, updates)
             record["feedback_id"] = existing.get("feedback_id") or Path(str(existing.get("_path", ""))).stem
         else:
             record = save_feedback_record(settings, base_payload)
             existing_by_key[automation_key] = record
         synced["feedback_id"] = str(record.get("feedback_id", "")).strip()
+        synced["feedback_status"] = _feedback_status(str(record.get("status", "") or "new"))
+        synced["feedback_status_label"] = _feedback_status_label(str(record.get("status", "") or "new"))
         synced["queue_url"] = f"/admin/website-ops/feedback/{html.escape(synced['feedback_id'], quote=True)}" if synced["feedback_id"] else ""
         synced_items.append(synced)
     return synced_items
@@ -275,7 +415,22 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
     for key in ("automation_key", "auto_generated", "source_report_slug", "source_insight"):
         if key in payload:
             entry[key] = payload[key]
-    for key in ("section_name", "before_state", "after_state", "expected_impact", "confidence", "requires_approval", "suggested_action_type", "suggested_action_value"):
+    for key in (
+        "source_report_date",
+        "section_name",
+        "before_state",
+        "after_state",
+        "expected_impact",
+        "confidence",
+        "requires_approval",
+        "suggested_action_type",
+        "suggested_action_value",
+        "reopened_from_feedback_id",
+        "reopened_reason",
+    ):
+        if key in payload:
+            entry[key] = payload[key]
+    for key in WORKFLOW_OWNED_FEEDBACK_FIELDS:
         if key in payload:
             entry[key] = payload[key]
     path = website_ops.save_feedback_entry(entry, config=config)
@@ -619,37 +774,101 @@ def _system_details_panel(settings: Settings, analytics_status: dict[str, Any]) 
     """
 
 
-def _dashboard_auto_run_script(latest: dict[str, Any] | None) -> str:
-    latest_date = str((latest or {}).get("date", "") or "")
+def _run_state_notice(state: Mapping[str, Any]) -> tuple[str, str]:
+    status = _feedback_status(str(state.get("status", "") or "idle"))
+    run_date = str(state.get("run_date", "") or "").strip()
+    last_successful_date = str(state.get("last_successful_date", "") or "").strip()
+    last_error = str(state.get("last_error", "") or "").strip()
     today = date.today().isoformat()
-    if latest_date == today:
+    if status in {"queued", "running"} and run_date == today:
+        return ("neutral", "Daily sweep running")
+    if status == "failed" and run_date == today:
+        return ("warn", f"Last daily sweep failed{': ' + last_error if last_error else ''}")
+    if last_successful_date == today:
+        return ("good", "Daily sweep completed today")
+    return ("neutral", "Daily sweep will start automatically when needed")
+
+
+def _run_state_summary(state: Mapping[str, Any]) -> str:
+    tone, text = _run_state_notice(state)
+    return _summary_chip("Daily Sweep", text, tone=tone)
+
+
+def _dashboard_auto_run_script(run_state: Mapping[str, Any]) -> str:
+    status = _feedback_status(str(run_state.get("status", "") or "idle"))
+    if status not in {"queued", "running"}:
         return ""
     return f"""
     <script>
       (function () {{
-        const todayKey = "website-ops-auto-run-{today}";
-        if (window.localStorage && window.localStorage.getItem(todayKey) === "done") {{
-          return;
+        let attempts = 0;
+        function poll() {{
+          attempts += 1;
+          fetch("/admin/api/website-ops/status?mode=daily", {{
+            method: "GET",
+            headers: {{"Accept": "application/json"}},
+            credentials: "same-origin"
+          }}).then(function (response) {{
+            if (!response.ok) {{
+              return null;
+            }}
+            return response.json();
+          }}).then(function (payload) {{
+            if (!payload || !payload.details) {{
+              return;
+            }}
+            const details = payload.details;
+            if (details.status === "queued" || details.status === "running") {{
+              if (attempts < 45) {{
+                window.setTimeout(poll, 2000);
+              }}
+              return;
+            }}
+            window.location.reload();
+          }}).catch(function () {{
+            if (attempts < 45) {{
+              window.setTimeout(poll, 4000);
+            }}
+          }});
         }}
-        const body = new URLSearchParams({{mode: "daily"}});
-        fetch("/admin/api/website-ops/run", {{
-          method: "POST",
-          headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
-          body: body.toString(),
-          credentials: "same-origin"
-        }}).then(function () {{
-          if (window.localStorage) {{
-            window.localStorage.setItem(todayKey, "done");
-          }}
-          window.location.reload();
-        }}).catch(function () {{
-          if (window.localStorage) {{
-            window.localStorage.setItem(todayKey, "failed");
-          }}
-        }});
+        poll();
       }})();
     </script>
     """
+
+
+def _action_queue_workflow_chip(status: str) -> str:
+    normalized = _feedback_status(status)
+    tone_map = {
+        "new": "warn",
+        "approved": "ok",
+        "in-progress": "neutral",
+        "done": "ok",
+        "error": "bad",
+        "rejected": "neutral",
+    }
+    label_map = {
+        "new": "Awaiting review",
+        "approved": "Approved",
+        "in-progress": "In progress",
+        "done": "Done",
+        "error": "Error",
+        "rejected": "Rejected",
+    }
+    return f'<span class="status-pill status-{html.escape(tone_map.get(normalized, "neutral"), quote=True)}">{html.escape(label_map.get(normalized, _feedback_status_label(normalized)))}</span>'
+
+
+def _action_queue_link_label(status: str) -> str:
+    normalized = _feedback_status(status)
+    if normalized == "approved":
+        return "View approved item"
+    if normalized == "done":
+        return "View completed item"
+    if normalized == "error":
+        return "View failed item"
+    if normalized == "in-progress":
+        return "View item"
+    return "Open review item"
 
 
 def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
@@ -659,12 +878,15 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
     for item in action_queue:
         confidence = str(item.get("confidence", "medium")).strip().lower() or "medium"
         requires_approval = bool(item.get("requires_approval"))
+        feedback_status = str(item.get("feedback_status", "new") or "new")
+        link_label = _action_queue_link_label(feedback_status)
         cards.append(
             f"""
             <article class="action-card">
               <div class="row-actions">
                 {_action_source_chip(str(item.get("insight_source", "System")))}
                 <div class="chip-row">
+                  {_action_queue_workflow_chip(feedback_status)}
                   <span class="status-pill {'status-warn' if requires_approval else 'status-ok'}">{'Approval required' if requires_approval else 'Safe to apply'}</span>
                   <span class="status-pill status-neutral">{html.escape(confidence.title())} confidence</span>
                 </div>
@@ -686,7 +908,7 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
                 </div>
               </div>
               <p><strong>Why this matters:</strong> {html.escape(str(item.get("reason", "No rationale supplied.")))}</p>
-              {f"<div class='button-row'><a class='text-link' href='/admin/website-ops/feedback/{html.escape(str(item.get('feedback_id', '')), quote=True)}'>Open review item</a></div>" if item.get('feedback_id') else ""}
+              {f"<div class='button-row'><a class='text-link' href='/admin/website-ops/feedback/{html.escape(str(item.get('feedback_id', '')), quote=True)}'>{html.escape(link_label)}</a></div>" if item.get('feedback_id') else ""}
             </article>
             """
         )
@@ -826,6 +1048,7 @@ def _page_shell(title: str, body: str) -> str:
       .status-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }}
       .status-ok {{ background: rgba(15,118,110,.1); color: var(--good); }}
       .status-warn {{ background: rgba(161,98,7,.12); color: var(--warn); }}
+      .status-bad {{ background: rgba(185,28,28,.1); color: var(--bad); }}
       .status-neutral {{ background: rgba(133, 187, 218, 0.14); color: var(--ink); border-color: rgba(79,132,196,0.12); }}
       .chip-row {{ display: flex; flex-wrap: wrap; gap: 8px; }}
       .text-link {{ font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }}
@@ -972,9 +1195,12 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
     latest = reports[0] if reports else None
     latest_payload = _report_payload(latest) if latest else {}
     feedback = load_feedback_records(settings)
+    active_feedback = [item for item in feedback if item.get("status") not in {"done", "rejected"}]
+    run_state = get_website_ops_run_state(settings, "daily")
     status_counts: dict[str, int] = {}
     for item in feedback:
         status_counts[item["status"]] = status_counts.get(item["status"], 0) + 1
+    error_count = status_counts.get("error", 0)
     action_queue = list(latest_payload.get("action_queue") or [])[:6]
     support_requests = list(latest_payload.get("support_requests") or [])[:5]
     page_insights = list(latest_payload.get("page_insights") or [])[:5]
@@ -1007,6 +1233,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
             <div class="summary-grid">
               {_summary_chip("Monitored Pages", len(settings.website_ops_site_urls), tone="neutral")}
               {_summary_chip("Auto execution", "Enabled" if settings.website_ops_execute_approved else "Disabled", tone="good" if settings.website_ops_execute_approved else "warn")}
+              {_run_state_summary(run_state)}
               {_connection_summary_chips(analytics_status)}
             </div>
             <p class="muted">Core system status only. Full connection and developer details are lower on the page.</p>
@@ -1015,8 +1242,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
           {_dashboard_stat_card("Awaiting Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
-          {_dashboard_stat_card("Approved", status_counts.get('approved', 0), "Ready for action", "/admin/website-ops/queue?status=approved")}
+          {_dashboard_stat_card("Approved", status_counts.get('approved', 0) + status_counts.get('in-progress', 0), "Accepted or in progress", "/admin/website-ops/queue?status=approved")}
           {_dashboard_stat_card("Done", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
+          {_dashboard_stat_card("Errors", error_count, "Needs intervention", "/admin/website-ops/queue?status=error") if error_count else ""}
         </section>
         <section class="grid-2">
           <div class="card stack">
@@ -1061,7 +1289,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           </div>
         </section>
         <section class="grid-2">
-          <div class="card stack"><h2>Open queue</h2><div class="widget-scroll compact-scroll">{_feedback_cards(feedback[:8], with_actions=True)}</div></div>
+          <div class="card stack"><h2>Open queue</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True)}</div></div>
           <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
         </section>
         <section class="grid-2">
@@ -1069,7 +1297,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           {_system_details_panel(settings, analytics_status)}
         </section>
       </main>
-      {_dashboard_auto_run_script(latest)}
+      {_dashboard_auto_run_script(run_state)}
     """
     return _page_shell("Agent Website Ops", body)
 
@@ -1078,7 +1306,10 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
     normalized_filter = _feedback_status(status_filter) if status_filter else ""
     entries = load_feedback_records(settings)
     if normalized_filter:
-        entries = [item for item in entries if item.get("status") == normalized_filter]
+        if normalized_filter == "approved":
+            entries = [item for item in entries if item.get("status") in {"approved", "in-progress"}]
+        else:
+            entries = [item for item in entries if item.get("status") == normalized_filter]
     else:
         entries = [item for item in entries if item.get("status") not in {"done", "rejected"}]
     queue_title = _humanize_label(normalized_filter) if normalized_filter else "Active"
@@ -1113,10 +1344,26 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
         if is_auto_executable
         else "This recommendation will move into the approved queue. Use the form below only if you want to override or add execution details."
     )
+    workflow_notice = ""
+    if record.get("status") == "approved":
+        workflow_notice = "<div class='flash'>Approved for implementation. This item should remain out of awaiting review until it is completed or reopened.</div>"
+    elif record.get("status") == "done":
+        executed_at = str(record.get("last_execution_at", "") or "").strip()
+        execution_result = record.get("execution_result") if isinstance(record.get("execution_result"), dict) else {}
+        execution_type = str((execution_result or {}).get("action_type", "") or "").strip()
+        detail_bits = []
+        if executed_at:
+            detail_bits.append(f"Executed at {html.escape(executed_at)}.")
+        if execution_type:
+            detail_bits.append(f"Action: {html.escape(_humanize_label(execution_type) or execution_type)}.")
+        workflow_notice = f"<div class='flash'>Completed successfully. {' '.join(detail_bits)}</div>"
+    elif record.get("status") == "error":
+        workflow_notice = f"<div class='flash'>{html.escape(str(record.get('execution_error', '') or 'The last execution failed.'))}</div>"
     body = f"""
       {_nav("queue", website_ops_section="queue")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
+        {workflow_notice}
         <section class="detail-layout">
           <aside class="card stack">
             <p class="eyebrow">Feedback record</p>
