@@ -119,9 +119,10 @@ def walk_elements(elements: Sequence[Dict[str, Any]]) -> Iterable[Dict[str, Any]
             yield child
 
 
-def update_primary_heading(elements: List[Dict[str, Any]], new_text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def update_primary_heading(elements: List[Dict[str, Any]], new_text: str = "") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     first_heading: Optional[Dict[str, Any]] = None
     target_heading: Optional[Dict[str, Any]] = None
+    demoted_widget_ids: List[str] = []
     for element in walk_elements(elements):
         if element.get("widgetType") != "heading":
             continue
@@ -129,23 +130,32 @@ def update_primary_heading(elements: List[Dict[str, Any]], new_text: str) -> Tup
             first_heading = element
         settings = element.get("settings") or {}
         if str(settings.get("header_size", "")).strip().lower() == "h1":
-            target_heading = element
-            break
+            if target_heading is None:
+                target_heading = element
+                continue
+            demoted_settings = dict(settings)
+            demoted_settings["header_size"] = "h2"
+            element["settings"] = demoted_settings
+            demoted_widget_ids.append(str(element.get("id", "")))
     target_heading = target_heading or first_heading
     if target_heading is None:
         raise ExecutionError("No Elementor heading widget found to update.")
     settings = dict(target_heading.get("settings") or {})
     before_text = str(settings.get("title", ""))
     before_size = str(settings.get("header_size", ""))
-    settings["title"] = new_text
+    after_text = new_text.strip() or before_text
+    if not after_text:
+        raise ExecutionError("No heading text found to promote as the primary H1.")
+    settings["title"] = after_text
     settings["header_size"] = "h1"
     target_heading["settings"] = settings
     return elements, {
         "before_text": before_text,
-        "after_text": new_text,
+        "after_text": after_text,
         "before_header_size": before_size,
         "after_header_size": "h1",
         "widget_id": str(target_heading.get("id", "")),
+        "demoted_widget_ids": demoted_widget_ids,
     }
 
 
@@ -169,8 +179,6 @@ def execute_feedback_action(
     if action_type != "replace_primary_heading":
         raise ExecutionError(f"Unsupported action_type: {action_type or 'missing'}")
     action_value = str(feedback.get("action_value", "")).strip()
-    if not action_value:
-        raise ExecutionError("replace_primary_heading requires action_value.")
 
     record = resolve_page_record(feedback)
     backup_path = backup_page_record(record, timestamp=timestamp)
@@ -182,9 +190,13 @@ def execute_feedback_action(
         payload={"meta": {"_elementor_data": json.dumps(updated_data)}},
     )
     verification = collect_page_observation(str(feedback.get("page_url") or updated_record.get("link")), config=config)
-    live_h1 = (verification.get("h1") or [""])[0]
-    if live_h1.strip() != action_value.strip():
-        raise ExecutionError(f"Verification failed. Expected H1 '{action_value}' but found '{live_h1}'.")
+    live_h1s = [str(value).strip() for value in (verification.get("h1") or []) if str(value).strip()]
+    if not live_h1s:
+        raise ExecutionError("Verification failed. No live H1 found after execution.")
+    if len(live_h1s) != 1:
+        raise ExecutionError(f"Verification failed. Expected exactly one H1 but found {len(live_h1s)}.")
+    if action_value and live_h1s[0] != action_value.strip():
+        raise ExecutionError(f"Verification failed. Expected H1 '{action_value}' but found '{live_h1s[0]}'.")
     return {
         "feedback_id": feedback.get("feedback_id"),
         "action_type": action_type,

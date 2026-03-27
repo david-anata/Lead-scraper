@@ -187,6 +187,31 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("Approve Recommendation", html)
             self.assertIn("Current state", html)
 
+    def test_review_feedback_approve_autofills_supported_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            record = save_feedback_record(
+                settings,
+                {
+                    "summary": "Fix duplicate hero H1",
+                    "page_url": "https://anatainc.com/services/ai/",
+                    "auto_generated": True,
+                    "suggested_action_type": "replace_primary_heading",
+                    "before_state": "Contact Us | Faster, Smarter, Intelligent, Data.",
+                    "after_state": "Keep one topic-specific H1 and demote the rest to H2.",
+                },
+            )
+            with mock.patch.object(
+                website_ops,
+                "execute_feedback_action",
+                return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "replace_primary_heading"},
+            ):
+                result = review_feedback_record(settings, record["feedback_id"], {"status": "approved"})
+            self.assertTrue(result.ok)
+            updated = load_feedback_records(settings)[0]
+            self.assertEqual(updated["status"], "done")
+            self.assertEqual(updated["action_type"], "replace_primary_heading")
+
     def test_run_website_ops_marks_error_when_execution_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir), execute_approved=True)

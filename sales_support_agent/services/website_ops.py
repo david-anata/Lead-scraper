@@ -230,6 +230,7 @@ def _sync_action_queue_feedback(
             "confidence": str(item.get("confidence", "")).strip(),
             "requires_approval": bool(item.get("requires_approval")),
             "suggested_action_type": str(item.get("action_type", "")).strip(),
+            "suggested_action_value": str(item.get("action_value", "")).strip(),
         }
         existing = existing_by_key.get(automation_key)
         if existing:
@@ -267,7 +268,7 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
     for key in ("automation_key", "auto_generated", "source_report_slug", "source_insight"):
         if key in payload:
             entry[key] = payload[key]
-    for key in ("section_name", "before_state", "after_state", "expected_impact", "confidence", "requires_approval", "suggested_action_type"):
+    for key in ("section_name", "before_state", "after_state", "expected_impact", "confidence", "requires_approval", "suggested_action_type", "suggested_action_value"):
         if key in payload:
             entry[key] = payload[key]
     path = website_ops.save_feedback_entry(entry, config=config)
@@ -278,10 +279,32 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
     return record
 
 
+def _is_auto_executable_action(action_type: str) -> bool:
+    return action_type.strip() == "replace_primary_heading"
+
+
+def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    updates = dict(payload)
+    status = _feedback_status(str(updates.get("status", "")))
+    if status != "approved" or str(updates.get("action_type", "")).strip():
+        return updates
+    suggested_action_type = str(existing.get("suggested_action_type", "")).strip()
+    if not _is_auto_executable_action(suggested_action_type):
+        return updates
+    updates["action_type"] = suggested_action_type
+    suggested_action_value = str(existing.get("suggested_action_value", "")).strip()
+    if suggested_action_value and not str(updates.get("action_value", "")).strip():
+        updates["action_value"] = suggested_action_value
+    if not str(updates.get("target_post_id", "")).strip() and str(existing.get("target_post_id", "")).strip():
+        updates["target_post_id"] = str(existing.get("target_post_id", "")).strip()
+    return updates
+
+
 def review_feedback_record(settings: Settings, feedback_id: str, payload: dict[str, Any]) -> WebsiteOpsActionResult:
     existing = get_feedback_record(settings, feedback_id)
     if not existing:
         return WebsiteOpsActionResult(ok=False, message="Feedback record not found.")
+    payload = _autofill_review_updates(existing, payload)
     updates = {
         "status": _feedback_status(str(payload.get("status", ""))),
         "reviewer_name": str(payload.get("reviewer_name", "")).strip(),
@@ -915,6 +938,13 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
     is_auto_generated = bool(record.get("auto_generated"))
     confidence = str(record.get("confidence", "")).strip()
     suggested_action_type = str(record.get("suggested_action_type", "")).strip()
+    is_auto_executable = _is_auto_executable_action(suggested_action_type)
+    recommendation_cta = "Approve and Execute" if is_auto_executable else "Approve Recommendation"
+    recommendation_note = (
+        "This recommendation maps to a supported safe action. Approving it will execute immediately when auto-execution is enabled."
+        if is_auto_executable
+        else "This recommendation will move into the approved queue. Use the form below only if you want to override or add execution details."
+    )
     body = f"""
       {_nav()}
       <main class="shell">
@@ -934,8 +964,8 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
             <p class="lead"><strong>Desired outcome:</strong> {html.escape(str(record.get('desired_outcome', '') or 'Not specified.'))}</p>
             <p class="lead"><strong>Recommended fix:</strong> {html.escape(str(record.get('recommended_fix', '') or 'Not specified.'))}</p>
             {f"<div class='diff-grid'><div class='diff-block'><p class='eyebrow'>Current state</p><p>{html.escape(str(record.get('before_state', '') or 'Not captured.'))}</p></div><div class='diff-block'><p class='eyebrow'>Proposed update</p><p>{html.escape(str(record.get('after_state', '') or record.get('desired_outcome', '') or 'Not specified.'))}</p></div></div>" if record.get('before_state') or record.get('after_state') else ""}
-            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', suggested_action_type or 'Manual review', tone='neutral')}</div>" if is_auto_generated else ""}
-            {f"<div class='button-row'><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='approved'><button type='submit'>Approve Recommendation</button></form><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='rejected'><button class='ghost' type='submit'>Reject Recommendation</button></form><span class='muted'>These buttons review the recommendation directly. Use the form below only if you want to override or add execution details.</span></div>" if is_auto_generated else ""}
+            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', suggested_action_type or 'Manual review', tone='neutral')}{_summary_chip('Execution', 'Auto-executable' if is_auto_executable else 'Approval only', tone='neutral')}</div>" if is_auto_generated else ""}
+            {f"<div class='button-row'><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='approved'><button type='submit'>{recommendation_cta}</button></form><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='rejected'><button class='ghost' type='submit'>Reject Recommendation</button></form><span class='muted'>{html.escape(recommendation_note)}</span></div>" if is_auto_generated else ""}
             <form action="/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review" method="post" class="form-grid">
               <div><label>Status</label><select name="status">
                 <option value="new" {'selected' if record.get('status') == 'new' else ''}>New</option>
