@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -156,29 +157,110 @@ def get_feedback_record(settings: Settings, feedback_id: str) -> dict[str, Any] 
     return None
 
 
+def _automation_key(item: Mapping[str, Any]) -> str:
+    raw = "||".join(
+        [
+            str(item.get("page_url", "")).strip(),
+            str(item.get("action_type", "")).strip(),
+            str(item.get("section_name", "")).strip(),
+            str(item.get("after_state", "")).strip(),
+        ]
+    )
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    return f"auto-{digest}"
+
+
+def _action_item_category(item: Mapping[str, Any]) -> str:
+    source = str(item.get("insight_source", "")).lower()
+    if "analytics" in source or "ga4" in source:
+        return "Conversion"
+    return "SEO"
+
+
+def _action_item_priority(item: Mapping[str, Any]) -> str:
+    confidence = str(item.get("confidence", "medium")).lower()
+    if confidence == "high":
+        return "High"
+    return "Medium"
+
+
+def _action_item_summary(item: Mapping[str, Any]) -> str:
+    page_label = str(item.get("page_title") or _short_page_label(str(item.get("page_url", ""))))
+    section = str(item.get("section_name", "Page update")).strip() or "Page update"
+    return f"Review: {page_label} / {section}"
+
+
+def _sync_action_queue_feedback(
+    settings: Settings,
+    action_queue: list[dict[str, Any]],
+    existing_records: list[dict[str, Any]],
+    *,
+    report_slug: str = "",
+) -> list[dict[str, Any]]:
+    existing_by_key = {
+        str(record.get("automation_key", "")).strip(): record
+        for record in existing_records
+        if str(record.get("automation_key", "")).strip()
+    }
+    synced_items: list[dict[str, Any]] = []
+    for item in action_queue:
+        synced = dict(item)
+        automation_key = _automation_key(item)
+        base_payload = {
+            "category": _action_item_category(item),
+            "priority": _action_item_priority(item),
+            "page_url": str(item.get("page_url", "")).strip(),
+            "page_title": str(item.get("page_title", "")).strip(),
+            "summary": _action_item_summary(item),
+            "details": str(item.get("reason", "")).strip(),
+            "desired_outcome": str(item.get("after_state", "")).strip(),
+            "recommended_fix": str(item.get("expected_impact", "")).strip(),
+            "status": "new",
+            "action_type": "",
+            "action_value": "",
+            "target_post_id": "",
+            "automation_key": automation_key,
+            "auto_generated": True,
+            "source_report_slug": report_slug,
+            "source_insight": str(item.get("insight_source", "")).strip(),
+        }
+        existing = existing_by_key.get(automation_key)
+        if existing:
+            record = website_ops.update_feedback_entry(existing, base_payload)
+            record["feedback_id"] = existing.get("feedback_id") or Path(str(existing.get("_path", ""))).stem
+        else:
+            record = save_feedback_record(settings, base_payload)
+            existing_by_key[automation_key] = record
+        synced["feedback_id"] = str(record.get("feedback_id", "")).strip()
+        synced["queue_url"] = f"/admin/website-ops/feedback/{html.escape(synced['feedback_id'], quote=True)}" if synced["feedback_id"] else ""
+        synced_items.append(synced)
+    return synced_items
+
+
 def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[str, Any]:
     config = _config(settings)
-    path = website_ops.save_feedback_entry(
-        {
-            "feedback_id": payload.get("feedback_id") or "",
-            "category": str(payload.get("category", "")).strip() or "General",
-            "priority": str(payload.get("priority", "")).strip() or "Medium",
-            "page_url": str(payload.get("page_url", "")).strip(),
-            "page_title": str(payload.get("page_title", "")).strip(),
-            "summary": str(payload.get("summary", "")).strip() or "Feedback item",
-            "details": str(payload.get("details", "")).strip(),
-            "desired_outcome": str(payload.get("desired_outcome", "")).strip(),
-            "recommended_fix": str(payload.get("recommended_fix", "")).strip(),
-            "reporter_name": str(payload.get("reporter_name", "")).strip(),
-            "reporter_email": str(payload.get("reporter_email", "")).strip(),
-            "status": _feedback_status(str(payload.get("status", "") or "new")),
-            "action_type": str(payload.get("action_type", "")).strip(),
-            "action_value": str(payload.get("action_value", "")).strip(),
-            "target_post_id": str(payload.get("target_post_id", "")).strip(),
-            "submitted_at": datetime.now(timezone.utc).isoformat(),
-        },
-        config=config,
-    )
+    entry = {
+        "feedback_id": payload.get("feedback_id") or "",
+        "category": str(payload.get("category", "")).strip() or "General",
+        "priority": str(payload.get("priority", "")).strip() or "Medium",
+        "page_url": str(payload.get("page_url", "")).strip(),
+        "page_title": str(payload.get("page_title", "")).strip(),
+        "summary": str(payload.get("summary", "")).strip() or "Feedback item",
+        "details": str(payload.get("details", "")).strip(),
+        "desired_outcome": str(payload.get("desired_outcome", "")).strip(),
+        "recommended_fix": str(payload.get("recommended_fix", "")).strip(),
+        "reporter_name": str(payload.get("reporter_name", "")).strip(),
+        "reporter_email": str(payload.get("reporter_email", "")).strip(),
+        "status": _feedback_status(str(payload.get("status", "") or "new")),
+        "action_type": str(payload.get("action_type", "")).strip(),
+        "action_value": str(payload.get("action_value", "")).strip(),
+        "target_post_id": str(payload.get("target_post_id", "")).strip(),
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for key in ("automation_key", "auto_generated", "source_report_slug", "source_insight"):
+        if key in payload:
+            entry[key] = payload[key]
+    path = website_ops.save_feedback_entry(entry, config=config)
     record = json.loads(path.read_text())
     record["_path"] = str(path)
     record["feedback_id"] = Path(path).stem
@@ -288,6 +370,12 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
             feedback_entries=feedback_entries,
         )
     )
+    enriched_report["action_queue"] = _sync_action_queue_feedback(
+        settings,
+        list(enriched_report.get("action_queue") or []),
+        feedback_entries,
+        report_slug=_slugify_text(report_title),
+    )
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     return WebsiteOpsActionResult(
         ok=True,
@@ -298,6 +386,11 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
 
 def _status_chip(value: str) -> str:
     return f'<span class="status-chip status-{html.escape(_feedback_status(value), quote=True)}">{html.escape(_feedback_status_label(value))}</span>'
+
+
+def _slugify_text(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "report"
 
 
 def _summary_chip(label: str, value: Any, *, tone: str = "neutral") -> str:
@@ -456,6 +549,7 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
               </div>
               <p><strong>Why this matters:</strong> {html.escape(str(item.get("reason", "No rationale supplied.")))}</p>
               <p class="muted"><strong>Expected impact:</strong> {html.escape(str(item.get("expected_impact", "Improves performance against the current goal.")))}</p>
+              {f"<p><a class='text-link' href='/admin/website-ops/feedback/{html.escape(str(item.get('feedback_id', '')), quote=True)}'>Open review item</a></p>" if item.get('feedback_id') else ""}
             </article>
             """
         )

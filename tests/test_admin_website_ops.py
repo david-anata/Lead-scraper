@@ -228,6 +228,10 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             assert result.report is not None
             self.assertEqual(result.report["goal"]["primary"], "Increase qualified leads.")
             self.assertEqual(result.report["action_queue"][0]["page_url"], "https://anatainc.com/services/shipping/")
+            self.assertTrue(result.report["action_queue"][0]["feedback_id"])
+            records = load_feedback_records(settings)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["automation_key"][:5], "auto-")
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
