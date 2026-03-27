@@ -107,7 +107,15 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                                 "ga4": {"sessions": 22, "conversions": 0},
                             }
                         ],
-                        "analytics_status": {"search_console": True, "ga4": False, "notes": ["GA4 unavailable"]},
+                        "analytics_status": {
+                            "search_console": True,
+                            "ga4": False,
+                            "notes": ["GA4 unavailable"],
+                            "project_id": "sdr-support-agent",
+                            "client_email": "codex-website-ops@sdr-support-agent.iam.gserviceaccount.com",
+                            "search_console_property": "sc-domain:anatainc.com",
+                            "ga4_property_id": "372887830",
+                        },
                     }
                 )
             )
@@ -121,6 +129,8 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("GA4 unavailable", html)
             self.assertIn("Why this matters", html)
             self.assertIn("Needs setup", html)
+            self.assertIn("sdr-support-agent", html)
+            self.assertIn("codex-website-ops@sdr-support-agent.iam.gserviceaccount.com", html)
 
     def test_review_feedback_round_trip_saves_execution_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

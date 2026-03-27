@@ -321,6 +321,18 @@ def _action_source_chip(source: str) -> str:
 
 def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
     notes = [str(item).strip() for item in analytics_status.get("notes", []) if str(item).strip()]
+    project_id = str(analytics_status.get("project_id", "") or "").strip()
+    client_email = str(analytics_status.get("client_email", "") or "").strip()
+    search_console_property = str(analytics_status.get("search_console_property", "") or "").strip()
+    ga4_property_id = str(analytics_status.get("ga4_property_id", "") or "").strip()
+    identity_block = ""
+    if project_id or client_email:
+        identity_lines = []
+        if project_id:
+            identity_lines.append(f"<div><strong>Project</strong><br><code>{html.escape(project_id)}</code></div>")
+        if client_email:
+            identity_lines.append(f"<div><strong>Service account</strong><br><code>{html.escape(client_email)}</code></div>")
+        identity_block = f"<div class='identity-grid'>{''.join(identity_lines)}</div>"
     cards = [
         f"""
         <article class="setup-card {'is-connected' if analytics_status.get('search_console') else 'is-blocked'}">
@@ -329,6 +341,8 @@ def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
             <span class="status-pill {'status-ok' if analytics_status.get('search_console') else 'status-warn'}">{'Connected' if analytics_status.get('search_console') else 'Needs setup'}</span>
           </div>
           <p class="muted">{html.escape(next((note for note in notes if 'Search Console' in note), 'Search Console data is available for Website Ops decisions.'))}</p>
+          {f"<p class='muted'><strong>Property:</strong> <code>{html.escape(search_console_property)}</code></p>" if search_console_property else ""}
+          {identity_block}
         </article>
         """,
         f"""
@@ -338,6 +352,8 @@ def _analytics_connection_cards(analytics_status: dict[str, Any]) -> str:
             <span class="status-pill {'status-ok' if analytics_status.get('ga4') else 'status-warn'}">{'Connected' if analytics_status.get('ga4') else 'Needs setup'}</span>
           </div>
           <p class="muted">{html.escape(next((note for note in notes if 'GA4' in note), 'GA4 landing-page and conversion data is available for Website Ops decisions.'))}</p>
+          {f"<p class='muted'><strong>Property ID:</strong> <code>{html.escape(ga4_property_id)}</code></p>" if ga4_property_id else ""}
+          {identity_block}
         </article>
         """,
     ]
@@ -510,6 +526,8 @@ def _page_shell(title: str, body: str) -> str:
       .summary-bad strong {{ color: var(--bad); }}
       .setup-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }}
       .setup-card, .task-card, .action-card {{ display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: #fff; }}
+      .identity-grid {{ display: grid; gap: 10px; grid-template-columns: 1fr; padding-top: 4px; }}
+      .identity-grid code {{ word-break: break-word; }}
       .setup-card.is-blocked {{ border-color: rgba(161,98,7,.28); background: #fffaf0; }}
       .setup-card.is-connected {{ border-color: rgba(15,118,110,.18); background: #f8fffc; }}
       .status-pill {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }}

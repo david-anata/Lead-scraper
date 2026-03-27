@@ -89,6 +89,19 @@ def analytics_config_from_settings(settings: Any) -> AnalyticsConfig:
     )
 
 
+def _service_account_identity(raw_service_account_json: str) -> dict[str, str]:
+    if not raw_service_account_json:
+        return {}
+    try:
+        info = _load_service_account_info(raw_service_account_json)
+    except Exception:
+        return {}
+    return {
+        "project_id": str(info.get("project_id", "") or "").strip(),
+        "client_email": str(info.get("client_email", "") or "").strip(),
+    }
+
+
 def _service_disabled_note(service_name: str, project_name: str) -> str:
     return f"{service_name} API is disabled in Google Cloud project {project_name}. Enable it in Google Cloud, then rerun Website Ops."
 
@@ -459,6 +472,8 @@ def build_autonomy_overlay(
     feedback_entries: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     urls = [str(item.get("url", "")) for item in observations]
+    config = analytics_config_from_settings(settings)
+    identity = _service_account_identity(config.service_account_json)
     gsc_metrics, gsc_notes = fetch_search_console_snapshot(settings, urls)
     ga4_metrics, ga4_notes = fetch_ga4_snapshot(settings, urls)
 
@@ -536,6 +551,10 @@ def build_autonomy_overlay(
             "search_console": not gsc_notes,
             "ga4": not ga4_notes,
             "notes": gsc_notes + ga4_notes,
+            "project_id": identity.get("project_id", ""),
+            "client_email": identity.get("client_email", ""),
+            "search_console_property": config.search_console_property,
+            "ga4_property_id": config.ga4_property_id,
         },
         "start_doing": start_doing,
         "stop_doing": stop_doing,
