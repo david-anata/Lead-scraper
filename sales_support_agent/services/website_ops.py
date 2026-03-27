@@ -223,6 +223,13 @@ def _sync_action_queue_feedback(
             "auto_generated": True,
             "source_report_slug": report_slug,
             "source_insight": str(item.get("insight_source", "")).strip(),
+            "section_name": str(item.get("section_name", "")).strip(),
+            "before_state": str(item.get("before_state", "")).strip(),
+            "after_state": str(item.get("after_state", "")).strip(),
+            "expected_impact": str(item.get("expected_impact", "")).strip(),
+            "confidence": str(item.get("confidence", "")).strip(),
+            "requires_approval": bool(item.get("requires_approval")),
+            "suggested_action_type": str(item.get("action_type", "")).strip(),
         }
         existing = existing_by_key.get(automation_key)
         if existing:
@@ -258,6 +265,9 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
         "submitted_at": datetime.now(timezone.utc).isoformat(),
     }
     for key in ("automation_key", "auto_generated", "source_report_slug", "source_insight"):
+        if key in payload:
+            entry[key] = payload[key]
+    for key in ("section_name", "before_state", "after_state", "expected_impact", "confidence", "requires_approval", "suggested_action_type"):
         if key in payload:
             entry[key] = payload[key]
     path = website_ops.save_feedback_entry(entry, config=config)
@@ -902,6 +912,9 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
     record = get_feedback_record(settings, feedback_id)
     if not record:
         return _page_shell("Not Found", f"{_nav()}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
+    is_auto_generated = bool(record.get("auto_generated"))
+    confidence = str(record.get("confidence", "")).strip()
+    suggested_action_type = str(record.get("suggested_action_type", "")).strip()
     body = f"""
       {_nav()}
       <main class="shell">
@@ -914,11 +927,15 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
             <p class="lead">{html.escape(str(record.get('page_url', '') or 'No page specified'))}</p>
             <p class="muted">Priority: {html.escape(str(record.get('priority', 'Medium')))}</p>
             <p class="muted">Category: {html.escape(str(record.get('category', 'General')))}</p>
+            {f"<p class='muted'>Source: {html.escape(str(record.get('source_insight', '') or 'Website Ops'))}</p>" if record.get('source_insight') else ""}
           </aside>
           <section class="card stack">
             <p class="lead"><strong>Details:</strong> {html.escape(str(record.get('details', '') or 'No details provided.'))}</p>
             <p class="lead"><strong>Desired outcome:</strong> {html.escape(str(record.get('desired_outcome', '') or 'Not specified.'))}</p>
             <p class="lead"><strong>Recommended fix:</strong> {html.escape(str(record.get('recommended_fix', '') or 'Not specified.'))}</p>
+            {f"<div class='diff-grid'><div class='diff-block'><p class='eyebrow'>Current state</p><p>{html.escape(str(record.get('before_state', '') or 'Not captured.'))}</p></div><div class='diff-block'><p class='eyebrow'>Proposed update</p><p>{html.escape(str(record.get('after_state', '') or record.get('desired_outcome', '') or 'Not specified.'))}</p></div></div>" if record.get('before_state') or record.get('after_state') else ""}
+            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', suggested_action_type or 'Manual review', tone='neutral')}</div>" if is_auto_generated else ""}
+            {f"<div class='button-row'><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='approved'><button type='submit'>Approve Recommendation</button></form><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='rejected'><button class='ghost' type='submit'>Reject Recommendation</button></form><span class='muted'>These buttons review the recommendation directly. Use the form below only if you want to override or add execution details.</span></div>" if is_auto_generated else ""}
             <form action="/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review" method="post" class="form-grid">
               <div><label>Status</label><select name="status">
                 <option value="new" {'selected' if record.get('status') == 'new' else ''}>New</option>

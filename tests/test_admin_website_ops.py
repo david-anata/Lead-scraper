@@ -172,11 +172,20 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 {
                     "summary": "Improve AI page heading",
                     "details": "Current H1 is vague.",
+                    "auto_generated": True,
+                    "section_name": "Hero CTA / proof block",
+                    "before_state": "40 sessions and 0 conversions",
+                    "after_state": "Clarify the offer and strengthen the primary CTA.",
+                    "expected_impact": "Higher lead conversion rate from existing traffic.",
+                    "confidence": "medium",
+                    "suggested_action_type": "strengthen_primary_cta",
                 },
             )
             html = render_feedback_detail_page(settings, record["feedback_id"])
             self.assertIn("Submit Review", html)
             self.assertIn("replace_primary_heading", html)
+            self.assertIn("Approve Recommendation", html)
+            self.assertIn("Current state", html)
 
     def test_run_website_ops_marks_error_when_execution_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
