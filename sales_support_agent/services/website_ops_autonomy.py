@@ -293,6 +293,8 @@ def _expected_impact(action_type: str) -> str:
         "rewrite_title_and_intro": "Higher SERP click-through rate from existing impressions.",
         "strengthen_primary_cta": "Higher lead conversion rate from existing traffic.",
         "resolve_canonical_route": "Clearer authority consolidation and less route confusion.",
+        "expand_topic_coverage": "Broader query coverage, stronger AI extraction, and better service-page depth.",
+        "add_internal_links": "Stronger authority flow into commercial pages and clearer topical relationships.",
     }
     return impacts.get(action_type, "Improves page performance against the current growth goal.")
 
@@ -383,7 +385,9 @@ def _analytics_actions(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Map
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
     conversions = float(ga4.get("conversions", 0) or 0)
-    if impressions >= 50 and ctr < 0.02:
+    top_queries = list(gsc.get("top_queries") or [])
+    has_issues = bool(page.get("issues"))
+    if impressions >= 20 and ctr < 0.03:
         actions.append(
             {
                 "page_url": page.get("url", ""),
@@ -395,12 +399,12 @@ def _analytics_actions(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Map
                 "reason": "This page is appearing in search often enough to matter, but too few searchers click through.",
                 "insight_source": "Google Search Console",
                 "expected_impact": _expected_impact("rewrite_title_and_intro"),
-                "confidence": "medium",
+                "confidence": "high" if impressions >= 80 else "medium",
                 "requires_approval": True,
                 "status": "recommended",
             }
         )
-    if sessions >= 20 and conversions == 0:
+    if sessions >= 10 and conversions == 0:
         actions.append(
             {
                 "page_url": page.get("url", ""),
@@ -417,6 +421,40 @@ def _analytics_actions(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Map
                 "status": "recommended",
             }
         )
+    if not has_issues and impressions < 20 and sessions < 10:
+        actions.append(
+            {
+                "page_url": page.get("url", ""),
+                "page_title": page.get("title", ""),
+                "action_type": "expand_topic_coverage",
+                "section_name": "FAQ / entity coverage",
+                "before_state": f"{int(impressions)} impressions and {int(sessions)} sessions",
+                "after_state": "Expand question coverage, entity mentions, internal links, and AI extraction content on this service page.",
+                "reason": "This page is live but not earning enough search demand yet, so it needs stronger topical depth and distribution support.",
+                "insight_source": "Growth opportunity",
+                "expected_impact": _expected_impact("expand_topic_coverage"),
+                "confidence": "medium",
+                "requires_approval": True,
+                "status": "recommended",
+            }
+        )
+    if not has_issues and impressions < 50 and top_queries:
+        actions.append(
+            {
+                "page_url": page.get("url", ""),
+                "page_title": page.get("title", ""),
+                "action_type": "add_internal_links",
+                "section_name": "Internal links / cluster support",
+                "before_state": f"Top query signal exists, but only {int(impressions)} impressions are reaching the page.",
+                "after_state": "Add stronger internal links from related service, cluster, and hub pages using aligned anchor language.",
+                "reason": "Search demand is emerging, but the page likely needs stronger internal authority and contextual support.",
+                "insight_source": "Google Search Console",
+                "expected_impact": _expected_impact("add_internal_links"),
+                "confidence": "medium",
+                "requires_approval": True,
+                "status": "recommended",
+            }
+        )
     return actions
 
 
@@ -428,14 +466,14 @@ def _page_bucket(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[s
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
     conversions = float(ga4.get("conversions", 0) or 0)
-    if sessions >= 20 and conversions == 0:
+    if sessions >= 10 and conversions == 0:
         return "convert"
-    if impressions >= 50 and ctr < 0.02:
+    if impressions >= 20 and ctr < 0.03:
         return "repair"
     if impressions >= 50 and conversions > 0:
         return "scale"
     if impressions < 20 and sessions < 10:
-        return "hold"
+        return "build"
     return "hold"
 
 
@@ -455,10 +493,12 @@ def _page_score(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[st
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
     conversions = float(ga4.get("conversions", 0) or 0)
-    if impressions >= 50 and ctr < 0.02:
+    if impressions >= 20 and ctr < 0.03:
         score -= 12
-    if sessions >= 20 and conversions == 0:
+    if sessions >= 10 and conversions == 0:
         score -= 15
+    if impressions < 20 and sessions < 10:
+        score -= 8
     if conversions > 0:
         score += 6
     return max(0, min(100, score))
