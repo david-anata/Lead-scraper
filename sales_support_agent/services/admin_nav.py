@@ -5,6 +5,15 @@ from __future__ import annotations
 import html
 
 
+def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str = "") -> str:
+    classes = ["top-link"]
+    if active:
+        classes.append("active")
+    if extra_class:
+        classes.append(extra_class)
+    return f'<a class="{" ".join(classes)}" href="{href}">{html.escape(label)}</a>'
+
+
 def render_agent_nav_styles() -> str:
     return """
       .topbar {
@@ -24,6 +33,12 @@ def render_agent_nav_styles() -> str:
         justify-content: space-between;
         align-items: center;
         gap: 16px;
+      }
+      .topbar-shell {
+        max-width: 1180px;
+        margin: 0 auto;
+        display: grid;
+        gap: 10px;
       }
       .brandmark {
         display: inline-flex;
@@ -45,6 +60,9 @@ def render_agent_nav_styles() -> str:
         align-items: center;
         gap: 10px;
         flex-wrap: wrap;
+      }
+      .top-actions--secondary {
+        gap: 8px;
       }
       .top-link {
         display: inline-flex;
@@ -86,8 +104,27 @@ def render_agent_nav_styles() -> str:
         background: #2B3644;
         border-color: #2B3644;
       }
+      .top-link--secondary {
+        min-height: 36px;
+        padding: 0 14px;
+        background: rgba(255, 255, 255, 0.62);
+        border-color: rgba(43, 54, 68, 0.08);
+        font-size: 12px;
+        letter-spacing: 0.02em;
+      }
+      .top-link--secondary.active {
+        background: rgba(133, 187, 218, 0.22);
+        border-color: rgba(133, 187, 218, 0.52);
+        color: #2B3644;
+        box-shadow: inset 0 0 0 1px rgba(133, 187, 218, 0.16);
+      }
+      .topbar-divider {
+        height: 1px;
+        background: linear-gradient(90deg, rgba(43, 54, 68, 0.10) 0%, rgba(43, 54, 68, 0.04) 100%);
+      }
       @media (max-width: 960px) {
-        .topbar-inner {
+        .topbar-inner,
+        .top-actions {
           flex-wrap: wrap;
         }
         .brandmark {
@@ -97,28 +134,38 @@ def render_agent_nav_styles() -> str:
     """
 
 
-def render_agent_nav(active: str = "") -> str:
-    links = [
-        ("sales", "Sales Priorities", "/admin"),
-        ("executive", "Executive", "/admin/executive"),
-        ("website_ops", "Website Ops", "/admin/website-ops"),
-        ("queue", "Queue", "/admin/website-ops/queue"),
-        ("reports", "Reports", "/admin/website-ops/reports"),
+def render_agent_nav(active: str = "", *, website_ops_section: str = "") -> str:
+    primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
+    primary_links = [
+        _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
+        _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
+        _nav_item("Executive", "/admin/executive", active=primary_active == "executive"),
     ]
-    nav_links = []
-    for key, label, href in links:
-        classes = ["top-link"]
-        if active == key:
-            classes.append("active")
-        nav_links.append(f'<a class="{" ".join(classes)}" href="{href}">{html.escape(label)}</a>')
-    nav_links.append('<a class="top-link logout" href="/admin/logout">Log out</a>')
+    secondary_nav = ""
+    current_section = website_ops_section or ("seo_dashboard" if active == "website_ops" else active)
+    if primary_active == "website_ops":
+        secondary_links = [
+            _nav_item("SEO Dashboard", "/admin/website-ops", active=current_section == "seo_dashboard", extra_class="top-link--secondary"),
+            _nav_item("Queue", "/admin/website-ops/queue", active=current_section == "queue", extra_class="top-link--secondary"),
+            _nav_item("Reports", "/admin/website-ops/reports", active=current_section == "reports", extra_class="top-link--secondary"),
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(secondary_links)}
+        </nav>
+        """
     return f"""
     <header class="topbar">
-      <div class="topbar-inner">
-        <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
-        <nav class="top-actions">
-          {"".join(nav_links)}
-        </nav>
+      <div class="topbar-shell">
+        <div class="topbar-inner">
+          <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
+          <nav class="top-actions">
+            {"".join(primary_links)}
+            {_nav_item("Log out", "/admin/logout", extra_class="logout")}
+          </nav>
+        </div>
+        {secondary_nav}
       </div>
     </header>
     """

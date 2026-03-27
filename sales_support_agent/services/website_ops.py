@@ -564,7 +564,6 @@ def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) 
       <div class="summary-grid">
         {''.join(_summary_chip(label, value, tone=tone) for label, value, tone in stats)}
       </div>
-      <p class="lead">{html.escape(entry.get('excerpt', '') or 'Latest Website Ops summary is ready for review.')}</p>
       <div class="button-row">
         <a href="/admin/website-ops/reports/{html.escape(entry['mode'], quote=True)}/{html.escape(entry['slug'], quote=True)}" class="text-link">Open {html.escape(entry['title'])}</a>
       </div>
@@ -969,7 +968,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
         else ""
     )
     body = f"""
-      {_nav("website_ops")}
+      {_nav("website_ops", website_ops_section="seo_dashboard")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="hero">
@@ -1065,7 +1064,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
         entries = [item for item in entries if item.get("status") not in {"done", "rejected"}]
     queue_title = _humanize_label(normalized_filter) if normalized_filter else "Active"
     body = f"""
-      {_nav("queue")}
+      {_nav("queue", website_ops_section="queue")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="card stack">
@@ -1084,7 +1083,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
 def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_message: str = "") -> str:
     record = get_feedback_record(settings, feedback_id)
     if not record:
-        return _page_shell("Not Found", f"{_nav('queue')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
+        return _page_shell("Not Found", f"{_nav('queue', website_ops_section='queue')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The feedback record could not be located.</p></section></main>")
     is_auto_generated = bool(record.get("auto_generated"))
     confidence = str(record.get("confidence", "")).strip()
     suggested_action_type = str(record.get("suggested_action_type", "")).strip()
@@ -1096,7 +1095,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
         else "This recommendation will move into the approved queue. Use the form below only if you want to override or add execution details."
     )
     body = f"""
-      {_nav("queue")}
+      {_nav("queue", website_ops_section="queue")}
       <main class="shell">
         {f"<div class='flash'>{html.escape(flash_message)}</div>" if flash_message else ""}
         <section class="detail-layout">
@@ -1142,7 +1141,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
 def render_reports_page(settings: Settings) -> str:
     reports = _report_entries(settings)
     body = f"""
-      {_nav("reports")}
+      {_nav("reports", website_ops_section="reports")}
       <main class="shell">
         <section class="card stack">
           <p class="eyebrow">Website Ops reports</p>
@@ -1160,12 +1159,12 @@ def render_reports_page(settings: Settings) -> str:
 def render_report_page(settings: Settings, mode: str, slug: str) -> str:
     entry = get_report_entry(settings, mode, slug)
     if not entry:
-        return _page_shell("Not Found", f"{_nav('reports')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
+        return _page_shell("Not Found", f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
     html_path = entry["html_path"]
     if html_path.exists():
         return _inject_admin_nav_into_report_html(html_path.read_text(), active="reports")
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
-        f"{_nav('reports')}<main class='shell'><section class='card stack'><p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
+        f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card stack'><p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
     )
