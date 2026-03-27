@@ -3003,7 +3003,7 @@ def render_dashboard_page(data: DashboardData) -> str:
             <details class="utility-drawer" id="deck-generator-panel">
               <summary>Generate sales deck</summary>
               <div class="utility-body">
-                <p>Upload the competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
+                <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
                 {deck_ready_notice}
                 <form class="lead-form" id="deck-generator-form">
                   <label>
@@ -3011,18 +3011,26 @@ def render_dashboard_page(data: DashboardData) -> str:
                     <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
                   </label>
                   <label>
-                    Competitor CSV
-                    <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" />
+                    Competitor CSVs
+                    <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
                   </label>
                   <label>
-                    Keyword CSV
-                    <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" />
+                    Keyword CSVs
+                    <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
+                  </label>
+                  <label>
+                    Cerebro CSV
+                    <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
+                  </label>
+                  <label>
+                    Word frequency CSV
+                    <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
                   </label>
                   <label>
                     Creative mockup URL
                     <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
                   </label>
-                  <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. The service-offering section always includes Amazon, TikTok Shop, Shopify, 3PL, and Shipping OS.</div>
+                  <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
                   <fieldset class="offer-toggle-group">
                     <legend>Recommended plan options</legend>
                     <label class="checkbox-label">

@@ -3688,8 +3688,10 @@ def admin_canva_connect_proxy(request: Request) -> Response:
 @app.post("/admin/api/generate-deck")
 async def admin_generate_deck_proxy(
     request: Request,
-    competitor_xray_csv: UploadFile = File(...),
-    keyword_xray_csv: UploadFile | None = File(default=None),
+    competitor_xray_csv: list[UploadFile] = File(...),
+    keyword_xray_csv: list[UploadFile] = File(default=[]),
+    cerebro_csv: UploadFile | None = File(default=None),
+    word_frequency_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
     creative_mockup_url: str = Form(default=""),
@@ -3703,8 +3705,10 @@ async def admin_generate_deck_proxy(
     if not validate_admin_session_token(admin_settings, token):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
-    competitor_file_bytes = await competitor_xray_csv.read()
-    keyword_file_bytes = await keyword_xray_csv.read() if keyword_xray_csv is not None else None
+    competitor_files = [file for file in competitor_xray_csv if file.filename]
+    keyword_files = [file for file in keyword_xray_csv if file.filename]
+    cerebro_bytes = await cerebro_csv.read() if cerebro_csv and cerebro_csv.filename else b""
+    word_frequency_bytes = await word_frequency_csv.read() if word_frequency_csv and word_frequency_csv.filename else b""
     try:
         status_code, payload = _post_sales_support_multipart(
             "/api/admin/generate-deck",
@@ -3718,26 +3722,54 @@ async def admin_generate_deck_proxy(
                 ("include_recommended_plan", "true" if include_recommended_plan else "false"),
             ],
             files_payload=[
-                (
-                    "competitor_xray_csv",
+                *[
                     (
-                        competitor_xray_csv.filename or "competitors.csv",
-                        competitor_file_bytes,
-                        competitor_xray_csv.content_type or "text/csv",
-                    ),
+                        "competitor_xray_csv",
+                        (
+                            file.filename or "competitors.csv",
+                            await file.read(),
+                            file.content_type or "text/csv",
+                        ),
+                    )
+                    for file in competitor_files
+                ],
+                *[
+                    (
+                        "keyword_xray_csv",
+                        (
+                            file.filename or "keywords.csv",
+                            await file.read(),
+                            file.content_type or "text/csv",
+                        ),
+                    )
+                    for file in keyword_files
+                ],
+                *(
+                    [
+                        (
+                            "cerebro_csv",
+                            (
+                                cerebro_csv.filename or "cerebro.csv",
+                                cerebro_bytes,
+                                cerebro_csv.content_type or "text/csv",
+                            ),
+                        )
+                    ]
+                    if cerebro_csv and cerebro_csv.filename and cerebro_bytes
+                    else []
                 ),
                 *(
                     [
                         (
-                            "keyword_xray_csv",
+                            "word_frequency_csv",
                             (
-                                keyword_xray_csv.filename or "keywords.csv",
-                                keyword_file_bytes or b"",
-                                keyword_xray_csv.content_type or "text/csv",
+                                word_frequency_csv.filename or "word-frequency.csv",
+                                word_frequency_bytes,
+                                word_frequency_csv.content_type or "text/csv",
                             ),
                         )
                     ]
-                    if keyword_xray_csv is not None
+                    if word_frequency_csv and word_frequency_csv.filename and word_frequency_bytes
                     else []
                 ),
             ],

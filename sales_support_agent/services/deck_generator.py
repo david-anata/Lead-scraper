@@ -30,13 +30,20 @@ from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.helium10 import (
+    CerebroKeywordInsight,
     DistributionSlice,
+    Helium10CerebroReport,
     Helium10KeywordReport,
     Helium10XrayReport,
     KeywordInsight,
+    WordFrequencyReport,
     XrayProduct,
+    parse_cerebro_csv,
     parse_keyword_csv,
+    parse_keyword_csvs,
+    parse_word_frequency_csv,
     parse_xray_csv,
+    parse_xray_csvs,
 )
 from sales_support_agent.services.product_research import EnrichedHeroProduct, ProductResearchService
 from sales_support_agent.services.token_seal import seal_token, unseal_token
@@ -106,6 +113,23 @@ DEFAULT_CASE_STUDY_URL = (
 )
 
 DEFAULT_SERVICE_TABS: tuple[str, ...] = ("amazon", "tiktok_shop", "shopify", "3pl", "shipping_os")
+COPY_TERM_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "by",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+    }
+)
 
 
 class DeckGenerationService:
@@ -183,8 +207,14 @@ class DeckGenerationService:
         *,
         competitor_xray_csv_bytes: bytes | None = None,
         competitor_xray_filename: str = "",
+        competitor_xray_csv_payloads: list[tuple[str, bytes]] | None = None,
         keyword_xray_csv_bytes: bytes | None = None,
         keyword_xray_filename: str = "",
+        keyword_xray_csv_payloads: list[tuple[str, bytes]] | None = None,
+        cerebro_csv_bytes: bytes | None = None,
+        cerebro_filename: str = "",
+        word_frequency_csv_bytes: bytes | None = None,
+        word_frequency_filename: str = "",
         target_product_input: str = "",
         channels: list[str] | None = None,
         creative_mockup_url: str = "",
@@ -195,6 +225,20 @@ class DeckGenerationService:
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
         effective_target_input = target_product_input.strip()
+        competitor_payloads = [
+            (filename, content)
+            for filename, content in (competitor_xray_csv_payloads or [])
+            if content
+        ]
+        if not competitor_payloads and competitor_xray_csv_bytes is not None:
+            competitor_payloads = [(competitor_xray_filename or "competitors.csv", competitor_xray_csv_bytes)]
+        keyword_payloads = [
+            (filename, content)
+            for filename, content in (keyword_xray_csv_payloads or [])
+            if content
+        ]
+        if not keyword_payloads and keyword_xray_csv_bytes is not None:
+            keyword_payloads = [(keyword_xray_filename or "keywords.csv", keyword_xray_csv_bytes)]
         enabled_channels = list(DEFAULT_SERVICE_TABS)
         enabled_offers = _normalize_offers(offers or [])
         offer_cards = _normalize_custom_offer_cards(offer_payload_json=offer_payload_json, offers=enabled_offers)
@@ -204,8 +248,10 @@ class DeckGenerationService:
             metadata={
                 "generation_mode": "amazon_first_html",
                 "target_product_input": effective_target_input,
-                "competitor_xray_filename": competitor_xray_filename,
-                "keyword_xray_filename": keyword_xray_filename,
+                "competitor_xray_filename": ", ".join(filename for filename, _ in competitor_payloads),
+                "keyword_xray_filename": ", ".join(filename for filename, _ in keyword_payloads),
+                "cerebro_filename": cerebro_filename.strip(),
+                "word_frequency_filename": word_frequency_filename.strip(),
                 "channels": enabled_channels,
                 "creative_mockup_url": creative_mockup_url.strip(),
                 "case_study_url": case_study_url.strip(),
@@ -216,8 +262,10 @@ class DeckGenerationService:
         try:
             dataset = self._build_amazon_first_dataset(
                 target_product_input=effective_target_input,
-                competitor_xray_csv_bytes=competitor_xray_csv_bytes,
-                keyword_xray_csv_bytes=keyword_xray_csv_bytes,
+                competitor_xray_csv_payloads=competitor_payloads,
+                keyword_xray_csv_payloads=keyword_payloads,
+                cerebro_csv_bytes=cerebro_csv_bytes,
+                word_frequency_csv_bytes=word_frequency_csv_bytes,
                 channels=enabled_channels,
                 creative_mockup_url=creative_mockup_url.strip(),
                 case_study_url=case_study_url.strip(),
@@ -487,8 +535,10 @@ class DeckGenerationService:
         self,
         *,
         target_product_input: str,
-        competitor_xray_csv_bytes: bytes | None,
-        keyword_xray_csv_bytes: bytes | None,
+        competitor_xray_csv_payloads: list[tuple[str, bytes]],
+        keyword_xray_csv_payloads: list[tuple[str, bytes]],
+        cerebro_csv_bytes: bytes | None,
+        word_frequency_csv_bytes: bytes | None,
         channels: list[str],
         creative_mockup_url: str,
         case_study_url: str,
@@ -499,15 +549,21 @@ class DeckGenerationService:
         parsed_target = _parse_target_product_input(target_product_input)
         if parsed_target["source_type"] not in {"amazon", "shopify", "website"}:
             raise RuntimeError("Target product must be a product URL or an Amazon ASIN.")
-        if competitor_xray_csv_bytes is None:
+        if not competitor_xray_csv_payloads:
             raise RuntimeError("Competitor Xray CSV is required.")
 
-        xray_report = parse_xray_csv(competitor_xray_csv_bytes)
-        keyword_report = parse_keyword_csv(keyword_xray_csv_bytes)
+        xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
+        keyword_report = parse_keyword_csvs([content for _, content in keyword_xray_csv_payloads])
+        cerebro_report = parse_cerebro_csv(cerebro_csv_bytes)
+        word_frequency_report = parse_word_frequency_csv(word_frequency_csv_bytes)
         hero_product = self.product_research.enrich_target_product(parsed_target)
         warnings: list[str] = [*xray_report.warnings, *hero_product.warnings]
         if keyword_report:
             warnings.extend(keyword_report.warnings)
+        if cerebro_report:
+            warnings.extend(cerebro_report.warnings)
+        if word_frequency_report:
+            warnings.extend(word_frequency_report.warnings)
 
         verified_target_asin = (parsed_target["asin"] or hero_product.asin).strip()
         target_match = _find_target_row(
@@ -531,10 +587,13 @@ class DeckGenerationService:
         ][:10]
         market_cards = _build_market_metric_cards(xray_report, keyword_report)
         keyword_cards = _build_keyword_metric_cards(keyword_report)
+        keyword_cards.extend(_build_cerebro_metric_cards(cerebro_report, word_frequency_report))
         search_insights = _build_search_insights(
             title=hero_product.title or parsed_target["product_name"],
             description=hero_product.description,
             keyword_report=keyword_report,
+            cerebro_report=cerebro_report,
+            word_frequency_report=word_frequency_report,
         )
         target_title = _preferred_target_title(
             hero_product.title,
@@ -586,18 +645,7 @@ class DeckGenerationService:
                 ]
             )
 
-        keyword_rows = [["Keyword", "Search Volume", "Keyword Sales", "Competing Products", "Title Density"]]
-        if keyword_report:
-            for keyword in keyword_report.keywords[:10]:
-                keyword_rows.append(
-                    [
-                        keyword.phrase,
-                        keyword.search_volume_label,
-                        keyword.keyword_sales_label,
-                        str(keyword.competing_products or ""),
-                        str(keyword.title_density or ""),
-                    ]
-                )
+        keyword_rows = _build_keyword_rows(keyword_report, cerebro_report)
 
         target_image_url = (hero_product.image_url or (target_row.image_url if target_row else "")).strip()
         target_price_label = (
@@ -718,13 +766,24 @@ class DeckGenerationService:
                 "keyword_cards": keyword_cards,
                 "xray_report": xray_report,
                 "keyword_report": keyword_report,
+                "cerebro_report": cerebro_report,
+                "word_frequency_report": word_frequency_report,
+                "keyword_table_rows": keyword_rows,
                 "primary_competitors": primary_competitors,
                 "seo_recommendations": seo_recommendations,
                 "cro_recommendations": cro_recommendations,
                 "creative_recommendations": creative_recommendations,
                 "offering_sections": channel_sections,
                 "channels": channels,
-                "niche_keyword": keyword_report.keywords[0].phrase if keyword_report and keyword_report.keywords else (parsed_target["product_name"] or display_title),
+                "niche_keyword": (
+                    cerebro_report.keywords[0].phrase
+                    if cerebro_report and cerebro_report.keywords
+                    else (
+                        keyword_report.keywords[0].phrase
+                        if keyword_report and keyword_report.keywords
+                        else (parsed_target["product_name"] or display_title)
+                    )
+                ),
                 "search_insights": search_insights,
                 "target_strengths": target_strengths,
                 "target_gaps": target_gaps,
@@ -878,6 +937,9 @@ class DeckGenerationService:
             raise RuntimeError("Deck payload is missing the Xray report.")
         if keyword_report is not None and not isinstance(keyword_report, Helium10KeywordReport):
             keyword_report = None
+        cerebro_report = payload.get("cerebro_report")
+        if cerebro_report is not None and not isinstance(cerebro_report, Helium10CerebroReport):
+            cerebro_report = None
         market_cards = list(payload.get("market_cards", []))
         keyword_cards = list(payload.get("keyword_cards", []))
         primary_competitors = list(payload.get("primary_competitors", []))
@@ -895,7 +957,9 @@ class DeckGenerationService:
         monogram = self._load_brand_asset("assets/monogram.png")
         no_product_image = self._load_brand_asset("assets/no-product-image-available.png")
         stylesheet = self._load_brand_stylesheet()
-        keyword_rows = "".join(_render_keyword_row(keyword) for keyword in (keyword_report.keywords[:10] if keyword_report else []))
+        keyword_table_rows = payload.get("keyword_table_rows") or []
+        if not isinstance(keyword_table_rows, list):
+            keyword_table_rows = []
         revenue_bars = "".join(_render_revenue_bar(product, xray_report.total_revenue) for product in xray_report.products[:8])
         offering_html = _render_offering_tabs(offering_sections)
         gallery_items = [target] + [_product_to_gallery_item(product) for product in primary_competitors[:4]]
@@ -906,6 +970,10 @@ class DeckGenerationService:
         size_donut = _render_distribution_card("Size tier", xray_report.size_tier_distribution)
         fulfillment_donut = _render_distribution_card("Fulfillment", xray_report.fulfillment_distribution)
         niche_keyword = str(payload.get("niche_keyword") or target.get("asin") or "the niche").strip()
+        keyword_table_html = _render_keyword_table(keyword_table_rows)
+        keyword_table_caption = "Top keyword opportunities from the Cerebro rank set" if cerebro_report else "Highest search volume from the current keyword dataset"
+        keyword_rank_summary_html = _render_cerebro_rank_summary(cerebro_report)
+        keyword_bubble_html = _render_word_frequency_bubbles(payload.get("word_frequency_report"))
         niche_table_rows = "".join(
             _render_niche_summary_row(product, xray_report.total_revenue)
             for product in xray_report.products[:10]
@@ -1096,16 +1164,11 @@ class DeckGenerationService:
         <div class="dashboard-card">
           <div class="card-head">
             <h3>Top keyword opportunities</h3>
-            <span class="muted">Highest search volume from the current keyword dataset</span>
+            <span class="muted">{html.escape(keyword_table_caption)}</span>
           </div>
           <div class="table-wrap">
             <table>
-              <thead>
-                <tr><th>Keyword</th><th>Search volume</th><th>Sales</th><th>Competing products</th><th>Title density</th></tr>
-              </thead>
-              <tbody>
-                {keyword_rows or "<tr><td colspan='5' class='muted'>No keyword data available.</td></tr>"}
-              </tbody>
+              {keyword_table_html}
             </table>
           </div>
         </div>
@@ -1114,6 +1177,12 @@ class DeckGenerationService:
           <ul class="emphasis-list">{''.join(_render_emphasis_list_item(item) for item in seo_recommendations)}</ul>
         </div>
       </div>
+      {(
+        "<div class='two-col split-top'>"
+        f"{keyword_rank_summary_html}"
+        f"{keyword_bubble_html}"
+        "</div>"
+      ) if (keyword_rank_summary_html or keyword_bubble_html) else ""}
     </section>
 
     <section class="slide">
@@ -1621,15 +1690,81 @@ def _build_market_metric_cards(
 
 def _build_keyword_metric_cards(keyword_report: Helium10KeywordReport | None) -> list[dict[str, str]]:
     if keyword_report is None:
-        return [
-            {"label": "Keyword coverage", "value": "Missing", "meta": "Add keyword data to populate this slide"},
-        ]
+        return []
     return [
         {"label": "Keywords parsed", "value": str(len(keyword_report.keywords)), "meta": "Rows loaded from the current keyword dataset"},
         {"label": "Total search volume", "value": _label_integer(keyword_report.total_search_volume), "meta": "Summed across the current keyword dataset"},
         {"label": "Average competing products", "value": _label_float(keyword_report.average_competing_products, 0), "meta": "Competitive density"},
         {"label": "Average title density", "value": _label_float(keyword_report.average_title_density, 0), "meta": "How crowded the SERP language is"},
     ]
+
+
+def _build_cerebro_metric_cards(
+    cerebro_report: Helium10CerebroReport | None,
+    word_frequency_report: WordFrequencyReport | None,
+) -> list[dict[str, str]]:
+    cards: list[dict[str, str]] = []
+    if cerebro_report:
+        cards.extend(
+            [
+                {
+                    "label": "Top-20 impression proxy",
+                    "value": _label_integer(cerebro_report.impression_proxy),
+                    "meta": "Summed search volume where the target ranks 1-20 in the Cerebro set",
+                },
+                {
+                    "label": "Tracked ranking keywords",
+                    "value": _label_integer(cerebro_report.top_20_ranked_keywords),
+                    "meta": "Keywords where the target currently ranks inside positions 1-20",
+                },
+                {
+                    "label": "Competitor overlays",
+                    "value": _label_integer(len(cerebro_report.competitor_asins)),
+                    "meta": "ASIN columns compared against the target listing",
+                },
+            ]
+        )
+    if word_frequency_report:
+        cards.append(
+            {
+                "label": "Support terms parsed",
+                "value": _label_integer(len(word_frequency_report.words)),
+                "meta": "Individual terms available for bullet and copy coverage checks",
+            }
+        )
+    return cards
+
+
+def _build_keyword_rows(
+    keyword_report: Helium10KeywordReport | None,
+    cerebro_report: Helium10CerebroReport | None,
+) -> list[list[str]]:
+    if cerebro_report and cerebro_report.keywords:
+        rows: list[list[str]] = [["Keyword", "Search volume", "Keyword sales", "Target rank", "Impression proxy"]]
+        for keyword in cerebro_report.keywords[:10]:
+            rows.append(
+                [
+                    keyword.phrase,
+                    _label_integer(keyword.search_volume),
+                    _label_integer(keyword.keyword_sales),
+                    _label_integer(keyword.target_rank),
+                    _label_integer(keyword.target_impression_proxy),
+                ]
+            )
+        return rows
+    rows = [["Keyword", "Search volume", "Sales", "Competing products", "Title density"]]
+    if keyword_report:
+        for keyword in keyword_report.keywords[:10]:
+            rows.append(
+                [
+                    keyword.phrase,
+                    keyword.search_volume_label,
+                    keyword.keyword_sales_label,
+                    str(keyword.competing_products or ""),
+                    str(keyword.title_density or ""),
+                ]
+            )
+    return rows
 
 
 def _build_seo_recommendations(
@@ -1821,11 +1956,17 @@ def _build_search_insights(
     title: str,
     description: str,
     keyword_report: Helium10KeywordReport | None,
+    cerebro_report: Helium10CerebroReport | None,
+    word_frequency_report: WordFrequencyReport | None,
 ) -> dict[str, list[str]]:
-    keywords = [keyword.phrase.strip() for keyword in (keyword_report.keywords[:10] if keyword_report else []) if keyword.phrase.strip()]
+    keywords = _build_title_targets(keyword_report, cerebro_report)
     title_lc = _clean_listing_title(title).lower()
     description_lc = _clean_listing_title(description).lower()
-    copy_targets = _build_copy_targets(keywords)
+    copy_targets = _build_copy_targets(
+        keywords,
+        keyword_report=keyword_report,
+        word_frequency_report=word_frequency_report,
+    )
     return {
         "title_hits": [phrase for phrase in keywords if phrase.lower() in title_lc],
         "title_misses": [phrase for phrase in keywords if phrase.lower() not in title_lc],
@@ -1920,6 +2061,89 @@ def _render_keyword_row(keyword: KeywordInsight) -> str:
         f"<td>{html.escape(str(keyword.competing_products or ''))}</td>"
         f"<td>{html.escape(str(keyword.title_density or ''))}</td>"
         "</tr>"
+    )
+
+
+def _render_keyword_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return (
+            "<thead><tr><th>Keyword</th><th>Search volume</th><th>Sales</th><th>Competing products</th><th>Title density</th></tr></thead>"
+            "<tbody><tr><td colspan='5' class='muted'>No keyword data available.</td></tr></tbody>"
+        )
+    headers = rows[0]
+    body = rows[1:]
+    header_html = "".join(f"<th>{html.escape(str(header))}</th>" for header in headers)
+    if not body:
+        return f"<thead><tr>{header_html}</tr></thead><tbody><tr><td colspan='{len(headers)}' class='muted'>No keyword data available.</td></tr></tbody>"
+    body_html = "".join(
+        "<tr>" + "".join(f"<td>{html.escape(str(cell))}</td>" for cell in row) + "</tr>"
+        for row in body
+    )
+    return f"<thead><tr>{header_html}</tr></thead><tbody>{body_html}</tbody>"
+
+
+def _render_cerebro_rank_summary(cerebro_report: Helium10CerebroReport | None) -> str:
+    if not cerebro_report or not cerebro_report.keywords:
+        return ""
+    buckets = [
+        ("Rank 1-5", 0, 0),
+        ("Rank 6-10", 0, 0),
+        ("Rank 11-20", 0, 0),
+        ("Rank 21-50", 0, 0),
+        ("Unranked", 0, 0),
+    ]
+    for keyword in cerebro_report.keywords:
+        rank = keyword.target_rank
+        volume = keyword.search_volume or 0
+        if rank is not None and 1 <= rank <= 5:
+            index = 0
+        elif rank is not None and 6 <= rank <= 10:
+            index = 1
+        elif rank is not None and 11 <= rank <= 20:
+            index = 2
+        elif rank is not None and 21 <= rank <= 50:
+            index = 3
+        else:
+            index = 4
+        label, count, proxy = buckets[index]
+        buckets[index] = (label, count + 1, proxy + volume)
+    max_count = max((count for _, count, _ in buckets), default=1) or 1
+    rows = "".join(
+        "<li>"
+        f"<div><strong>{html.escape(label)}</strong><span>{_label_integer(count)} keywords</span></div>"
+        f"<div class='rank-track'><span style='width:{max(8, int((count / max_count) * 100))}%'></span></div>"
+        f"<small>{_label_integer(proxy)} search volume</small>"
+        "</li>"
+        for label, count, proxy in buckets
+    )
+    return (
+        "<div class='dashboard-card'>"
+        "<div class='card-head'><h3>Ranking path</h3>"
+        "<span class='muted'>Where the target already ranks and where the next keyword lifts can come from</span></div>"
+        f"<ul class='rank-summary-list'>{rows}</ul>"
+        "</div>"
+    )
+
+
+def _render_word_frequency_bubbles(report: Any) -> str:
+    if not isinstance(report, WordFrequencyReport) or not report.words:
+        return ""
+    words = report.words[:12]
+    max_frequency = max((item.frequency for item in words), default=1) or 1
+    bubbles = "".join(
+        "<li class='term-bubble' "
+        f"style='--bubble-size:{72 + int((item.frequency / max_frequency) * 84)}px'>"
+        f"<strong>{html.escape(item.word)}</strong>"
+        f"<span>{_label_integer(item.frequency)}</span>"
+        "</li>"
+        for item in words
+    )
+    return (
+        "<div class='dashboard-card'>"
+        "<div class='card-head'><h3>Support-term demand</h3>"
+        "<span class='muted'>Single-word demand from the word-frequency file to guide bullet and copy expansion</span></div>"
+        f"<ul class='bubble-cloud'>{bubbles}</ul>"
+        "</div>"
     )
 
 
@@ -2589,7 +2813,35 @@ def _rank_keyword_terms(phrases: list[str]) -> list[str]:
     return [term for term, _ in ranked[:8]]
 
 
-def _build_copy_targets(phrases: list[str]) -> list[dict[str, Any]]:
+def _build_title_targets(
+    keyword_report: Helium10KeywordReport | None,
+    cerebro_report: Helium10CerebroReport | None,
+) -> list[str]:
+    if cerebro_report and cerebro_report.keywords:
+        ordered = sorted(
+            cerebro_report.keywords,
+            key=lambda item: (-(item.search_volume or 0), 0 if item.target_rank is not None else 1, item.phrase.lower()),
+        )
+        return [item.phrase.strip() for item in ordered if item.phrase.strip()][:10]
+    return [keyword.phrase.strip() for keyword in (keyword_report.keywords[:10] if keyword_report else []) if keyword.phrase.strip()]
+
+
+def _build_copy_targets(
+    phrases: list[str],
+    *,
+    keyword_report: Helium10KeywordReport | None,
+    word_frequency_report: WordFrequencyReport | None,
+) -> list[dict[str, Any]]:
+    if word_frequency_report and word_frequency_report.words:
+        phrase_terms = {term for phrase in phrases for term in _coverage_terms(phrase)}
+        ranked_terms = [
+            insight.word
+            for insight in word_frequency_report.words
+            if insight.word not in COPY_TERM_STOP_WORDS and len(insight.word) > 2 and insight.word not in phrase_terms
+        ]
+        targets = [{"label": term, "terms": (term,)} for term in ranked_terms[:8]]
+        if targets:
+            return targets
     head_terms = {term for term in _rank_keyword_terms(phrases)[:2]}
     targets: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2604,6 +2856,9 @@ def _build_copy_targets(phrases: list[str]) -> list[dict[str, Any]]:
             continue
         seen.add(label)
         targets.append({"label": label, "terms": tuple(chosen_terms)})
+    if not targets and keyword_report and keyword_report.keywords:
+        fallback_terms = _rank_keyword_terms([keyword.phrase for keyword in keyword_report.keywords[:10]])
+        targets = [{"label": term, "terms": (term,)} for term in fallback_terms[:8]]
     return targets[:8]
 
 

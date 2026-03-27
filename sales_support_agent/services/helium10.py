@@ -95,6 +95,44 @@ class Helium10KeywordReport:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class CerebroKeywordInsight:
+    phrase: str
+    search_volume: int | None
+    keyword_sales: int | None
+    search_volume_trend: str
+    target_rank: int | None
+    target_impression_proxy: int
+    competitor_ranks: dict[str, int | None]
+
+
+@dataclass(frozen=True)
+class Helium10CerebroReport:
+    keywords: list[CerebroKeywordInsight]
+    competitor_asins: list[str]
+    top_20_ranked_keywords: int
+    impression_proxy: int
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class WordFrequencyInsight:
+    word: str
+    frequency: int
+
+
+@dataclass(frozen=True)
+class WordFrequencyReport:
+    words: list[WordFrequencyInsight]
+    total_frequency: int
+    warnings: list[str]
+
+
+def parse_xray_csvs(contents: list[bytes]) -> Helium10XrayReport:
+    merged = _merge_xray_csvs(contents)
+    return parse_xray_csv(merged)
+
+
 def parse_xray_csv(content: bytes) -> Helium10XrayReport:
     decoded = content.decode("utf-8-sig").strip()
     if not decoded:
@@ -180,6 +218,13 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
     )
 
 
+def parse_keyword_csvs(contents: list[bytes]) -> Helium10KeywordReport | None:
+    merged = _merge_keyword_csvs(contents)
+    if merged is None:
+        return None
+    return parse_keyword_csv(merged)
+
+
 def parse_keyword_csv(content: bytes | None) -> Helium10KeywordReport | None:
     if content is None:
         return None
@@ -229,6 +274,191 @@ def parse_keyword_csv(content: bytes | None) -> Helium10KeywordReport | None:
         average_title_density=_avg(title_density),
         warnings=[],
     )
+
+
+def parse_cerebro_csv(content: bytes | None) -> Helium10CerebroReport | None:
+    if content is None:
+        return None
+    decoded = content.decode("utf-8-sig").strip()
+    if not decoded:
+        return None
+
+    reader = csv.DictReader(io.StringIO(decoded))
+    fieldnames = [str(header or "").strip() for header in (reader.fieldnames or []) if str(header or "").strip()]
+    headers = {header.lower(): header for header in fieldnames}
+    required = {"keyword phrase", "search volume", "position (rank)"}
+    missing = sorted(field for field in required if field not in headers)
+    if missing:
+        raise RuntimeError(f"Cerebro CSV is missing columns: {', '.join(missing)}")
+
+    competitor_headers = [header for header in fieldnames if _extract_asin(header)]
+    keywords: list[CerebroKeywordInsight] = []
+    for row in reader:
+        phrase = _clean_text(row.get(headers["keyword phrase"], ""))
+        if not phrase:
+            continue
+        search_volume = _parse_int(row.get(headers["search volume"], ""))
+        target_rank = _parse_rank(row.get(headers["position (rank)"], ""))
+        competitor_ranks = {
+            _extract_asin(header): _parse_rank(row.get(header, ""))
+            for header in competitor_headers
+            if _extract_asin(header)
+        }
+        keywords.append(
+            CerebroKeywordInsight(
+                phrase=phrase,
+                search_volume=search_volume,
+                keyword_sales=_parse_int(row.get(headers.get("keyword sales", ""), "")),
+                search_volume_trend=_clean_text(row.get(headers.get("search volume trend", ""), "")),
+                target_rank=target_rank,
+                target_impression_proxy=search_volume if search_volume is not None and _rank_is_top_20(target_rank) else 0,
+                competitor_ranks=competitor_ranks,
+            )
+        )
+
+    if not keywords:
+        return None
+
+    sorted_keywords = sorted(
+        keywords,
+        key=lambda item: (
+            0 if _rank_is_top_20(item.target_rank) else 1,
+            -(item.search_volume or 0),
+            item.phrase.lower(),
+        ),
+    )
+    return Helium10CerebroReport(
+        keywords=sorted_keywords,
+        competitor_asins=[_extract_asin(header) for header in competitor_headers if _extract_asin(header)],
+        top_20_ranked_keywords=sum(1 for item in sorted_keywords if _rank_is_top_20(item.target_rank)),
+        impression_proxy=sum(item.target_impression_proxy for item in sorted_keywords),
+        warnings=[],
+    )
+
+
+def parse_word_frequency_csv(content: bytes | None) -> WordFrequencyReport | None:
+    if content is None:
+        return None
+    decoded = content.decode("utf-8-sig").strip()
+    if not decoded:
+        return None
+
+    reader = csv.DictReader(io.StringIO(decoded))
+    headers = {str(header or "").strip().lower(): header for header in (reader.fieldnames or [])}
+    required = {"word", "frequency"}
+    missing = sorted(field for field in required if field not in headers)
+    if missing:
+        raise RuntimeError(f"Word frequency CSV is missing columns: {', '.join(missing)}")
+
+    words: list[WordFrequencyInsight] = []
+    for row in reader:
+        word = _clean_text(row.get(headers["word"], "")).lower()
+        frequency = _parse_int(row.get(headers["frequency"], ""))
+        if not word or frequency is None or frequency <= 0:
+            continue
+        words.append(WordFrequencyInsight(word=word, frequency=frequency))
+
+    if not words:
+        return None
+
+    sorted_words = sorted(words, key=lambda item: (-item.frequency, item.word))
+    return WordFrequencyReport(
+        words=sorted_words,
+        total_frequency=sum(item.frequency for item in sorted_words),
+        warnings=[],
+    )
+
+
+def _merge_xray_csvs(contents: list[bytes]) -> bytes:
+    decoded_inputs = [content.decode("utf-8-sig").strip() for content in contents if content and content.decode("utf-8-sig").strip()]
+    if not decoded_inputs:
+        raise RuntimeError("Competitor Xray CSV is empty.")
+
+    merged_rows: dict[str, dict[str, str]] = {}
+    header_order: list[str] = []
+    for decoded in decoded_inputs:
+        reader = csv.DictReader(io.StringIO(decoded))
+        headers = [str(header or "").strip() for header in (reader.fieldnames or []) if str(header or "").strip()]
+        for header in headers:
+            if header not in header_order:
+                header_order.append(header)
+        header_map = {str(header or "").strip().lower(): str(header or "").strip() for header in (reader.fieldnames or [])}
+        asin_header = header_map.get("asin", "")
+        url_header = header_map.get("url", "")
+        for row in reader:
+            asin = _extract_asin(row.get(asin_header, "")) or _extract_asin(row.get(url_header, ""))
+            title = _clean_text(row.get(header_map.get("product details", ""), ""))
+            key = asin or _normalize_row_key(title)
+            if not key:
+                continue
+            normalized_row = {header: _clean_text(row.get(header, "")) for header in header_order}
+            existing = merged_rows.get(key)
+            merged_rows[key] = _prefer_richer_row(existing, normalized_row)
+
+    return _rows_to_csv_bytes(header_order, list(merged_rows.values()))
+
+
+def _merge_keyword_csvs(contents: list[bytes]) -> bytes | None:
+    decoded_inputs = [content.decode("utf-8-sig").strip() for content in contents if content and content.decode("utf-8-sig").strip()]
+    if not decoded_inputs:
+        return None
+
+    merged_rows: dict[str, dict[str, str]] = {}
+    header_order: list[str] = []
+    for decoded in decoded_inputs:
+        reader = csv.DictReader(io.StringIO(decoded))
+        headers = [str(header or "").strip() for header in (reader.fieldnames or []) if str(header or "").strip()]
+        for header in headers:
+            if header not in header_order:
+                header_order.append(header)
+        header_map = {str(header or "").strip().lower(): str(header or "").strip() for header in (reader.fieldnames or [])}
+        phrase_header = header_map.get("keyword phrase", "")
+        for row in reader:
+            phrase = _clean_text(row.get(phrase_header, ""))
+            key = _normalize_row_key(phrase)
+            if not key:
+                continue
+            normalized_row = {header: _clean_text(row.get(header, "")) for header in header_order}
+            existing = merged_rows.get(key)
+            merged_rows[key] = _prefer_richer_row(existing, normalized_row)
+
+    return _rows_to_csv_bytes(header_order, list(merged_rows.values()))
+
+
+def _prefer_richer_row(existing: dict[str, str] | None, candidate: dict[str, str]) -> dict[str, str]:
+    if existing is None:
+        return candidate
+    merged: dict[str, str] = {}
+    all_headers = list(dict.fromkeys([*existing.keys(), *candidate.keys()]))
+    for header in all_headers:
+        current = _clean_text(existing.get(header, ""))
+        incoming = _clean_text(candidate.get(header, ""))
+        if not current:
+            merged[header] = incoming
+            continue
+        if not incoming:
+            merged[header] = current
+            continue
+        current_num = _parse_number(current)
+        incoming_num = _parse_number(incoming)
+        if current_num is not None and incoming_num is not None:
+            merged[header] = incoming if incoming_num > current_num else current
+            continue
+        merged[header] = incoming if len(incoming) > len(current) else current
+    return merged
+
+
+def _rows_to_csv_bytes(headers: list[str], rows: list[dict[str, str]]) -> bytes:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=headers)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({header: row.get(header, "") for header in headers})
+    return buffer.getvalue().encode("utf-8")
+
+
+def _normalize_row_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
 def _build_distribution(values: Iterable[str]) -> list[DistributionSlice]:
@@ -282,6 +512,17 @@ def _parse_number(value: str) -> float | None:
         return float(cleaned) * multiplier
     except ValueError:
         return None
+
+
+def _parse_rank(value: str) -> int | None:
+    cleaned = _clean_text(value)
+    if not cleaned or cleaned in {"-", "0"}:
+        return None
+    return _parse_int(cleaned)
+
+
+def _rank_is_top_20(value: int | None) -> bool:
+    return value is not None and 1 <= value <= 20
 
 
 def _label_money(value: str) -> str:

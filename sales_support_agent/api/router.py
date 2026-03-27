@@ -1099,8 +1099,10 @@ def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: 
 @router.post("/admin/api/generate-deck", response_model=ApiMessage)
 async def admin_generate_deck(
     request: Request,
-    competitor_xray_csv: UploadFile = File(...),
-    keyword_xray_csv: UploadFile | None = File(default=None),
+    competitor_xray_csv: list[UploadFile] = File(...),
+    keyword_xray_csv: list[UploadFile] = File(default=[]),
+    cerebro_csv: UploadFile | None = File(default=None),
+    word_frequency_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
     creative_mockup_url: str = Form(default=""),
@@ -1112,16 +1114,24 @@ async def admin_generate_deck(
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         raise HTTPException(status_code=401, detail="Admin login required.")
-    competitor_bytes = await competitor_xray_csv.read()
-    keyword_bytes = await keyword_xray_csv.read() if keyword_xray_csv is not None else None
+    competitor_files = [file for file in competitor_xray_csv if file.filename]
+    keyword_files = [file for file in keyword_xray_csv if file.filename]
     settings = request.app.state.settings
     try:
         with session_scope(request.app.state.session_factory) as session:
             result = DeckGenerationService(settings, session).generate_deck(
-                competitor_xray_csv_bytes=competitor_bytes,
-                competitor_xray_filename=competitor_xray_csv.filename or "competitors.csv",
-                keyword_xray_csv_bytes=keyword_bytes,
-                keyword_xray_filename=keyword_xray_csv.filename if keyword_xray_csv is not None else "",
+                competitor_xray_csv_payloads=[
+                    (file.filename or "competitors.csv", await file.read())
+                    for file in competitor_files
+                ],
+                keyword_xray_csv_payloads=[
+                    (file.filename or "keywords.csv", await file.read())
+                    for file in keyword_files
+                ],
+                cerebro_csv_bytes=(await cerebro_csv.read()) if cerebro_csv and cerebro_csv.filename else None,
+                cerebro_filename=(cerebro_csv.filename or "") if cerebro_csv else "",
+                word_frequency_csv_bytes=(await word_frequency_csv.read()) if word_frequency_csv and word_frequency_csv.filename else None,
+                word_frequency_filename=(word_frequency_csv.filename or "") if word_frequency_csv else "",
                 target_product_input=target_product_input,
                 channels=channels,
                 creative_mockup_url=creative_mockup_url,
@@ -1155,8 +1165,10 @@ async def admin_generate_deck(
 async def internal_admin_generate_deck(
     request: Request,
     x_internal_api_key: str | None = Header(default=None),
-    competitor_xray_csv: UploadFile = File(...),
-    keyword_xray_csv: UploadFile | None = File(default=None),
+    competitor_xray_csv: list[UploadFile] = File(...),
+    keyword_xray_csv: list[UploadFile] = File(default=[]),
+    cerebro_csv: UploadFile | None = File(default=None),
+    word_frequency_csv: UploadFile | None = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
     creative_mockup_url: str = Form(default=""),
@@ -1166,16 +1178,24 @@ async def internal_admin_generate_deck(
     include_recommended_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
-    competitor_bytes = await competitor_xray_csv.read()
-    keyword_bytes = await keyword_xray_csv.read() if keyword_xray_csv is not None else None
+    competitor_files = [file for file in competitor_xray_csv if file.filename]
+    keyword_files = [file for file in keyword_xray_csv if file.filename]
     settings = request.app.state.settings
     try:
         with session_scope(request.app.state.session_factory) as session:
             result = DeckGenerationService(settings, session).generate_deck(
-                competitor_xray_csv_bytes=competitor_bytes,
-                competitor_xray_filename=competitor_xray_csv.filename or "competitors.csv",
-                keyword_xray_csv_bytes=keyword_bytes,
-                keyword_xray_filename=keyword_xray_csv.filename if keyword_xray_csv is not None else "",
+                competitor_xray_csv_payloads=[
+                    (file.filename or "competitors.csv", await file.read())
+                    for file in competitor_files
+                ],
+                keyword_xray_csv_payloads=[
+                    (file.filename or "keywords.csv", await file.read())
+                    for file in keyword_files
+                ],
+                cerebro_csv_bytes=(await cerebro_csv.read()) if cerebro_csv and cerebro_csv.filename else None,
+                cerebro_filename=(cerebro_csv.filename or "") if cerebro_csv else "",
+                word_frequency_csv_bytes=(await word_frequency_csv.read()) if word_frequency_csv and word_frequency_csv.filename else None,
+                word_frequency_filename=(word_frequency_csv.filename or "") if word_frequency_csv else "",
                 target_product_input=target_product_input,
                 channels=channels,
                 creative_mockup_url=creative_mockup_url,

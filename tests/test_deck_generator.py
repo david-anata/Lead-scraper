@@ -18,6 +18,7 @@ try:
         _extract_listing_copy_points,
         _normalize_custom_offer_cards,
     )
+    from sales_support_agent.services.helium10 import parse_cerebro_csv, parse_word_frequency_csv
     from sales_support_agent.services.product_research import EnrichedHeroProduct
 
     SQLALCHEMY_AVAILABLE = True
@@ -86,6 +87,34 @@ def _keyword_csv() -> bytes:
     ).encode("utf-8")
 
 
+def _keyword_csv_extra() -> bytes:
+    return (
+        "Keyword Phrase,Search Volume,Keyword Sales,Suggested PPC Bid,Competing Products,Title Density,Competitor Rank (avg)\n"
+        "spirulina gummies,1800,220,0.84,91,4,18.0\n"
+        "blue spirulina,9000,1900,1.10,321,8,10.5\n"
+    ).encode("utf-8")
+
+
+def _cerebro_csv() -> bytes:
+    return (
+        "Keyword Phrase,Keyword Sales,Search Volume,Search Volume Trend,Position (Rank),B07FKKP72W,B071W6CQ7S\n"
+        "blue spirulina,1820,8299,stable,7,4,2\n"
+        "spirulina powder,930,4200,growing,18,6,3\n"
+        "organic spirulina tablets,410,1800,flat,29,8,5\n"
+    ).encode("utf-8")
+
+
+def _word_frequency_csv() -> bytes:
+    return (
+        "Word,Frequency\n"
+        "spirulina,510\n"
+        "powder,330\n"
+        "organic,240\n"
+        "blue,210\n"
+        "supplement,120\n"
+    ).encode("utf-8")
+
+
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck generator tests")
 class DeckGeneratorTests(unittest.TestCase):
     def test_normalize_custom_offer_cards_prefers_json_payload(self) -> None:
@@ -113,6 +142,20 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertGreaterEqual(len(bullets), 2)
         self.assertTrue(any("Confidence In Every Reading" in item for item in bullets))
         self.assertTrue(all("About this item" not in item for item in bullets))
+
+    def test_parse_cerebro_and_word_frequency_reports(self) -> None:
+        cerebro = parse_cerebro_csv(_cerebro_csv())
+        words = parse_word_frequency_csv(_word_frequency_csv())
+
+        self.assertIsNotNone(cerebro)
+        self.assertIsNotNone(words)
+        assert cerebro is not None
+        assert words is not None
+        self.assertEqual(cerebro.top_20_ranked_keywords, 2)
+        self.assertEqual(cerebro.impression_proxy, 12499)
+        self.assertEqual(len(cerebro.competitor_asins), 2)
+        self.assertEqual(words.words[0].word, "spirulina")
+        self.assertEqual(words.total_frequency, 1410)
 
     def test_generate_deck_returns_html_output_and_persists_run_metadata(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
@@ -178,6 +221,41 @@ class DeckGeneratorTests(unittest.TestCase):
 
         self.assertEqual(result.output_type, "html")
         self.assertIn("/decks/", result.view_url)
+
+    def test_generate_deck_merges_multiple_keyword_uploads_and_uses_optional_reports(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(),
+                session,
+                google_client=object(),
+                canva_client=object(),
+                shopify_client=object(),
+                amazon_client=_FakeAmazonClient(),
+            )
+            service.product_research = _FakeProductResearch()
+            result = service.generate_deck(
+                competitor_xray_csv_payloads=[("xray.csv", _xray_csv())],
+                keyword_xray_csv_payloads=[("keywords-a.csv", _keyword_csv()), ("keywords-b.csv", _keyword_csv_extra())],
+                cerebro_csv_bytes=_cerebro_csv(),
+                cerebro_filename="cerebro.csv",
+                word_frequency_csv_bytes=_word_frequency_csv(),
+                word_frequency_filename="words.csv",
+                target_product_input="B0TARGET01",
+                channels=["amazon"],
+            )
+
+        self.assertEqual(result.output_type, "html")
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+            deck_html = str(summary.get("deck_html") or "")
+            self.assertIn("Top-20 impression proxy", deck_html)
+            self.assertIn("Top keyword opportunities from the Cerebro rank set", deck_html)
 
 
 if __name__ == "__main__":
