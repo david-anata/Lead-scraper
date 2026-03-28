@@ -87,6 +87,7 @@ class ClickUpSyncService:
     def _upsert_task(self, task: dict[str, Any], field_map) -> LeadMirror:
         task_id = str(task.get("id") or "")
         lead = self.session.get(LeadMirror, task_id) or LeadMirror(clickup_task_id=task_id, list_id=self.settings.clickup_list_id, task_name=str(task.get("name") or ""), status="")
+        lead.list_id = self.settings.clickup_list_id
         assignee_id, assignee_name = _extract_assignee(task)
         lead.task_name = str(task.get("name") or "")
         lead.task_url = str(task.get("url") or "")
