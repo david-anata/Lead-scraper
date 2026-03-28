@@ -3,5 +3,6 @@ uvicorn
 pydantic
 requests
 SQLAlchemy>=2.0,<3.0
+psycopg2-binary
 google-auth
 python-multipart
