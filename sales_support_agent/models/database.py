@@ -13,6 +13,12 @@ class Base(DeclarativeBase):
     """Base SQLAlchemy declarative model."""
 
 
+def _register_models() -> None:
+    """Import ORM models so Base.metadata is fully populated before schema work."""
+
+    import sales_support_agent.models.entities  # noqa: F401
+
+
 def create_session_factory(database_url: str) -> sessionmaker[Session]:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, future=True, connect_args=connect_args)
@@ -23,6 +29,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     engine = session_factory.kw.get("bind")
     if engine is None:
         raise RuntimeError("Session factory is missing an engine binding.")
+    _register_models()
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(bind=engine)
         _apply_sqlite_compat_migrations(engine)
