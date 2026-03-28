@@ -30,10 +30,14 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
 
     # Production deployments use a persistent Postgres database. Running
     # `create_all` on every boot slows startup enough to interfere with
-    # Render's promotion health checks, so we do a lightweight connectivity
-    # probe instead.
+    # Render's promotion health checks. We only bootstrap a fresh Postgres
+    # database when no tables exist yet, then rely on additive compat
+    # migrations for subsequent boots.
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
+    inspector = inspect(engine)
+    if not inspector.get_table_names():
+        Base.metadata.create_all(bind=engine)
     _apply_postgres_compat_migrations(engine)
 
 

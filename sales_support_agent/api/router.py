@@ -455,9 +455,14 @@ def health(request: Request) -> ApiMessage:
     settings = request.app.state.settings
     brand_package_path = Path(str(getattr(settings, "shared_brand_package_path", "") or "")).expanduser()
     ticket1_details: dict[str, object] = {}
+    db_details: dict[str, object] = {}
     try:
         with session_scope(request.app.state.session_factory) as session:
             bind = session.get_bind()
+            db_details = {
+                "database_backend": bind.dialect.name,
+                "sales_agent_db_url_configured": bool(str(getattr(settings, "sales_agent_db_url", "") or "").strip()),
+            }
             inspector = inspect(bind)
             existing_columns = {
                 column["name"]
@@ -531,6 +536,7 @@ def health(request: Request) -> ApiMessage:
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
             "deck_generator_configured": brand_package_path.exists(),
             "deck_brand_package_path": str(brand_package_path),
+            **db_details,
             **ticket1_details,
         },
     )
