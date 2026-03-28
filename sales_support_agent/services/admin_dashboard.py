@@ -1237,6 +1237,37 @@ def _sync_confidence_state(
     return "healthy", f"Last successful sync was {age_minutes} minutes ago."
 
 
+def _sync_age_minutes(latest_sync_at: datetime | None, now: datetime | None = None) -> int | None:
+    if latest_sync_at is None:
+        return None
+    current_time = now or datetime.now(timezone.utc)
+    normalized_latest_sync = latest_sync_at if latest_sync_at.tzinfo else latest_sync_at.replace(tzinfo=timezone.utc)
+    return max(0, int((current_time - normalized_latest_sync).total_seconds() // 60))
+
+
+def _sync_banner_primary_copy(
+    *,
+    latest_sync_at: datetime | None,
+    error_message: str = "",
+    stale_after_minutes: int = 30,
+    now: datetime | None = None,
+) -> str:
+    state, _ = _sync_confidence_state(
+        latest_sync_at=latest_sync_at,
+        error_message=error_message,
+        stale_after_minutes=stale_after_minutes,
+        now=now,
+    )
+    age_minutes = _sync_age_minutes(latest_sync_at, now=now)
+    if state == "failed":
+        return "Failed"
+    if age_minutes is None:
+        return "Failed"
+    if state == "stale":
+        return f"Stale {age_minutes}m old"
+    return f"Synced {age_minutes}m ago"
+
+
 def render_login_page(*, error_message: str = "") -> str:
     error_html = (
         f'<div class="notice error">{html.escape(error_message)}</div>'
@@ -1497,15 +1528,19 @@ def render_dashboard_page(data: DashboardData) -> str:
 
     metric_cards = "".join(
         [
-            _card("Leads", str(data.total_active_leads), "Current ClickUp leads in active statuses"),
-            _card("Overdue", str(data.stale_counts.get("overdue", 0)), "Highest priority follow-up risk"),
+            _card("Leads", str(data.total_active_leads), "Current active pipeline in ClickUp"),
+            _card("Overdue", str(data.stale_counts.get("overdue", 0)), f'{data.stale_counts.get("overdue", 0)} overdue -> clear these first'),
             _card(
                 "Review",
                 str(data.stale_counts.get("needs_immediate_review", 0)),
-                "Untouched or missing-next-step leads",
+                f'{data.stale_counts.get("needs_immediate_review", 0)} need review -> decide the next move',
             ),
-            _card("Follow-up", str(data.stale_counts.get("follow_up_due", 0)), "Routine queue ready for review"),
-            _card("Mailbox", str(data.mailbox_findings), "Signals captured in the last 7 days"),
+            _card(
+                "Due today",
+                str(data.stale_counts.get("follow_up_due", 0)),
+                f'{data.stale_counts.get("follow_up_due", 0)} due today -> routine follow-up',
+            ),
+            _card("Mailbox", str(data.mailbox_findings), f"{data.mailbox_findings} signals -> check replies"),
         ]
     )
 
@@ -1603,6 +1638,11 @@ def render_dashboard_page(data: DashboardData) -> str:
         error_message=dashboard_error,
         stale_after_minutes=max(1, int(data.sync_stale_after_minutes or 30)),
     )
+    sync_banner_primary = _sync_banner_primary_copy(
+        latest_sync_at=data.latest_sync_at,
+        error_message=dashboard_error,
+        stale_after_minutes=max(1, int(data.sync_stale_after_minutes or 30)),
+    )
     sync_banner_title = {
         "healthy": "Healthy",
         "stale": "Stale",
@@ -1630,6 +1670,11 @@ def render_dashboard_page(data: DashboardData) -> str:
                 for item in queue.items
                 if item.urgency == urgency_key
             ][:4]
+            empty_copy = {
+                "overdue": "No overdue leads.",
+                "needs_immediate_review": "No review-risk leads.",
+                "follow_up_due": "No leads due today.",
+            }.get(urgency_key, "Nothing in this lane right now.")
             priority_cards.append(
                 f"""
                 <section class="priority-lane urgency-{html.escape(urgency_key)}">
@@ -1640,6 +1685,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                     </div>
                     <strong>{data.stale_counts.get(urgency_key, 0)}</strong>
                   </header>
+                  <button class="priority-drilldown" type="button" data-urgency-target="{html.escape(urgency_key)}">Open {html.escape(label.lower())} queue</button>
                   <div class="priority-items">
                     {''.join(
                         f'''
@@ -1651,7 +1697,7 @@ def render_dashboard_page(data: DashboardData) -> str:
                         </article>
                         '''
                         for item in bucket_items
-                    ) or '<p class="empty">Nothing in this lane right now.</p>'}
+                    ) or f'<p class="empty module-copy">{html.escape(empty_copy)}</p>'}
                   </div>
                 </section>
                 """
@@ -1831,15 +1877,18 @@ def render_dashboard_page(data: DashboardData) -> str:
         gap: 16px;
         padding: 16px 18px;
         border-radius: 18px;
-        border: 1px solid rgba(43, 54, 68, 0.10);
+        border: 2px solid rgba(133, 187, 218, 0.34);
         margin-bottom: 18px;
-        background: rgba(133, 187, 218, 0.12);
+        background: rgba(133, 187, 218, 0.22);
+        box-shadow: 0 16px 28px rgba(43, 54, 68, 0.10);
       }}
       .confidence-banner.stale {{
-        background: rgba(191, 168, 137, 0.14);
+        background: rgba(191, 168, 137, 0.26);
+        border-color: rgba(191, 168, 137, 0.55);
       }}
       .confidence-banner.failed {{
-        background: rgba(139, 76, 66, 0.12);
+        background: rgba(139, 76, 66, 0.22);
+        border-color: rgba(139, 76, 66, 0.48);
       }}
       .confidence-copy {{
         display: grid;
@@ -1847,13 +1896,16 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       .confidence-copy strong {{
         font-family: "Montserrat", sans-serif;
-        font-size: 14px;
+        font-size: 16px;
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }}
       .confidence-copy span {{
         font-size: 14px;
         line-height: 1.4;
+      }}
+      .confidence-copy time {{
+        font-weight: 600;
       }}
       .confidence-banner button {{
         width: auto;
@@ -1901,6 +1953,22 @@ def render_dashboard_page(data: DashboardData) -> str:
         font-size: 28px;
         line-height: 1;
       }}
+      .priority-drilldown {{
+        width: 100%;
+        border: 0;
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        background: rgba(43, 54, 68, 0.08);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        text-align: left;
+      }}
       .priority-items {{
         display: grid;
         gap: 12px;
@@ -1932,6 +2000,28 @@ def render_dashboard_page(data: DashboardData) -> str:
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px;
         margin-bottom: 22px;
+      }}
+      .secondary-drawer {{
+        margin-top: 22px;
+        border: 2px solid rgba(43, 54, 68, 0.10);
+        border-radius: 18px;
+        padding: 18px 20px;
+        background: rgba(43, 54, 68, 0.02);
+      }}
+      .secondary-drawer > summary {{
+        cursor: pointer;
+        list-style: none;
+        font-family: "Montserrat", sans-serif;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }}
+      .secondary-drawer > summary::-webkit-details-marker {{
+        display: none;
+      }}
+      .secondary-drawer-content {{
+        padding-top: 18px;
       }}
       .panel-card,
       .meta-card {{
@@ -3021,291 +3111,18 @@ def render_dashboard_page(data: DashboardData) -> str:
 
         <section class="confidence-banner {html.escape(sync_state)}">
           <div class="confidence-copy">
-            <strong>{html.escape(sync_banner_title)} sync state</strong>
-            <span>{html.escape(sync_state_note)} Last successful sync: {html.escape(latest_sync)}.</span>
+            <strong>{html.escape(sync_banner_primary)}</strong>
+            <span title="{html.escape(f'Last successful sync: {latest_sync}')}">
+              {html.escape(sync_banner_title)} state. <time datetime="{html.escape(latest_sync_iso)}">{html.escape(latest_sync)}</time>
+            </span>
           </div>
           <button id="sync-dashboard-button" type="button">Sync now</button>
         </section>
 
         {priority_lane_html}
 
-        <section class="controls-grid">
-          <div class="panel-card">
-            <div class="card-title-line">
-              <h3>Sync data</h3>
-              {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
-            </div>
-            <p>The board loads from the last cached ClickUp sync and refreshes itself when that cache gets stale.</p>
-            <div class="status-line" id="sync-status">{sync_status_initial}</div>
-          </div>
-
-          <div class="panel-card" id="lead-pull-panel">
-            <div class="card-title-line">
-              <h3>Run lead pull</h3>
-              {info_hint("Runs the outbound lead pipeline from this dashboard. It sources fresh companies, finds matched contacts, adds accepted leads into Instantly, and then returns the CSV download for review.")}
-            </div>
-            <p>Run the active lead pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
-            {lead_builder_notice}
-            <form class="lead-form" id="lead-build-form">
-              <label>
-                Run date
-                <input type="date" name="date" value="{html.escape(today_value)}" required />
-              </label>
-              <label>
-                Max domains
-                <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
-              </label>
-              <div class="lead-submit">
-                <button type="submit">PULL LEADS</button>
-              </div>
-            </form>
-            <div class="status-line" id="run-status">Scrape Status: Ready.</div>
-          </div>
-
-          <section class="meta-card">
-            <div class="card-title-line">
-              <h2>Board health</h2>
-              {info_hint("Quick readout of the latest sync and stale-scan activity so you can see whether the board is fresh and whether recent automation runs completed cleanly.")}
-            </div>
-            <div class="snapshot-rows">
-              {''.join(headline_snapshot_rows)}
-            </div>
-            <details class="draft-preview">
-              <summary>Show scan details</summary>
-              <div class="snapshot-rows">
-                {''.join(extended_snapshot_rows) or _summary_row("Details", "No extra run details yet")}
-              </div>
-            </details>
-          </section>
-        </section>
-
         {dashboard_error_notice}
-
-        <section class="meta-card utility-hub">
-          <div class="card-title-line">
-            <h2>Optional tools</h2>
-            {info_hint("These workflows are helpful, but they are not required for reviewing priorities. They stay collapsed by default so the queue remains the center of the page.")}
-          </div>
-          <div class="utility-drawers">
-            <details class="utility-drawer" id="gmail-drafts-panel">
-              <summary>Bulk Gmail drafts</summary>
-              <div class="utility-body">
-                <p>Upload a CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
-                <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
-                  <label>
-                    Contacts CSV
-                    <input type="file" name="contacts_csv" accept=".csv,text/csv" required />
-                  </label>
-                  <label>
-                    Sales objective
-                    <input type="text" name="sales_objective" placeholder="book intro calls with Amazon operators" />
-                  </label>
-                  <label>
-                    Subject template
-                    <input type="text" name="subject_template" placeholder="Idea for {{company}}" />
-                  </label>
-                  <label>
-                    Preview mode
-                    <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
-                  </label>
-                  <div class="draft-mode-note" id="draft-mode-note"><strong>Preview mode is on.</strong> We will validate rows and show rendered email previews, but nothing will be created in Gmail until you turn preview mode off.</div>
-                  <label class="draft-body-field">
-                    Body template
-                    <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
-                  </label>
-                  <div class="draft-help">
-                    Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
-                  </div>
-                  <div class="draft-submit">
-                    <button type="submit" id="drafts-submit-button">PREVIEW DRAFTS</button>
-                    <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
-                  </div>
-                </form>
-                <div class="status-line" id="drafts-status">Drafts: Ready.</div>
-                <div class="draft-results" id="drafts-results"></div>
-              </div>
-            </details>
-
-            <details class="utility-drawer" id="deck-generator-panel">
-              <summary>Generate sales deck</summary>
-              <div class="utility-body">
-                <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
-                {deck_ready_notice}
-                <form class="lead-form" id="deck-generator-form">
-                  <label>
-                    Target product URL or ASIN
-                    <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
-                  </label>
-                  <label>
-                    Competitor CSVs
-                    <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
-                  </label>
-                  <label>
-                    Keyword CSVs
-                    <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
-                  </label>
-                  <label>
-                    Cerebro CSV
-                    <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
-                  </label>
-                  <label>
-                    Word frequency CSV
-                    <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
-                  </label>
-                  <label>
-                    Creative mockup URL
-                    <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
-                  </label>
-                  <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
-                  <fieldset class="offer-toggle-group">
-                    <legend>Recommended plan options</legend>
-                    <label class="checkbox-label">
-                      <span>Include recommended plan slide</span>
-                      <span class="toggle-switch"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /><span aria-hidden="true"></span></span>
-                    </label>
-                    <div class="offer-builder">
-                      <div class="offer-builder-head">
-                        <p>Edit the offer cards directly. These values feed the deck as written here.</p>
-                        <div class="offer-builder-actions">
-                          <button type="button" id="deck-add-offer">ADD OFFER</button>
-                        </div>
-                      </div>
-                      <input type="hidden" name="offer_payload_json" id="deck-offer-payload-json" value="" />
-                      <div class="offer-editor-list" id="deck-offer-list">
-                        <div class="offer-editor" data-offer-index="0">
-                          <div class="offer-editor-top">
-                            <button type="button" class="offer-editor-toggle" aria-expanded="false">Channel management</button>
-                            <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
-                          </div>
-                          <div class="offer-editor-body" hidden>
-                          <div class="offer-editor-grid">
-                            <label class="full-width">
-                              Offer title
-                              <input type="text" class="offer-title" value="Channel management" />
-                            </label>
-                            <label class="full-width">
-                              Description
-                              <textarea class="offer-description">Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.</textarea>
-                            </label>
-                            <label>
-                              Price
-                              <input type="text" class="offer-price" value="$3,000" />
-                            </label>
-                            <label>
-                              Price label
-                              <input type="text" class="offer-price-label" value="Monthly retainer fee" />
-                            </label>
-                            <label>
-                              Commission
-                              <input type="text" class="offer-commission" value="5%" />
-                            </label>
-                            <label>
-                              Commission label
-                              <input type="text" class="offer-commission-label" value="Commission on growth" />
-                            </label>
-                            <label>
-                              Baseline
-                              <input type="text" class="offer-baseline" value="$10,000" />
-                            </label>
-                            <label>
-                              Baseline label
-                              <input type="text" class="offer-baseline-label" value="Commission baseline" />
-                            </label>
-                            <label class="full-width">
-                              Bonus / note
-                              <input type="text" class="offer-bonus" value="+TikTok Shop Support" />
-                            </label>
-                          </div>
-                          </div>
-                        </div>
-                        <div class="offer-editor" data-offer-index="1">
-                          <div class="offer-editor-top">
-                            <button type="button" class="offer-editor-toggle" aria-expanded="false">Commission Model + Shipping OS</button>
-                            <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
-                          </div>
-                          <div class="offer-editor-body" hidden>
-                          <div class="offer-editor-grid">
-                            <label class="full-width">
-                              Offer title
-                              <input type="text" class="offer-title" value="Commission Model + Shipping OS" />
-                            </label>
-                            <label class="full-width">
-                              Description
-                              <textarea class="offer-description">A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.</textarea>
-                            </label>
-                            <label>
-                              Price
-                              <input type="text" class="offer-price" value="$0" />
-                            </label>
-                            <label>
-                              Price label
-                              <input type="text" class="offer-price-label" value="Monthly retainer fee" />
-                            </label>
-                            <label>
-                              Commission
-                              <input type="text" class="offer-commission" value="10%" />
-                            </label>
-                            <label>
-                              Commission label
-                              <input type="text" class="offer-commission-label" value="Commission over baseline" />
-                            </label>
-                            <label>
-                              Baseline
-                              <input type="text" class="offer-baseline" value="$TBD" />
-                            </label>
-                            <label>
-                              Baseline label
-                              <input type="text" class="offer-baseline-label" value="Commission baseline" />
-                            </label>
-                            <label class="full-width">
-                              Bonus / note
-                              <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
-                            </label>
-                          </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </fieldset>
-                  <div class="lead-submit">
-                    <button type="submit" id="deck-submit-button">GENERATE DECK</button>
-                  </div>
-                </form>
-                <div class="draft-help">
-                  This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.
-                </div>
-                <div class="status-line" id="deck-status">Deck status: Ready.</div>
-                <div class="deck-run-list" id="deck-run-list">
-                  {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
-                </div>
-                <div class="analytics-modal" id="deck-analytics-modal" aria-hidden="true">
-                  <div class="analytics-dialog">
-                    <div class="analytics-head">
-                      <h3>Deck analytics</h3>
-                      <button type="button" id="deck-analytics-close" aria-label="Close analytics">×</button>
-                    </div>
-                    <div class="analytics-grid" id="deck-analytics-summary"></div>
-                    <div class="analytics-tabs" id="deck-analytics-tabs">
-                      <button type="button" class="is-active" data-window="7">7 days</button>
-                      <button type="button" data-window="30">30 days</button>
-                      <button type="button" data-window="90">90 days</button>
-                      <button type="button" data-window="all">All time</button>
-                    </div>
-                    <div class="analytics-card">
-                      <h4>Visits by day</h4>
-                      <div id="deck-analytics-daily"></div>
-                    </div>
-                    <p class="draft-help">Visit counts, first and last visits, and daily trend windows are available here. Visit-length and per-section time tracking are not enabled yet.</p>
-                  </div>
-                </div>
-              </div>
-            </details>
-          </div>
-        </section>
-
-        <section class="metrics">{metric_cards}</section>
-
-        <section class="section-bar">
+        <section class="section-bar" id="owner-priorities">
           <h2 class="section-title">Owner priorities.</h2>
           <div class="filters">
             <select id="owner-filter" aria-label="Filter by owner">
@@ -3334,6 +3151,285 @@ def render_dashboard_page(data: DashboardData) -> str:
         <div class="filtered-empty" id="queue-empty-state">No queue items match the current filters. Try a different owner, urgency, or search term.</div>
 
         {''.join(owner_sections) or f'<section class="owner-card"><p class="empty">{html.escape(empty_queue_message)}</p></section>'}
+
+        <details class="secondary-drawer">
+          <summary>Show more tools and diagnostics</summary>
+          <div class="secondary-drawer-content">
+            <section class="metrics">{metric_cards}</section>
+
+            <section class="controls-grid">
+              <div class="panel-card">
+                <div class="card-title-line">
+                  <h3>Sync data</h3>
+                  {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
+                </div>
+                <p>The board loads from the last cached ClickUp sync and refreshes itself when that cache gets stale.</p>
+                <div class="status-line" id="sync-status">{sync_status_initial}</div>
+              </div>
+
+              <div class="panel-card" id="lead-pull-panel">
+                <div class="card-title-line">
+                  <h3>Run lead pull</h3>
+                  {info_hint("Runs the outbound lead pipeline from this dashboard. It sources fresh companies, finds matched contacts, adds accepted leads into Instantly, and then returns the CSV download for review.")}
+                </div>
+                <p>Run the active lead pipeline here. Leads still go to Instantly first, then the CSV downloads immediately.</p>
+                {lead_builder_notice}
+                <form class="lead-form" id="lead-build-form">
+                  <label>
+                    Run date
+                    <input type="date" name="date" value="{html.escape(today_value)}" required />
+                  </label>
+                  <label>
+                    Max domains
+                    <input type="number" name="max_domains" min="1" max="1000" step="1" value="150" required />
+                  </label>
+                  <div class="lead-submit">
+                    <button type="submit">PULL LEADS</button>
+                  </div>
+                </form>
+                <div class="status-line" id="run-status">Scrape Status: Ready.</div>
+              </div>
+
+              <section class="meta-card">
+                <div class="card-title-line">
+                  <h2>Board health</h2>
+                  {info_hint("Quick readout of the latest sync and stale-scan activity so you can see whether the board is fresh and whether recent automation runs completed cleanly.")}
+                </div>
+                <div class="snapshot-rows">
+                  {''.join(headline_snapshot_rows)}
+                </div>
+                <details class="draft-preview">
+                  <summary>Show scan details</summary>
+                  <div class="snapshot-rows">
+                    {''.join(extended_snapshot_rows) or _summary_row("Details", "No extra run details yet")}
+                  </div>
+                </details>
+              </section>
+            </section>
+
+            <section class="meta-card utility-hub">
+              <div class="card-title-line">
+                <h2>Optional tools</h2>
+                {info_hint("These workflows are helpful, but they are not required for reviewing priorities. They stay collapsed by default so the queue remains the center of the page.")}
+              </div>
+              <div class="utility-drawers">
+                <details class="utility-drawer" id="gmail-drafts-panel">
+                  <summary>Bulk Gmail drafts</summary>
+                  <div class="utility-body">
+                    <p>Upload a CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
+                    <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
+                      <label>
+                        Contacts CSV
+                        <input type="file" name="contacts_csv" accept=".csv,text/csv" required />
+                      </label>
+                      <label>
+                        Sales objective
+                        <input type="text" name="sales_objective" placeholder="book intro calls with Amazon operators" />
+                      </label>
+                      <label>
+                        Subject template
+                        <input type="text" name="subject_template" placeholder="Idea for {{company}}" />
+                      </label>
+                      <label>
+                        Preview mode
+                        <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
+                      </label>
+                      <div class="draft-mode-note" id="draft-mode-note"><strong>Preview mode is on.</strong> We will validate rows and show rendered email previews, but nothing will be created in Gmail until you turn preview mode off.</div>
+                      <label class="draft-body-field">
+                        Body template
+                        <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
+                      </label>
+                      <div class="draft-help">
+                        Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
+                      </div>
+                      <div class="draft-submit">
+                        <button type="submit" id="drafts-submit-button">PREVIEW DRAFTS</button>
+                        <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
+                      </div>
+                    </form>
+                    <div class="status-line" id="drafts-status">Drafts: Ready.</div>
+                    <div class="draft-results" id="drafts-results"></div>
+                  </div>
+                </details>
+
+                <details class="utility-drawer" id="deck-generator-panel">
+                  <summary>Generate sales deck</summary>
+                  <div class="utility-body">
+                    <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
+                    {deck_ready_notice}
+                    <form class="lead-form" id="deck-generator-form">
+                      <label>
+                        Target product URL or ASIN
+                        <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
+                      </label>
+                      <label>
+                        Competitor CSVs
+                        <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
+                      </label>
+                      <label>
+                        Keyword CSVs
+                        <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
+                      </label>
+                      <label>
+                        Cerebro CSV
+                        <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
+                      </label>
+                      <label>
+                        Word frequency CSV
+                        <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
+                      </label>
+                      <label>
+                        Creative mockup URL
+                        <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
+                      </label>
+                      <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
+                      <fieldset class="offer-toggle-group">
+                        <legend>Recommended plan options</legend>
+                        <label class="checkbox-label">
+                          <span>Include recommended plan slide</span>
+                          <span class="toggle-switch"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /><span aria-hidden="true"></span></span>
+                        </label>
+                        <div class="offer-builder">
+                          <div class="offer-builder-head">
+                            <p>Edit the offer cards directly. These values feed the deck as written here.</p>
+                            <div class="offer-builder-actions">
+                              <button type="button" id="deck-add-offer">ADD OFFER</button>
+                            </div>
+                          </div>
+                          <input type="hidden" name="offer_payload_json" id="deck-offer-payload-json" value="" />
+                          <div class="offer-editor-list" id="deck-offer-list">
+                            <div class="offer-editor" data-offer-index="0">
+                              <div class="offer-editor-top">
+                                <button type="button" class="offer-editor-toggle" aria-expanded="false">Channel management</button>
+                                <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
+                              </div>
+                              <div class="offer-editor-body" hidden>
+                              <div class="offer-editor-grid">
+                                <label class="full-width">
+                                  Offer title
+                                  <input type="text" class="offer-title" value="Channel management" />
+                                </label>
+                                <label class="full-width">
+                                  Description
+                                  <textarea class="offer-description">Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.</textarea>
+                                </label>
+                                <label>
+                                  Price
+                                  <input type="text" class="offer-price" value="$3,000" />
+                                </label>
+                                <label>
+                                  Price label
+                                  <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                                </label>
+                                <label>
+                                  Commission
+                                  <input type="text" class="offer-commission" value="5%" />
+                                </label>
+                                <label>
+                                  Commission label
+                                  <input type="text" class="offer-commission-label" value="Commission on growth" />
+                                </label>
+                                <label>
+                                  Baseline
+                                  <input type="text" class="offer-baseline" value="$10,000" />
+                                </label>
+                                <label>
+                                  Baseline label
+                                  <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                                </label>
+                                <label class="full-width">
+                                  Bonus / note
+                                  <input type="text" class="offer-bonus" value="+TikTok Shop Support" />
+                                </label>
+                              </div>
+                              </div>
+                            </div>
+                            <div class="offer-editor" data-offer-index="1">
+                              <div class="offer-editor-top">
+                                <button type="button" class="offer-editor-toggle" aria-expanded="false">Commission Model + Shipping OS</button>
+                                <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
+                              </div>
+                              <div class="offer-editor-body" hidden>
+                              <div class="offer-editor-grid">
+                                <label class="full-width">
+                                  Offer title
+                                  <input type="text" class="offer-title" value="Commission Model + Shipping OS" />
+                                </label>
+                                <label class="full-width">
+                                  Description
+                                  <textarea class="offer-description">A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.</textarea>
+                                </label>
+                                <label>
+                                  Price
+                                  <input type="text" class="offer-price" value="$0" />
+                                </label>
+                                <label>
+                                  Price label
+                                  <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                                </label>
+                                <label>
+                                  Commission
+                                  <input type="text" class="offer-commission" value="10%" />
+                                </label>
+                                <label>
+                                  Commission label
+                                  <input type="text" class="offer-commission-label" value="Commission over baseline" />
+                                </label>
+                                <label>
+                                  Baseline
+                                  <input type="text" class="offer-baseline" value="$TBD" />
+                                </label>
+                                <label>
+                                  Baseline label
+                                  <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                                </label>
+                                <label class="full-width">
+                                  Bonus / note
+                                  <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
+                                </label>
+                              </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </fieldset>
+                      <div class="lead-submit">
+                        <button type="submit" id="deck-submit-button">GENERATE DECK</button>
+                      </div>
+                    </form>
+                    <div class="draft-help">
+                      This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.
+                    </div>
+                    <div class="status-line" id="deck-status">Deck status: Ready.</div>
+                    <div class="deck-run-list" id="deck-run-list">
+                      {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
+                    </div>
+                    <div class="analytics-modal" id="deck-analytics-modal" aria-hidden="true">
+                      <div class="analytics-dialog">
+                        <div class="analytics-head">
+                          <h3>Deck analytics</h3>
+                          <button type="button" id="deck-analytics-close" aria-label="Close analytics">×</button>
+                        </div>
+                        <div class="analytics-grid" id="deck-analytics-summary"></div>
+                        <div class="analytics-tabs" id="deck-analytics-tabs">
+                          <button type="button" class="is-active" data-window="7">7 days</button>
+                          <button type="button" data-window="30">30 days</button>
+                          <button type="button" data-window="90">90 days</button>
+                          <button type="button" data-window="all">All time</button>
+                        </div>
+                        <div class="analytics-card">
+                          <h4>Visits by day</h4>
+                          <div id="deck-analytics-daily"></div>
+                        </div>
+                        <p class="draft-help">Visit counts, first and last visits, and daily trend windows are available here. Visit-length and per-section time tracking are not enabled yet.</p>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </section>
+          </div>
+        </details>
       </div>
     </div>
     <div class="footer-bar" aria-hidden="true"></div>
@@ -3369,6 +3465,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       const filterResults = document.getElementById("filter-results");
       const queueEmptyState = document.getElementById("queue-empty-state");
       const urgencyButtons = document.querySelectorAll("#urgency-filter .filter-button");
+      const priorityDrilldowns = document.querySelectorAll(".priority-drilldown");
       let activeUrgency = "all";
       let syncStatusPollHandle = null;
       let syncReloadPending = false;
@@ -3711,13 +3808,50 @@ def render_dashboard_page(data: DashboardData) -> str:
         }}
       }}
 
+      function setUrgencyFilter(nextUrgency) {{
+        activeUrgency = nextUrgency || "all";
+        urgencyButtons.forEach((node) => node.classList.toggle("is-active", (node.dataset.urgency || "all") === activeUrgency));
+      }}
+
+      function applyQueuePreset({{ owner = "all", urgency = "all", search = "" }} = {{}}) {{
+        if (ownerFilter) {{
+          ownerFilter.value = owner;
+        }}
+        if (searchInput) {{
+          searchInput.value = search;
+        }}
+        setUrgencyFilter(urgency);
+        applyQueueFilters();
+        document.getElementById("owner-priorities")?.scrollIntoView({{ behavior: "smooth", block: "start" }});
+      }}
+
+      function hydrateQueuePresetFromUrl() {{
+        const params = new URLSearchParams(window.location.search);
+        const owner = params.get("owner");
+        const urgency = params.get("urgency");
+        const search = params.get("search");
+        if (!owner && !urgency && !search) {{
+          setUrgencyFilter(activeUrgency);
+          return;
+        }}
+        applyQueuePreset({{
+          owner: owner || "all",
+          urgency: urgency || "all",
+          search: search || "",
+        }});
+      }}
+
       ownerFilter?.addEventListener("change", applyQueueFilters);
       searchInput?.addEventListener("input", applyQueueFilters);
       urgencyButtons.forEach((button) => {{
         button.addEventListener("click", () => {{
-          activeUrgency = button.dataset.urgency || "all";
-          urgencyButtons.forEach((node) => node.classList.toggle("is-active", node === button));
+          setUrgencyFilter(button.dataset.urgency || "all");
           applyQueueFilters();
+        }});
+      }});
+      priorityDrilldowns.forEach((button) => {{
+        button.addEventListener("click", () => {{
+          applyQueuePreset({{ urgency: button.dataset.urgencyTarget || "all" }});
         }});
       }});
       document.querySelectorAll(".show-more-button").forEach((button) => {{
@@ -4098,6 +4232,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       }});
       draftsDryRunCheckbox?.addEventListener("change", updateDraftModeUi);
       updateDraftModeUi();
+      hydrateQueuePresetFromUrl();
       applyQueueFilters();
     </script>
   </body>
@@ -4109,6 +4244,11 @@ def render_executive_page(data: ExecutiveData) -> str:
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
     executive_error = str((data.latest_run_summary or {}).get("executive_error", "") or "").strip()
     sync_state, sync_state_note = _sync_confidence_state(
+        latest_sync_at=data.latest_sync_at,
+        error_message=executive_error,
+        stale_after_minutes=60,
+    )
+    sync_banner_primary = _sync_banner_primary_copy(
         latest_sync_at=data.latest_sync_at,
         error_message=executive_error,
         stale_after_minutes=60,
@@ -4217,15 +4357,18 @@ def render_executive_page(data: ExecutiveData) -> str:
         gap: 16px;
         padding: 16px 18px;
         border-radius: 18px;
-        border: 1px solid var(--border);
+        border: 2px solid rgba(133, 187, 218, 0.34);
         margin-bottom: 18px;
-        background: rgba(133, 187, 218, 0.12);
+        background: rgba(133, 187, 218, 0.22);
+        box-shadow: 0 16px 28px rgba(43, 54, 68, 0.10);
       }}
       .confidence-banner.stale {{
-        background: rgba(191, 168, 137, 0.14);
+        background: rgba(191, 168, 137, 0.26);
+        border-color: rgba(191, 168, 137, 0.55);
       }}
       .confidence-banner.failed {{
-        background: rgba(139, 76, 66, 0.12);
+        background: rgba(139, 76, 66, 0.22);
+        border-color: rgba(139, 76, 66, 0.48);
       }}
       .confidence-copy {{
         display: grid;
@@ -4233,13 +4376,16 @@ def render_executive_page(data: ExecutiveData) -> str:
       }}
       .confidence-copy strong {{
         font-family: "Montserrat", sans-serif;
-        font-size: 14px;
+        font-size: 16px;
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }}
       .confidence-copy span {{
         font-size: 14px;
         line-height: 1.4;
+      }}
+      .confidence-copy time {{
+        font-weight: 600;
       }}
       .confidence-banner button {{
         border: 0;
@@ -4253,14 +4399,14 @@ def render_executive_page(data: ExecutiveData) -> str:
         padding: 12px 18px;
         cursor: pointer;
       }}
-      .summary-card {{
+      .owner-focus-card {{
         background: rgba(133, 187, 218, 0.10);
         border: 1px solid rgba(133, 187, 218, 0.25);
         border-radius: 18px;
         padding: 18px 20px;
-        margin: 24px 0;
+        margin: 0 0 18px;
       }}
-      .summary-card h2 {{
+      .owner-focus-card h2 {{
         margin: 0 0 8px;
         font-family: "Montserrat", sans-serif;
         font-size: 24px;
@@ -4328,7 +4474,7 @@ def render_executive_page(data: ExecutiveData) -> str:
         visibility: visible;
         transform: translateX(-50%) translateY(0);
       }}
-      .summary-card p {{
+      .owner-focus-card p {{
         margin: 0;
         font-size: 16px;
         line-height: 1.5;
@@ -4385,15 +4531,16 @@ def render_executive_page(data: ExecutiveData) -> str:
         line-height: 1;
         margin-bottom: 8px;
       }}
+      .kpi a {{
+        color: inherit;
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 3px;
+      }}
       .kpi small {{
         display: block;
         font-size: 14px;
         line-height: 1.4;
-      }}
-      .layout {{
-        display: grid;
-        grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.85fr);
-        gap: 24px;
       }}
       .section {{
         background: var(--white);
@@ -4401,6 +4548,19 @@ def render_executive_page(data: ExecutiveData) -> str:
         border-radius: 20px;
         padding: 20px;
         margin-bottom: 18px;
+      }}
+      .module-state {{
+        border-radius: 14px;
+        padding: 14px 16px;
+        margin-bottom: 16px;
+        background: rgba(191, 168, 137, 0.16);
+        border: 1px solid rgba(191, 168, 137, 0.30);
+        font-size: 14px;
+        line-height: 1.45;
+      }}
+      .module-state.failed {{
+        background: rgba(139, 76, 66, 0.16);
+        border-color: rgba(139, 76, 66, 0.30);
       }}
       .section details.secondary-disclosure > summary {{
         cursor: pointer;
@@ -4571,17 +4731,19 @@ def render_executive_page(data: ExecutiveData) -> str:
 
         <section class="confidence-banner {html.escape(sync_state)}">
           <div class="confidence-copy">
-            <strong>{html.escape(sync_banner_title)} sync state</strong>
-            <span>{html.escape(sync_state_note)} Last successful sync: {html.escape(latest_sync)}.</span>
+            <strong>{html.escape(sync_banner_primary)}</strong>
+            <span title="{html.escape(f'Last successful sync: {latest_sync}')}">
+              {html.escape(sync_banner_title)} state. <time datetime="{html.escape(data.latest_sync_at.isoformat() if data.latest_sync_at else '')}">{html.escape(latest_sync)}</time>
+            </span>
           </div>
           <button id="executive-sync-button" type="button">Sync now</button>
         </section>
 
         <section class="kpis" id="kpi-grid"></section>
 
-        <section class="summary-card">
-          <h2 class="heading-line">Executive summary {info_hint("Leadership readout generated from the current active ClickUp mirror, response signals, and stale-priority logic.")}</h2>
-          <p id="summary-text">{html.escape(data.summary_text)}</p>
+        <section class="owner-focus-card">
+          <h2 class="heading-line">Top owner at risk {info_hint("Fastest owner-level handoff from signal to action. Opens the overdue queue for the owner carrying the most overdue risk.")}</h2>
+          <p id="owner-focus-copy">Loading owner risk focus...</p>
         </section>
 
         <section class="filters">
@@ -4603,58 +4765,59 @@ def render_executive_page(data: ExecutiveData) -> str:
           </div>
         </section>
 
-        <section class="layout">
-          <div>
+        <section class="section">
+          <h2 class="heading-line">At-risk leads {info_hint("Prioritized by urgency first, then late stage, then time since last touch, then parseable value.")}</h2>
+          <div class="risk-list" id="risk-list"></div>
+        </section>
+
+        <section class="section">
+          <details class="secondary-disclosure">
+            <summary>Show secondary breakdowns</summary>
+            <div class="secondary-grid">
+            <section class="section">
+              <h2 class="heading-line">Executive summary {info_hint("Leadership readout generated from the current active ClickUp mirror, response signals, and stale-priority logic.")}</h2>
+              <p id="summary-text">{html.escape(data.summary_text)}</p>
+            </section>
             <section class="section">
               <h2 class="heading-line">AE scorecard {info_hint("Owner-level view of active pipeline, follow-up risk, late-stage exposure, and parseable value totals.")}</h2>
               <div id="scorecard-table"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">At-risk leads {info_hint("Prioritized by urgency first, then late stage, then time since last touch, then parseable value.")}</h2>
-              <div class="risk-list" id="risk-list"></div>
+              <h2 class="heading-line">Leads by status {info_hint("Current pipeline mix across the active ClickUp sales statuses.")}</h2>
+              <div class="dist-list" id="status-distribution"></div>
             </section>
-          </div>
-          <div>
             <section class="section">
-              <details class="secondary-disclosure">
-                <summary>Show secondary breakdowns</summary>
-                <div class="secondary-grid">
-                  <section class="section">
-                    <h2 class="heading-line">Leads by status {info_hint("Current pipeline mix across the active ClickUp sales statuses.")}</h2>
-                    <div class="dist-list" id="status-distribution"></div>
-                  </section>
-                  <section class="section">
-                    <h2 class="heading-line">Leads by source {info_hint("Distribution of the current active pipeline by lead source.")}</h2>
-                    <div class="dist-list" id="source-distribution"></div>
-                  </section>
-                  <section class="section">
-                    <h2 class="heading-line">Last-touch aging {info_hint("How long it has been since the most recent meaningful touch on each active lead.")}</h2>
-                    <div class="dist-list" id="aging-distribution"></div>
-                  </section>
-                  <section class="section">
-                    <h2 class="heading-line">Late-stage mix {info_hint("Pipeline concentration in qualified, needs offer, offered, and negotiating stages.")}</h2>
-                    <div class="dist-list" id="late-stage-distribution"></div>
-                  </section>
-                  <section class="section">
-                    <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.")}</h2>
-                    <div class="snapshot" id="hygiene-snapshot"></div>
-                    <div id="owner-response"></div>
-                  </section>
-                </div>
-              </details>
+              <h2 class="heading-line">Leads by source {info_hint("Distribution of the current active pipeline by lead source.")}</h2>
+              <div class="dist-list" id="source-distribution"></div>
             </section>
-          </div>
+            <section class="section">
+              <h2 class="heading-line">Last-touch aging {info_hint("How long it has been since the most recent meaningful touch on each active lead.")}</h2>
+              <div class="dist-list" id="aging-distribution"></div>
+            </section>
+            <section class="section">
+              <h2 class="heading-line">Late-stage mix {info_hint("Pipeline concentration in qualified, needs offer, offered, and negotiating stages.")}</h2>
+              <div class="dist-list" id="late-stage-distribution"></div>
+            </section>
+            <section class="section">
+              <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.")}</h2>
+              <div class="snapshot" id="hygiene-snapshot"></div>
+              <div id="owner-response"></div>
+            </section>
+            </div>
+          </details>
         </section>
       </div>
     </div>
     <div class="footer-bar" aria-hidden="true"></div>
     <script>
       const executiveData = {payload_json};
+      const executiveSyncState = {json.dumps(sync_state)};
       const executiveSyncButton = document.getElementById("executive-sync-button");
       const ownerFilter = document.getElementById("owner-filter");
       const statusFilter = document.getElementById("status-filter");
       const sourceFilter = document.getElementById("source-filter");
       const urgencyFilter = document.getElementById("urgency-filter");
+      const ownerFocusCopy = document.getElementById("owner-focus-copy");
 
       function formatNumber(value) {{
         return new Intl.NumberFormat("en-US").format(Number(value || 0));
@@ -4675,6 +4838,13 @@ def render_executive_page(data: ExecutiveData) -> str:
 
       function renderInfoHint(text) {{
         return `<span class="info-hint" tabindex="0"><span class="info-dot" aria-hidden="true">i</span><span class="tooltip-bubble" role="tooltip">${{text}}</span></span>`;
+      }}
+
+      function adminQueueUrl(ownerName) {{
+        const params = new URLSearchParams();
+        if (ownerName) params.set("owner", ownerName);
+        params.set("urgency", "overdue");
+        return `/admin?${{params.toString()}}#owner-priorities`;
       }}
 
       function initFilters() {{
@@ -4767,6 +4937,10 @@ def render_executive_page(data: ExecutiveData) -> str:
       }}
 
       function renderKpis(leads) {{
+        if (executiveSyncState === "failed") {{
+          document.getElementById("kpi-grid").innerHTML = '<section class="module-state failed">Executive metrics hidden because sync failed. Run sync now before using this page.</section>';
+          return;
+        }}
         const pipelineValue = leads.reduce((sum, lead) => sum + Number(lead.value_numeric || 0), 0);
         const ownerRows = aggregateOwnerScorecards(leads);
         const topOwner = ownerRows[0];
@@ -4782,10 +4956,28 @@ def render_executive_page(data: ExecutiveData) -> str:
         document.getElementById("kpi-grid").innerHTML = kpis.map(([label, value, note, type, tooltip]) => `
           <section class="kpi">
             <span class="heading-line">${{label}} ${{renderInfoHint(tooltip)}}</span>
-            <strong>${{type === "currency" ? formatCurrency(value) : type === "text" ? value : formatNumber(value)}}</strong>
+            <strong>${{type === "currency" ? formatCurrency(value) : type === "text" && topOwner ? `<a href="${{adminQueueUrl(topOwner.owner_name)}}">${{value}}</a>` : type === "text" ? value : formatNumber(value)}}</strong>
             <small>${{note}}</small>
           </section>
         `).join("");
+        if (executiveSyncState === "stale") {{
+          document.getElementById("kpi-grid").insertAdjacentHTML("afterbegin", '<section class="module-state">Executive metrics may be stale. Run sync now before using this page for current pipeline decisions.</section>');
+        }}
+      }}
+
+      function renderOwnerFocus(leads) {{
+        if (!ownerFocusCopy) return;
+        if (executiveSyncState === "failed") {{
+          ownerFocusCopy.textContent = "Owner risk is hidden because sync failed.";
+          return;
+        }}
+        const ownerRows = aggregateOwnerScorecards(leads);
+        const topOwner = ownerRows[0];
+        if (!topOwner || !topOwner.overdue_count) {{
+          ownerFocusCopy.textContent = "No overdue owner risk in the current filtered view.";
+          return;
+        }}
+        ownerFocusCopy.innerHTML = `Top owner at risk: <a href="${{adminQueueUrl(topOwner.owner_name)}}">${{topOwner.owner_name}}</a> with ${{formatNumber(topOwner.overdue_count)}} overdue lead${{topOwner.overdue_count === 1 ? "" : "s"}}. Open the queue and clear those first.`;
       }}
 
       function renderScorecards(leads) {{
@@ -4864,6 +5056,10 @@ def render_executive_page(data: ExecutiveData) -> str:
       }}
 
       function renderRiskList(leads) {{
+        if (executiveSyncState === "failed") {{
+          document.getElementById("risk-list").innerHTML = '<p class="empty module-copy">Risk view hidden because sync failed.</p>';
+          return;
+        }}
         const urgencyRank = {{ overdue: 0, needs_immediate_review: 1, follow_up_due: 2 }};
         const risks = [...leads].sort((a, b) => (
           (urgencyRank[a.urgency] ?? 99) - (urgencyRank[b.urgency] ?? 99) ||
@@ -4875,7 +5071,7 @@ def render_executive_page(data: ExecutiveData) -> str:
 
         const list = document.getElementById("risk-list");
         if (!risks.length) {{
-          list.innerHTML = '<p class="empty">No active risk items match the current filters.</p>';
+          list.innerHTML = '<p class="empty module-copy">No overdue or review-risk leads match the current filters.</p>';
           return;
         }}
         list.innerHTML = risks.map((item) => `
@@ -4946,6 +5142,7 @@ def render_executive_page(data: ExecutiveData) -> str:
       function renderExecutiveView() {{
         const leads = getFilteredLeads();
         renderKpis(leads);
+        renderOwnerFocus(leads);
         renderScorecards(leads);
         renderDistributions(leads);
         renderRiskList(leads);

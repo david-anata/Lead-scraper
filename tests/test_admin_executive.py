@@ -258,12 +258,12 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertIn("Executive summary", html)
         self.assertIn("Pipeline value", html)
         self.assertIn("info-dot", html)
+        self.assertIn("Top owner at risk", html)
+        self.assertIn("Loading owner risk focus", html)
+        self.assertIn("Show secondary breakdowns", html)
+        self.assertIn("Sync now", html)
         self.assertIn("id=\"owner-filter\"", html)
         self.assertIn("id=\"scorecard-table\"", html)
-        self.assertIn("Failed sync state", html)
-        self.assertIn("Sync now", html)
-        self.assertIn("Top owner at risk", html)
-        self.assertIn("Show secondary breakdowns", html)
 
 
 if __name__ == "__main__":
