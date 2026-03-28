@@ -13,6 +13,13 @@ from urllib.parse import quote, urlparse
 
 import requests
 from sales_support_agent.services import website_ops_vendor
+from sales_support_agent.services.website_ops_content import (
+    build_faq_payload,
+    build_section_expansion_payload,
+    save_content_tasks,
+)
+from sales_support_agent.services.website_ops_customer_language import collect_customer_questions
+from sales_support_agent.services.website_ops_serp import build_blueprint
 
 try:
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -27,6 +34,8 @@ except ModuleNotFoundError:  # pragma: no cover - environment dependent
 
 SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GA4_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
+MVP_MODE_ACTIVE = True
+MVP_ALLOWED_ACTION_TYPES = ("inject_faq_block", "expand_service_page_section")
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,123 @@ def _humanize_slug(value: str) -> str:
     return cleaned.title() if cleaned else ""
 
 
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug or "item"
+
+
+def _website_ops_root(settings: Any) -> Path:
+    root = Path(getattr(settings, "website_ops_root"))
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _save_blueprints(settings: Any, blueprints: list[Mapping[str, Any]]) -> None:
+    root = _website_ops_root(settings) / "serp_blueprints"
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": date.today().isoformat(),
+        "blueprints": list(blueprints),
+    }
+    dated_path = root / f"serp_blueprints_{date.today().isoformat()}.json"
+    latest_path = root / "latest.json"
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    dated_path.write_text(text, encoding="utf-8")
+    latest_path.write_text(text, encoding="utf-8")
+
+
+def _page_service_slug(page: Mapping[str, Any]) -> str:
+    parsed = urlparse(str(page.get("url", "")).strip())
+    parts = [item for item in parsed.path.split("/") if item]
+    if "services" in parts:
+        try:
+            index = parts.index("services")
+            return parts[index + 1] if len(parts) > index + 1 else ""
+        except ValueError:
+            return ""
+    return parts[-1] if parts else ""
+
+
+def _matching_customer_questions(
+    page: Mapping[str, Any],
+    customer_questions: list[Mapping[str, Any]],
+    top_queries: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    service_slug = _page_service_slug(page)
+    title = str(page.get("title", "")).lower()
+    query_terms = " ".join(str(item.get("query", "")).lower() for item in top_queries[:3]).strip()
+    matches: list[dict[str, Any]] = []
+    for item in customer_questions:
+        related_service = str(item.get("related_service", "")).strip().lower()
+        question = str(item.get("question", "")).lower()
+        if related_service and related_service in {service_slug.lower(), title}:
+            matches.append(dict(item))
+            continue
+        if service_slug and service_slug.lower().replace("-", " ") in question:
+            matches.append(dict(item))
+            continue
+        if query_terms and any(token for token in query_terms.split() if len(token) > 3 and token in question):
+            matches.append(dict(item))
+    matches.sort(key=lambda item: (-int(item.get("frequency", 0) or 0), str(item.get("question", ""))))
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in matches:
+        key = str(item.get("question_id", "") or item.get("question", "")).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:4]
+
+
+def _blueprint_missing_faq(blueprint: Mapping[str, Any]) -> bool:
+    if list(blueprint.get("faq_patterns") or []):
+        return True
+    return any("faq" in str(item).lower() for item in (blueprint.get("content_gaps") or []))
+
+
+def _content_task_action(
+    *,
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    primary_lead_event: str,
+    action_type: str,
+    section_name: str,
+    before_state: str,
+    after_state: str,
+    reason: str,
+    confidence: str,
+    action_payload: Mapping[str, Any],
+    confidence_basis: list[str],
+    evidence: list[str],
+    execution_eligibility: str,
+    target_region: str,
+    verification_requirements: list[str],
+) -> dict[str, Any]:
+    action = _base_action(
+        page=page,
+        gsc=gsc,
+        ga4=ga4,
+        action_type=action_type,
+        section_name=section_name,
+        before_state=before_state,
+        after_state=after_state,
+        reason=reason,
+        insight_source="SERP + Customer Language",
+        confidence=confidence,
+        action_payload=action_payload,
+        primary_lead_event=primary_lead_event,
+        confidence_basis=confidence_basis,
+    )
+    action["evidence"] = evidence
+    action["execution_eligibility"] = execution_eligibility
+    action["requires_approval"] = execution_eligibility != "auto_execute"
+    action["target_region"] = target_region
+    action["verification_requirements"] = verification_requirements
+    return action
+
+
 def _service_focus(page: Mapping[str, Any], gsc: Mapping[str, Any]) -> str:
     top_queries = list(gsc.get("top_queries") or [])
     if top_queries:
@@ -110,6 +236,11 @@ def _service_cluster_map(urls: list[str]) -> dict[str, list[str]]:
         ordered = [item for item in ([hub] if hub else []) + peers if item]
         mapping[url] = ordered[:3]
     return mapping
+
+
+def _mvp_filter_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allowed = set(MVP_ALLOWED_ACTION_TYPES)
+    return [item for item in actions if str(item.get("action_type", "")).strip() in allowed]
 
 
 def analytics_config_from_settings(settings: Any) -> AnalyticsConfig:
@@ -788,6 +919,131 @@ def _page_score(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[st
     return max(0, min(100, score))
 
 
+def _content_actions(
+    *,
+    settings: Any,
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    primary_lead_event: str,
+    blueprint_cache: dict[str, dict[str, Any]],
+    customer_questions: list[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    impressions = float(gsc.get("impressions", 0) or 0)
+    ctr = float(gsc.get("ctr", 0) or 0)
+    top_queries = list(gsc.get("top_queries") or [])
+    if impressions < 40 or ctr >= 0.03 or not top_queries:
+        return [], None
+
+    query = str(top_queries[0].get("query", "")).strip()
+    if not query:
+        return [], None
+    blueprint = blueprint_cache.get(query)
+    if blueprint is None:
+        try:
+            blueprint = build_blueprint(query)
+        except Exception:
+            blueprint = {
+                "blueprint_id": f"bp_{_slugify(query)}_{date.today().isoformat()}",
+                "query": query,
+                "created_at": date.today().isoformat(),
+                "source_urls": [],
+                "topical_entities": [],
+                "heading_structure": [],
+                "faq_patterns": [],
+                "content_gaps": [],
+            }
+        blueprint_cache[query] = blueprint
+
+    matched_questions = _matching_customer_questions(page, customer_questions, top_queries)
+    if not matched_questions and not _blueprint_missing_faq(blueprint):
+        return [], blueprint
+
+    actions: list[dict[str, Any]] = []
+    common_evidence = _evidence_lines(page, gsc, ga4, primary_lead_event=primary_lead_event)
+    question_count = len(matched_questions)
+    supporting_signals = 0
+    if impressions >= 40 and ctr < 0.03:
+        supporting_signals += 1
+    if question_count > 0:
+        supporting_signals += 1
+    if _blueprint_missing_faq(blueprint):
+        supporting_signals += 1
+
+    faq_payload = build_faq_payload(
+        page={**page, "related_service": _page_service_slug(page)},
+        blueprint=blueprint,
+        customer_questions=matched_questions,
+    )
+    if faq_payload.get("questions"):
+        actions.append(
+            _content_task_action(
+                page=page,
+                gsc=gsc,
+                ga4=ga4,
+                primary_lead_event=primary_lead_event,
+                action_type="inject_faq_block",
+                section_name="FAQ block",
+                before_state="No structured FAQ block is present on the page.",
+                after_state="Insert a structured FAQ block using repeated buyer questions and SERP patterns.",
+                reason="Search demand exists, CTR is weak, and the page needs direct-answer content that matches buyer questions.",
+                confidence="high" if supporting_signals >= 2 else "medium",
+                action_payload=faq_payload,
+                confidence_basis=[
+                    f"{int(impressions)} impressions crossed the FAQ opportunity threshold.",
+                    f"{ctr:.2%} CTR is below the service-page target.",
+                    f"{question_count} matching customer questions were found." if question_count else "SERP blueprint shows repeated FAQ demand.",
+                ],
+                evidence=common_evidence
+                + ([f"Customer language: {question_count} repeated buyer questions matched this page."] if question_count else [])
+                + ([f"SERP blueprint: {len(list(blueprint.get('faq_patterns') or []))} repeated FAQ patterns."] if _blueprint_missing_faq(blueprint) else []),
+                execution_eligibility="auto_execute" if supporting_signals >= 2 else "approval_required",
+                target_region="FAQ insertion zone",
+                verification_requirements=[
+                    "FAQ section exists after insert",
+                    "No duplicate FAQ block was created",
+                    "At least one generated question is visible",
+                ],
+            )
+        )
+
+    if list(blueprint.get("content_gaps") or []):
+        section_payload = build_section_expansion_payload(
+            page={**page, "related_service": _page_service_slug(page)},
+            blueprint=blueprint,
+            customer_questions=matched_questions,
+        )
+        actions.append(
+            _content_task_action(
+                page=page,
+                gsc=gsc,
+                ga4=ga4,
+                primary_lead_event=primary_lead_event,
+                action_type="expand_service_page_section",
+                section_name=str(section_payload.get("heading", "") or "Service page section"),
+                before_state="The page is missing depth on a repeated buyer topic from search and customer conversations.",
+                after_state="Add one structured service-page section that closes the observed content gap.",
+                reason="The page needs a deeper section tied to repeated buyer questions and missing SERP coverage.",
+                confidence="medium",
+                action_payload=section_payload,
+                confidence_basis=[
+                    f"{len(list(blueprint.get('content_gaps') or []))} content gaps were detected from SERP structure.",
+                    "Section expansion remains approval-first until insertion coverage is proven stable.",
+                ],
+                evidence=common_evidence
+                + [f"Blueprint gap: {str(list(blueprint.get('content_gaps') or [])[0])}"]
+                + ([f"Customer language: {question_count} repeated buyer questions support this gap."] if question_count else []),
+                execution_eligibility="approval_required",
+                target_region="After first major section",
+                verification_requirements=[
+                    "New heading is visible on the live page",
+                    "Section body renders under the inserted heading",
+                ],
+            )
+        )
+    return actions, blueprint
+
+
 def build_autonomy_overlay(
     *,
     settings: Any,
@@ -802,9 +1058,15 @@ def build_autonomy_overlay(
     ga4_metrics, ga4_notes = fetch_ga4_snapshot(settings, urls)
     cluster_map = _service_cluster_map(urls)
     ga4_trust_status = _lead_trust_status(ga4_metrics, ga4_notes)
+    try:
+        customer_questions = collect_customer_questions(settings, max_messages=int(getattr(settings, "gmail_poll_max_messages", 25) or 25))
+    except Exception:
+        customer_questions = []
+    blueprint_cache: dict[str, dict[str, Any]] = {}
 
     page_insights: list[dict[str, Any]] = []
     action_queue: list[dict[str, Any]] = []
+    content_tasks: list[dict[str, Any]] = []
     support_requests: list[str] = []
 
     for observation in observations:
@@ -821,17 +1083,20 @@ def build_autonomy_overlay(
         if float(ga4.get("sessions", 0) or 0) >= 20 and float(ga4.get("lead_conversions", 0) or 0) == 0:
             insights.append("Traffic is reaching the page, but the page is not generating trusted lead conversions.")
 
-        for issue in observation.get("issues") or []:
-            action_queue.append(_structural_action_from_issue(observation, issue))
-        action_queue.extend(
-            _analytics_actions(
-                observation,
-                gsc,
-                ga4,
-                primary_lead_event=config.primary_lead_event,
-                cluster_map=cluster_map,
-            )
+        generated_content_actions, blueprint = _content_actions(
+            settings=settings,
+            page=observation,
+            gsc=gsc,
+            ga4=ga4,
+            primary_lead_event=config.primary_lead_event,
+            blueprint_cache=blueprint_cache,
+            customer_questions=customer_questions,
         )
+        if blueprint:
+            blueprint_cache[str(blueprint.get("query", "")).strip()] = blueprint
+        filtered_generated_content_actions = _mvp_filter_actions(generated_content_actions)
+        action_queue.extend(filtered_generated_content_actions)
+        content_tasks.extend(filtered_generated_content_actions)
 
         page_insights.append(
             {
@@ -844,6 +1109,7 @@ def build_autonomy_overlay(
                 "top_queries": gsc.get("top_queries", []),
                 "insights": insights[:3],
                 "why_this_page_now": insights[:2] or ["This page is part of the monitored commercial service set."],
+                "customer_question_count": len(_matching_customer_questions(observation, customer_questions, list(gsc.get("top_queries") or []))),
                 "ga4_trust_status": str(ga4.get("trust_status", ga4_trust_status)),
             }
         )
@@ -860,9 +1126,14 @@ def build_autonomy_overlay(
         support_requests.append("Standardize all active commercial services under /services/, then redirect legacy /ecommerce-services/ routes so Website Ops can consolidate authority on one canonical page family.")
 
     approved_actions = [item for item in feedback_entries if str(item.get("status", "")).strip().lower() == "approved"]
-    auto_executable_count = sum(1 for item in action_queue if str(item.get("execution_eligibility", "")) == "auto_execute")
-    approval_required_count = sum(1 for item in action_queue if str(item.get("execution_eligibility", "")) != "auto_execute")
-    action_type_coverage = sorted({str(item.get("action_type", "")).strip() for item in action_queue if str(item.get("action_type", "")).strip()})
+    filtered_action_queue = _mvp_filter_actions(action_queue)
+    filtered_content_tasks = _mvp_filter_actions(content_tasks)
+    auto_executable_count = sum(1 for item in filtered_action_queue if str(item.get("execution_eligibility", "")) == "auto_execute")
+    approval_required_count = sum(1 for item in filtered_action_queue if str(item.get("execution_eligibility", "")) != "auto_execute")
+    action_type_coverage = sorted({str(item.get("action_type", "")).strip() for item in filtered_action_queue if str(item.get("action_type", "")).strip()})
+    serp_blueprints = list(blueprint_cache.values())
+    _save_blueprints(settings, serp_blueprints)
+    save_content_tasks(settings, filtered_content_tasks)
 
     return {
         "goal": {
@@ -889,9 +1160,16 @@ def build_autonomy_overlay(
             "auto_executed_today": sum(1 for item in feedback_entries if str(item.get("status", "")).strip().lower() == "done"),
             "approval_required_today": approval_required_count,
             "auto_executable_today": auto_executable_count,
+            "mvp_mode_active": MVP_MODE_ACTIVE,
+            "mvp_allowed_action_types": list(MVP_ALLOWED_ACTION_TYPES),
         },
         "support_requests": list(dict.fromkeys(item for item in support_requests if item)),
         "page_insights": sorted(page_insights, key=lambda item: (item["score"], item["page_url"]))[:20],
-        "action_queue": action_queue[:25],
+        "action_queue": filtered_action_queue[:25],
+        "serp_blueprints": serp_blueprints[:10],
+        "customer_questions": customer_questions[:12],
+        "content_tasks": filtered_content_tasks[:25],
         "approved_action_count": len(approved_actions),
+        "mvp_mode_active": MVP_MODE_ACTIVE,
+        "mvp_allowed_action_types": list(MVP_ALLOWED_ACTION_TYPES),
     }

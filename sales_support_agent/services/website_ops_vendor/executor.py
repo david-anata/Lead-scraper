@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -26,6 +27,8 @@ SUPPORTED_ACTION_TYPES = {
     "strengthen_primary_cta",
     "add_internal_links",
     "update_faq_ai_extraction",
+    "inject_faq_block",
+    "expand_service_page_section",
 }
 TEXT_WIDGET_TYPES = {"text-editor", "html"}
 PROOF_WIDGET_TYPES = {"text-editor", "html", "icon-list"}
@@ -222,6 +225,98 @@ def _make_heading_widget(text: str, *, level: str = "h2") -> Dict[str, Any]:
     }
 
 
+def clean_generated_content(text: str) -> str:
+    cleaned = str(text or "")
+    for brand in ("search atlas", "linkgraph", "amazon", "shipbob", "red stag", "quiet platforms"):
+        cleaned = re.sub(re.escape(brand), "competitor", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", cleaned) if item.strip()]
+    normalized: list[str] = []
+    for sentence in sentences:
+        words = sentence.split()
+        if len(words) > 24:
+            sentence = " ".join(words[:24]).rstrip(",;:") + "."
+        normalized.append(sentence)
+    cleaned = " ".join(normalized).strip()
+    if cleaned and not re.match(r"^(what|how|when|why|anata|this|these)\b", cleaned, flags=re.IGNORECASE):
+        cleaned = "Anata answers directly: " + cleaned[0].lower() + cleaned[1:]
+    return cleaned
+
+
+def _elementor_html_snapshot(elements: Sequence[Dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for element, _, _ in _flatten_widget_refs(list(elements)):
+        widget_type = str(element.get("widgetType", "")).strip()
+        text = _widget_text(element)
+        if not text:
+            continue
+        rendered = str(text)
+        if widget_type == "heading":
+            level = str((element.get("settings") or {}).get("header_size", "h2")).strip().lower() or "h2"
+            chunks.append(f"<{level}>{rendered}</{level}>")
+        elif widget_type == "button":
+            chunks.append(f"<div class='cta-section'><button>{html.escape(_strip_html(rendered))}</button></div>")
+        else:
+            chunks.append(rendered)
+    return "\n".join(chunks)
+
+
+def faq_exists(page_html: str) -> bool:
+    haystack = str(page_html or "")
+    normalized = haystack.lower()
+    if '<section class="anata-faq"' in normalized or "<section class='anata-faq'" in normalized:
+        return True
+    if "frequently asked" in normalized or re.search(r"\bfaq\b", normalized):
+        return True
+    return '"@type":"faqpage"' in normalized.replace(" ", "") or '"@type": "FAQPage"' in haystack
+
+
+def _faq_marker_count(page_html: str) -> int:
+    normalized = str(page_html or "").lower()
+    count = 0
+    count += normalized.count('class="anata-faq"') + normalized.count("class='anata-faq'")
+    count += len(re.findall(r"\bfaq\b", normalized))
+    count += normalized.count("frequently asked")
+    count += normalized.replace(" ", "").count('"@type":"faqpage"')
+    return count
+
+
+def resolve_insertion_point(page_html: str) -> Dict[str, Any]:
+    html_text = str(page_html or "")
+    if not html_text.strip():
+        return {"strategy": "end_of_content", "index": 0}
+    first_major = re.search(r"</(?:p|section|div|h2)>", html_text, flags=re.IGNORECASE)
+    cta = re.search(r"(book|contact|schedule|analysis|call|get started)", html_text, flags=re.IGNORECASE)
+    if first_major and (cta is None or first_major.end() <= cta.start()):
+        return {"strategy": "after_first_major_section", "index": first_major.end()}
+    if cta:
+        return {"strategy": "before_cta", "index": cta.start()}
+    return {"strategy": "end_of_content", "index": len(html_text)}
+
+
+def _resolve_widget_insertion_index(elements: List[Dict[str, Any]], insertion_point: Mapping[str, Any]) -> int:
+    refs = _flatten_widget_refs(elements)
+    strategy = str(insertion_point.get("strategy", "")).strip()
+    if strategy == "after_first_major_section":
+        text_or_heading_refs = [
+            ref for ref in refs if str(ref[0].get("widgetType", "")).strip() in (TEXT_WIDGET_TYPES | {"heading"})
+        ]
+        if text_or_heading_refs:
+            _, parent, index = text_or_heading_refs[min(1, len(text_or_heading_refs) - 1)]
+            return index + 1 if parent is elements else len(elements)
+    if strategy == "before_cta":
+        button_ref = next((ref for ref in refs if str(ref[0].get("widgetType", "")) == "button"), None)
+        if button_ref:
+            _, parent, index = button_ref
+            return index if parent is elements else len(elements)
+    return len(elements)
+
+
+def _sanitize_html_fragment(value: str) -> str:
+    text = clean_generated_content(_strip_html(value))
+    return html.escape(text)
+
+
 def _parse_action_payload(feedback: Mapping[str, Any]) -> Dict[str, Any]:
     raw = str(feedback.get("action_value", "") or feedback.get("suggested_action_value", "") or "").strip()
     if not raw:
@@ -253,6 +348,8 @@ def _infer_region_label(action_type: str) -> str:
         "strengthen_primary_cta": "Primary CTA and proof block",
         "add_internal_links": "Intro/body copy insertion zone",
         "update_faq_ai_extraction": "FAQ / AI extraction section",
+        "inject_faq_block": "FAQ insertion zone",
+        "expand_service_page_section": "After first major section",
     }
     return labels.get(action_type, "Page region")
 
@@ -316,10 +413,26 @@ def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
         eligible = True
         reason = "FAQ section can be replaced or appended deterministically."
         verification = ["FAQ heading is visible", "At least one generated question is visible", "No duplicate FAQ block"]
+    elif action_type == "inject_faq_block":
+        page_html = _elementor_html_snapshot(elements)
+        has_duplicate = faq_exists(page_html)
+        insertion_point = resolve_insertion_point(page_html)
+        eligible = not has_duplicate and insertion_point.get("strategy") in {"after_first_major_section", "before_cta", "end_of_content"}
+        reason = "Deterministic FAQ insertion point located." if eligible else "Existing FAQ found or no stable insertion point was resolved."
+        verification = ["FAQ section exists after insert", "No duplicate FAQ block was created", "Generated FAQ question is visible"]
+    elif action_type == "expand_service_page_section":
+        insertion_point = resolve_insertion_point(_elementor_html_snapshot(elements))
+        eligible = insertion_point.get("strategy") in {"after_first_major_section", "before_cta", "end_of_content"}
+        reason = "Structured section insertion point located." if eligible else "No stable section insertion point was resolved."
+        verification = ["New section heading is visible", "Section body renders under the inserted heading"]
 
     return {
         "eligible": eligible,
-        "execution_eligibility": "auto_execute" if eligible else "approval_required",
+        "execution_eligibility": (
+            "auto_execute"
+            if eligible and action_type == "inject_faq_block"
+            else "approval_required"
+        ),
         "target_region": _infer_region_label(action_type),
         "reason": reason,
         "verification_requirements": verification,
@@ -515,6 +628,61 @@ def update_faq_ai_block(elements: List[Dict[str, Any]], payload: Mapping[str, An
     }
 
 
+def inject_faq_block(elements: List[Dict[str, Any]], payload: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    page_html = _elementor_html_snapshot(elements)
+    before_count = _faq_marker_count(page_html)
+    if faq_exists(page_html):
+        raise ExecutionError("FAQ block already exists on the page.")
+    insertion_point = resolve_insertion_point(page_html)
+    insertion_index = _resolve_widget_insertion_index(elements, insertion_point)
+    heading = _normalize_text(str(payload.get("heading", "") or "Service FAQ").strip())
+    questions = payload.get("questions") or []
+    if not heading or not isinstance(questions, list) or not questions:
+        raise ExecutionError("FAQ payload is missing a heading or questions.")
+
+    items: list[str] = []
+    for item in questions[:5]:
+        if not isinstance(item, dict):
+            continue
+        question = _sanitize_html_fragment(str(item.get("question", "")).strip())
+        answer = _sanitize_html_fragment(str(item.get("answer", "")).strip())
+        if question and answer:
+            items.append(f'<div class="faq-item"><h3>{question}</h3><p>{answer}</p></div>')
+    if not items:
+        raise ExecutionError("FAQ payload did not contain any valid question-answer items.")
+    faq_html = f'<section class="anata-faq"><h2>{html.escape(heading)}</h2>{"".join(items)}</section>'
+    elements.insert(insertion_index, _make_text_widget(faq_html))
+    return elements, {
+        "before_faq_count": before_count,
+        "after_faq_count": before_count + 1,
+        "insertion_strategy": str(insertion_point.get("strategy", "end_of_content")),
+        "faq_html": faq_html,
+    }
+
+
+def expand_service_page_section(elements: List[Dict[str, Any]], payload: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    heading = clean_generated_content(str(payload.get("heading", "")).strip())
+    body_html = str(payload.get("body_html", "")).strip()
+    if not heading or not body_html:
+        raise ExecutionError("Section expansion payload is missing heading or body_html.")
+    insertion_point = resolve_insertion_point(_elementor_html_snapshot(elements))
+    insertion_index = _resolve_widget_insertion_index(elements, insertion_point)
+    safe_paragraphs: list[str] = []
+    for fragment in re.findall(r"<p>(.*?)</p>", body_html, flags=re.IGNORECASE | re.DOTALL):
+        cleaned = clean_generated_content(fragment)
+        if cleaned:
+            safe_paragraphs.append(f"<p>{html.escape(cleaned)}</p>")
+    if not safe_paragraphs:
+        safe_paragraphs.append(f"<p>{html.escape(clean_generated_content(_strip_html(body_html)))}</p>")
+    elements.insert(insertion_index, _make_heading_widget(heading, level="h2"))
+    elements.insert(insertion_index + 1, _make_text_widget("".join(safe_paragraphs)))
+    return elements, {
+        "heading": heading,
+        "body_html": "".join(safe_paragraphs),
+        "insertion_strategy": str(insertion_point.get("strategy", "end_of_content")),
+    }
+
+
 def backup_page_record(record: Mapping[str, Any], *, timestamp: datetime) -> Path:
     run_dir = backup_root() / f"{timestamp.date().isoformat()}-approved-actions"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -554,6 +722,12 @@ def execute_feedback_action(
         payload["meta"]["_elementor_data"] = json.dumps(updated_data)
     elif action_type == "add_internal_links":
         updated_data, change_summary = update_internal_links(elementor_data, action_payload)
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    elif action_type == "inject_faq_block":
+        updated_data, change_summary = inject_faq_block(elementor_data, action_payload)
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    elif action_type == "expand_service_page_section":
+        updated_data, change_summary = expand_service_page_section(elementor_data, action_payload)
         payload["meta"]["_elementor_data"] = json.dumps(updated_data)
     else:
         updated_data, change_summary = update_faq_ai_block(elementor_data, action_payload)
@@ -602,6 +776,27 @@ def execute_feedback_action(
             raise ExecutionError("Verification failed. FAQ heading is not visible on the live page.")
         if first_question and not _verify_text_present(live_html, first_question):
             raise ExecutionError("Verification failed. Generated FAQ question is not visible on the live page.")
+    elif action_type == "inject_faq_block":
+        first_question = ""
+        questions = action_payload.get("questions") or []
+        if questions and isinstance(questions[0], dict):
+            first_question = str(questions[0].get("question", "")).strip()
+        if not faq_exists(live_html):
+            raise ExecutionError("Verification failed. FAQ section was not detected on the live page.")
+        before_count = int(change_summary.get("before_faq_count", 0) or 0)
+        if _faq_marker_count(live_html) > before_count + 1:
+            raise ExecutionError("Verification failed. Duplicate FAQ markers were created.")
+        if not _verify_text_present(live_html, str(action_payload.get("heading", "") or "Service FAQ")):
+            raise ExecutionError("Verification failed. Inserted FAQ heading is not visible on the live page.")
+        if first_question and not _verify_text_present(live_html, first_question):
+            raise ExecutionError("Verification failed. Inserted FAQ question is not visible on the live page.")
+    elif action_type == "expand_service_page_section":
+        expected_heading = str(action_payload.get("heading", "")).strip()
+        expected_body = _strip_html(str(action_payload.get("body_html", "")).strip())
+        if expected_heading and not _verify_text_present(live_html, expected_heading):
+            raise ExecutionError("Verification failed. Inserted section heading is not visible on the live page.")
+        if expected_body and not _verify_text_present(live_html, expected_body.split(".")[0]):
+            raise ExecutionError("Verification failed. Inserted section body is not visible on the live page.")
     return {
         "feedback_id": feedback.get("feedback_id"),
         "action_type": action_type,

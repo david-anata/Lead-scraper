@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
+from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
     latest_report_entry,
@@ -27,6 +28,11 @@ from sales_support_agent.services.website_ops import (
     save_feedback_record,
     website_ops_run_is_due,
     write_website_ops_run_state,
+)
+from sales_support_agent.services.website_ops_vendor.executor import (
+    faq_exists,
+    inject_faq_block,
+    resolve_insertion_point,
 )
 
 
@@ -93,9 +99,10 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                             {
                                 "page_url": "https://anatainc.com/services/shipping/",
                                 "page_title": "Shipping services",
+                                "action_type": "inject_faq_block",
                                 "section_name": "Hero heading",
                                 "before_state": "Old heading",
-                                "after_state": "New heading",
+                                "after_state": "Insert structured shipping FAQ",
                                 "reason": "CTR is weak.",
                                 "insight_source": "Google Search Console",
                             }
@@ -130,10 +137,10 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("Increase qualified leads.", html)
             self.assertIn("Pages reviewed", html)
             self.assertIn("needs attention", html)
-            self.assertIn("New heading", html)
+            self.assertIn("Insert structured shipping FAQ", html)
             self.assertIn("Provide proof assets for shipping.", html)
             self.assertIn("GA4 unavailable", html)
-            self.assertIn("Why this matters", html)
+            self.assertIn("MVP mode active", html)
             self.assertIn("Needs setup", html)
             self.assertIn("sdr-support-agent", html)
             self.assertIn("codex-website-ops@sdr-support-agent.iam.gserviceaccount.com", html)
@@ -184,12 +191,12 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "after_state": "Clarify the offer and strengthen the primary CTA.",
                     "expected_impact": "Higher lead conversion rate from existing traffic.",
                     "confidence": "medium",
-                    "suggested_action_type": "strengthen_primary_cta",
+                    "suggested_action_type": "inject_faq_block",
                 },
             )
             html = render_feedback_detail_page(settings, record["feedback_id"])
             self.assertIn("Submit Review", html)
-            self.assertIn("replace_primary_heading", html)
+            self.assertIn("inject_faq_block", html)
             self.assertIn("Approve Recommendation", html)
             self.assertIn("Current state", html)
 
@@ -202,7 +209,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "summary": "Fix duplicate hero H1",
                     "page_url": "https://anatainc.com/services/ai/",
                     "auto_generated": True,
-                    "suggested_action_type": "replace_primary_heading",
+                    "suggested_action_type": "inject_faq_block",
+                    "suggested_action_value": json.dumps({"heading": "AI FAQ", "questions": [{"question": "What does Anata automate?", "answer": "Anata answers directly: workflow automation is implemented safely."}]}),
+                    "execution_eligibility": "auto_execute",
                     "before_state": "Contact Us | Faster, Smarter, Intelligent, Data.",
                     "after_state": "Keep one topic-specific H1 and demote the rest to H2.",
                 },
@@ -210,13 +219,13 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             with mock.patch.object(
                 website_ops,
                 "execute_feedback_action",
-                return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "replace_primary_heading"},
+                return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "inject_faq_block"},
             ):
                 result = review_feedback_record(settings, record["feedback_id"], {"status": "approved"})
             self.assertTrue(result.ok)
             updated = load_feedback_records(settings)[0]
             self.assertEqual(updated["status"], "done")
-            self.assertEqual(updated["action_type"], "replace_primary_heading")
+            self.assertEqual(updated["action_type"], "inject_faq_block")
 
     def test_run_website_ops_marks_error_when_execution_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -226,8 +235,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 {
                     "summary": "Apply heading change",
                     "status": "approved",
-                    "action_type": "replace_primary_heading",
-                    "action_value": "New Heading",
+                    "action_type": "inject_faq_block",
+                    "action_value": json.dumps({"heading": "AI FAQ", "questions": [{"question": "What does Anata automate?", "answer": "Anata answers directly: automation is implemented safely."}]}),
+                    "execution_eligibility": "auto_execute",
                     "page_url": "https://anatainc.com/services/ai/",
                 },
             )
@@ -253,7 +263,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             }
             fake_overlay = {
                 "goal": {"primary": "Increase qualified leads."},
-                "action_queue": [{"page_url": "https://anatainc.com/services/shipping/"}],
+                "action_queue": [{"page_url": "https://anatainc.com/services/shipping/", "action_type": "inject_faq_block"}],
                 "analytics_status": {"search_console": False, "ga4": False, "notes": []},
                 "support_requests": [],
                 "start_doing": [],
@@ -304,6 +314,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "status": "approved",
                     "automation_key": "auto-keep-approved",
                     "auto_generated": True,
+                    "suggested_action_type": "inject_faq_block",
                     "source_report_date": "2026-03-27",
                     "reviewer_name": "SEO Lead",
                 },
@@ -315,6 +326,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     {
                         "page_url": "https://anatainc.com/services/shipping/",
                         "page_title": "Shipping services",
+                        "action_type": "inject_faq_block",
                         "section_name": "Title",
                         "after_state": "Tighten the commercial title.",
                         "reason": "CTR is weak.",
@@ -344,6 +356,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "status": "done",
                     "automation_key": "auto-reopen",
                     "auto_generated": True,
+                    "suggested_action_type": "inject_faq_block",
                     "source_report_date": "2026-03-26",
                 },
             )
@@ -354,6 +367,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     {
                         "page_url": "https://anatainc.com/contact/",
                         "page_title": "Contact",
+                        "action_type": "inject_faq_block",
                         "section_name": "Hero CTA",
                         "after_state": "Strengthen contact proof block.",
                         "reason": "Traffic is not converting.",
@@ -377,7 +391,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(reopened["reopened_from_feedback_id"], original["feedback_id"])
             self.assertEqual(reopened["reopened_reason"], "recommendation_reappeared")
 
-    def test_build_autonomy_overlay_generates_evidence_and_execution_contracts(self) -> None:
+    def test_build_autonomy_overlay_generates_mvp_only_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             observations = [
@@ -418,32 +432,179 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     ),
                 ):
                     with mock.patch(
-                        "sales_support_agent.services.website_ops_autonomy.website_ops_vendor.execution_target_details",
-                        return_value={
-                            "eligible": True,
-                            "execution_eligibility": "auto_execute",
-                            "target_region": "Hero title and intro",
-                            "reason": "Widgets located",
-                            "verification_requirements": ["Single H1 remains"],
-                        },
+                        "sales_support_agent.services.website_ops_autonomy.collect_customer_questions",
+                        return_value=[
+                            {
+                                "question_id": "cq_1",
+                                "question": "How fast can onboarding happen?",
+                                "intent": "transactional",
+                                "frequency": 4,
+                                "source": "gmail",
+                                "related_service": "fulfillment",
+                            }
+                        ],
                     ):
-                        overlay = build_autonomy_overlay(
-                            settings=settings,
-                            report=self._fake_report(),
-                            observations=observations,
-                            feedback_entries=[],
-                        )
+                        with mock.patch(
+                            "sales_support_agent.services.website_ops_autonomy.build_blueprint",
+                            return_value={
+                                "blueprint_id": "bp_1",
+                                "query": "amazon fulfillment services",
+                                "source_urls": ["https://example.com/a", "https://example.com/b"],
+                                "heading_structure": [{"heading": "What is Amazon Fulfillment?", "level": "h2", "support_count": 3}],
+                                "faq_patterns": [{"question": "How fast is onboarding?", "support_count": 2}],
+                                "content_gaps": ["Missing onboarding timeline section"],
+                            },
+                        ):
+                            overlay = build_autonomy_overlay(
+                                settings=settings,
+                                report=self._fake_report(),
+                                observations=observations,
+                                feedback_entries=[],
+                            )
             self.assertEqual(overlay["analytics_status"]["ga4_trust_status"], "partial")
             self.assertEqual(overlay["analytics_status"]["primary_lead_event"], "generate_lead")
             action_types = {item["action_type"] for item in overlay["action_queue"]}
-            self.assertIn("rewrite_title_and_intro", action_types)
-            self.assertIn("strengthen_primary_cta", action_types)
-            title_action = next(item for item in overlay["action_queue"] if item["action_type"] == "rewrite_title_and_intro")
-            cta_action = next(item for item in overlay["action_queue"] if item["action_type"] == "strengthen_primary_cta")
-            self.assertEqual(title_action["execution_eligibility"], "auto_execute")
-            self.assertEqual(cta_action["execution_eligibility"], "approval_required")
-            self.assertTrue(title_action["evidence"])
-            self.assertTrue(title_action["verification_requirements"])
+            self.assertEqual(action_types, {"inject_faq_block", "expand_service_page_section"})
+            faq_action = next(item for item in overlay["action_queue"] if item["action_type"] == "inject_faq_block")
+            section_action = next(item for item in overlay["action_queue"] if item["action_type"] == "expand_service_page_section")
+            self.assertEqual(faq_action["execution_eligibility"], "auto_execute")
+            self.assertEqual(section_action["execution_eligibility"], "approval_required")
+            self.assertTrue(faq_action["evidence"])
+            self.assertTrue(faq_action["verification_requirements"])
+
+    def test_clean_generated_content_sanitizes_and_shortens(self) -> None:
+        cleaned = clean_generated_content(
+            "Search Atlas says this very long sentence should keep going well past any normal reader tolerance and keep naming competitor brands while avoiding a direct answer entirely."
+        )
+        self.assertNotIn("Search Atlas", cleaned)
+        self.assertIn("competitor", cleaned.lower())
+        self.assertLessEqual(len(cleaned.split()), 28)
+
+    def test_faq_exists_detects_copy_and_schema(self) -> None:
+        self.assertTrue(faq_exists('<section class="anata-faq"><h2>FAQ</h2></section>'))
+        self.assertTrue(faq_exists("<h2>Frequently Asked Questions</h2>"))
+        self.assertTrue(faq_exists('<script type="application/ld+json">{"@type":"FAQPage"}</script>'))
+        self.assertFalse(faq_exists("<div><h2>Overview</h2></div>"))
+
+    def test_resolve_insertion_point_prefers_major_section_then_cta_then_end(self) -> None:
+        after_section = resolve_insertion_point("<h1>Title</h1><p>Intro copy.</p><div>More</div>")
+        self.assertEqual(after_section["strategy"], "after_first_major_section")
+        before_cta = resolve_insertion_point("<h1>Title</h1><div>Book a call</div>")
+        self.assertEqual(before_cta["strategy"], "before_cta")
+        fallback = resolve_insertion_point("Plain content with no markers")
+        self.assertEqual(fallback["strategy"], "end_of_content")
+
+    def test_inject_faq_block_creates_expected_html(self) -> None:
+        elements = [
+            {
+                "id": "heading-1",
+                "elType": "widget",
+                "widgetType": "heading",
+                "settings": {"title": "Fulfillment Services", "header_size": "h1"},
+                "elements": [],
+            },
+            {
+                "id": "text-1",
+                "elType": "widget",
+                "widgetType": "text-editor",
+                "settings": {"editor": "<p>Intro copy.</p>"},
+                "elements": [],
+            },
+        ]
+        updated, summary = inject_faq_block(
+            elements,
+            {
+                "heading": "Fulfillment FAQ",
+                "questions": [
+                    {
+                        "question": "How fast can onboarding happen?",
+                        "answer": "Anata answers directly: onboarding can start quickly after discovery and implementation planning.",
+                    }
+                ],
+            },
+        )
+        html_output = json.dumps(updated)
+        self.assertIn("anata-faq", html_output)
+        self.assertIn("Fulfillment FAQ", html_output)
+        self.assertEqual(summary["after_faq_count"], 1)
+
+    def test_build_autonomy_overlay_generates_phase_one_faq_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            observations = [
+                {
+                    "url": "https://anatainc.com/services/fulfillment/",
+                    "title": "Fulfillment",
+                    "issues": [],
+                }
+            ]
+            with mock.patch(
+                "sales_support_agent.services.website_ops_autonomy.fetch_search_console_snapshot",
+                return_value=(
+                    {
+                        "https://anatainc.com/services/fulfillment": {
+                            "impressions": 140.0,
+                            "clicks": 2.0,
+                            "ctr": 0.014,
+                            "position": 18.0,
+                            "top_queries": [{"query": "amazon fulfillment services", "impressions": 80.0, "clicks": 2.0}],
+                        }
+                    },
+                    [],
+                ),
+            ):
+                with mock.patch(
+                    "sales_support_agent.services.website_ops_autonomy.fetch_ga4_snapshot",
+                    return_value=(
+                        {
+                            "https://anatainc.com/services/fulfillment": {
+                                "sessions": 42.0,
+                                "engaged_sessions": 30.0,
+                                "lead_conversions": 0.0,
+                                "lead_conversion_rate": 0.0,
+                                "trust_status": "partial",
+                            }
+                        },
+                        [],
+                    ),
+                ):
+                    with mock.patch(
+                        "sales_support_agent.services.website_ops_autonomy.collect_customer_questions",
+                        return_value=[
+                            {
+                                "question_id": "cq_1",
+                                "question": "How fast can onboarding happen?",
+                                "intent": "transactional",
+                                "frequency": 4,
+                                "source": "gmail",
+                                "related_service": "fulfillment",
+                            }
+                        ],
+                    ):
+                        with mock.patch(
+                            "sales_support_agent.services.website_ops_autonomy.build_blueprint",
+                            return_value={
+                                "blueprint_id": "bp_1",
+                                "query": "amazon fulfillment services",
+                                "source_urls": ["https://example.com/a", "https://example.com/b"],
+                                "heading_structure": [{"heading": "What is Amazon Fulfillment?", "level": "h2", "support_count": 3}],
+                                "faq_patterns": [{"question": "How fast is onboarding?", "support_count": 2}],
+                                "content_gaps": ["Missing onboarding timeline section"],
+                            },
+                        ):
+                            overlay = build_autonomy_overlay(
+                                settings=settings,
+                                report=self._fake_report(),
+                                observations=observations,
+                                feedback_entries=[],
+                            )
+            faq_action = next(item for item in overlay["action_queue"] if item["action_type"] == "inject_faq_block")
+            section_action = next(item for item in overlay["action_queue"] if item["action_type"] == "expand_service_page_section")
+            self.assertEqual(faq_action["execution_eligibility"], "auto_execute")
+            self.assertEqual(section_action["execution_eligibility"], "approval_required")
+            self.assertTrue(overlay["customer_questions"])
+            self.assertTrue(overlay["serp_blueprints"])
+            self.assertTrue(overlay["content_tasks"])
 
     def test_run_website_ops_auto_executes_new_high_confidence_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -459,20 +620,20 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     {
                         "page_url": "https://anatainc.com/services/shipping/",
                         "page_title": "Shipping",
-                        "action_type": "rewrite_title_and_intro",
-                        "section_name": "Hero title and intro",
-                        "before_state": "120 impressions at 1.2% CTR",
-                        "after_state": "Rewrite title and intro around search demand.",
-                        "reason": "CTR is weak against meaningful impressions.",
-                        "insight_source": "Google Search Console",
-                        "expected_impact": "Higher SERP click-through rate from existing impressions.",
+                        "action_type": "inject_faq_block",
+                        "section_name": "FAQ block",
+                        "before_state": "No structured FAQ block.",
+                        "after_state": "Insert FAQ block from buyer questions.",
+                        "reason": "CTR is weak against meaningful impressions and buyers keep asking the same questions.",
+                        "insight_source": "SERP + Customer Language",
+                        "expected_impact": "Broader query coverage and stronger direct-answer content.",
                         "confidence": "high",
                         "requires_approval": False,
-                        "evidence": ["120 impressions", "CTR is 1.2%"],
+                        "evidence": ["120 impressions", "4 repeated buyer questions"],
                         "execution_eligibility": "auto_execute",
-                        "target_region": "Hero title and intro",
-                        "verification_requirements": ["Single H1 remains"],
-                        "action_value": json.dumps({"page_title": "Shipping Services | Anata", "heading": "Shipping services", "intro": "New intro", "intro_html": "<p>New intro</p>"}),
+                        "target_region": "FAQ insertion zone",
+                        "verification_requirements": ["FAQ section exists after insert"],
+                        "action_value": json.dumps({"heading": "Shipping FAQ", "questions": [{"question": "How fast is shipping setup?", "answer": "Anata answers directly: shipping setup starts with carrier and workflow planning."}]}),
                     }
                 ],
                 "analytics_status": {
@@ -490,14 +651,14 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     with mock.patch.object(
                         website_ops,
                         "execute_feedback_action",
-                        return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "rewrite_title_and_intro"},
+                        return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "inject_faq_block"},
                     ):
                         result = run_website_ops(settings, mode="daily")
             self.assertTrue(result.ok)
             records = load_feedback_records(settings)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["status"], "done")
-            self.assertEqual(records[0]["action_type"], "rewrite_title_and_intro")
+            self.assertEqual(records[0]["action_type"], "inject_faq_block")
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -27,6 +27,8 @@ class WebsiteOpsActionResult:
 
 RUN_MODES = ("daily", "weekly", "monthly")
 RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
+MVP_MODE_ACTIVE = True
+MVP_ALLOWED_ACTION_TYPES = {"inject_faq_block", "expand_service_page_section"}
 WORKFLOW_OWNED_FEEDBACK_FIELDS = {
     "status",
     "reviewer_name",
@@ -39,6 +41,41 @@ WORKFLOW_OWNED_FEEDBACK_FIELDS = {
     "execution_result",
     "execution_error",
 }
+
+
+def _mvp_action_allowed(action_type: str) -> bool:
+    return str(action_type or "").strip() in MVP_ALLOWED_ACTION_TYPES
+
+
+def _mvp_filter_action_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in items if _mvp_action_allowed(str(item.get("action_type", "")).strip())]
+
+
+def _mvp_filter_feedback_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not MVP_MODE_ACTIVE:
+        return records
+    filtered: list[dict[str, Any]] = []
+    for record in records:
+        if not bool(record.get("auto_generated")):
+            filtered.append(record)
+            continue
+        action_type = str(record.get("suggested_action_type", "") or record.get("action_type", "")).strip()
+        if _mvp_action_allowed(action_type):
+            filtered.append(record)
+    return filtered
+
+
+def _mvp_filter_report_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    filtered = dict(payload)
+    filtered["action_queue"] = _mvp_filter_action_items(list(payload.get("action_queue") or []))
+    filtered["content_tasks"] = _mvp_filter_action_items(list(payload.get("content_tasks") or []))
+    filtered["mvp_mode_active"] = MVP_MODE_ACTIVE
+    filtered["mvp_allowed_action_types"] = sorted(MVP_ALLOWED_ACTION_TYPES)
+    analytics_status = dict(payload.get("analytics_status") or {})
+    analytics_status["mvp_mode_active"] = MVP_MODE_ACTIVE
+    analytics_status["mvp_allowed_action_types"] = sorted(MVP_ALLOWED_ACTION_TYPES)
+    filtered["analytics_status"] = analytics_status
+    return filtered
 SYSTEM_OWNED_FEEDBACK_FIELDS = {
     "category",
     "priority",
@@ -469,13 +506,7 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
 
 
 def _is_auto_executable_action(action_type: str, execution_eligibility: str = "") -> bool:
-    supported = {
-        "replace_primary_heading",
-        "rewrite_title_and_intro",
-        "strengthen_primary_cta",
-        "add_internal_links",
-        "update_faq_ai_extraction",
-    }
+    supported = {"inject_faq_block"}
     normalized_action = action_type.strip()
     normalized_eligibility = execution_eligibility.strip()
     if normalized_action not in supported:
@@ -580,13 +611,15 @@ def _execute_record(settings: Settings, config: website_ops.WebsiteOpsConfig, re
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
     config = _config(settings)
     feedback_entries = load_feedback_records(settings)
+    visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
     executed_actions: list[dict[str, Any]] = []
     if settings.website_ops_execute_approved:
-        for record in feedback_entries:
+        for record in visible_feedback_entries:
             result = _execute_record(settings, config, record)
             if result:
                 executed_actions.append(result)
         feedback_entries = load_feedback_records(settings)
+        visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
 
     report_title = {
         "daily": "Anata Website Ops Daily Report",
@@ -598,7 +631,7 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         list(settings.website_ops_site_urls),
         config=config,
         output_dir=output_dir,
-        feedback_entries=feedback_entries,
+        feedback_entries=visible_feedback_entries,
         title=report_title,
         report_type=f"website_ops_{mode}",
         scope=f"agent-admin {mode} sweep",
@@ -617,17 +650,18 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
             settings=settings,
             report=enriched_report,
             observations=list(pipeline.get("observations") or []),
-            feedback_entries=feedback_entries,
+            feedback_entries=visible_feedback_entries,
         )
     )
+    enriched_report = _mvp_filter_report_payload(enriched_report)
     enriched_report["action_queue"] = _sync_action_queue_feedback(
         settings,
         list(enriched_report.get("action_queue") or []),
-        feedback_entries,
+        visible_feedback_entries,
         report_slug=_slugify_text(report_title),
     )
     if settings.website_ops_execute_approved:
-        current_records = {str(item.get("feedback_id", "")): item for item in load_feedback_records(settings)}
+        current_records = {str(item.get("feedback_id", "")): item for item in _mvp_filter_feedback_records(load_feedback_records(settings))}
         for item in enriched_report["action_queue"]:
             feedback_id = str(item.get("feedback_id", "")).strip()
             record = current_records.get(feedback_id)
@@ -649,13 +683,14 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
                     executed_actions.append(result)
         if executed_actions:
             feedback_entries = load_feedback_records(settings)
+            visible_feedback_entries = _mvp_filter_feedback_records(feedback_entries)
             enriched_report["executed_actions"] = list(enriched_report.get("executed_actions") or []) + executed_actions
             enriched_report["changes_applied"] = int(enriched_report.get("changes_applied", 0) or 0) + len(executed_actions)
             enriched_report["auto_executed_today"] = len(executed_actions)
             enriched_report["action_queue"] = _sync_action_queue_feedback(
                 settings,
                 list(enriched_report.get("action_queue") or []),
-                feedback_entries,
+                visible_feedback_entries,
                 report_slug=_slugify_text(report_title),
             )
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
@@ -828,6 +863,7 @@ def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) 
     return f"""
     <div class="card stack">
       <h2>Latest report</h2>
+      {_mvp_mode_banner()}
       <div class="summary-grid">
         {''.join(_summary_chip(label, value, tone=tone) for label, value, tone in stats)}
       </div>
@@ -836,6 +872,16 @@ def _latest_report_panel(entry: dict[str, Any] | None, payload: dict[str, Any]) 
       </div>
     </div>
     """
+
+
+def _mvp_mode_banner() -> str:
+    allowed = ", ".join(sorted(MVP_ALLOWED_ACTION_TYPES))
+    return (
+        "<div class='flash'>"
+        "<strong>MVP mode active.</strong> "
+        f"Allowed action types: {html.escape(allowed)}."
+        "</div>"
+    )
 
 
 def _dashboard_stat_card(title: str, value: int, note: str, href: str) -> str:
@@ -1077,6 +1123,74 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
     return "".join(cards)
 
 
+def _customer_question_cards(questions: list[dict[str, Any]]) -> str:
+    if not questions:
+        return "<div class='list-card'><p class='muted'>No customer questions extracted yet.</p></div>"
+    cards = []
+    for item in questions[:8]:
+        cards.append(
+            f"""
+            <article class="list-card">
+              <div class="row-actions">
+                <span class="status-pill status-neutral">{html.escape(str(item.get("intent", "informational")).title())}</span>
+                <span class="muted">{html.escape(str(item.get("frequency", 0)))} mentions</span>
+              </div>
+              <h3>{html.escape(str(item.get("question", "")))}</h3>
+              <p class="muted">{html.escape(_humanize_label(str(item.get("related_service", ""))) or "General")} · {html.escape(str(item.get("source", "gmail")).title())}</p>
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
+def _serp_blueprint_cards(blueprints: list[dict[str, Any]]) -> str:
+    if not blueprints:
+        return "<div class='list-card'><p class='muted'>No SERP blueprints generated yet.</p></div>"
+    cards = []
+    for item in blueprints[:8]:
+        faq_html = ""
+        faq_patterns = list(item.get("faq_patterns") or [])
+        if faq_patterns:
+            faq_lines = "".join(
+                f"<li>{html.escape(str(pattern.get('question', pattern)))}</li>"
+                for pattern in faq_patterns[:3]
+            )
+            faq_html = f"<ul class='compact-list'>{faq_lines}</ul>"
+        cards.append(
+            f"""
+            <article class="list-card">
+              <div class="row-actions">
+                <h3>{html.escape(str(item.get("query", "")))}</h3>
+                <span class="status-pill status-neutral">{html.escape(str(len(list(item.get("source_urls") or []))))} sources</span>
+              </div>
+              <p class="muted">{html.escape(', '.join(str(entry.get("heading", "")) for entry in list(item.get("heading_structure") or [])[:3]) or 'No repeated headings yet.')}</p>
+              {faq_html}
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
+def _content_task_cards(tasks: list[dict[str, Any]]) -> str:
+    if not tasks:
+        return "<div class='list-card'><p class='muted'>No content tasks generated yet.</p></div>"
+    cards = []
+    for item in tasks[:8]:
+        cards.append(
+            f"""
+            <article class="task-card">
+              <div class="row-actions">
+                <h3>{html.escape(str(item.get("page_title") or _short_page_label(str(item.get("page_url", "")))))}</h3>
+                <span class="status-pill {'status-ok' if str(item.get('execution_eligibility', '')) == 'auto_execute' else 'status-warn'}">{html.escape(_humanize_label(str(item.get("action_type", ""))) or "Task")}</span>
+              </div>
+              <p class="muted">{html.escape(str(item.get("section_name", "Content task")))}</p>
+              <p>{html.escape(str(item.get("reason", "No rationale supplied.")))}</p>
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
 def _page_shell(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -1220,6 +1334,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     """
+    nav_style_block = f"<style>{nav_styles}</style>"
     shell_styles = """
     <style>
       body {
@@ -1246,7 +1361,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     """
     injected = report_html
     if "</head>" in injected:
-        injected = injected.replace("</head>", f"{font_links}{nav_styles}{shell_styles}</head>", 1)
+        injected = injected.replace("</head>", f"{font_links}{nav_style_block}{shell_styles}</head>", 1)
     if "<body" in injected:
         injected = re.sub(
             r"(<body[^>]*>)",
@@ -1316,8 +1431,8 @@ def _feedback_cards(entries: list[dict[str, Any]], *, with_actions: bool = False
 def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str:
     reports = _report_entries(settings)
     latest = reports[0] if reports else None
-    latest_payload = _report_payload(latest) if latest else {}
-    feedback = load_feedback_records(settings)
+    latest_payload = _mvp_filter_report_payload(_report_payload(latest) if latest else {})
+    feedback = _mvp_filter_feedback_records(load_feedback_records(settings))
     active_feedback = [item for item in feedback if item.get("status") not in {"done", "rejected"}]
     run_state = get_website_ops_run_state(settings, "daily")
     status_counts: dict[str, int] = {}
@@ -1327,6 +1442,9 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
     action_queue = list(latest_payload.get("action_queue") or [])[:6]
     support_requests = list(latest_payload.get("support_requests") or [])[:5]
     page_insights = list(latest_payload.get("page_insights") or [])[:5]
+    customer_questions = list(latest_payload.get("customer_questions") or [])[:6]
+    serp_blueprints = list(latest_payload.get("serp_blueprints") or [])[:6]
+    content_tasks = list(latest_payload.get("content_tasks") or [])[:6]
     analytics_status = latest_payload.get("analytics_status") or {}
     today = date.today().isoformat()
     latest_date = str(latest.get("date", "") if latest else "")
@@ -1344,6 +1462,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
             <p class="eyebrow">Website Ops</p>
             <h1>SEO <span style="color:var(--accent)">control tower</span>.</h1>
             <p class="lead">Review daily website reports, approve changes, and route safe live actions through the same internal agent dashboard your team already uses.</p>
+            {_mvp_mode_banner()}
             <div class="button-row">
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="weekly"><button class="ghost" type="submit">Run Weekly Sweep</button></form>
@@ -1412,11 +1531,30 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
           </div>
         </section>
         <section class="grid-2">
-          <div class="card stack"><h2>Open queue</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True)}</div></div>
-          <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
+          <div class="card stack">
+            <h2>Customer Questions</h2>
+            <p class="lead">Repeated buyer questions extracted from Gmail threads and normalized for content decisions.</p>
+            <div class="widget-scroll compact-scroll">{_customer_question_cards(customer_questions)}</div>
+          </div>
+          <div class="card stack">
+            <h2>SERP Blueprints</h2>
+            <p class="lead">Repeated heading and FAQ patterns from ranking pages for the highest-signal service queries.</p>
+            <div class="widget-scroll compact-scroll">{_serp_blueprint_cards(serp_blueprints)}</div>
+          </div>
         </section>
         <section class="grid-2">
+          <div class="card stack">
+            <h2>Content Tasks</h2>
+            <p class="lead">Structured content updates generated from search demand and buyer language.</p>
+            <div class="widget-scroll compact-scroll">{_content_task_cards(content_tasks)}</div>
+          </div>
+          <div class="card stack"><h2>Open queue</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True)}</div></div>
+        </section>
+        <section class="grid-2">
+          <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
           <div class="card stack"><h2>Data connection notes</h2><p class="lead">Website Ops uses these signals to decide what to change next.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
+        </section>
+        <section class="grid-2">
           {_system_details_panel(settings, analytics_status)}
         </section>
       </main>
@@ -1427,7 +1565,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "") -> str
 
 def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "") -> str:
     normalized_filter = _feedback_status(status_filter) if status_filter else ""
-    entries = load_feedback_records(settings)
+    entries = _mvp_filter_feedback_records(load_feedback_records(settings))
     if normalized_filter:
         if normalized_filter == "approved":
             entries = [item for item in entries if item.get("status") in {"approved", "in-progress"}]
@@ -1443,6 +1581,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
         <section class="card stack">
           <p class="eyebrow">Website Ops queue</p>
           <h1>Review <span style="color:var(--accent)">and approve</span>.</h1>
+          {_mvp_mode_banner()}
           <p class="lead">Showing: {html.escape(queue_title)} items. Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
         </section>
         <section class="card stack">
@@ -1516,7 +1655,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
                 <option value="error" {'selected' if record.get('status') == 'error' else ''}>Error</option>
               </select></div>
               <div><label>Reviewer</label><input type="text" name="reviewer_name" value="{html.escape(str(record.get('reviewer_name', '')), quote=True)}"></div>
-              <div><label>Action type</label><select name="action_type"><option value="">Manual only</option><option value="replace_primary_heading" {'selected' if record.get('action_type') == 'replace_primary_heading' else ''}>Replace Primary Heading</option><option value="rewrite_title_and_intro" {'selected' if record.get('action_type') == 'rewrite_title_and_intro' else ''}>Rewrite Title And Intro</option><option value="strengthen_primary_cta" {'selected' if record.get('action_type') == 'strengthen_primary_cta' else ''}>Strengthen Primary Cta</option><option value="add_internal_links" {'selected' if record.get('action_type') == 'add_internal_links' else ''}>Add Internal Links</option><option value="update_faq_ai_extraction" {'selected' if record.get('action_type') == 'update_faq_ai_extraction' else ''}>Update Faq Ai Extraction</option></select></div>
+              <div><label>Action type</label><select name="action_type"><option value="">Manual only</option><option value="inject_faq_block" {'selected' if record.get('action_type') == 'inject_faq_block' else ''}>Inject Faq Block</option><option value="expand_service_page_section" {'selected' if record.get('action_type') == 'expand_service_page_section' else ''}>Expand Service Page Section</option></select></div>
               <div><label>Target post ID</label><input type="text" name="target_post_id" value="{html.escape(str(record.get('target_post_id', '')), quote=True)}" placeholder="Optional WordPress page ID"></div>
               <div class="span-2"><label>Action value</label><textarea name="action_value" placeholder="Exact action payload">{html.escape(str(record.get('action_value', '')))}</textarea></div>
               <div class="span-2"><label>Review notes</label><textarea name="review_notes">{html.escape(str(record.get('review_notes', '')))}</textarea></div>
@@ -1553,9 +1692,11 @@ def render_report_page(settings: Settings, mode: str, slug: str) -> str:
         return _page_shell("Not Found", f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
     html_path = entry["html_path"]
     if html_path.exists():
-        return _inject_admin_nav_into_report_html(html_path.read_text(), active="reports")
+        rendered = _inject_admin_nav_into_report_html(html_path.read_text(), active="reports")
+        banner = _mvp_mode_banner() if MVP_MODE_ACTIVE else ""
+        return rendered.replace('<div class="admin-report-shell">', f'<div class="admin-report-shell">{banner}', 1)
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
-        f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card stack'><p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
+        f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card stack'>{_mvp_mode_banner() if MVP_MODE_ACTIVE else ''}<p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
     )
