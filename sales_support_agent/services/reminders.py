@@ -66,6 +66,8 @@ class ReminderService:
         *,
         as_of_date: date,
         comments: list[dict[str, Any]] | None = None,
+        latest_event_at: datetime | None = None,
+        comment_touch_at: datetime | None = None,
     ) -> LeadEvaluation | None:
         status = (lead.status or "").strip()
         status_key = normalize_status_key(status)
@@ -76,8 +78,8 @@ class ReminderService:
         ):
             return None
 
-        last_event = self._latest_meaningful_event(lead.clickup_task_id)
-        comment_touch = self._latest_meaningful_comment(comments or [])
+        last_event = latest_event_at if latest_event_at is not None else self._latest_meaningful_event(lead.clickup_task_id)
+        comment_touch = comment_touch_at if comment_touch_at is not None else self._latest_meaningful_comment(comments or [])
         last_touch = self._max_datetime(lead.last_meaningful_touch_at, lead.last_outbound_at, lead.last_inbound_at, last_event, comment_touch)
         has_work_signal = bool(
             last_touch

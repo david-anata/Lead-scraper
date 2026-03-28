@@ -874,6 +874,41 @@ def build_executive_data(
             .order_by(CommunicationEvent.occurred_at.desc())
         ).scalars()
     )
+    active_leads = [
+        lead
+        for lead in leads
+        if is_active_pipeline_status(
+            (lead.status or "").strip(),
+            active_statuses=settings.active_statuses,
+            inactive_statuses=settings.inactive_statuses,
+        )
+    ]
+    active_task_ids = [lead.clickup_task_id for lead in active_leads if lead.clickup_task_id]
+    latest_meaningful_event_by_task: dict[str, CommunicationEvent] = {}
+    if active_task_ids:
+        meaningful_events = list(
+            session.execute(
+                select(CommunicationEvent)
+                .where(
+                    CommunicationEvent.clickup_task_id.in_(active_task_ids),
+                    CommunicationEvent.event_type.in_(
+                        [
+                            "outbound_email_sent",
+                            "inbound_reply_received",
+                            "call_completed",
+                            "meeting_completed",
+                            "offer_sent",
+                            "note_logged",
+                        ]
+                    ),
+                )
+                .order_by(CommunicationEvent.occurred_at.desc())
+            ).scalars()
+        )
+        for event in meaningful_events:
+            if event.clickup_task_id and event.clickup_task_id not in latest_meaningful_event_by_task:
+                latest_meaningful_event_by_task[event.clickup_task_id] = event
+
     latest_event_by_task: dict[str, CommunicationEvent] = {}
     for event in inbox_reply_events:
         if event.clickup_task_id and event.clickup_task_id not in latest_event_by_task:
@@ -890,7 +925,6 @@ def build_executive_data(
     late_stage_counter: Counter[str] = Counter()
     owner_mailbox_counter: Counter[str] = Counter()
     owner_reply_counter: Counter[str] = Counter()
-    comment_cache: dict[str, list[dict[str, object]]] = {}
     owner_stats: dict[str, dict[str, object]] = defaultdict(
         lambda: {
             "active": 0,
@@ -912,18 +946,17 @@ def build_executive_data(
         owner = signal.owner_name or "Assigned AE"
         owner_mailbox_counter[owner] += 1
 
-    for lead in leads:
+    for lead in active_leads:
         status = (lead.status or "").strip()
         status_key = " ".join(status.lower().split())
-        if not is_active_pipeline_status(
-            status,
-            active_statuses=settings.active_statuses,
-            inactive_statuses=settings.inactive_statuses,
-        ):
-            continue
-
-        comments = _get_task_comments(clickup_client, lead.clickup_task_id, comment_cache)
-        evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=comments)
+        latest_event = latest_meaningful_event_by_task.get(lead.clickup_task_id)
+        evaluation = reminder_service.evaluate_lead(
+            lead,
+            as_of_date=effective_date,
+            comments=[],
+            latest_event_at=latest_event.occurred_at if latest_event else None,
+            comment_touch_at=None,
+        )
         if evaluation is None:
             continue
 
@@ -939,8 +972,8 @@ def build_executive_data(
         )
         last_touch_source, context_summary = _build_executive_context(
             lead=lead,
-            comments=comments,
-            latest_event=latest_event_by_task.get(lead.clickup_task_id),
+            comments=[],
+            latest_event=latest_event,
             latest_mailbox_signal=latest_mailbox_signal_by_task.get(lead.clickup_task_id),
         )
         late_stage = status_key in late_stage_status_keys
