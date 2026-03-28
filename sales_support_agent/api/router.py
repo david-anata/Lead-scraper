@@ -1283,6 +1283,8 @@ def sync_clickup_tasks(
     _enforce_api_key(request, x_internal_api_key)
     _validate_runtime(request)
     settings = request.app.state.settings
+    with request.app.state.dashboard_sync_lock:
+        request.app.state.dashboard_sync_last_started_at = datetime.now(timezone.utc)
     try:
         with session_scope(request.app.state.session_factory) as session:
             summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(
@@ -1290,6 +1292,9 @@ def sync_clickup_tasks(
                 max_tasks=payload.max_tasks,
             )
     except ClickUpAPIError as exc:
+        with request.app.state.dashboard_sync_lock:
+            request.app.state.dashboard_sync_last_completed_at = datetime.now(timezone.utc)
+            request.app.state.dashboard_sync_last_error = str(exc)
         return ApiMessage(
             status="error",
             message=str(exc),
@@ -1300,6 +1305,9 @@ def sync_clickup_tasks(
                 "path": exc.path,
             },
         )
+    with request.app.state.dashboard_sync_lock:
+        request.app.state.dashboard_sync_last_completed_at = datetime.now(timezone.utc)
+        request.app.state.dashboard_sync_last_error = ""
     return ApiMessage(status="ok", message="ClickUp sync completed.", details=summary)
 
 
