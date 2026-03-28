@@ -761,12 +761,26 @@ def sync_remote_dashboard_sources() -> dict[str, Any]:
         "/api/clickup/sync",
         {"include_closed": True},
     )
+    clickup_status = str(clickup_sync.get("status") or "ok").strip().lower()
     stale_scan = _post_sales_support_job(
         "/api/jobs/stale-leads/run",
         {"dry_run": True},
-    )
+    ) if clickup_status == "ok" else {
+        "status": "skipped",
+        "message": "Stale lead scan skipped because ClickUp sync failed.",
+        "details": {"status": "skipped"},
+    }
     clickup_details = clickup_sync.get("details", clickup_sync)
     stale_details = stale_scan.get("details", stale_scan)
+    if clickup_status != "ok":
+        message = str(clickup_sync.get("message") or clickup_details.get("dashboard_error") or "Dashboard sync failed.")
+        return {
+            "clickup_sync": clickup_details,
+            "stale_lead_scan": stale_details,
+            "gmail_sync": {"status": "skipped", "reason": "enable once Gmail OAuth is fixed"},
+            "dashboard_error": message,
+            "message": message,
+        }
     synced_tasks = int(clickup_details.get("synced_tasks", 0) or 0)
     inspected = int(stale_details.get("inspected", 0) or 0)
     if synced_tasks == 0:
@@ -847,7 +861,7 @@ def _refresh_remote_dashboard_cache_for_app(app_instance: FastAPI, *, force: boo
         result = sync_remote_dashboard_sources()
         app_instance.state.admin_dashboard_last_auto_sync_at = datetime.now(timezone.utc)
         final_result = {
-            "status": "ok",
+            "status": "error" if str(result.get("dashboard_error") or "").strip() else "ok",
             "running": False,
             **result,
         }

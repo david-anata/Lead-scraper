@@ -9,6 +9,14 @@ import requests
 from sales_support_agent.config import Settings
 
 
+class ClickUpAPIError(RuntimeError):
+    def __init__(self, *, status_code: int, method: str, path: str, message: str):
+        super().__init__(message)
+        self.status_code = int(status_code)
+        self.method = method
+        self.path = path
+
+
 class ClickUpClient:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -25,7 +33,25 @@ class ClickUpClient:
             json=json_body,
             timeout=self.settings.clickup_request_timeout_seconds,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = ""
+            try:
+                payload = response.json() or {}
+                if isinstance(payload, dict):
+                    detail = str(payload.get("err") or payload.get("message") or payload.get("ECODE") or "").strip()
+            except ValueError:
+                detail = (response.text or "").strip()
+            message = f"ClickUp API {method.upper()} {path} failed with {response.status_code}."
+            if detail:
+                message = f"{message} {detail}"
+            raise ClickUpAPIError(
+                status_code=response.status_code,
+                method=method.upper(),
+                path=path,
+                message=message,
+            ) from exc
         if not response.content:
             return {}
         return response.json()
@@ -36,7 +62,7 @@ class ClickUpClient:
     def get_accessible_custom_fields(self, list_id: str) -> list[dict[str, Any]]:
         try:
             payload = self._request("GET", f"list/{list_id}/field")
-        except requests.HTTPError:
+        except ClickUpAPIError:
             return []
         return list(payload.get("fields", []) or payload.get("custom_fields", []) or [])
 
@@ -58,7 +84,7 @@ class ClickUpClient:
     def get_task_comments(self, task_id: str) -> list[dict[str, Any]]:
         try:
             payload = self._request("GET", f"task/{task_id}/comment")
-        except requests.HTTPError:
+        except ClickUpAPIError:
             return []
         return list(payload.get("comments", []) or [])
 
@@ -74,4 +100,3 @@ class ClickUpClient:
 
     def set_custom_field_value(self, task_id: str, field_id: str, value: Any) -> dict[str, Any]:
         return self._request("POST", f"task/{task_id}/field/{field_id}", json_body={"value": value})
-

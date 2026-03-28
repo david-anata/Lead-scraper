@@ -26,7 +26,7 @@ from main import (
 
 from sales_support_agent.config import get_missing_runtime_settings
 from sales_support_agent.integrations.canva import CanvaClient
-from sales_support_agent.integrations.clickup import ClickUpClient
+from sales_support_agent.integrations.clickup import ClickUpAPIError, ClickUpClient
 from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
 from sales_support_agent.integrations.slack import SlackClient
 from sales_support_agent.jobs.daily_digest import DailyDigestJob
@@ -219,6 +219,11 @@ def _dashboard_sync_details(request: Request) -> dict[str, object]:
         "max_age_minutes": max(1, request.app.state.settings.dashboard_auto_sync_max_age_minutes),
         "message": message,
     }
+
+
+def _dashboard_sync_error_message(request: Request) -> str:
+    with request.app.state.dashboard_sync_lock:
+        return str(request.app.state.dashboard_sync_last_error or "").strip()
 
 
 def _remote_lead_builder_url(request: Request) -> str:
@@ -541,7 +546,13 @@ def admin_dashboard_data(
             lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
         )
-    return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=dashboard_data_to_dict(dashboard))
+    details = dashboard_data_to_dict(dashboard)
+    sync_error = _dashboard_sync_error_message(request)
+    if sync_error:
+        latest_run_summary = dict(details.get("latest_run_summary", {}) or {})
+        latest_run_summary.setdefault("dashboard_error", sync_error)
+        details["latest_run_summary"] = latest_run_summary
+    return ApiMessage(status="ok", message="Admin dashboard data loaded.", details=details)
 
 
 @router.post("/admin/api/website-ops/run")
@@ -635,10 +646,16 @@ def admin_executive_data(
             session=session,
             clickup_client=ClickUpClient(settings),
         )
+    details = executive_data_to_dict(executive)
+    sync_error = _dashboard_sync_error_message(request)
+    if sync_error:
+        latest_run_summary = dict(details.get("latest_run_summary", {}) or {})
+        latest_run_summary.setdefault("executive_error", sync_error)
+        details["latest_run_summary"] = latest_run_summary
     return ApiMessage(
         status="ok",
         message="Executive summary data loaded.",
-        details=executive_data_to_dict(executive),
+        details=details,
     )
 
 
@@ -1266,10 +1283,22 @@ def sync_clickup_tasks(
     _enforce_api_key(request, x_internal_api_key)
     _validate_runtime(request)
     settings = request.app.state.settings
-    with session_scope(request.app.state.session_factory) as session:
-        summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(
-            include_closed=payload.include_closed,
-            max_tasks=payload.max_tasks,
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            summary = ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(
+                include_closed=payload.include_closed,
+                max_tasks=payload.max_tasks,
+            )
+    except ClickUpAPIError as exc:
+        return ApiMessage(
+            status="error",
+            message=str(exc),
+            details={
+                "dashboard_error": str(exc),
+                "http_status": exc.status_code,
+                "error_code": "clickup_auth_error" if exc.status_code in {401, 403} else "clickup_api_error",
+                "path": exc.path,
+            },
         )
     return ApiMessage(status="ok", message="ClickUp sync completed.", details=summary)
 
