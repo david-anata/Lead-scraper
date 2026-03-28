@@ -110,6 +110,10 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertNotIn("CONNECT CANVA", html)
         self.assertNotIn("Google sheet range", html)
         self.assertNotIn("Competitor Amazon links or ASINs", html)
+        self.assertIn("Failed sync state", html)
+        self.assertIn("Sync now", html)
+        self.assertIn("Needs review", html)
+        self.assertIn("Due today", html)
 
     def test_unknown_non_terminal_statuses_are_treated_as_active(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")

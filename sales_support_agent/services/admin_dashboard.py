@@ -1217,6 +1217,26 @@ def _get_task_comments(
     return comments
 
 
+def _sync_confidence_state(
+    *,
+    latest_sync_at: datetime | None,
+    error_message: str = "",
+    stale_after_minutes: int = 30,
+    now: datetime | None = None,
+) -> tuple[str, str]:
+    error_text = (error_message or "").strip()
+    if error_text:
+        return "failed", error_text
+    if latest_sync_at is None:
+        return "failed", "No successful sync has been recorded yet."
+    current_time = now or datetime.now(timezone.utc)
+    normalized_latest_sync = latest_sync_at if latest_sync_at.tzinfo else latest_sync_at.replace(tzinfo=timezone.utc)
+    age_minutes = max(0, int((current_time - normalized_latest_sync).total_seconds() // 60))
+    if stale_after_minutes > 0 and age_minutes >= stale_after_minutes:
+        return "stale", f"Last successful sync was {age_minutes} minutes ago."
+    return "healthy", f"Last successful sync was {age_minutes} minutes ago."
+
+
 def render_login_page(*, error_message: str = "") -> str:
     error_html = (
         f'<div class="notice error">{html.escape(error_message)}</div>'
@@ -1578,6 +1598,16 @@ def render_dashboard_page(data: DashboardData) -> str:
     today_value = data.as_of_date.isoformat()
     latest_run_summary = data.latest_run_summary or {}
     dashboard_error = str(latest_run_summary.get("dashboard_error", "") or "").strip()
+    sync_state, sync_state_note = _sync_confidence_state(
+        latest_sync_at=data.latest_sync_at,
+        error_message=dashboard_error,
+        stale_after_minutes=max(1, int(data.sync_stale_after_minutes or 30)),
+    )
+    sync_banner_title = {
+        "healthy": "Healthy",
+        "stale": "Stale",
+        "failed": "Failed",
+    }[sync_state]
     dashboard_error_notice = (
         '<div class="notice warning">Board data is temporarily unavailable. '
         + html.escape(dashboard_error)
@@ -1585,6 +1615,48 @@ def render_dashboard_page(data: DashboardData) -> str:
         if dashboard_error
         else ""
     )
+    priority_buckets = [
+        ("Overdue", "overdue", "Clear these first"),
+        ("Needs review", "needs_immediate_review", "Decide the next move"),
+        ("Due today", "follow_up_due", "Routine follow-up queue"),
+    ]
+    priority_lane_html = ""
+    if total_queue_items > 0:
+        priority_cards: list[str] = []
+        for label, urgency_key, helper in priority_buckets:
+            bucket_items = [
+                item
+                for queue in data.owner_queues
+                for item in queue.items
+                if item.urgency == urgency_key
+            ][:4]
+            priority_cards.append(
+                f"""
+                <section class="priority-lane urgency-{html.escape(urgency_key)}">
+                  <header>
+                    <div>
+                      <h3>{html.escape(label)}</h3>
+                      <p>{html.escape(helper)}</p>
+                    </div>
+                    <strong>{data.stale_counts.get(urgency_key, 0)}</strong>
+                  </header>
+                  <div class="priority-items">
+                    {''.join(
+                        f'''
+                        <article class="priority-item">
+                          <div class="priority-owner">{html.escape(item.owner_name)}</div>
+                          <div class="priority-title">{html.escape(item.title)}</div>
+                          <div class="priority-note">{html.escape(item.action_summary)}</div>
+                          {f'<a href="{html.escape(item.link_url)}" target="_blank" rel="noreferrer">Open task</a>' if item.link_url else ''}
+                        </article>
+                        '''
+                        for item in bucket_items
+                    ) or '<p class="empty">Nothing in this lane right now.</p>'}
+                  </div>
+                </section>
+                """
+            )
+        priority_lane_html = f'<section class="priority-lanes">{"".join(priority_cards)}</section>'
     empty_queue_message = (
         "No owner queues available because the board feed could not be loaded yet."
         if dashboard_error
@@ -1748,6 +1820,112 @@ def render_dashboard_page(data: DashboardData) -> str:
       }}
       .freshness-pill strong {{
         font-size: 12px;
+      }}
+      .confidence-banner {{
+        position: sticky;
+        top: 84px;
+        z-index: 30;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        margin-bottom: 18px;
+        background: rgba(133, 187, 218, 0.12);
+      }}
+      .confidence-banner.stale {{
+        background: rgba(191, 168, 137, 0.14);
+      }}
+      .confidence-banner.failed {{
+        background: rgba(139, 76, 66, 0.12);
+      }}
+      .confidence-copy {{
+        display: grid;
+        gap: 4px;
+      }}
+      .confidence-copy strong {{
+        font-family: "Montserrat", sans-serif;
+        font-size: 14px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }}
+      .confidence-copy span {{
+        font-size: 14px;
+        line-height: 1.4;
+      }}
+      .confidence-banner button {{
+        width: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 13px 22px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 14px;
+        cursor: pointer;
+      }}
+      .priority-lanes {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+        margin-bottom: 22px;
+      }}
+      .priority-lane {{
+        background: rgba(43, 54, 68, 0.03);
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 18px;
+        padding: 18px;
+      }}
+      .priority-lane header {{
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        margin-bottom: 14px;
+      }}
+      .priority-lane h3 {{
+        margin: 0 0 4px;
+        font-family: "Montserrat", sans-serif;
+        font-size: 20px;
+      }}
+      .priority-lane header p {{
+        margin: 0;
+        font-size: 14px;
+        color: rgba(43, 54, 68, 0.78);
+      }}
+      .priority-lane header strong {{
+        font-family: "Montserrat", sans-serif;
+        font-size: 28px;
+        line-height: 1;
+      }}
+      .priority-items {{
+        display: grid;
+        gap: 12px;
+      }}
+      .priority-item {{
+        padding-top: 12px;
+        border-top: 1px solid rgba(43, 54, 68, 0.08);
+      }}
+      .priority-owner {{
+        font-family: "Montserrat", sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }}
+      .priority-title {{
+        font-size: 15px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }}
+      .priority-note {{
+        font-size: 13px;
+        line-height: 1.45;
+        margin-bottom: 6px;
       }}
       .controls-grid {{
         display: grid;
@@ -2789,6 +2967,7 @@ def render_dashboard_page(data: DashboardData) -> str:
       @media (max-width: 1180px) {{
         .page-header,
         .controls-grid,
+        .priority-lanes,
         .metrics,
         .draft-summary-grid,
         .lead-form,
@@ -2840,6 +3019,16 @@ def render_dashboard_page(data: DashboardData) -> str:
           </div>
         </section>
 
+        <section class="confidence-banner {html.escape(sync_state)}">
+          <div class="confidence-copy">
+            <strong>{html.escape(sync_banner_title)} sync state</strong>
+            <span>{html.escape(sync_state_note)} Last successful sync: {html.escape(latest_sync)}.</span>
+          </div>
+          <button id="sync-dashboard-button" type="button">Sync now</button>
+        </section>
+
+        {priority_lane_html}
+
         <section class="controls-grid">
           <div class="panel-card">
             <div class="card-title-line">
@@ -2847,7 +3036,6 @@ def render_dashboard_page(data: DashboardData) -> str:
               {info_hint("Refreshes the ClickUp mirror and recalculates the stale-priority queue. Run this when you want the board to reflect the latest task state before reviewing owner work.")}
             </div>
             <p>The board loads from the last cached ClickUp sync and refreshes itself when that cache gets stale.</p>
-            <button id="sync-dashboard-button" type="button">REFRESH NOW</button>
             <div class="status-line" id="sync-status">{sync_status_initial}</div>
           </div>
 
@@ -3919,6 +4107,17 @@ def render_dashboard_page(data: DashboardData) -> str:
 def render_executive_page(data: ExecutiveData) -> str:
     payload_json = json.dumps(executive_data_to_dict(data)).replace("</", "<\\/")
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
+    executive_error = str((data.latest_run_summary or {}).get("executive_error", "") or "").strip()
+    sync_state, sync_state_note = _sync_confidence_state(
+        latest_sync_at=data.latest_sync_at,
+        error_message=executive_error,
+        stale_after_minutes=60,
+    )
+    sync_banner_title = {
+        "healthy": "Healthy",
+        "stale": "Stale",
+        "failed": "Failed",
+    }[sync_state]
     def info_hint(text: str) -> str:
         escaped = html.escape(text, quote=True)
         return (
@@ -4007,6 +4206,52 @@ def render_executive_page(data: ExecutiveData) -> str:
         font-size: 18px;
         line-height: 1.5;
         color: var(--dark-blue);
+      }}
+      .confidence-banner {{
+        position: sticky;
+        top: 84px;
+        z-index: 30;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid var(--border);
+        margin-bottom: 18px;
+        background: rgba(133, 187, 218, 0.12);
+      }}
+      .confidence-banner.stale {{
+        background: rgba(191, 168, 137, 0.14);
+      }}
+      .confidence-banner.failed {{
+        background: rgba(139, 76, 66, 0.12);
+      }}
+      .confidence-copy {{
+        display: grid;
+        gap: 4px;
+      }}
+      .confidence-copy strong {{
+        font-family: "Montserrat", sans-serif;
+        font-size: 14px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }}
+      .confidence-copy span {{
+        font-size: 14px;
+        line-height: 1.4;
+      }}
+      .confidence-banner button {{
+        border: 0;
+        border-radius: 999px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        padding: 12px 18px;
+        cursor: pointer;
       }}
       .summary-card {{
         background: rgba(133, 187, 218, 0.10);
@@ -4156,6 +4401,19 @@ def render_executive_page(data: ExecutiveData) -> str:
         border-radius: 20px;
         padding: 20px;
         margin-bottom: 18px;
+      }}
+      .section details.secondary-disclosure > summary {{
+        cursor: pointer;
+        font-family: "Montserrat", sans-serif;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 16px;
+      }}
+      .secondary-grid {{
+        display: grid;
+        gap: 18px;
       }}
       .section h2 {{
         margin: 0 0 16px;
@@ -4311,6 +4569,16 @@ def render_executive_page(data: ExecutiveData) -> str:
           </div>
         </section>
 
+        <section class="confidence-banner {html.escape(sync_state)}">
+          <div class="confidence-copy">
+            <strong>{html.escape(sync_banner_title)} sync state</strong>
+            <span>{html.escape(sync_state_note)} Last successful sync: {html.escape(latest_sync)}.</span>
+          </div>
+          <button id="executive-sync-button" type="button">Sync now</button>
+        </section>
+
+        <section class="kpis" id="kpi-grid"></section>
+
         <section class="summary-card">
           <h2 class="heading-line">Executive summary {info_hint("Leadership readout generated from the current active ClickUp mirror, response signals, and stale-priority logic.")}</h2>
           <p id="summary-text">{html.escape(data.summary_text)}</p>
@@ -4335,8 +4603,6 @@ def render_executive_page(data: ExecutiveData) -> str:
           </div>
         </section>
 
-        <section class="kpis" id="kpi-grid"></section>
-
         <section class="layout">
           <div>
             <section class="section">
@@ -4350,25 +4616,32 @@ def render_executive_page(data: ExecutiveData) -> str:
           </div>
           <div>
             <section class="section">
-              <h2 class="heading-line">Leads by status {info_hint("Current pipeline mix across the active ClickUp sales statuses.")}</h2>
-              <div class="dist-list" id="status-distribution"></div>
-            </section>
-            <section class="section">
-              <h2 class="heading-line">Leads by source {info_hint("Distribution of the current active pipeline by lead source.")}</h2>
-              <div class="dist-list" id="source-distribution"></div>
-            </section>
-            <section class="section">
-              <h2 class="heading-line">Last-touch aging {info_hint("How long it has been since the most recent meaningful touch on each active lead.")}</h2>
-              <div class="dist-list" id="aging-distribution"></div>
-            </section>
-            <section class="section">
-              <h2 class="heading-line">Late-stage mix {info_hint("Pipeline concentration in qualified, needs offer, offered, and negotiating stages.")}</h2>
-              <div class="dist-list" id="late-stage-distribution"></div>
-            </section>
-            <section class="section">
-              <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.")}</h2>
-              <div class="snapshot" id="hygiene-snapshot"></div>
-              <div id="owner-response"></div>
+              <details class="secondary-disclosure">
+                <summary>Show secondary breakdowns</summary>
+                <div class="secondary-grid">
+                  <section class="section">
+                    <h2 class="heading-line">Leads by status {info_hint("Current pipeline mix across the active ClickUp sales statuses.")}</h2>
+                    <div class="dist-list" id="status-distribution"></div>
+                  </section>
+                  <section class="section">
+                    <h2 class="heading-line">Leads by source {info_hint("Distribution of the current active pipeline by lead source.")}</h2>
+                    <div class="dist-list" id="source-distribution"></div>
+                  </section>
+                  <section class="section">
+                    <h2 class="heading-line">Last-touch aging {info_hint("How long it has been since the most recent meaningful touch on each active lead.")}</h2>
+                    <div class="dist-list" id="aging-distribution"></div>
+                  </section>
+                  <section class="section">
+                    <h2 class="heading-line">Late-stage mix {info_hint("Pipeline concentration in qualified, needs offer, offered, and negotiating stages.")}</h2>
+                    <div class="dist-list" id="late-stage-distribution"></div>
+                  </section>
+                  <section class="section">
+                    <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.")}</h2>
+                    <div class="snapshot" id="hygiene-snapshot"></div>
+                    <div id="owner-response"></div>
+                  </section>
+                </div>
+              </details>
             </section>
           </div>
         </section>
@@ -4377,6 +4650,7 @@ def render_executive_page(data: ExecutiveData) -> str:
     <div class="footer-bar" aria-hidden="true"></div>
     <script>
       const executiveData = {payload_json};
+      const executiveSyncButton = document.getElementById("executive-sync-button");
       const ownerFilter = document.getElementById("owner-filter");
       const statusFilter = document.getElementById("status-filter");
       const sourceFilter = document.getElementById("source-filter");
@@ -4494,22 +4768,21 @@ def render_executive_page(data: ExecutiveData) -> str:
 
       function renderKpis(leads) {{
         const pipelineValue = leads.reduce((sum, lead) => sum + Number(lead.value_numeric || 0), 0);
-        const pipelineTarget = Number(executiveData.kpis.pipeline_target || 100000);
-        const pipelineProgress = pipelineTarget > 0 ? Math.min((pipelineValue / pipelineTarget) * 100, 999) : 0;
+        const ownerRows = aggregateOwnerScorecards(leads);
+        const topOwner = ownerRows[0];
+        const overdueCount = leads.filter((lead) => lead.urgency === "overdue").length;
+        const lateStageStaleCount = leads.filter((lead) => lead.late_stage_stale).length;
         const kpis = [
-          ["Active leads", leads.length, "Current active pipeline", "number", "Current active pipeline in the filtered view."],
-          ["Pipeline value", pipelineValue, "Parseable close value across filtered leads", "currency", "Only leads with parseable value are included in this rollup."],
-          ["Goal progress", pipelineProgress, `Toward the $${{formatNumber(pipelineTarget)}} pipeline target`, "percent", "Share of the $100k target covered by parseable pipeline value."],
-          ["Overdue", leads.filter((lead) => lead.urgency === "overdue").length, "Highest urgency follow-up risk", "number", "Leads whose follow-up window has already passed."],
-          ["Review", leads.filter((lead) => lead.urgency === "needs_immediate_review").length, "Needs a decision or clean-up", "number", "Leads needing immediate review because they are untouched or missing the next step."],
-          ["Due", leads.filter((lead) => lead.urgency === "follow_up_due").length, "Routine next touches", "number", "Leads due for a routine follow-up today."],
-          ["Untouched 7+ days", leads.filter((lead) => lead.days_since_touch !== null && lead.days_since_touch >= 7).length, "Aging engagement risk", "number", "Leads with seven or more days since their last meaningful touch."],
-          ["Late-stage stale", leads.filter((lead) => lead.late_stage_stale).length, "Needs offer / offered / negotiating at risk", "number", "Late-stage leads that are overdue or require immediate review."],
+          ["Active leads", leads.length, `${{formatNumber(leads.length)}} active -> inspect queue if risk rises`, "number", "Current active pipeline in the filtered view."],
+          ["Pipeline value", pipelineValue, "Parseable close value -> focus on at-risk revenue", "currency", "Only leads with parseable value are included in this rollup."],
+          ["Overdue", overdueCount, `${{formatNumber(overdueCount)}} overdue -> clear these first`, "number", "Leads whose follow-up window has already passed."],
+          ["Late-stage stale", lateStageStaleCount, `${{formatNumber(lateStageStaleCount)}} at risk -> review today`, "number", "Late-stage leads that are overdue or require immediate review."],
+          ["Top owner at risk", topOwner ? `${{topOwner.owner_name}} (${{formatNumber(topOwner.overdue_count)}})` : "None", topOwner ? "Inspect queue" : "No overdue owner risk", "text", "Owner carrying the highest overdue concentration in the filtered view."],
         ];
         document.getElementById("kpi-grid").innerHTML = kpis.map(([label, value, note, type, tooltip]) => `
           <section class="kpi">
             <span class="heading-line">${{label}} ${{renderInfoHint(tooltip)}}</span>
-            <strong>${{type === "currency" ? formatCurrency(value) : type === "percent" ? formatPercent(value) : formatNumber(value)}}</strong>
+            <strong>${{type === "currency" ? formatCurrency(value) : type === "text" ? value : formatNumber(value)}}</strong>
             <small>${{note}}</small>
           </section>
         `).join("");
@@ -4598,7 +4871,7 @@ def render_executive_page(data: ExecutiveData) -> str:
           (b.days_since_touch || 0) - (a.days_since_touch || 0) ||
           (b.value_numeric || 0) - (a.value_numeric || 0) ||
           a.task_name.localeCompare(b.task_name)
-        )).slice(0, 15);
+        )).slice(0, 10);
 
         const list = document.getElementById("risk-list");
         if (!risks.length) {{
@@ -4679,8 +4952,30 @@ def render_executive_page(data: ExecutiveData) -> str:
         renderResponseSection(leads);
       }}
 
+      async function triggerExecutiveSync() {{
+        if (!executiveSyncButton) return;
+        executiveSyncButton.disabled = true;
+        executiveSyncButton.textContent = "Syncing...";
+        try {{
+          const response = await fetch("/admin/api/sync-dashboard?background=true", {{ method: "POST" }});
+          if (!response.ok) {{
+            throw new Error("Unable to start sync.");
+          }}
+          window.setTimeout(() => window.location.reload(), 3000);
+        }} catch (error) {{
+          executiveSyncButton.textContent = "Sync failed";
+          window.setTimeout(() => {{
+            executiveSyncButton.disabled = false;
+            executiveSyncButton.textContent = "Sync now";
+          }}, 2000);
+        }}
+      }}
+
       initFilters();
       renderExecutiveView();
+      if (executiveSyncButton) {{
+        executiveSyncButton.addEventListener("click", triggerExecutiveSync);
+      }}
       window.setTimeout(() => window.location.reload(), 60 * 60 * 1000);
     </script>
   </body>
