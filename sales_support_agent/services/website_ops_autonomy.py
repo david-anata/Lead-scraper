@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Mapping
 from urllib.parse import quote, urlparse
 
 import requests
+from sales_support_agent.services import website_ops_vendor
 
 try:
     from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -33,6 +35,7 @@ class AnalyticsConfig:
     search_console_property: str
     ga4_property_id: str
     lookback_days: int
+    primary_lead_event: str
 
 
 def _setting(settings: Any, name: str, env_name: str, default: str = "") -> str:
@@ -80,12 +83,42 @@ def _path_from_url(value: str) -> str:
     return path.rstrip("/") or "/"
 
 
+def _humanize_slug(value: str) -> str:
+    cleaned = re.sub(r"[_\-]+", " ", str(value or "").strip()).strip()
+    return cleaned.title() if cleaned else ""
+
+
+def _service_focus(page: Mapping[str, Any], gsc: Mapping[str, Any]) -> str:
+    top_queries = list(gsc.get("top_queries") or [])
+    if top_queries:
+        top_query = str(top_queries[0].get("query", "")).strip()
+        if top_query:
+            return top_query.title()
+    title = str(page.get("title", "") or "").strip()
+    if title:
+        return title
+    return _humanize_slug((_path_from_url(str(page.get("url", ""))) or "/").split("/")[-1])
+
+
+def _service_cluster_map(urls: list[str]) -> dict[str, list[str]]:
+    normalized = [_normalize_url(url) for url in urls if str(url).strip()]
+    services = [url for url in normalized if "/services/" in url and url.rstrip("/").split("/")[-1] != "services"]
+    hub = next((url for url in normalized if url.rstrip("/").endswith("/services")), "")
+    mapping: dict[str, list[str]] = {}
+    for url in services:
+        peers = [candidate for candidate in services if candidate != url][:3]
+        ordered = [item for item in ([hub] if hub else []) + peers if item]
+        mapping[url] = ordered[:3]
+    return mapping
+
+
 def analytics_config_from_settings(settings: Any) -> AnalyticsConfig:
     return AnalyticsConfig(
         service_account_json=_setting(settings, "google_service_account_json", "GOOGLE_SERVICE_ACCOUNT_JSON"),
         search_console_property=_setting(settings, "website_ops_gsc_property", "WEBSITE_OPS_GSC_PROPERTY", "sc-domain:anatainc.com"),
         ga4_property_id=_setting(settings, "website_ops_ga4_property_id", "WEBSITE_OPS_GA4_PROPERTY_ID", "372887830"),
         lookback_days=max(int(_setting(settings, "website_ops_lookback_days", "WEBSITE_OPS_LOOKBACK_DAYS", "28") or "28"), 7),
+        primary_lead_event=_setting(settings, "website_ops_ga4_primary_lead_event", "WEBSITE_OPS_GA4_PRIMARY_LEAD_EVENT", "generate_lead"),
     )
 
 
@@ -251,7 +284,7 @@ def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[s
         json={
             "dateRanges": [{"startDate": f"{config.lookback_days}daysAgo", "endDate": "yesterday"}],
             "dimensions": [{"name": "landingPagePlusQueryString"}],
-            "metrics": [{"name": "sessions"}, {"name": "engagedSessions"}, {"name": "conversions"}],
+            "metrics": [{"name": "sessions"}, {"name": "engagedSessions"}],
             "limit": 250,
         },
         timeout=30,
@@ -259,12 +292,32 @@ def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[s
     if not response.ok:
         return {}, [_ga4_failure_note(response, config.ga4_property_id, str(project_name))]
 
+    lead_response = requests.post(
+        f"https://analyticsdata.googleapis.com/v1beta/properties/{config.ga4_property_id}:runReport",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={
+            "dateRanges": [{"startDate": f"{config.lookback_days}daysAgo", "endDate": "yesterday"}],
+            "dimensions": [{"name": "landingPagePlusQueryString"}],
+            "metrics": [{"name": "eventCount"}],
+            "dimensionFilter": {
+                "filter": {
+                    "fieldName": "eventName",
+                    "stringFilter": {"matchType": "EXACT", "value": config.primary_lead_event},
+                }
+            },
+            "limit": 250,
+        },
+        timeout=30,
+    )
+    if not lead_response.ok:
+        return {}, [_ga4_failure_note(lead_response, config.ga4_property_id, str(project_name))]
+
     monitored_paths = {_path_from_url(url): _normalize_url(url) for url in urls}
     metrics_by_url: dict[str, dict[str, Any]] = {}
     for row in response.json().get("rows", []):
         dimensions = row.get("dimensionValues") or []
         metrics = row.get("metricValues") or []
-        if not dimensions or len(metrics) < 3:
+        if not dimensions or len(metrics) < 2:
             continue
         landing = str(dimensions[0].get("value", "")).strip()
         path = _path_from_url(landing)
@@ -273,13 +326,41 @@ def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[s
         url = monitored_paths[path]
         sessions = float(metrics[0].get("value", 0) or 0)
         engaged_sessions = float(metrics[1].get("value", 0) or 0)
-        conversions = float(metrics[2].get("value", 0) or 0)
         metrics_by_url[url] = {
             "sessions": sessions,
             "engaged_sessions": engaged_sessions,
-            "conversions": conversions,
-            "conversion_rate": (conversions / sessions) if sessions else 0.0,
+            "lead_conversions": 0.0,
+            "lead_conversion_rate": 0.0,
+            "primary_lead_event": config.primary_lead_event,
+            "trust_status": "partial",
         }
+    for row in lead_response.json().get("rows", []):
+        dimensions = row.get("dimensionValues") or []
+        metrics = row.get("metricValues") or []
+        if not dimensions or not metrics:
+            continue
+        landing = str(dimensions[0].get("value", "")).strip()
+        path = _path_from_url(landing)
+        if path not in monitored_paths:
+            continue
+        url = monitored_paths[path]
+        metrics_by_url.setdefault(
+            url,
+            {
+                "sessions": 0.0,
+                "engaged_sessions": 0.0,
+                "lead_conversions": 0.0,
+                "lead_conversion_rate": 0.0,
+                "primary_lead_event": config.primary_lead_event,
+                "trust_status": "partial",
+            },
+        )
+        metrics_by_url[url]["lead_conversions"] = float(metrics[0].get("value", 0) or 0)
+    for value in metrics_by_url.values():
+        sessions = float(value.get("sessions", 0) or 0)
+        lead_conversions = float(value.get("lead_conversions", 0) or 0)
+        value["lead_conversion_rate"] = (lead_conversions / sessions) if sessions else 0.0
+        value["trust_status"] = "trusted" if lead_conversions > 0 else ("partial" if sessions > 0 else "missing")
     return metrics_by_url, []
 
 
@@ -293,10 +374,117 @@ def _expected_impact(action_type: str) -> str:
         "rewrite_title_and_intro": "Higher SERP click-through rate from existing impressions.",
         "strengthen_primary_cta": "Higher lead conversion rate from existing traffic.",
         "resolve_canonical_route": "Clearer authority consolidation and less route confusion.",
-        "expand_topic_coverage": "Broader query coverage, stronger AI extraction, and better service-page depth.",
+        "update_faq_ai_extraction": "Broader query coverage, stronger AI extraction, and better service-page depth.",
         "add_internal_links": "Stronger authority flow into commercial pages and clearer topical relationships.",
     }
     return impacts.get(action_type, "Improves page performance against the current growth goal.")
+
+
+def _lead_trust_status(ga4_metrics: Mapping[str, Mapping[str, Any]], ga4_notes: list[str]) -> str:
+    if ga4_notes:
+        return "missing"
+    total_sessions = sum(float(item.get("sessions", 0) or 0) for item in ga4_metrics.values())
+    total_leads = sum(float(item.get("lead_conversions", 0) or 0) for item in ga4_metrics.values())
+    if total_leads > 0:
+        return "trusted"
+    if total_sessions > 0:
+        return "partial"
+    return "missing"
+
+
+def _content_opportunity(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[str, Any]) -> dict[str, Any]:
+    impressions = float(gsc.get("impressions", 0) or 0)
+    top_queries = list(gsc.get("top_queries") or [])
+    sessions = float(ga4.get("sessions", 0) or 0)
+    low_demand = impressions < 25 and sessions < 15
+    weak_ai_ready = bool(top_queries) or low_demand
+    return {
+        "faq_gap": weak_ai_ready and not page.get("issues"),
+        "internal_link_gap": bool(top_queries) and impressions < 60,
+        "weak_ai_ready": weak_ai_ready,
+    }
+
+
+def _evidence_lines(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[str, Any], *, primary_lead_event: str) -> list[str]:
+    evidence = []
+    impressions = int(float(gsc.get("impressions", 0) or 0))
+    clicks = int(float(gsc.get("clicks", 0) or 0))
+    ctr = float(gsc.get("ctr", 0) or 0)
+    position = float(gsc.get("position", 0) or 0)
+    sessions = int(float(ga4.get("sessions", 0) or 0))
+    leads = int(float(ga4.get("lead_conversions", 0) or 0))
+    lead_rate = float(ga4.get("lead_conversion_rate", 0) or 0)
+    if impressions:
+        evidence.append(f"Search Console: {impressions} impressions, {clicks} clicks, {ctr:.2%} CTR.")
+    if position:
+        evidence.append(f"Average position is {position:.1f}.")
+    if sessions:
+        evidence.append(f"GA4: {sessions} sessions, {leads} {primary_lead_event} events, {lead_rate:.2%} conversion rate.")
+    top_queries = list(gsc.get("top_queries") or [])
+    if top_queries:
+        query = str(top_queries[0].get("query", "")).strip()
+        if query:
+            evidence.append(f"Top query signal: {query}.")
+    if page.get("issues"):
+        evidence.append(f"Structural issues present: {len(page.get('issues') or [])}.")
+    return evidence
+
+
+def _execution_envelope(action: Mapping[str, Any], *, page_url: str) -> dict[str, Any]:
+    details = website_ops_vendor.execution_target_details(
+        {
+            "page_url": page_url,
+            "action_type": action.get("action_type", ""),
+            "suggested_action_type": action.get("action_type", ""),
+            "suggested_action_value": action.get("action_value", ""),
+        }
+    )
+    confidence = _confidence_level(str(action.get("confidence", "medium")))
+    executable = confidence == "high" and bool(details.get("eligible"))
+    return {
+        "execution_eligibility": "auto_execute" if executable else "approval_required",
+        "target_region": str(details.get("target_region", "") or ""),
+        "verification_requirements": list(details.get("verification_requirements") or []),
+        "execution_reason": str(details.get("reason", "") or ""),
+        "requires_approval": not executable,
+    }
+
+
+def _base_action(
+    *,
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    action_type: str,
+    section_name: str,
+    before_state: str,
+    after_state: str,
+    reason: str,
+    insight_source: str,
+    confidence: str,
+    action_payload: Mapping[str, Any],
+    primary_lead_event: str,
+    confidence_basis: list[str],
+) -> dict[str, Any]:
+    action = {
+        "page_url": page.get("url", ""),
+        "page_title": page.get("title", ""),
+        "action_type": action_type,
+        "section_name": section_name,
+        "before_state": before_state,
+        "after_state": after_state,
+        "reason": reason,
+        "insight_source": insight_source,
+        "expected_impact": _expected_impact(action_type),
+        "confidence": _confidence_level(confidence),
+        "status": "recommended",
+        "evidence": _evidence_lines(page, gsc, ga4, primary_lead_event=primary_lead_event),
+        "confidence_basis": confidence_basis,
+        "ga4_trust_status": str(ga4.get("trust_status", "missing") or "missing"),
+        "action_value": json.dumps(action_payload, sort_keys=True),
+    }
+    action.update(_execution_envelope(action, page_url=str(page.get("url", ""))))
+    return action
 
 
 def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, Any]) -> dict[str, Any]:
@@ -304,7 +492,7 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
     h1 = list(page.get("h1") or [])
     canonical = str(page.get("canonical_url", "") or "")
     if code == "MULTIPLE_H1":
-        return {
+        action = {
             "page_url": page.get("url", ""),
             "page_title": page.get("title", ""),
             "action_type": "replace_primary_heading",
@@ -315,11 +503,13 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
             "insight_source": "Structural audit",
             "expected_impact": _expected_impact("replace_primary_heading"),
             "confidence": "high",
-            "requires_approval": False,
-            "status": "recommended",
+            "evidence": [str(issue.get("summary", "")).strip()],
+            "confidence_basis": ["Multiple H1s are deterministic structural debt."],
         }
+        action.update(_execution_envelope(action, page_url=str(page.get("url", ""))))
+        return action
     if code == "MISSING_H1":
-        return {
+        action = {
             "page_url": page.get("url", ""),
             "page_title": page.get("title", ""),
             "action_type": "replace_primary_heading",
@@ -330,9 +520,11 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
             "insight_source": "Structural audit",
             "expected_impact": _expected_impact("replace_primary_heading"),
             "confidence": "high",
-            "requires_approval": False,
-            "status": "recommended",
+            "evidence": [str(issue.get("summary", "")).strip()],
+            "confidence_basis": ["Missing H1 can be resolved deterministically."],
         }
+        action.update(_execution_envelope(action, page_url=str(page.get("url", ""))))
+        return action
     if code in {"CANONICAL_MISMATCH", "REDIRECTED_URL"}:
         return {
             "page_url": page.get("url", ""),
@@ -345,8 +537,11 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
             "insight_source": "Structural audit",
             "expected_impact": _expected_impact("resolve_canonical_route"),
             "confidence": "medium",
-            "requires_approval": True,
-            "status": "recommended",
+            "evidence": [str(issue.get("summary", "")).strip()],
+            "confidence_basis": ["Canonical decisions can affect URL authority and should remain approval-first."],
+            "execution_eligibility": "approval_required",
+            "target_region": "Route / canonical",
+            "verification_requirements": ["Canonical route aligns to one preferred URL"],
         }
     if code == "MISSING_CANONICAL":
         return {
@@ -360,8 +555,11 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
             "insight_source": "Structural audit",
             "expected_impact": _expected_impact("resolve_canonical_route"),
             "confidence": "medium",
-            "requires_approval": True,
-            "status": "recommended",
+            "evidence": [str(issue.get("summary", "")).strip()],
+            "confidence_basis": ["Canonical changes can affect indexation and should remain approval-first."],
+            "execution_eligibility": "approval_required",
+            "target_region": "Canonical tag",
+            "verification_requirements": ["Canonical tag resolves to the preferred URL"],
         }
     return {
         "page_url": page.get("url", ""),
@@ -374,86 +572,172 @@ def _structural_action_from_issue(page: Mapping[str, Any], issue: Mapping[str, A
         "insight_source": "Structural audit",
         "expected_impact": "Reduces structural SEO risk on this page.",
         "confidence": "medium",
-        "requires_approval": True,
-        "status": "recommended",
+        "evidence": [str(issue.get("summary", "")).strip()],
+        "confidence_basis": ["Manual review is required for non-deterministic structural issues."],
+        "execution_eligibility": "approval_required",
+        "target_region": "Page structure",
+        "verification_requirements": [],
     }
 
 
-def _analytics_actions(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _analytics_actions(
+    page: Mapping[str, Any],
+    gsc: Mapping[str, Any],
+    ga4: Mapping[str, Any],
+    *,
+    primary_lead_event: str,
+    cluster_map: Mapping[str, list[str]],
+) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     impressions = float(gsc.get("impressions", 0) or 0)
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
-    conversions = float(ga4.get("conversions", 0) or 0)
+    lead_conversions = float(ga4.get("lead_conversions", 0) or 0)
+    lead_rate = float(ga4.get("lead_conversion_rate", 0) or 0)
     top_queries = list(gsc.get("top_queries") or [])
     has_issues = bool(page.get("issues"))
-    if impressions >= 20 and ctr < 0.03:
-        actions.append(
-            {
-                "page_url": page.get("url", ""),
-                "page_title": page.get("title", ""),
-                "action_type": "rewrite_title_and_intro",
-                "section_name": "Title / SERP framing",
-                "before_state": f"{int(impressions)} impressions at {ctr:.1%} CTR",
-                "after_state": "Rewrite title and top-of-page messaging to align with buyer intent and likely query language.",
-                "reason": "This page is appearing in search often enough to matter, but too few searchers click through.",
-                "insight_source": "Google Search Console",
-                "expected_impact": _expected_impact("rewrite_title_and_intro"),
-                "confidence": "high" if impressions >= 80 else "medium",
-                "requires_approval": True,
-                "status": "recommended",
-            }
+    focus = _service_focus(page, gsc)
+    content_gap = _content_opportunity(page, gsc, ga4)
+    top_query = str(top_queries[0].get("query", "")).strip() if top_queries else ""
+    if impressions >= 40 and ctr < 0.03:
+        title_text = f"{focus} Services | Anata"
+        intro = (
+            f"Anata helps brands improve {focus.lower()} with execution-first support, clearer operating visibility, "
+            "and a faster path from audit findings to measurable growth."
         )
-    if sessions >= 10 and conversions == 0:
         actions.append(
-            {
-                "page_url": page.get("url", ""),
-                "page_title": page.get("title", ""),
-                "action_type": "strengthen_primary_cta",
-                "section_name": "Hero CTA / proof block",
-                "before_state": f"{int(sessions)} sessions and {int(conversions)} conversions",
-                "after_state": "Clarify the offer, add proof, and strengthen the primary conversion path.",
-                "reason": "The page is attracting visits but not converting them into lead actions.",
-                "insight_source": "Google Analytics 4",
-                "expected_impact": _expected_impact("strengthen_primary_cta"),
-                "confidence": "medium",
-                "requires_approval": True,
-                "status": "recommended",
-            }
+            _base_action(
+                page=page,
+                gsc=gsc,
+                ga4=ga4,
+                action_type="rewrite_title_and_intro",
+                section_name="Hero title and intro",
+                before_state=f"{int(impressions)} impressions at {ctr:.1%} CTR",
+                after_state="Rewrite the page title and hero intro around observed search demand and buyer language.",
+                reason="The page is already surfacing in search, but weak CTR suggests the title and intro are underselling relevance.",
+                insight_source="Google Search Console",
+                confidence="high" if impressions >= 100 and ctr < 0.02 else "medium",
+                action_payload={
+                    "page_title": title_text,
+                    "heading": focus,
+                    "intro": intro,
+                    "intro_html": f"<p>{intro}</p>",
+                },
+                primary_lead_event=primary_lead_event,
+                confidence_basis=[
+                    f"{int(impressions)} impressions crossed the title-test threshold.",
+                    f"{ctr:.2%} CTR is below the target benchmark for a commercial service page.",
+                    f"Top query language: {top_query or focus}.",
+                ],
+            )
         )
-    if not has_issues and impressions < 20 and sessions < 10:
-        actions.append(
-            {
-                "page_url": page.get("url", ""),
-                "page_title": page.get("title", ""),
-                "action_type": "expand_topic_coverage",
-                "section_name": "FAQ / entity coverage",
-                "before_state": f"{int(impressions)} impressions and {int(sessions)} sessions",
-                "after_state": "Expand question coverage, entity mentions, internal links, and AI extraction content on this service page.",
-                "reason": "This page is live but not earning enough search demand yet, so it needs stronger topical depth and distribution support.",
-                "insight_source": "Growth opportunity",
-                "expected_impact": _expected_impact("expand_topic_coverage"),
-                "confidence": "medium",
-                "requires_approval": True,
-                "status": "recommended",
-            }
+    if sessions >= 20 and lead_rate < 0.01:
+        trust_status = str(ga4.get("trust_status", "missing") or "missing")
+        confidence = "high" if trust_status == "trusted" and sessions >= 30 else "medium"
+        cta_text = "Book a Free Analysis"
+        proof_text = (
+            "Get service-specific recommendations, channel priorities, and a practical execution plan tailored to your current operation."
         )
-    if not has_issues and impressions < 50 and top_queries:
         actions.append(
+            _base_action(
+                page=page,
+                gsc=gsc,
+                ga4=ga4,
+                action_type="strengthen_primary_cta",
+                section_name="Hero CTA and proof block",
+                before_state=f"{int(sessions)} sessions, {int(lead_conversions)} {primary_lead_event} events, {lead_rate:.2%} lead rate",
+                after_state="Strengthen the CTA language and add proof that reduces hesitation on the primary lead path.",
+                reason="Traffic is reaching the page, but the main conversion block is not turning enough visits into qualified lead submissions.",
+                insight_source="Google Analytics 4",
+                confidence=confidence if trust_status == "trusted" else "medium",
+                action_payload={
+                    "cta_text": cta_text,
+                    "proof_text": proof_text,
+                    "proof_html": f"<p>{proof_text}</p>",
+                },
+                primary_lead_event=primary_lead_event,
+                confidence_basis=[
+                    f"{int(sessions)} sessions have reached the page during the lookback window.",
+                    f"Primary lead event trust is {trust_status}.",
+                    f"{lead_rate:.2%} lead conversion rate is below target.",
+                ],
+            )
+        )
+    peers = list(cluster_map.get(_normalize_url(str(page.get("url", ""))), []) or [])
+    if not has_issues and content_gap["internal_link_gap"] and peers:
+        links = []
+        for url in peers[:3]:
+            anchor = _humanize_slug((_path_from_url(url).split("/")[-1] or "services"))
+            if top_query:
+                anchor = f"{anchor} services"
+            links.append({"url": url, "anchor": anchor})
+        actions.append(
+            _base_action(
+                page=page,
+                gsc=gsc,
+                ga4=ga4,
+                action_type="add_internal_links",
+                section_name="Internal links and cluster support",
+                before_state=f"Search demand is emerging, but only {int(impressions)} impressions are reaching the page.",
+                after_state="Add stronger internal links from adjacent service and hub pages using approved anchor language.",
+                reason="The page needs stronger internal authority and clearer topical support from related services.",
+                insight_source="Google Search Console",
+                confidence="high" if len(links) >= 2 and impressions >= 10 else "medium",
+                action_payload={"links": links, "section_label": "Related services"},
+                primary_lead_event=primary_lead_event,
+                confidence_basis=[
+                    f"{len(top_queries)} query patterns are already visible in Search Console.",
+                    f"{len(links)} approved cluster destinations are available.",
+                    "Internal links are safe only within approved insertion zones.",
+                ],
+            )
+        )
+    if not has_issues and content_gap["faq_gap"]:
+        query_seed = top_query or focus
+        questions = [
             {
-                "page_url": page.get("url", ""),
-                "page_title": page.get("title", ""),
-                "action_type": "add_internal_links",
-                "section_name": "Internal links / cluster support",
-                "before_state": f"Top query signal exists, but only {int(impressions)} impressions are reaching the page.",
-                "after_state": "Add stronger internal links from related service, cluster, and hub pages using aligned anchor language.",
-                "reason": "Search demand is emerging, but the page likely needs stronger internal authority and contextual support.",
-                "insight_source": "Google Search Console",
-                "expected_impact": _expected_impact("add_internal_links"),
-                "confidence": "medium",
-                "requires_approval": True,
-                "status": "recommended",
-            }
+                "question": f"What is {query_seed}?",
+                "answer": f"{focus} is the operational work required to improve execution, reporting clarity, and measurable growth around {query_seed.lower()}.",
+            },
+            {
+                "question": f"When should a brand invest in {query_seed}?",
+                "answer": "A brand should invest when performance is inconsistent, internal bandwidth is limited, or execution needs to move faster with clearer accountability.",
+            },
+            {
+                "question": f"How does Anata approach {query_seed}?",
+                "answer": "Anata focuses on practical implementation, measurable outcomes, and decision-ready reporting instead of generic recommendations.",
+            },
+        ]
+        actions.append(
+            _base_action(
+                page=page,
+                gsc=gsc,
+                ga4=ga4,
+                action_type="update_faq_ai_extraction",
+                section_name="FAQ and AI extraction block",
+                before_state=f"{int(impressions)} impressions, {int(sessions)} sessions, and limited structured answer coverage.",
+                after_state="Add a standardized FAQ and AI extraction block tied to observed search intent and service entities.",
+                reason="The page needs clearer definition statements, direct answers, and entity coverage to support both SEO and AI search extraction.",
+                insight_source="Google Search Console",
+                confidence="high" if top_queries else "medium",
+                action_payload={
+                    "heading": f"{focus} FAQ",
+                    "definitions": [
+                        f"{focus} should be tied to measurable growth, not generic activity.",
+                        f"Strong {focus.lower()} combines execution, reporting clarity, and commercial intent.",
+                    ],
+                    "questions": questions,
+                    "citable_sentences": [
+                        f"{focus} should improve both discoverability and conversion clarity.",
+                        f"Anata uses observed search demand to shape how service pages explain the offer.",
+                    ],
+                },
+                primary_lead_event=primary_lead_event,
+                confidence_basis=[
+                    "Topical coverage and answer extraction can be expanded safely within a dedicated FAQ block.",
+                    f"Search demand is {'present' if top_queries else 'still emerging'}, which supports structured Q&A content.",
+                ],
+            )
         )
     return actions
 
@@ -465,7 +749,7 @@ def _page_bucket(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[s
     impressions = float(gsc.get("impressions", 0) or 0)
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
-    conversions = float(ga4.get("conversions", 0) or 0)
+    conversions = float(ga4.get("lead_conversions", 0) or 0)
     if sessions >= 10 and conversions == 0:
         return "convert"
     if impressions >= 20 and ctr < 0.03:
@@ -492,7 +776,7 @@ def _page_score(page: Mapping[str, Any], gsc: Mapping[str, Any], ga4: Mapping[st
     impressions = float(gsc.get("impressions", 0) or 0)
     ctr = float(gsc.get("ctr", 0) or 0)
     sessions = float(ga4.get("sessions", 0) or 0)
-    conversions = float(ga4.get("conversions", 0) or 0)
+    conversions = float(ga4.get("lead_conversions", 0) or 0)
     if impressions >= 20 and ctr < 0.03:
         score -= 12
     if sessions >= 10 and conversions == 0:
@@ -516,6 +800,8 @@ def build_autonomy_overlay(
     identity = _service_account_identity(config.service_account_json)
     gsc_metrics, gsc_notes = fetch_search_console_snapshot(settings, urls)
     ga4_metrics, ga4_notes = fetch_ga4_snapshot(settings, urls)
+    cluster_map = _service_cluster_map(urls)
+    ga4_trust_status = _lead_trust_status(ga4_metrics, ga4_notes)
 
     page_insights: list[dict[str, Any]] = []
     action_queue: list[dict[str, Any]] = []
@@ -532,12 +818,20 @@ def build_autonomy_overlay(
             insights.extend(str(issue.get("summary", "")) for issue in observation.get("issues") or [])
         if float(gsc.get("impressions", 0) or 0) >= 50 and float(gsc.get("ctr", 0) or 0) < 0.02:
             insights.append("Search demand exists, but click-through rate is weak.")
-        if float(ga4.get("sessions", 0) or 0) >= 20 and float(ga4.get("conversions", 0) or 0) == 0:
-            insights.append("Traffic is reaching the page, but the page is not generating conversions.")
+        if float(ga4.get("sessions", 0) or 0) >= 20 and float(ga4.get("lead_conversions", 0) or 0) == 0:
+            insights.append("Traffic is reaching the page, but the page is not generating trusted lead conversions.")
 
         for issue in observation.get("issues") or []:
             action_queue.append(_structural_action_from_issue(observation, issue))
-        action_queue.extend(_analytics_actions(observation, gsc, ga4))
+        action_queue.extend(
+            _analytics_actions(
+                observation,
+                gsc,
+                ga4,
+                primary_lead_event=config.primary_lead_event,
+                cluster_map=cluster_map,
+            )
+        )
 
         page_insights.append(
             {
@@ -549,6 +843,8 @@ def build_autonomy_overlay(
                 "ga4": ga4,
                 "top_queries": gsc.get("top_queries", []),
                 "insights": insights[:3],
+                "why_this_page_now": insights[:2] or ["This page is part of the monitored commercial service set."],
+                "ga4_trust_status": str(ga4.get("trust_status", ga4_trust_status)),
             }
         )
 
@@ -556,27 +852,17 @@ def build_autonomy_overlay(
         support_requests.extend(gsc_notes)
     if ga4_notes:
         support_requests.extend(ga4_notes)
-    if ga4_metrics and all(float(item.get("conversions", 0) or 0) == 0 for item in ga4_metrics.values()):
-        support_requests.append("Define one primary GA4 lead event, ideally generate lead, and validate it on real contact, quote, and free analysis submits so Website Ops can prioritize conversion fixes with confidence.")
+    if ga4_trust_status != "trusted":
+        support_requests.append(
+            f"Define or verify the GA4 primary lead event ({config.primary_lead_event}) on real service-page submits so Website Ops can trust conversion-driven prioritization."
+        )
     if any(action.get("action_type") == "resolve_canonical_route" for action in action_queue):
         support_requests.append("Standardize all active commercial services under /services/, then redirect legacy /ecommerce-services/ routes so Website Ops can consolidate authority on one canonical page family.")
 
     approved_actions = [item for item in feedback_entries if str(item.get("status", "")).strip().lower() == "approved"]
-    start_doing = [
-        "Prioritize pages with search demand but weak CTR.",
-        "Prioritize pages with traffic but no conversions.",
-        "Approve high-confidence structural fixes quickly.",
-    ]
-    stop_doing = [
-        "Stop splitting authority across legacy and current route families.",
-        "Stop editing healthy pages without a clear search or conversion signal.",
-        "Stop publishing service pages without proof and conversion intent.",
-    ]
-    do_more_of = [
-        "Provide proof assets and case studies for priority service pages.",
-        "Clarify conversion events in GA4 so low-converting pages can be fixed faster.",
-        "Use the dashboard approval queue instead of one-off requests.",
-    ]
+    auto_executable_count = sum(1 for item in action_queue if str(item.get("execution_eligibility", "")) == "auto_execute")
+    approval_required_count = sum(1 for item in action_queue if str(item.get("execution_eligibility", "")) != "auto_execute")
+    action_type_coverage = sorted({str(item.get("action_type", "")).strip() for item in action_queue if str(item.get("action_type", "")).strip()})
 
     return {
         "goal": {
@@ -595,10 +881,15 @@ def build_autonomy_overlay(
             "client_email": identity.get("client_email", ""),
             "search_console_property": config.search_console_property,
             "ga4_property_id": config.ga4_property_id,
+            "ga4_trust_status": ga4_trust_status,
+            "primary_lead_event": config.primary_lead_event,
+            "conversion_weight_enabled": ga4_trust_status == "trusted",
+            "search_console_freshness": "connected" if not gsc_notes else "degraded",
+            "action_type_coverage": action_type_coverage,
+            "auto_executed_today": sum(1 for item in feedback_entries if str(item.get("status", "")).strip().lower() == "done"),
+            "approval_required_today": approval_required_count,
+            "auto_executable_today": auto_executable_count,
         },
-        "start_doing": start_doing,
-        "stop_doing": stop_doing,
-        "do_more_of": do_more_of,
         "support_requests": list(dict.fromkeys(item for item in support_requests if item)),
         "page_insights": sorted(page_insights, key=lambda item: (item["score"], item["page_url"]))[:20],
         "action_queue": action_queue[:25],

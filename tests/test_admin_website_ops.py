@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sales_support_agent.services import website_ops_vendor as website_ops
+from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
     latest_report_entry,
@@ -375,6 +376,128 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(reopened["status"], "new")
             self.assertEqual(reopened["reopened_from_feedback_id"], original["feedback_id"])
             self.assertEqual(reopened["reopened_reason"], "recommendation_reappeared")
+
+    def test_build_autonomy_overlay_generates_evidence_and_execution_contracts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            observations = [
+                {
+                    "url": "https://anatainc.com/services/fulfillment/",
+                    "title": "Fulfillment",
+                    "issues": [],
+                }
+            ]
+            with mock.patch(
+                "sales_support_agent.services.website_ops_autonomy.fetch_search_console_snapshot",
+                return_value=(
+                    {
+                        "https://anatainc.com/services/fulfillment": {
+                            "impressions": 140.0,
+                            "clicks": 2.0,
+                            "ctr": 0.014,
+                            "position": 18.0,
+                            "top_queries": [{"query": "amazon fulfillment services", "impressions": 80.0, "clicks": 2.0}],
+                        }
+                    },
+                    [],
+                ),
+            ):
+                with mock.patch(
+                    "sales_support_agent.services.website_ops_autonomy.fetch_ga4_snapshot",
+                    return_value=(
+                        {
+                            "https://anatainc.com/services/fulfillment": {
+                                "sessions": 42.0,
+                                "engaged_sessions": 30.0,
+                                "lead_conversions": 0.0,
+                                "lead_conversion_rate": 0.0,
+                                "trust_status": "partial",
+                            }
+                        },
+                        [],
+                    ),
+                ):
+                    with mock.patch(
+                        "sales_support_agent.services.website_ops_autonomy.website_ops_vendor.execution_target_details",
+                        return_value={
+                            "eligible": True,
+                            "execution_eligibility": "auto_execute",
+                            "target_region": "Hero title and intro",
+                            "reason": "Widgets located",
+                            "verification_requirements": ["Single H1 remains"],
+                        },
+                    ):
+                        overlay = build_autonomy_overlay(
+                            settings=settings,
+                            report=self._fake_report(),
+                            observations=observations,
+                            feedback_entries=[],
+                        )
+            self.assertEqual(overlay["analytics_status"]["ga4_trust_status"], "partial")
+            self.assertEqual(overlay["analytics_status"]["primary_lead_event"], "generate_lead")
+            action_types = {item["action_type"] for item in overlay["action_queue"]}
+            self.assertIn("rewrite_title_and_intro", action_types)
+            self.assertIn("strengthen_primary_cta", action_types)
+            title_action = next(item for item in overlay["action_queue"] if item["action_type"] == "rewrite_title_and_intro")
+            cta_action = next(item for item in overlay["action_queue"] if item["action_type"] == "strengthen_primary_cta")
+            self.assertEqual(title_action["execution_eligibility"], "auto_execute")
+            self.assertEqual(cta_action["execution_eligibility"], "approval_required")
+            self.assertTrue(title_action["evidence"])
+            self.assertTrue(title_action["verification_requirements"])
+
+    def test_run_website_ops_auto_executes_new_high_confidence_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            fake_pipeline = {
+                "report": self._fake_report(),
+                "observations": [{"url": "https://anatainc.com/services/shipping/", "title": "Shipping", "issues": []}],
+                "artifacts": {},
+            }
+            fake_overlay = {
+                "goal": {"primary": "Increase qualified leads."},
+                "action_queue": [
+                    {
+                        "page_url": "https://anatainc.com/services/shipping/",
+                        "page_title": "Shipping",
+                        "action_type": "rewrite_title_and_intro",
+                        "section_name": "Hero title and intro",
+                        "before_state": "120 impressions at 1.2% CTR",
+                        "after_state": "Rewrite title and intro around search demand.",
+                        "reason": "CTR is weak against meaningful impressions.",
+                        "insight_source": "Google Search Console",
+                        "expected_impact": "Higher SERP click-through rate from existing impressions.",
+                        "confidence": "high",
+                        "requires_approval": False,
+                        "evidence": ["120 impressions", "CTR is 1.2%"],
+                        "execution_eligibility": "auto_execute",
+                        "target_region": "Hero title and intro",
+                        "verification_requirements": ["Single H1 remains"],
+                        "action_value": json.dumps({"page_title": "Shipping Services | Anata", "heading": "Shipping services", "intro": "New intro", "intro_html": "<p>New intro</p>"}),
+                    }
+                ],
+                "analytics_status": {
+                    "search_console": True,
+                    "ga4": True,
+                    "notes": [],
+                    "ga4_trust_status": "trusted",
+                    "primary_lead_event": "generate_lead",
+                },
+                "support_requests": [],
+                "page_insights": [],
+            }
+            with mock.patch("sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline", return_value=fake_pipeline):
+                with mock.patch("sales_support_agent.services.website_ops.build_autonomy_overlay", return_value=fake_overlay):
+                    with mock.patch.object(
+                        website_ops,
+                        "execute_feedback_action",
+                        return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "rewrite_title_and_intro"},
+                    ):
+                        result = run_website_ops(settings, mode="daily")
+            self.assertTrue(result.ok)
+            records = load_feedback_records(settings)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["status"], "done")
+            self.assertEqual(records[0]["action_type"], "rewrite_title_and_intro")
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

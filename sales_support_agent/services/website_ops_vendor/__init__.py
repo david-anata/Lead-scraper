@@ -23,6 +23,7 @@ from .executor import (
     ExecutionError,
     execute_approved_feedback,
     execute_feedback_action,
+    execution_target_details,
     execution_enabled,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "ExecutionError",
     "execute_approved_feedback",
     "execute_feedback_action",
+    "execution_target_details",
     "execution_enabled",
 ]

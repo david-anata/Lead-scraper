@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,16 @@ from .core import WebsiteOpsConfig, collect_page_observation, load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BACKUPS_ROOT = ROOT_DIR / "website-ops" / "backups"
+SUPPORTED_ACTION_TYPES = {
+    "replace_primary_heading",
+    "rewrite_title_and_intro",
+    "strengthen_primary_cta",
+    "add_internal_links",
+    "update_faq_ai_extraction",
+}
+TEXT_WIDGET_TYPES = {"text-editor", "html"}
+PROOF_WIDGET_TYPES = {"text-editor", "html", "icon-list"}
+FAQ_WIDGET_TYPES = {"accordion", "toggle", "text-editor", "html"}
 
 
 class ExecutionError(RuntimeError):
@@ -119,6 +131,201 @@ def walk_elements(elements: Sequence[Dict[str, Any]]) -> Iterable[Dict[str, Any]
             yield child
 
 
+def walk_widget_refs(
+    elements: List[Dict[str, Any]],
+    *,
+    parent: Optional[List[Dict[str, Any]]] = None,
+) -> Iterable[Tuple[Dict[str, Any], List[Dict[str, Any]], int]]:
+    current_parent = parent or elements
+    for index, element in enumerate(elements):
+        yield element, current_parent, index
+        children = element.get("elements") or []
+        if isinstance(children, list) and children:
+            for child in walk_widget_refs(children, parent=children):
+                yield child
+
+
+def _new_widget_id(prefix: str) -> str:
+    return hashlib.sha1(f"{prefix}-{datetime.now(timezone.utc).isoformat()}".encode("utf-8")).hexdigest()[:7]
+
+
+def _normalize_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _strip_html(value: Any) -> str:
+    return _normalize_text(re.sub(r"<[^>]+>", " ", str(value or "")))
+
+
+def _find_widget_refs(elements: List[Dict[str, Any]], widget_types: set[str]) -> List[Tuple[Dict[str, Any], List[Dict[str, Any]], int]]:
+    refs: List[Tuple[Dict[str, Any], List[Dict[str, Any]], int]] = []
+    for element, parent, index in walk_widget_refs(elements):
+        if str(element.get("widgetType", "")).strip() in widget_types:
+            refs.append((element, parent, index))
+    return refs
+
+
+def _flatten_widget_refs(elements: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], List[Dict[str, Any]], int]]:
+    return [ref for ref in walk_widget_refs(elements) if str(ref[0].get("widgetType", "")).strip()]
+
+
+def _widget_text(element: Mapping[str, Any]) -> str:
+    widget_type = str(element.get("widgetType", "")).strip()
+    settings = element.get("settings") or {}
+    if widget_type == "heading":
+        return str(settings.get("title", ""))
+    if widget_type == "button":
+        return str(settings.get("text", ""))
+    if widget_type == "icon-list":
+        items = settings.get("icon_list") or []
+        if isinstance(items, list):
+            return " ".join(str(item.get("text", "")) for item in items if isinstance(item, dict))
+        return ""
+    if widget_type in TEXT_WIDGET_TYPES:
+        return str(settings.get("editor", "") or settings.get("html", ""))
+    return ""
+
+
+def _set_widget_text(element: Dict[str, Any], value: str) -> None:
+    widget_type = str(element.get("widgetType", "")).strip()
+    settings = dict(element.get("settings") or {})
+    if widget_type == "heading":
+        settings["title"] = value
+    elif widget_type == "button":
+        settings["text"] = value
+    elif widget_type == "icon-list":
+        settings["icon_list"] = [{"text": line.strip()} for line in str(value).splitlines() if line.strip()]
+    elif widget_type == "html":
+        settings["html"] = value
+    else:
+        settings["editor"] = value
+    element["settings"] = settings
+
+
+def _make_text_widget(html_value: str) -> Dict[str, Any]:
+    return {
+        "id": _new_widget_id("text"),
+        "elType": "widget",
+        "widgetType": "text-editor",
+        "settings": {"editor": html_value},
+        "elements": [],
+    }
+
+
+def _make_heading_widget(text: str, *, level: str = "h2") -> Dict[str, Any]:
+    return {
+        "id": _new_widget_id("heading"),
+        "elType": "widget",
+        "widgetType": "heading",
+        "settings": {"title": text, "header_size": level},
+        "elements": [],
+    }
+
+
+def _parse_action_payload(feedback: Mapping[str, Any]) -> Dict[str, Any]:
+    raw = str(feedback.get("action_value", "") or feedback.get("suggested_action_value", "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"text": raw}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+def _fetch_live_html(url: str, *, config: WebsiteOpsConfig) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": config.user_agent})
+    try:
+        with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        raise ExecutionError(f"Failed to fetch live page for verification: {exc.reason}") from exc
+
+
+def _verify_text_present(html_text: str, expected_text: str) -> bool:
+    return _normalize_text(expected_text).lower() in _strip_html(html_text).lower()
+
+
+def _infer_region_label(action_type: str) -> str:
+    labels = {
+        "replace_primary_heading": "Primary heading",
+        "rewrite_title_and_intro": "Hero title and intro",
+        "strengthen_primary_cta": "Primary CTA and proof block",
+        "add_internal_links": "Intro/body copy insertion zone",
+        "update_faq_ai_extraction": "FAQ / AI extraction section",
+    }
+    return labels.get(action_type, "Page region")
+
+
+def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
+    action_type = str(feedback.get("action_type") or feedback.get("suggested_action_type") or "").strip()
+    if action_type not in SUPPORTED_ACTION_TYPES:
+        return {
+            "eligible": False,
+            "execution_eligibility": "manual_only",
+            "target_region": _infer_region_label(action_type),
+            "reason": "Unsupported action type.",
+            "verification_requirements": [],
+        }
+    if not wp_site_url() or not wp_username() or not wp_application_password():
+        return {
+            "eligible": False,
+            "execution_eligibility": "approval_required",
+            "target_region": _infer_region_label(action_type),
+            "reason": "WordPress execution credentials are not configured.",
+            "verification_requirements": [],
+        }
+    try:
+        record = resolve_page_record(feedback)
+        elements = parse_elementor_data(record)
+        flat = _flatten_widget_refs(elements)
+    except ExecutionError as exc:
+        return {
+            "eligible": False,
+            "execution_eligibility": "approval_required",
+            "target_region": _infer_region_label(action_type),
+            "reason": str(exc),
+            "verification_requirements": [],
+        }
+
+    eligible = False
+    reason = ""
+    verification: list[str] = []
+    if action_type == "replace_primary_heading":
+        eligible = any(str(element.get("widgetType", "")) == "heading" for element, _, _ in flat)
+        reason = "Primary heading widget located." if eligible else "No heading widget found."
+        verification = ["Exactly one live H1", "Updated H1 text is visible"]
+    elif action_type == "rewrite_title_and_intro":
+        has_heading = any(str(element.get("widgetType", "")) == "heading" for element, _, _ in flat)
+        has_text = any(str(element.get("widgetType", "")) in TEXT_WIDGET_TYPES for element, _, _ in flat)
+        eligible = has_heading and has_text
+        reason = "Hero heading and intro text widgets located." if eligible else "Required heading/text widgets were not found."
+        verification = ["Live title contains new framing", "Intro text is visible", "Single H1 remains"]
+    elif action_type == "strengthen_primary_cta":
+        has_button = any(str(element.get("widgetType", "")) == "button" for element, _, _ in flat)
+        has_support = any(str(element.get("widgetType", "")) in PROOF_WIDGET_TYPES for element, _, _ in flat)
+        eligible = has_button and has_support
+        reason = "CTA and nearby support widgets located." if eligible else "Required CTA/proof widgets were not found."
+        verification = ["Updated CTA text is visible", "Proof/support copy is visible"]
+    elif action_type == "add_internal_links":
+        has_insertion = any(str(element.get("widgetType", "")) in TEXT_WIDGET_TYPES for element, _, _ in flat)
+        eligible = has_insertion
+        reason = "Approved insertion zone found." if eligible else "No text/html insertion zone found."
+        verification = ["All inserted links resolve internally", "No duplicate anchors in the updated zone"]
+    elif action_type == "update_faq_ai_extraction":
+        eligible = True
+        reason = "FAQ section can be replaced or appended deterministically."
+        verification = ["FAQ heading is visible", "At least one generated question is visible", "No duplicate FAQ block"]
+
+    return {
+        "eligible": eligible,
+        "execution_eligibility": "auto_execute" if eligible else "approval_required",
+        "target_region": _infer_region_label(action_type),
+        "reason": reason,
+        "verification_requirements": verification,
+    }
+
+
 def update_primary_heading(elements: List[Dict[str, Any]], new_text: str = "") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     first_heading: Optional[Dict[str, Any]] = None
     target_heading: Optional[Dict[str, Any]] = None
@@ -159,6 +366,155 @@ def update_primary_heading(elements: List[Dict[str, Any]], new_text: str = "") -
     }
 
 
+def update_title_and_intro(elements: List[Dict[str, Any]], payload: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    refs = _flatten_widget_refs(elements)
+    heading_ref = next((ref for ref in refs if str(ref[0].get("widgetType", "")) == "heading"), None)
+    text_ref = None
+    if heading_ref:
+        heading_index = refs.index(heading_ref)
+        for ref in refs[heading_index + 1 :]:
+            if str(ref[0].get("widgetType", "")) in TEXT_WIDGET_TYPES:
+                text_ref = ref
+                break
+    if heading_ref is None or text_ref is None:
+        raise ExecutionError("Could not locate a deterministic hero title and intro region.")
+    heading, _, _ = heading_ref
+    intro_widget, _, _ = text_ref
+    heading_text = str(payload.get("heading", "") or payload.get("page_title", "") or "").strip()
+    intro_html = str(payload.get("intro_html", "") or payload.get("intro", "") or "").strip()
+    if not heading_text or not intro_html:
+        raise ExecutionError("Title/intro payload is missing heading or intro content.")
+    before_heading = _widget_text(heading)
+    before_intro = _widget_text(intro_widget)
+    _set_widget_text(heading, heading_text)
+    _set_widget_text(intro_widget, intro_html)
+    return elements, {
+        "before_heading": before_heading,
+        "after_heading": heading_text,
+        "before_intro": before_intro,
+        "after_intro": intro_html,
+    }
+
+
+def update_primary_cta(elements: List[Dict[str, Any]], payload: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    refs = _flatten_widget_refs(elements)
+    button_ref = next((ref for ref in refs if str(ref[0].get("widgetType", "")) == "button"), None)
+    if button_ref is None:
+        raise ExecutionError("Could not locate a deterministic primary CTA button.")
+    cta_widget, parent_list, button_index = button_ref
+    proof_ref = None
+    button_flat_index = refs.index(button_ref)
+    for ref in refs[button_flat_index + 1 :]:
+        if str(ref[0].get("widgetType", "")) in PROOF_WIDGET_TYPES:
+            proof_ref = ref
+            break
+    cta_text = str(payload.get("cta_text", "") or "").strip()
+    proof_html = str(payload.get("proof_html", "") or payload.get("proof_text", "") or "").strip()
+    if not cta_text or not proof_html:
+        raise ExecutionError("CTA payload is missing CTA or proof content.")
+    before_cta = _widget_text(cta_widget)
+    _set_widget_text(cta_widget, cta_text)
+    created_proof = False
+    if proof_ref is None:
+        proof_widget = _make_text_widget(proof_html)
+        parent_list.insert(button_index + 1, proof_widget)
+        created_proof = True
+        before_proof = ""
+    else:
+        proof_widget, _, _ = proof_ref
+        before_proof = _widget_text(proof_widget)
+        _set_widget_text(proof_widget, proof_html)
+    return elements, {
+        "before_cta": before_cta,
+        "after_cta": cta_text,
+        "before_proof": before_proof,
+        "after_proof": proof_html,
+        "created_proof_widget": created_proof,
+    }
+
+
+def update_internal_links(elements: List[Dict[str, Any]], payload: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    refs = _flatten_widget_refs(elements)
+    insertion_ref = next((ref for ref in refs if str(ref[0].get("widgetType", "")) in TEXT_WIDGET_TYPES), None)
+    if insertion_ref is None:
+        raise ExecutionError("Could not locate a deterministic text block for internal link insertion.")
+    links = payload.get("links") or []
+    if not isinstance(links, list) or not links:
+        raise ExecutionError("Internal link payload is missing approved links.")
+    widget, _, _ = insertion_ref
+    before_html = _widget_text(widget)
+    existing_html = str(before_html or "")
+    new_links = []
+    for item in links[:3]:
+        if not isinstance(item, dict):
+            continue
+        href = str(item.get("url", "")).strip()
+        anchor = str(item.get("anchor", "")).strip()
+        if not href or not anchor:
+            continue
+        if href in existing_html:
+            continue
+        new_links.append(f'<a href="{href}">{anchor}</a>')
+    if not new_links:
+        raise ExecutionError("No new internal links were eligible for insertion.")
+    section_label = str(payload.get("section_label", "") or "Related services").strip()
+    addition = f"<p><strong>{section_label}:</strong> " + ", ".join(new_links) + ".</p>"
+    updated_html = (existing_html + "\n" + addition).strip() if existing_html else addition
+    _set_widget_text(widget, updated_html)
+    return elements, {
+        "before_html": before_html,
+        "after_html": updated_html,
+        "inserted_links": [re.sub(r"<[^>]+>", "", item) for item in new_links],
+    }
+
+
+def update_faq_ai_block(elements: List[Dict[str, Any]], payload: Mapping[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    refs = _flatten_widget_refs(elements)
+    target_ref = None
+    for ref in refs:
+        widget_type = str(ref[0].get("widgetType", "")).strip()
+        if widget_type not in FAQ_WIDGET_TYPES:
+            continue
+        if "faq" in _strip_html(_widget_text(ref[0])).lower() or "question" in _strip_html(_widget_text(ref[0])).lower():
+            target_ref = ref
+            break
+    heading = str(payload.get("heading", "") or "Service FAQ").strip()
+    definitions = [str(item).strip() for item in (payload.get("definitions") or []) if str(item).strip()]
+    questions = payload.get("questions") or []
+    citable = [str(item).strip() for item in (payload.get("citable_sentences") or []) if str(item).strip()]
+    if not heading or not questions:
+        raise ExecutionError("FAQ payload is missing required heading or questions.")
+    blocks = [f"<h2>{heading}</h2>"]
+    if definitions:
+        blocks.append("<ul>" + "".join(f"<li>{item}</li>" for item in definitions[:3]) + "</ul>")
+    for item in questions[:5]:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question", "")).strip()
+        answer = str(item.get("answer", "")).strip()
+        if question and answer:
+            blocks.append(f"<h3>{question}</h3><p>{answer}</p>")
+    if citable:
+        blocks.append("<p>" + " ".join(citable[:3]) + "</p>")
+    faq_html = "".join(blocks)
+    if target_ref is None:
+        elements.append(_make_heading_widget(heading, level="h2"))
+        elements.append(_make_text_widget(faq_html))
+        return elements, {
+            "before_html": "",
+            "after_html": faq_html,
+            "created_section": True,
+        }
+    widget, _, _ = target_ref
+    before_html = _widget_text(widget)
+    _set_widget_text(widget, faq_html)
+    return elements, {
+        "before_html": before_html,
+        "after_html": faq_html,
+        "created_section": False,
+    }
+
+
 def backup_page_record(record: Mapping[str, Any], *, timestamp: datetime) -> Path:
     run_dir = backup_root() / f"{timestamp.date().isoformat()}-approved-actions"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -176,31 +532,80 @@ def execute_feedback_action(
     config = config or load_config()
     timestamp = timestamp or datetime.now(timezone.utc)
     action_type = str(feedback.get("action_type", "")).strip()
-    if action_type != "replace_primary_heading":
+    if action_type not in SUPPORTED_ACTION_TYPES:
         raise ExecutionError(f"Unsupported action_type: {action_type or 'missing'}")
+    action_payload = _parse_action_payload(feedback)
     action_value = str(feedback.get("action_value", "")).strip()
 
     record = resolve_page_record(feedback)
     backup_path = backup_page_record(record, timestamp=timestamp)
     elementor_data = parse_elementor_data(record)
-    updated_data, change_summary = update_primary_heading(elementor_data, action_value)
-    updated_record = wp_request(
-        f"/wp-json/wp/v2/pages/{record['id']}",
-        method="POST",
-        payload={"meta": {"_elementor_data": json.dumps(updated_data)}},
-    )
+    payload: Dict[str, Any] = {"meta": {"_elementor_data": json.dumps(elementor_data)}}
+
+    if action_type == "replace_primary_heading":
+        updated_data, change_summary = update_primary_heading(elementor_data, action_value)
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    elif action_type == "rewrite_title_and_intro":
+        updated_data, change_summary = update_title_and_intro(elementor_data, action_payload)
+        payload["title"] = action_payload.get("page_title") or action_payload.get("heading") or record.get("title", {}).get("raw", "")
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    elif action_type == "strengthen_primary_cta":
+        updated_data, change_summary = update_primary_cta(elementor_data, action_payload)
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    elif action_type == "add_internal_links":
+        updated_data, change_summary = update_internal_links(elementor_data, action_payload)
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    else:
+        updated_data, change_summary = update_faq_ai_block(elementor_data, action_payload)
+        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+
+    updated_record = wp_request(f"/wp-json/wp/v2/pages/{record['id']}", method="POST", payload=payload)
     verification = collect_page_observation(str(feedback.get("page_url") or updated_record.get("link")), config=config)
     live_h1s = [str(value).strip() for value in (verification.get("h1") or []) if str(value).strip()]
-    if not live_h1s:
-        raise ExecutionError("Verification failed. No live H1 found after execution.")
-    if len(live_h1s) != 1:
-        raise ExecutionError(f"Verification failed. Expected exactly one H1 but found {len(live_h1s)}.")
-    if action_value and live_h1s[0] != action_value.strip():
-        raise ExecutionError(f"Verification failed. Expected H1 '{action_value}' but found '{live_h1s[0]}'.")
+    page_url = str(feedback.get("page_url") or updated_record.get("link") or "")
+    live_html = _fetch_live_html(page_url, config=config)
+    if action_type == "replace_primary_heading":
+        if not live_h1s:
+            raise ExecutionError("Verification failed. No live H1 found after execution.")
+        if len(live_h1s) != 1:
+            raise ExecutionError(f"Verification failed. Expected exactly one H1 but found {len(live_h1s)}.")
+        if action_value and live_h1s[0] != action_value.strip():
+            raise ExecutionError(f"Verification failed. Expected H1 '{action_value}' but found '{live_h1s[0]}'.")
+    elif action_type == "rewrite_title_and_intro":
+        expected_heading = str(action_payload.get("heading", "") or "").strip()
+        expected_intro = str(action_payload.get("intro", "") or action_payload.get("intro_html", "") or "").strip()
+        expected_title = str(action_payload.get("page_title", "") or expected_heading).strip()
+        if len(live_h1s) != 1:
+            raise ExecutionError("Verification failed. Expected exactly one live H1 after title/intro update.")
+        if expected_heading and live_h1s and live_h1s[0] != expected_heading:
+            raise ExecutionError("Verification failed. Live H1 did not match the rewritten title.")
+        if expected_title and _normalize_text(expected_title).lower() not in _normalize_text(verification.get("title", "")).lower():
+            raise ExecutionError("Verification failed. Live page title did not include the rewritten SERP title.")
+        if expected_intro and not _verify_text_present(live_html, expected_intro):
+            raise ExecutionError("Verification failed. Rewritten intro text is not visible on the live page.")
+    elif action_type == "strengthen_primary_cta":
+        if not _verify_text_present(live_html, str(action_payload.get("cta_text", "") or "")):
+            raise ExecutionError("Verification failed. Updated CTA text is not visible on the live page.")
+        if not _verify_text_present(live_html, str(action_payload.get("proof_text", "") or action_payload.get("proof_html", "") or "")):
+            raise ExecutionError("Verification failed. Updated proof block is not visible on the live page.")
+    elif action_type == "add_internal_links":
+        for link in action_payload.get("links") or []:
+            href = str(link.get("url", "")).strip() if isinstance(link, dict) else ""
+            if href and href not in live_html:
+                raise ExecutionError(f"Verification failed. Expected internal link '{href}' was not found.")
+    elif action_type == "update_faq_ai_extraction":
+        first_question = ""
+        questions = action_payload.get("questions") or []
+        if questions and isinstance(questions[0], dict):
+            first_question = str(questions[0].get("question", "")).strip()
+        if not _verify_text_present(live_html, str(action_payload.get("heading", "") or "Service FAQ")):
+            raise ExecutionError("Verification failed. FAQ heading is not visible on the live page.")
+        if first_question and not _verify_text_present(live_html, first_question):
+            raise ExecutionError("Verification failed. Generated FAQ question is not visible on the live page.")
     return {
         "feedback_id": feedback.get("feedback_id"),
         "action_type": action_type,
-        "page_url": str(feedback.get("page_url") or updated_record.get("link") or ""),
+        "page_url": page_url,
         "target_post_id": updated_record.get("id"),
         "backup_path": str(backup_path),
         "executed_at": timestamp.isoformat(),

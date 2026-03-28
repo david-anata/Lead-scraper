@@ -61,6 +61,15 @@ SYSTEM_OWNED_FEEDBACK_FIELDS = {
     "requires_approval",
     "suggested_action_type",
     "suggested_action_value",
+    "evidence",
+    "confidence_basis",
+    "execution_eligibility",
+    "target_region",
+    "verification_requirements",
+    "ga4_trust_status",
+    "primary_lead_event",
+    "conversion_weight_enabled",
+    "execution_reason",
 }
 
 
@@ -367,6 +376,15 @@ def _sync_action_queue_feedback(
             "requires_approval": bool(item.get("requires_approval")),
             "suggested_action_type": str(item.get("action_type", "")).strip(),
             "suggested_action_value": str(item.get("action_value", "")).strip(),
+            "evidence": list(item.get("evidence") or []),
+            "confidence_basis": list(item.get("confidence_basis") or []),
+            "execution_eligibility": str(item.get("execution_eligibility", "")).strip(),
+            "target_region": str(item.get("target_region", "")).strip(),
+            "verification_requirements": list(item.get("verification_requirements") or []),
+            "ga4_trust_status": str(item.get("ga4_trust_status", "")).strip(),
+            "primary_lead_event": str(item.get("primary_lead_event", "")).strip(),
+            "conversion_weight_enabled": bool(item.get("conversion_weight_enabled")),
+            "execution_reason": str(item.get("execution_reason", "")).strip(),
         }
         existing = existing_by_key.get(automation_key)
         if existing and existing.get("status") in {"done", "rejected"} and str(existing.get("source_report_date", "")).strip() not in {"", report_date}:
@@ -425,6 +443,15 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
         "requires_approval",
         "suggested_action_type",
         "suggested_action_value",
+        "evidence",
+        "confidence_basis",
+        "execution_eligibility",
+        "target_region",
+        "verification_requirements",
+        "ga4_trust_status",
+        "primary_lead_event",
+        "conversion_weight_enabled",
+        "execution_reason",
         "reopened_from_feedback_id",
         "reopened_reason",
     ):
@@ -441,8 +468,28 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
     return record
 
 
-def _is_auto_executable_action(action_type: str) -> bool:
-    return action_type.strip() == "replace_primary_heading"
+def _is_auto_executable_action(action_type: str, execution_eligibility: str = "") -> bool:
+    supported = {
+        "replace_primary_heading",
+        "rewrite_title_and_intro",
+        "strengthen_primary_cta",
+        "add_internal_links",
+        "update_faq_ai_extraction",
+    }
+    normalized_action = action_type.strip()
+    normalized_eligibility = execution_eligibility.strip()
+    if normalized_action not in supported:
+        return False
+    if normalized_eligibility == "auto_execute":
+        return True
+    return normalized_action == "replace_primary_heading" and not normalized_eligibility
+
+
+def _record_is_auto_executable(record: Mapping[str, Any]) -> bool:
+    return _is_auto_executable_action(
+        str(record.get("suggested_action_type", "") or record.get("action_type", "")),
+        str(record.get("execution_eligibility", "")),
+    )
 
 
 def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -451,7 +498,7 @@ def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any
     if status != "approved" or str(updates.get("action_type", "")).strip():
         return updates
     suggested_action_type = str(existing.get("suggested_action_type", "")).strip()
-    if not _is_auto_executable_action(suggested_action_type):
+    if not _is_auto_executable_action(suggested_action_type, str(existing.get("execution_eligibility", ""))):
         return updates
     updates["action_type"] = suggested_action_type
     suggested_action_value = str(existing.get("suggested_action_value", "")).strip()
@@ -477,7 +524,7 @@ def review_feedback_record(settings: Settings, feedback_id: str, payload: dict[s
         "reviewed_at": datetime.now(timezone.utc).isoformat(),
     }
     record = website_ops.update_feedback_entry(existing, updates)
-    if settings.website_ops_execute_approved and record.get("status") == "approved" and record.get("action_type"):
+    if settings.website_ops_execute_approved and record.get("status") == "approved" and record.get("action_type") and _record_is_auto_executable(record):
         try:
             result = website_ops.execute_feedback_action(record, config=_config(settings))
         except website_ops.ExecutionError as exc:
@@ -502,35 +549,43 @@ def review_feedback_record(settings: Settings, feedback_id: str, payload: dict[s
     return WebsiteOpsActionResult(ok=True, message="Review saved.", record=record)
 
 
+def _execute_record(settings: Settings, config: website_ops.WebsiteOpsConfig, record: Mapping[str, Any]) -> dict[str, Any] | None:
+    if record.get("status") != "approved" or not record.get("action_type"):
+        return None
+    if not _record_is_auto_executable(record):
+        return None
+    try:
+        result = website_ops.execute_feedback_action(record, config=config)
+    except website_ops.ExecutionError as exc:
+        website_ops.update_feedback_entry(
+            record,
+            {
+                "status": "error",
+                "execution_error": str(exc),
+                "last_execution_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return None
+    website_ops.update_feedback_entry(
+        record,
+        {
+            "status": "done",
+            "last_execution_at": result["executed_at"],
+            "execution_result": result,
+        },
+    )
+    return result
+
+
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
     config = _config(settings)
     feedback_entries = load_feedback_records(settings)
     executed_actions: list[dict[str, Any]] = []
     if settings.website_ops_execute_approved:
         for record in feedback_entries:
-            if record.get("status") != "approved" or not record.get("action_type"):
-                continue
-            try:
-                result = website_ops.execute_feedback_action(record, config=config)
-            except website_ops.ExecutionError as exc:
-                website_ops.update_feedback_entry(
-                    record,
-                    {
-                        "status": "error",
-                        "execution_error": str(exc),
-                        "last_execution_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-            else:
+            result = _execute_record(settings, config, record)
+            if result:
                 executed_actions.append(result)
-                website_ops.update_feedback_entry(
-                    record,
-                    {
-                        "status": "done",
-                        "last_execution_at": result["executed_at"],
-                        "execution_result": result,
-                    },
-                )
         feedback_entries = load_feedback_records(settings)
 
     report_title = {
@@ -571,6 +626,38 @@ def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsAct
         feedback_entries,
         report_slug=_slugify_text(report_title),
     )
+    if settings.website_ops_execute_approved:
+        current_records = {str(item.get("feedback_id", "")): item for item in load_feedback_records(settings)}
+        for item in enriched_report["action_queue"]:
+            feedback_id = str(item.get("feedback_id", "")).strip()
+            record = current_records.get(feedback_id)
+            if not record:
+                continue
+            if record.get("status") == "new" and _record_is_auto_executable(record):
+                record = website_ops.update_feedback_entry(
+                    record,
+                    {
+                        "status": "approved",
+                        "action_type": str(record.get("suggested_action_type", "")).strip(),
+                        "action_value": str(record.get("suggested_action_value", "")).strip(),
+                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        "review_notes": "Auto-approved by Website Ops: high-confidence deterministic action.",
+                    },
+                )
+                result = _execute_record(settings, config, record)
+                if result:
+                    executed_actions.append(result)
+        if executed_actions:
+            feedback_entries = load_feedback_records(settings)
+            enriched_report["executed_actions"] = list(enriched_report.get("executed_actions") or []) + executed_actions
+            enriched_report["changes_applied"] = int(enriched_report.get("changes_applied", 0) or 0) + len(executed_actions)
+            enriched_report["auto_executed_today"] = len(executed_actions)
+            enriched_report["action_queue"] = _sync_action_queue_feedback(
+                settings,
+                list(enriched_report.get("action_queue") or []),
+                feedback_entries,
+                report_slug=_slugify_text(report_title),
+            )
     artifacts = website_ops.write_daily_report_artifacts(enriched_report, output_dir=output_dir, config=config)
     return WebsiteOpsActionResult(
         ok=True,
@@ -622,6 +709,11 @@ def _analytics_connection_cards(analytics_status: dict[str, Any], *, include_ide
     client_email = str(analytics_status.get("client_email", "") or "").strip()
     search_console_property = str(analytics_status.get("search_console_property", "") or "").strip()
     ga4_property_id = str(analytics_status.get("ga4_property_id", "") or "").strip()
+    ga4_trust_status = str(analytics_status.get("ga4_trust_status", "") or "").strip()
+    primary_lead_event = str(analytics_status.get("primary_lead_event", "") or "").strip()
+    auto_executable_today = int(analytics_status.get("auto_executable_today", 0) or 0)
+    approval_required_today = int(analytics_status.get("approval_required_today", 0) or 0)
+    action_type_coverage = list(analytics_status.get("action_type_coverage") or [])
     identity_block = ""
     if include_identity and (project_id or client_email):
         identity_lines = []
@@ -643,6 +735,7 @@ def _analytics_connection_cards(analytics_status: dict[str, Any], *, include_ide
           </div>
           <p class="lead-sm">{html.escape(next((note for note in notes if 'Search Console' in note), 'Live search query data is available for Website Ops decisions.'))}</p>
           {f"<div class='meta-pair'><span>Property</span><code>{html.escape(search_console_property)}</code></div>" if search_console_property else ""}
+          {f"<div class='meta-pair'><span>Freshness</span><strong>{html.escape(str(analytics_status.get('search_console_freshness', 'connected')).replace('-', ' ').title())}</strong></div>" if analytics_status.get('search_console_freshness') else ""}
           {identity_block}
         </article>
         """,
@@ -654,10 +747,29 @@ def _analytics_connection_cards(analytics_status: dict[str, Any], *, include_ide
           </div>
           <p class="lead-sm">{html.escape(next((note for note in notes if 'GA4' in note), 'Landing-page and conversion data is available for Website Ops decisions.'))}</p>
           {f"<div class='meta-pair'><span>Property ID</span><code>{html.escape(ga4_property_id)}</code></div>" if ga4_property_id else ""}
+          {f"<div class='meta-pair'><span>Lead Event</span><code>{html.escape(primary_lead_event)}</code></div>" if primary_lead_event else ""}
+          {f"<div class='meta-pair'><span>Trust</span><strong>{html.escape(ga4_trust_status.title())}</strong></div>" if ga4_trust_status else ""}
           {identity_block}
         </article>
         """,
     ]
+    if include_identity and (action_type_coverage or auto_executable_today or approval_required_today):
+        cards.append(
+            f"""
+            <article class="setup-card is-connected">
+              <div class="row-actions">
+                <h3>Execution coverage</h3>
+                <span class="status-pill status-neutral">Live</span>
+              </div>
+              <div class="mini-grid">
+                {_mini_chip("Auto Execute", auto_executable_today)}
+                {_mini_chip("Approval First", approval_required_today)}
+                {_mini_chip("Action Types", len(action_type_coverage))}
+              </div>
+              <p class="lead-sm">{html.escape(', '.join(_humanize_label(item) for item in action_type_coverage) or 'No action types surfaced yet.')}</p>
+            </article>
+            """
+        )
     return "".join(cards)
 
 
@@ -880,6 +992,11 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
         requires_approval = bool(item.get("requires_approval"))
         feedback_status = str(item.get("feedback_status", "new") or "new")
         link_label = _action_queue_link_label(feedback_status)
+        evidence = list(item.get("evidence") or [])
+        target_region = str(item.get("target_region", "")).strip()
+        execution_eligibility = str(item.get("execution_eligibility", "")).strip() or ("approval_required" if requires_approval else "auto_execute")
+        ga4_trust_status = str(item.get("ga4_trust_status", "")).strip()
+        verification_requirements = list(item.get("verification_requirements") or [])
         cards.append(
             f"""
             <article class="action-card">
@@ -887,7 +1004,7 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
                 {_action_source_chip(str(item.get("insight_source", "System")))}
                 <div class="chip-row">
                   {_action_queue_workflow_chip(feedback_status)}
-                  <span class="status-pill {'status-warn' if requires_approval else 'status-ok'}">{'Approval required' if requires_approval else 'Safe to apply'}</span>
+                  <span class="status-pill {'status-warn' if requires_approval else 'status-ok'}">{'Approval required' if requires_approval else 'Auto execute'}</span>
                   <span class="status-pill status-neutral">{html.escape(confidence.title())} confidence</span>
                 </div>
               </div>
@@ -896,6 +1013,9 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
               <div class="mini-grid">
                 {_mini_chip("Section", str(item.get("section_name", "Unspecified section")))}
                 {_mini_chip("Impact", str(item.get("expected_impact", "Improves performance against the current goal.")))}
+                {_mini_chip("Target", target_region or "Page region")}
+                {_mini_chip("Execution", _humanize_label(execution_eligibility) or execution_eligibility)}
+                {_mini_chip("GA4 Trust", ga4_trust_status.title() if ga4_trust_status else "n/a")}
               </div>
               <div class="diff-grid">
                 <div class="diff-block">
@@ -908,6 +1028,8 @@ def _action_queue_cards(action_queue: list[dict[str, Any]]) -> str:
                 </div>
               </div>
               <p><strong>Why this matters:</strong> {html.escape(str(item.get("reason", "No rationale supplied.")))}</p>
+              {f"<ul class='compact-list'>{''.join(f'<li>{html.escape(str(line))}</li>' for line in evidence[:3])}</ul>" if evidence else ""}
+              {f"<p class='muted'><strong>Verification:</strong> {html.escape('; '.join(str(line) for line in verification_requirements))}</p>" if verification_requirements else ""}
               {f"<div class='button-row'><a class='text-link' href='/admin/website-ops/feedback/{html.escape(str(item.get('feedback_id', '')), quote=True)}'>{html.escape(link_label)}</a></div>" if item.get('feedback_id') else ""}
             </article>
             """
@@ -944,7 +1066,8 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
                 {_mini_chip("Impressions", int((item.get("search_console") or {}).get("impressions", 0)))}
                 {_mini_chip("CTR", f"{round(float((item.get('search_console') or {}).get('ctr', 0) or 0) * 100, 2)}%")}
                 {_mini_chip("Sessions", int((item.get("ga4") or {}).get("sessions", 0)))}
-                {_mini_chip("Conversions", int((item.get("ga4") or {}).get("conversions", 0)))}
+                {_mini_chip("Lead Events", int((item.get("ga4") or {}).get("lead_conversions", 0)))}
+                {_mini_chip("Trust", str(item.get("ga4_trust_status", "missing")).title())}
               </div>
               {top_query}
               {insights}
@@ -1337,7 +1460,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
     is_auto_generated = bool(record.get("auto_generated"))
     confidence = str(record.get("confidence", "")).strip()
     suggested_action_type = str(record.get("suggested_action_type", "")).strip()
-    is_auto_executable = _is_auto_executable_action(suggested_action_type)
+    is_auto_executable = _record_is_auto_executable(record)
     recommendation_cta = "Approve and Execute" if is_auto_executable else "Approve Recommendation"
     recommendation_note = (
         "This recommendation maps to a supported safe action. Approving it will execute immediately when auto-execution is enabled."
@@ -1379,7 +1502,9 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
             <p class="lead"><strong>Desired outcome:</strong> {html.escape(str(record.get('desired_outcome', '') or 'Not specified.'))}</p>
             <p class="lead"><strong>Recommended fix:</strong> {html.escape(str(record.get('recommended_fix', '') or 'Not specified.'))}</p>
             {f"<div class='diff-grid'><div class='diff-block'><p class='eyebrow'>Current state</p><p>{html.escape(str(record.get('before_state', '') or 'Not captured.'))}</p></div><div class='diff-block'><p class='eyebrow'>Proposed update</p><p>{html.escape(str(record.get('after_state', '') or record.get('desired_outcome', '') or 'Not specified.'))}</p></div></div>" if record.get('before_state') or record.get('after_state') else ""}
-            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', _humanize_label(suggested_action_type) or 'Manual review', tone='neutral')}{_summary_chip('Execution', 'Auto-executable' if is_auto_executable else 'Approval only', tone='neutral')}</div>" if is_auto_generated else ""}
+            {f"<div class='summary-grid'>{_summary_chip('Section', record.get('section_name', 'General'), tone='neutral')}{_summary_chip('Confidence', confidence.title() if confidence else 'Medium', tone='neutral')}{_summary_chip('Suggested action', _humanize_label(suggested_action_type) or 'Manual review', tone='neutral')}{_summary_chip('Execution', 'Auto-executable' if is_auto_executable else 'Approval only', tone='neutral')}{_summary_chip('Target region', record.get('target_region', 'Page region'), tone='neutral')}{_summary_chip('GA4 trust', str(record.get('ga4_trust_status', 'missing')).title(), tone='neutral')}</div>" if is_auto_generated else ""}
+            {f"<ul class='compact-list'>{''.join(f'<li>{html.escape(str(line))}</li>' for line in (record.get('evidence') or [])[:4])}</ul>" if is_auto_generated and record.get('evidence') else ""}
+            {f"<p class='muted'><strong>Verification:</strong> {html.escape('; '.join(str(line) for line in (record.get('verification_requirements') or [])))}</p>" if is_auto_generated and record.get('verification_requirements') else ""}
             {f"<div class='button-row'><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='approved'><button type='submit'>{recommendation_cta}</button></form><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='rejected'><button class='ghost' type='submit'>Reject Recommendation</button></form><span class='muted'>{html.escape(recommendation_note)}</span></div>" if is_auto_generated else ""}
             <form action="/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review" method="post" class="form-grid">
               <div><label>Status</label><select name="status">
@@ -1391,9 +1516,9 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
                 <option value="error" {'selected' if record.get('status') == 'error' else ''}>Error</option>
               </select></div>
               <div><label>Reviewer</label><input type="text" name="reviewer_name" value="{html.escape(str(record.get('reviewer_name', '')), quote=True)}"></div>
-              <div><label>Action type</label><select name="action_type"><option value="">Manual only</option><option value="replace_primary_heading" {'selected' if record.get('action_type') == 'replace_primary_heading' else ''}>Replace Primary Heading</option></select></div>
+              <div><label>Action type</label><select name="action_type"><option value="">Manual only</option><option value="replace_primary_heading" {'selected' if record.get('action_type') == 'replace_primary_heading' else ''}>Replace Primary Heading</option><option value="rewrite_title_and_intro" {'selected' if record.get('action_type') == 'rewrite_title_and_intro' else ''}>Rewrite Title And Intro</option><option value="strengthen_primary_cta" {'selected' if record.get('action_type') == 'strengthen_primary_cta' else ''}>Strengthen Primary Cta</option><option value="add_internal_links" {'selected' if record.get('action_type') == 'add_internal_links' else ''}>Add Internal Links</option><option value="update_faq_ai_extraction" {'selected' if record.get('action_type') == 'update_faq_ai_extraction' else ''}>Update Faq Ai Extraction</option></select></div>
               <div><label>Target post ID</label><input type="text" name="target_post_id" value="{html.escape(str(record.get('target_post_id', '')), quote=True)}" placeholder="Optional WordPress page ID"></div>
-              <div class="span-2"><label>Action value</label><input type="text" name="action_value" value="{html.escape(str(record.get('action_value', '')), quote=True)}" placeholder="Exact new H1 text"></div>
+              <div class="span-2"><label>Action value</label><textarea name="action_value" placeholder="Exact action payload">{html.escape(str(record.get('action_value', '')))}</textarea></div>
               <div class="span-2"><label>Review notes</label><textarea name="review_notes">{html.escape(str(record.get('review_notes', '')))}</textarea></div>
               <div class="span-2"><button type="submit">Submit Review</button></div>
             </form>
