@@ -236,6 +236,38 @@ def _clickup_probe_error(settings) -> str:
     return ""
 
 
+def _dashboard_needs_inline_sync(details: dict[str, object]) -> bool:
+    return not str(details.get("latest_sync_at") or "").strip() and int(details.get("total_active_leads", 0) or 0) == 0
+
+
+def _executive_needs_inline_sync(details: dict[str, object]) -> bool:
+    kpis = dict(details.get("kpis", {}) or {})
+    return not str(details.get("latest_sync_at") or "").strip() and int(kpis.get("active_leads", 0) or 0) == 0
+
+
+def _inline_sync_dashboard_data(request: Request, settings) -> dict[str, object]:
+    with session_scope(request.app.state.session_factory) as session:
+        ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
+        dashboard = build_dashboard_data(
+            settings=settings,
+            session=session,
+            lead_builder_status=_lead_builder_status(settings),
+            clickup_client=ClickUpClient(settings),
+        )
+    return dashboard_data_to_dict(dashboard)
+
+
+def _inline_sync_executive_data(request: Request, settings) -> dict[str, object]:
+    with session_scope(request.app.state.session_factory) as session:
+        ClickUpSyncService(settings, ClickUpClient(settings), session).sync_list(include_closed=True)
+        executive = build_executive_data(
+            settings=settings,
+            session=session,
+            clickup_client=ClickUpClient(settings),
+        )
+    return executive_data_to_dict(executive)
+
+
 def _remote_lead_builder_url(request: Request) -> str:
     return str(getattr(request.app.state.settings, "lead_build_url", "") or "").rstrip("/")
 
@@ -558,7 +590,12 @@ def admin_dashboard_data(
         )
     details = dashboard_data_to_dict(dashboard)
     sync_error = _dashboard_sync_error_message(request)
-    if not sync_error and not str(details.get("latest_sync_at") or "").strip() and int(details.get("total_active_leads", 0) or 0) == 0:
+    if not sync_error and _dashboard_needs_inline_sync(details):
+        try:
+            details = _inline_sync_dashboard_data(request, settings)
+        except ClickUpAPIError as exc:
+            sync_error = str(exc)
+    if not sync_error and _dashboard_needs_inline_sync(details):
         sync_error = _clickup_probe_error(settings)
     if sync_error:
         latest_run_summary = dict(details.get("latest_run_summary", {}) or {})
@@ -660,7 +697,12 @@ def admin_executive_data(
         )
     details = executive_data_to_dict(executive)
     sync_error = _dashboard_sync_error_message(request)
-    if not sync_error and not str(details.get("latest_sync_at") or "").strip() and int(dict(details.get("kpis", {}) or {}).get("active_leads", 0) or 0) == 0:
+    if not sync_error and _executive_needs_inline_sync(details):
+        try:
+            details = _inline_sync_executive_data(request, settings)
+        except ClickUpAPIError as exc:
+            sync_error = str(exc)
+    if not sync_error and _executive_needs_inline_sync(details):
         sync_error = _clickup_probe_error(settings)
     if sync_error:
         latest_run_summary = dict(details.get("latest_run_summary", {}) or {})
