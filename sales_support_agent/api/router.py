@@ -226,6 +226,16 @@ def _dashboard_sync_error_message(request: Request) -> str:
         return str(request.app.state.dashboard_sync_last_error or "").strip()
 
 
+def _clickup_probe_error(settings) -> str:
+    if not settings.clickup_api_token or not settings.clickup_list_id:
+        return ""
+    try:
+        ClickUpClient(settings).get_list(settings.clickup_list_id)
+    except ClickUpAPIError as exc:
+        return str(exc)
+    return ""
+
+
 def _remote_lead_builder_url(request: Request) -> str:
     return str(getattr(request.app.state.settings, "lead_build_url", "") or "").rstrip("/")
 
@@ -548,6 +558,8 @@ def admin_dashboard_data(
         )
     details = dashboard_data_to_dict(dashboard)
     sync_error = _dashboard_sync_error_message(request)
+    if not sync_error and not str(details.get("latest_sync_at") or "").strip() and int(details.get("total_active_leads", 0) or 0) == 0:
+        sync_error = _clickup_probe_error(settings)
     if sync_error:
         latest_run_summary = dict(details.get("latest_run_summary", {}) or {})
         latest_run_summary.setdefault("dashboard_error", sync_error)
@@ -648,6 +660,8 @@ def admin_executive_data(
         )
     details = executive_data_to_dict(executive)
     sync_error = _dashboard_sync_error_message(request)
+    if not sync_error and not str(details.get("latest_sync_at") or "").strip() and int(dict(details.get("kpis", {}) or {}).get("active_leads", 0) or 0) == 0:
+        sync_error = _clickup_probe_error(settings)
     if sync_error:
         latest_run_summary = dict(details.get("latest_run_summary", {}) or {})
         latest_run_summary.setdefault("executive_error", sync_error)
