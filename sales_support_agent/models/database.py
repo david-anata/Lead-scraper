@@ -34,6 +34,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     # probe instead.
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
+    _apply_postgres_compat_migrations(engine)
 
 
 @contextmanager
@@ -62,6 +63,12 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     migrations: dict[str, dict[str, str]] = {
+        "lead_mirrors": {
+            "status_key": "ALTER TABLE lead_mirrors ADD COLUMN status_key VARCHAR(128) DEFAULT ''",
+            "is_closed": "ALTER TABLE lead_mirrors ADD COLUMN is_closed BOOLEAN DEFAULT 0",
+            "is_active": "ALTER TABLE lead_mirrors ADD COLUMN is_active BOOLEAN DEFAULT 0",
+            "task_updated_at": "ALTER TABLE lead_mirrors ADD COLUMN task_updated_at DATETIME",
+        },
         "communication_events": {
             "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
         },
@@ -76,3 +83,99 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                 if column_name in existing_columns:
                     continue
                 connection.execute(text(statement))
+
+
+def _apply_postgres_compat_migrations(engine: Any) -> None:
+    """Apply additive compatibility migrations for persistent Postgres deployments."""
+
+    if engine.dialect.name != "postgresql":
+        return
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if "lead_mirrors" not in existing_tables:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                ALTER TABLE lead_mirrors
+                ADD COLUMN IF NOT EXISTS status_key VARCHAR(128) NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS is_closed BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS task_updated_at TIMESTAMPTZ NULL
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE lead_mirrors
+                SET
+                  status_key = trim(regexp_replace(lower(coalesce(status, '')), '\\s+', ' ', 'g')),
+                  task_updated_at = COALESCE(task_updated_at, updated_at)
+                WHERE
+                  status_key = ''
+                  OR task_updated_at IS NULL
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                UPDATE lead_mirrors
+                SET
+                  is_closed = CASE
+                    WHEN status_key = '' THEN FALSE
+                    WHEN status_key IN (
+                      'won onboarding',
+                      'won active',
+                      'lost',
+                      'lost not qualified',
+                      'won canceled'
+                    ) THEN TRUE
+                    WHEN status_key LIKE '%won%'
+                      OR status_key LIKE '%lost%'
+                      OR status_key LIKE '%canceled%'
+                      OR status_key LIKE '%cancelled%'
+                      OR status_key LIKE '%closed%'
+                      OR status_key LIKE '%archive%'
+                      OR status_key LIKE '%archived%' THEN TRUE
+                    ELSE FALSE
+                  END,
+                  is_active = CASE
+                    WHEN status_key = '' THEN FALSE
+                    WHEN status_key IN (
+                      'new lead',
+                      'contacted cold',
+                      'contacted warm',
+                      'working qualified',
+                      'working needs offer',
+                      'working offered',
+                      'working negotiating'
+                    ) THEN TRUE
+                    WHEN status_key IN (
+                      'won onboarding',
+                      'won active',
+                      'lost',
+                      'lost not qualified',
+                      'won canceled'
+                    ) THEN FALSE
+                    WHEN status_key LIKE '%won%'
+                      OR status_key LIKE '%lost%'
+                      OR status_key LIKE '%canceled%'
+                      OR status_key LIKE '%cancelled%'
+                      OR status_key LIKE '%closed%'
+                      OR status_key LIKE '%archive%'
+                      OR status_key LIKE '%archived%' THEN FALSE
+                    ELSE TRUE
+                  END
+                WHERE TRUE
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_status_key_idx ON lead_mirrors (status_key)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_closed_idx ON lead_mirrors (is_closed)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_active_idx ON lead_mirrors (is_active)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_task_updated_at_idx ON lead_mirrors (task_updated_at)"))

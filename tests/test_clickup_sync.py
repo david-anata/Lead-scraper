@@ -24,12 +24,38 @@ except ModuleNotFoundError as exc:
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for sync tests")
 class ClickUpSyncServiceTests(unittest.TestCase):
     def _settings(self) -> SimpleNamespace:
-        return SimpleNamespace(clickup_list_id="900600702146")
+        return SimpleNamespace(
+            clickup_list_id="900600702146",
+            active_statuses=(
+                "new lead",
+                "contacted cold",
+                "contacted warm",
+                "working qualified",
+                "working needs offer",
+                "working offered",
+                "working negotiating",
+            ),
+            inactive_statuses=(
+                "won - onboarding",
+                "won - active",
+                "lost",
+                "lost - not qualified",
+                "won - canceled",
+            ),
+        )
 
-    def test_sync_updates_existing_mirror_to_current_list_id(self) -> None:
-        session_factory = create_session_factory("sqlite:///:memory:")
-        init_database(session_factory)
+    def _field_map(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            next_follow_up_date="",
+            communication_summary="",
+            last_meeting_outcome="",
+            recommended_next_action="",
+            last_meaningful_touch="",
+            last_outbound="",
+            last_inbound="",
+        )
 
+    def _base_task(self, **overrides) -> dict:
         task = {
             "id": "task-123",
             "name": "Example lead",
@@ -41,15 +67,15 @@ class ClickUpSyncServiceTests(unittest.TestCase):
             "date_updated": None,
             "due_date": None,
         }
-        field_map = SimpleNamespace(
-            next_follow_up_date="",
-            communication_summary="",
-            last_meeting_outcome="",
-            recommended_next_action="",
-            last_meaningful_touch="",
-            last_outbound="",
-            last_inbound="",
-        )
+        task.update(overrides)
+        return task
+
+    def test_sync_updates_existing_mirror_to_current_list_id(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        task = self._base_task()
+        field_map = self._field_map()
 
         with session_scope(session_factory) as session:
             session.add(
@@ -71,6 +97,82 @@ class ClickUpSyncServiceTests(unittest.TestCase):
             self.assertIsNotNone(mirrored)
             assert mirrored is not None
             self.assertEqual(mirrored.list_id, "900600702146")
+            self.assertEqual(mirrored.status_key, "follow up")
+            self.assertTrue(mirrored.is_active)
+            self.assertFalse(mirrored.is_closed)
+
+    def test_sync_marks_closed_tasks_inactive(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        task = self._base_task(id="task-closed", status={"status": "WON - ACTIVE"})
+
+        with session_scope(session_factory) as session:
+            service = ClickUpSyncService(self._settings(), clickup_client=object(), session=session)
+            service._upsert_task(task, self._field_map())
+
+        with session_scope(session_factory) as session:
+            mirrored = session.get(LeadMirror, "task-closed")
+            self.assertIsNotNone(mirrored)
+            assert mirrored is not None
+            self.assertEqual(mirrored.status_key, "won active")
+            self.assertTrue(mirrored.is_closed)
+            self.assertFalse(mirrored.is_active)
+
+    def test_sync_keeps_unknown_open_statuses_active(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        task = self._base_task(id="task-open", status={"status": "FOLLOW UP"})
+
+        with session_scope(session_factory) as session:
+            service = ClickUpSyncService(self._settings(), clickup_client=object(), session=session)
+            service._upsert_task(task, self._field_map())
+
+        with session_scope(session_factory) as session:
+            mirrored = session.get(LeadMirror, "task-open")
+            self.assertIsNotNone(mirrored)
+            assert mirrored is not None
+            self.assertEqual(mirrored.status_key, "follow up")
+            self.assertFalse(mirrored.is_closed)
+            self.assertTrue(mirrored.is_active)
+
+    def test_sync_handles_partial_payloads_with_deterministic_defaults(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        task = self._base_task(
+            id="task-partial",
+            name=None,
+            url=None,
+            status=None,
+            assignees=None,
+            custom_fields=None,
+            date_created="not-a-date",
+            date_updated="not-a-date",
+            due_date="not-a-date",
+        )
+
+        with session_scope(session_factory) as session:
+            service = ClickUpSyncService(self._settings(), clickup_client=object(), session=session)
+            service._upsert_task(task, self._field_map())
+
+        with session_scope(session_factory) as session:
+            mirrored = session.get(LeadMirror, "task-partial")
+            self.assertIsNotNone(mirrored)
+            assert mirrored is not None
+            self.assertEqual(mirrored.task_name, "")
+            self.assertEqual(mirrored.task_url, "")
+            self.assertEqual(mirrored.status, "")
+            self.assertEqual(mirrored.status_key, "")
+            self.assertFalse(mirrored.is_closed)
+            self.assertFalse(mirrored.is_active)
+            self.assertEqual(mirrored.assignee_id, "")
+            self.assertEqual(mirrored.assignee_name, "")
+            self.assertIsNone(mirrored.created_at)
+            self.assertIsNone(mirrored.updated_at)
+            self.assertIsNone(mirrored.task_updated_at)
+            self.assertIsNone(mirrored.due_date)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from sales_support_agent.config import Settings
+from sales_support_agent.config import (
+    ACTIVE_FOLLOW_UP_STATUSES,
+    INACTIVE_STATUSES,
+    Settings,
+    is_active_pipeline_status,
+    is_closed_pipeline_status,
+    normalize_status_key,
+)
 from sales_support_agent.integrations.clickup import ClickUpClient
 from sales_support_agent.models.entities import LeadMirror
 from sales_support_agent.services.field_mapping import (
@@ -47,12 +54,52 @@ def _extract_priority(task: dict[str, Any]) -> str:
     return str(priority or "")
 
 
-def _extract_assignee(task: dict[str, Any]) -> tuple[str, str]:
+def _extract_owner(task: dict[str, Any]) -> tuple[str, str]:
     assignees = task.get("assignees", []) or []
+    if isinstance(assignees, dict):
+        assignees = [assignees]
     if not assignees:
         return "", ""
     assignee = assignees[0] or {}
     return str(assignee.get("id") or ""), str(assignee.get("username") or assignee.get("email") or assignee.get("initials") or "")
+
+
+def _extract_task_dates(task: dict[str, Any]) -> tuple[datetime | None, datetime | None, datetime | None]:
+    created_at = parse_clickup_datetime(task.get("date_created"))
+    updated_at = parse_clickup_datetime(task.get("date_updated"))
+    due_date = parse_clickup_datetime(task.get("due_date"))
+    return created_at, updated_at, due_date
+
+
+def _normalized_status_sets(settings: Settings) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    active_statuses = tuple(
+        normalize_status_key(status)
+        for status in getattr(settings, "active_statuses", ACTIVE_FOLLOW_UP_STATUSES)
+        if normalize_status_key(status)
+    )
+    inactive_statuses = tuple(
+        normalize_status_key(status)
+        for status in getattr(settings, "inactive_statuses", INACTIVE_STATUSES)
+        if normalize_status_key(status)
+    )
+    return active_statuses, inactive_statuses
+
+
+def _extract_status(task: dict[str, Any], settings: Settings) -> tuple[str, str, bool, bool]:
+    status_value = task.get("status") or {}
+    if isinstance(status_value, dict):
+        raw_status = str(status_value.get("status") or "")
+    else:
+        raw_status = str(status_value or "")
+    status_key = normalize_status_key(raw_status)
+    active_statuses, inactive_statuses = _normalized_status_sets(settings)
+    is_closed = is_closed_pipeline_status(status_key, inactive_statuses)
+    is_active = is_active_pipeline_status(
+        raw_status,
+        active_statuses=active_statuses,
+        inactive_statuses=inactive_statuses,
+    )
+    return raw_status, status_key, is_closed, is_active
 
 
 class ClickUpSyncService:
@@ -86,12 +133,25 @@ class ClickUpSyncService:
 
     def _upsert_task(self, task: dict[str, Any], field_map) -> LeadMirror:
         task_id = str(task.get("id") or "")
-        lead = self.session.get(LeadMirror, task_id) or LeadMirror(clickup_task_id=task_id, list_id=self.settings.clickup_list_id, task_name=str(task.get("name") or ""), status="")
+        if not task_id:
+            raise ValueError("ClickUp task payload is missing an id.")
+
+        lead = self.session.get(LeadMirror, task_id) or LeadMirror(
+            clickup_task_id=task_id,
+            list_id=self.settings.clickup_list_id,
+            task_name=str(task.get("name") or ""),
+            status="",
+        )
         lead.list_id = self.settings.clickup_list_id
-        assignee_id, assignee_name = _extract_assignee(task)
+        assignee_id, assignee_name = _extract_owner(task)
+        created_at, updated_at, due_date = _extract_task_dates(task)
+        raw_status, status_key, is_closed, is_active = _extract_status(task, self.settings)
         lead.task_name = str(task.get("name") or "")
         lead.task_url = str(task.get("url") or "")
-        lead.status = str(((task.get("status") or {}).get("status")) or "")
+        lead.status = raw_status
+        lead.status_key = status_key
+        lead.is_closed = is_closed
+        lead.is_active = is_active
         lead.assignee_id = assignee_id
         lead.assignee_name = assignee_name
         lead.priority = _extract_priority(task)
@@ -100,9 +160,10 @@ class ClickUpSyncService:
         lead.email = _extract_named_field(task, VISIBLE_FIELD_NAMES["email"])
         lead.phone_number = _extract_named_field(task, VISIBLE_FIELD_NAMES["phone_number"])
         lead.value = _extract_named_field(task, VISIBLE_FIELD_NAMES["value"])
-        lead.created_at = parse_clickup_datetime(task.get("date_created"))
-        lead.updated_at = parse_clickup_datetime(task.get("date_updated"))
-        lead.due_date = parse_clickup_datetime(task.get("due_date"))
+        lead.created_at = created_at
+        lead.updated_at = updated_at
+        lead.task_updated_at = updated_at
+        lead.due_date = due_date
         lead.last_meaningful_touch_at = parse_clickup_datetime(extract_field_value(task, field_map, "last_meaningful_touch"))
         lead.last_outbound_at = parse_clickup_datetime(extract_field_value(task, field_map, "last_outbound"))
         lead.last_inbound_at = parse_clickup_datetime(extract_field_value(task, field_map, "last_inbound"))
