@@ -595,6 +595,8 @@ def admin_dashboard_data(
             details = _inline_sync_dashboard_data(request, settings)
         except ClickUpAPIError as exc:
             sync_error = str(exc)
+        except Exception as exc:
+            sync_error = f"Inline dashboard sync failed: {exc}"
     if not sync_error and _dashboard_needs_inline_sync(details):
         sync_error = _clickup_probe_error(settings)
     if sync_error:
@@ -702,6 +704,8 @@ def admin_executive_data(
             details = _inline_sync_executive_data(request, settings)
         except ClickUpAPIError as exc:
             sync_error = str(exc)
+        except Exception as exc:
+            sync_error = f"Inline executive sync failed: {exc}"
     if not sync_error and _executive_needs_inline_sync(details):
         sync_error = _clickup_probe_error(settings)
     if sync_error:
