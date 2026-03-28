@@ -85,6 +85,21 @@ def build_faq_payload(
                     ),
                 }
             )
+    if not faq_questions:
+        fallback_questions = [
+            f"What does {service_label} include?",
+            f"How does {service_label} onboarding work?",
+            f"When should a brand choose {service_label}?",
+        ]
+        for question in fallback_questions:
+            faq_questions.append(
+                {
+                    "question": question,
+                    "answer": clean_generated_content(
+                        f"{service_label} should answer this directly with scope, onboarding steps, timing, and fit guidance."
+                    ),
+                }
+            )
     return {
         "heading": f"{service_label} FAQ",
         "questions": faq_questions,

@@ -536,6 +536,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "url": "https://anatainc.com/services/fulfillment/",
                     "title": "Fulfillment",
                     "issues": [],
+                    "text_length": 9042,
+                    "h2": ["Fulfillment capabilities", "Onboarding and support"],
+                    "h3": ["Inventory management", "Customer satisfaction"],
                 }
             ]
             with mock.patch(
@@ -543,11 +546,11 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 return_value=(
                     {
                         "https://anatainc.com/services/fulfillment": {
-                            "impressions": 140.0,
-                            "clicks": 2.0,
-                            "ctr": 0.014,
+                            "impressions": 124.0,
+                            "clicks": 1.0,
+                            "ctr": 0.0081,
                             "position": 18.0,
-                            "top_queries": [{"query": "amazon fulfillment services", "impressions": 80.0, "clicks": 2.0}],
+                            "top_queries": [],
                         }
                     },
                     [],
@@ -570,26 +573,17 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 ):
                     with mock.patch(
                         "sales_support_agent.services.website_ops_autonomy.collect_customer_questions",
-                        return_value=[
-                            {
-                                "question_id": "cq_1",
-                                "question": "How fast can onboarding happen?",
-                                "intent": "transactional",
-                                "frequency": 4,
-                                "source": "gmail",
-                                "related_service": "fulfillment",
-                            }
-                        ],
+                        return_value=[],
                     ):
                         with mock.patch(
                             "sales_support_agent.services.website_ops_autonomy.build_blueprint",
                             return_value={
                                 "blueprint_id": "bp_1",
-                                "query": "amazon fulfillment services",
-                                "source_urls": ["https://example.com/a", "https://example.com/b"],
-                                "heading_structure": [{"heading": "What is Amazon Fulfillment?", "level": "h2", "support_count": 3}],
-                                "faq_patterns": [{"question": "How fast is onboarding?", "support_count": 2}],
-                                "content_gaps": ["Missing onboarding timeline section"],
+                                "query": "Fulfillment",
+                                "source_urls": [],
+                                "heading_structure": [],
+                                "faq_patterns": [],
+                                "content_gaps": ["SERP leaders frequently open with a direct definition block."],
                             },
                         ):
                             overlay = build_autonomy_overlay(
@@ -599,12 +593,61 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                                 feedback_entries=[],
                             )
             faq_action = next(item for item in overlay["action_queue"] if item["action_type"] == "inject_faq_block")
-            section_action = next(item for item in overlay["action_queue"] if item["action_type"] == "expand_service_page_section")
             self.assertEqual(faq_action["execution_eligibility"], "auto_execute")
-            self.assertEqual(section_action["execution_eligibility"], "approval_required")
-            self.assertTrue(overlay["customer_questions"])
+            self.assertEqual({item["action_type"] for item in overlay["action_queue"]}, {"inject_faq_block"})
+            self.assertFalse(overlay["customer_questions"])
             self.assertTrue(overlay["serp_blueprints"])
             self.assertTrue(overlay["content_tasks"])
+            insight = overlay["page_insights"][0]
+            self.assertEqual(insight["customer_question_count"], 0)
+            self.assertTrue(insight["blueprint_found"])
+            self.assertTrue(insight["faq_demand_detected"])
+            self.assertFalse(insight["page_thin_enough"])
+            self.assertEqual(insight["query_seed"], "Fulfillment")
+            self.assertEqual(insight["task_block_reason"], "")
+
+    def test_dashboard_render_shows_mvp_debug_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            reports_dir = settings.website_ops_root / "reports" / "daily"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            report_md = reports_dir / "2026-03-28-debug-report.md"
+            report_json = reports_dir / "2026-03-28-debug-report.json"
+            report_md.write_text("# Debug Report\n\nDate: 2026-03-28\nScope: agent-admin daily sweep\n\nSummary paragraph.\n")
+            report_json.write_text(
+                json.dumps(
+                    {
+                        "goal": {"primary": "Increase qualified leads."},
+                        "action_queue": [],
+                        "content_tasks": [],
+                        "support_requests": [],
+                        "analytics_status": {"search_console": True, "ga4": True, "notes": []},
+                        "page_insights": [
+                            {
+                                "page_url": "https://anatainc.com/services/fulfillment/",
+                                "page_title": "Fulfillment",
+                                "bucket": "convert",
+                                "score": 73,
+                                "search_console": {"impressions": 124, "ctr": 0.0081},
+                                "ga4": {"sessions": 43, "lead_conversions": 0},
+                                "ga4_trust_status": "partial",
+                                "customer_question_count": 0,
+                                "blueprint_found": True,
+                                "faq_demand_detected": True,
+                                "page_thin_enough": False,
+                                "task_block_reason": "The page is not thin enough for MVP section expansion.",
+                                "query_seed": "Fulfillment",
+                            }
+                        ],
+                    }
+                )
+            )
+            html = render_dashboard_page(settings)
+            self.assertIn("Questions", html)
+            self.assertIn("Blueprint", html)
+            self.assertIn("FAQ Demand", html)
+            self.assertIn("Task block reason", html)
+            self.assertIn("The page is not thin enough for MVP section expansion.", html)
 
     def test_run_website_ops_auto_executes_new_high_confidence_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

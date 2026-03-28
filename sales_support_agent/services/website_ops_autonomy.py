@@ -36,6 +36,11 @@ SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GA4_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 MVP_MODE_ACTIVE = True
 MVP_ALLOWED_ACTION_TYPES = ("inject_faq_block", "expand_service_page_section")
+MVP_FAQ_IMPRESSIONS_THRESHOLD = 25.0
+MVP_FAQ_CTR_THRESHOLD = 0.03
+MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD = 100.0
+MVP_FAQ_FORCE_CTR_THRESHOLD = 0.015
+MVP_THIN_TEXT_THRESHOLD = 5000
 
 
 @dataclass(frozen=True)
@@ -170,6 +175,28 @@ def _blueprint_missing_faq(blueprint: Mapping[str, Any]) -> bool:
     if list(blueprint.get("faq_patterns") or []):
         return True
     return any("faq" in str(item).lower() for item in (blueprint.get("content_gaps") or []))
+
+
+def _page_has_faq_coverage(page: Mapping[str, Any]) -> bool:
+    headings = []
+    for key in ("h1", "h2", "h3"):
+        headings.extend(str(item or "") for item in (page.get(key) or []))
+    headings.extend(
+        str(item.get("text", "") if isinstance(item, Mapping) else item or "")
+        for item in (page.get("heading_structure") or [])
+    )
+    haystack = " ".join(headings).lower()
+    return "faq" in haystack or "frequently asked" in haystack
+
+
+def _page_thin_for_section(page: Mapping[str, Any], blueprint: Mapping[str, Any], matched_questions: list[Mapping[str, Any]]) -> bool:
+    text_length = int(page.get("text_length", 0) or 0)
+    gap_count = len(list(blueprint.get("content_gaps") or []))
+    if text_length and text_length < MVP_THIN_TEXT_THRESHOLD:
+        return True
+    if gap_count >= 2:
+        return True
+    return bool(gap_count and matched_questions and text_length < (MVP_THIN_TEXT_THRESHOLD * 1.5))
 
 
 def _content_task_action(
@@ -928,16 +955,34 @@ def _content_actions(
     primary_lead_event: str,
     blueprint_cache: dict[str, dict[str, Any]],
     customer_questions: list[Mapping[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any]]:
     impressions = float(gsc.get("impressions", 0) or 0)
     ctr = float(gsc.get("ctr", 0) or 0)
     top_queries = list(gsc.get("top_queries") or [])
-    if impressions < 40 or ctr >= 0.03 or not top_queries:
-        return [], None
+    debug_state: dict[str, Any] = {
+        "customer_question_count": 0,
+        "blueprint_found": False,
+        "faq_demand_detected": False,
+        "page_thin_enough": False,
+        "task_block_reason": "",
+        "top_query_count": len(top_queries),
+        "query_seed": "",
+        "page_has_faq_coverage": _page_has_faq_coverage(page),
+    }
+    if impressions < MVP_FAQ_IMPRESSIONS_THRESHOLD:
+        debug_state["task_block_reason"] = f"Impressions below MVP threshold ({int(impressions)} < {int(MVP_FAQ_IMPRESSIONS_THRESHOLD)})."
+        return [], None, debug_state
+    if ctr >= MVP_FAQ_CTR_THRESHOLD:
+        debug_state["task_block_reason"] = f"CTR is above the MVP intervention threshold ({ctr:.2%} >= {MVP_FAQ_CTR_THRESHOLD:.0%})."
+        return [], None, debug_state
 
-    query = str(top_queries[0].get("query", "")).strip()
+    query = str(top_queries[0].get("query", "")).strip() if top_queries else ""
     if not query:
-        return [], None
+        query = _service_focus(page, gsc)
+    debug_state["query_seed"] = query
+    if not query:
+        debug_state["task_block_reason"] = "No query seed was available for SERP blueprint generation."
+        return [], None, debug_state
     blueprint = blueprint_cache.get(query)
     if blueprint is None:
         try:
@@ -954,20 +999,29 @@ def _content_actions(
                 "content_gaps": [],
             }
         blueprint_cache[query] = blueprint
+    debug_state["blueprint_found"] = bool(blueprint)
 
     matched_questions = _matching_customer_questions(page, customer_questions, top_queries)
-    if not matched_questions and not _blueprint_missing_faq(blueprint):
-        return [], blueprint
+    debug_state["customer_question_count"] = len(matched_questions)
+    page_lacks_faq_coverage = not bool(debug_state["page_has_faq_coverage"])
+    faq_demand_detected = bool(matched_questions) or _blueprint_missing_faq(blueprint) or (
+        page_lacks_faq_coverage and impressions >= MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD and ctr <= MVP_FAQ_FORCE_CTR_THRESHOLD
+    )
+    debug_state["faq_demand_detected"] = faq_demand_detected
+    page_thin_enough = _page_thin_for_section(page, blueprint, matched_questions)
+    debug_state["page_thin_enough"] = page_thin_enough
 
     actions: list[dict[str, Any]] = []
     common_evidence = _evidence_lines(page, gsc, ga4, primary_lead_event=primary_lead_event)
     question_count = len(matched_questions)
     supporting_signals = 0
-    if impressions >= 40 and ctr < 0.03:
+    if impressions >= MVP_FAQ_IMPRESSIONS_THRESHOLD and ctr < MVP_FAQ_CTR_THRESHOLD:
         supporting_signals += 1
     if question_count > 0:
         supporting_signals += 1
     if _blueprint_missing_faq(blueprint):
+        supporting_signals += 1
+    if page_lacks_faq_coverage and impressions >= MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD and ctr <= MVP_FAQ_FORCE_CTR_THRESHOLD:
         supporting_signals += 1
 
     faq_payload = build_faq_payload(
@@ -975,7 +1029,7 @@ def _content_actions(
         blueprint=blueprint,
         customer_questions=matched_questions,
     )
-    if faq_payload.get("questions"):
+    if faq_payload.get("questions") and faq_demand_detected:
         actions.append(
             _content_task_action(
                 page=page,
@@ -992,11 +1046,16 @@ def _content_actions(
                 confidence_basis=[
                     f"{int(impressions)} impressions crossed the FAQ opportunity threshold.",
                     f"{ctr:.2%} CTR is below the service-page target.",
-                    f"{question_count} matching customer questions were found." if question_count else "SERP blueprint shows repeated FAQ demand.",
+                    (
+                        f"{question_count} matching customer questions were found."
+                        if question_count
+                        else "SERP or page-level FAQ demand supports direct-answer content."
+                    ),
                 ],
                 evidence=common_evidence
                 + ([f"Customer language: {question_count} repeated buyer questions matched this page."] if question_count else [])
-                + ([f"SERP blueprint: {len(list(blueprint.get('faq_patterns') or []))} repeated FAQ patterns."] if _blueprint_missing_faq(blueprint) else []),
+                + ([f"SERP blueprint: {len(list(blueprint.get('faq_patterns') or []))} repeated FAQ patterns."] if _blueprint_missing_faq(blueprint) else [])
+                + (["The live page has no visible FAQ section despite strong CTR-loss signals."] if page_lacks_faq_coverage else []),
                 execution_eligibility="auto_execute" if supporting_signals >= 2 else "approval_required",
                 target_region="FAQ insertion zone",
                 verification_requirements=[
@@ -1007,7 +1066,7 @@ def _content_actions(
             )
         )
 
-    if list(blueprint.get("content_gaps") or []):
+    if list(blueprint.get("content_gaps") or []) and page_thin_enough:
         section_payload = build_section_expansion_payload(
             page={**page, "related_service": _page_service_slug(page)},
             blueprint=blueprint,
@@ -1041,7 +1100,16 @@ def _content_actions(
                 ],
             )
         )
-    return actions, blueprint
+    if not actions:
+        block_reasons: list[str] = []
+        if not faq_demand_detected:
+            block_reasons.append("No matched customer questions or FAQ demand signal was found.")
+        if list(blueprint.get("content_gaps") or []) and not page_thin_enough:
+            block_reasons.append("The page is not thin enough for MVP section expansion.")
+        if not faq_payload.get("questions"):
+            block_reasons.append("FAQ payload generation returned no usable questions.")
+        debug_state["task_block_reason"] = " ".join(block_reasons) or "No MVP content task qualified for this page."
+    return actions, blueprint, debug_state
 
 
 def build_autonomy_overlay(
@@ -1083,7 +1151,7 @@ def build_autonomy_overlay(
         if float(ga4.get("sessions", 0) or 0) >= 20 and float(ga4.get("lead_conversions", 0) or 0) == 0:
             insights.append("Traffic is reaching the page, but the page is not generating trusted lead conversions.")
 
-        generated_content_actions, blueprint = _content_actions(
+        generated_content_actions, blueprint, content_debug = _content_actions(
             settings=settings,
             page=observation,
             gsc=gsc,
@@ -1109,7 +1177,14 @@ def build_autonomy_overlay(
                 "top_queries": gsc.get("top_queries", []),
                 "insights": insights[:3],
                 "why_this_page_now": insights[:2] or ["This page is part of the monitored commercial service set."],
-                "customer_question_count": len(_matching_customer_questions(observation, customer_questions, list(gsc.get("top_queries") or []))),
+                "customer_question_count": int(content_debug.get("customer_question_count", 0) or 0),
+                "blueprint_found": bool(content_debug.get("blueprint_found")),
+                "faq_demand_detected": bool(content_debug.get("faq_demand_detected")),
+                "page_thin_enough": bool(content_debug.get("page_thin_enough")),
+                "task_block_reason": str(content_debug.get("task_block_reason", "")),
+                "query_seed": str(content_debug.get("query_seed", "")),
+                "top_query_count": int(content_debug.get("top_query_count", 0) or 0),
+                "page_has_faq_coverage": bool(content_debug.get("page_has_faq_coverage")),
                 "ga4_trust_status": str(ga4.get("trust_status", ga4_trust_status)),
             }
         )

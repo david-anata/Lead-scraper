@@ -1099,6 +1099,20 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
                 + "".join(f"<li>{html.escape(str(note))}</li>" for note in item.get("insights", [])[:2])
                 + "</ul>"
             )
+        debug_chips = "".join(
+            [
+                _mini_chip("Questions", int(item.get("customer_question_count", 0) or 0)),
+                _mini_chip("Blueprint", "Yes" if item.get("blueprint_found") else "No"),
+                _mini_chip("FAQ Demand", "Yes" if item.get("faq_demand_detected") else "No"),
+                _mini_chip("Thin Enough", "Yes" if item.get("page_thin_enough") else "No"),
+            ]
+        )
+        query_seed = ""
+        if item.get("query_seed"):
+            query_seed = f"<p class='muted'><strong>Query seed:</strong> {html.escape(str(item.get('query_seed', '')))}</p>"
+        block_reason = ""
+        if item.get("task_block_reason"):
+            block_reason = f"<p class='muted'><strong>Task block reason:</strong> {html.escape(str(item.get('task_block_reason', '')))}</p>"
         cards.append(
             f"""
             <article class="insight-card">
@@ -1116,6 +1130,9 @@ def _insight_snapshot_cards(page_insights: list[dict[str, Any]]) -> str:
                 {_mini_chip("Trust", str(item.get("ga4_trust_status", "missing")).title())}
               </div>
               {top_query}
+              <div class="mini-grid">{debug_chips}</div>
+              {query_seed}
+              {block_reason}
               {insights}
             </article>
             """
@@ -1690,13 +1707,25 @@ def render_report_page(settings: Settings, mode: str, slug: str) -> str:
     entry = get_report_entry(settings, mode, slug)
     if not entry:
         return _page_shell("Not Found", f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card'><h1>Not found</h1><p class='lead'>The requested report was not found.</p></section></main>")
+    payload = _mvp_filter_report_payload(_report_payload(entry))
+    debug_insights = list(payload.get("page_insights") or [])[:6]
+    debug_panel = ""
+    if MVP_MODE_ACTIVE and debug_insights:
+        debug_panel = (
+            "<section style=\"max-width:1200px;margin:24px auto 0;padding:0 20px;\">"
+            "<div style=\"background:#fff;border:1px solid rgba(25,55,109,0.12);border-radius:24px;padding:24px;box-shadow:0 16px 40px rgba(24,39,75,0.08);\">"
+            "<p style=\"margin:0 0 8px;font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#5d6b82;\">MVP debug</p>"
+            "<h2 style=\"margin:0 0 12px;font-size:28px;line-height:1.1;color:#16233b;\">Per-page generation trace</h2>"
+            f"{_insight_snapshot_cards(debug_insights)}"
+            "</div></section>"
+        )
     html_path = entry["html_path"]
     if html_path.exists():
         rendered = _inject_admin_nav_into_report_html(html_path.read_text(), active="reports")
         banner = _mvp_mode_banner() if MVP_MODE_ACTIVE else ""
-        return rendered.replace('<div class="admin-report-shell">', f'<div class="admin-report-shell">{banner}', 1)
+        return rendered.replace('<div class="admin-report-shell">', f'<div class="admin-report-shell">{banner}{debug_panel}', 1)
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
-        f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card stack'>{_mvp_mode_banner() if MVP_MODE_ACTIVE else ''}<p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section></main>",
+        f"{_nav('reports', website_ops_section='reports')}<main class='shell'><section class='card stack'>{_mvp_mode_banner() if MVP_MODE_ACTIVE else ''}<p class='eyebrow'>{html.escape(mode.title())}</p><h1>{html.escape(entry['title'])}</h1><pre>{html.escape(markdown_path.read_text())}</pre></section>{debug_panel}</main>",
     )
