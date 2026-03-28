@@ -40,6 +40,8 @@ services:
         value: "150"
       - key: SALES_AGENT_DB_URL
         sync: false
+      - key: FULFILLMENT_CS_REPORTS_DIR
+        sync: false
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
         sync: false
       - key: GOOGLE_SHEETS_SALES_RANGE

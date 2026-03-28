@@ -126,6 +126,7 @@ class Settings:
     sales_agent_db_url: str
     internal_api_key: str
     discovery_snapshot_path: Path
+    fulfillment_cs_reports_dir: Path
     website_ops_root: Path
     website_ops_site_urls: tuple[str, ...]
     website_ops_execute_approved: bool
@@ -415,6 +416,10 @@ def load_settings() -> Settings:
         discovery_snapshot_path=Path(
             os.getenv("CLICKUP_DISCOVERY_SNAPSHOT_PATH", "runtime/clickup_schema_snapshot.json").strip()
             or "runtime/clickup_schema_snapshot.json"
+        ),
+        fulfillment_cs_reports_dir=Path(
+            os.getenv("FULFILLMENT_CS_REPORTS_DIR", "runtime/fulfillment_cs_reports").strip()
+            or "runtime/fulfillment_cs_reports"
         ),
         website_ops_root=Path(
             os.getenv("WEBSITE_OPS_ROOT", "runtime/website_ops").strip()

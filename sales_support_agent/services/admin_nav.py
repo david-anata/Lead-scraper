@@ -140,6 +140,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "") -> str:
         _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
         _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
         _nav_item("Executive", "/admin/executive", active=primary_active == "executive"),
+        _nav_item("Fulfillment CS", "/admin/fulfillment-cs", active=primary_active == "fulfillment"),
     ]
     secondary_nav = ""
     current_section = website_ops_section or ("seo_dashboard" if active == "website_ops" else active)
@@ -153,6 +154,18 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "") -> str:
         <div class="topbar-divider"></div>
         <nav class="top-actions top-actions--secondary">
           {"".join(secondary_links)}
+        </nav>
+        """
+    if primary_active == "fulfillment":
+        fulfillment_links = [
+            _nav_item("Dashboard", "/admin/fulfillment-cs/", active=current_section == "fulfillment_dashboard", extra_class="top-link--secondary"),
+            _nav_item("Reports", "/admin/fulfillment-cs/reports/", active=current_section == "fulfillment_reports", extra_class="top-link--secondary"),
+            _nav_item("Latest", "/admin/fulfillment-cs/reports/latest", active=current_section == "fulfillment_latest", extra_class="top-link--secondary"),
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(fulfillment_links)}
         </nav>
         """
     return f"""

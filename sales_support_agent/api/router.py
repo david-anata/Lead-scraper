@@ -63,6 +63,16 @@ from sales_support_agent.services.admin_dashboard import (
 )
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.deck_generator import DeckGenerationService
+from sales_support_agent.services.fulfillment_dashboard import (
+    fulfillment_report_entries,
+    latest_fulfillment_report_entry,
+    load_fulfillment_report_by_slug,
+    load_latest_fulfillment_report,
+    render_fulfillment_dashboard_page,
+    render_fulfillment_not_found_page,
+    render_fulfillment_report_detail_page,
+    render_fulfillment_reports_page,
+)
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
@@ -519,8 +529,66 @@ def admin_executive_dashboard(request: Request) -> Response:
             settings=settings,
             session=session,
             clickup_client=ClickUpClient(settings),
-        )
+    )
     return HTMLResponse(render_executive_page(executive))
+
+
+@router.get("/admin/fulfillment-cs", response_class=HTMLResponse)
+def admin_fulfillment_cs_root(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment-cs/", status_code=302)
+
+
+@router.get("/admin/fulfillment-cs/", response_class=HTMLResponse)
+def admin_fulfillment_cs_dashboard(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    reports_dir = request.app.state.settings.fulfillment_cs_reports_dir
+    latest_report = load_latest_fulfillment_report(reports_dir)
+    entries = fulfillment_report_entries(reports_dir)
+    return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries))
+
+
+@router.get("/admin/fulfillment-cs/reports", response_class=HTMLResponse)
+def admin_fulfillment_cs_reports_root(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
+
+
+@router.get("/admin/fulfillment-cs/reports/", response_class=HTMLResponse)
+def admin_fulfillment_cs_reports(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    reports_dir = request.app.state.settings.fulfillment_cs_reports_dir
+    return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(reports_dir)))
+
+
+@router.get("/admin/fulfillment-cs/reports/latest", response_class=HTMLResponse)
+def admin_fulfillment_cs_latest_report(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    latest_entry = latest_fulfillment_report_entry(request.app.state.settings.fulfillment_cs_reports_dir)
+    if latest_entry is None:
+        return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
+    return RedirectResponse(url=f"/admin/fulfillment-cs/reports/{latest_entry.slug}", status_code=302)
+
+
+@router.get("/admin/fulfillment-cs/reports/{report_slug}", response_class=HTMLResponse)
+def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    report = load_fulfillment_report_by_slug(request.app.state.settings.fulfillment_cs_reports_dir, report_slug)
+    if report is None:
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found."), status_code=404)
+    return HTMLResponse(render_fulfillment_report_detail_page(report))
 
 
 @router.get("/admin/website-ops", response_class=HTMLResponse)
