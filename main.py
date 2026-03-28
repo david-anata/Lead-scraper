@@ -468,7 +468,7 @@ def load_website_ops_settings() -> WebsiteOpsHostSettings:
                 "https://anatainc.com/contact/",
             ),
         ),
-        website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "false"), default=False),
+        website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "true"), default=True),
     )
 
 

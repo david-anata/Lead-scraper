@@ -36,7 +36,27 @@ services:
         value: runtime/clickup_schema_snapshot.json
       - key: CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP
         value: "false"
+      - key: STALE_LEAD_SCAN_MAX_TASKS
+        value: "150"
       - key: SALES_AGENT_DB_URL
+        sync: false
+      - key: GOOGLE_SHEETS_SPREADSHEET_ID
+        sync: false
+      - key: GOOGLE_SHEETS_SALES_RANGE
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: WEBSITE_OPS_EXECUTE_APPROVED
+        value: "true"
+      - key: CANVA_CLIENT_ID
+        sync: false
+      - key: CANVA_CLIENT_SECRET
+        sync: false
+      - key: CANVA_REDIRECT_URI
+        sync: false
+      - key: CANVA_BRAND_TEMPLATE_ID
+        sync: false
+      - key: CANVA_TOKEN_SECRET
         sync: false
 
   - type: cron

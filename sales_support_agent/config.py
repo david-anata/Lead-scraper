@@ -435,7 +435,7 @@ def load_settings() -> Settings:
                 "https://anatainc.com/contact/",
             ),
         ),
-        website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "false"), default=False),
+        website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "true"), default=True),
         use_due_date_for_follow_up=_parse_bool(os.getenv("CLICKUP_USE_DUE_DATE_FOR_FOLLOW_UP", "")),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
