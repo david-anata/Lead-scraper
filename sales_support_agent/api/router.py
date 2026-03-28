@@ -13,7 +13,7 @@ from urllib.parse import parse_qs
 import requests
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 
 from main import (
     ICPBuildRequest as LeadBuildRequest,
@@ -454,6 +454,74 @@ def root() -> ApiMessage:
 def health(request: Request) -> ApiMessage:
     settings = request.app.state.settings
     brand_package_path = Path(str(getattr(settings, "shared_brand_package_path", "") or "")).expanduser()
+    ticket1_details: dict[str, object] = {}
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            bind = session.get_bind()
+            inspector = inspect(bind)
+            existing_columns = {
+                column["name"]
+                for column in inspector.get_columns("lead_mirrors")
+            }
+            latest_sync_at = session.execute(select(func.max(LeadMirror.last_sync_at))).scalar_one_or_none()
+            ticket1_details = {
+                "lead_mirror_ticket1_columns_present": {
+                    "status_key": "status_key" in existing_columns,
+                    "is_closed": "is_closed" in existing_columns,
+                    "is_active": "is_active" in existing_columns,
+                    "task_updated_at": "task_updated_at" in existing_columns,
+                },
+                "lead_mirror_record_count": int(
+                    session.execute(select(func.count()).select_from(LeadMirror)).scalar_one() or 0
+                ),
+                "lead_mirror_current_list_count": int(
+                    session.execute(
+                        select(func.count()).select_from(LeadMirror).where(LeadMirror.list_id == settings.clickup_list_id)
+                    ).scalar_one()
+                    or 0
+                ),
+                "lead_mirror_other_list_count": int(
+                    session.execute(
+                        select(func.count()).select_from(LeadMirror).where(LeadMirror.list_id != settings.clickup_list_id)
+                    ).scalar_one()
+                    or 0
+                ),
+                "lead_mirror_ticket1_populated_counts": {
+                    "status_key_nonempty": int(
+                        session.execute(
+                            select(func.count()).select_from(LeadMirror).where(LeadMirror.status_key != "")
+                        ).scalar_one()
+                        or 0
+                    ),
+                    "is_active_true": int(
+                        session.execute(
+                            select(func.count()).select_from(LeadMirror).where(LeadMirror.is_active.is_(True))
+                        ).scalar_one()
+                        or 0
+                    ),
+                    "is_closed_true": int(
+                        session.execute(
+                            select(func.count()).select_from(LeadMirror).where(LeadMirror.is_closed.is_(True))
+                        ).scalar_one()
+                        or 0
+                    ),
+                    "task_updated_at_nonnull": int(
+                        session.execute(
+                            select(func.count()).select_from(LeadMirror).where(LeadMirror.task_updated_at.is_not(None))
+                        ).scalar_one()
+                        or 0
+                    ),
+                    "raw_task_payload_present": int(
+                        session.execute(
+                            select(func.count()).select_from(LeadMirror).where(LeadMirror.raw_task_payload.is_not(None))
+                        ).scalar_one()
+                        or 0
+                    ),
+                },
+                "lead_mirror_latest_sync_at": latest_sync_at.isoformat() if latest_sync_at else "",
+            }
+    except Exception as exc:
+        ticket1_details = {"lead_mirror_ticket1_validation_error": str(exc)}
     return ApiMessage(
         status="ok",
         message="healthy",
@@ -463,6 +531,7 @@ def health(request: Request) -> ApiMessage:
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
             "deck_generator_configured": brand_package_path.exists(),
             "deck_brand_package_path": str(brand_package_path),
+            **ticket1_details,
         },
     )
 
