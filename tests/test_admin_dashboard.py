@@ -25,6 +25,7 @@ try:
         dashboard_data_from_dict,
         dashboard_data_to_dict,
         render_dashboard_page,
+        render_sales_deck_page,
     )
 
     SQLALCHEMY_AVAILABLE = True
@@ -71,7 +72,7 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertEqual(rebuilt.lead_builder_missing, ["STORELEADS_API_KEY"])
         self.assertTrue(rebuilt.deck_generator_ready)
 
-    def test_dashboard_render_includes_amazon_first_deck_controls(self) -> None:
+    def test_dashboard_render_removes_gmail_drafts_and_deck_builder_from_admin(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
         with session_scope(session_factory) as session:
@@ -100,22 +101,53 @@ class AdminDashboardTests(unittest.TestCase):
             )
 
         html = render_dashboard_page(dashboard)
-        self.assertIn("deck-generator-form", html)
-        self.assertIn("/admin/api/generate-deck", html)
-        self.assertIn("Target Amazon ASIN or URL", html)
-        self.assertIn("Competitor Xray CSV", html)
-        self.assertIn("Keyword Xray CSV", html)
-        self.assertIn("Include offering slides", html)
-        self.assertIn("tiktok_shop", html)
-        self.assertNotIn("CONNECT CANVA", html)
-        self.assertNotIn("Google sheet range", html)
-        self.assertNotIn("Competitor Amazon links or ASINs", html)
+        self.assertNotIn("deck-generator-form", html)
+        self.assertNotIn("Bulk Gmail drafts", html)
+        self.assertIn("/admin/sales-decks", html)
         self.assertIn("Failed", html)
         self.assertIn("Sync now", html)
         self.assertIn("Needs review", html)
         self.assertIn("Due today", html)
         self.assertIn("Open overdue queue", html)
         self.assertIn("Show more tools and diagnostics", html)
+
+    def test_sales_deck_page_renders_deck_controls(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            session.add(
+                AutomationRun(
+                    run_type="deck_generation",
+                    status="success",
+                    started_at=datetime(2026, 3, 14, 10, 0, tzinfo=timezone.utc),
+                    summary_json={
+                        "status": "success",
+                        "message": "Deck generated successfully as an HTML report.",
+                        "output_type": "html",
+                        "design_title": "OceanRx x anata - Strategy Deck",
+                        "view_url": "https://sales-support-agent.onrender.com/deck-exports/1/token",
+                        "channels": ["amazon", "shopify"],
+                        "view_count": 3,
+                    },
+                )
+            )
+            dashboard = build_dashboard_data(
+                settings=self._settings(),
+                session=session,
+                lead_builder_status={"ready": True, "missing": []},
+                clickup_client=self._FakeClickUpClient(),
+                as_of_date=date(2026, 3, 14),
+            )
+
+        html = render_sales_deck_page(dashboard)
+        self.assertIn("deck-generator-form", html)
+        self.assertIn("/admin/api/generate-deck", html)
+        self.assertIn("Generate sales deck", html)
+        self.assertIn("Target product URL or ASIN", html)
+        self.assertIn("Competitor CSVs", html)
+        self.assertIn("Keyword CSVs", html)
+        self.assertIn("deck-run-list", html)
+        self.assertNotIn("Bulk Gmail drafts", html)
 
     def test_unknown_non_terminal_statuses_are_treated_as_active(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")

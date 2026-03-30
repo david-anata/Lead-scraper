@@ -3089,7 +3089,7 @@ def render_dashboard_page(data: DashboardData) -> str:
     </style>
   </head>
   <body>
-    {render_agent_nav("sales")}
+    {render_agent_nav("sales", sales_section="sales")}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">
@@ -3207,227 +3207,6 @@ def render_dashboard_page(data: DashboardData) -> str:
               </section>
             </section>
 
-            <section class="meta-card utility-hub">
-              <div class="card-title-line">
-                <h2>Optional tools</h2>
-                {info_hint("These workflows are helpful, but they are not required for reviewing priorities. They stay collapsed by default so the queue remains the center of the page.")}
-              </div>
-              <div class="utility-drawers">
-                <details class="utility-drawer" id="gmail-drafts-panel">
-                  <summary>Bulk Gmail drafts</summary>
-                  <div class="utility-body">
-                    <p>Upload a CSV and create Gmail drafts in bulk without sending anything. Required column: <strong>email</strong>. Optional columns: <strong>first_name</strong>, <strong>last_name</strong>, <strong>company</strong>, <strong>subject</strong>, <strong>body</strong>, plus any custom fields you want to reference.</p>
-                    <form class="draft-form" id="gmail-drafts-form" enctype="multipart/form-data">
-                      <label>
-                        Contacts CSV
-                        <input type="file" name="contacts_csv" accept=".csv,text/csv" required />
-                      </label>
-                      <label>
-                        Sales objective
-                        <input type="text" name="sales_objective" placeholder="book intro calls with Amazon operators" />
-                      </label>
-                      <label>
-                        Subject template
-                        <input type="text" name="subject_template" placeholder="Idea for {{company}}" />
-                      </label>
-                      <label>
-                        Preview mode
-                        <span class="checkbox-label"><input type="checkbox" name="dry_run" value="true" checked /> Preview only before creating drafts</span>
-                      </label>
-                      <div class="draft-mode-note" id="draft-mode-note"><strong>Preview mode is on.</strong> We will validate rows and show rendered email previews, but nothing will be created in Gmail until you turn preview mode off.</div>
-                      <label class="draft-body-field">
-                        Body template
-                        <textarea name="body_template" placeholder="Hi {{first_name}},&#10;&#10;Reaching out because {{objective}}.&#10;&#10;Would you be open to a quick conversation next week?&#10;&#10;Best,&#10;David"></textarea>
-                      </label>
-                      <div class="draft-help">
-                        Use placeholders like <strong>{'{{first_name}}'}</strong>, <strong>{'{{company}}'}</strong>, <strong>{'{{objective}}'}</strong>, or any normalized CSV header. If your CSV already includes <strong>subject</strong> or <strong>body</strong> columns, you can leave the template fields blank.
-                      </div>
-                      <div class="draft-submit">
-                        <button type="submit" id="drafts-submit-button">PREVIEW DRAFTS</button>
-                        <a class="button-link" href="https://mail.google.com/mail/u/0/#drafts" target="_blank" rel="noreferrer">OPEN GMAIL DRAFTS</a>
-                      </div>
-                    </form>
-                    <div class="status-line" id="drafts-status">Drafts: Ready.</div>
-                    <div class="draft-results" id="drafts-results"></div>
-                  </div>
-                </details>
-
-                <details class="utility-drawer" id="deck-generator-panel">
-                  <summary>Generate sales deck</summary>
-                  <div class="utility-body">
-                    <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
-                    {deck_ready_notice}
-                    <form class="lead-form" id="deck-generator-form">
-                      <label>
-                        Target product URL or ASIN
-                        <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
-                      </label>
-                      <label>
-                        Competitor CSVs
-                        <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
-                      </label>
-                      <label>
-                        Keyword CSVs
-                        <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
-                      </label>
-                      <label>
-                        Cerebro CSV
-                        <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
-                      </label>
-                      <label>
-                        Word frequency CSV
-                        <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
-                      </label>
-                      <label>
-                        Creative mockup URL
-                        <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
-                      </label>
-                      <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
-                      <fieldset class="offer-toggle-group">
-                        <legend>Recommended plan options</legend>
-                        <label class="checkbox-label">
-                          <span>Include recommended plan slide</span>
-                          <span class="toggle-switch"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /><span aria-hidden="true"></span></span>
-                        </label>
-                        <div class="offer-builder">
-                          <div class="offer-builder-head">
-                            <p>Edit the offer cards directly. These values feed the deck as written here.</p>
-                            <div class="offer-builder-actions">
-                              <button type="button" id="deck-add-offer">ADD OFFER</button>
-                            </div>
-                          </div>
-                          <input type="hidden" name="offer_payload_json" id="deck-offer-payload-json" value="" />
-                          <div class="offer-editor-list" id="deck-offer-list">
-                            <div class="offer-editor" data-offer-index="0">
-                              <div class="offer-editor-top">
-                                <button type="button" class="offer-editor-toggle" aria-expanded="false">Channel management</button>
-                                <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
-                              </div>
-                              <div class="offer-editor-body" hidden>
-                              <div class="offer-editor-grid">
-                                <label class="full-width">
-                                  Offer title
-                                  <input type="text" class="offer-title" value="Channel management" />
-                                </label>
-                                <label class="full-width">
-                                  Description
-                                  <textarea class="offer-description">Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.</textarea>
-                                </label>
-                                <label>
-                                  Price
-                                  <input type="text" class="offer-price" value="$3,000" />
-                                </label>
-                                <label>
-                                  Price label
-                                  <input type="text" class="offer-price-label" value="Monthly retainer fee" />
-                                </label>
-                                <label>
-                                  Commission
-                                  <input type="text" class="offer-commission" value="5%" />
-                                </label>
-                                <label>
-                                  Commission label
-                                  <input type="text" class="offer-commission-label" value="Commission on growth" />
-                                </label>
-                                <label>
-                                  Baseline
-                                  <input type="text" class="offer-baseline" value="$10,000" />
-                                </label>
-                                <label>
-                                  Baseline label
-                                  <input type="text" class="offer-baseline-label" value="Commission baseline" />
-                                </label>
-                                <label class="full-width">
-                                  Bonus / note
-                                  <input type="text" class="offer-bonus" value="+TikTok Shop Support" />
-                                </label>
-                              </div>
-                              </div>
-                            </div>
-                            <div class="offer-editor" data-offer-index="1">
-                              <div class="offer-editor-top">
-                                <button type="button" class="offer-editor-toggle" aria-expanded="false">Commission Model + Shipping OS</button>
-                                <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
-                              </div>
-                              <div class="offer-editor-body" hidden>
-                              <div class="offer-editor-grid">
-                                <label class="full-width">
-                                  Offer title
-                                  <input type="text" class="offer-title" value="Commission Model + Shipping OS" />
-                                </label>
-                                <label class="full-width">
-                                  Description
-                                  <textarea class="offer-description">A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.</textarea>
-                                </label>
-                                <label>
-                                  Price
-                                  <input type="text" class="offer-price" value="$0" />
-                                </label>
-                                <label>
-                                  Price label
-                                  <input type="text" class="offer-price-label" value="Monthly retainer fee" />
-                                </label>
-                                <label>
-                                  Commission
-                                  <input type="text" class="offer-commission" value="10%" />
-                                </label>
-                                <label>
-                                  Commission label
-                                  <input type="text" class="offer-commission-label" value="Commission over baseline" />
-                                </label>
-                                <label>
-                                  Baseline
-                                  <input type="text" class="offer-baseline" value="$TBD" />
-                                </label>
-                                <label>
-                                  Baseline label
-                                  <input type="text" class="offer-baseline-label" value="Commission baseline" />
-                                </label>
-                                <label class="full-width">
-                                  Bonus / note
-                                  <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
-                                </label>
-                              </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </fieldset>
-                      <div class="lead-submit">
-                        <button type="submit" id="deck-submit-button">GENERATE DECK</button>
-                      </div>
-                    </form>
-                    <div class="draft-help">
-                      This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.
-                    </div>
-                    <div class="status-line" id="deck-status">Deck status: Ready.</div>
-                    <div class="deck-run-list" id="deck-run-list">
-                      {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
-                    </div>
-                    <div class="analytics-modal" id="deck-analytics-modal" aria-hidden="true">
-                      <div class="analytics-dialog">
-                        <div class="analytics-head">
-                          <h3>Deck analytics</h3>
-                          <button type="button" id="deck-analytics-close" aria-label="Close analytics">×</button>
-                        </div>
-                        <div class="analytics-grid" id="deck-analytics-summary"></div>
-                        <div class="analytics-tabs" id="deck-analytics-tabs">
-                          <button type="button" class="is-active" data-window="7">7 days</button>
-                          <button type="button" data-window="30">30 days</button>
-                          <button type="button" data-window="90">90 days</button>
-                          <button type="button" data-window="all">All time</button>
-                        </div>
-                        <div class="analytics-card">
-                          <h4>Visits by day</h4>
-                          <div id="deck-analytics-daily"></div>
-                        </div>
-                        <p class="draft-help">Visit counts, first and last visits, and daily trend windows are available here. Visit-length and per-section time tracking are not enabled yet.</p>
-                      </div>
-                    </div>
-                  </div>
-                </details>
-              </div>
-            </section>
           </div>
         </details>
       </div>
@@ -3454,12 +3233,6 @@ def render_dashboard_page(data: DashboardData) -> str:
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
       const deckAnalyticsDaily = document.getElementById("deck-analytics-daily");
       const deckAnalyticsTabs = document.getElementById("deck-analytics-tabs");
-      const draftsForm = document.getElementById("gmail-drafts-form");
-      const draftsStatus = document.getElementById("drafts-status");
-      const draftsResults = document.getElementById("drafts-results");
-      const draftsSubmitButton = document.getElementById("drafts-submit-button");
-      const draftModeNote = document.getElementById("draft-mode-note");
-      const draftsDryRunCheckbox = draftsForm?.querySelector('input[name="dry_run"]');
       const ownerFilter = document.getElementById("owner-filter");
       const searchInput = document.getElementById("queue-search");
       const filterResults = document.getElementById("filter-results");
@@ -3726,18 +3499,6 @@ def render_dashboard_page(data: DashboardData) -> str:
         renderDeckAnalyticsDaily("7");
         deckAnalyticsModal?.classList.add("is-visible");
         deckAnalyticsModal?.setAttribute("aria-hidden", "false");
-      }}
-
-      function updateDraftModeUi() {{
-        const previewOnly = Boolean(draftsDryRunCheckbox?.checked);
-        if (draftsSubmitButton) {{
-          draftsSubmitButton.textContent = previewOnly ? "PREVIEW DRAFTS" : "CREATE DRAFTS";
-        }}
-        if (draftModeNote) {{
-          draftModeNote.innerHTML = previewOnly
-            ? "<strong>Preview mode is on.</strong> We will validate rows and show rendered email previews, but nothing will be created in Gmail until you turn preview mode off."
-            : "<strong>Create mode is on.</strong> Clicking the button will create Gmail drafts for all valid rows in this upload."
-        }}
       }}
 
       function applyQueueFilters() {{
@@ -4104,136 +3865,1037 @@ def render_dashboard_page(data: DashboardData) -> str:
 
       syncOfferEditorTitles();
 
-      draftsForm?.addEventListener("submit", async (event) => {{
+      hydrateQueuePresetFromUrl();
+      applyQueueFilters();
+    </script>
+  </body>
+</html>"""
+
+
+def render_sales_deck_page(data: DashboardData) -> str:
+    latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
+    deck_ready_notice = (
+        '<div class="notice warning">Deck generator is missing env vars: '
+        + html.escape(", ".join(data.deck_generator_missing))
+        + ".</div>"
+        if data.deck_generator_missing
+        else '<div class="notice success">Deck generator is configured for the Amazon-first HTML workflow.</div>'
+    )
+    recent_deck_runs_html = "".join(
+        f"""
+        <article class="deck-run-item">
+          <div>
+            <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
+            <p class="muted">Created {html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</p>
+            <ul class="deck-run-bullets">
+              {''.join(f"<li>{html.escape(_format_deck_channel_label(channel))}</li>" for channel in (run.get("channels") or []))}
+            </ul>
+          </div>
+          <div class="deck-run-links">
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
+            <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>View analytics</button>
+          </div>
+        </article>
+        """
+        for run in data.recent_deck_runs
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>agent | Generate Sales Deck</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {{
+        --dark-blue: #2B3644;
+        --alt-dark-blue: #33445C;
+        --light-blue: #85BBDA;
+        --brown: #BFA889;
+        --light-brown: #F9F7F3;
+        --white: #FFFFFF;
+        --text: #2B3644;
+        --shadow: rgba(43, 54, 68, 0.10);
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        background: var(--light-brown);
+        color: var(--text);
+        font-family: "Inter", "Segoe UI", sans-serif;
+      }}
+      a {{ color: var(--dark-blue); }}
+      {render_agent_nav_styles()}
+      .shell {{
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 28px 18px 64px;
+      }}
+      .workspace {{
+        background: var(--white);
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 26px;
+        box-shadow: 0 18px 40px var(--shadow);
+        padding: 24px;
+      }}
+      .page-header {{
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+        gap: 22px;
+        align-items: end;
+        padding-bottom: 20px;
+        border-bottom: 1px solid rgba(43, 54, 68, 0.10);
+        margin-bottom: 22px;
+      }}
+      .eyebrow {{
+        display: inline-block;
+        padding: 11px 16px;
+        border-radius: 6px;
+        background: var(--dark-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 15px;
+        line-height: 1;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 16px;
+      }}
+      .page-title {{
+        margin: 0;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 52px;
+        line-height: 0.96;
+        letter-spacing: -0.035em;
+        color: var(--dark-blue);
+      }}
+      .highlight {{
+        color: var(--light-blue);
+      }}
+      .header-meta {{
+        display: grid;
+        gap: 12px;
+      }}
+      .page-copy {{
+        font-weight: 300;
+        font-size: 17px;
+        line-height: 1.5;
+        color: var(--dark-blue);
+      }}
+      .freshness-strip {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+      .freshness-pill {{
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(133, 187, 218, 0.16);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }}
+      .freshness-pill strong {{
+        font-size: 12px;
+      }}
+      .notice {{
+        border-radius: 12px;
+        padding: 14px 16px;
+        margin-bottom: 14px;
+        line-height: 1.35;
+        font-weight: 300;
+        font-size: 14px;
+      }}
+      .success {{
+        background: rgba(133, 187, 218, 0.14);
+        border: 1px solid rgba(133, 187, 218, 0.30);
+      }}
+      .warning {{
+        background: rgba(191, 168, 137, 0.18);
+        border: 1px solid rgba(191, 168, 137, 0.30);
+      }}
+      .deck-page-card {{
+        background: var(--white);
+        border: 2px solid rgba(43, 54, 68, 0.10);
+        border-radius: 18px;
+        padding: 20px 22px;
+      }}
+      .deck-page-card h2 {{
+        margin: 0 0 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 27px;
+        color: var(--dark-blue);
+      }}
+      .deck-page-card p {{
+        margin: 0 0 16px;
+        font-weight: 300;
+        font-size: 16px;
+        line-height: 1.45;
+      }}
+      .lead-form {{
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .lead-form label {{
+        display: grid;
+        gap: 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }}
+      .lead-form input,
+      .lead-form textarea {{
+        width: 100%;
+        padding: 16px 18px;
+        border-radius: 10px;
+        border: 2px solid rgba(43, 54, 68, 0.16);
+        background: var(--white);
+        font-family: "Inter", "Segoe UI", sans-serif;
+        font-weight: 300;
+        font-size: 15px;
+        color: var(--dark-blue);
+      }}
+      .lead-form textarea {{
+        min-height: 180px;
+        resize: vertical;
+      }}
+      .lead-form input[type="file"] {{
+        padding: 14px 16px;
+      }}
+      .lead-form .lead-submit,
+      .lead-form .full-width {{
+        grid-column: 1 / -1;
+      }}
+      .lead-form .lead-submit {{
+        display: flex;
+        align-items: end;
+        gap: 12px;
+        flex-wrap: wrap;
+      }}
+      .lead-form button {{
+        width: auto;
+        border: 0;
+        border-radius: 999px;
+        padding: 13px 22px;
+        background: var(--light-blue);
+        color: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 16px;
+        cursor: pointer;
+      }}
+      .lead-form button[disabled] {{
+        opacity: 0.68;
+        background: var(--brown);
+        cursor: wait;
+      }}
+      .offer-toggle-group {{
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 12px;
+        padding: 16px 18px;
+        border-radius: 12px;
+        border: 2px solid rgba(43, 54, 68, 0.12);
+        background: rgba(191, 168, 137, 0.08);
+      }}
+      .offer-builder {{
+        display: grid;
+        gap: 14px;
+      }}
+      .offer-builder-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }}
+      .offer-builder-head p {{
+        margin: 0;
+        color: var(--alt-dark-blue);
+      }}
+      .offer-builder-actions {{
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }}
+      .offer-builder-actions button {{
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: rgba(43, 54, 68, 0.10);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      .offer-editor-list {{
+        display: grid;
+        gap: 14px;
+      }}
+      .offer-editor {{
+        display: grid;
+        gap: 14px;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        background: rgba(255, 255, 255, 0.8);
+      }}
+      .offer-editor-top {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }}
+      .offer-editor-toggle {{
+        border: 0;
+        background: transparent;
+        padding: 0;
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .offer-editor-toggle::after {{
+        content: "▾";
+        font-size: 12px;
+      }}
+      .offer-editor-toggle[aria-expanded="true"]::after {{
+        content: "▴";
+      }}
+      .offer-editor-body[hidden] {{
+        display: none;
+      }}
+      .offer-editor-grid {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }}
+      .offer-editor-grid .full-width {{
+        grid-column: 1 / -1;
+      }}
+      .checkbox-label {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-family: "Inter", "Segoe UI", sans-serif;
+        font-weight: 300;
+        font-size: 15px;
+        text-transform: none;
+        letter-spacing: 0;
+      }}
+      .checkbox-label input {{
+        width: auto;
+        margin: 0;
+        padding: 0;
+      }}
+      .toggle-switch {{
+        position: relative;
+        width: 46px;
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+      }}
+      .toggle-switch input {{
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+      }}
+      .toggle-switch span {{
+        width: 46px;
+        height: 26px;
+        border-radius: 999px;
+        background: rgba(43, 54, 68, 0.16);
+        position: relative;
+        transition: background 120ms ease;
+      }}
+      .toggle-switch span::after {{
+        content: "";
+        position: absolute;
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        background: var(--white);
+        top: 3px;
+        left: 3px;
+        box-shadow: 0 3px 6px rgba(43, 54, 68, 0.18);
+        transition: transform 120ms ease;
+      }}
+      .toggle-switch input:checked + span {{
+        background: var(--light-blue);
+      }}
+      .toggle-switch input:checked + span::after {{
+        transform: translateX(20px);
+      }}
+      .draft-help {{
+        margin-top: 14px;
+        color: rgba(43, 54, 68, 0.78);
+        font-size: 14px;
+        line-height: 1.45;
+      }}
+      .status-line {{
+        margin-top: 14px;
+        font-weight: 300;
+        font-size: 14px;
+        color: var(--dark-blue);
+      }}
+      .deck-run-list {{
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }}
+      .deck-run-item {{
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        background: rgba(43, 54, 68, 0.03);
+      }}
+      .deck-run-item strong {{
+        display: block;
+        margin-bottom: 4px;
+      }}
+      .muted {{
+        color: rgba(43, 54, 68, 0.68);
+      }}
+      .deck-run-bullets {{
+        margin: 10px 0 0;
+        padding-left: 18px;
+      }}
+      .deck-run-links {{
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        flex-wrap: wrap;
+      }}
+      .deck-run-links a,
+      .deck-run-links button {{
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: rgba(43, 54, 68, 0.10);
+        color: var(--dark-blue);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+      }}
+      .analytics-modal {{
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(43, 54, 68, 0.45);
+        z-index: 60;
+      }}
+      .analytics-modal.is-visible {{
+        display: flex;
+      }}
+      .analytics-dialog {{
+        width: min(920px, 100%);
+        max-height: 88vh;
+        overflow: auto;
+        background: var(--white);
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: 0 24px 60px rgba(43, 54, 68, 0.26);
+      }}
+      .analytics-head {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 18px;
+      }}
+      .analytics-head h3 {{
+        margin: 0;
+      }}
+      .analytics-head button {{
+        border: 0;
+        background: transparent;
+        font-size: 28px;
+        line-height: 1;
+        cursor: pointer;
+      }}
+      .analytics-grid {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 16px;
+      }}
+      .analytics-card {{
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 14px;
+        padding: 16px;
+      }}
+      .analytics-tabs {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 16px;
+      }}
+      .analytics-tabs button {{
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 14px;
+        background: rgba(43, 54, 68, 0.10);
+        cursor: pointer;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+      }}
+      .analytics-tabs button.is-active {{
+        background: var(--dark-blue);
+        color: var(--white);
+      }}
+      @media (max-width: 960px) {{
+        .page-header,
+        .lead-form,
+        .offer-editor-grid,
+        .analytics-grid {{
+          grid-template-columns: 1fr;
+        }}
+        .topbar-inner {{
+          flex-wrap: wrap;
+        }}
+        .brandmark {{
+          font-size: 34px;
+        }}
+      }}
+    </style>
+  </head>
+  <body>
+    {render_agent_nav("sales_decks", sales_section="sales_decks")}
+    <div class="shell">
+      <div class="workspace">
+        <section class="page-header">
+          <div>
+            <div class="eyebrow">Agent dashboard</div>
+            <h1 class="page-title">Generate <span class="highlight">Sales Deck</span>.</h1>
+          </div>
+          <div class="header-meta">
+            <div class="page-copy">
+              Build the prospect deck outside the daily queue so Sales Priorities stays focused on follow-up and owner action.
+            </div>
+            <div class="freshness-strip">
+              <div class="freshness-pill">Updated <strong>{html.escape(latest_sync)}</strong></div>
+              <div class="freshness-pill">Recent runs <strong>{len(data.recent_deck_runs)}</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="deck-page-card">
+          <h2>Generate sales deck</h2>
+          <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
+          {deck_ready_notice}
+          <form class="lead-form" id="deck-generator-form">
+            <label>
+              Target product URL or ASIN
+              <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
+            </label>
+            <label>
+              Competitor CSVs
+              <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
+            </label>
+            <label>
+              Keyword CSVs
+              <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
+            </label>
+            <label>
+              Cerebro CSV
+              <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
+            </label>
+            <label>
+              Word frequency CSV
+              <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
+            </label>
+            <label>
+              Creative mockup URL
+              <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
+            </label>
+            <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
+            <fieldset class="offer-toggle-group">
+              <legend>Recommended plan options</legend>
+              <label class="checkbox-label">
+                <span>Include recommended plan slide</span>
+                <span class="toggle-switch"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /><span aria-hidden="true"></span></span>
+              </label>
+              <div class="offer-builder">
+                <div class="offer-builder-head">
+                  <p>Edit the offer cards directly. These values feed the deck as written here.</p>
+                  <div class="offer-builder-actions">
+                    <button type="button" id="deck-add-offer">ADD OFFER</button>
+                  </div>
+                </div>
+                <input type="hidden" name="offer_payload_json" id="deck-offer-payload-json" value="" />
+                <div class="offer-editor-list" id="deck-offer-list">
+                  <div class="offer-editor" data-offer-index="0">
+                    <div class="offer-editor-top">
+                      <button type="button" class="offer-editor-toggle" aria-expanded="false">Channel management</button>
+                      <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
+                    </div>
+                    <div class="offer-editor-body" hidden>
+                      <div class="offer-editor-grid">
+                        <label class="full-width">
+                          Offer title
+                          <input type="text" class="offer-title" value="Channel management" />
+                        </label>
+                        <label class="full-width">
+                          Description
+                          <textarea class="offer-description">Full-service Amazon marketing and operations support, including graphic designers, advertising management, and more.</textarea>
+                        </label>
+                        <label>
+                          Price
+                          <input type="text" class="offer-price" value="$3,000" />
+                        </label>
+                        <label>
+                          Price label
+                          <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                        </label>
+                        <label>
+                          Commission
+                          <input type="text" class="offer-commission" value="5%" />
+                        </label>
+                        <label>
+                          Commission label
+                          <input type="text" class="offer-commission-label" value="Commission on growth" />
+                        </label>
+                        <label>
+                          Baseline
+                          <input type="text" class="offer-baseline" value="$10,000" />
+                        </label>
+                        <label>
+                          Baseline label
+                          <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                        </label>
+                        <label class="full-width">
+                          Bonus / note
+                          <input type="text" class="offer-bonus" value="+TikTok Shop Support" />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="offer-editor" data-offer-index="1">
+                    <div class="offer-editor-top">
+                      <button type="button" class="offer-editor-toggle" aria-expanded="false">Commission Model + Shipping OS</button>
+                      <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
+                    </div>
+                    <div class="offer-editor-body" hidden>
+                      <div class="offer-editor-grid">
+                        <label class="full-width">
+                          Offer title
+                          <input type="text" class="offer-title" value="Commission Model + Shipping OS" />
+                        </label>
+                        <label class="full-width">
+                          Description
+                          <textarea class="offer-description">A performance-based growth model that aligns marketing, inventory, and fulfillment under one operating system - ensuring every dollar of demand can be fulfilled profitably.</textarea>
+                        </label>
+                        <label>
+                          Price
+                          <input type="text" class="offer-price" value="$0" />
+                        </label>
+                        <label>
+                          Price label
+                          <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+                        </label>
+                        <label>
+                          Commission
+                          <input type="text" class="offer-commission" value="10%" />
+                        </label>
+                        <label>
+                          Commission label
+                          <input type="text" class="offer-commission-label" value="Commission over baseline" />
+                        </label>
+                        <label>
+                          Baseline
+                          <input type="text" class="offer-baseline" value="$TBD" />
+                        </label>
+                        <label>
+                          Baseline label
+                          <input type="text" class="offer-baseline-label" value="Commission baseline" />
+                        </label>
+                        <label class="full-width">
+                          Bonus / note
+                          <input type="text" class="offer-bonus" value="Shipping OS | Required (* Order Min.)" />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+            <div class="lead-submit">
+              <button type="submit" id="deck-submit-button">GENERATE DECK</button>
+            </div>
+          </form>
+          <div class="draft-help">
+            This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.
+          </div>
+          <div class="status-line" id="deck-status">Deck status: Ready.</div>
+          <div class="deck-run-list" id="deck-run-list">
+            {recent_deck_runs_html or '<p class="empty">No deck generation runs yet.</p>'}
+          </div>
+          <div class="analytics-modal" id="deck-analytics-modal" aria-hidden="true">
+            <div class="analytics-dialog">
+              <div class="analytics-head">
+                <h3>Deck analytics</h3>
+                <button type="button" id="deck-analytics-close" aria-label="Close analytics">×</button>
+              </div>
+              <div class="analytics-grid" id="deck-analytics-summary"></div>
+              <div class="analytics-tabs" id="deck-analytics-tabs">
+                <button type="button" class="is-active" data-window="7">7 days</button>
+                <button type="button" data-window="30">30 days</button>
+                <button type="button" data-window="90">90 days</button>
+                <button type="button" data-window="all">All time</button>
+              </div>
+              <div class="analytics-card">
+                <h4>Visits by day</h4>
+                <div id="deck-analytics-daily"></div>
+              </div>
+              <p class="draft-help">Visit counts, first and last visits, and daily trend windows are available here. Visit-length and per-section time tracking are not enabled yet.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <script>
+      const deckForm = document.getElementById("deck-generator-form");
+      const deckStatus = document.getElementById("deck-status");
+      const deckSubmitButton = document.getElementById("deck-submit-button");
+      const deckIncludePlanCheckbox = document.getElementById("deck-include-plan");
+      const deckOfferList = document.getElementById("deck-offer-list");
+      const deckOfferPayloadInput = document.getElementById("deck-offer-payload-json");
+      const deckAddOfferButton = document.getElementById("deck-add-offer");
+      const deckRunList = document.getElementById("deck-run-list");
+      const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
+      const deckAnalyticsClose = document.getElementById("deck-analytics-close");
+      const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
+      const deckAnalyticsDaily = document.getElementById("deck-analytics-daily");
+      const deckAnalyticsTabs = document.getElementById("deck-analytics-tabs");
+      let activeDeckAnalytics = null;
+
+      function escapeHtml(value) {{
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }}
+
+      function collectOfferPayload() {{
+        return Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).map((editor) => ({{
+          enabled: Boolean(editor.querySelector(".offer-enabled")?.checked),
+          title: editor.querySelector(".offer-title")?.value || "",
+          description: editor.querySelector(".offer-description")?.value || "",
+          price: editor.querySelector(".offer-price")?.value || "",
+          price_label: editor.querySelector(".offer-price-label")?.value || "",
+          commission: editor.querySelector(".offer-commission")?.value || "",
+          commission_label: editor.querySelector(".offer-commission-label")?.value || "",
+          baseline: editor.querySelector(".offer-baseline")?.value || "",
+          baseline_label: editor.querySelector(".offer-baseline-label")?.value || "",
+          bonus: editor.querySelector(".offer-bonus")?.value || "",
+        }}));
+      }}
+
+      function buildOfferEditor(index) {{
+        const wrapper = document.createElement("div");
+        wrapper.className = "offer-editor";
+        wrapper.dataset.offerIndex = String(index);
+        wrapper.innerHTML = `
+          <div class="offer-editor-top">
+            <button type="button" class="offer-editor-toggle" aria-expanded="false">Custom offer ${{index + 1}}</button>
+            <label class="checkbox-label"><span>Include</span><span class="toggle-switch"><input type="checkbox" class="offer-enabled" checked /><span aria-hidden="true"></span></span></label>
+          </div>
+          <div class="offer-editor-body" hidden>
+          <div class="offer-editor-grid">
+            <label class="full-width">
+              Offer title
+              <input type="text" class="offer-title" value="Custom offer ${{index + 1}}" />
+            </label>
+            <label class="full-width">
+              Description
+              <textarea class="offer-description">Describe the scope, operating model, and why this offer fits the prospect.</textarea>
+            </label>
+            <label>
+              Price
+              <input type="text" class="offer-price" value="$TBD" />
+            </label>
+            <label>
+              Price label
+              <input type="text" class="offer-price-label" value="Monthly retainer fee" />
+            </label>
+            <label>
+              Commission
+              <input type="text" class="offer-commission" value="TBD" />
+            </label>
+            <label>
+              Commission label
+              <input type="text" class="offer-commission-label" value="Commission" />
+            </label>
+            <label>
+              Baseline
+              <input type="text" class="offer-baseline" value="TBD" />
+            </label>
+            <label>
+              Baseline label
+              <input type="text" class="offer-baseline-label" value="Baseline" />
+            </label>
+            <label class="full-width">
+              Bonus / note
+              <input type="text" class="offer-bonus" value="" />
+            </label>
+          </div>
+          </div>`;
+        return wrapper;
+      }}
+
+      function syncOfferEditorTitles() {{
+        Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).forEach((editor, index) => {{
+          const titleInput = editor.querySelector(".offer-title");
+          const toggle = editor.querySelector(".offer-editor-toggle");
+          if (titleInput && toggle) {{
+            toggle.textContent = titleInput.value.trim() || `Custom offer ${{index + 1}}`;
+          }}
+        }});
+      }}
+
+      function toggleOfferEditor(editor, forceOpen = null) {{
+        const body = editor?.querySelector(".offer-editor-body");
+        const toggle = editor?.querySelector(".offer-editor-toggle");
+        if (!body || !toggle) {{
+          return;
+        }}
+        const nextOpen = forceOpen == null ? Boolean(body.hidden) : Boolean(forceOpen);
+        body.hidden = !nextOpen;
+        toggle.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+      }}
+
+      function formatDeckChannelLabel(value) {{
+        const labels = {{
+          amazon: "Amazon",
+          shopify: "Shopify",
+          tiktok_shop: "TikTok Shop",
+          "3pl": "3PL",
+          shipping_os: "Shipping OS",
+        }};
+        return labels[String(value || "").toLowerCase()] || String(value || "").replaceAll("_", " ");
+      }}
+
+      function formatDeckDate(value) {{
+        if (!value) return "Not available";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return String(value);
+        const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+        const day = String(parsed.getUTCDate()).padStart(2, "0");
+        const year = parsed.getUTCFullYear();
+        return `${{month}}/${{day}}/${{year}}`;
+      }}
+
+      function buildDeckRunHtml(run) {{
+        const channels = Array.isArray(run.channels) && run.channels.length ? run.channels : ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"];
+        const viewUrl = run.view_url || "";
+        const safeTitle = escapeHtml(run.design_title || `Run ${{run.id || ""}}`);
+        const bulletHtml = channels.map((channel) => `<li>${{escapeHtml(formatDeckChannelLabel(channel))}}</li>`).join("");
+        const analyticsPayload = escapeHtml(JSON.stringify(run.view_analytics || {{}}));
+        return `
+          <article class="deck-run-item">
+            <div>
+              <strong>${{safeTitle}}</strong>
+              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}}</p>
+              <ul class="deck-run-bullets">${{bulletHtml}}</ul>
+            </div>
+            <div class="deck-run-links">
+              ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
+              <button type="button" class="analytics-button" data-analytics='${{analyticsPayload}}'>View analytics</button>
+            </div>
+          </article>`;
+      }}
+
+      function renderDeckAnalyticsDaily(windowKey) {{
+        if (!deckAnalyticsDaily || !activeDeckAnalytics) return;
+        const internalDaily = activeDeckAnalytics.internal?.daily_counts?.[windowKey] || {{}};
+        const externalDaily = activeDeckAnalytics.external?.daily_counts?.[windowKey] || {{}};
+        const allDays = Array.from(new Set([...Object.keys(internalDaily), ...Object.keys(externalDaily)])).sort().reverse();
+        if (!allDays.length) {{
+          deckAnalyticsDaily.innerHTML = "<p class='muted'>No visits recorded for this window yet.</p>";
+          return;
+        }}
+        deckAnalyticsDaily.innerHTML = `<table><thead><tr><th>Date</th><th>Internal</th><th>External</th></tr></thead><tbody>${{allDays.map((day) => `<tr><td>${{escapeHtml(formatDeckDate(day))}}</td><td>${{escapeHtml(String(internalDaily[day] || 0))}}</td><td>${{escapeHtml(String(externalDaily[day] || 0))}}</td></tr>`).join("")}}</tbody></table>`;
+      }}
+
+      function openDeckAnalytics(payload) {{
+        activeDeckAnalytics = payload || {{}};
+        if (deckAnalyticsSummary) {{
+          const internal = activeDeckAnalytics.internal || {{}};
+          const external = activeDeckAnalytics.external || {{}};
+          deckAnalyticsSummary.innerHTML = `
+            <article class="analytics-card">
+              <h4>Internal views</h4>
+              <ul>
+                <li>Unique visitors: ${{escapeHtml(String(internal.unique_visitors || 0))}}</li>
+                <li>Total visits: ${{escapeHtml(String(internal.total_visits || 0))}}</li>
+                <li>First visited: ${{escapeHtml(formatDeckDate(internal.first_viewed_at || ""))}}</li>
+                <li>Last visited: ${{escapeHtml(formatDeckDate(internal.last_viewed_at || ""))}}</li>
+              </ul>
+            </article>
+            <article class="analytics-card">
+              <h4>External views</h4>
+              <ul>
+                <li>Unique visitors: ${{escapeHtml(String(external.unique_visitors || 0))}}</li>
+                <li>Total visits: ${{escapeHtml(String(external.total_visits || 0))}}</li>
+                <li>First visited: ${{escapeHtml(formatDeckDate(external.first_viewed_at || ""))}}</li>
+                <li>Last visited: ${{escapeHtml(formatDeckDate(external.last_viewed_at || ""))}}</li>
+              </ul>
+            </article>`;
+        }}
+        deckAnalyticsTabs?.querySelectorAll("button").forEach((button) => button.classList.toggle("is-active", button.dataset.window === "7"));
+        renderDeckAnalyticsDaily("7");
+        deckAnalyticsModal?.classList.add("is-visible");
+        deckAnalyticsModal?.setAttribute("aria-hidden", "false");
+      }}
+
+      deckForm?.addEventListener("submit", async (event) => {{
         event.preventDefault();
-        const previewOnly = Boolean(draftsDryRunCheckbox?.checked);
-        draftsStatus.textContent = previewOnly ? "Preparing Gmail preview..." : "Creating Gmail drafts...";
-        draftsResults.innerHTML = "";
-        const formData = new FormData(draftsForm);
+        if (deckSubmitButton) {{
+          deckSubmitButton.disabled = true;
+          deckSubmitButton.textContent = "GENERATING...";
+        }}
+        deckStatus.innerHTML = "Generating deck. This can take a minute...";
+        if (deckOfferPayloadInput) {{
+          deckOfferPayloadInput.value = JSON.stringify(collectOfferPayload());
+        }}
+        const formData = new FormData(deckForm);
+        formData.delete("include_recommended_plan");
+        formData.append("include_recommended_plan", deckIncludePlanCheckbox?.checked ? "true" : "false");
+        ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"].forEach((channel) => formData.append("channels", channel));
         try {{
-          const response = await fetch("/admin/api/create-gmail-drafts", {{
+          const response = await fetch("/admin/api/generate-deck", {{
             method: "POST",
             body: formData,
           }});
-          const payload = await response.json().catch(() => ({{ detail: "Draft creation failed." }}));
+          const payload = await response.json().catch(() => ({{ detail: "Deck generation failed." }}));
           if (!response.ok) {{
-            draftsStatus.textContent = payload.detail || payload.message || "Draft creation failed.";
+            deckStatus.textContent = payload.detail || payload.message || "Deck generation failed.";
+            if (deckSubmitButton) {{
+              deckSubmitButton.disabled = false;
+              deckSubmitButton.textContent = "GENERATE DECK";
+            }}
             return;
           }}
           const details = payload.details || {{}};
-          const summary = `${{payload.message || "Draft workflow completed."}} Prepared ${{details.prepared || 0}}, created ${{details.created || 0}}, failed ${{details.failed || 0}}.`;
-          draftsStatus.innerHTML = details.drafts_url
-            ? `${{summary}} <a href="${{details.drafts_url}}" target="_blank" rel="noreferrer">Open Gmail drafts</a>`
-            : summary;
-
-          const blocks = [];
-          blocks.push(`
-            <div class="draft-summary-grid">
-              <div class="draft-summary-card">
-                <span>Total rows</span>
-                <strong>${{details.rows_total || 0}}</strong>
-                <small>Rows detected in the uploaded CSV.</small>
-              </div>
-              <div class="draft-summary-card">
-                <span>Prepared</span>
-                <strong>${{details.prepared || 0}}</strong>
-                <small>Rows that were valid enough to turn into drafts.</small>
-              </div>
-              <div class="draft-summary-card">
-                <span>Created</span>
-                <strong>${{details.created || 0}}</strong>
-                <small>${{details.dry_run ? "Preview mode does not create drafts." : "Drafts successfully created in Gmail."}}</small>
-              </div>
-              <div class="draft-summary-card">
-                <span>Failed</span>
-                <strong>${{details.failed || 0}}</strong>
-                <small>Rows that need fixes before they can be drafted.</small>
-              </div>
-            </div>
-          `);
-          if (Array.isArray(details.available_placeholders) && details.available_placeholders.length) {{
-            blocks.push(`
-              <div class="result-block">
-                <strong>Available placeholders (${{details.available_placeholders.length}})</strong>
-                <div>${{details.available_placeholders.map((item) => `<span class="source">${{escapeHtml(item)}}</span>`).join(" ")}}</div>
-              </div>
-            `);
+          const openUrl = details.view_url ? `${{details.view_url}}?viewer=internal` : "";
+          const createdRun = {{
+            id: details.run_id,
+            design_title: details.design_title,
+            view_url: details.view_url,
+            channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
+            started_at: new Date().toISOString(),
+            view_analytics: {{
+              internal: {{ unique_visitors: 0, total_visits: 0, first_viewed_at: "", last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
+              external: {{ unique_visitors: 0, total_visits: 0, first_viewed_at: "", last_viewed_at: "", daily_counts: {{ "7": {{}}, "30": {{}}, "90": {{}}, "all": {{}} }} }},
+            }},
+          }};
+          if (deckRunList) {{
+            const empty = deckRunList.querySelector(".empty");
+            if (empty) empty.remove();
+            deckRunList.insertAdjacentHTML("afterbegin", buildDeckRunHtml(createdRun));
           }}
-          if (Array.isArray(details.previews) && details.previews.length) {{
-            const previewHeading = details.dry_run ? "Preview drafts" : "Created draft content";
-            const previewMeta = details.previewed < details.prepared
-              ? `Showing the first ${{details.previewed}} rendered emails out of ${{details.prepared}} prepared rows.`
-              : `Showing all ${{details.previewed}} rendered emails.`;
-            blocks.push(`
-              <div class="result-block">
-                <strong>${{previewHeading}}</strong>
-                <div class="result-meta">${{previewMeta}}</div>
-                <div class="preview-card-list">
-                  ${{details.previews.map((item) => `
-                    <article class="preview-card">
-                      <div class="preview-card-head">
-                        <div>
-                          <h4>${{escapeHtml(item.email)}}</h4>
-                          <p>Row ${{item.row_number}}${{item.first_name || item.last_name ? ` · ${{escapeHtml([item.first_name, item.last_name].filter(Boolean).join(" "))}}` : ""}}${{item.company ? ` · ${{escapeHtml(item.company)}}` : ""}}</p>
-                        </div>
-                        <div class="preview-card-tags">
-                          <span class="draft-chip">${{item.body_length || 0}} chars</span>
-                          <span class="draft-chip">${{details.dry_run ? "Preview" : "Drafted"}}</span>
-                        </div>
-                      </div>
-                      <div class="preview-subject"><strong>Subject:</strong> ${{escapeHtml(item.subject)}}</div>
-                      <pre class="preview-body">${{escapeHtml(item.body || "")}}</pre>
-                    </article>
-                  `).join("")}}
-                </div>
-              </div>
-            `);
+          if (openUrl) {{
+            window.open(openUrl, "_blank", "noopener,noreferrer");
           }}
-          if (Array.isArray(details.created_rows) && details.created_rows.length) {{
-            blocks.push(`
-              <div class="result-block">
-                <strong>Created draft records</strong>
-                <div class="created-card-list">
-                  ${{details.created_rows.map((item) => `
-                    <article class="created-card">
-                      <div class="created-card-head">
-                        <div>
-                          <h4>${{escapeHtml(item.email)}}</h4>
-                          <p>Row ${{item.row_number}}</p>
-                        </div>
-                        <div class="created-card-tags">
-                          <span class="draft-chip success">Draft created</span>
-                        </div>
-                      </div>
-                      <p><strong>Subject:</strong> ${{escapeHtml(item.subject)}}</p>
-                      <p><strong>Draft ID:</strong> ${{escapeHtml(item.draft_id || "n/a")}}${{item.message_id ? ` · <strong>Message ID:</strong> ${{escapeHtml(item.message_id)}}` : ""}}</p>
-                    </article>
-                  `).join("")}}
-                </div>
-              </div>
-            `);
+          deckStatus.innerHTML = `Deck generated. ${{openUrl ? `<a href="${{openUrl}}" target="_blank" rel="noreferrer">Open deck</a>` : ""}}`;
+          if (deckSubmitButton) {{
+            deckSubmitButton.disabled = false;
+            deckSubmitButton.textContent = "GENERATE DECK";
           }}
-          if (Array.isArray(details.failed_rows) && details.failed_rows.length) {{
-            const failureItems = details.failed_rows.map((item) => {{
-              const emailPart = item.email ? ` (${{escapeHtml(item.email)}})` : "";
-              return `<li>Row ${{item.row_number}}${{emailPart}}: ${{escapeHtml(item.error)}}</li>`;
-            }}).join("");
-            blocks.push(`
-              <div class="result-block">
-                <strong>Rows that need fixes</strong>
-                <ul>${{failureItems}}</ul>
-              </div>
-            `);
+        }} catch (_error) {{
+          deckStatus.textContent = "Deck generation failed before a response came back.";
+          if (deckSubmitButton) {{
+            deckSubmitButton.disabled = false;
+            deckSubmitButton.textContent = "GENERATE DECK";
           }}
-          draftsResults.innerHTML = blocks.join("");
-        }} catch (error) {{
-          draftsStatus.textContent = "Draft creation failed before a response came back.";
         }}
       }});
-      draftsDryRunCheckbox?.addEventListener("change", updateDraftModeUi);
-      updateDraftModeUi();
-      hydrateQueuePresetFromUrl();
-      applyQueueFilters();
+
+      deckAddOfferButton?.addEventListener("click", () => {{
+        if (!deckOfferList) return;
+        const nextIndex = deckOfferList.querySelectorAll(".offer-editor").length;
+        deckOfferList.appendChild(buildOfferEditor(nextIndex));
+        syncOfferEditorTitles();
+      }});
+
+      deckOfferList?.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const toggle = target.closest(".offer-editor-toggle");
+        if (!toggle) return;
+        const editor = toggle.closest(".offer-editor");
+        toggleOfferEditor(editor);
+      }});
+
+      deckOfferList?.addEventListener("input", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.classList.contains("offer-title")) {{
+          syncOfferEditorTitles();
+        }}
+      }});
+
+      document.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const analyticsButton = target.closest(".analytics-button");
+        if (analyticsButton) {{
+          try {{
+            openDeckAnalytics(JSON.parse(analyticsButton.getAttribute("data-analytics") || "{{}}"));
+          }} catch (_error) {{
+            openDeckAnalytics({{}});
+          }}
+        }}
+      }});
+
+      deckAnalyticsClose?.addEventListener("click", () => {{
+        deckAnalyticsModal?.classList.remove("is-visible");
+        deckAnalyticsModal?.setAttribute("aria-hidden", "true");
+      }});
+
+      deckAnalyticsModal?.addEventListener("click", (event) => {{
+        if (event.target === deckAnalyticsModal) {{
+          deckAnalyticsModal.classList.remove("is-visible");
+          deckAnalyticsModal.setAttribute("aria-hidden", "true");
+        }}
+      }});
+
+      deckAnalyticsTabs?.querySelectorAll("button").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          deckAnalyticsTabs.querySelectorAll("button").forEach((node) => node.classList.toggle("is-active", node === button));
+          renderDeckAnalyticsDaily(button.dataset.window || "7");
+        }});
+      }});
+
+      syncOfferEditorTitles();
     </script>
   </body>
 </html>"""

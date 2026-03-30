@@ -35,6 +35,7 @@ from sales_support_agent.services.admin_dashboard import (
     render_dashboard_page,
     render_executive_page,
     render_login_page,
+    render_sales_deck_page,
 )
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
@@ -3487,6 +3488,18 @@ def admin_dashboard(request: Request) -> Response:
     return HTMLResponse(render_dashboard_page(dashboard))
 
 
+@app.get("/admin/sales-decks", response_class=HTMLResponse)
+def admin_sales_decks(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    dashboard = fetch_remote_dashboard_data()
+    return HTMLResponse(render_sales_deck_page(dashboard))
+
+
 @app.get("/admin/executive", response_class=HTMLResponse)
 def admin_executive_dashboard(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
@@ -3915,54 +3928,6 @@ async def admin_website_ops_feedback_review(
     if not result.ok and not result.record:
         return JSONResponse(status_code=404, content={"detail": result.message})
     return RedirectResponse(url=f"/admin/website-ops/feedback/{feedback_id}", status_code=302)
-
-
-@app.post("/admin/api/create-gmail-drafts")
-async def admin_create_gmail_drafts(
-    request: Request,
-    contacts_csv: UploadFile = File(...),
-    sales_objective: str = Form(default=""),
-    subject_template: str = Form(default=""),
-    body_template: str = Form(default=""),
-    dry_run: bool = Form(default=False),
-) -> JSONResponse:
-    admin_settings = load_admin_dashboard_settings()
-    token = request.cookies.get(admin_settings.admin_cookie_name, "")
-    if not validate_admin_session_token(admin_settings, token):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
-
-    file_bytes = await contacts_csv.read()
-    if not file_bytes:
-        return JSONResponse(status_code=400, content={"detail": "Upload a CSV file with at least one contact row."})
-
-    try:
-        status_code, payload = _post_sales_support_multipart(
-            "/api/admin/gmail-drafts",
-            data_items=[
-                ("sales_objective", sales_objective),
-                ("subject_template", subject_template),
-                ("body_template", body_template),
-                ("dry_run", "true" if dry_run else "false"),
-            ],
-            files_payload=[
-                (
-                    "contacts_csv",
-                    (
-                        contacts_csv.filename or "contacts.csv",
-                        file_bytes,
-                        contacts_csv.content_type or "text/csv",
-                    ),
-                )
-            ],
-        )
-    except Exception as exc:
-        logger.exception("[AdminDashboard] gmail draft creation failed")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Bulk draft creation failed.", "error": str(exc)},
-        )
-
-    return JSONResponse(status_code=status_code, content=payload)
 
 
 @app.get("/admin/api/canva/connect", response_model=None)

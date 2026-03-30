@@ -134,8 +134,10 @@ def render_agent_nav_styles() -> str:
     """
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "") -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "") -> str:
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
+    if active in {"sales", "sales_decks"}:
+        primary_active = "sales"
     primary_links = [
         _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
         _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
@@ -143,6 +145,18 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "") -> str:
         _nav_item("Fulfillment CS", "/admin/fulfillment-cs", active=primary_active == "fulfillment"),
     ]
     secondary_nav = ""
+    current_sales_section = sales_section or active
+    if primary_active == "sales":
+        sales_links = [
+            _nav_item("Sales Priorities", "/admin", active=current_sales_section == "sales", extra_class="top-link--secondary"),
+            _nav_item("Generate sales deck", "/admin/sales-decks", active=current_sales_section == "sales_decks", extra_class="top-link--secondary"),
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(sales_links)}
+        </nav>
+        """
     current_section = website_ops_section or ("seo_dashboard" if active == "website_ops" else active)
     if primary_active == "website_ops":
         secondary_links = [
