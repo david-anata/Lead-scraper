@@ -50,6 +50,12 @@ from sales_support_agent.services.website_ops import (
     website_ops_run_is_due,
     write_website_ops_run_state,
 )
+from sales_support_agent.services.lead_build_revenue import (
+    build_revenue_fields,
+    format_money_compact,
+    format_money_exact,
+    parse_monthly_sales,
+)
 from sales_support_agent.services.revenue_ops import (
     append_daily_import_count_db,
     append_processed_domains_db,
@@ -918,39 +924,6 @@ def normalize_domain(domain: str) -> str:
         .strip("/")
         .lower()
     )
-
-
-def parse_monthly_sales(store: dict[str, Any]) -> float | None:
-    monthly_candidates = (
-        "estimated_sales",
-        "estimated_monthly_revenue",
-        "monthly_revenue",
-    )
-    for field_name in monthly_candidates:
-        try:
-            value = store.get(field_name)
-            if value is None:
-                continue
-            return float(value)
-        except (TypeError, ValueError):
-            continue
-
-    annual_candidates = (
-        "estimated_annual_revenue",
-        "annual_revenue",
-        "organization_estimated_annual_revenue",
-        "organization_annual_revenue",
-    )
-    for field_name in annual_candidates:
-        try:
-            value = store.get(field_name)
-            if value is None:
-                continue
-            return float(value) / 12.0
-        except (TypeError, ValueError):
-            continue
-
-    return None
 
 
 def parse_average_product_price_usd(store: dict[str, Any]) -> float | None:
@@ -2625,7 +2598,9 @@ def build_csv_rows(
             apollo_hits += 1
 
         revenue = parse_monthly_sales(store)
-        formatted_revenue = format_money_bucket(revenue)
+        revenue_fields = build_revenue_fields(store)
+        formatted_revenue = revenue_fields["revenue"]
+        formatted_estimated_revenue = revenue_fields["estimated_revenue"]
         average_product_price_usd = parse_average_product_price_usd(store)
         formatted_average_product_price = format_money_bucket(average_product_price_usd)
         estimated_monthly_orders = estimate_monthly_orders(revenue, average_product_price_usd)
@@ -2680,6 +2655,7 @@ def build_csv_rows(
                     "city": store.get("city", ""),
                     "state": store.get("state", ""),
                     "revenue": formatted_revenue,
+                    "estimated_revenue": formatted_estimated_revenue,
                     "average_product_price": formatted_average_product_price,
                     "estimated_monthly_orders": formatted_estimated_monthly_orders,
                     "market_segment": store.get("market_segment", ""),
@@ -2705,6 +2681,7 @@ def build_csv_rows(
                     "city": store.get("city", ""),
                     "state": store.get("state", ""),
                     "revenue": formatted_revenue,
+                    "estimated_revenue": formatted_estimated_revenue,
                     "average_product_price": formatted_average_product_price,
                     "estimated_monthly_orders": formatted_estimated_monthly_orders,
                     "market_segment": store.get("market_segment", ""),
@@ -2920,6 +2897,7 @@ def import_leads_to_instantly(rows: list[dict[str, Any]], settings: Settings) ->
                         "city": row.get("city", ""),
                         "state": row.get("state", ""),
                         "revenue": row.get("revenue", ""),
+                        "estimated_revenue": row.get("estimated_revenue", ""),
                         "average_product_price": row.get("average_product_price", ""),
                         "estimated_monthly_orders": row.get("estimated_monthly_orders", ""),
                         "market_segment": row.get("market_segment", ""),
