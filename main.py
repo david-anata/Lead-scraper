@@ -106,6 +106,8 @@ HEYREACH_ADD_LEADS_TO_CAMPAIGN_URL = os.getenv(
 # ========= RUNTIME CONFIG =========
 REQUEST_TIMEOUT_SECONDS = 60
 ADMIN_REMOTE_TIMEOUT_SECONDS = int((os.getenv("ADMIN_REMOTE_TIMEOUT_SECONDS", "8") or "8").strip())
+DECK_PROXY_TIMEOUT_SECONDS = 10
+DECK_PROXY_RETRY_DELAYS_SECONDS = (0.5, 1.0)
 MAX_APOLLO_ORG_PAGES = int((os.getenv("MAX_APOLLO_ORG_PAGES", "25") or "25").strip())
 APOLLO_ORG_PAGE_SIZE = min(int((os.getenv("APOLLO_ORG_PAGE_SIZE", "100") or "100").strip()), 100)
 MAX_APOLLO_DOMAINS_PER_RUN = int((os.getenv("MAX_APOLLO_DOMAINS_PER_RUN", "60") or "60").strip())
@@ -761,6 +763,37 @@ def _rewrite_sales_support_url_for_agent(request: Request, value: str) -> str:
     if backend_base.netloc and parsed.netloc == backend_base.netloc:
         return parsed._replace(scheme=request_base.scheme, netloc=request_base.netloc).geturl()
     return raw
+
+
+def _deck_proxy_headers(content_type: str) -> dict[str, str]:
+    return {
+        "Content-Type": content_type,
+        "Cache-Control": "private, max-age=300",
+        "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: https:; img-src 'self' data: https:; media-src https: data:; frame-ancestors *;",
+    }
+
+
+def _deck_proxy_error_response() -> HTMLResponse:
+    return HTMLResponse(
+        """
+        <!doctype html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Deck temporarily unavailable</title>
+          </head>
+          <body style="font-family: Inter, Arial, sans-serif; background: #f7f4ed; color: #1f3550; padding: 40px;">
+            <main style="max-width: 720px; margin: 0 auto;">
+              <h1 style="font-size: 2rem; margin-bottom: 0.5rem;">Deck is temporarily unavailable.</h1>
+              <p style="font-size: 1rem; line-height: 1.6;">Retry in a few seconds. If this keeps happening, regenerate the deck or check the sales-support-agent service.</p>
+            </main>
+          </body>
+        </html>
+        """,
+        status_code=502,
+        headers=_deck_proxy_headers("text/html; charset=utf-8"),
+    )
 
 
 def sync_remote_dashboard_sources() -> dict[str, Any]:
@@ -4061,18 +4094,47 @@ def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str)
     backend_url = f"{admin_settings.sales_support_agent_url}/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}"
     if request.url.query:
         backend_url = f"{backend_url}?{request.url.query}"
-    response = requests.get(backend_url, timeout=REQUEST_TIMEOUT_SECONDS)
-    content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
-    return Response(
-        content=response.content,
-        status_code=response.status_code,
-        media_type=content_type.split(";")[0],
-        headers={
-            "Content-Type": content_type,
-            "Cache-Control": "private, max-age=300",
-            "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: https:; img-src 'self' data: https:; media-src https: data:; frame-ancestors *;",
-        },
-    )
+    attempt_count = 1 + len(DECK_PROXY_RETRY_DELAYS_SECONDS)
+    for attempt in range(1, attempt_count + 1):
+        try:
+            response = requests.get(backend_url, timeout=DECK_PROXY_TIMEOUT_SECONDS)
+        except requests.RequestException as exc:
+            logger.warning(
+                "[DeckProxy] upstream request failed attempt=%s slug=%s run_id=%s url=%s error=%s",
+                attempt,
+                deck_slug,
+                run_id,
+                backend_url,
+                exc,
+            )
+            if attempt < attempt_count:
+                time.sleep(DECK_PROXY_RETRY_DELAYS_SECONDS[attempt - 1])
+                continue
+            return _deck_proxy_error_response()
+
+        if response.status_code in {502, 503, 504}:
+            logger.warning(
+                "[DeckProxy] upstream retryable status attempt=%s slug=%s run_id=%s url=%s status=%s",
+                attempt,
+                deck_slug,
+                run_id,
+                backend_url,
+                response.status_code,
+            )
+            if attempt < attempt_count:
+                time.sleep(DECK_PROXY_RETRY_DELAYS_SECONDS[attempt - 1])
+                continue
+            return _deck_proxy_error_response()
+
+        content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type=content_type.split(";")[0],
+            headers=_deck_proxy_headers(content_type),
+        )
+
+    return _deck_proxy_error_response()
 
 
 @app.get("/")
