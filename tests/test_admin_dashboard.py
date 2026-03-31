@@ -114,7 +114,7 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("Failed", html)
         self.assertIn("Sync now", html)
         self.assertIn("Needs review", html)
-        self.assertIn("Due today", html)
+        self.assertNotIn("Due today", html)
         self.assertIn("Open overdue queue", html)
         self.assertIn("Show more tools and diagnostics", html)
 
@@ -156,7 +156,7 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("deck-run-list", html)
         self.assertNotIn("Bulk Gmail drafts", html)
 
-    def test_unknown_non_terminal_statuses_are_treated_as_active(self) -> None:
+    def test_follow_up_status_is_excluded_from_dashboard(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
         settings = self._settings()
@@ -182,7 +182,9 @@ class AdminDashboardTests(unittest.TestCase):
                 as_of_date=date(2026, 3, 14),
             )
 
-        self.assertEqual(dashboard.total_active_leads, 1)
+        self.assertEqual(dashboard.total_active_leads, 0)
+        self.assertEqual(dashboard.stale_counts.get("overdue", 0), 0)
+        self.assertEqual(dashboard.stale_counts.get("needs_immediate_review", 0), 0)
 
 
 class AdminStatusPolicyTests(unittest.TestCase):

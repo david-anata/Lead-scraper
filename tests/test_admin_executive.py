@@ -169,10 +169,10 @@ class AdminExecutiveTests(unittest.TestCase):
                 as_of_date=date(2026, 3, 18),
             )
 
-        self.assertEqual(executive.kpis["active_leads"], 3)
+        self.assertEqual(executive.kpis["active_leads"], 2)
         self.assertEqual(executive.kpis["overdue"], 1)
         self.assertEqual(executive.kpis["review"], 1)
-        self.assertEqual(executive.kpis["due"], 1)
+        self.assertNotIn("due", executive.kpis)
         self.assertEqual(executive.kpis["late_stage_stale"], 1)
         self.assertEqual(executive.kpis["pipeline_value"], 12000)
         self.assertEqual(executive.kpis["pipeline_target"], 100000)
@@ -180,16 +180,17 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertEqual(executive.owner_scorecards[0].value_total, 12000.0)
         self.assertEqual(executive.risk_leads[0].task_name, "Acme Wholesale")
         self.assertEqual(executive.risk_leads[0].urgency, "overdue")
-        self.assertEqual(executive.hygiene_counts["missing_next_action"], 1)
+        self.assertEqual(executive.hygiene_counts["missing_next_action"], 0)
         self.assertEqual(executive.hygiene_counts["missing_meeting_outcome"], 2)
-        self.assertEqual(executive.hygiene_counts["untouched_new_or_contacted"], 1)
+        self.assertEqual(executive.hygiene_counts["untouched_new_or_contacted"], 0)
         self.assertEqual(executive.inbound_replies_by_owner[0].owner_name, "Gabe Smedley")
         self.assertEqual(executive.inbound_replies_by_owner[0].count, 1)
         self.assertEqual(executive.mailbox_signals_by_owner[0].count, 1)
         self.assertIn("Apollo", {item.label for item in executive.source_distribution})
-        self.assertIn("3 active leads are currently tracked.", executive.summary_text)
+        self.assertIn("2 active leads are currently tracked.", executive.summary_text)
         self.assertIn("$12,000", executive.summary_text)
         self.assertNotIn("FOLLOW UP", {item.label for item in executive.status_distribution})
+        self.assertNotIn("FOLLOW UP", {item.status for item in executive.lead_records})
 
     def test_build_executive_data_does_not_fetch_clickup_comments_per_lead(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
@@ -264,6 +265,7 @@ class AdminExecutiveTests(unittest.TestCase):
         self.assertIn("Sync now", html)
         self.assertIn("id=\"owner-filter\"", html)
         self.assertIn("id=\"scorecard-table\"", html)
+        self.assertNotIn("Due</th>", html)
 
 
 if __name__ == "__main__":

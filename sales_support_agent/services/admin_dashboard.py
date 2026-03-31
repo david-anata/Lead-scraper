@@ -40,7 +40,6 @@ class DashboardOwnerQueue:
     total_items: int
     overdue_count: int
     immediate_count: int
-    follow_up_count: int
     items: list[DashboardActionItem]
 
 
@@ -68,7 +67,6 @@ class ExecutiveOwnerScorecard:
     active_leads: int
     overdue_count: int
     review_count: int
-    due_count: int
     avg_days_since_touch: float | None
     late_stage_leads: int
     late_stage_stale_leads: int
@@ -189,7 +187,10 @@ def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
     return {
         "as_of_date": data.as_of_date.isoformat(),
         "total_active_leads": data.total_active_leads,
-        "stale_counts": data.stale_counts,
+        "stale_counts": {
+            "overdue": int(data.stale_counts.get("overdue", 0) or 0),
+            "needs_immediate_review": int(data.stale_counts.get("needs_immediate_review", 0) or 0),
+        },
         "mailbox_findings": data.mailbox_findings,
         "owner_queues": [
             {
@@ -197,7 +198,6 @@ def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
                 "total_items": queue.total_items,
                 "overdue_count": queue.overdue_count,
                 "immediate_count": queue.immediate_count,
-                "follow_up_count": queue.follow_up_count,
                 "items": [
                     {
                         "owner_name": item.owner_name,
@@ -234,7 +234,7 @@ def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
         items = [
             DashboardActionItem(
                 owner_name=str(item.get("owner_name", "")),
-                urgency=str(item.get("urgency", "follow_up_due")),
+                urgency=str(item.get("urgency", "needs_immediate_review")),
                 title=str(item.get("title", "")),
                 subtitle=str(item.get("subtitle", "")),
                 action_summary=str(item.get("action_summary", "")),
@@ -252,7 +252,6 @@ def dashboard_data_from_dict(payload: dict[str, object]) -> DashboardData:
                 total_items=int(queue_dict.get("total_items", len(items)) or len(items)),
                 overdue_count=int(queue_dict.get("overdue_count", 0) or 0),
                 immediate_count=int(queue_dict.get("immediate_count", 0) or 0),
-                follow_up_count=int(queue_dict.get("follow_up_count", 0) or 0),
                 items=items,
             )
         )
@@ -290,7 +289,6 @@ def executive_data_to_dict(data: ExecutiveData) -> dict[str, object]:
                 "active_leads": item.active_leads,
                 "overdue_count": item.overdue_count,
                 "review_count": item.review_count,
-                "due_count": item.due_count,
                 "avg_days_since_touch": item.avg_days_since_touch,
                 "late_stage_leads": item.late_stage_leads,
                 "late_stage_stale_leads": item.late_stage_stale_leads,
@@ -368,7 +366,6 @@ def executive_data_from_dict(payload: dict[str, object]) -> ExecutiveData:
                 active_leads=int(item.get("active_leads", 0) or 0),
                 overdue_count=int(item.get("overdue_count", 0) or 0),
                 review_count=int(item.get("review_count", 0) or 0),
-                due_count=int(item.get("due_count", 0) or 0),
                 avg_days_since_touch=float(item["avg_days_since_touch"]) if item.get("avg_days_since_touch") is not None else None,
                 late_stage_leads=int(item.get("late_stage_leads", 0) or 0),
                 late_stage_stale_leads=int(item.get("late_stage_stale_leads", 0) or 0),
@@ -643,6 +640,10 @@ def _build_executive_summary_text(
     return summary.strip()
 
 
+def _exclude_from_dashboard(status: str) -> bool:
+    return normalize_status_key(status) == "follow up"
+
+
 def build_dashboard_data(
     *,
     settings: Settings,
@@ -669,7 +670,6 @@ def build_dashboard_data(
 
     for lead in leads:
         status = (lead.status or "").strip()
-        status_key = normalize_status_key(status)
         if not status:
             continue
         if not is_active_pipeline_status(
@@ -678,11 +678,15 @@ def build_dashboard_data(
             inactive_statuses=settings.inactive_statuses,
         ):
             continue
+        if _exclude_from_dashboard(status):
+            continue
         active_lead_count += 1
         evaluation = reminder_service.evaluate_lead(lead, as_of_date=effective_date, comments=[])
         if evaluation is None:
             continue
         digest_item = reminder_service.build_digest_item(evaluation)
+        if digest_item.urgency == "follow_up_due":
+            continue
         stale_counts[digest_item.urgency] += 1
         owner_name = digest_item.owner_label or "Assigned AE"
         owner_items[owner_name].append(
@@ -707,13 +711,17 @@ def build_dashboard_data(
         .order_by(MailboxSignal.received_at.desc())
         .limit(100)
     )
-    mailbox_signals = list(session.execute(mailbox_query).scalars())
+    mailbox_signals = [
+        signal
+        for signal in session.execute(mailbox_query).scalars()
+        if (signal.urgency or "").strip() != "follow_up_due"
+    ]
     for signal in mailbox_signals:
         owner_name = signal.owner_name or "Triage"
         owner_items[owner_name].append(
             DashboardActionItem(
                 owner_name=owner_name,
-                urgency=signal.urgency or "follow_up_due",
+                urgency=signal.urgency or "needs_immediate_review",
                 title=signal.subject or signal.task_name or signal.sender_email or "Mailbox signal",
                 subtitle=signal.task_name or signal.sender_email or signal.sender_domain or "Unmatched mailbox item",
                 action_summary=signal.action_summary or "Review and decide the next action.",
@@ -741,7 +749,6 @@ def build_dashboard_data(
                 total_items=len(ordered_items),
                 overdue_count=sum(1 for item in ordered_items if item.urgency == "overdue"),
                 immediate_count=sum(1 for item in ordered_items if item.urgency == "needs_immediate_review"),
-                follow_up_count=sum(1 for item in ordered_items if item.urgency == "follow_up_due"),
                 items=ordered_items[:max_items_per_owner],
             )
         )
@@ -750,7 +757,6 @@ def build_dashboard_data(
         key=lambda queue: (
             -queue.overdue_count,
             -queue.immediate_count,
-            -queue.follow_up_count,
             queue.owner_name.lower(),
         )
     )
@@ -860,13 +866,15 @@ def build_executive_data(
     latest_run_summary = latest_run.summary_json if latest_run else {}
 
     mailbox_start = datetime.combine(effective_date - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc)
-    mailbox_signals = list(
-        session.execute(
+    mailbox_signals = [
+        signal
+        for signal in session.execute(
             select(MailboxSignal)
             .where(MailboxSignal.received_at >= mailbox_start)
             .order_by(MailboxSignal.received_at.desc())
         ).scalars()
-    )
+        if (signal.urgency or "").strip() != "follow_up_due"
+    ]
     inbox_reply_events = list(
         session.execute(
             select(CommunicationEvent)
@@ -882,6 +890,7 @@ def build_executive_data(
             active_statuses=settings.active_statuses,
             inactive_statuses=settings.inactive_statuses,
         )
+        and not _exclude_from_dashboard(lead.status or "")
     ]
     active_task_ids = [lead.clickup_task_id for lead in active_leads if lead.clickup_task_id]
     latest_meaningful_event_by_task: dict[str, CommunicationEvent] = {}
@@ -930,7 +939,6 @@ def build_executive_data(
             "active": 0,
             "overdue": 0,
             "review": 0,
-            "due": 0,
             "touch_ages": [],
             "late_stage": 0,
             "late_stage_stale": 0,
@@ -961,6 +969,8 @@ def build_executive_data(
             continue
 
         digest_item = reminder_service.build_digest_item(evaluation)
+        if digest_item.urgency == "follow_up_due":
+            continue
         owner_name = lead.assignee_name or "Assigned AE"
         lead_owner_map[lead.clickup_task_id] = owner_name
         source_name = _display_source_name(lead.source)
@@ -1026,8 +1036,6 @@ def build_executive_data(
             overdue_by_owner[owner_name] += 1
         elif digest_item.urgency == "needs_immediate_review":
             stats["review"] = int(stats["review"]) + 1
-        elif digest_item.urgency == "follow_up_due":
-            stats["due"] = int(stats["due"]) + 1
         if days_since_touch is not None:
             touch_ages = list(stats["touch_ages"])
             touch_ages.append(days_since_touch)
@@ -1055,7 +1063,6 @@ def build_executive_data(
             active_leads=int(stats["active"]),
             overdue_count=int(stats["overdue"]),
             review_count=int(stats["review"]),
-            due_count=int(stats["due"]),
             avg_days_since_touch=(
                 round(sum(stats["touch_ages"]) / len(stats["touch_ages"]), 1)
                 if stats["touch_ages"]
@@ -1128,7 +1135,6 @@ def build_executive_data(
     total_active_leads = len(lead_records)
     overdue_count = sum(1 for item in lead_records if item.urgency == "overdue")
     review_count = sum(1 for item in lead_records if item.urgency == "needs_immediate_review")
-    due_count = sum(1 for item in lead_records if item.urgency == "follow_up_due")
     untouched_7_plus_count = sum(
         1 for item in lead_records if item.days_since_touch is not None and item.days_since_touch >= 7
     )
@@ -1168,7 +1174,6 @@ def build_executive_data(
             "active_leads": total_active_leads,
             "overdue": overdue_count,
             "review": review_count,
-            "due": due_count,
             "untouched_7_plus": untouched_7_plus_count,
             "late_stage_stale": late_stage_stale_count,
             "pipeline_value": int(round(pipeline_value)),
@@ -1194,7 +1199,7 @@ def build_executive_data(
             "owners": sorted({item.owner_name for item in lead_records}),
             "statuses": sorted({item.status for item in lead_records}),
             "sources": sorted({item.source for item in lead_records}),
-            "urgencies": ["overdue", "needs_immediate_review", "follow_up_due"],
+            "urgencies": ["overdue", "needs_immediate_review"],
         },
         lead_records=lead_records,
     )
@@ -1536,11 +1541,6 @@ def render_dashboard_page(data: DashboardData) -> str:
                 str(data.stale_counts.get("needs_immediate_review", 0)),
                 f'{data.stale_counts.get("needs_immediate_review", 0)} need review -> decide the next move',
             ),
-            _card(
-                "Due today",
-                str(data.stale_counts.get("follow_up_due", 0)),
-                f'{data.stale_counts.get("follow_up_due", 0)} due today -> routine follow-up',
-            ),
             _card("Mailbox", str(data.mailbox_findings), f"{data.mailbox_findings} signals -> check replies"),
         ]
     )
@@ -1606,7 +1606,6 @@ def render_dashboard_page(data: DashboardData) -> str:
                 <div class="owner-stats">
                   <span>Overdue {queue.overdue_count}</span>
                   <span>Review {queue.immediate_count}</span>
-                  <span>Due {queue.follow_up_count}</span>
                 </div>
               </header>
               <div class="owner-items">
@@ -1659,7 +1658,6 @@ def render_dashboard_page(data: DashboardData) -> str:
     priority_buckets = [
         ("Overdue", "overdue", "Clear these first"),
         ("Needs review", "needs_immediate_review", "Decide the next move"),
-        ("Due today", "follow_up_due", "Routine follow-up queue"),
     ]
     priority_lane_html = ""
     if total_queue_items > 0:
@@ -1674,7 +1672,6 @@ def render_dashboard_page(data: DashboardData) -> str:
             empty_copy = {
                 "overdue": "No overdue leads.",
                 "needs_immediate_review": "No review-risk leads.",
-                "follow_up_due": "No leads due today.",
             }.get(urgency_key, "Nothing in this lane right now.")
             priority_cards.append(
                 f"""
@@ -1708,7 +1705,7 @@ def render_dashboard_page(data: DashboardData) -> str:
         "No owner queues available because the board feed could not be loaded yet."
         if dashboard_error
         else (
-            f"{data.total_active_leads} active leads are synced, but none currently require follow-up."
+            f"{data.total_active_leads} active leads are synced, but none currently require action."
             if data.total_active_leads
             else "No owner queues yet. Run a sync or stale scan to populate the dashboard."
         )
@@ -3136,7 +3133,6 @@ def render_dashboard_page(data: DashboardData) -> str:
               <button class="filter-button is-active" type="button" data-urgency="all">All</button>
               <button class="filter-button" type="button" data-urgency="overdue">Overdue {data.stale_counts.get("overdue", 0)}</button>
               <button class="filter-button" type="button" data-urgency="needs_immediate_review">Review {data.stale_counts.get("needs_immediate_review", 0)}</button>
-              <button class="filter-button" type="button" data-urgency="follow_up_due">Due {data.stale_counts.get("follow_up_due", 0)}</button>
             </div>
           </div>
         </section>
@@ -3145,7 +3141,6 @@ def render_dashboard_page(data: DashboardData) -> str:
           <div class="urgency-legend">
             <span class="legend-chip overdue">Overdue = first touch</span>
             <span class="legend-chip review">Review = decision needed</span>
-            <span class="legend-chip due">Due = routine follow-up</span>
           </div>
           <div class="filter-results" id="filter-results">Showing {total_queue_items} queue items across {len(data.owner_queues)} owners.</div>
         </section>
@@ -4399,7 +4394,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
           </div>
           <div class="header-meta">
             <div class="page-copy">
-              Build the prospect deck outside the daily queue so Sales Priorities stays focused on follow-up and owner action.
+              Build the prospect deck outside the daily queue so Sales Priorities stays focused on owner action.
             </div>
             <div class="freshness-strip">
               <div class="freshness-pill">Updated <strong>{html.escape(latest_sync)}</strong></div>
@@ -5391,7 +5386,7 @@ def render_executive_page(data: ExecutiveData) -> str:
             <h1 class="page-title">Pipeline <span class="highlight">Health</span>.</h1>
           </div>
           <div class="page-copy">
-            Leadership view for AE performance, pipeline risk, and follow-up execution. Latest ClickUp sync: {html.escape(latest_sync)}.
+            Leadership view for AE performance and pipeline risk. Latest ClickUp sync: {html.escape(latest_sync)}.
           </div>
         </section>
 
@@ -5445,7 +5440,7 @@ def render_executive_page(data: ExecutiveData) -> str:
               <p id="summary-text">{html.escape(data.summary_text)}</p>
             </section>
             <section class="section">
-              <h2 class="heading-line">AE scorecard {info_hint("Owner-level view of active pipeline, follow-up risk, late-stage exposure, and parseable value totals.")}</h2>
+              <h2 class="heading-line">AE scorecard {info_hint("Owner-level view of active pipeline, overdue risk, late-stage exposure, and parseable value totals.")}</h2>
               <div id="scorecard-table"></div>
             </section>
             <section class="section">
@@ -5465,7 +5460,7 @@ def render_executive_page(data: ExecutiveData) -> str:
               <div class="dist-list" id="late-stage-distribution"></div>
             </section>
             <section class="section">
-              <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing follow-up hygiene items that can slow deal movement.")}</h2>
+              <h2 class="heading-line">Response and hygiene {info_hint("Inbound reply activity, mailbox signals, and missing hygiene items that can slow deal movement.")}</h2>
               <div class="snapshot" id="hygiene-snapshot"></div>
               <div id="owner-response"></div>
             </section>
@@ -5566,7 +5561,6 @@ def render_executive_page(data: ExecutiveData) -> str:
               active_leads: 0,
               overdue_count: 0,
               review_count: 0,
-              due_count: 0,
               touchAges: [],
               late_stage_leads: 0,
               late_stage_stale_leads: 0,
@@ -5579,7 +5573,6 @@ def render_executive_page(data: ExecutiveData) -> str:
           row.active_leads += 1;
           if (lead.urgency === "overdue") row.overdue_count += 1;
           if (lead.urgency === "needs_immediate_review") row.review_count += 1;
-          if (lead.urgency === "follow_up_due") row.due_count += 1;
           if (lead.days_since_touch !== null && lead.days_since_touch !== undefined) row.touchAges.push(Number(lead.days_since_touch));
           if (lead.late_stage) row.late_stage_leads += 1;
           if (lead.late_stage_stale) row.late_stage_stale_leads += 1;
@@ -5661,7 +5654,6 @@ def render_executive_page(data: ExecutiveData) -> str:
                 <th>Active</th>
                 <th>Overdue</th>
                 <th>Review</th>
-                <th>Due</th>
                 <th>Avg touch age</th>
                 <th>Late stage</th>
                 <th>Late-stage stale</th>
@@ -5676,7 +5668,6 @@ def render_executive_page(data: ExecutiveData) -> str:
                   <td>${{formatNumber(row.active_leads)}}</td>
                   <td>${{formatNumber(row.overdue_count)}}</td>
                   <td>${{formatNumber(row.review_count)}}</td>
-                  <td>${{formatNumber(row.due_count)}}</td>
                   <td>${{row.avg_days_since_touch}}</td>
                   <td>${{formatNumber(row.late_stage_leads)}}</td>
                   <td>${{formatNumber(row.late_stage_stale_leads)}}</td>
@@ -5726,7 +5717,7 @@ def render_executive_page(data: ExecutiveData) -> str:
           document.getElementById("risk-list").innerHTML = '<p class="empty module-copy">Risk view hidden because sync failed.</p>';
           return;
         }}
-        const urgencyRank = {{ overdue: 0, needs_immediate_review: 1, follow_up_due: 2 }};
+        const urgencyRank = {{ overdue: 0, needs_immediate_review: 1 }};
         const risks = [...leads].sort((a, b) => (
           (urgencyRank[a.urgency] ?? 99) - (urgencyRank[b.urgency] ?? 99) ||
           (b.late_stage ? 1 : 0) - (a.late_stage ? 1 : 0) ||
