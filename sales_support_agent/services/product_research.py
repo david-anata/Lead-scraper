@@ -438,14 +438,33 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     ).strip()
     if price and not price.startswith("$") and re.fullmatch(r"\d+(\.\d+)?", price):
         price = f"${price}"
-    description = html_lib.unescape(
-        _extract_first(
-            content,
-            r'<div id="feature-bullets"[^>]*>(.*?)</div>',
-            r'<meta\s+name="description"\s+content="([^"]+)"',
+    feature_bullets = _clean_scraped_text(
+        html_lib.unescape(
+            _extract_first(
+                content,
+                r'<div id="feature-bullets"[^>]*>(.*?)</div>',
+            )
         )
     )
-    description = _clean_scraped_text(description)
+    product_description = _clean_scraped_text(
+        html_lib.unescape(
+            _extract_first(
+                content,
+                r'<div id="productDescription"[^>]*>(.*?)</div>',
+                r'<div id="productDescription_feature_div"[^>]*>(.*?)</div>',
+                r'"productDescription":"([^"]+)"',
+            )
+        )
+    )
+    meta_description = _clean_scraped_text(
+        html_lib.unescape(
+            _extract_first(
+                content,
+                r'<meta\s+name="description"\s+content="([^"]+)"',
+            )
+        )
+    )
+    description = _merge_listing_copy_segments(feature_bullets, product_description, meta_description)
     brand_name = _clean_scraped_text(
         _extract_first(
             content,
@@ -840,6 +859,21 @@ def _extract_first(content: str, *patterns: str) -> str:
         if match:
             return str(match.group(1) or "").strip()
     return ""
+
+
+def _merge_listing_copy_segments(*segments: str) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for segment in segments:
+        cleaned = _clean_scraped_text(segment)
+        if not cleaned:
+            continue
+        normalized = re.sub(r"\s+", " ", cleaned).strip().lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(cleaned)
+    return "\n".join(merged)
 
 
 def _clean_scraped_text(value: str) -> str:
