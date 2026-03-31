@@ -37,6 +37,17 @@ from sales_support_agent.services.admin_dashboard import (
     render_login_page,
     render_sales_deck_page,
 )
+from sales_support_agent.services.fulfillment_dashboard import (
+    fulfillment_report_entries,
+    latest_fulfillment_report_entry,
+    load_fulfillment_report_artifact,
+    load_fulfillment_report_by_slug,
+    load_latest_fulfillment_report,
+    render_fulfillment_dashboard_page,
+    render_fulfillment_not_found_page,
+    render_fulfillment_report_detail_page,
+    render_fulfillment_reports_page,
+)
 from sales_support_agent.services.website_ops import (
     get_website_ops_run_state,
     latest_report_entry as latest_website_ops_report_entry,
@@ -357,6 +368,11 @@ class WebsiteOpsHostSettings:
 
 
 @dataclass(frozen=True)
+class FulfillmentCSHostSettings:
+    fulfillment_cs_reports_dir: Path
+
+
+@dataclass(frozen=True)
 class LeadBuildExecutionResult:
     instantly_csv: str
     instantly_rows: list[dict[str, Any]]
@@ -478,6 +494,15 @@ def load_website_ops_settings() -> WebsiteOpsHostSettings:
             ),
         ),
         website_ops_execute_approved=_parse_bool(os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "true"), default=True),
+    )
+
+
+def load_fulfillment_cs_settings() -> FulfillmentCSHostSettings:
+    return FulfillmentCSHostSettings(
+        fulfillment_cs_reports_dir=Path(
+            os.getenv("FULFILLMENT_CS_REPORTS_DIR", "runtime/fulfillment_cs_reports").strip()
+            or "runtime/fulfillment_cs_reports"
+        )
     )
 
 
@@ -3560,6 +3585,116 @@ def admin_executive_dashboard(request: Request) -> Response:
         except Exception:
             logger.exception("[ExecutiveDashboard] auto sync on page load failed")
     return HTMLResponse(render_executive_page(executive))
+
+
+@app.get("/admin/fulfillment-cs", response_class=HTMLResponse)
+def admin_fulfillment_cs_root(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment-cs/", status_code=302)
+
+
+@app.get("/admin/fulfillment-cs/", response_class=HTMLResponse)
+def admin_fulfillment_cs_dashboard(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    settings = load_fulfillment_cs_settings()
+    latest_report = load_latest_fulfillment_report(settings.fulfillment_cs_reports_dir)
+    entries = fulfillment_report_entries(settings.fulfillment_cs_reports_dir)
+    return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries))
+
+
+@app.get("/admin/fulfillment-cs/reports", response_class=HTMLResponse)
+def admin_fulfillment_cs_reports_root(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
+
+
+@app.get("/admin/fulfillment-cs/reports/", response_class=HTMLResponse)
+def admin_fulfillment_cs_reports(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    settings = load_fulfillment_cs_settings()
+    return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(settings.fulfillment_cs_reports_dir)))
+
+
+@app.get("/admin/fulfillment-cs/reports/latest")
+def admin_fulfillment_cs_reports_latest(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    latest_entry = latest_fulfillment_report_entry(load_fulfillment_cs_settings().fulfillment_cs_reports_dir)
+    if latest_entry is None:
+        return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
+    return RedirectResponse(url=f"/admin/fulfillment-cs/reports/{latest_entry.slug}", status_code=302)
+
+
+def _fulfillment_report_artifact_response(
+    request: Request,
+    *,
+    report_slug: str,
+    extension: str,
+) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    artifact = load_fulfillment_report_artifact(load_fulfillment_cs_settings().fulfillment_cs_reports_dir, report_slug, extension)
+    if artifact is None:
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report artifact was not found."), status_code=404)
+    body, media_type = artifact
+    return Response(content=body, media_type=media_type)
+
+
+@app.get("/admin/fulfillment-cs/reports/{report_slug}.json")
+def admin_fulfillment_cs_report_json(request: Request, report_slug: str) -> Response:
+    return _fulfillment_report_artifact_response(request, report_slug=report_slug, extension="json")
+
+
+@app.get("/admin/fulfillment-cs/reports/{report_slug}.md")
+def admin_fulfillment_cs_report_markdown(request: Request, report_slug: str) -> Response:
+    return _fulfillment_report_artifact_response(request, report_slug=report_slug, extension="md")
+
+
+@app.get("/admin/fulfillment-cs/reports/{report_slug}.html")
+def admin_fulfillment_cs_report_html(request: Request, report_slug: str) -> Response:
+    return _fulfillment_report_artifact_response(request, report_slug=report_slug, extension="html")
+
+
+@app.get("/admin/fulfillment-cs/reports/{report_slug}", response_class=HTMLResponse)
+def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    report = load_fulfillment_report_by_slug(load_fulfillment_cs_settings().fulfillment_cs_reports_dir, report_slug)
+    if report is None:
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found."), status_code=404)
+    return HTMLResponse(render_fulfillment_report_detail_page(report))
 
 
 def _website_ops_run_status(request: Request, *, mode: str = "daily") -> dict[str, Any]:
