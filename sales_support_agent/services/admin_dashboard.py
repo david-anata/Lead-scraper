@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings, is_active_pipeline_status, normalize_status_key
 from sales_support_agent.models.entities import AutomationRun, CanvaConnection, CommunicationEvent, LeadMirror, MailboxSignal
-from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
+from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
 from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
@@ -1280,6 +1280,7 @@ def render_login_page(*, error_message: str = "") -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>anata | Agent Admin</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -1765,6 +1766,7 @@ def render_dashboard_page(data: DashboardData) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>agent | Admin Dashboard</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -3906,6 +3908,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>agent | Generate Sales Deck</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -4934,6 +4937,7 @@ def render_executive_page(data: ExecutiveData) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>agent | Executive Summary</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">

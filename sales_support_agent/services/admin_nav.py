@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import html
+from functools import lru_cache
+from pathlib import Path
 
 
 def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str = "") -> str:
@@ -12,6 +15,20 @@ def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str =
     if extra_class:
         classes.append(extra_class)
     return f'<a class="{" ".join(classes)}" href="{href}">{html.escape(label)}</a>'
+
+
+@lru_cache(maxsize=1)
+def render_agent_favicon_links() -> str:
+    favicon_path = Path(__file__).resolve().parents[2] / "shared" / "anata_brand" / "assets" / "agent-favicon.png"
+    try:
+        encoded = base64.b64encode(favicon_path.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    href = f"data:image/png;base64,{encoded}"
+    return (
+        f'<link rel="icon" type="image/png" href="{href}">'
+        f'<link rel="apple-touch-icon" href="{href}">'
+    )
 
 
 def render_agent_nav_styles() -> str:

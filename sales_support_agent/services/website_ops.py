@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from sales_support_agent.config import Settings
-from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
+from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
 from sales_support_agent.services import website_ops_vendor as website_ops
 
@@ -1215,6 +1215,7 @@ def _page_shell(title: str, body: str) -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{html.escape(title)}</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">

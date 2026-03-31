@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
+from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 
 
 DEFAULT_TITLE = "Fulfillment CS Review"
@@ -281,6 +281,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{html.escape(title)}</title>
+    {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">

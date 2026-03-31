@@ -25,6 +25,7 @@ try:
         dashboard_data_from_dict,
         dashboard_data_to_dict,
         render_dashboard_page,
+        render_login_page,
         render_sales_deck_page,
     )
 
@@ -71,6 +72,12 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertEqual(rebuilt.as_of_date.isoformat(), "2026-03-14")
         self.assertEqual(rebuilt.lead_builder_missing, ["STORELEADS_API_KEY"])
         self.assertTrue(rebuilt.deck_generator_ready)
+
+    def test_admin_pages_include_favicon_links(self) -> None:
+        html = render_login_page()
+        self.assertIn('rel="icon"', html)
+        self.assertIn('rel="apple-touch-icon"', html)
+        self.assertIn("data:image/png;base64,", html)
 
     def test_dashboard_render_removes_gmail_drafts_and_deck_builder_from_admin(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
