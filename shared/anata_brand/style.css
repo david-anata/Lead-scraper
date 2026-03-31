@@ -391,14 +391,20 @@ h3 {
   overflow: hidden;
   border-radius: 18px;
   background: #fff;
+  box-sizing: border-box;
+  padding: 14px;
 }
 
 .hero-media img,
 .competitor-media img,
 .gallery-media img {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
+  object-position: center;
+  flex: 0 1 auto;
   display: block;
   background: #fff;
 }
@@ -527,12 +533,18 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  padding: 4px;
 }
 
 .niche-product-thumb img {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
+  object-position: center;
+  flex: 0 1 auto;
   background: #fff;
 }
 
@@ -608,12 +620,18 @@ th {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  padding: 4px;
 }
 
 .table-product-thumb img {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
+  object-position: center;
+  flex: 0 1 auto;
   background: #fff;
 }
 
@@ -872,12 +890,18 @@ mark {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  padding: 12px;
 }
 
 .resource-preview-media img {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
+  object-position: center;
+  flex: 0 1 auto;
   background: #fff;
 }
 
@@ -1051,12 +1075,17 @@ mark {
   align-items: center;
   justify-content: center;
   padding: 14px;
+  box-sizing: border-box;
 }
 
 .comparison-thumb img {
-  width: 100%;
-  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
+  object-position: center;
+  flex: 0 1 auto;
   background: #fff;
 }
 
