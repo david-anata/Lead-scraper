@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sales_support_agent.models.database import Base
@@ -302,5 +302,132 @@ class CanvaConnection(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict)
     last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Cashflow Controller
+# ---------------------------------------------------------------------------
+
+
+class CashEvent(Base):
+    """A single financial cash event — either a planned obligation or a posted
+    bank transaction.  All amounts are stored as integer cents to avoid
+    floating-point arithmetic errors.
+
+    source values:
+        "manual"    — created by the operator inside this app
+        "clickup"   — imported from a ClickUp task (transition period)
+        "csv"       — parsed from an uploaded bank CSV
+        "recurring" — auto-generated from a RecurringTemplate
+
+    status values (planned side):
+        "planned"   — scheduled but not yet due
+        "pending"   — due within 7 days, not yet paid
+        "overdue"   — past due_date, no matching bank transaction
+        "paid"      — matched to a csv event or manually marked paid
+        "cancelled" — removed from forecast
+
+    status values (bank/actual side):
+        "posted"    — appeared in bank CSV, not yet matched to a planned event
+        "matched"   — linked to a planned obligation via matched_to_id
+
+    confidence:
+        "confirmed" — from a real source (bank CSV, QBO)
+        "estimated" — manually entered or auto-generated
+    """
+
+    __tablename__ = "cash_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # Origin
+    source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    source_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+
+    # Classification
+    event_type: Mapped[str] = mapped_column(String(16), index=True)   # "inflow" | "outflow"
+    category: Mapped[str] = mapped_column(String(64), default="uncategorized", index=True)
+    subcategory: Mapped[str] = mapped_column(String(64), default="")
+
+    # Identity
+    name: Mapped[str] = mapped_column(String(255), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    vendor_or_customer: Mapped[str] = mapped_column(String(255), default="")
+
+    # Amount — stored as integer cents; use Decimal for all arithmetic
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Dates
+    due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    effective_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expected_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Lifecycle
+    status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
+    confidence: Mapped[str] = mapped_column(String(16), default="estimated")  # "confirmed" | "estimated"
+
+    # Recurring linkage
+    recurring_template_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    recurring_rule: Mapped[str] = mapped_column(String(64), default="")  # "weekly"|"biweekly"|"monthly"|"custom"
+
+    # CSV ↔ planned obligation matching
+    matched_to_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+
+    # ClickUp transition
+    clickup_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+
+    # Bank snapshot (from CSV rows)
+    account_balance_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bank_transaction_type: Mapped[str] = mapped_column(String(32), default="")  # Card|Retail ACH|Check|POS
+    bank_reference: Mapped[str] = mapped_column(String(128), default="")
+
+    # Notes
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    # Audit
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+    # Composite index for the most common forecast query: date range + status
+    __table_args__ = (
+        Index("ix_cash_events_due_date_status", "due_date", "status"),
+        Index("ix_cash_events_source_source_id", "source", "source_id"),
+    )
+
+
+class RecurringTemplate(Base):
+    """Defines a repeating financial obligation.  Each template generates new
+    CashEvent rows (source="recurring") one period ahead on each app boot or
+    manual refresh, keeping the forecast window populated.
+
+    frequency values:
+        "weekly" | "biweekly" | "monthly" | "quarterly" | "annual"
+    """
+
+    __tablename__ = "recurring_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # What
+    name: Mapped[str] = mapped_column(String(255), default="")
+    vendor_or_customer: Mapped[str] = mapped_column(String(255), default="")
+    event_type: Mapped[str] = mapped_column(String(16), default="outflow")   # "inflow" | "outflow"
+    category: Mapped[str] = mapped_column(String(64), default="uncategorized")
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[str] = mapped_column(String(16), default="estimated")
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    # When
+    frequency: Mapped[str] = mapped_column(String(32), default="monthly", index=True)
+    next_due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)  # for monthly rules
+
+    # Lifecycle
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    clickup_task_id: Mapped[str] = mapped_column(String(64), default="")
+
+    # Audit
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

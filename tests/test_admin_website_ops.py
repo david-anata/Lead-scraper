@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
@@ -30,6 +31,9 @@ from sales_support_agent.services.website_ops import (
     write_website_ops_run_state,
 )
 from sales_support_agent.services.website_ops_vendor.executor import (
+    ExecutionError,
+    execute_feedback_action,
+    execution_target_details,
     faq_exists,
     inject_faq_block,
     resolve_insertion_point,
@@ -211,21 +215,16 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "auto_generated": True,
                     "suggested_action_type": "inject_faq_block",
                     "suggested_action_value": json.dumps({"heading": "AI FAQ", "questions": [{"question": "What does Anata automate?", "answer": "Anata answers directly: workflow automation is implemented safely."}]}),
-                    "execution_eligibility": "auto_execute",
+                    "execution_eligibility": "suggestion_only",
                     "before_state": "Contact Us | Faster, Smarter, Intelligent, Data.",
                     "after_state": "Keep one topic-specific H1 and demote the rest to H2.",
                 },
             )
-            with mock.patch.object(
-                website_ops,
-                "execute_feedback_action",
-                return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "inject_faq_block"},
-            ):
-                result = review_feedback_record(settings, record["feedback_id"], {"status": "approved"})
+            result = review_feedback_record(settings, record["feedback_id"], {"status": "approved"})
             self.assertTrue(result.ok)
             updated = load_feedback_records(settings)[0]
-            self.assertEqual(updated["status"], "done")
-            self.assertEqual(updated["action_type"], "inject_faq_block")
+            self.assertEqual(updated["status"], "approved")
+            self.assertEqual(updated["action_type"], "")
 
     def test_run_website_ops_marks_error_when_execution_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -237,7 +236,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     "status": "approved",
                     "action_type": "inject_faq_block",
                     "action_value": json.dumps({"heading": "AI FAQ", "questions": [{"question": "What does Anata automate?", "answer": "Anata answers directly: automation is implemented safely."}]}),
-                    "execution_eligibility": "auto_execute",
+                    "execution_eligibility": "suggestion_only",
                     "page_url": "https://anatainc.com/services/ai/",
                 },
             )
@@ -250,8 +249,8 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                     result = run_website_ops(settings, mode="daily")
             self.assertTrue(result.ok)
             updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == record["feedback_id"])
-            self.assertEqual(updated["status"], "error")
-            self.assertIn("boom", updated["execution_error"])
+            self.assertEqual(updated["status"], "approved")
+            self.assertEqual(updated.get("execution_error", ""), "")
 
     def test_run_website_ops_enriches_report_with_autonomy_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -467,8 +466,8 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertEqual(action_types, {"inject_faq_block", "expand_service_page_section"})
             faq_action = next(item for item in overlay["action_queue"] if item["action_type"] == "inject_faq_block")
             section_action = next(item for item in overlay["action_queue"] if item["action_type"] == "expand_service_page_section")
-            self.assertEqual(faq_action["execution_eligibility"], "auto_execute")
-            self.assertEqual(section_action["execution_eligibility"], "approval_required")
+            self.assertEqual(faq_action["execution_eligibility"], "suggestion_only")
+            self.assertEqual(section_action["execution_eligibility"], "suggestion_only")
             self.assertTrue(faq_action["evidence"])
             self.assertTrue(faq_action["verification_requirements"])
 
@@ -527,6 +526,129 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         self.assertIn("anata-faq", html_output)
         self.assertIn("Fulfillment FAQ", html_output)
         self.assertEqual(summary["after_faq_count"], 1)
+
+    def test_execution_target_details_uses_plugin_execution_path(self) -> None:
+        feedback = {
+            "action_type": "inject_faq_block",
+            "page_url": "https://anatainc.com/services/fulfillment/",
+        }
+        with mock.patch.dict(os.environ, {"ANATA_OPS_SHARED_SECRET": "test-secret"}, clear=False):
+            with mock.patch(
+                "sales_support_agent.services.website_ops_vendor.executor._fetch_live_html",
+                return_value="<h1>Fulfillment</h1><p>Intro copy.</p><div>Book a call</div>",
+            ):
+                details = execution_target_details(feedback)
+        self.assertFalse(details["eligible"])
+        self.assertEqual(details["execution_eligibility"], "suggestion_only")
+        self.assertIn("suggestion only", details["reason"].lower())
+
+    def test_execute_feedback_action_calls_plugin_endpoint(self) -> None:
+        feedback = {
+            "feedback_id": "fb_123",
+            "action_type": "inject_faq_block",
+            "page_url": "https://anatainc.com/services/fulfillment/",
+            "action_value": json.dumps(
+                {
+                    "heading": "Fulfillment FAQ",
+                    "questions": [
+                        {
+                            "question": "How fast can onboarding happen?",
+                            "answer": "Anata answers directly: onboarding starts quickly after implementation planning.",
+                        }
+                    ],
+                }
+            ),
+        }
+        with self.assertRaises(ExecutionError):
+            execute_feedback_action(feedback)
+
+    def test_execution_target_details_meta_update_is_auto_executable(self) -> None:
+        feedback = {
+            "action_type": "meta_update",
+            "page_url": "https://anatainc.com/services/fulfillment/",
+            "action_value": json.dumps(
+                {
+                    "meta_title": "eCommerce Fulfillment Services | Anata",
+                    "meta_description": "Direct-answer fulfillment services for growing brands.",
+                }
+            ),
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ANATA_OPS_SHARED_SECRET": "test-secret",
+                "ANATA_OPS_BASE_URL": "https://anatainc.com",
+            },
+            clear=False,
+        ):
+            details = execution_target_details(feedback)
+        self.assertTrue(details["eligible"])
+        self.assertEqual(details["execution_eligibility"], "auto_execute")
+        self.assertIn("seo metadata", details["reason"].lower())
+
+    def test_execute_feedback_action_meta_update_calls_plugin_endpoint(self) -> None:
+        feedback = {
+            "feedback_id": "fb_meta_123",
+            "action_type": "meta_update",
+            "page_url": "https://anatainc.com/services/fulfillment/",
+            "action_value": json.dumps(
+                {
+                    "meta_title": "eCommerce 3PL Warehousing and Fulfillment | Anata",
+                    "meta_description": "Scale fulfillment with direct-answer onboarding, systems setup, and launch support.",
+                    "canonical_url": "https://anatainc.com/services/fulfillment/",
+                }
+            ),
+        }
+        plugin_response = {
+            "ok": True,
+            "action_type": "meta_update",
+            "target_post_id": 2640,
+            "target_url": "https://anatainc.com/services/fulfillment/",
+            "before_meta": {
+                "meta_title": "",
+                "meta_description": "",
+                "canonical_url": "https://anatainc.com/services/fulfillment/",
+            },
+            "after_meta": {
+                "meta_title": "eCommerce 3PL Warehousing and Fulfillment | Anata",
+                "meta_description": "Scale fulfillment with direct-answer onboarding, systems setup, and launch support.",
+                "canonical_url": "https://anatainc.com/services/fulfillment/",
+            },
+            "updated_fields": ["meta_title", "meta_description"],
+            "backup_reference": "post-meta:_anata_ops_before_snapshot,_anata_ops_after_snapshot",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ANATA_OPS_SHARED_SECRET": "test-secret",
+                "ANATA_OPS_BASE_URL": "https://anatainc.com",
+            },
+            clear=False,
+        ):
+            with mock.patch(
+                "sales_support_agent.services.website_ops_vendor.executor.plugin_request",
+                return_value=plugin_response,
+            ) as plugin_request_mock:
+                with mock.patch(
+                    "sales_support_agent.services.website_ops_vendor.executor.collect_page_observation",
+                    return_value={
+                        "title": "eCommerce 3PL Warehousing and Fulfillment | Anata",
+                        "meta_description": "Scale fulfillment with direct-answer onboarding, systems setup, and launch support.",
+                        "canonical_url": "https://anatainc.com/services/fulfillment/",
+                    },
+                ):
+                    with mock.patch(
+                        "sales_support_agent.services.website_ops_vendor.executor._fetch_live_html",
+                        return_value="<html><head><title>eCommerce 3PL Warehousing and Fulfillment | Anata</title><meta name='description' content='Scale fulfillment with direct-answer onboarding, systems setup, and launch support.' /><link rel='canonical' href='https://anatainc.com/services/fulfillment/' /></head><body></body></html>",
+                    ):
+                        result = execute_feedback_action(feedback)
+        self.assertEqual(result["verification_status"], "verified")
+        self.assertEqual(result["target_post_id"], 2640)
+        sent_payload = plugin_request_mock.call_args.args[0]
+        self.assertEqual(sent_payload["action_type"], "meta_update")
+        self.assertEqual(sent_payload["meta_title"], "eCommerce 3PL Warehousing and Fulfillment | Anata")
+        self.assertEqual(sent_payload["meta_description"], "Scale fulfillment with direct-answer onboarding, systems setup, and launch support.")
+        self.assertEqual(sent_payload["canonical_url"], "https://anatainc.com/services/fulfillment/")
 
     def test_build_autonomy_overlay_generates_phase_one_faq_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -593,7 +715,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                                 feedback_entries=[],
                             )
             faq_action = next(item for item in overlay["action_queue"] if item["action_type"] == "inject_faq_block")
-            self.assertEqual(faq_action["execution_eligibility"], "auto_execute")
+            self.assertEqual(faq_action["execution_eligibility"], "suggestion_only")
             self.assertEqual({item["action_type"] for item in overlay["action_queue"]}, {"inject_faq_block"})
             self.assertFalse(overlay["customer_questions"])
             self.assertTrue(overlay["serp_blueprints"])
@@ -673,7 +795,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                         "confidence": "high",
                         "requires_approval": False,
                         "evidence": ["120 impressions", "4 repeated buyer questions"],
-                        "execution_eligibility": "auto_execute",
+                        "execution_eligibility": "suggestion_only",
                         "target_region": "FAQ insertion zone",
                         "verification_requirements": ["FAQ section exists after insert"],
                         "action_value": json.dumps({"heading": "Shipping FAQ", "questions": [{"question": "How fast is shipping setup?", "answer": "Anata answers directly: shipping setup starts with carrier and workflow planning."}]}),
@@ -691,17 +813,12 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             }
             with mock.patch("sales_support_agent.services.website_ops.website_ops.run_daily_report_pipeline", return_value=fake_pipeline):
                 with mock.patch("sales_support_agent.services.website_ops.build_autonomy_overlay", return_value=fake_overlay):
-                    with mock.patch.object(
-                        website_ops,
-                        "execute_feedback_action",
-                        return_value={"executed_at": "2026-03-27T00:00:00Z", "action_type": "inject_faq_block"},
-                    ):
-                        result = run_website_ops(settings, mode="daily")
+                    result = run_website_ops(settings, mode="daily")
             self.assertTrue(result.ok)
             records = load_feedback_records(settings)
             self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["status"], "done")
-            self.assertEqual(records[0]["action_type"], "inject_faq_block")
+            self.assertEqual(records[0]["status"], "new")
+            self.assertEqual(records[0]["action_type"], "")
 
     def test_latest_report_entry_reads_generated_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

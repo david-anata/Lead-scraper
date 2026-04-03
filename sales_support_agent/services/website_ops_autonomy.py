@@ -35,7 +35,15 @@ except ModuleNotFoundError:  # pragma: no cover - environment dependent
 SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GA4_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 MVP_MODE_ACTIVE = True
-MVP_ALLOWED_ACTION_TYPES = ("inject_faq_block", "expand_service_page_section")
+MVP_ALLOWED_ACTION_TYPES = (
+    "inject_faq_block",
+    "expand_service_page_section",
+    "meta_update",
+    "meta_title_update",
+    "meta_description_update",
+    "canonical_update",
+)
+MVP_SUGGESTION_ONLY_ACTION_TYPES = {"inject_faq_block", "expand_service_page_section"}
 MVP_FAQ_IMPRESSIONS_THRESHOLD = 25.0
 MVP_FAQ_CTR_THRESHOLD = 0.03
 MVP_FAQ_FORCE_IMPRESSIONS_THRESHOLD = 100.0
@@ -1056,7 +1064,7 @@ def _content_actions(
                 + ([f"Customer language: {question_count} repeated buyer questions matched this page."] if question_count else [])
                 + ([f"SERP blueprint: {len(list(blueprint.get('faq_patterns') or []))} repeated FAQ patterns."] if _blueprint_missing_faq(blueprint) else [])
                 + (["The live page has no visible FAQ section despite strong CTR-loss signals."] if page_lacks_faq_coverage else []),
-                execution_eligibility="auto_execute" if supporting_signals >= 2 else "approval_required",
+                execution_eligibility="suggestion_only",
                 target_region="FAQ insertion zone",
                 verification_requirements=[
                     "FAQ section exists after insert",
@@ -1092,7 +1100,7 @@ def _content_actions(
                 evidence=common_evidence
                 + [f"Blueprint gap: {str(list(blueprint.get('content_gaps') or [])[0])}"]
                 + ([f"Customer language: {question_count} repeated buyer questions support this gap."] if question_count else []),
-                execution_eligibility="approval_required",
+                execution_eligibility="suggestion_only",
                 target_region="After first major section",
                 verification_requirements=[
                     "New heading is visible on the live page",

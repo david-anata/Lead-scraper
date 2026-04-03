@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import html
 import json
 import os
@@ -22,13 +23,10 @@ from .core import WebsiteOpsConfig, collect_page_observation, load_config
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_BACKUPS_ROOT = ROOT_DIR / "website-ops" / "backups"
 SUPPORTED_ACTION_TYPES = {
-    "replace_primary_heading",
-    "rewrite_title_and_intro",
-    "strengthen_primary_cta",
-    "add_internal_links",
-    "update_faq_ai_extraction",
-    "inject_faq_block",
-    "expand_service_page_section",
+    "meta_update",
+    "meta_title_update",
+    "meta_description_update",
+    "canonical_update",
 }
 TEXT_WIDGET_TYPES = {"text-editor", "html"}
 PROOF_WIDGET_TYPES = {"text-editor", "html", "icon-list"}
@@ -55,9 +53,67 @@ def execution_enabled() -> bool:
     return os.getenv("WEBSITE_OPS_EXECUTE_APPROVED", "").strip().lower() in {"1", "true", "yes", "y"}
 
 
+def plugin_shared_secret() -> str:
+    return os.getenv("ANATA_OPS_SHARED_SECRET", "").strip()
+
+
+def plugin_base_url(page_url: str = "") -> str:
+    configured = os.getenv("ANATA_OPS_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    parsed = urllib.parse.urlparse(str(page_url).strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return ""
+
+
+def plugin_endpoint_path(action_type: str) -> str:
+    normalized = str(action_type or "").strip()
+    if normalized in {"meta_update", "meta_title_update", "meta_description_update", "canonical_update"}:
+        return os.getenv("ANATA_OPS_META_ENDPOINT_PATH", "/wp-json/anata-ops/v1/meta-update").strip() or "/wp-json/anata-ops/v1/meta-update"
+    return os.getenv("ANATA_OPS_FAQ_ENDPOINT_PATH", "/wp-json/anata-ops/v1/faq-insert").strip() or "/wp-json/anata-ops/v1/faq-insert"
+
+
 def backup_root() -> Path:
     configured = os.getenv("WEBSITE_OPS_BACKUPS_DIR", "").strip()
     return Path(configured).expanduser() if configured else DEFAULT_BACKUPS_ROOT
+
+
+def _plugin_canonical_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _plugin_canonical_payload(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [_plugin_canonical_payload(item) for item in value]
+    return value
+
+
+def _plugin_signature(payload: Mapping[str, Any], secret: str) -> str:
+    canonical = json.dumps(_plugin_canonical_payload(dict(payload)), separators=(",", ":"), ensure_ascii=True)
+    return hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def plugin_request(payload: Mapping[str, Any], *, page_url: str, action_type: str) -> Dict[str, Any]:
+    base_url = plugin_base_url(page_url)
+    secret = plugin_shared_secret()
+    if not base_url or not secret:
+        raise ExecutionError("Missing ANATA_OPS_BASE_URL or ANATA_OPS_SHARED_SECRET for Website Ops plugin execution.")
+    signed_payload = dict(payload)
+    signed_payload["signature"] = _plugin_signature(payload, secret)
+    request = urllib.request.Request(
+        f"{base_url}{plugin_endpoint_path(action_type)}",
+        data=json.dumps(signed_payload).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise ExecutionError(f"Website Ops plugin error {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise ExecutionError(f"Website Ops plugin request failed: {exc.reason}") from exc
 
 
 def wp_headers() -> Dict[str, str]:
@@ -281,6 +337,11 @@ def _faq_marker_count(page_html: str) -> int:
     return count
 
 
+def _faq_section_count(page_html: str) -> int:
+    normalized = str(page_html or "").lower()
+    return normalized.count('class="anata-faq"') + normalized.count("class='anata-faq'")
+
+
 def resolve_insertion_point(page_html: str) -> Dict[str, Any]:
     html_text = str(page_html or "")
     if not html_text.strip():
@@ -341,6 +402,10 @@ def _verify_text_present(html_text: str, expected_text: str) -> bool:
     return _normalize_text(expected_text).lower() in _strip_html(html_text).lower()
 
 
+def _normalize_url(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
 def _infer_region_label(action_type: str) -> str:
     labels = {
         "replace_primary_heading": "Primary heading",
@@ -350,12 +415,24 @@ def _infer_region_label(action_type: str) -> str:
         "update_faq_ai_extraction": "FAQ / AI extraction section",
         "inject_faq_block": "FAQ insertion zone",
         "expand_service_page_section": "After first major section",
+        "meta_update": "SEO metadata",
+        "meta_title_update": "SEO meta title",
+        "meta_description_update": "SEO meta description",
+        "canonical_update": "Canonical URL",
     }
     return labels.get(action_type, "Page region")
 
 
 def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
     action_type = str(feedback.get("action_type") or feedback.get("suggested_action_type") or "").strip()
+    if action_type in {"inject_faq_block", "expand_service_page_section", "rewrite_title_and_intro", "strengthen_primary_cta"}:
+        return {
+            "eligible": False,
+            "execution_eligibility": "suggestion_only",
+            "target_region": _infer_region_label(action_type),
+            "reason": "Branded service page content changes are suggestion only in MVP.",
+            "verification_requirements": [],
+        }
     if action_type not in SUPPORTED_ACTION_TYPES:
         return {
             "eligible": False,
@@ -364,18 +441,60 @@ def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
             "reason": "Unsupported action type.",
             "verification_requirements": [],
         }
-    if not wp_site_url() or not wp_username() or not wp_application_password():
+    if action_type in {"meta_update", "meta_title_update", "meta_description_update", "canonical_update"}:
+        page_url = str(feedback.get("page_url", "")).strip()
+        target_post_id = str(feedback.get("target_post_id", "")).strip()
+        if not plugin_shared_secret() or not plugin_base_url(page_url):
+            return {
+                "eligible": False,
+                "execution_eligibility": "approval_required",
+                "target_region": _infer_region_label(action_type),
+                "reason": "Website Ops plugin endpoint or shared secret is not configured.",
+                "verification_requirements": [],
+            }
+        if not page_url and not target_post_id:
+            return {
+                "eligible": False,
+                "execution_eligibility": "approval_required",
+                "target_region": _infer_region_label(action_type),
+                "reason": "Approved action is missing page_url or target_post_id.",
+                "verification_requirements": [],
+            }
+        verification = []
+        if action_type in {"meta_update", "meta_title_update"}:
+            verification.append("Document title matches the requested meta title")
+        if action_type in {"meta_update", "meta_description_update"}:
+            verification.append("Meta description matches the requested value")
+        if action_type in {"meta_update", "canonical_update"}:
+            verification.append("Canonical URL matches the requested value")
+        return {
+            "eligible": True,
+            "execution_eligibility": "auto_execute",
+            "target_region": _infer_region_label(action_type),
+            "reason": "SEO metadata updates are safe back-office mutations in MVP.",
+            "verification_requirements": verification,
+        }
+    if action_type != "inject_faq_block":
         return {
             "eligible": False,
             "execution_eligibility": "approval_required",
             "target_region": _infer_region_label(action_type),
-            "reason": "WordPress execution credentials are not configured.",
+            "reason": "Only inject_faq_block is executable in the plugin-based MVP.",
+            "verification_requirements": [],
+        }
+    page_url = str(feedback.get("page_url", "")).strip()
+    if not plugin_shared_secret() or not plugin_base_url(page_url):
+        return {
+            "eligible": False,
+            "execution_eligibility": "approval_required",
+            "target_region": _infer_region_label(action_type),
+            "reason": "Website Ops plugin endpoint or shared secret is not configured.",
             "verification_requirements": [],
         }
     try:
-        record = resolve_page_record(feedback)
-        elements = parse_elementor_data(record)
-        flat = _flatten_widget_refs(elements)
+        page_html = _fetch_live_html(page_url, config=load_config())
+        insertion_point = resolve_insertion_point(page_html)
+        has_duplicate = faq_exists(page_html)
     except ExecutionError as exc:
         return {
             "eligible": False,
@@ -384,55 +503,13 @@ def execution_target_details(feedback: Mapping[str, Any]) -> Dict[str, Any]:
             "reason": str(exc),
             "verification_requirements": [],
         }
-
-    eligible = False
-    reason = ""
-    verification: list[str] = []
-    if action_type == "replace_primary_heading":
-        eligible = any(str(element.get("widgetType", "")) == "heading" for element, _, _ in flat)
-        reason = "Primary heading widget located." if eligible else "No heading widget found."
-        verification = ["Exactly one live H1", "Updated H1 text is visible"]
-    elif action_type == "rewrite_title_and_intro":
-        has_heading = any(str(element.get("widgetType", "")) == "heading" for element, _, _ in flat)
-        has_text = any(str(element.get("widgetType", "")) in TEXT_WIDGET_TYPES for element, _, _ in flat)
-        eligible = has_heading and has_text
-        reason = "Hero heading and intro text widgets located." if eligible else "Required heading/text widgets were not found."
-        verification = ["Live title contains new framing", "Intro text is visible", "Single H1 remains"]
-    elif action_type == "strengthen_primary_cta":
-        has_button = any(str(element.get("widgetType", "")) == "button" for element, _, _ in flat)
-        has_support = any(str(element.get("widgetType", "")) in PROOF_WIDGET_TYPES for element, _, _ in flat)
-        eligible = has_button and has_support
-        reason = "CTA and nearby support widgets located." if eligible else "Required CTA/proof widgets were not found."
-        verification = ["Updated CTA text is visible", "Proof/support copy is visible"]
-    elif action_type == "add_internal_links":
-        has_insertion = any(str(element.get("widgetType", "")) in TEXT_WIDGET_TYPES for element, _, _ in flat)
-        eligible = has_insertion
-        reason = "Approved insertion zone found." if eligible else "No text/html insertion zone found."
-        verification = ["All inserted links resolve internally", "No duplicate anchors in the updated zone"]
-    elif action_type == "update_faq_ai_extraction":
-        eligible = True
-        reason = "FAQ section can be replaced or appended deterministically."
-        verification = ["FAQ heading is visible", "At least one generated question is visible", "No duplicate FAQ block"]
-    elif action_type == "inject_faq_block":
-        page_html = _elementor_html_snapshot(elements)
-        has_duplicate = faq_exists(page_html)
-        insertion_point = resolve_insertion_point(page_html)
-        eligible = not has_duplicate and insertion_point.get("strategy") in {"after_first_major_section", "before_cta", "end_of_content"}
-        reason = "Deterministic FAQ insertion point located." if eligible else "Existing FAQ found or no stable insertion point was resolved."
-        verification = ["FAQ section exists after insert", "No duplicate FAQ block was created", "Generated FAQ question is visible"]
-    elif action_type == "expand_service_page_section":
-        insertion_point = resolve_insertion_point(_elementor_html_snapshot(elements))
-        eligible = insertion_point.get("strategy") in {"after_first_major_section", "before_cta", "end_of_content"}
-        reason = "Structured section insertion point located." if eligible else "No stable section insertion point was resolved."
-        verification = ["New section heading is visible", "Section body renders under the inserted heading"]
+    eligible = not has_duplicate and insertion_point.get("strategy") in {"after_first_major_section", "before_cta", "end_of_content"}
+    reason = "Deterministic FAQ insertion point located." if eligible else "Existing FAQ found or no stable insertion point was resolved."
+    verification = ["FAQ section exists after insert", "No duplicate FAQ block was created", "Generated FAQ question is visible"]
 
     return {
         "eligible": eligible,
-        "execution_eligibility": (
-            "auto_execute"
-            if eligible and action_type == "inject_faq_block"
-            else "approval_required"
-        ),
+        "execution_eligibility": "auto_execute" if eligible else "approval_required",
         "target_region": _infer_region_label(action_type),
         "reason": reason,
         "verification_requirements": verification,
@@ -700,112 +777,77 @@ def execute_feedback_action(
     config = config or load_config()
     timestamp = timestamp or datetime.now(timezone.utc)
     action_type = str(feedback.get("action_type", "")).strip()
+    if action_type in {"inject_faq_block", "expand_service_page_section", "rewrite_title_and_intro", "strengthen_primary_cta"}:
+        raise ExecutionError("Branded service page content changes are suggestion only in MVP.")
     if action_type not in SUPPORTED_ACTION_TYPES:
         raise ExecutionError(f"Unsupported action_type: {action_type or 'missing'}")
     action_payload = _parse_action_payload(feedback)
-    action_value = str(feedback.get("action_value", "")).strip()
-
-    record = resolve_page_record(feedback)
-    backup_path = backup_page_record(record, timestamp=timestamp)
-    elementor_data = parse_elementor_data(record)
-    payload: Dict[str, Any] = {"meta": {"_elementor_data": json.dumps(elementor_data)}}
-
-    if action_type == "replace_primary_heading":
-        updated_data, change_summary = update_primary_heading(elementor_data, action_value)
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
-    elif action_type == "rewrite_title_and_intro":
-        updated_data, change_summary = update_title_and_intro(elementor_data, action_payload)
-        payload["title"] = action_payload.get("page_title") or action_payload.get("heading") or record.get("title", {}).get("raw", "")
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
-    elif action_type == "strengthen_primary_cta":
-        updated_data, change_summary = update_primary_cta(elementor_data, action_payload)
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
-    elif action_type == "add_internal_links":
-        updated_data, change_summary = update_internal_links(elementor_data, action_payload)
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
-    elif action_type == "inject_faq_block":
-        updated_data, change_summary = inject_faq_block(elementor_data, action_payload)
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
-    elif action_type == "expand_service_page_section":
-        updated_data, change_summary = expand_service_page_section(elementor_data, action_payload)
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
+    page_url = str(feedback.get("page_url", "")).strip()
+    target_post_id = str(feedback.get("target_post_id", "")).strip()
+    if not page_url and not target_post_id:
+        raise ExecutionError("Approved action is missing page_url or target_post_id.")
+    request_timestamp = timestamp.isoformat()
+    plugin_payload: Dict[str, Any] = {
+        "target_post_id": int(target_post_id) if target_post_id else None,
+        "target_url": page_url,
+        "action_type": action_type,
+        "request_timestamp": request_timestamp,
+    }
+    if action_type == "inject_faq_block":
+        plugin_payload.update(
+            {
+                "heading": str(action_payload.get("heading", "") or "Service FAQ").strip(),
+                "questions": action_payload.get("questions") or [],
+                "definitions": action_payload.get("definitions") or [],
+            }
+        )
     else:
-        updated_data, change_summary = update_faq_ai_block(elementor_data, action_payload)
-        payload["meta"]["_elementor_data"] = json.dumps(updated_data)
-
-    updated_record = wp_request(f"/wp-json/wp/v2/pages/{record['id']}", method="POST", payload=payload)
-    verification = collect_page_observation(str(feedback.get("page_url") or updated_record.get("link")), config=config)
-    live_h1s = [str(value).strip() for value in (verification.get("h1") or []) if str(value).strip()]
-    page_url = str(feedback.get("page_url") or updated_record.get("link") or "")
-    live_html = _fetch_live_html(page_url, config=config)
-    if action_type == "replace_primary_heading":
-        if not live_h1s:
-            raise ExecutionError("Verification failed. No live H1 found after execution.")
-        if len(live_h1s) != 1:
-            raise ExecutionError(f"Verification failed. Expected exactly one H1 but found {len(live_h1s)}.")
-        if action_value and live_h1s[0] != action_value.strip():
-            raise ExecutionError(f"Verification failed. Expected H1 '{action_value}' but found '{live_h1s[0]}'.")
-    elif action_type == "rewrite_title_and_intro":
-        expected_heading = str(action_payload.get("heading", "") or "").strip()
-        expected_intro = str(action_payload.get("intro", "") or action_payload.get("intro_html", "") or "").strip()
-        expected_title = str(action_payload.get("page_title", "") or expected_heading).strip()
-        if len(live_h1s) != 1:
-            raise ExecutionError("Verification failed. Expected exactly one live H1 after title/intro update.")
-        if expected_heading and live_h1s and live_h1s[0] != expected_heading:
-            raise ExecutionError("Verification failed. Live H1 did not match the rewritten title.")
-        if expected_title and _normalize_text(expected_title).lower() not in _normalize_text(verification.get("title", "")).lower():
-            raise ExecutionError("Verification failed. Live page title did not include the rewritten SERP title.")
-        if expected_intro and not _verify_text_present(live_html, expected_intro):
-            raise ExecutionError("Verification failed. Rewritten intro text is not visible on the live page.")
-    elif action_type == "strengthen_primary_cta":
-        if not _verify_text_present(live_html, str(action_payload.get("cta_text", "") or "")):
-            raise ExecutionError("Verification failed. Updated CTA text is not visible on the live page.")
-        if not _verify_text_present(live_html, str(action_payload.get("proof_text", "") or action_payload.get("proof_html", "") or "")):
-            raise ExecutionError("Verification failed. Updated proof block is not visible on the live page.")
-    elif action_type == "add_internal_links":
-        for link in action_payload.get("links") or []:
-            href = str(link.get("url", "")).strip() if isinstance(link, dict) else ""
-            if href and href not in live_html:
-                raise ExecutionError(f"Verification failed. Expected internal link '{href}' was not found.")
-    elif action_type == "update_faq_ai_extraction":
-        first_question = ""
-        questions = action_payload.get("questions") or []
-        if questions and isinstance(questions[0], dict):
-            first_question = str(questions[0].get("question", "")).strip()
-        if not _verify_text_present(live_html, str(action_payload.get("heading", "") or "Service FAQ")):
-            raise ExecutionError("Verification failed. FAQ heading is not visible on the live page.")
-        if first_question and not _verify_text_present(live_html, first_question):
-            raise ExecutionError("Verification failed. Generated FAQ question is not visible on the live page.")
-    elif action_type == "inject_faq_block":
+        plugin_payload.update(
+            {
+                "meta_title": str(action_payload.get("meta_title", "") or "").strip(),
+                "meta_description": str(action_payload.get("meta_description", "") or "").strip(),
+                "canonical_url": str(action_payload.get("canonical_url", "") or "").strip(),
+            }
+        )
+    plugin_result = plugin_request(plugin_payload, page_url=page_url, action_type=action_type)
+    verified_url = page_url or str(plugin_result.get("target_url", ""))
+    verification = collect_page_observation(verified_url, config=config)
+    live_html = _fetch_live_html(verified_url, config=config)
+    if action_type == "inject_faq_block":
         first_question = ""
         questions = action_payload.get("questions") or []
         if questions and isinstance(questions[0], dict):
             first_question = str(questions[0].get("question", "")).strip()
         if not faq_exists(live_html):
             raise ExecutionError("Verification failed. FAQ section was not detected on the live page.")
-        before_count = int(change_summary.get("before_faq_count", 0) or 0)
-        if _faq_marker_count(live_html) > before_count + 1:
+        if _faq_section_count(live_html) > 1:
             raise ExecutionError("Verification failed. Duplicate FAQ markers were created.")
         if not _verify_text_present(live_html, str(action_payload.get("heading", "") or "Service FAQ")):
             raise ExecutionError("Verification failed. Inserted FAQ heading is not visible on the live page.")
         if first_question and not _verify_text_present(live_html, first_question):
             raise ExecutionError("Verification failed. Inserted FAQ question is not visible on the live page.")
-    elif action_type == "expand_service_page_section":
-        expected_heading = str(action_payload.get("heading", "")).strip()
-        expected_body = _strip_html(str(action_payload.get("body_html", "")).strip())
-        if expected_heading and not _verify_text_present(live_html, expected_heading):
-            raise ExecutionError("Verification failed. Inserted section heading is not visible on the live page.")
-        if expected_body and not _verify_text_present(live_html, expected_body.split(".")[0]):
-            raise ExecutionError("Verification failed. Inserted section body is not visible on the live page.")
+    else:
+        requested_title = str(action_payload.get("meta_title", "") or "").strip()
+        requested_description = str(action_payload.get("meta_description", "") or "").strip()
+        requested_canonical = str(action_payload.get("canonical_url", "") or "").strip()
+        live_title = _normalize_text(verification.get("title", ""))
+        live_description = _normalize_text(verification.get("meta_description", ""))
+        live_canonical = _normalize_url(verification.get("canonical_url", ""))
+        if action_type in {"meta_update", "meta_title_update"} and requested_title and live_title != _normalize_text(requested_title):
+            raise ExecutionError("Verification failed. Document title does not match the requested meta title.")
+        if action_type in {"meta_update", "meta_description_update"} and requested_description and live_description != _normalize_text(requested_description):
+            raise ExecutionError("Verification failed. Meta description does not match the requested value.")
+        if action_type in {"meta_update", "canonical_update"} and requested_canonical and live_canonical != _normalize_url(requested_canonical):
+            raise ExecutionError("Verification failed. Canonical URL does not match the requested value.")
     return {
         "feedback_id": feedback.get("feedback_id"),
         "action_type": action_type,
-        "page_url": page_url,
-        "target_post_id": updated_record.get("id"),
-        "backup_path": str(backup_path),
+        "page_url": verified_url,
+        "target_post_id": plugin_result.get("target_post_id"),
+        "backup_path": str(plugin_result.get("backup_reference", "")),
         "executed_at": timestamp.isoformat(),
         "verification_status": "verified",
-        "summary": change_summary,
+        "summary": plugin_result,
     }
 
 
