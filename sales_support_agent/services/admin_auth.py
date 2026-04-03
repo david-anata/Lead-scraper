@@ -1,4 +1,4 @@
-"""Simple single-user admin auth helpers."""
+"""Single-user admin auth helpers — supports legacy password tokens and Google SSO tokens."""
 
 from __future__ import annotations
 
@@ -65,6 +65,81 @@ def validate_admin_session_token(
     if current_time > issued_at + timedelta(hours=settings.admin_session_ttl_hours):
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Google SSO session tokens (5-part: email|name|role|timestamp|signature)
+# Legacy password tokens are 3-part: username|timestamp|signature
+# ---------------------------------------------------------------------------
+
+def create_user_session_token(settings: Settings, *, email: str, name: str, role: str, now: datetime | None = None) -> str:
+    """Create a signed session token for a Google-authenticated user."""
+    issued_at = now or datetime.now(timezone.utc)
+    payload = f"{email}|{name}|{role}|{int(issued_at.timestamp())}"
+    signature = hmac.new(
+        settings.admin_session_secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    token = f"{payload}|{signature}"
+    return base64.urlsafe_b64encode(token.encode("utf-8")).decode("utf-8")
+
+
+def get_session_user(settings: Settings, token: str, *, now: datetime | None = None) -> dict[str, str] | None:
+    """Validate any session token (legacy or Google SSO) and return user dict or None."""
+    if not token:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
+        parts = decoded.split("|")
+    except Exception:
+        return None
+
+    current_time = now or datetime.now(timezone.utc)
+
+    if len(parts) == 5:
+        # Google SSO token: email|name|role|timestamp|signature
+        email, name, role, issued_ts_text, provided_signature = parts
+        try:
+            issued_ts = int(issued_ts_text)
+        except ValueError:
+            return None
+        payload = f"{email}|{name}|{role}|{issued_ts}"
+        expected_signature = hmac.new(
+            settings.admin_session_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(provided_signature, expected_signature):
+            return None
+        issued_at = datetime.fromtimestamp(issued_ts, tz=timezone.utc)
+        if current_time > issued_at + timedelta(hours=settings.admin_session_ttl_hours):
+            return None
+        return {"email": email, "name": name, "role": role}
+
+    if len(parts) == 3:
+        # Legacy password token: username|timestamp|signature
+        username, issued_ts_text, provided_signature = parts
+        try:
+            issued_ts = int(issued_ts_text)
+        except ValueError:
+            return None
+        if username != settings.admin_username:
+            return None
+        payload = f"{username}|{issued_ts}"
+        expected_signature = hmac.new(
+            settings.admin_session_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(provided_signature, expected_signature):
+            return None
+        issued_at = datetime.fromtimestamp(issued_ts, tz=timezone.utc)
+        if current_time > issued_at + timedelta(hours=settings.admin_session_ttl_hours):
+            return None
+        return {"email": username, "name": username, "role": "admin"}
+
+    return None
 
 
 def create_signed_state_token(secret: str, payload: dict[str, str]) -> str:

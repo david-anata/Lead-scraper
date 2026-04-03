@@ -167,6 +167,11 @@ class Settings:
     amazon_sp_api_aws_access_key_id: str
     amazon_sp_api_aws_secret_access_key: str
     amazon_sp_api_aws_session_token: str
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_allowed_domain: str = "anatainc.com"
+    admin_role_map: dict[str, str] = field(default_factory=dict)
+    admin_default_role: str = "ops"
     active_statuses: tuple[str, ...] = field(default_factory=lambda: ACTIVE_FOLLOW_UP_STATUSES)
     inactive_statuses: tuple[str, ...] = field(default_factory=lambda: INACTIVE_STATUSES)
     managed_fields: ManagedFieldSettings = field(default_factory=ManagedFieldSettings)
@@ -523,6 +528,11 @@ def load_settings() -> Settings:
         amazon_sp_api_aws_access_key_id=os.getenv("AMAZON_SP_API_AWS_ACCESS_KEY_ID", "").strip(),
         amazon_sp_api_aws_secret_access_key=os.getenv("AMAZON_SP_API_AWS_SECRET_ACCESS_KEY", "").strip(),
         amazon_sp_api_aws_session_token=os.getenv("AMAZON_SP_API_AWS_SESSION_TOKEN", "").strip(),
+        google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
+        google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
+        google_oauth_allowed_domain=(os.getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN", "anatainc.com").strip() or "anatainc.com"),
+        admin_role_map=_parse_json_object(os.getenv("ADMIN_ROLE_MAP", "{}")),
+        admin_default_role=(os.getenv("ADMIN_DEFAULT_ROLE", "ops").strip() or "ops"),
         active_statuses=tuple(
             normalize_status_key(status)
             for status in ACTIVE_FOLLOW_UP_STATUSES

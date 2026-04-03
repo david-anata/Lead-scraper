@@ -109,18 +109,6 @@ def render_agent_nav_styles() -> str:
         color: #fff;
         box-shadow: 0 10px 22px rgba(43, 54, 68, 0.16);
       }
-      .top-link.logout {
-        background: rgba(133, 187, 218, 0.18);
-        border-color: rgba(133, 187, 218, 0.38);
-      }
-      .top-link.logout:hover {
-        background: rgba(133, 187, 218, 0.24);
-        border-color: rgba(133, 187, 218, 0.52);
-      }
-      .top-link.active.logout {
-        background: #2B3644;
-        border-color: #2B3644;
-      }
       .top-link--secondary {
         min-height: 36px;
         padding: 0 14px;
@@ -139,6 +127,89 @@ def render_agent_nav_styles() -> str:
         height: 1px;
         background: linear-gradient(90deg, rgba(43, 54, 68, 0.10) 0%, rgba(43, 54, 68, 0.04) 100%);
       }
+      /* User chip + dropdown */
+      .user-chip {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 14px 0 10px;
+        min-height: 42px;
+        border-radius: 999px;
+        background: #fff;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        color: #2B3644;
+        cursor: pointer;
+        user-select: none;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+      .user-chip:hover {
+        border-color: rgba(43, 54, 68, 0.22);
+        box-shadow: 0 4px 12px rgba(43, 54, 68, 0.08);
+      }
+      .user-chip-avatar {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: #85BBDA;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        color: #fff;
+        font-weight: 900;
+        flex-shrink: 0;
+      }
+      .user-chip-role {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #85BBDA;
+        margin-left: -2px;
+      }
+      .user-chip-caret {
+        font-size: 9px;
+        color: rgba(43,54,68,0.4);
+        margin-left: 2px;
+      }
+      .user-dropdown {
+        display: none;
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        min-width: 160px;
+        background: #fff;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(43, 54, 68, 0.12);
+        padding: 6px;
+        z-index: 100;
+      }
+      .user-chip:focus-within .user-dropdown,
+      .user-chip[data-open] .user-dropdown {
+        display: block;
+      }
+      .user-dropdown a {
+        display: block;
+        padding: 9px 14px;
+        border-radius: 8px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        color: #2B3644;
+        text-decoration: none;
+        transition: background 100ms ease;
+      }
+      .user-dropdown a:hover {
+        background: rgba(43, 54, 68, 0.06);
+      }
+      .user-dropdown a.logout-link {
+        color: #8b4c42;
+      }
       @media (max-width: 960px) {
         .topbar-inner,
         .top-actions {
@@ -151,13 +222,33 @@ def render_agent_nav_styles() -> str:
     """
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "") -> str:
+def _user_chip_html(user: dict | None) -> str:
+    if not user:
+        return f'<a class="top-link" href="/admin/logout">Log out</a>'
+    name = html.escape(user.get("name") or user.get("email") or "User")
+    role = html.escape(user.get("role") or "")
+    initials = "".join(part[0].upper() for part in name.split()[:2]) or "?"
+    return f"""<div class="user-chip" tabindex="0" onclick="this.toggleAttribute('data-open')">
+      <span class="user-chip-avatar">{initials}</span>
+      <span>{name}</span>
+      {f'<span class="user-chip-role">{role}</span>' if role else ""}
+      <span class="user-chip-caret">&#9660;</span>
+      <div class="user-dropdown">
+        <a href="/admin/logout" class="logout-link">Log out</a>
+      </div>
+    </div>"""
+
+
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", user: dict | None = None) -> str:
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"
+    if active in {"finance", "finances"}:
+        primary_active = "finance"
     primary_links = [
         _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
         _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
+        _nav_item("Finance", "/admin/finances", active=primary_active == "finance"),
         _nav_item("Executive", "/admin/executive", active=primary_active == "executive"),
         _nav_item("Fulfillment CS", "/admin/fulfillment-cs", active=primary_active == "fulfillment"),
     ]
@@ -199,17 +290,6 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           {"".join(fulfillment_links)}
         </nav>
         """
-    if primary_active == "executive":
-        executive_links = [
-            _nav_item("Overview", "/admin/executive", active=current_section == "executive", extra_class="top-link--secondary"),
-            _nav_item("Finance", "/admin/finances", active=current_section == "finance", extra_class="top-link--secondary"),
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(executive_links)}
-        </nav>
-        """
     return f"""
     <header class="topbar">
       <div class="topbar-shell">
@@ -217,8 +297,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
           <nav class="top-actions">
             {"".join(primary_links)}
-            {_nav_item("Log out", "/admin/logout", extra_class="logout")}
           </nav>
+          {_user_chip_html(user)}
         </div>
         {secondary_nav}
       </div>
