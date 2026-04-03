@@ -16,6 +16,11 @@ ACTION_STATE_ORDER = ("clarifying", "investigating", "ready_to_answer", "escalat
 LIFECYCLE_STATE_ORDER = ("new", "investigating", "responded", "escalated", "waiting_human", "resolved")
 
 
+DEFAULT_TITLE = "Fulfillment CS Review"
+ACTION_STATE_ORDER = ("clarifying", "investigating", "ready_to_answer", "escalated", "resolved")
+LIFECYCLE_STATE_ORDER = ("new", "investigating", "responded", "escalated", "waiting_human", "resolved")
+
+
 @dataclass(frozen=True)
 class FulfillmentReportEntry:
     slug: str

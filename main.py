@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import csv
 import io
 import json
@@ -14,7 +16,7 @@ from base64 import b64decode, b64encode
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Union
 
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -36,6 +38,17 @@ from sales_support_agent.services.admin_dashboard import (
     render_executive_page,
     render_login_page,
     render_sales_deck_page,
+)
+from sales_support_agent.services.fulfillment_dashboard import (
+    fulfillment_report_entries,
+    latest_fulfillment_report_entry,
+    load_fulfillment_report_artifact,
+    load_fulfillment_report_by_slug,
+    load_latest_fulfillment_report,
+    render_fulfillment_dashboard_page,
+    render_fulfillment_not_found_page,
+    render_fulfillment_report_detail_page,
+    render_fulfillment_reports_page,
 )
 from sales_support_agent.services.fulfillment_dashboard import (
     fulfillment_report_entries,
@@ -637,7 +650,7 @@ def dashboard_needs_auto_sync(
     dashboard: DashboardData,
     admin_settings: AdminDashboardSettings,
     *,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
 ) -> bool:
     max_age_minutes = max(admin_settings.admin_auto_sync_max_age_minutes, 0)
     if max_age_minutes == 0:
@@ -655,10 +668,10 @@ def dashboard_needs_auto_sync(
 
 
 def latest_sync_is_stale(
-    latest_sync_at: datetime | None,
+    latest_sync_at: Optional[datetime],
     admin_settings: AdminDashboardSettings,
     *,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
 ) -> bool:
     max_age_minutes = max(admin_settings.admin_auto_sync_max_age_minutes, 0)
     if max_age_minutes == 0:
@@ -752,7 +765,7 @@ def _post_sales_support_multipart(
     path: str,
     *,
     data_items: list[tuple[str, Any]],
-    files_payload: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+    files_payload: Optional[list[tuple[str, tuple[str, bytes, str]]]] = None,
 ) -> tuple[int, dict[str, Any]]:
     admin_settings = load_admin_dashboard_settings()
     if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
@@ -882,7 +895,7 @@ def should_run_auto_dashboard_sync(
     dashboard: DashboardData,
     admin_settings: AdminDashboardSettings,
     *,
-    max_age_minutes_override: int | None = None,
+    max_age_minutes_override: Optional[int] = None,
 ) -> bool:
     effective_settings = admin_settings
     if max_age_minutes_override is not None:
@@ -985,7 +998,7 @@ def normalize_domain(domain: str) -> str:
     )
 
 
-def parse_average_product_price_usd(store: dict[str, Any]) -> float | None:
+def parse_average_product_price_usd(store: dict[str, Any]) -> Optional[float]:
     for field_name in ("avg_price_usd", "average_product_price_usd", "avgppusd"):
         try:
             value = store.get(field_name)
@@ -1054,7 +1067,7 @@ def ensure_github_state_branch() -> None:
         create_response.raise_for_status()
 
 
-def load_github_state_file(path: str) -> tuple[str, str | None]:
+def load_github_state_file(path: str) -> tuple[str, Optional[str]]:
     ensure_github_state_branch()
     response = requests.get(
         f"https://api.github.com/repos/{GITHUB_STATE_REPO}/contents/{path}",
@@ -1109,7 +1122,7 @@ def current_utc_timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def parse_iso_datetime(value: str) -> datetime | None:
+def parse_iso_datetime(value: str) -> Optional[datetime]:
     normalized = (value or "").strip()
     if not normalized:
         return None
@@ -1816,7 +1829,7 @@ def derive_department(role_name: str) -> str:
     return "Leadership"
 
 
-def format_money_bucket(amount: float | None) -> str:
+def format_money_bucket(amount: Optional[float]) -> str:
     if amount is None:
         return ""
 
@@ -1841,14 +1854,14 @@ def format_money_bucket(amount: float | None) -> str:
     return f"${int(bucketed_amount):,}"
 
 
-def estimate_monthly_orders(revenue: float | None, average_product_price_usd: float | None) -> int | None:
+def estimate_monthly_orders(revenue: Optional[float], average_product_price_usd: Optional[float]) -> Optional[int]:
     if revenue is None or average_product_price_usd is None or average_product_price_usd <= 0:
         return None
 
     return max(int(round(revenue / average_product_price_usd)), 0)
 
 
-def format_orders_bucket(order_count: int | None) -> str:
+def format_orders_bucket(order_count: Optional[int]) -> str:
     if order_count is None:
         return ""
 
@@ -1959,7 +1972,7 @@ def _extract_country_code(value: Any) -> str:
     return normalized
 
 
-def _parse_int(value: Any) -> int | None:
+def _parse_int(value: Any) -> Optional[int]:
     if value is None or value == "":
         return None
     if isinstance(value, bool):
@@ -1975,7 +1988,7 @@ def _parse_int(value: Any) -> int | None:
         return None
 
 
-def _extract_revenue_ceiling(value: Any) -> int | None:
+def _extract_revenue_ceiling(value: Any) -> Optional[int]:
     if isinstance(value, (int, float)):
         return int(value)
     text = _extract_first_text(value).lower()
@@ -2233,7 +2246,7 @@ def fetch_apollo_org_page(page: int, settings: Settings) -> list[dict[str, Any]]
 def collect_domains(
     max_domains: int,
     settings: Settings,
-    processed_domains: set[str] | None = None,
+    processed_domains: Optional[set[str]] = None,
 ) -> StoreLeadsCollectionResult:
     start_page = load_apollo_org_cursor()
     max_pages_this_run = effective_max_apollo_org_pages(max_domains)
@@ -2517,7 +2530,7 @@ def search_apollo_contacts(
     settings: Settings,
     *,
     max_per_domain: int = MAX_CONTACTS_PER_DOMAIN,
-) -> tuple[list[dict[str, Any]], dict[str, int | str]]:
+) -> tuple[list[dict[str, Any]], dict[str, Union[int, str]]]:
     people, people_status = search_apollo_people(domain, settings)
     if people_status != "ok":
         logger.info(
@@ -2615,7 +2628,7 @@ def effective_max_apollo_org_pages(max_domains: int) -> int:
     return max(1, min(MAX_APOLLO_ORG_PAGES, max(APOLLO_MIN_ORG_PAGES_PER_RUN, target_pages)))
 
 
-def determine_offer(revenue: float | None) -> str:
+def determine_offer(revenue: Optional[float]) -> str:
     if revenue and revenue >= 150000:
         return "Fulfillment"
     return "Shipping Optimization"
@@ -2811,7 +2824,7 @@ def build_heyreach_headers(settings: Settings) -> dict[str, str]:
     }
 
 
-def normalize_external_identifier(value: str) -> int | str:
+def normalize_external_identifier(value: str) -> Union[int, str]:
     normalized = (value or "").strip()
     if normalized.isdigit():
         return int(normalized)
@@ -3483,7 +3496,7 @@ def enqueue_lead_build(payload: ICPBuildRequest, *, scheduler_source: str) -> st
     return run_id
 
 
-def fetch_lead_run_status(run_id: str) -> dict[str, Any] | None:
+def fetch_lead_run_status(run_id: str) -> Optional[dict[str, Any]]:
     return get_lead_run(run_id)
 
 
@@ -4121,8 +4134,8 @@ async def admin_generate_deck_proxy(
     request: Request,
     competitor_xray_csv: list[UploadFile] = File(...),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
-    cerebro_csv: UploadFile | None = File(default=None),
-    word_frequency_csv: UploadFile | None = File(default=None),
+    cerebro_csv: Optional[UploadFile] = File(default=None),
+    word_frequency_csv: Optional[UploadFile] = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
     creative_mockup_url: str = Form(default=""),

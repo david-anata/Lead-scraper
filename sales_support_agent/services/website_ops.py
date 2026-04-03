@@ -28,7 +28,14 @@ class WebsiteOpsActionResult:
 RUN_MODES = ("daily", "weekly", "monthly")
 RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
 MVP_MODE_ACTIVE = True
-MVP_ALLOWED_ACTION_TYPES = {"inject_faq_block", "expand_service_page_section"}
+MVP_ALLOWED_ACTION_TYPES = {
+    "inject_faq_block",
+    "expand_service_page_section",
+    "meta_update",
+    "meta_title_update",
+    "meta_description_update",
+    "canonical_update",
+}
 WORKFLOW_OWNED_FEEDBACK_FIELDS = {
     "status",
     "reviewer_name",
@@ -506,14 +513,12 @@ def save_feedback_record(settings: Settings, payload: dict[str, Any]) -> dict[st
 
 
 def _is_auto_executable_action(action_type: str, execution_eligibility: str = "") -> bool:
-    supported = {"inject_faq_block"}
+    supported = {"meta_update", "meta_title_update", "meta_description_update", "canonical_update"}
     normalized_action = action_type.strip()
     normalized_eligibility = execution_eligibility.strip()
     if normalized_action not in supported:
         return False
-    if normalized_eligibility == "auto_execute":
-        return True
-    return normalized_action == "replace_primary_heading" and not normalized_eligibility
+    return normalized_eligibility == "auto_execute"
 
 
 def _record_is_auto_executable(record: Mapping[str, Any]) -> bool:

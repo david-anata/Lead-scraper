@@ -13,6 +13,11 @@ class Base(DeclarativeBase):
     """Base SQLAlchemy declarative model."""
 
 
+# Module-level engine reference — set by create_session_factory so cashflow
+# services can import it directly without needing the request object.
+engine: Any = None
+
+
 def _register_models() -> None:
     """Import ORM models so Base.metadata is fully populated before schema work."""
 
@@ -20,6 +25,7 @@ def _register_models() -> None:
 
 
 def create_session_factory(database_url: str) -> sessionmaker[Session]:
+    global engine
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, future=True, connect_args=connect_args)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
@@ -190,3 +196,74 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_closed_idx ON lead_mirrors (is_closed)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_active_idx ON lead_mirrors (is_active)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_task_updated_at_idx ON lead_mirrors (task_updated_at)"))
+
+    # Cashflow tables — created by create_all on fresh DBs; for existing
+    # Postgres deployments we create them if absent.
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS cash_events (
+                    id                      SERIAL PRIMARY KEY,
+                    source                  VARCHAR(32)  NOT NULL DEFAULT 'manual',
+                    source_id               VARCHAR(255) NOT NULL DEFAULT '',
+                    event_type              VARCHAR(16)  NOT NULL DEFAULT 'outflow',
+                    category                VARCHAR(64)  NOT NULL DEFAULT 'uncategorized',
+                    subcategory             VARCHAR(64)  NOT NULL DEFAULT '',
+                    name                    VARCHAR(255) NOT NULL DEFAULT '',
+                    description             TEXT         NOT NULL DEFAULT '',
+                    vendor_or_customer      VARCHAR(255) NOT NULL DEFAULT '',
+                    amount_cents            INTEGER      NOT NULL DEFAULT 0,
+                    due_date                TIMESTAMPTZ  NULL,
+                    effective_date          TIMESTAMPTZ  NULL,
+                    expected_date           TIMESTAMPTZ  NULL,
+                    status                  VARCHAR(32)  NOT NULL DEFAULT 'planned',
+                    confidence              VARCHAR(16)  NOT NULL DEFAULT 'estimated',
+                    recurring_template_id   INTEGER      NULL,
+                    recurring_rule          VARCHAR(64)  NOT NULL DEFAULT '',
+                    matched_to_id           INTEGER      NULL,
+                    clickup_task_id         VARCHAR(64)  NOT NULL DEFAULT '',
+                    account_balance_cents   INTEGER      NULL,
+                    bank_transaction_type   VARCHAR(32)  NOT NULL DEFAULT '',
+                    bank_reference          VARCHAR(128) NOT NULL DEFAULT '',
+                    notes                   TEXT         NOT NULL DEFAULT '',
+                    created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS recurring_templates (
+                    id                    SERIAL PRIMARY KEY,
+                    name                  VARCHAR(255) NOT NULL DEFAULT '',
+                    vendor_or_customer    VARCHAR(255) NOT NULL DEFAULT '',
+                    event_type            VARCHAR(16)  NOT NULL DEFAULT 'outflow',
+                    category              VARCHAR(64)  NOT NULL DEFAULT 'uncategorized',
+                    amount_cents          INTEGER      NOT NULL DEFAULT 0,
+                    confidence            VARCHAR(16)  NOT NULL DEFAULT 'estimated',
+                    notes                 TEXT         NOT NULL DEFAULT '',
+                    frequency             VARCHAR(32)  NOT NULL DEFAULT 'monthly',
+                    next_due_date         TIMESTAMPTZ  NULL,
+                    day_of_month          INTEGER      NULL,
+                    is_active             BOOLEAN      NOT NULL DEFAULT TRUE,
+                    clickup_task_id       VARCHAR(64)  NOT NULL DEFAULT '',
+                    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        # Indexes for the most common cashflow queries
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_due_date ON cash_events (due_date)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_status ON cash_events (status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_event_type ON cash_events (event_type)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_source ON cash_events (source)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_due_date_status ON cash_events (due_date, status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_source_source_id ON cash_events (source, source_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_matched_to_id ON cash_events (matched_to_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_clickup_task_id ON cash_events (clickup_task_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_is_active ON recurring_templates (is_active)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_next_due_date ON recurring_templates (next_due_date)"))

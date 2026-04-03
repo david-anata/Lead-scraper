@@ -199,6 +199,17 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           {"".join(fulfillment_links)}
         </nav>
         """
+    if primary_active == "executive":
+        executive_links = [
+            _nav_item("Overview", "/admin/executive", active=current_section == "executive", extra_class="top-link--secondary"),
+            _nav_item("Finance", "/admin/finances", active=current_section == "finance", extra_class="top-link--secondary"),
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(executive_links)}
+        </nav>
+        """
     return f"""
     <header class="topbar">
       <div class="topbar-shell">

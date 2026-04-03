@@ -8,6 +8,7 @@ from threading import Lock
 
 from fastapi import FastAPI
 
+from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.api.router import router
 from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import create_session_factory, init_database
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     app.state.dashboard_sync_last_completed_at = None
     app.state.dashboard_sync_last_error = ""
     app.include_router(router)
+    app.include_router(cashflow_router)
     return app
 
 

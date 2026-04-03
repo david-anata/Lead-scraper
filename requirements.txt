@@ -6,3 +6,4 @@ SQLAlchemy>=2.0,<3.0
 psycopg2-binary
 google-auth
 python-multipart
+anthropic>=0.25.0
