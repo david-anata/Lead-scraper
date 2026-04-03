@@ -3,6 +3,7 @@ domain,last_attempted_at,result,cooldown_until
 3dpetsprosthetics.com,2026-04-02T05:03:45+00:00,no_usable_contacts,2026-06-01T05:03:45.002234+00:00
 3momsorganics.com,2026-03-17T05:07:13+00:00,no_usable_contacts,2026-05-16T05:07:13.988383+00:00
 4505meats.com,2026-03-16T13:51:15+00:00,no_usable_contacts,2026-05-15T13:51:15.335817+00:00
+92degrees.coffee,2026-04-03T13:40:57+00:00,accepted_contacts,
 abbeyglen.com,2026-03-31T05:02:55+00:00,no_usable_contacts,2026-05-30T05:02:55.353902+00:00
 abnativeplants.com,2026-03-15T04:21:36+00:00,no_usable_contacts,2026-05-14T04:21:36.094157+00:00
 academiafurniture.com,2026-03-26T05:02:20+00:00,accepted_contacts,
@@ -124,6 +125,7 @@ bestmasterfurnitures.com,2026-04-03T05:01:33+00:00,no_usable_contacts,2026-06-02
 better-notyounger.com,2026-03-15T04:22:50+00:00,no_usable_contacts,2026-05-14T04:22:50.593285+00:00
 beverageforum.com,2026-03-30T05:05:16+00:00,no_usable_contacts,2026-05-29T05:05:16.254138+00:00
 beverageinnovationgroup.com,2026-03-30T05:04:48+00:00,accepted_contacts,
+beverageranch.com,2026-04-03T13:40:47+00:00,accepted_contacts,
 biggmans.com,2026-03-18T13:58:38+00:00,no_usable_contacts,2026-05-17T13:58:38.697985+00:00
 bimiboo.com,2026-03-27T05:02:18+00:00,no_usable_contacts,2026-05-26T05:02:18.256352+00:00
 bioandme.co.uk,2026-03-19T13:47:18+00:00,accepted_contacts,
@@ -235,12 +237,14 @@ cmcoffee.com,2026-03-30T05:05:07+00:00,no_usable_contacts,2026-05-29T05:05:07.37
 coasttocoast.com,2026-03-26T05:02:27+00:00,accepted_contacts,
 cocoagecosmetics.com,2026-03-25T13:53:53+00:00,no_usable_contacts,2026-05-24T13:53:53.460857+00:00
 coderkids.com,2026-03-30T14:05:51+00:00,no_usable_contacts,2026-05-29T14:05:51.755585+00:00
+coffeecommune.com.au,2026-04-03T13:40:51+00:00,accepted_contacts,
 colakicks.com,2026-03-18T14:00:04+00:00,no_usable_contacts,2026-05-17T14:00:04.837859+00:00
 collaborativecoffeesource.com,2026-03-26T14:03:19+00:00,no_usable_contacts,2026-05-25T14:03:19.317507+00:00
 collinsclothingco.com,2026-03-25T05:02:10+00:00,no_usable_contacts,2026-05-24T05:02:10.577283+00:00
 comfortcustombedding.com,2026-03-26T05:02:35+00:00,no_usable_contacts,2026-05-25T05:02:35.293360+00:00
 commoditeas.com,2026-03-26T14:03:46+00:00,no_usable_contacts,2026-05-25T14:03:46.801958+00:00
 commonsenseof.com,2026-03-31T05:02:13+00:00,accepted_contacts,
+commonwealthjoe.com,2026-04-03T13:41:05+00:00,accepted_contacts,
 connectedapparel.com,2026-03-25T05:01:48+00:00,no_usable_contacts,2026-05-24T05:01:48.285006+00:00
 contourliving.com,2026-03-17T05:06:22+00:00,accepted_contacts,
 copelandfurniture.com,2026-03-27T13:47:51+00:00,accepted_contacts,
@@ -314,6 +318,7 @@ drinkooso.com,2026-03-26T14:03:34+00:00,no_usable_contacts,2026-05-25T14:03:34.6
 drinkparch.com,2026-03-18T14:00:44+00:00,accepted_contacts,
 drinkspindrift.com,2026-03-21T19:35:47+00:00,accepted_contacts,
 drinksupercoffee.com,2026-03-15T04:21:15+00:00,no_usable_contacts,2026-05-14T04:21:15.130190+00:00
+drurycoffee.com,2026-04-03T13:41:03+00:00,no_usable_contacts,2026-06-02T13:41:03.907509+00:00
 dtfdallas.com,2026-03-20T13:38:31+00:00,no_usable_contacts,2026-05-19T13:38:31.228100+00:00
 dudleyq.com,2026-03-30T14:06:17+00:00,accepted_contacts,
 dukeclothing.com,2026-04-02T14:00:10+00:00,no_usable_contacts,2026-06-01T14:00:10.115737+00:00
@@ -402,6 +407,7 @@ footpetals.com,2026-03-15T04:22:20+00:00,no_usable_contacts,2026-05-14T04:22:20.
 forstrangewomen.com,2026-03-16T13:59:04+00:00,no_usable_contacts,2026-05-15T13:59:04.386171+00:00
 fpsa.org,2026-03-26T14:03:50+00:00,accepted_contacts,
 framemytv.com,2026-03-15T04:22:02+00:00,no_usable_contacts,2026-05-14T04:22:02.890644+00:00
+fratellocoffee.com,2026-04-03T13:40:53+00:00,accepted_contacts,
 free2bfoods.com,2026-03-16T13:51:48+00:00,accepted_contacts,
 freelypet.com,2026-04-02T05:03:59+00:00,no_usable_contacts,2026-06-01T05:03:59.102672+00:00
 frenchtruckcoffee.com,2026-03-30T05:05:14+00:00,accepted_contacts,
@@ -500,6 +506,7 @@ hardjewelry.com,2026-03-23T13:56:14+00:00,no_usable_contacts,2026-05-22T13:56:14
 harmonybabynutrition.com,2026-03-24T13:55:09+00:00,accepted_contacts,
 havasunutrition.com,2026-03-19T05:09:59+00:00,no_usable_contacts,2026-05-18T05:09:59.617479+00:00
 havenskitchen.com,2026-04-03T05:01:58+00:00,no_usable_contacts,2026-06-02T05:01:58.713919+00:00
+hawaiicoffeecompany.com,2026-04-03T13:41:00+00:00,no_usable_contacts,2026-06-02T13:41:00.609459+00:00
 hawkfurniture.co.uk,2026-03-27T13:48:25+00:00,accepted_contacts,
 hbculegacyfashion.com,2026-04-03T05:01:19+00:00,no_usable_contacts,2026-06-02T05:01:19.385909+00:00
 healthextension.com,2026-03-18T13:59:00+00:00,accepted_contacts,
@@ -554,6 +561,7 @@ indestructiblemfg.com,2026-03-18T13:58:14+00:00,no_usable_contacts,2026-05-17T13
 inkeeze.com,2026-03-20T13:38:40+00:00,no_usable_contacts,2026-05-19T13:38:40.238187+00:00
 innobaby.com,2026-03-24T13:54:29+00:00,no_usable_contacts,2026-05-23T13:54:29.250117+00:00
 insideretail.com.au,2026-03-21T19:35:52+00:00,no_usable_contacts,2026-05-20T19:35:52.402333+00:00
+intelligence.coffee,2026-04-03T13:40:58+00:00,no_usable_contacts,2026-06-02T13:40:58.657718+00:00
 ironoaktx.com,2026-04-02T14:00:28+00:00,accepted_contacts,
 ironwoodgourmet.com,2026-03-17T05:07:06+00:00,no_usable_contacts,2026-05-16T05:07:06.853757+00:00
 isabellagracecosmetics.com,2026-03-25T13:53:58+00:00,no_usable_contacts,2026-05-24T13:53:58.532053+00:00
@@ -668,6 +676,7 @@ loaded.la,2026-03-25T05:01:59+00:00,no_usable_contacts,2026-05-24T05:01:59.55415
 lobsternativityscene.com,2026-03-19T05:10:16+00:00,no_usable_contacts,2026-05-18T05:10:16.095200+00:00
 lockjawcollar.com,2026-03-19T13:47:06+00:00,no_usable_contacts,2026-05-18T13:47:06.179789+00:00
 loftipop.com,2026-03-19T13:47:43+00:00,no_usable_contacts,2026-05-18T13:47:43.716033+00:00
+longbottomcoffee.com,2026-04-03T13:41:02+00:00,accepted_contacts,
 lostsheepcoffee.com,2026-03-30T05:05:24+00:00,no_usable_contacts,2026-05-29T05:05:24.398400+00:00
 lottieandlysh.co.uk,2026-03-18T05:05:15+00:00,no_usable_contacts,2026-05-17T05:05:15.381164+00:00
 loveandpebble.com,2026-03-19T05:10:47+00:00,accepted_contacts,
@@ -723,6 +732,7 @@ mercadoglobal.org,2026-03-18T13:59:06+00:00,accepted_contacts,
 mercatodibellina.com,2026-03-20T13:38:52+00:00,no_usable_contacts,2026-05-19T13:38:52.520776+00:00
 merewaykitchens.co.uk,2026-03-27T13:48:18+00:00,no_usable_contacts,2026-05-26T13:48:18.179808+00:00
 merlenormanniles.com,2026-04-01T14:11:08+00:00,no_usable_contacts,2026-05-31T14:11:08.807767+00:00
+metropoliscoffee.com,2026-04-03T13:40:49+00:00,accepted_contacts,
 mfcoffice.com,2026-03-26T05:02:48+00:00,accepted_contacts,
 mgnaturals.com,2026-03-18T05:05:06+00:00,no_usable_contacts,2026-05-17T05:05:06.990365+00:00
 michaelgravesdesign.com,2026-03-17T05:05:51+00:00,no_usable_contacts,2026-05-16T05:05:51.641098+00:00
@@ -810,6 +820,7 @@ okoliving.com,2026-03-16T13:58:23+00:00,no_usable_contacts,2026-05-15T13:58:23.0
 oldwhalingcompany.com,2026-03-15T04:22:04+00:00,no_usable_contacts,2026-05-14T04:22:04.488247+00:00
 oliverpluff.com,2026-03-20T13:39:26+00:00,accepted_contacts,
 olivesetal.co.uk,2026-03-19T13:47:45+00:00,no_usable_contacts,2026-05-18T13:47:45.254700+00:00
+omgbubbletea.com,2026-04-03T13:40:55+00:00,accepted_contacts,
 onekaelements.com,2026-03-19T05:09:46+00:00,no_usable_contacts,2026-05-18T05:09:46.894471+00:00
 oneoceanbeauty.com,2026-04-01T14:11:11+00:00,no_usable_contacts,2026-05-31T14:11:11.769605+00:00
 onlyaccessories.net,2026-04-02T14:00:33+00:00,no_usable_contacts,2026-06-01T14:00:33.668872+00:00
@@ -821,6 +832,7 @@ ototodesign.com,2026-03-15T04:22:09+00:00,no_usable_contacts,2026-05-14T04:22:09
 otterwax.com,2026-03-19T05:10:50+00:00,no_usable_contacts,2026-05-18T05:10:50.688673+00:00
 pacificabeauty.com,2026-03-30T14:05:14+00:00,accepted_contacts,
 pacificshaving.com,2026-03-16T13:51:00+00:00,no_usable_contacts,2026-05-15T13:51:00.416710+00:00
+pactcoffee.com,2026-04-03T13:41:07+00:00,accepted_contacts,
 paintedskydesigns.com,2026-03-19T13:47:57+00:00,accepted_contacts,
 paleopetgoods.com,2026-04-02T05:03:33+00:00,no_usable_contacts,2026-06-01T05:03:33.472027+00:00
 palestiniansoap.coop,2026-03-17T05:05:34+00:00,no_usable_contacts,2026-05-16T05:05:34.073991+00:00
@@ -937,6 +949,7 @@ ricelove.com,2026-03-19T05:09:50+00:00,no_usable_contacts,2026-05-18T05:09:50.39
 righteousfelon.com,2026-03-18T14:00:13+00:00,accepted_contacts,
 ripplejunction.com,2026-03-17T05:07:40+00:00,accepted_contacts,
 rivalbros.com,2026-04-01T05:01:03+00:00,accepted_contacts,
+roastcoffeeandtea.com,2026-04-03T13:40:45+00:00,no_usable_contacts,2026-06-02T13:40:45.993035+00:00
 robolink.com,2026-03-18T05:04:49+00:00,accepted_contacts,
 rocketcupcoffee.com,2026-03-30T05:04:53+00:00,no_usable_contacts,2026-05-29T05:04:53.658371+00:00
 rockymountaindog.ca,2026-03-18T05:05:08+00:00,no_usable_contacts,2026-05-17T05:05:08.946141+00:00
