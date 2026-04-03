@@ -256,7 +256,7 @@ def create_recurring_template(
                 ) VALUES (
                     :id, :name, :vendor_or_customer, :event_type, :category,
                     :amount_cents, :frequency, :next_due_date, :day_of_month,
-                    1, :now, :now
+                    TRUE, :now, :now
                 )
             """),
             {
@@ -292,7 +292,7 @@ def list_recurring_templates(*, active_only: bool = True) -> list[dict[str, Any]
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
 
-    where = "WHERE is_active = 1" if active_only else ""
+    where = "WHERE is_active = TRUE" if active_only else ""
     with engine.connect() as conn:
         rows = conn.execute(
             text(f"SELECT * FROM recurring_templates {where} ORDER BY next_due_date ASC"),  # noqa: S608

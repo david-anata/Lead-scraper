@@ -219,8 +219,10 @@ def _events_to_dtos(rows: list[dict[str, Any]]) -> list[EventDTO]:
                 due = date.fromisoformat(raw_date[:10])
             except ValueError:
                 continue
-        elif isinstance(raw_date, (date, datetime)):
-            due = raw_date if isinstance(raw_date, date) else raw_date.date()
+        elif isinstance(raw_date, datetime):
+            due = raw_date.date()
+        elif isinstance(raw_date, date):
+            due = raw_date
         else:
             continue
         out.append(
