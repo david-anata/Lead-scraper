@@ -45,8 +45,9 @@ router = APIRouter(prefix="/admin/finances", tags=["finance"])
 # ---------------------------------------------------------------------------
 
 def _check_auth(request: Request) -> bool:
+    from sales_support_agent.config import load_settings
     from sales_support_agent.services.admin_auth import validate_admin_session_token
-    settings = request.app.state.settings
+    settings = load_settings()
     token = request.cookies.get(settings.admin_cookie_name, "")
     return bool(token and validate_admin_session_token(settings, token))
 
