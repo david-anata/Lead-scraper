@@ -48,10 +48,12 @@ from sales_support_agent.services.admin_auth import (
     admin_login_enabled,
     create_admin_session_token,
     create_signed_state_token,
+    get_session_user,
     read_signed_state_token,
     validate_admin_session_token,
     verify_admin_password,
 )
+from sales_support_agent.services.admin_auth_google import google_oauth_enabled
 from sales_support_agent.services.admin_dashboard import (
     build_dashboard_data,
     build_executive_data,
@@ -158,8 +160,19 @@ def _require_admin_enabled(request: Request) -> None:
 
 def _is_admin_authenticated(request: Request) -> bool:
     settings = request.app.state.settings
-    token = request.cookies.get(settings.admin_cookie_name, "")
-    return validate_admin_session_token(settings, token)
+    for token in request.cookies.values():
+        if get_session_user(settings, token):
+            return True
+    return False
+
+
+def _get_request_user(request: Request) -> dict | None:
+    settings = request.app.state.settings
+    for token in request.cookies.values():
+        user = get_session_user(settings, token)
+        if user:
+            return user
+    return None
 
 
 def _admin_cookie_options(request: Request) -> dict[str, object]:
@@ -548,7 +561,8 @@ def admin_login_page(request: Request) -> HTMLResponse:
     _require_admin_enabled(request)
     if _is_admin_authenticated(request):
         return HTMLResponse("", status_code=302, headers={"Location": "/admin"})
-    return HTMLResponse(render_login_page())
+    settings = request.app.state.settings
+    return HTMLResponse(render_login_page(show_google_button=google_oauth_enabled(settings)))
 
 
 @router.post("/admin/login", response_class=HTMLResponse)
@@ -557,7 +571,8 @@ async def admin_login_submit(request: Request) -> Response:
     body = (await request.body()).decode("utf-8")
     password = parse_qs(body).get("password", [""])[0]
     if not verify_admin_password(request.app.state.settings, password):
-        return HTMLResponse(render_login_page(error_message="Incorrect password."), status_code=401)
+        settings = request.app.state.settings
+        return HTMLResponse(render_login_page(error_message="Incorrect password.", show_google_button=google_oauth_enabled(settings)), status_code=401)
 
     response = RedirectResponse(url="/admin", status_code=302)
     response.set_cookie(
@@ -590,7 +605,7 @@ def admin_dashboard(request: Request) -> Response:
         )
     if settings.dashboard_auto_sync_enabled:
         _start_dashboard_sync(request, trigger="admin_page_load", force=False)
-    return HTMLResponse(render_dashboard_page(dashboard))
+    return HTMLResponse(render_dashboard_page(dashboard, user=_get_request_user(request)))
 
 
 @router.get("/admin/executive", response_class=HTMLResponse)
@@ -606,7 +621,7 @@ def admin_executive_dashboard(request: Request) -> Response:
             session=session,
             clickup_client=ClickUpClient(settings),
     )
-    return HTMLResponse(render_executive_page(executive))
+    return HTMLResponse(render_executive_page(executive, user=_get_request_user(request)))
 
 
 @router.get("/admin/fulfillment-cs", response_class=HTMLResponse)

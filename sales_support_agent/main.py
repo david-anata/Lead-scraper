@@ -8,6 +8,7 @@ from threading import Lock
 
 from fastapi import FastAPI
 
+from sales_support_agent.api.auth_router import router as auth_router
 from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.api.router import router
 from sales_support_agent.config import load_settings
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
     app.state.dashboard_sync_last_completed_at = None
     app.state.dashboard_sync_last_error = ""
     app.include_router(router)
+    app.include_router(auth_router)
     app.include_router(cashflow_router)
     return app
 

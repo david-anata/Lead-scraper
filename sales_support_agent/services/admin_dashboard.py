@@ -1273,10 +1273,24 @@ def _sync_banner_primary_copy(
     return f"Synced {age_minutes}m ago"
 
 
-def render_login_page(*, error_message: str = "") -> str:
+def render_login_page(*, error_message: str = "", show_google_button: bool = False) -> str:
     error_html = (
         f'<div class="notice error">{html.escape(error_message)}</div>'
         if error_message
+        else ""
+    )
+    google_button_html = (
+        """<a href="/admin/auth/google" class="google-btn">
+          <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/>
+            <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.836.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/>
+            <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
+            <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+          </svg>
+          Sign in with Google
+        </a>
+        <div class="login-divider"><span>or</span></div>"""
+        if show_google_button
         else ""
     )
     return f"""<!doctype html>
@@ -1445,6 +1459,46 @@ def render_login_page(*, error_message: str = "") -> str:
         background: var(--alt-dark-blue);
         margin-top: 0;
       }}
+      .google-btn {{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        width: 100%;
+        padding: 16px 24px;
+        border-radius: 999px;
+        border: 2px solid rgba(43, 54, 68, 0.16);
+        background: var(--white);
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 16px;
+        color: var(--dark-blue);
+        text-decoration: none;
+        cursor: pointer;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+        margin-bottom: 22px;
+      }}
+      .google-btn:hover {{
+        border-color: rgba(43, 54, 68, 0.3);
+        box-shadow: 0 6px 18px rgba(43,54,68,0.10);
+      }}
+      .login-divider {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 22px;
+        color: rgba(43,54,68,0.36);
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }}
+      .login-divider::before, .login-divider::after {{
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: rgba(43,54,68,0.12);
+      }}
       @media (max-width: 1200px) {{
         .shell {{
           padding: 24px 20px 36px;
@@ -1485,6 +1539,7 @@ def render_login_page(*, error_message: str = "") -> str:
             <h2>Enter the dashboard.</h2>
             <p>Use the admin password to review priorities, sync fresh data, and run a lead pull.</p>
             {error_html}
+            {google_button_html}
             <form method="post" action="/admin/login">
               <label for="password">Password</label>
               <input id="password" name="password" type="password" autocomplete="current-password" required />
@@ -1500,7 +1555,7 @@ def render_login_page(*, error_message: str = "") -> str:
 </html>"""
 
 
-def render_dashboard_page(data: DashboardData) -> str:
+def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> str:
     def _card(title: str, value: str, note: str) -> str:
         return (
             '<section class="metric">'
@@ -3088,7 +3143,7 @@ def render_dashboard_page(data: DashboardData) -> str:
     </style>
   </head>
   <body>
-    {render_agent_nav("sales", sales_section="sales")}
+    {render_agent_nav("sales", sales_section="sales", user=user)}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">
@@ -4899,7 +4954,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
 </html>"""
 
 
-def render_executive_page(data: ExecutiveData) -> str:
+def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> str:
     payload_json = json.dumps(executive_data_to_dict(data)).replace("</", "<\\/")
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
     executive_error = str((data.latest_run_summary or {}).get("executive_error", "") or "").strip()
@@ -5377,7 +5432,7 @@ def render_executive_page(data: ExecutiveData) -> str:
     </style>
   </head>
   <body>
-    {render_agent_nav("executive")}
+    {render_agent_nav("executive", user=user)}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">

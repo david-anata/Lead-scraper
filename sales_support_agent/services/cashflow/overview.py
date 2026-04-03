@@ -171,7 +171,7 @@ def _page_shell(title: str, active_section: str, body: str, *, flash: str = "") 
     </style>
   </head>
   <body>
-    {render_agent_nav(active="executive", website_ops_section="finance")}
+    {render_agent_nav(active="finance")}
     <div class="finance-subnav-bar">
       <div class="finance-subnav-inner">
         {_finance_subnav(active_section)}
@@ -291,7 +291,7 @@ def render_cashflow_overview_page(*, flash: str = "") -> str:
     # Metric cards
     balance_class = "negative" if balance_cents < 0 else ""
     net_4w = sum(w.net_cents for w in weeks)
-    net_class = "negative" if net_4w < 0 else "positive"
+    net_class = "negative" if net_4w < 0 else ("positive" if net_4w > 0 else "")
 
     # Upcoming (next 14 days)
     soon = today + timedelta(days=14)
@@ -317,7 +317,7 @@ def render_cashflow_overview_page(*, flash: str = "") -> str:
       </div>
       <div class="metric-card">
         <div class="metric-label">Due in 14 Days</div>
-        <div class="metric-value amount-out">{_dollar(upcoming_total)}</div>
+        <div class="metric-value {"amount-out" if upcoming_total > 0 else ""}">{_dollar(upcoming_total)}</div>
         <div class="metric-note">{len(upcoming)} obligations</div>
       </div>
       <div class="metric-card">
