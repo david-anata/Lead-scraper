@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -120,7 +121,6 @@ def run_csv_upload(
             result.rows_skipped_duplicate += 1
             continue
 
-        import uuid
         event_id = str(uuid.uuid4())
         due_date = row.get("due_date")
         due_date_str = (

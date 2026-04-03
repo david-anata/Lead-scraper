@@ -204,7 +204,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
             text(
                 """
                 CREATE TABLE IF NOT EXISTS cash_events (
-                    id                      SERIAL PRIMARY KEY,
+                    id                      TEXT         PRIMARY KEY,
                     source                  VARCHAR(32)  NOT NULL DEFAULT 'manual',
                     source_id               VARCHAR(255) NOT NULL DEFAULT '',
                     event_type              VARCHAR(16)  NOT NULL DEFAULT 'outflow',
@@ -219,9 +219,9 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     expected_date           TIMESTAMPTZ  NULL,
                     status                  VARCHAR(32)  NOT NULL DEFAULT 'planned',
                     confidence              VARCHAR(16)  NOT NULL DEFAULT 'estimated',
-                    recurring_template_id   INTEGER      NULL,
+                    recurring_template_id   TEXT         NULL,
                     recurring_rule          VARCHAR(64)  NOT NULL DEFAULT '',
-                    matched_to_id           INTEGER      NULL,
+                    matched_to_id           TEXT         NULL,
                     clickup_task_id         VARCHAR(64)  NOT NULL DEFAULT '',
                     account_balance_cents   INTEGER      NULL,
                     bank_transaction_type   VARCHAR(32)  NOT NULL DEFAULT '',
@@ -237,7 +237,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
             text(
                 """
                 CREATE TABLE IF NOT EXISTS recurring_templates (
-                    id                    SERIAL PRIMARY KEY,
+                    id                    TEXT         PRIMARY KEY,
                     name                  VARCHAR(255) NOT NULL DEFAULT '',
                     vendor_or_customer    VARCHAR(255) NOT NULL DEFAULT '',
                     event_type            VARCHAR(16)  NOT NULL DEFAULT 'outflow',
@@ -253,6 +253,50 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+        )
+        # Migrate existing SERIAL (integer) id columns to TEXT for UUID support.
+        # This is a no-op when tables are freshly created with TEXT primary keys.
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'cash_events'
+                    AND column_name = 'id'
+                    AND data_type = 'integer'
+                  ) THEN
+                    ALTER TABLE cash_events DROP CONSTRAINT IF EXISTS cash_events_pkey CASCADE;
+                    ALTER TABLE cash_events ALTER COLUMN id DROP DEFAULT;
+                    ALTER TABLE cash_events ALTER COLUMN id TYPE TEXT USING id::TEXT;
+                    ALTER TABLE cash_events ADD PRIMARY KEY (id);
+                    ALTER TABLE cash_events ALTER COLUMN recurring_template_id TYPE TEXT USING recurring_template_id::TEXT;
+                    ALTER TABLE cash_events ALTER COLUMN matched_to_id TYPE TEXT USING matched_to_id::TEXT;
+                  END IF;
+                END $$;
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'recurring_templates'
+                    AND column_name = 'id'
+                    AND data_type = 'integer'
+                  ) THEN
+                    ALTER TABLE recurring_templates DROP CONSTRAINT IF EXISTS recurring_templates_pkey CASCADE;
+                    ALTER TABLE recurring_templates ALTER COLUMN id DROP DEFAULT;
+                    ALTER TABLE recurring_templates ALTER COLUMN id TYPE TEXT USING id::TEXT;
+                    ALTER TABLE recurring_templates ADD PRIMARY KEY (id);
+                  END IF;
+                END $$;
                 """
             )
         )
