@@ -107,10 +107,6 @@ from sales_support_agent.services.revenue_ops import (
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-
-from sales_support_agent.api.cashflow_router import router as cashflow_router  # noqa: E402
-app.include_router(cashflow_router)
-
 LEAD_RUN_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lead-build")
 ACTIVE_LEAD_RUNS: dict[str, Future[Any]] = {}
 ADMIN_SYNC_LOCK = threading.Lock()
@@ -574,12 +570,6 @@ def startup() -> None:
     app.state.website_ops_run_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="website-ops")
     app.state.website_ops_run_futures = {}
     validate_settings_on_startup(settings)
-    # Initialise the cashflow DB engine so cashflow services can import it
-    _db_url = os.getenv("SALES_AGENT_DB_URL", "").strip()
-    if _db_url:
-        from sales_support_agent.models.database import create_session_factory, init_database
-        _sf = create_session_factory(_db_url)
-        init_database(_sf)
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
         APP_VERSION,
