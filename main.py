@@ -576,9 +576,19 @@ def startup() -> None:
     validate_settings_on_startup(settings)
     _cf_db_url = os.getenv("SALES_AGENT_DB_URL", "").strip()
     if _cf_db_url:
-        from sales_support_agent.models.database import create_session_factory, init_database
+        from sales_support_agent.models.database import create_session_factory, init_database, init_cashflow_db
         _sf = create_session_factory(_cf_db_url)
         init_database(_sf)
+        init_cashflow_db(_cf_db_url)
+    # Load the full sales_support_agent Settings and store as agent_settings so
+    # cashflow routes (auth_deps, etc.) can access admin_cookie_name and
+    # admin_session_secret without relying on the root Settings dataclass.
+    try:
+        from sales_support_agent.config import load_settings as _load_agent_settings
+        app.state.agent_settings = _load_agent_settings()
+    except Exception as _e:
+        logger.warning("Could not load agent_settings: %s", _e)
+        app.state.agent_settings = None
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
         APP_VERSION,
