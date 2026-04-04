@@ -123,6 +123,25 @@ FINANCE_CSS = """
   .subnav-link:hover { background: #fff; border-color: rgba(43,54,68,.18); box-shadow: 0 4px 12px rgba(43,54,68,.08); transform: translateY(-1px); }
   .subnav-link.active { background: rgba(133,187,218,.22); border-color: rgba(133,187,218,.52); color: var(--anata-ink); box-shadow: inset 0 0 0 1px rgba(133,187,218,.16); }
   .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
+  .week-section { margin-bottom: 6px; }
+  .week-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; background: var(--anata-ink); color: #fff;
+    border-radius: 14px 14px 0 0; font-family: "Montserrat", sans-serif;
+    font-weight: 800; font-size: 13px; cursor: pointer;
+  }
+  .week-header-totals { display: flex; gap: 16px; font-size: 12px; font-weight: 700; }
+  .week-body { background: var(--panel); border: 1px solid var(--line); border-top: none; border-radius: 0 0 14px 14px; overflow: hidden; }
+  .week-body table { margin: 0; }
+  .week-body td, .week-body th { padding: 8px 12px; }
+  .week-net-row td { background: rgba(43,54,68,.04); font-weight: 700; font-family: "Montserrat", sans-serif; font-size: 13px; }
+  .priority-must_pay { background: rgba(185,28,28,.12); color: #b91c1c; }
+  .priority-should_pay { background: rgba(161,98,7,.12); color: #a16207; }
+  .priority-review { background: rgba(133,187,218,.18); color: var(--anata-sky-deep); }
+  .priority-can_hold { background: rgba(15,118,110,.10); color: var(--good); }
+  .clickup-link { font-size: 11px; color: var(--muted); text-decoration: none; }
+  .clickup-link:hover { color: var(--anata-sky-deep); }
+  .week-empty { padding: 12px 16px; color: var(--muted); font-size: 13px; font-style: italic; }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
   .form-row.single { grid-template-columns: 1fr; }
   .form-row.triple { grid-template-columns: 1fr 1fr 1fr; }
@@ -244,6 +263,113 @@ def _events_to_dtos(rows: list[dict[str, Any]]) -> list[EventDTO]:
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Weekly table helpers
+# ---------------------------------------------------------------------------
+
+def _parse_pay_priority(notes: str) -> str:
+    if notes and notes.startswith("priority:"):
+        return notes.split("|")[0].replace("priority:", "")
+    return "review"
+
+
+PRIORITY_BADGE = {
+    "must_pay": ("MUST PAY", "badge-critical"),
+    "should_pay": ("SHOULD PAY", "badge-warning"),
+    "review": ("REVIEW", "badge-info"),
+    "can_hold": ("CAN HOLD", "badge-ok"),
+}
+
+
+def _render_weekly_table(events: list, today) -> str:
+    """Build an 8-week rolling cashflow table."""
+    week_start = today - timedelta(days=today.weekday())
+
+    weeks_data = []
+    for w in range(8):
+        wstart = week_start + timedelta(weeks=w)
+        wend = wstart + timedelta(days=6)
+        week_events = [e for e in events if e.due_date and wstart <= e.due_date <= wend]
+        ap_items = [e for e in week_events if e.event_type == "outflow"]
+        ar_items = [e for e in week_events if e.event_type == "inflow"]
+        ap_total = sum(e.amount_cents for e in ap_items)
+        ar_total = sum(e.amount_cents for e in ar_items)
+        weeks_data.append({
+            "label": f"Week of {wstart.strftime('%b %-d')}",
+            "wstart": wstart,
+            "wend": wend,
+            "ap_items": ap_items,
+            "ar_items": ar_items,
+            "ap_total": ap_total,
+            "ar_total": ar_total,
+            "net": ar_total - ap_total,
+        })
+
+    html_parts = []
+    for wd in weeks_data:
+        net = wd["net"]
+        net_s = ("+$" if net >= 0 else "-$") + f"{abs(net)/100:,.0f}"
+        net_col = "#0f766e" if net >= 0 else "#b91c1c"
+
+        header = f"""
+        <div class="week-header">
+          <span>{html.escape(wd['label'])}</span>
+          <div class="week-header-totals">
+            <span style="color:#7dbaaa">AR {_dollar(wd['ar_total'])}</span>
+            <span style="color:#e89090">AP {_dollar(wd['ap_total'])}</span>
+            <span style="color:{net_col}">Net {net_s}</span>
+          </div>
+        </div>"""
+
+        # Build combined rows
+        rows_html = ""
+        all_items = [(e, "outflow") for e in wd["ap_items"]] + [(e, "inflow") for e in wd["ar_items"]]
+        all_items.sort(key=lambda x: (x[0].due_date or date.min, x[0].name))
+
+        if all_items:
+            for ev, etype in all_items:
+                priority = _parse_pay_priority(getattr(ev, "notes", "") or "")
+                badge_label, badge_cls = PRIORITY_BADGE.get(priority, ("REVIEW", "badge-info"))
+                amount_cls = "amount-out" if etype == "outflow" else "amount-in"
+                amount_s = _dollar(ev.amount_cents)
+                status_cls = f"status-{ev.status}"
+                clickup_id = getattr(ev, "id", "")
+                # Build ClickUp task link from ID if it's a clickup source
+                task_url = ""
+                if clickup_id.startswith("clickup-") and not "-20" in clickup_id[8:12]:
+                    raw_task_id = clickup_id.replace("clickup-", "").split("-")[0]
+                    task_url = f'<a href="https://app.clickup.com/t/{raw_task_id}" target="_blank" class="clickup-link">↗</a>'
+                rows_html += f"""
+                <tr class="priority-{priority}">
+                  <td><span class="badge {badge_cls}">{html.escape(badge_label)}</span></td>
+                  <td>{html.escape(ev.name)} {task_url}</td>
+                  <td class="{amount_cls}">{amount_s}</td>
+                  <td><span class="status-pill {status_cls}">{html.escape(ev.status)}</span></td>
+                </tr>"""
+            # Net row
+            rows_html += f"""
+            <tr class="week-net-row">
+              <td colspan="2" style="text-align:right">Week Net</td>
+              <td colspan="2" style="color:{net_col}">{net_s}</td>
+            </tr>"""
+        else:
+            rows_html = '<tr><td colspan="4" class="week-empty">No events this week</td></tr>'
+
+        body = f"""
+        <div class="week-body">
+          <table>
+            <thead><tr>
+              <th>Priority</th><th>Name</th><th>Amount</th><th>Status</th>
+            </tr></thead>
+            <tbody>{rows_html}</tbody>
+          </table>
+        </div>"""
+
+        html_parts.append(f'<div class="week-section">{header}{body}</div>')
+
+    return "\n".join(html_parts)
 
 
 # ---------------------------------------------------------------------------
@@ -397,29 +523,6 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
       </div>
     </div>"""
 
-    # Weekly mini-bars (4 weeks)
-    max_flow = max((max(w.inflow_cents, w.outflow_cents) for w in weeks), default=1) or 1
-    bars_html = ""
-    for w in weeks:
-        in_pct = min(100, int(w.inflow_cents / max_flow * 100))
-        out_pct = min(100, int(w.outflow_cents / max_flow * 100))
-        net_s = ("+$" if w.net_cents >= 0 else "-$") + f"{abs(w.net_cents)/100:,.0f}"
-        net_col = "amount-in" if w.net_cents >= 0 else "amount-out"
-        bars_html += f"""
-        <div class="week-bar-row">
-          <div class="week-bar-label">{html.escape(w.label)}</div>
-          <div style="flex:1">
-            <div class="week-bar-track" title="In: {_dollar(w.inflow_cents)}">
-              <div class="week-bar-fill-in" style="width:{in_pct}%"></div>
-            </div>
-            <div style="height:3px"></div>
-            <div class="week-bar-track" title="Out: {_dollar(w.outflow_cents)}">
-              <div class="week-bar-fill-out" style="width:{out_pct}%"></div>
-            </div>
-          </div>
-          <div class="week-net {net_col}">{net_s}</div>
-        </div>"""
-
     # Top 3 alerts
     alert_rows = ""
     for a in alerts[:3]:
@@ -439,6 +542,9 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
 
     ai_block = f'<div class="ai-summary">{html.escape(metrics.ai_text)}</div>' if metrics.ai_text else ""
 
+    # 8-week rolling cashflow table
+    weekly_table_html = _render_weekly_table(events, today)
+
     body = f"""
     <div>
       <p class="eyebrow" style="margin:0 0 10px;text-transform:uppercase;letter-spacing:.18em;font-size:12px;font-weight:800;color:var(--accent);font-family:'Montserrat',sans-serif;">Finance</p>
@@ -447,26 +553,27 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
       {ai_block}
     </div>
     {cards_html}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div class="card">
-        <h2>4-Week Cashflow</h2>
-        <div style="margin-top:14px">
-          {bars_html if bars_html else '<div class="empty-state">Upload a CSV to see forecast.</div>'}
-        </div>
-        <div class="action-row">
-          <a href="/admin/finances/forecast" class="btn btn-secondary btn-sm">Full Forecast →</a>
-        </div>
+    <div class="card">
+      <h2>Risk Alerts</h2>
+      <div style="margin-top:14px">{alerts_table}</div>
+      <div class="action-row">
+        <a href="/admin/finances/alerts" class="btn btn-secondary btn-sm">All Alerts →</a>
       </div>
-      <div class="card">
-        <h2>Risk Alerts</h2>
-        <div style="margin-top:14px">{alerts_table}</div>
-        <div class="action-row">
-          <a href="/admin/finances/alerts" class="btn btn-secondary btn-sm">All Alerts →</a>
-        </div>
+    </div>
+    <div class="card">
+      <h2>8-Week Cashflow</h2>
+      <div style="margin-top:14px">
+        {weekly_table_html if events else '<div class="empty-state">No events yet — sync from ClickUp or upload a CSV.</div>'}
+      </div>
+      <div class="action-row">
+        <a href="/admin/finances/forecast" class="btn btn-secondary btn-sm">Full Forecast →</a>
       </div>
     </div>
     <div class="action-row" style="margin-top:0">
-      <a href="/admin/finances/upload" class="btn btn-primary">Upload Bank CSV</a>
+      <form method="post" action="/admin/finances/sync-clickup" style="display:inline">
+        <button type="submit" class="btn btn-primary">Sync from ClickUp</button>
+      </form>
+      <a href="/admin/finances/upload" class="btn btn-secondary">Upload Bank CSV</a>
       <a href="/admin/finances/ap/new" class="btn btn-secondary">+ Add Payable</a>
       <a href="/admin/finances/ar/new" class="btn btn-secondary">+ Add Receivable</a>
       <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring Templates</a>

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -41,6 +43,7 @@ from sales_support_agent.services.cashflow.upload_page import (
     render_upload_result,
 )
 from sales_support_agent.services.auth_deps import has_finance_access
+from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 
 router = APIRouter(prefix="/admin/finances", tags=["finance"])
 
@@ -252,6 +255,24 @@ async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
     result_html = render_upload_result(result)
     flash = f"ok:{result.summary()}" if result.success else f"err:{'; '.join(result.errors[:2])}"
     return render_upload_page(result_html=result_html, flash=flash)
+
+
+# ---------------------------------------------------------------------------
+# ClickUp sync
+# ---------------------------------------------------------------------------
+
+@router.post("/sync-clickup", response_class=HTMLResponse)
+async def sync_clickup(request: Request):
+    if not has_finance_access(request):
+        return _redirect_login()
+    settings = getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+    try:
+        result = await asyncio.to_thread(sync_clickup_finance, settings)
+        flash = f"ok:Synced from ClickUp — {result['created']} added · {result['updated']} updated · {result['skipped']} skipped"
+    except Exception as exc:
+        flash = f"err:ClickUp sync failed: {exc}"
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
