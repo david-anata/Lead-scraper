@@ -7,7 +7,7 @@ import io
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from sales_support_agent.services.cashflow.matcher import auto_match_transactions
 from sales_support_agent.services.cashflow.normalizers import normalize_bank_csv_row
@@ -22,7 +22,7 @@ class UploadResult:
     rows_skipped_invalid: int = 0
     matches_made: int = 0
     errors: list[str] = field(default_factory=list)
-    latest_balance_cents: int | None = None
+    latest_balance_cents: Optional[int] = None
 
     @property
     def success(self) -> bool:
@@ -134,13 +134,13 @@ def run_csv_upload(
                 text("""
                     INSERT INTO cash_events (
                         id, source, source_id, event_type, category,
-                        name, vendor_or_customer, amount_cents,
+                        subcategory, name, vendor_or_customer, amount_cents,
                         due_date, status, confidence,
                         account_balance_cents,
                         created_at, updated_at
                     ) VALUES (
                         :id, 'csv', :source_id, :event_type, :category,
-                        :name, :vendor_or_customer, :amount_cents,
+                        :subcategory, :name, :vendor_or_customer, :amount_cents,
                         :due_date, 'posted', 'confirmed',
                         :account_balance_cents,
                         :now, :now
@@ -151,6 +151,7 @@ def run_csv_upload(
                     "source_id": source_id,
                     "event_type": row.get("event_type", "outflow"),
                     "category": row.get("category", "other"),
+                    "subcategory": row.get("subcategory", ""),
                     "name": row.get("name", ""),
                     "vendor_or_customer": row.get("vendor_or_customer", ""),
                     "amount_cents": row.get("amount_cents", 0),

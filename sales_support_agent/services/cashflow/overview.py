@@ -142,6 +142,10 @@ FINANCE_CSS = """
   .clickup-link { font-size: 11px; color: var(--muted); text-decoration: none; }
   .clickup-link:hover { color: var(--anata-sky-deep); }
   .week-empty { padding: 12px 16px; color: var(--muted); font-size: 13px; font-style: italic; }
+  .cat-group-header td { background: rgba(43,54,68,.03); padding: 8px 12px; border-top: 1px solid rgba(43,54,68,.06); font-size: 13px; }
+  .cat-group-header:first-child td { border-top: none; }
+  .cat-item-row td { padding: 6px 10px; border-bottom: none; }
+  .cat-item-row:last-of-type td { border-bottom: 1px solid rgba(43,54,68,.06); }
   .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
   .form-row.single { grid-template-columns: 1fr; }
   .form-row.triple { grid-template-columns: 1fr 1fr 1fr; }
@@ -269,22 +273,52 @@ def _events_to_dtos(rows: list[dict[str, Any]]) -> list[EventDTO]:
 # Weekly table helpers
 # ---------------------------------------------------------------------------
 
-def _parse_pay_priority(notes: str) -> str:
-    if notes and notes.startswith("priority:"):
-        return notes.split("|")[0].replace("priority:", "")
-    return "review"
+# Category display order and labels — mirrors ClickUp AP/AR list structure
+CATEGORY_ORDER: list[tuple[str, str, str]] = [
+    # (internal_key, display_label, event_type_filter)  "" = show both
+    ("revenue",      "Revenue",                "inflow"),
+    ("payroll",      "Payroll",                "outflow"),
+    ("rent",         "Rent",                   "outflow"),
+    ("debt",         "Debt / Loans",           "outflow"),
+    ("software",     "Software & SaaS",        "outflow"),
+    ("utilities",    "Utilities",              "outflow"),
+    ("insurance",    "Insurance",              "outflow"),
+    ("credit_card",  "Credit Card Payments",   "outflow"),
+    ("tax",          "Tax",                    "outflow"),
+    ("supplies",     "Supplies",               "outflow"),
+    ("equipment",    "Equipment",              "outflow"),
+    ("meals",        "Meals",                  "outflow"),
+    ("fees",         "Bank Fees",              "outflow"),
+    ("owner_draw",   "Owner Draw",             "outflow"),
+    ("transfer",     "Transfers",              ""),
+    ("uncategorized","Uncategorized",          ""),
+]
 
+_CAT_ORDER_INDEX: dict[str, int] = {cat: i for i, (cat, _, _) in enumerate(CATEGORY_ORDER)}
 
-PRIORITY_BADGE = {
-    "must_pay": ("MUST PAY", "badge-critical"),
-    "should_pay": ("SHOULD PAY", "badge-warning"),
-    "review": ("REVIEW", "badge-info"),
-    "can_hold": ("CAN HOLD", "badge-ok"),
+# Category icon mapping for visual variety
+_CAT_ICON: dict[str, str] = {
+    "revenue":      "💰",
+    "payroll":      "👥",
+    "rent":         "🏠",
+    "debt":         "🏦",
+    "software":     "💻",
+    "utilities":    "⚡",
+    "insurance":    "🛡️",
+    "credit_card":  "💳",
+    "tax":          "🧾",
+    "supplies":     "📦",
+    "equipment":    "🔧",
+    "meals":        "🍽️",
+    "fees":         "💸",
+    "owner_draw":   "👤",
+    "transfer":     "↔️",
+    "uncategorized":"📌",
 }
 
 
 def _render_weekly_table(events: list, today) -> str:
-    """Build an 8-week rolling cashflow table."""
+    """Build an 8-week rolling cashflow table grouped by category (mirrors ClickUp structure)."""
     week_start = today - timedelta(days=today.weekday())
 
     weeks_data = []
@@ -292,16 +326,13 @@ def _render_weekly_table(events: list, today) -> str:
         wstart = week_start + timedelta(weeks=w)
         wend = wstart + timedelta(days=6)
         week_events = [e for e in events if e.due_date and wstart <= e.due_date <= wend]
-        ap_items = [e for e in week_events if e.event_type == "outflow"]
-        ar_items = [e for e in week_events if e.event_type == "inflow"]
-        ap_total = sum(e.amount_cents for e in ap_items)
-        ar_total = sum(e.amount_cents for e in ar_items)
+        ap_total = sum(e.amount_cents for e in week_events if e.event_type == "outflow")
+        ar_total = sum(e.amount_cents for e in week_events if e.event_type == "inflow")
         weeks_data.append({
             "label": f"Week of {wstart.strftime('%b %-d')}",
             "wstart": wstart,
             "wend": wend,
-            "ap_items": ap_items,
-            "ar_items": ar_items,
+            "events": week_events,
             "ap_total": ap_total,
             "ar_total": ar_total,
             "net": ar_total - ap_total,
@@ -323,45 +354,87 @@ def _render_weekly_table(events: list, today) -> str:
           </div>
         </div>"""
 
-        # Build combined rows
-        rows_html = ""
-        all_items = [(e, "outflow") for e in wd["ap_items"]] + [(e, "inflow") for e in wd["ar_items"]]
-        all_items.sort(key=lambda x: (x[0].due_date or date.min, x[0].name))
+        week_events = wd["events"]
 
-        if all_items:
-            for ev, etype in all_items:
-                priority = _parse_pay_priority(getattr(ev, "notes", "") or "")
-                badge_label, badge_cls = PRIORITY_BADGE.get(priority, ("REVIEW", "badge-info"))
-                amount_cls = "amount-out" if etype == "outflow" else "amount-in"
-                amount_s = _dollar(ev.amount_cents)
-                status_cls = f"status-{ev.status}"
-                clickup_id = getattr(ev, "id", "")
-                # Build ClickUp task link from ID if it's a clickup source
-                task_url = ""
-                if clickup_id.startswith("clickup-") and not "-20" in clickup_id[8:12]:
-                    raw_task_id = clickup_id.replace("clickup-", "").split("-")[0]
-                    task_url = f'<a href="https://app.clickup.com/t/{raw_task_id}" target="_blank" class="clickup-link">↗</a>'
+        # Group events by category
+        by_category: dict[str, list] = {}
+        for ev in week_events:
+            cat = getattr(ev, "category", "uncategorized") or "uncategorized"
+            by_category.setdefault(cat, []).append(ev)
+
+        rows_html = ""
+        if by_category:
+            # Sort categories by our defined order
+            sorted_cats = sorted(
+                by_category.keys(),
+                key=lambda c: _CAT_ORDER_INDEX.get(c, 99),
+            )
+
+            for cat in sorted_cats:
+                cat_events = sorted(by_category[cat], key=lambda e: (e.due_date or date.min, e.name))
+                cat_total_in  = sum(e.amount_cents for e in cat_events if e.event_type == "inflow")
+                cat_total_out = sum(e.amount_cents for e in cat_events if e.event_type == "outflow")
+                cat_net = cat_total_in - cat_total_out
+
+                # Find display label
+                display_label = cat.replace("_", " ").title()
+                for key, label, _ in CATEGORY_ORDER:
+                    if key == cat:
+                        display_label = label
+                        break
+
+                icon = _CAT_ICON.get(cat, "📌")
+                subtotal_s = _dollar(cat_total_in if cat_total_in else cat_total_out)
+                subtotal_cls = "amount-in" if cat_total_in > 0 and cat_total_out == 0 else "amount-out"
+                count = len(cat_events)
+
+                # Category header row
                 rows_html += f"""
-                <tr class="priority-{priority}">
-                  <td><span class="badge {badge_cls}">{html.escape(badge_label)}</span></td>
-                  <td>{html.escape(ev.name)} {task_url}</td>
-                  <td class="{amount_cls}">{amount_s}</td>
-                  <td><span class="status-pill {status_cls}">{html.escape(ev.status)}</span></td>
+                <tr class="cat-group-header">
+                  <td colspan="3">
+                    <span style="font-size:14px;margin-right:6px">{icon}</span>
+                    <strong>{html.escape(display_label)}</strong>
+                    <span style="color:var(--muted);font-size:11px;margin-left:6px">{count} item{'s' if count != 1 else ''}</span>
+                  </td>
+                  <td class="{subtotal_cls}" style="font-weight:700">{subtotal_s}</td>
+                  <td></td>
                 </tr>"""
+
+                # Individual transaction rows
+                for ev in cat_events:
+                    amount_cls = "amount-out" if ev.event_type == "outflow" else "amount-in"
+                    amount_s = _dollar(ev.amount_cents)
+                    status_cls = f"status-{ev.status}"
+                    vendor = getattr(ev, "vendor_or_customer", "") or ""
+                    display_name = ev.name or vendor or "(unnamed)"
+                    due_str = ev.due_date.strftime("%-m/%-d") if ev.due_date else ""
+
+                    rows_html += f"""
+                    <tr class="cat-item-row">
+                      <td style="padding-left:28px;color:var(--muted);font-size:12px">{html.escape(due_str)}</td>
+                      <td style="padding-left:6px">
+                        <span style="font-size:13px">{html.escape(display_name)}</span>
+                        {f'<br><span style="color:var(--muted);font-size:11px">{html.escape(vendor)}</span>' if vendor and vendor != display_name else ''}
+                      </td>
+                      <td class="{amount_cls}" style="font-size:13px">{amount_s}</td>
+                      <td><span class="status-pill {status_cls}" style="font-size:10px">{html.escape(ev.status)}</span></td>
+                      <td></td>
+                    </tr>"""
+
             # Net row
             rows_html += f"""
             <tr class="week-net-row">
-              <td colspan="2" style="text-align:right">Week Net</td>
+              <td colspan="3" style="text-align:right">Week Net</td>
               <td colspan="2" style="color:{net_col}">{net_s}</td>
             </tr>"""
         else:
-            rows_html = '<tr><td colspan="4" class="week-empty">No events this week</td></tr>'
+            rows_html = '<tr><td colspan="5" class="week-empty">No transactions this week — upload a bank CSV to populate.</td></tr>'
 
         body = f"""
         <div class="week-body">
           <table>
             <thead><tr>
-              <th>Priority</th><th>Name</th><th>Amount</th><th>Status</th>
+              <th>Date</th><th>Description</th><th>Amount</th><th>Status</th><th></th>
             </tr></thead>
             <tbody>{rows_html}</tbody>
           </table>
@@ -563,17 +636,14 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
     <div class="card">
       <h2>8-Week Cashflow</h2>
       <div style="margin-top:14px">
-        {weekly_table_html if events else '<div class="empty-state">No events yet — sync from ClickUp or upload a CSV.</div>'}
+        {weekly_table_html if events else '<div class="empty-state">No transactions yet — upload a bank CSV to see your 8-week cashflow view.</div>'}
       </div>
       <div class="action-row">
         <a href="/admin/finances/forecast" class="btn btn-secondary btn-sm">Full Forecast →</a>
       </div>
     </div>
     <div class="action-row" style="margin-top:0">
-      <form method="post" action="/admin/finances/sync-clickup" style="display:inline">
-        <button type="submit" class="btn btn-primary">Sync from ClickUp</button>
-      </form>
-      <a href="/admin/finances/upload" class="btn btn-secondary">Upload Bank CSV</a>
+      <a href="/admin/finances/upload" class="btn btn-primary">Upload Bank CSV</a>
       <a href="/admin/finances/ap/new" class="btn btn-secondary">+ Add Payable</a>
       <a href="/admin/finances/ar/new" class="btn btn-secondary">+ Add Receivable</a>
       <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring Templates</a>
