@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -29,14 +30,14 @@ class LeadMirror(Base):
     email: Mapped[str] = mapped_column(String(255), default="")
     phone_number: Mapped[str] = mapped_column(String(128), default="")
     value: Mapped[str] = mapped_column(String(128), default="")
-    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    task_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_meaningful_touch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_outbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    task_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_meaningful_touch_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_outbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_inbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     communication_summary: Mapped[str] = mapped_column(Text, default="")
     last_meeting_outcome: Mapped[str] = mapped_column(Text, default="")
     recommended_next_action: Mapped[str] = mapped_column(Text, default="")
@@ -63,14 +64,14 @@ class Company(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
-    last_exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_exported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class Contact(Base):
     __tablename__ = "contacts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    company_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     email: Mapped[str] = mapped_column(String(255), default="", index=True)
     linkedin_url: Mapped[str] = mapped_column(String(1024), default="", index=True)
     apollo_person_id: Mapped[str] = mapped_column(String(128), default="", index=True)
@@ -91,7 +92,7 @@ class LeadRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     lead_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     company_id: Mapped[int] = mapped_column(Integer, index=True)
-    contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    contact_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(64), default="email", index=True)
     status: Mapped[str] = mapped_column(String(64), default="accepted", index=True)
     source_run_id: Mapped[str] = mapped_column(String(64), default="", index=True)
@@ -99,7 +100,7 @@ class LeadRecord(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
-    last_qualified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_qualified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class LeadRun(Base):
@@ -116,8 +117,8 @@ class LeadRun(Base):
     csv_content: Mapped[str] = mapped_column(Text, default="")
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class LeadRunItem(Base):
@@ -125,8 +126,8 @@ class LeadRunItem(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String(64), index=True)
-    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    company_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    contact_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     domain: Mapped[str] = mapped_column(String(255), default="", index=True)
     stage: Mapped[str] = mapped_column(String(64), default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
@@ -141,9 +142,9 @@ class CampaignEnrollment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     enrollment_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    lead_record_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    company_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    lead_record_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    company_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    contact_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(64), default="", index=True)
     campaign_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     campaign_name: Mapped[str] = mapped_column(String(255), default="")
@@ -171,8 +172,8 @@ class Cooldown(Base):
     scope: Mapped[str] = mapped_column(String(128), index=True)
     entity_key: Mapped[str] = mapped_column(String(255), index=True)
     result: Mapped[str] = mapped_column(String(64), default="")
-    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_attempted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -254,7 +255,7 @@ class AutomationRun(Base):
     status: Mapped[str] = mapped_column(String(32), default="running")
     trigger: Mapped[str] = mapped_column(String(64), default="manual")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -263,7 +264,7 @@ class AutomationAction(Base):
     __tablename__ = "automation_actions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     clickup_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     system: Mapped[str] = mapped_column(String(64), index=True)
     action_type: Mapped[str] = mapped_column(String(64), index=True)
@@ -279,7 +280,7 @@ class IntegrationLog(Base):
     __tablename__ = "integration_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     provider: Mapped[str] = mapped_column(String(64), index=True)
     operation: Mapped[str] = mapped_column(String(128), index=True)
     request_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -299,9 +300,9 @@ class CanvaConnection(Base):
     access_token_encrypted: Mapped[str] = mapped_column(Text, default="")
     refresh_token_encrypted: Mapped[str] = mapped_column(Text, default="")
     token_type: Mapped[str] = mapped_column(String(64), default="Bearer")
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -340,7 +341,7 @@ class CashEvent(Base):
 
     __tablename__ = "cash_events"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 
     # Origin
     source: Mapped[str] = mapped_column(String(32), default="manual", index=True)
@@ -360,26 +361,26 @@ class CashEvent(Base):
     amount_cents: Mapped[int] = mapped_column(Integer, default=0)
 
     # Dates
-    due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    effective_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    expected_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    effective_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expected_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Lifecycle
     status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
     confidence: Mapped[str] = mapped_column(String(16), default="estimated")  # "confirmed" | "estimated"
 
     # Recurring linkage
-    recurring_template_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    recurring_template_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     recurring_rule: Mapped[str] = mapped_column(String(64), default="")  # "weekly"|"biweekly"|"monthly"|"custom"
 
     # CSV ↔ planned obligation matching
-    matched_to_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    matched_to_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     # ClickUp transition
     clickup_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
 
     # Bank snapshot (from CSV rows)
-    account_balance_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    account_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     bank_transaction_type: Mapped[str] = mapped_column(String(32), default="")  # Card|Retail ACH|Check|POS
     bank_reference: Mapped[str] = mapped_column(String(128), default="")
 
@@ -408,7 +409,7 @@ class RecurringTemplate(Base):
 
     __tablename__ = "recurring_templates"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
 
     # What
     name: Mapped[str] = mapped_column(String(255), default="")
@@ -421,8 +422,8 @@ class RecurringTemplate(Base):
 
     # When
     frequency: Mapped[str] = mapped_column(String(32), default="monthly", index=True)
-    next_due_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    day_of_month: Mapped[int | None] = mapped_column(Integer, nullable=True)  # for monthly rules
+    next_due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    day_of_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # for monthly rules
 
     # Lifecycle
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
