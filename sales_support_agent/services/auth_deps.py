@@ -8,32 +8,40 @@ from sales_support_agent.services.admin_auth import get_session_user
 def _get_auth_settings(request: Request):
     """Return the settings object that has admin_cookie_name / admin_session_secret.
 
-    Root main.py stores a lean Settings (Apollo/Slack only) at app.state.settings
-    and the full sales_support_agent Settings at app.state.agent_settings.  Prefer
-    agent_settings; fall back to settings for legacy compatibility.
+    Priority:
+      1. app.state.agent_settings  — full sales_support_agent Settings (preferred)
+      2. app.state.admin_dashboard_settings — AdminDashboardSettings stored at startup
+      3. app.state.settings — lean root Settings (last resort, may lack admin fields)
     """
     agent = getattr(request.app.state, "agent_settings", None)
     if agent is not None and hasattr(agent, "admin_cookie_name"):
         return agent
+    admin_ds = getattr(request.app.state, "admin_dashboard_settings", None)
+    if admin_ds is not None and hasattr(admin_ds, "admin_cookie_name"):
+        return admin_ds
     return request.app.state.settings
 
 
 def get_session_user_from_request(request: Request) -> Optional[dict]:
     """Return the authenticated user dict or None. Tries all cookie values."""
-    settings = _get_auth_settings(request)
-    # Try named cookie first for efficiency, then fall back to all values
-    named = request.cookies.get(settings.admin_cookie_name, "")
-    if named:
-        user = get_session_user(settings, named)
-        if user:
-            return user
-    # Fallback: iterate all cookies (handles cookie-name mismatches)
-    for token in request.cookies.values():
-        if token == named:
-            continue
-        user = get_session_user(settings, token)
-        if user:
-            return user
+    try:
+        settings = _get_auth_settings(request)
+        # Try named cookie first for efficiency, then fall back to all values
+        named = request.cookies.get(settings.admin_cookie_name, "")
+        if named:
+            user = get_session_user(settings, named)
+            if user:
+                return user
+        # Fallback: iterate all cookies (handles cookie-name mismatches)
+        for token in request.cookies.values():
+            if token == named:
+                continue
+            user = get_session_user(settings, token)
+            if user:
+                return user
+    except AttributeError:
+        # Settings object missing admin_cookie_name — treat as unauthenticated
+        pass
     return None
 
 def is_authenticated(request: Request) -> bool:

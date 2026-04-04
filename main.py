@@ -580,6 +580,9 @@ def startup() -> None:
         _sf = create_session_factory(_cf_db_url)
         init_database(_sf)
         init_cashflow_db(_cf_db_url)
+    # Store AdminDashboardSettings so cashflow auth_deps can always find
+    # admin_cookie_name even when agent_settings fails to load.
+    app.state.admin_dashboard_settings = load_admin_dashboard_settings()
     # Load the full sales_support_agent Settings and store as agent_settings so
     # cashflow routes (auth_deps, etc.) can access admin_cookie_name and
     # admin_session_secret without relying on the root Settings dataclass.
