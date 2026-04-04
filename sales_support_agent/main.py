@@ -12,7 +12,7 @@ from sales_support_agent.api.auth_router import router as auth_router
 from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.api.router import router
 from sales_support_agent.config import load_settings
-from sales_support_agent.models.database import create_session_factory, init_database
+from sales_support_agent.models.database import create_session_factory, init_cashflow_db, init_database
 
 
 def create_app() -> FastAPI:
@@ -20,6 +20,7 @@ def create_app() -> FastAPI:
     settings = load_settings()
     session_factory = create_session_factory(settings.sales_agent_db_url)
     init_database(session_factory)
+    init_cashflow_db(settings.sales_agent_db_url)
 
     app = FastAPI(title="Sales Support Agent")
     app.state.settings = settings

@@ -6,7 +6,6 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy.orm import Session
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +67,6 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def create_obligation(
-    db: Session,
     *,
     name: str,
     event_type: str,  # "inflow" | "outflow"
@@ -383,7 +381,6 @@ def generate_upcoming_from_templates(
             event = get_obligation(existing[0])
         else:
             event = create_obligation(
-                db=None,  # type: ignore[arg-type]  # engine used directly
                 name=tmpl["name"],
                 event_type=tmpl["event_type"],
                 category=tmpl["category"],

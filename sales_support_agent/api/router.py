@@ -92,6 +92,7 @@ from sales_support_agent.services.website_ops import (
     save_feedback_record,
 )
 from sales_support_agent.config import is_active_pipeline_status, normalize_status_key
+from sales_support_agent.services.auth_deps import get_session_user_from_request, is_authenticated
 
 
 router = APIRouter()
@@ -159,20 +160,11 @@ def _require_admin_enabled(request: Request) -> None:
 
 
 def _is_admin_authenticated(request: Request) -> bool:
-    settings = request.app.state.settings
-    for token in request.cookies.values():
-        if get_session_user(settings, token):
-            return True
-    return False
+    return is_authenticated(request)
 
 
 def _get_request_user(request: Request) -> dict | None:
-    settings = request.app.state.settings
-    for token in request.cookies.values():
-        user = get_session_user(settings, token)
-        if user:
-            return user
-    return None
+    return get_session_user_from_request(request)
 
 
 def _admin_cookie_options(request: Request) -> dict[str, object]:

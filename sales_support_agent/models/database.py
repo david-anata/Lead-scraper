@@ -31,6 +31,14 @@ def create_session_factory(database_url: str) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
 
 
+def init_cashflow_db(db_url: str) -> None:
+    """Re-initialize the module-level engine from a specific DB URL.
+    Call this at app startup to ensure cashflow services use the same DB as the main app."""
+    global engine
+    connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
+    engine = create_engine(db_url, future=True, connect_args=connect_args)
+
+
 def init_database(session_factory: sessionmaker[Session]) -> None:
     engine = session_factory.kw.get("bind")
     if engine is None:
