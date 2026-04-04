@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -23,39 +23,39 @@ class DiscoveryRequest(BaseModel):
 
 
 class SyncRequest(BaseModel):
-    max_tasks: int | None = Field(default=None, ge=1, le=1000)
+    max_tasks: Optional[int] = Field(default=None, ge=1, le=1000)
     include_closed: bool = True
 
 
 class StaleLeadRunRequest(BaseModel):
     dry_run: bool = False
-    as_of_date: date | None = None
-    max_tasks: int | None = Field(default=None, ge=1, le=1000)
+    as_of_date: Optional[date] = None
+    max_tasks: Optional[int] = Field(default=None, ge=1, le=1000)
 
 
 class GmailSyncRequest(BaseModel):
     dry_run: bool = False
     query: str = ""
-    max_messages: int | None = Field(default=None, ge=1, le=250)
+    max_messages: Optional[int] = Field(default=None, ge=1, le=250)
 
 
 class DailyDigestRunRequest(BaseModel):
-    as_of_date: date | None = None
+    as_of_date: Optional[date] = None
     include_stale: bool = True
     include_mailbox: bool = True
-    max_items: int | None = Field(default=None, ge=1, le=250)
+    max_items: Optional[int] = Field(default=None, ge=1, le=250)
 
 
 class CommunicationEventRequest(BaseModel):
     task_id: str = Field(min_length=1)
     event_type: CommunicationEventType
     external_event_key: str = ""
-    occurred_at: datetime | None = None
+    occurred_at: Optional[datetime] = None
     summary: str = ""
     outcome: str = ""
     recommended_next_action: str = ""
     suggested_reply_draft: str = ""
-    next_follow_up_date: date | None = None
+    next_follow_up_date: Optional[date] = None
     suggested_status: str = ""
     source: str = "manual"
     metadata: dict[str, Any] = Field(default_factory=dict)
