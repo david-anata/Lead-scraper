@@ -32,7 +32,7 @@ from typing import Any
 @dataclass
 class EventDTO:
     """Lightweight snapshot of a CashEvent row for engine processing."""
-    id: int
+    id: str
     source: str                     # "manual" | "csv" | "clickup" | "recurring"
     event_type: str                 # "inflow" | "outflow"
     category: str
@@ -42,7 +42,7 @@ class EventDTO:
     due_date: date | None
     status: str                     # "planned" | "pending" | "overdue" | "paid" | "posted" | "matched"
     confidence: str                 # "confirmed" | "estimated"
-    matched_to_id: int | None = None
+    matched_to_id: str | None = None
     recurring_rule: str = ""
 
 
@@ -81,7 +81,7 @@ class RiskAlert:
 @dataclass
 class ScenarioAdjustment:
     """One override to apply in scenario modelling."""
-    event_id: int
+    event_id: str
     new_amount_cents: int | None = None   # None = keep original
     new_due_date: date | None = None      # None = keep original
     remove: bool = False                  # True = exclude from forecast
@@ -226,7 +226,7 @@ def flag_risks(
 
     # ── 3. Duplicate obligations ───────────────────────────────────────────
     outflows = [e for e in events if e.event_type == "outflow" and e.due_date is not None]
-    seen: set[int] = set()
+    seen: set[str] = set()
     for i, a in enumerate(outflows):
         if a.id in seen:
             continue
@@ -322,7 +322,7 @@ def apply_scenario(
     Returns:
         Modified copy of the event list with adjustments applied.
     """
-    adj_by_id: dict[int, ScenarioAdjustment] = {a.event_id: a for a in adjustments}
+    adj_by_id: dict[str, ScenarioAdjustment] = {a.event_id: a for a in adjustments}
     result: list[EventDTO] = []
     for event in events:
         adj = adj_by_id.get(event.id)

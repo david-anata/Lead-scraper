@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from sales_support_agent.services.admin_auth import (
     create_signed_state_token,
@@ -67,7 +67,7 @@ def google_login_start(request: Request) -> RedirectResponse:
 
 
 @router.get("/admin/auth/callback")
-def google_callback(request: Request, code: str = "", state: str = "", error: str = "") -> HTMLResponse | RedirectResponse:
+def google_callback(request: Request, code: str = "", state: str = "", error: str = "") -> Response:
     settings = request.app.state.settings
 
     if error:

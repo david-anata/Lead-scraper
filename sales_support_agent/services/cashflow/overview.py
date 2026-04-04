@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import os
+from dataclasses import dataclass as _dc
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -245,10 +247,83 @@ def _events_to_dtos(rows: list[dict[str, Any]]) -> list[EventDTO]:
 
 
 # ---------------------------------------------------------------------------
+# Finance overview metrics dataclass and compute function
+# ---------------------------------------------------------------------------
+
+@_dc
+class FinanceOverviewMetrics:
+    balance_cents: int
+    balance_class: str          # "negative" or ""
+    net_4w_cents: int
+    net_class: str              # "negative", "positive", or ""
+    upcoming_total_cents: int
+    upcoming_count: int
+    upcoming_class: str         # "amount-out" if > 0, else ""
+    overdue_count: int
+    overdue_total_cents: int
+    overdue_class: str          # "negative" if overdue > 0, else ""
+    critical_count: int
+    warning_count: int
+    alerts_class: str           # "negative" if critical > 0, else ""
+    weeks: list                 # list[WeekSummary]
+    ai_text: str
+
+
+def compute_finance_overview(
+    events: list,
+    alerts: list,
+    weeks: list,
+    balance_cents: int,
+    *,
+    today,
+    ai_text: str = "",
+) -> FinanceOverviewMetrics:
+    balance_class = "negative" if balance_cents < 0 else ""
+    net_4w = sum(w.net_cents for w in weeks)
+    net_class = "negative" if net_4w < 0 else ("positive" if net_4w > 0 else "")
+
+    soon = today + timedelta(days=14)
+    upcoming = [
+        e for e in events
+        if e.status in ("planned", "pending", "overdue")
+        and today <= e.due_date <= soon
+        and e.event_type == "outflow"
+    ]
+    upcoming_total = sum(e.amount_cents for e in upcoming)
+    upcoming_class = "amount-out" if upcoming_total > 0 else ""
+
+    overdue = [e for e in events if e.status == "overdue"]
+    overdue_total = sum(e.amount_cents for e in overdue)
+    overdue_class = "negative" if overdue else ""
+
+    critical_count = sum(1 for a in alerts if a.severity == "critical")
+    warning_count = sum(1 for a in alerts if a.severity == "warning")
+    alerts_class = "negative" if critical_count else ""
+
+    return FinanceOverviewMetrics(
+        balance_cents=balance_cents,
+        balance_class=balance_class,
+        net_4w_cents=net_4w,
+        net_class=net_class,
+        upcoming_total_cents=upcoming_total,
+        upcoming_count=len(upcoming),
+        upcoming_class=upcoming_class,
+        overdue_count=len(overdue),
+        overdue_total_cents=overdue_total,
+        overdue_class=overdue_class,
+        critical_count=critical_count,
+        warning_count=warning_count,
+        alerts_class=alerts_class,
+        weeks=weeks,
+        ai_text=ai_text,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Overview page
 # ---------------------------------------------------------------------------
 
-def render_cashflow_overview_page(*, flash: str = "") -> str:
+async def render_cashflow_overview_page(*, flash: str = "") -> str:
     # Load all non-cancelled events
     rows = list_obligations(limit=2000)
     events = _events_to_dtos(rows)
@@ -268,70 +343,56 @@ def render_cashflow_overview_page(*, flash: str = "") -> str:
     weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=4)
     alerts = flag_risks(weeks, events)
 
-    critical_count = sum(1 for a in alerts if a.severity == "critical")
-    warning_count = sum(1 for a in alerts if a.severity == "warning")
-
-    # Overdue obligations
     today = datetime.utcnow().date()
-    overdue = [
-        e for e in events
-        if e.status in ("planned", "pending")
-        and e.event_type == "outflow"
-        and e.due_date < today
-    ]
 
     # AI summary
     ai_text = ""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key and weeks:
         from sales_support_agent.services.cashflow.ai_summary import generate_cashflow_summary
-        result = generate_cashflow_summary(weeks, alerts, balance_cents, api_key=api_key)
+        result = await asyncio.to_thread(generate_cashflow_summary, weeks, alerts, balance_cents, api_key=api_key)
         ai_text = result.text
 
+    # Compute metrics using the extracted function
+    metrics = compute_finance_overview(
+        events,
+        alerts,
+        weeks,
+        balance_cents,
+        today=today,
+        ai_text=ai_text,
+    )
+
     # Metric cards
-    balance_class = "negative" if balance_cents < 0 else ""
-    net_4w = sum(w.net_cents for w in weeks)
-    net_class = "negative" if net_4w < 0 else ("positive" if net_4w > 0 else "")
-
-    # Upcoming (next 14 days)
-    soon = today + timedelta(days=14)
-    upcoming = [
-        e for e in events
-        if e.status in ("planned", "pending", "overdue")
-        and today <= e.due_date <= soon
-        and e.event_type == "outflow"
-    ]
-    upcoming_total = sum(e.amount_cents for e in upcoming)
-
     cards_html = f"""
     <div class="card-grid">
       <div class="metric-card">
         <div class="metric-label">Bank Balance</div>
-        <div class="metric-value {balance_class}">{_dollar(balance_cents)}</div>
+        <div class="metric-value {metrics.balance_class}">{_dollar(metrics.balance_cents)}</div>
         <div class="metric-note">From latest CSV upload</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">4-Week Net</div>
-        <div class="metric-value {net_class}">{_dollar(net_4w)}</div>
+        <div class="metric-value {metrics.net_class}">{_dollar(metrics.net_4w_cents)}</div>
         <div class="metric-note">Forecasted net cashflow</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Due in 14 Days</div>
-        <div class="metric-value {"amount-out" if upcoming_total > 0 else ""}">{_dollar(upcoming_total)}</div>
-        <div class="metric-note">{len(upcoming)} obligations</div>
+        <div class="metric-value {metrics.upcoming_class}">{_dollar(metrics.upcoming_total_cents)}</div>
+        <div class="metric-note">{metrics.upcoming_count} obligations</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Overdue AP</div>
-        <div class="metric-value {"negative" if overdue else ""}">{len(overdue)}</div>
-        <div class="metric-note">{_dollar(sum(e.amount_cents for e in overdue))} outstanding</div>
+        <div class="metric-value {metrics.overdue_class}">{metrics.overdue_count}</div>
+        <div class="metric-note">{_dollar(metrics.overdue_total_cents)} outstanding</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Risk Alerts</div>
-        <div class="metric-value {"negative" if critical_count else ""}">
-          {critical_count + warning_count}
+        <div class="metric-value {metrics.alerts_class}">
+          {metrics.critical_count + metrics.warning_count}
         </div>
         <div class="metric-note">
-          {critical_count} critical · {warning_count} warnings
+          {metrics.critical_count} critical · {metrics.warning_count} warnings
         </div>
       </div>
     </div>"""
@@ -376,7 +437,7 @@ def render_cashflow_overview_page(*, flash: str = "") -> str:
       <tbody>{alert_rows if alert_rows else '<tr><td colspan="3" class="empty-state">No active alerts</td></tr>'}</tbody>
     </table>""" if alerts else '<div class="empty-state">No risk alerts. Looking good.</div>'
 
-    ai_block = f'<div class="ai-summary">{html.escape(ai_text)}</div>' if ai_text else ""
+    ai_block = f'<div class="ai-summary">{html.escape(metrics.ai_text)}</div>' if metrics.ai_text else ""
 
     body = f"""
     <div>

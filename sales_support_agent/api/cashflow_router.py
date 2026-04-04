@@ -20,8 +20,12 @@ from sales_support_agent.services.cashflow.ar import (
 from sales_support_agent.services.cashflow.forecast import render_weekly_forecast_page
 from sales_support_agent.services.cashflow.obligations import (
     create_obligation,
+    create_recurring_template,
     delete_obligation,
+    delete_recurring_template,
+    generate_upcoming_from_templates,
     update_obligation,
+    update_recurring_template,
 )
 from sales_support_agent.services.cashflow.overview import render_cashflow_overview_page
 from sales_support_agent.services.cashflow.recurring import (
@@ -36,6 +40,7 @@ from sales_support_agent.services.cashflow.upload_page import (
     render_upload_page,
     render_upload_result,
 )
+from sales_support_agent.services.auth_deps import has_finance_access
 
 router = APIRouter(prefix="/admin/finances", tags=["finance"])
 
@@ -43,27 +48,6 @@ router = APIRouter(prefix="/admin/finances", tags=["finance"])
 # ---------------------------------------------------------------------------
 # Auth guard helper
 # ---------------------------------------------------------------------------
-
-def _get_session_user(request: Request) -> dict | None:
-    from sales_support_agent.services.admin_auth import get_session_user
-    settings = request.app.state.settings
-    for token in request.cookies.values():
-        user = get_session_user(settings, token)
-        if user:
-            return user
-    return None
-
-
-def _check_auth(request: Request) -> bool:
-    return _get_session_user(request) is not None
-
-
-def _check_finance_auth(request: Request) -> bool:
-    user = _get_session_user(request)
-    if not user:
-        return False
-    return user.get("role", "") in ("admin", "finance")
-
 
 def _redirect_login() -> RedirectResponse:
     return RedirectResponse("/admin/login", status_code=303)
@@ -76,9 +60,9 @@ def _redirect_login() -> RedirectResponse:
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def finance_overview(request: Request, flash: str = ""):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
-    return render_cashflow_overview_page(flash=flash)
+    return await render_cashflow_overview_page(flash=flash)
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +71,7 @@ async def finance_overview(request: Request, flash: str = ""):
 
 @router.get("/forecast", response_class=HTMLResponse)
 async def finance_forecast(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_weekly_forecast_page()
 
@@ -98,26 +82,26 @@ async def finance_forecast(request: Request):
 
 @router.get("/ap", response_class=HTMLResponse)
 async def ap_list(request: Request, flash: str = ""):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_upcoming_ap_page(flash=flash)
 
 
 @router.get("/ap/new", response_class=HTMLResponse)
 async def ap_new_form(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_ap_new_page()
 
 
 @router.post("/ap/new", response_class=HTMLResponse)
 async def ap_new_submit(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
     try:
-        create_obligation(db=None, event_type="outflow", **kwargs)  # type: ignore[arg-type]
+        create_obligation(event_type="outflow", **kwargs)
         return RedirectResponse("/admin/finances/ap?flash=ok:Payable+added", status_code=303)
     except Exception as exc:
         return render_ap_new_page(flash=f"err:{exc}")
@@ -125,14 +109,14 @@ async def ap_new_submit(request: Request):
 
 @router.get("/ap/{event_id}/edit", response_class=HTMLResponse)
 async def ap_edit_form(request: Request, event_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_ap_edit_page(event_id)
 
 
 @router.post("/ap/{event_id}/edit", response_class=HTMLResponse)
 async def ap_edit_submit(request: Request, event_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
@@ -145,7 +129,7 @@ async def ap_edit_submit(request: Request, event_id: str):
 
 @router.post("/ap/{event_id}/delete")
 async def ap_delete(request: Request, event_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     delete_obligation(event_id)
     return RedirectResponse("/admin/finances/ap?flash=ok:Deleted", status_code=303)
@@ -157,26 +141,26 @@ async def ap_delete(request: Request, event_id: str):
 
 @router.get("/ar", response_class=HTMLResponse)
 async def ar_list(request: Request, flash: str = ""):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_expected_ar_page(flash=flash)
 
 
 @router.get("/ar/new", response_class=HTMLResponse)
 async def ar_new_form(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_ar_new_page()
 
 
 @router.post("/ar/new", response_class=HTMLResponse)
 async def ar_new_submit(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
     try:
-        create_obligation(db=None, event_type="inflow", **kwargs)  # type: ignore[arg-type]
+        create_obligation(event_type="inflow", **kwargs)
         return RedirectResponse("/admin/finances/ar?flash=ok:Receivable+added", status_code=303)
     except Exception as exc:
         return render_ar_new_page(flash=f"err:{exc}")
@@ -184,14 +168,14 @@ async def ar_new_submit(request: Request):
 
 @router.get("/ar/{event_id}/edit", response_class=HTMLResponse)
 async def ar_edit_form(request: Request, event_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_ar_edit_page(event_id)
 
 
 @router.post("/ar/{event_id}/edit", response_class=HTMLResponse)
 async def ar_edit_submit(request: Request, event_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
@@ -204,7 +188,7 @@ async def ar_edit_submit(request: Request, event_id: str):
 
 @router.post("/ar/{event_id}/delete")
 async def ar_delete(request: Request, event_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     delete_obligation(event_id)
     return RedirectResponse("/admin/finances/ar?flash=ok:Deleted", status_code=303)
@@ -216,7 +200,7 @@ async def ar_delete(request: Request, event_id: str):
 
 @router.get("/alerts", response_class=HTMLResponse)
 async def finance_alerts(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_risk_alerts_page()
 
@@ -227,14 +211,14 @@ async def finance_alerts(request: Request):
 
 @router.get("/scenario", response_class=HTMLResponse)
 async def scenario_get(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_scenario_page()
 
 
 @router.post("/scenario", response_class=HTMLResponse)
 async def scenario_post(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     adj = {
@@ -252,14 +236,14 @@ async def scenario_post(request: Request):
 
 @router.get("/upload", response_class=HTMLResponse)
 async def upload_form(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_upload_page()
 
 
 @router.post("/upload", response_class=HTMLResponse)
 async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     merge_mode = str(form.get("merge_mode", "append"))
@@ -276,25 +260,24 @@ async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
 
 @router.get("/recurring", response_class=HTMLResponse)
 async def recurring_list(request: Request, flash: str = ""):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_recurring_page(flash=flash)
 
 
 @router.get("/recurring/new", response_class=HTMLResponse)
 async def recurring_new_form(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_recurring_new_page()
 
 
 @router.post("/recurring/new", response_class=HTMLResponse)
 async def recurring_new_submit(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_template_form(form)
-    from sales_support_agent.services.cashflow.obligations import create_recurring_template
     try:
         create_recurring_template(**kwargs)
         return RedirectResponse("/admin/finances/recurring?flash=ok:Template+created", status_code=303)
@@ -304,18 +287,17 @@ async def recurring_new_submit(request: Request):
 
 @router.get("/recurring/{template_id}/edit", response_class=HTMLResponse)
 async def recurring_edit_form(request: Request, template_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     return render_recurring_edit_page(template_id)
 
 
 @router.post("/recurring/{template_id}/edit", response_class=HTMLResponse)
 async def recurring_edit_submit(request: Request, template_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_template_form(form)
-    from sales_support_agent.services.cashflow.obligations import update_recurring_template
     try:
         update_recurring_template(template_id, **kwargs)
         return RedirectResponse("/admin/finances/recurring?flash=ok:Template+updated", status_code=303)
@@ -325,18 +307,16 @@ async def recurring_edit_submit(request: Request, template_id: str):
 
 @router.post("/recurring/{template_id}/delete")
 async def recurring_delete(request: Request, template_id: str):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
-    from sales_support_agent.services.cashflow.obligations import delete_recurring_template
     delete_recurring_template(template_id)
     return RedirectResponse("/admin/finances/recurring?flash=ok:Deleted", status_code=303)
 
 
 @router.post("/recurring/generate", response_class=HTMLResponse)
 async def recurring_generate(request: Request):
-    if not _check_finance_auth(request):
+    if not has_finance_access(request):
         return _redirect_login()
-    from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
     created = generate_upcoming_from_templates(horizon_days=90)
     return RedirectResponse(
         f"/admin/finances/recurring?flash=ok:{len(created)}+obligations+generated",
