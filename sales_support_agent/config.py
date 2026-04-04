@@ -194,6 +194,34 @@ def _parse_json_object(value: str) -> dict[str, str]:
     return {str(key): str(val) for key, val in parsed.items()}
 
 
+def _parse_json_object_lenient(value: str, *, env_var: str = "") -> dict[str, str]:
+    """Like _parse_json_object but logs a warning and returns {} on parse error.
+
+    Used for non-critical config fields (e.g. ADMIN_ROLE_MAP) so a malformed
+    value doesn't crash the entire app at startup.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            import sys
+            print(
+                f"WARNING: {env_var or 'JSON env var'} must be a JSON object; got {type(parsed).__name__}. Defaulting to {{}}.",
+                file=sys.stderr,
+            )
+            return {}
+        return {str(key): str(val) for key, val in parsed.items()}
+    except json.JSONDecodeError as exc:
+        import sys
+        print(
+            f"WARNING: {env_var or 'JSON env var'} contains invalid JSON ({exc}). Defaulting to {{}}.",
+            file=sys.stderr,
+        )
+        return {}
+
+
 def _parse_csv_tuple(value: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     raw = (value or "").strip()
     if not raw:
@@ -531,7 +559,7 @@ def load_settings() -> Settings:
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
         google_oauth_allowed_domain=(os.getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN", "anatainc.com").strip() or "anatainc.com"),
-        admin_role_map=_parse_json_object(os.getenv("ADMIN_ROLE_MAP", "{}")),
+        admin_role_map=_parse_json_object_lenient(os.getenv("ADMIN_ROLE_MAP", "{}"), env_var="ADMIN_ROLE_MAP"),
         admin_default_role=(os.getenv("ADMIN_DEFAULT_ROLE", "ops").strip() or "ops"),
         active_statuses=tuple(
             normalize_status_key(status)
