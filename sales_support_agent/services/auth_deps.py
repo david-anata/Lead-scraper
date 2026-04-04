@@ -1,9 +1,10 @@
 """Shared auth helpers for FastAPI request handlers."""
 from __future__ import annotations
+from typing import Optional
 from fastapi import Request
 from sales_support_agent.services.admin_auth import get_session_user
 
-def get_session_user_from_request(request: Request) -> dict | None:
+def get_session_user_from_request(request: Request) -> Optional[dict]:
     """Return the authenticated user dict or None. Tries all cookie values."""
     settings = request.app.state.settings
     # Try named cookie first for efficiency, then fall back to all values
