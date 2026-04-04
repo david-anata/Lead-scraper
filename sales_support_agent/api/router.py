@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 import hashlib
+from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
@@ -114,13 +115,13 @@ def _parse_competitor_inputs(value: str) -> list[str]:
     return items
 
 
-def _enforce_api_key(request: Request, internal_api_key: str | None) -> None:
+def _enforce_api_key(request: Request, internal_api_key: Optional[str]) -> None:
     configured = request.app.state.settings.internal_api_key
     if configured and internal_api_key != configured:
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
 
 
-def _enforce_api_key_from_header_or_query(request: Request, internal_api_key: str | None) -> None:
+def _enforce_api_key_from_header_or_query(request: Request, internal_api_key: Optional[str]) -> None:
     provided = internal_api_key or request.query_params.get("token") or ""
     _enforce_api_key(request, provided)
 
@@ -134,7 +135,7 @@ def _validate_runtime(request: Request) -> None:
         )
 
 
-def _lead_builder_status(settings: object | None = None) -> dict[str, object]:
+def _lead_builder_status(settings: Optional[object] = None) -> dict[str, object]:
     try:
         lead_settings = load_lead_builder_settings()
         missing = get_missing_lead_builder_settings(lead_settings)
@@ -163,7 +164,7 @@ def _is_admin_authenticated(request: Request) -> bool:
     return is_authenticated(request)
 
 
-def _get_request_user(request: Request) -> dict | None:
+def _get_request_user(request: Request) -> Optional[dict]:
     return get_session_user_from_request(request)
 
 
@@ -183,7 +184,7 @@ def _canva_oauth_cookie_name(request: Request) -> str:
     return f"{request.app.state.settings.admin_cookie_name}_canva_oauth"
 
 
-def _normalize_utc(dt: datetime | None) -> datetime | None:
+def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -191,13 +192,13 @@ def _normalize_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _latest_clickup_sync_at(request: Request) -> datetime | None:
+def _latest_clickup_sync_at(request: Request) -> Optional[datetime]:
     with session_scope(request.app.state.session_factory) as session:
         latest_sync = session.execute(select(func.max(LeadMirror.last_sync_at))).scalar_one_or_none()
     return _normalize_utc(latest_sync)
 
 
-def _dashboard_sync_is_stale(request: Request, latest_sync_at: datetime | None) -> bool:
+def _dashboard_sync_is_stale(request: Request, latest_sync_at: Optional[datetime]) -> bool:
     if latest_sync_at is None:
         return True
     max_age = max(1, request.app.state.settings.dashboard_auto_sync_max_age_minutes)
@@ -311,7 +312,7 @@ def _queue_remote_lead_build(request: Request, payload: dict[str, object]) -> di
     }
 
 
-def _fetch_remote_lead_run_status(request: Request, run_id: str) -> dict[str, object] | None:
+def _fetch_remote_lead_run_status(request: Request, run_id: str) -> Optional[dict[str, object]]:
     lead_build_url = _remote_lead_builder_url(request)
     if not lead_build_url:
         return None
@@ -323,7 +324,7 @@ def _fetch_remote_lead_run_status(request: Request, run_id: str) -> dict[str, ob
     return dict(payload.get("details") or {})
 
 
-def _download_remote_lead_run(request: Request, run_id: str) -> Response | None:
+def _download_remote_lead_run(request: Request, run_id: str) -> Optional[Response]:
     lead_build_url = _remote_lead_builder_url(request)
     if not lead_build_url:
         return None
@@ -767,7 +768,7 @@ def admin_website_ops_feedback_detail(request: Request, feedback_id: str) -> Res
 @router.get("/api/admin/dashboard-data", response_model=ApiMessage)
 def admin_dashboard_data(
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     settings = request.app.state.settings
@@ -877,7 +878,7 @@ def admin_website_ops_feedback_review(
 @router.get("/api/admin/executive-data", response_model=ApiMessage)
 def admin_executive_data(
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     settings = request.app.state.settings
@@ -1051,7 +1052,7 @@ def admin_sync_dashboard_status(request: Request) -> JSONResponse:
 @router.post("/api/admin/gmail-drafts", response_model=None)
 async def admin_create_gmail_drafts(
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
     contacts_csv: UploadFile = File(...),
     sales_objective: str = Form(default=""),
     subject_template: str = Form(default=""),
@@ -1194,7 +1195,7 @@ def admin_canva_connect(request: Request) -> Response:
 @router.get("/api/admin/canva/connect", response_model=None)
 def internal_canva_connect(
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> Response:
     _enforce_api_key_from_header_or_query(request, x_internal_api_key)
 
@@ -1372,8 +1373,8 @@ async def admin_generate_deck(
     request: Request,
     competitor_xray_csv: list[UploadFile] = File(...),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
-    cerebro_csv: UploadFile | None = File(default=None),
-    word_frequency_csv: UploadFile | None = File(default=None),
+    cerebro_csv: Optional[UploadFile] = File(default=None),
+    word_frequency_csv: Optional[UploadFile] = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
     creative_mockup_url: str = Form(default=""),
@@ -1435,11 +1436,11 @@ async def admin_generate_deck(
 @router.post("/api/admin/generate-deck", response_model=ApiMessage)
 async def internal_admin_generate_deck(
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
     competitor_xray_csv: list[UploadFile] = File(...),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
-    cerebro_csv: UploadFile | None = File(default=None),
-    word_frequency_csv: UploadFile | None = File(default=None),
+    cerebro_csv: Optional[UploadFile] = File(default=None),
+    word_frequency_csv: Optional[UploadFile] = File(default=None),
     target_product_input: str = Form(default=""),
     channels: list[str] = Form(default=[]),
     creative_mockup_url: str = Form(default=""),
@@ -1515,7 +1516,7 @@ def admin_deck_runs(request: Request) -> ApiMessage:
 def discover_clickup_schema(
     payload: DiscoveryRequest,
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     _validate_runtime(request)
@@ -1528,7 +1529,7 @@ def discover_clickup_schema(
 def sync_clickup_tasks(
     payload: SyncRequest,
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     _validate_runtime(request)
@@ -1565,7 +1566,7 @@ def sync_clickup_tasks(
 def run_stale_lead_job(
     payload: StaleLeadRunRequest,
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     _validate_runtime(request)
@@ -1583,7 +1584,7 @@ def run_stale_lead_job(
 def run_gmail_sync_job(
     payload: GmailSyncRequest,
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     settings = request.app.state.settings
@@ -1606,7 +1607,7 @@ def run_gmail_sync_job(
 def run_daily_digest_job(
     payload: DailyDigestRunRequest,
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     settings = request.app.state.settings
@@ -1629,7 +1630,7 @@ def run_daily_digest_job(
 def ingest_communication_event(
     payload: CommunicationEventRequest,
     request: Request,
-    x_internal_api_key: str | None = Header(default=None),
+    x_internal_api_key: Optional[str] = Header(default=None),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     _validate_runtime(request)

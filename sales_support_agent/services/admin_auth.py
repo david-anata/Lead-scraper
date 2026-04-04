@@ -7,6 +7,7 @@ import json
 import hashlib
 import hmac
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from sales_support_agent.config import Settings
 
@@ -21,7 +22,7 @@ def verify_admin_password(settings: Settings, supplied_password: str) -> bool:
     return bool(expected) and hmac.compare_digest(actual, expected)
 
 
-def create_admin_session_token(settings: Settings, *, now: datetime | None = None) -> str:
+def create_admin_session_token(settings: Settings, *, now: Optional[datetime] = None) -> str:
     issued_at = now or datetime.now(timezone.utc)
     payload = f"{settings.admin_username}|{int(issued_at.timestamp())}"
     signature = hmac.new(
@@ -37,7 +38,7 @@ def validate_admin_session_token(
     settings: Settings,
     token: str,
     *,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
 ) -> bool:
     if not token:
         return False
@@ -72,7 +73,7 @@ def validate_admin_session_token(
 # Legacy password tokens are 3-part: username|timestamp|signature
 # ---------------------------------------------------------------------------
 
-def create_user_session_token(settings: Settings, *, email: str, name: str, role: str, now: datetime | None = None) -> str:
+def create_user_session_token(settings: Settings, *, email: str, name: str, role: str, now: Optional[datetime] = None) -> str:
     """Create a signed session token for a Google-authenticated user."""
     issued_at = now or datetime.now(timezone.utc)
     payload = f"{email}|{name}|{role}|{int(issued_at.timestamp())}"
@@ -85,7 +86,7 @@ def create_user_session_token(settings: Settings, *, email: str, name: str, role
     return base64.urlsafe_b64encode(token.encode("utf-8")).decode("utf-8")
 
 
-def get_session_user(settings: Settings, token: str, *, now: datetime | None = None) -> dict[str, str] | None:
+def get_session_user(settings: Settings, token: str, *, now: Optional[datetime] = None) -> Optional[dict[str, str]]:
     """Validate any session token (legacy or Google SSO) and return user dict or None."""
     if not token:
         return None
@@ -149,7 +150,7 @@ def create_signed_state_token(secret: str, payload: dict[str, str]) -> str:
     return base64.urlsafe_b64encode(token.encode("utf-8")).decode("utf-8")
 
 
-def read_signed_state_token(secret: str, token: str) -> dict[str, str] | None:
+def read_signed_state_token(secret: str, token: str) -> Optional[dict[str, str]]:
     if not token:
         return None
     try:

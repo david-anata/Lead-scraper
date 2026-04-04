@@ -6,6 +6,7 @@ import base64
 import html
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 
 def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str = "") -> str:
@@ -222,7 +223,7 @@ def render_agent_nav_styles() -> str:
     """
 
 
-def _user_chip_html(user: dict | None) -> str:
+def _user_chip_html(user: Optional[dict]) -> str:
     if not user:
         return f'<a class="top-link" href="/admin/logout">Log out</a>'
     name = html.escape(user.get("name") or user.get("email") or "User")
@@ -239,7 +240,7 @@ def _user_chip_html(user: dict | None) -> str:
     </div>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", user: dict | None = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", user: Optional[dict] = None) -> str:
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"

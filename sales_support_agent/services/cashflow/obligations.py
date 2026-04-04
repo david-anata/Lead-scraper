@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 
 
@@ -16,7 +16,7 @@ def _today() -> date:
     return datetime.utcnow().date()
 
 
-def _next_occurrence(current: date, frequency: str, day_of_month: int | None) -> date:
+def _next_occurrence(current: date, frequency: str, day_of_month: Optional[int]) -> date:
     """Advance *current* by one period according to *frequency*."""
     if frequency == "weekly":
         return current + timedelta(weeks=1)
@@ -77,8 +77,8 @@ def create_obligation(
     status: str = "planned",
     confidence: str = "confirmed",
     notes: str = "",
-    recurring_template_id: str | None = None,
-    clickup_task_id: str | None = None,
+    recurring_template_id: Optional[str] = None,
+    clickup_task_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Insert a new manual CashEvent and return it as a dict."""
     from sales_support_agent.models.database import engine
@@ -124,7 +124,7 @@ def create_obligation(
     return get_obligation(event_id)
 
 
-def get_obligation(event_id: str) -> dict[str, Any] | None:
+def get_obligation(event_id: str) -> Optional[dict[str, Any]]:
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
 
@@ -136,7 +136,7 @@ def get_obligation(event_id: str) -> dict[str, Any] | None:
     return _row_to_dict(row) if row else None
 
 
-def update_obligation(event_id: str, **fields: Any) -> dict[str, Any] | None:
+def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
     """Update specific fields on an existing obligation."""
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
@@ -181,11 +181,11 @@ def delete_obligation(event_id: str) -> bool:
 
 def list_obligations(
     *,
-    event_type: str | None = None,
-    status: str | None = None,
-    from_date: date | None = None,
-    to_date: date | None = None,
-    source: str | None = None,
+    event_type: Optional[str] = None,
+    status: Optional[str] = None,
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
+    source: Optional[str] = None,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     """Return cash events matching the given filters, ordered by due_date."""
@@ -236,7 +236,7 @@ def create_recurring_template(
     amount_cents: int,
     frequency: str,
     next_due_date: date,
-    day_of_month: int | None = None,
+    day_of_month: Optional[int] = None,
 ) -> dict[str, Any]:
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
@@ -274,7 +274,7 @@ def create_recurring_template(
     return get_recurring_template(template_id)
 
 
-def get_recurring_template(template_id: str) -> dict[str, Any] | None:
+def get_recurring_template(template_id: str) -> Optional[dict[str, Any]]:
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
 
@@ -298,7 +298,7 @@ def list_recurring_templates(*, active_only: bool = True) -> list[dict[str, Any]
     return [_row_to_dict(r) for r in rows]
 
 
-def update_recurring_template(template_id: str, **fields: Any) -> dict[str, Any] | None:
+def update_recurring_template(template_id: str, **fields: Any) -> Optional[dict[str, Any]]:
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
 

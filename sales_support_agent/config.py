@@ -7,7 +7,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 ACTIVE_FOLLOW_UP_STATUSES = (
@@ -31,9 +31,9 @@ INACTIVE_STATUSES = (
 
 @dataclass(frozen=True)
 class StatusPolicy:
-    first_action_days: int | None = None
-    due_days: int | None = None
-    overdue_days: int | None = None
+    first_action_days: Optional[int] = None
+    due_days: Optional[int] = None
+    overdue_days: Optional[int] = None
     use_follow_up_date: bool = False
 
 
