@@ -24,60 +24,81 @@ from sales_support_agent.services.cashflow.engine import (
     aggregate_weeks,
     flag_risks,
 )
-from sales_support_agent.services.cashflow.obligations import list_obligations, get_events_for_range
+from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
 def _build_chart_data(period_weeks: int = 12) -> dict:
     """Build Chart.js dataset for the cashflow chart.
-    Returns dict with labels, actual_data, projected_data, threshold.
+
+    Performance note: uses a single DB call (list_obligations) for ALL data.
+    Forward weeks are projected by Python-bucketing the already-loaded rows
+    rather than issuing one get_events_for_range() query per future week.
     """
     today = date.today()
 
-    # Historical: bank CSV rows sorted by date, build running balance
+    # Single query for everything — historical CSV rows AND forward obligations.
     all_rows = list_obligations(limit=5000)
+
     csv_rows = sorted(
         [r for r in all_rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None],
         key=lambda r: str(r.get("due_date", ""))
     )
 
-    # Get starting balance
-    starting_balance = 0
-    if csv_rows:
-        starting_balance = int(csv_rows[-1].get("account_balance_cents") or 0)
+    starting_balance = int(csv_rows[-1].get("account_balance_cents") or 0) if csv_rows else 0
 
-    # Build weekly labels for the period
+    # ── Pre-bucket forward obligations by week-start (Monday) ──────────────
+    # This replaces the old N+1 loop that called get_events_for_range() once
+    # per future week.  One pass here; O(1) lookup below.
+    def _row_monday(r: dict) -> date | None:
+        raw = r.get("due_date")
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            d = raw.date()
+        elif isinstance(raw, date):
+            d = raw
+        elif isinstance(raw, str):
+            try:
+                d = date.fromisoformat(str(raw)[:10])
+            except ValueError:
+                return None
+        else:
+            return None
+        return d - timedelta(days=d.weekday())
+
+    from collections import defaultdict
+    week_buckets: dict = defaultdict(int)   # monday -> cumulative net_cents for that week
+    for r in all_rows:
+        if r.get("status") not in ("planned", "overdue", "pending"):
+            continue
+        mon = _row_monday(r)
+        if mon is None or mon <= today - timedelta(days=today.weekday()):
+            continue  # skip historical / current week (already in starting_balance)
+        amt = int(r.get("amount_cents") or 0)
+        delta = amt if r.get("event_type") == "inflow" else -amt
+        week_buckets[mon] += delta
+
+    # ── Build weekly labels ─────────────────────────────────────────────────
     monday = today - timedelta(days=today.weekday())
     start_monday = monday - timedelta(weeks=4)  # 4 weeks back
 
-    labels = []
-    actual_data = []
-    projected_data = []
+    labels: list = []
+    actual_data: list = []
+    projected_data: list = []
+    cumulative_net = 0  # cents accumulated week-by-week into the future
 
     for i in range(period_weeks + 4):
         week_date = start_monday + timedelta(weeks=i)
         labels.append(week_date.strftime("%b %d"))
 
         if week_date <= today:
-            # Find the closest CSV balance point
             week_csv = [r for r in csv_rows if str(r.get("due_date", ""))[:10] <= week_date.isoformat()]
-            if week_csv:
-                actual_data.append(int(week_csv[-1].get("account_balance_cents") or 0) / 100)
-            else:
-                actual_data.append(None)
+            actual_data.append(int(week_csv[-1].get("account_balance_cents") or 0) / 100 if week_csv else None)
             projected_data.append(None)
         else:
             actual_data.append(None)
-            # Project forward from starting balance
-            week_events = get_events_for_range(
-                today, week_date,
-                include_statuses=["planned", "overdue", "pending"]
-            )
-            net = sum(
-                (e["amount_cents"] if e["event_type"] == "inflow" else -e["amount_cents"])
-                for e in week_events
-            ) / 100
-            proj = starting_balance / 100 + net
-            projected_data.append(proj)
+            cumulative_net += week_buckets.get(week_date, 0)
+            projected_data.append((starting_balance + cumulative_net) / 100)
 
     return {
         "labels": labels,

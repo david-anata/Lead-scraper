@@ -17,6 +17,7 @@ so the view is always current without a separate sync step.
 from __future__ import annotations
 
 import html
+import time as _time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -34,85 +35,117 @@ from sales_support_agent.services.cashflow.trend_detector import (
 
 
 # ---------------------------------------------------------------------------
+# Module-level cache — amortises the expensive DB + matching + trend pass
+# ---------------------------------------------------------------------------
+
+_REC_CACHE: dict | None = None
+_REC_CACHE_TS: float = 0.0
+_REC_CACHE_TTL: int = 600  # 10 minutes
+
+
+# ---------------------------------------------------------------------------
 # Public render function
 # ---------------------------------------------------------------------------
 
 def render_reconcile_page(*, flash: str = "") -> str:
+    global _REC_CACHE, _REC_CACHE_TS
+
     today = datetime.utcnow().date()
-    lookback = today - timedelta(days=90)   # 90-day reconciliation window
 
-    rows = list_obligations(limit=5000)
-
-    # Split into planned (AP/AR obligations) and posted (bank actuals)
-    planned = [
-        r for r in rows
-        if r.get("source") not in ("csv",)
-        and r.get("status") in ("planned", "pending", "overdue")
-        and r.get("amount_cents", 0) > 0
-    ]
-    posted = [
-        r for r in rows
-        if r.get("source") == "csv"
-        and r.get("status") in ("posted", "matched")
-        and _to_date(r.get("due_date")) is not None
-        and _to_date(r.get("due_date")) >= lookback  # type: ignore[operator]
-    ]
-
-    # Run in-memory matching
-    match_results = auto_match_transactions(posted, planned)
-
-    # Build lookup maps
-    planned_by_id: dict = {str(p["id"]): p for p in planned}
-    posted_by_id:  dict = {str(p["id"]): p for p in posted}
-
-    matched_pairs: list[tuple[dict, dict, float, str]] = []   # (posted, planned, score, reason)
-    matched_planned_ids: set = set()
-    matched_posted_ids:  set = set()
-
-    for mr in match_results:
-        if mr.planned_event_id is None:
-            continue
-        p_csv  = posted_by_id.get(str(mr.csv_event_id))
-        p_plan = planned_by_id.get(str(mr.planned_event_id))
-        if p_csv and p_plan:
-            matched_pairs.append((p_csv, p_plan, mr.score, mr.reason))
-            matched_planned_ids.add(str(mr.planned_event_id))
-            matched_posted_ids.add(str(mr.csv_event_id))
-
-    # Also pull DB-already-matched rows (matched_to_id set from prior uploads)
-    for r in rows:
-        if r.get("status") == "matched" and r.get("matched_to_id"):
-            rid = str(r["id"])
-            mid = str(r["matched_to_id"])
-            if rid not in matched_posted_ids and mid in planned_by_id:
-                plan = planned_by_id.get(mid)
-                if plan:
-                    matched_pairs.append((r, plan, 1.0, "db-matched"))
-                    matched_planned_ids.add(mid)
-                    matched_posted_ids.add(rid)
-
-    unmatched_planned = [
-        p for p in planned if str(p["id"]) not in matched_planned_ids
-    ]
-    unmatched_posted = [
-        p for p in posted
-        if str(p["id"]) not in matched_posted_ids
-        and p.get("status") == "posted"
-    ]
-
-    # Detect trend patterns (AR-first)
-    try:
-        patterns = detect_recurring_patterns(min_occurrences=2, lookback_days=120)
-    except Exception:
-        patterns = []
-
-    # Metrics
-    total_planned_ap = sum(
-        p.get("amount_cents", 0) for p in planned if p.get("event_type") == "outflow"
+    # ── Cache check ─────────────────────────────────────────────────────────
+    # Skip the cache when flash is set — that means a form action (e.g. adding
+    # a template) just completed and the user needs to see fresh results.
+    cache_fresh = (
+        not flash
+        and _REC_CACHE is not None
+        and (_time.monotonic() - _REC_CACHE_TS) < _REC_CACHE_TTL
     )
-    total_planned_ar = sum(
-        p.get("amount_cents", 0) for p in planned if p.get("event_type") == "inflow"
-    )
+
+    if cache_fresh:
+        c = _REC_CACHE
+        matched_pairs     = c["matched_pairs"]
+        unmatched_planned = c["unmatched_planned"]
+        unmatched_posted  = c["unmatched_posted"]
+        patterns          = c["patterns"]
+    else:
+        # ── Expensive DB + matching + trend pass ────────────────────────────
+        lookback = today - timedelta(days=90)   # 90-day reconciliation window
+
+        rows = list_obligations(limit=5000)
+
+        # Split into planned (AP/AR obligations) and posted (bank actuals)
+        planned = [
+            r for r in rows
+            if r.get("source") not in ("csv",)
+            and r.get("status") in ("planned", "pending", "overdue")
+            and r.get("amount_cents", 0) > 0
+        ]
+        posted = [
+            r for r in rows
+            if r.get("source") == "csv"
+            and r.get("status") in ("posted", "matched")
+            and _to_date(r.get("due_date")) is not None
+            and _to_date(r.get("due_date")) >= lookback  # type: ignore[operator]
+        ]
+
+        # Run in-memory matching
+        match_results = auto_match_transactions(posted, planned)
+
+        # Build lookup maps
+        planned_by_id: dict = {str(p["id"]): p for p in planned}
+        posted_by_id:  dict = {str(p["id"]): p for p in posted}
+
+        matched_pairs: list = []   # (posted, planned, score, reason)
+        matched_planned_ids: set = set()
+        matched_posted_ids:  set = set()
+
+        for mr in match_results:
+            if mr.planned_event_id is None:
+                continue
+            p_csv  = posted_by_id.get(str(mr.csv_event_id))
+            p_plan = planned_by_id.get(str(mr.planned_event_id))
+            if p_csv and p_plan:
+                matched_pairs.append((p_csv, p_plan, mr.score, mr.reason))
+                matched_planned_ids.add(str(mr.planned_event_id))
+                matched_posted_ids.add(str(mr.csv_event_id))
+
+        # Also pull DB-already-matched rows (matched_to_id set from prior uploads)
+        for r in rows:
+            if r.get("status") == "matched" and r.get("matched_to_id"):
+                rid = str(r["id"])
+                mid = str(r["matched_to_id"])
+                if rid not in matched_posted_ids and mid in planned_by_id:
+                    plan = planned_by_id.get(mid)
+                    if plan:
+                        matched_pairs.append((r, plan, 1.0, "db-matched"))
+                        matched_planned_ids.add(mid)
+                        matched_posted_ids.add(rid)
+
+        unmatched_planned = [
+            p for p in planned if str(p["id"]) not in matched_planned_ids
+        ]
+        unmatched_posted = [
+            p for p in posted
+            if str(p["id"]) not in matched_posted_ids
+            and p.get("status") == "posted"
+        ]
+
+        # Detect trend patterns (AR-first)
+        try:
+            patterns = detect_recurring_patterns(min_occurrences=2, lookback_days=120)
+        except Exception:
+            patterns = []
+
+        # Store in cache
+        _REC_CACHE = {
+            "matched_pairs":     matched_pairs,
+            "unmatched_planned": unmatched_planned,
+            "unmatched_posted":  unmatched_posted,
+            "patterns":          patterns,
+        }
+        _REC_CACHE_TS = _time.monotonic()
+
+    # Metrics (derived from the cached or freshly-computed data)
     matched_count = len(matched_pairs)
     unmatched_p_count = len(unmatched_planned)
     surprise_count = len(unmatched_posted)

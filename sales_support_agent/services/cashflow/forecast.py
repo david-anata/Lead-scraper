@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import html
-from datetime import date, datetime
+import logging
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sales_support_agent.services.cashflow.cashflow_helpers import (
@@ -15,34 +16,55 @@ from sales_support_agent.services.cashflow.cashflow_helpers import (
 from sales_support_agent.services.cashflow.engine import aggregate_weeks, flag_risks
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
+logger = logging.getLogger(__name__)
+
+# How far back to look for overdue obligations and CSV balance rows.
+_LOOKBACK_DAYS = 180
+
+
+def _latest_balance_cents() -> int:
+    """Return the account balance from the most recent uploaded bank CSV row.
+
+    Runs a targeted, indexed query (source='csv', ORDER BY due_date DESC LIMIT 1)
+    instead of fetching all rows and filtering in Python.
+    """
+    from sales_support_agent.models.database import get_engine
+    from sqlalchemy import text
+
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT account_balance_cents FROM cash_events
+                    WHERE source = 'csv'
+                      AND account_balance_cents IS NOT NULL
+                    ORDER BY due_date DESC
+                    LIMIT 1
+                """)
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception as exc:
+        logger.warning("Could not fetch latest balance: %s", exc)
+        return 0
+
 
 def render_weekly_forecast_page(*, flash: str = "") -> str:
-    # Auto-expand recurring templates to cover the full 1-year forecast window.
-    # horizon_days=400 ensures every monthly/weekly template has events through 52 weeks.
-    # respect_cooldown=False so the page always reflects the latest template state.
-    try:
-        from sales_support_agent.services.cashflow.obligations import (
-            generate_upcoming_from_templates,
-        )
-        generate_upcoming_from_templates(horizon_days=400, advance_template=True)
-    except Exception as exc:
-        import logging as _logging
-        _logging.getLogger(__name__).warning("Template expansion failed (forecast page): %s", exc)
+    today = datetime.utcnow().date()
 
-    rows = list_obligations(limit=2000)
+    # Targeted balance query — avoids loading all CSV rows
+    balance_cents = _latest_balance_cents()
 
-    # Latest balance — from most recent bank CSV row only
-    balance_cents = 0
-    csv_rows = sorted(
-        [r for r in rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None],
-        key=lambda r: str(r.get("due_date", "")),
-        reverse=True,
-    )
-    if csv_rows:
-        balance_cents = int(csv_rows[0]["account_balance_cents"] or 0)
+    # Fetch only the date window we need:
+    #   - _LOOKBACK_DAYS back: captures overdue planned/pending obligations
+    #   - 52 weeks forward:    covers the full forecast horizon
+    # Posted/matched CSV rows in this window are excluded below.
+    window_start = today - timedelta(days=_LOOKBACK_DAYS)
+    rows = list_obligations(from_date=window_start, limit=3000)
 
-    # Forecast only forward-looking events — exclude already-settled bank rows
-    # (posted/matched = already reflected in the starting balance from the CSV)
+    # Exclude already-settled bank rows — they're baked into balance_cents.
+    # REGRESSION GUARD: removing this filter causes posted rows to double-count
+    # and forecasted outflows to show as $0. See test_cashflow_overview_metrics.py
+    # :: TestPostedRowFilterRegression for the explicit regression test.
     forecast_rows = [
         r for r in rows
         if r.get("status") not in ("posted", "matched", "cancelled", "paid")
@@ -88,7 +110,6 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
         </tr>"""
 
     # Event detail table (next 4 weeks, non-posted)
-    today = datetime.utcnow().date()
     near_events = sorted(
         [e for e in events if e.status not in ("posted", "matched", "cancelled", "paid")],
         key=lambda e: e.due_date,
