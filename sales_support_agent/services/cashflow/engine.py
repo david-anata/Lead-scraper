@@ -128,6 +128,9 @@ def aggregate_weeks(
     for event in events:
         if event.due_date is None:
             continue
+        # Skip cancelled and paid events — they should not affect the forecast
+        if event.status in ("cancelled", "paid"):
+            continue
         event_date = event.due_date if isinstance(event.due_date, date) else event.due_date.date()
         # Find the Monday of the week this event falls in
         event_monday = event_date - timedelta(days=event_date.weekday())

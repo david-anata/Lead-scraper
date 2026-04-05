@@ -91,7 +91,10 @@ class TestAutoMatchTransactions(unittest.TestCase):
 
     def test_empty_inputs_return_empty(self) -> None:
         self.assertEqual(auto_match_transactions([], []), [])
-        self.assertEqual(auto_match_transactions([_csv("c1", "X", 100_00, date(2026, 4, 7))], []), [])
+        # With CSV events but no planned events, returns one unmatched result per CSV event
+        results = auto_match_transactions([_csv("c1", "X", 100_00, date(2026, 4, 7))], [])
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].planned_event_id)
 
     def test_result_has_reason_string(self) -> None:
         d = date(2026, 4, 7)

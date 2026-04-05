@@ -93,8 +93,15 @@ class TestAggregateWeeks(unittest.TestCase):
         monday = date(2026, 4, 6)
         e = _event(event_type="outflow", amount_cents=1000_00, due_date=monday)
         weeks = aggregate_weeks([e], starting_cash_cents=500_00, weeks=2, as_of_date=monday)
+        # Week 0: starting=500, outflow=1000, ending=-500 → negative
         self.assertTrue(weeks[0].is_negative)
-        self.assertFalse(weeks[1].is_negative)
+        # Week 1: starts at -500 (carries forward), no events → ending=-500, still negative
+        self.assertTrue(weeks[1].is_negative)
+        # With enough inflow to recover, week becomes positive
+        e_in = _event(event_type="inflow", amount_cents=2000_00, due_date=monday + timedelta(weeks=1), event_id="e2")
+        weeks2 = aggregate_weeks([e, e_in], starting_cash_cents=500_00, weeks=2, as_of_date=monday)
+        self.assertTrue(weeks2[0].is_negative)
+        self.assertFalse(weeks2[1].is_negative)
 
     def test_week_label_format(self) -> None:
         weeks = aggregate_weeks([], starting_cash_cents=0, weeks=1, as_of_date=date(2026, 4, 6))

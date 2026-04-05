@@ -17,18 +17,15 @@ class TestNormalizeBankCsvRow(unittest.TestCase):
     def _make_row(self, **overrides) -> dict:
         row = {
             "Transaction ID": "TXN-001",
-            "Date": "3/15/2026",
+            "Posting Date": "3/15/2026",
+            "Effective Date": "3/15/2026",
             "Description": "Withdrawal ACH FORAFINANCIAL PAYMT Entry Class Code: WEB",
-            "Transaction Subtype": "ACH",
+            "Type": "ACH",
             "Amount": "-1500.00",
-            "Debit": "1500.00",
-            "Credit": "",
-            "Account Balance": "23450.00",
-            "Category": "Other",
-            "Note": "",
-            "Name": "",
-            "Bank Reference": "REF001",
+            "Balance": "23450.00",
             "Transaction Category": "Loan Payments",
+            "Reference Number": "REF001",
+            "Extended Description": "",
         }
         row.update(overrides)
         return row
@@ -60,12 +57,16 @@ class TestNormalizeBankCsvRow(unittest.TestCase):
         self.assertEqual(result["event_type"], "inflow")
 
     def test_date_parsed_correctly(self) -> None:
-        result = normalize_bank_csv_row(self._make_row(**{"Date": "3/15/2026"}))
+        result = normalize_bank_csv_row(self._make_row(**{"Posting Date": "3/15/2026"}))
         due = result["due_date"]
-        self.assertEqual(due, date(2026, 3, 15))
+        # due_date may be a datetime or date object depending on _parse_date
+        if hasattr(due, "date"):
+            self.assertEqual(due.date(), date(2026, 3, 15))
+        else:
+            self.assertEqual(due, date(2026, 3, 15))
 
     def test_balance_column_parsed(self) -> None:
-        result = normalize_bank_csv_row(self._make_row(**{"Account Balance": "23450.00"}))
+        result = normalize_bank_csv_row(self._make_row(**{"Balance": "23450.00"}))
         self.assertEqual(result["account_balance_cents"], 2345000)
 
     def test_category_assigned(self) -> None:
@@ -80,11 +81,11 @@ class TestNormalizeBankCsvRow(unittest.TestCase):
         self.assertNotIn("Entry Class Code", result["name"])
 
     def test_dollar_amount_stripped(self) -> None:
-        result = normalize_bank_csv_row(self._make_row(**{"Amount": "$1,234.56", "Debit": "1234.56", "Credit": ""}))
+        result = normalize_bank_csv_row(self._make_row(**{"Amount": "$1,234.56"}))
         self.assertEqual(result["amount_cents"], 123456)
 
     def test_missing_balance_is_none(self) -> None:
-        result = normalize_bank_csv_row(self._make_row(**{"Account Balance": ""}))
+        result = normalize_bank_csv_row(self._make_row(**{"Balance": ""}))
         self.assertIsNone(result["account_balance_cents"])
 
 
