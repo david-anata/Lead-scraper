@@ -161,6 +161,38 @@ async def chart_data(request: Request, weeks: int = 12):
     return JSONResponse(_build_chart_data(period_weeks=weeks))
 
 
+@router.patch("/events/{event_id}")
+async def patch_event(event_id: str, request: Request):
+    """Update friendly_name or notes on a cash event. Called by inline edit JS."""
+    if not has_finance_access(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    from sales_support_agent.models.database import engine
+    from sqlalchemy import text
+
+    body = await request.json()
+    allowed_fields = {"friendly_name", "notes"}
+    updates = {k: v for k, v in body.items() if k in allowed_fields}
+
+    if not updates:
+        return JSONResponse({"error": "no valid fields"}, status_code=400)
+
+    now = datetime.utcnow().isoformat()
+    set_clauses = ", ".join(f"{k} = :{k}" for k in updates)
+    updates["event_id"] = event_id
+    updates["now"] = now
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(f"UPDATE cash_events SET {set_clauses}, updated_at = :now WHERE id = :event_id"),
+            updates
+        )
+        if result.rowcount == 0:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+    return JSONResponse({"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # Forecast
 # ---------------------------------------------------------------------------
@@ -466,3 +498,131 @@ async def recurring_generate(request: Request):
         f"/admin/finances/recurring?flash=ok:{len(created)}+obligations+generated",
         status_code=303,
     )
+
+
+# ---------------------------------------------------------------------------
+# Ledger
+# ---------------------------------------------------------------------------
+
+@router.get("/ledger", response_class=HTMLResponse)
+async def ledger_page(request: Request, **kwargs):
+    if not has_finance_access(request):
+        return _redirect_login()
+    from sales_support_agent.services.cashflow.ledger import render_ledger_page
+    params = dict(request.query_params)
+    return HTMLResponse(render_ledger_page(
+        from_date=params.get("from"),
+        to_date=params.get("to"),
+        filter_type=params.get("filter", "all"),
+    ))
+
+
+@router.get("/ledger/export")
+async def ledger_export(request: Request):
+    if not has_finance_access(request):
+        return _redirect_login()
+    from sales_support_agent.services.cashflow.obligations import list_obligations
+    from sales_support_agent.services.cashflow.cashflow_helpers import _display_name
+    import csv, io
+
+    params = dict(request.query_params)
+    from_date = params.get("from") or datetime.utcnow().date().replace(day=1).isoformat()
+    to_date = params.get("to") or datetime.utcnow().date().isoformat()
+    filter_type = params.get("filter", "all")
+
+    all_rows = list_obligations(limit=5000)
+    filtered = [
+        r for r in all_rows
+        if str(r.get("due_date",""))[:10] >= from_date
+        and str(r.get("due_date",""))[:10] <= to_date
+    ]
+    if filter_type == "income":
+        filtered = [r for r in filtered if r.get("event_type") == "inflow"]
+    elif filter_type == "expenses":
+        filtered = [r for r in filtered if r.get("event_type") == "outflow"]
+    filtered.sort(key=lambda r: str(r.get("due_date","")))
+
+    csv_rows_sorted = sorted(
+        [r for r in all_rows if r.get("source")=="csv" and r.get("account_balance_cents") is not None
+         and str(r.get("due_date",""))[:10] <= from_date],
+        key=lambda r: str(r.get("due_date",""))
+    )
+    running = int(csv_rows_sorted[-1].get("account_balance_cents",0)) if csv_rows_sorted else 0
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Date","Income","Expenses","Description","Running Total","Notes"])
+    for row in filtered:
+        is_in = row.get("event_type") == "inflow"
+        amt = row.get("amount_cents",0) / 100
+        running += int(row.get("amount_cents",0)) if is_in else -int(row.get("amount_cents",0))
+        writer.writerow([
+            str(row.get("due_date",""))[:10],
+            f"{amt:.2f}" if is_in else "",
+            f"{amt:.2f}" if not is_in else "",
+            _display_name(row),
+            f"{running/100:.2f}",
+            row.get("notes",""),
+        ])
+
+    from fastapi.responses import Response
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="ledger-{from_date}-to-{to_date}.csv"'}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Calendar
+# ---------------------------------------------------------------------------
+
+@router.get("/calendar", response_class=HTMLResponse)
+async def calendar_page(request: Request):
+    if not has_finance_access(request):
+        return _redirect_login()
+    from sales_support_agent.services.cashflow.calendar_view import render_calendar_page
+    params = dict(request.query_params)
+    year = int(params["year"]) if params.get("year") else None
+    month = int(params["month"]) if params.get("month") else None
+    return HTMLResponse(render_calendar_page(
+        year=year,
+        month=month,
+        filter_type=params.get("filter", "all"),
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Alert dismiss
+# ---------------------------------------------------------------------------
+
+@router.post("/alerts/dismiss/{alert_id}", response_class=HTMLResponse)
+async def dismiss_alert(alert_id: str, request: Request):
+    if not has_finance_access(request):
+        return _redirect_login()
+    from sales_support_agent.models.database import engine
+    from sqlalchemy import text
+    now = datetime.utcnow().isoformat()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO kv_store (key, value, updated_at) VALUES (:key, 'dismissed', :now)
+            ON CONFLICT(key) DO UPDATE SET value='dismissed', updated_at=excluded.updated_at
+        """), {"key": f"alert_dismissed:{alert_id}", "now": now})
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/finances/alerts?flash={quote('ok:Alert dismissed')}", status_code=303)
+
+
+@router.post("/alerts/dismiss-all", response_class=HTMLResponse)
+async def dismiss_all_alerts(request: Request):
+    if not has_finance_access(request):
+        return _redirect_login()
+    from sales_support_agent.models.database import engine
+    from sqlalchemy import text
+    now = datetime.utcnow().isoformat()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO kv_store (key, value, updated_at) VALUES ('alerts_bulk_dismissed_at', :now, :now)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """), {"now": now})
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/finances/alerts?flash={quote('ok:All alerts dismissed')}", status_code=303)

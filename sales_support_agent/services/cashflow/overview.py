@@ -88,133 +88,113 @@ def _build_chart_data(period_weeks: int = 12) -> dict:
     }
 
 
-def _render_weekly_table(events: list, today) -> str:
-    """Build an 8-week rolling cashflow table grouped by category (mirrors ClickUp structure)."""
-    week_start = today - timedelta(days=today.weekday())
+def _render_weekly_table(rows_or_events: list, today, balance_cents: int = 0) -> str:
+    """Render the 8-week cashflow table: chronological, one row per transaction."""
+    monday = today - timedelta(days=today.weekday())
 
-    weeks_data = []
-    for w in range(8):
-        wstart = week_start + timedelta(weeks=w)
-        wend = wstart + timedelta(days=6)
-        week_events = [e for e in events if e.due_date and wstart <= e.due_date <= wend]
-        ap_total = sum(e.amount_cents for e in week_events if e.event_type == "outflow")
-        ar_total = sum(e.amount_cents for e in week_events if e.event_type == "inflow")
-        weeks_data.append({
-            "label": f"Week of {wstart.strftime('%b %-d')}",
-            "wstart": wstart,
-            "wend": wend,
-            "events": week_events,
-            "ap_total": ap_total,
-            "ar_total": ar_total,
-            "net": ar_total - ap_total,
-        })
+    # Build 8-week buckets
+    weeks = []
+    for i in range(8):
+        ws = monday + timedelta(weeks=i)
+        we = ws + timedelta(days=6)
+        weeks.append((ws, we, []))
 
-    html_parts = []
-    for wd in weeks_data:
-        net = wd["net"]
-        net_s = ("+$" if net >= 0 else "-$") + f"{abs(net)/100:,.0f}"
-        net_col = "#0f766e" if net >= 0 else "#b91c1c"
+    # Handle both EventDTO list and raw dict list
+    def _get_due(item):
+        raw = getattr(item, "due_date", None) or (item.get("due_date") if isinstance(item, dict) else None)
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            return raw.date()
+        if isinstance(raw, date):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return date.fromisoformat(raw[:10])
+            except Exception:
+                return None
+        return None
 
-        header = f"""
-        <div class="week-header">
-          <span>{html.escape(wd['label'])}</span>
-          <div class="week-header-totals">
-            <span style="color:#7dbaaa">AR {_dollar(wd['ar_total'])}</span>
-            <span style="color:#e89090">AP {_dollar(wd['ap_total'])}</span>
-            <span style="color:{net_col}">Net {net_s}</span>
-          </div>
-        </div>"""
+    def _get_attr(item, key, default=""):
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
 
-        week_events = wd["events"]
+    # Assign events to weeks
+    for item in rows_or_events:
+        due = _get_due(item)
+        if not due:
+            continue
+        due_monday = due - timedelta(days=due.weekday())
+        for ws, we, evts in weeks:
+            if ws == due_monday:
+                evts.append((due, item))
+                break
 
-        # Group events by category
-        by_category: dict[str, list] = {}
-        for ev in week_events:
-            cat = getattr(ev, "category", "uncategorized") or "uncategorized"
-            by_category.setdefault(cat, []).append(ev)
+    running = balance_cents
+    html_rows = ""
 
-        rows_html = ""
-        if by_category:
-            # Sort categories by our defined order
-            sorted_cats = sorted(
-                by_category.keys(),
-                key=lambda c: _CAT_ORDER_INDEX.get(c, 99),
-            )
+    for ws, we, evts in weeks:
+        evts.sort(key=lambda x: x[0])
+        week_in = sum(_get_attr(r, "amount_cents", 0) for _, r in evts if _get_attr(r, "event_type") == "inflow")
+        week_out = sum(_get_attr(r, "amount_cents", 0) for _, r in evts if _get_attr(r, "event_type") == "outflow")
+        week_net = week_in - week_out
 
-            for cat in sorted_cats:
-                cat_events = sorted(by_category[cat], key=lambda e: (e.due_date or date.min, e.name))
-                cat_total_in  = sum(e.amount_cents for e in cat_events if e.event_type == "inflow")
-                cat_total_out = sum(e.amount_cents for e in cat_events if e.event_type == "outflow")
-                cat_net = cat_total_in - cat_total_out
+        # Week header
+        net_col = "#86efac" if week_net >= 0 else "#fca5a5"
+        html_rows += f"""
+        <tr style="background:#1e293b;color:#fff">
+          <td colspan="3" style="font-weight:600;padding:6px 12px">
+            Week of {ws.strftime("%b %d")} – {we.strftime("%b %d")}
+          </td>
+          <td style="text-align:right;color:#86efac">+{_dollar(week_in)}</td>
+          <td style="text-align:right;color:#fca5a5">–{_dollar(week_out)}</td>
+          <td style="text-align:right;font-weight:600;color:{net_col}">{'+' if week_net >= 0 else ''}{_dollar(week_net)}</td>
+        </tr>"""
 
-                # Find display label
-                display_label = cat.replace("_", " ").title()
-                for key, label, _ in CATEGORY_ORDER:
-                    if key == cat:
-                        display_label = label
-                        break
+        if not evts:
+            html_rows += '<tr><td colspan="6" style="color:#9ca3af;font-style:italic;padding:4px 12px">No transactions this week</td></tr>'
 
-                icon = _CAT_ICON.get(cat, "📌")
-                subtotal_s = _dollar(cat_total_in if cat_total_in else cat_total_out)
-                subtotal_cls = "amount-in" if cat_total_in > 0 and cat_total_out == 0 else "amount-out"
-                count = len(cat_events)
+        for due_date, item in evts:
+            running += _get_attr(item, "amount_cents", 0) if _get_attr(item, "event_type") == "inflow" else -_get_attr(item, "amount_cents", 0)
+            is_in = _get_attr(item, "event_type") == "inflow"
+            amt = _dollar(_get_attr(item, "amount_cents", 0))
+            bal_color = "#16a34a" if running >= 0 else "#dc2626"
 
-                # Category header row
-                rows_html += f"""
-                <tr class="cat-group-header">
-                  <td colspan="3">
-                    <span style="font-size:14px;margin-right:6px">{icon}</span>
-                    <strong>{html.escape(display_label)}</strong>
-                    <span style="color:var(--muted);font-size:11px;margin-left:6px">{count} item{'s' if count != 1 else ''}</span>
-                  </td>
-                  <td class="{subtotal_cls}" style="font-weight:700">{subtotal_s}</td>
-                  <td></td>
-                </tr>"""
+            # Build row dict for _name_cell
+            if isinstance(item, dict):
+                row_dict = item
+            else:
+                row_dict = {
+                    "id": getattr(item, "id", ""),
+                    "name": getattr(item, "name", ""),
+                    "vendor_or_customer": getattr(item, "vendor_or_customer", ""),
+                    "description": "",
+                    "friendly_name": None,
+                }
 
-                # Individual transaction rows
-                for ev in cat_events:
-                    amount_cls = "amount-out" if ev.event_type == "outflow" else "amount-in"
-                    amount_s = _dollar(ev.amount_cents)
-                    status_cls = f"status-{ev.status}"
-                    due_str = ev.due_date.strftime("%-m/%-d") if ev.due_date else ""
-                    # Build a row dict for _name_cell
-                    row_dict = {
-                        "id": ev.id, "name": ev.name,
-                        "vendor_or_customer": ev.vendor_or_customer,
-                        "description": "", "friendly_name": None,
-                    }
-
-                    rows_html += f"""
-                    <tr class="cat-item-row">
-                      <td style="padding-left:28px;color:var(--muted);font-size:12px">{html.escape(due_str)}</td>
-                      <td style="padding-left:6px;font-size:13px">{_name_cell(row_dict)}</td>
-                      <td class="{amount_cls}" style="font-size:13px">{amount_s}</td>
-                      <td><span class="status-pill {status_cls}" style="font-size:10px">{html.escape(ev.status)}</span></td>
-                      <td></td>
-                    </tr>"""
-
-            # Net row
-            rows_html += f"""
-            <tr class="week-net-row">
-              <td colspan="3" style="text-align:right">Week Net</td>
-              <td colspan="2" style="color:{net_col}">{net_s}</td>
+            html_rows += f"""
+            <tr>
+              <td style="color:#6b7280;white-space:nowrap">{due_date.strftime("%b %d")}</td>
+              <td>{_name_cell(row_dict)}</td>
+              <td style="color:#6b7280;font-size:0.8rem">{html.escape(str(_get_attr(item, "category", "")))}</td>
+              <td style="text-align:right;color:#16a34a;font-weight:500">{"" if not is_in else amt}</td>
+              <td style="text-align:right;color:#dc2626;font-weight:500">{"" if is_in else amt}</td>
+              <td style="text-align:right;font-weight:600;color:{bal_color}">{_dollar(running)}</td>
             </tr>"""
-        else:
-            rows_html = '<tr><td colspan="5" class="week-empty">No transactions this week — upload a bank CSV to populate.</td></tr>'
 
-        body = f"""
-        <div class="week-body">
-          <table>
-            <thead><tr>
-              <th>Date</th><th>Description</th><th>Amount</th><th>Status</th><th></th>
-            </tr></thead>
-            <tbody>{rows_html}</tbody>
-          </table>
-        </div>"""
-
-        html_parts.append(f'<div class="week-section">{header}{body}</div>')
-
-    return "\n".join(html_parts)
+    return f"""
+    <table style="width:100%">
+      <thead>
+        <tr>
+          <th>Date</th><th>Description</th><th>Category</th>
+          <th style="text-align:right">In</th>
+          <th style="text-align:right">Out</th>
+          <th style="text-align:right">Balance</th>
+        </tr>
+      </thead>
+      <tbody>{html_rows}</tbody>
+    </table>"""
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +368,7 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
     ai_block = f'<div class="ai-summary">{html.escape(metrics.ai_text)}</div>' if metrics.ai_text else ""
 
     # 8-week rolling cashflow table
-    weekly_table_html = _render_weekly_table(events, today)
+    weekly_table_html = _render_weekly_table(events, today, balance_cents=balance_cents)
 
     chart_html = """
 <!-- Load Chart.js -->
