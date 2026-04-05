@@ -21,6 +21,7 @@ from typing import Any, Optional, Union
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from sales_support_agent.services.admin_auth import (
@@ -107,6 +108,11 @@ from sales_support_agent.services.revenue_ops import (
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Mount static files so finance.css (and future assets) are served at /static/*
+_static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sales_support_agent", "static")
+os.makedirs(_static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 from sales_support_agent.api.cashflow_router import router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
