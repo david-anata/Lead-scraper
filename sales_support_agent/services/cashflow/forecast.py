@@ -29,9 +29,8 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
         _logging.getLogger(__name__).warning("Template expansion failed (forecast page): %s", exc)
 
     rows = list_obligations(limit=2000)
-    events = _events_to_dtos(rows)
 
-    # Latest balance
+    # Latest balance — from most recent bank CSV row only
     balance_cents = 0
     csv_rows = sorted(
         [r for r in rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None],
@@ -40,6 +39,14 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
     )
     if csv_rows:
         balance_cents = int(csv_rows[0]["account_balance_cents"] or 0)
+
+    # Forecast only forward-looking events — exclude already-settled bank rows
+    # (posted/matched = already reflected in the starting balance from the CSV)
+    forecast_rows = [
+        r for r in rows
+        if r.get("status") not in ("posted", "matched", "cancelled", "paid")
+    ]
+    events = _events_to_dtos(forecast_rows)
 
     weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=12)
     alerts = flag_risks(weeks, events)

@@ -233,9 +233,9 @@ def sync_clickup_finance(settings):
                 if rule and base_due and task_id not in forward_generated and ev["status"] != "paid":
                     forward_generated.add(task_id)
                     if rule == "weekly":
-                        future_dates = _next_weekly_dates(base_due, 12)
+                        future_dates = _next_weekly_dates(base_due, 52)   # 1 year of weekly
                     elif rule == "monthly":
-                        future_dates = _next_monthly_dates(base_due, 3)
+                        future_dates = _next_monthly_dates(base_due, 12)  # 1 year of monthly
                     else:
                         future_dates = []
 

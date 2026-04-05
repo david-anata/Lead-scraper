@@ -275,9 +275,16 @@ def compute_finance_overview(
 # ---------------------------------------------------------------------------
 
 async def render_cashflow_overview_page(*, flash: str = "") -> str:
-    # Load all non-cancelled events
+    # Load all events
     rows = list_obligations(limit=2000)
-    events = _events_to_dtos(rows)
+
+    # Exclude already-settled rows from the forecast — they're already baked
+    # into balance_cents from the latest CSV upload and would double-count.
+    forecast_rows = [
+        r for r in rows
+        if r.get("status") not in ("posted", "matched", "cancelled", "paid")
+    ]
+    events = _events_to_dtos(forecast_rows)
 
     # Latest balance from CSV
     balance_cents = 0

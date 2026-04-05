@@ -400,6 +400,7 @@ def generate_upcoming_from_templates(
     *,
     horizon_days: int = 90,
     advance_template: bool = True,
+    respect_cooldown: bool = False,
 ) -> list[dict[str, Any]]:
     """
     For each active template whose next_due_date falls within *horizon_days*,
@@ -407,20 +408,23 @@ def generate_upcoming_from_templates(
     Returns the list of events that were created or already existed.
 
     If *advance_template* is True, bump next_due_date forward after creating.
+    If *respect_cooldown* is True, skip if ran within the last 6 hours
+    (use this for background jobs; leave False for on-demand page loads).
     """
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    # Check cooldown — skip if ran within last 6 hours
-    try:
-        with get_engine().connect() as conn:
-            row = conn.execute(text("SELECT value FROM kv_store WHERE key='template_gen_last_run'")).fetchone()
-        if row:
-            last_run = datetime.fromisoformat(row[0])
-            if (datetime.utcnow() - last_run).total_seconds() < 21600:  # 6 hours
-                return []  # skip
-    except Exception as exc:
-        logger.warning("Could not read template_gen cooldown from kv_store (will proceed): %s", exc)
+    # Cooldown gate — opt-in only for background/scheduled callers
+    if respect_cooldown:
+        try:
+            with get_engine().connect() as conn:
+                row = conn.execute(text("SELECT value FROM kv_store WHERE key='template_gen_last_run'")).fetchone()
+            if row:
+                last_run = datetime.fromisoformat(row[0])
+                if (datetime.utcnow() - last_run).total_seconds() < 21600:  # 6 hours
+                    return []  # skip
+        except Exception as exc:
+            logger.warning("Could not read template_gen cooldown from kv_store (will proceed): %s", exc)
 
     cutoff = _today() + timedelta(days=horizon_days)
     templates = list_recurring_templates(active_only=True)
