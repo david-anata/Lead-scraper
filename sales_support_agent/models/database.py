@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -16,6 +19,20 @@ class Base(DeclarativeBase):
 # Module-level engine reference — set by create_session_factory so cashflow
 # services can import it directly without needing the request object.
 engine: Any = None
+
+
+def get_engine():
+    """Return the initialized SQLAlchemy engine.
+
+    Raises RuntimeError if called before init_cashflow_db().
+    Use this instead of importing `engine` directly.
+    """
+    if engine is None:
+        raise RuntimeError(
+            "Database engine not initialized. "
+            "Call init_cashflow_db() before accessing the engine."
+        )
+    return engine
 
 
 def _register_models() -> None:
@@ -37,6 +54,7 @@ def init_cashflow_db(db_url: str) -> None:
     global engine
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
+    logger.info("Cashflow DB initialized: %s", db_url[:40])
 
 
 def init_database(session_factory: sessionmaker[Session]) -> None:

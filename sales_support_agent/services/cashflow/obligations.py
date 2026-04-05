@@ -20,7 +20,7 @@ def get_events_for_range(
     Used by Calendar and Ledger views. Faster than list_obligations()
     for date-bounded queries because it uses the due_date index.
     """
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     from_str = from_date.isoformat() if hasattr(from_date, "isoformat") else str(from_date)
@@ -51,7 +51,7 @@ def get_events_for_range(
         LIMIT :limit
     """
 
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         rows = conn.execute(text(sql), params).fetchall()
 
     cols = ["id","source","source_id","event_type","category","subcategory",
@@ -137,13 +137,13 @@ def create_obligation(
     db=None,  # legacy/unused — kept for backwards compatibility
 ) -> dict[str, Any]:
     """Insert a new manual CashEvent and return it as a dict."""
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     event_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(
             text("""
                 INSERT INTO cash_events (
@@ -185,10 +185,10 @@ def create_obligation(
 
 
 def get_obligation(event_id: str) -> Optional[dict[str, Any]]:
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         row = conn.execute(
             text("SELECT * FROM cash_events WHERE id = :id"),
             {"id": event_id},
@@ -198,7 +198,7 @@ def get_obligation(event_id: str) -> Optional[dict[str, Any]]:
 
 def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
     """Update specific fields on an existing obligation."""
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     if not fields:
@@ -218,7 +218,7 @@ def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
     set_clause = ", ".join(f"{k} = :{k}" for k in safe)
     safe["id"] = event_id
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(
             text(f"UPDATE cash_events SET {set_clause} WHERE id = :id"),  # noqa: S608
             safe,
@@ -228,10 +228,10 @@ def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
 
 def delete_obligation(event_id: str) -> bool:
     """Hard-delete a manual obligation. Returns True if a row was removed."""
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         result = conn.execute(
             text("DELETE FROM cash_events WHERE id = :id AND source = 'manual'"),
             {"id": event_id},
@@ -249,7 +249,7 @@ def list_obligations(
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     """Return cash events matching the given filters, ordered by due_date."""
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     conditions = ["1=1"]
@@ -274,7 +274,7 @@ def list_obligations(
     params["limit"] = limit
     where = " AND ".join(conditions)
 
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         rows = conn.execute(
             text(f"SELECT * FROM cash_events WHERE {where} ORDER BY due_date ASC LIMIT :limit"),  # noqa: S608
             params,
@@ -298,13 +298,13 @@ def create_recurring_template(
     next_due_date: date,
     day_of_month: Optional[int] = None,
 ) -> dict[str, Any]:
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     template_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(
             text("""
                 INSERT INTO recurring_templates (
@@ -335,10 +335,10 @@ def create_recurring_template(
 
 
 def get_recurring_template(template_id: str) -> Optional[dict[str, Any]]:
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         row = conn.execute(
             text("SELECT * FROM recurring_templates WHERE id = :id"),
             {"id": template_id},
@@ -347,11 +347,11 @@ def get_recurring_template(template_id: str) -> Optional[dict[str, Any]]:
 
 
 def list_recurring_templates(*, active_only: bool = True) -> list[dict[str, Any]]:
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     where = "WHERE is_active = TRUE" if active_only else ""
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         rows = conn.execute(
             text(f"SELECT * FROM recurring_templates {where} ORDER BY next_due_date ASC"),  # noqa: S608
         ).fetchall()
@@ -359,7 +359,7 @@ def list_recurring_templates(*, active_only: bool = True) -> list[dict[str, Any]
 
 
 def update_recurring_template(template_id: str, **fields: Any) -> Optional[dict[str, Any]]:
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     allowed = {
@@ -374,7 +374,7 @@ def update_recurring_template(template_id: str, **fields: Any) -> Optional[dict[
     set_clause = ", ".join(f"{k} = :{k}" for k in safe)
     safe["id"] = template_id
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(
             text(f"UPDATE recurring_templates SET {set_clause} WHERE id = :id"),  # noqa: S608
             safe,
@@ -383,10 +383,10 @@ def update_recurring_template(template_id: str, **fields: Any) -> Optional[dict[
 
 
 def delete_recurring_template(template_id: str) -> bool:
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         result = conn.execute(
             text("DELETE FROM recurring_templates WHERE id = :id"),
             {"id": template_id},
@@ -410,12 +410,12 @@ def generate_upcoming_from_templates(
 
     If *advance_template* is True, bump next_due_date forward after creating.
     """
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     # Check cooldown — skip if ran within last 6 hours
     try:
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             row = conn.execute(text("SELECT value FROM kv_store WHERE key='template_gen_last_run'")).fetchone()
         if row:
             last_run = datetime.fromisoformat(row[0])
@@ -439,7 +439,7 @@ def generate_upcoming_from_templates(
             continue
 
         # Check if an event already exists for this template + date
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             existing = conn.execute(
                 text("""
                     SELECT id FROM cash_events
@@ -474,7 +474,7 @@ def generate_upcoming_from_templates(
 
     # Update last-run timestamp
     try:
-        with engine.begin() as conn:
+        with get_engine().begin() as conn:
             conn.execute(text("""
                 INSERT INTO kv_store (key, value, updated_at) VALUES ('template_gen_last_run', :now, :now)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
@@ -494,7 +494,7 @@ def import_clickup_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
     Upsert a batch of raw ClickUp task dicts as CashEvents (source='clickup').
     Returns {"created": N, "updated": N, "skipped": N}.
     """
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sales_support_agent.services.cashflow.normalizers import normalize_clickup_task
     from sqlalchemy import text
 
@@ -518,7 +518,7 @@ def import_clickup_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
             else str(due_date_raw)[:10] if due_date_raw else None
         )
 
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             existing = conn.execute(
                 text("SELECT id FROM cash_events WHERE clickup_task_id = :cid"),
                 {"cid": clickup_id},
@@ -539,7 +539,7 @@ def import_clickup_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
             counts["updated"] += 1
         else:
             event_id = str(uuid.uuid4())
-            with engine.begin() as conn:
+            with get_engine().begin() as conn:
                 conn.execute(
                     text("""
                         INSERT INTO cash_events (

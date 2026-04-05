@@ -12,9 +12,9 @@ from sales_support_agent.services.cashflow.obligations import list_obligations
 def _get_dismissed_keys() -> set:
     """Load dismissed alert keys from kv_store."""
     try:
-        from sales_support_agent.models.database import engine
+        from sales_support_agent.models.database import get_engine
         from sqlalchemy import text
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             rows = conn.execute(text("SELECT key FROM kv_store WHERE key LIKE 'alert_dismissed:%'")).fetchall()
         return {row[0] for row in rows}
     except Exception:
@@ -24,9 +24,9 @@ def _get_dismissed_keys() -> set:
 def _get_bulk_dismiss_time():
     """Get the bulk dismiss timestamp if set."""
     try:
-        from sales_support_agent.models.database import engine
+        from sales_support_agent.models.database import get_engine
         from sqlalchemy import text
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             row = conn.execute(text("SELECT value FROM kv_store WHERE key='alerts_bulk_dismissed_at'")).fetchone()
         if row:
             return datetime.fromisoformat(row[0])

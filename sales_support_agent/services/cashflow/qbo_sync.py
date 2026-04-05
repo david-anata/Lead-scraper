@@ -93,11 +93,11 @@ def _save_refresh_token(realm_id: str, new_refresh_token: str) -> None:
     Falls back silently if the table doesn't exist yet (first run).
     """
     try:
-        from sales_support_agent.models.database import engine
+        from sales_support_agent.models.database import get_engine
         from sqlalchemy import text
 
         # Ensure table exists
-        with engine.begin() as conn:
+        with get_engine().begin() as conn:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS kv_store (
                     key   TEXT PRIMARY KEY,
@@ -117,10 +117,10 @@ def _save_refresh_token(realm_id: str, new_refresh_token: str) -> None:
 def _load_refresh_token(realm_id: str, fallback: str) -> str:
     """Load a persisted refresh token from DB, falling back to env-var value."""
     try:
-        from sales_support_agent.models.database import engine
+        from sales_support_agent.models.database import get_engine
         from sqlalchemy import text
 
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             row = conn.execute(
                 text("SELECT value FROM kv_store WHERE key = :key"),
                 {"key": f"qbo_refresh_token:{realm_id}"},
@@ -252,7 +252,7 @@ def sync_qbo_invoices(settings):
 
     Returns UploadResult (rows_inserted=created, rows_skipped_duplicate=updated+paid+cancelled).
     """
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sales_support_agent.services.cashflow.upload import UploadResult
     from sqlalchemy import text
 
@@ -313,7 +313,7 @@ def sync_qbo_invoices(settings):
 
             event_id = f"qbo-inv-{inv_id}"
 
-            with engine.connect() as conn:
+            with get_engine().connect() as conn:
                 existing = conn.execute(
                     text("SELECT id, status FROM cash_events WHERE id = :id"),
                     {"id": event_id},
@@ -323,7 +323,7 @@ def sync_qbo_invoices(settings):
             terminal_status = parsed.get("status") if "source" not in parsed else None
             if terminal_status in ("paid", "cancelled"):
                 if existing:
-                    with engine.begin() as conn:
+                    with get_engine().begin() as conn:
                         conn.execute(
                             text("UPDATE cash_events SET status=:s, updated_at=:now WHERE id=:id"),
                             {"s": terminal_status, "now": now_str, "id": event_id},
@@ -335,7 +335,7 @@ def sync_qbo_invoices(settings):
             due_str = due_date_val.isoformat() if isinstance(due_date_val, date) else None
 
             if existing:
-                with engine.begin() as conn:
+                with get_engine().begin() as conn:
                     conn.execute(
                         text("""
                             UPDATE cash_events SET
@@ -363,7 +363,7 @@ def sync_qbo_invoices(settings):
                     )
                 counts["updated"] += 1
             else:
-                with engine.begin() as conn:
+                with get_engine().begin() as conn:
                     conn.execute(
                         text("""
                             INSERT INTO cash_events (

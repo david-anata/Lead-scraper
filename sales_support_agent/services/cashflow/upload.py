@@ -59,12 +59,12 @@ def run_csv_upload(
       - "append": skip rows whose source_id already exists
       - "replace_range": delete existing csv rows in the date range first
     """
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     # -- Auto-detect format and delegate ------------------------------------
     if detect_csv_format(csv_bytes) == "qbo_open_invoices":
-        return _run_qbo_open_invoices_upload(csv_bytes, engine=engine)
+        return _run_qbo_open_invoices_upload(csv_bytes, engine=get_engine())
 
     result = UploadResult()
 
@@ -97,7 +97,7 @@ def run_csv_upload(
         if dates:
             min_date = min(dates)
             max_date = max(dates)
-            with engine.begin() as conn:
+            with get_engine().begin() as conn:
                 conn.execute(
                     text(
                         "DELETE FROM cash_events "
@@ -111,7 +111,7 @@ def run_csv_upload(
                 )
 
     # -- Fetch existing source_ids to detect duplicates ---------------------
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         existing_ids: set[str] = {
             row[0]
             for row in conn.execute(
@@ -119,66 +119,69 @@ def run_csv_upload(
             ).fetchall()
         }
 
-    # -- Insert new rows ----------------------------------------------------
+    # -- Insert new rows (single transaction for all inserts) ---------------
     now = datetime.utcnow().isoformat()
     new_events: list[dict[str, Any]] = []
 
+    rows_to_insert = []
     for row in normalised_rows:
         source_id = row.get("source_id", "")
         if source_id in existing_ids:
             result.rows_skipped_duplicate += 1
             continue
+        rows_to_insert.append(row)
 
-        event_id = str(uuid.uuid4())
-        due_date = row.get("due_date")
-        due_date_str = (
-            due_date.isoformat()
-            if hasattr(due_date, "isoformat")
-            else str(due_date)[:10] if due_date else None
-        )
-
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO cash_events (
-                        id, source, source_id, event_type, category,
-                        subcategory, description, name, vendor_or_customer,
-                        amount_cents, due_date, status, confidence,
-                        account_balance_cents,
-                        bank_transaction_type, bank_reference,
-                        notes, recurring_rule, clickup_task_id,
-                        created_at, updated_at
-                    ) VALUES (
-                        :id, 'csv', :source_id, :event_type, :category,
-                        :subcategory, :description, :name, :vendor_or_customer,
-                        :amount_cents, :due_date, 'posted', 'confirmed',
-                        :account_balance_cents,
-                        :bank_transaction_type, :bank_reference,
-                        '', '', '',
-                        :now, :now
-                    )
-                """),
-                {
-                    "id": event_id,
-                    "source_id": source_id,
-                    "event_type": row.get("event_type", "outflow"),
-                    "category": row.get("category", "other"),
-                    "subcategory": row.get("subcategory", ""),
-                    "description": row.get("description", "") or "",
-                    "name": row.get("name", ""),
-                    "vendor_or_customer": row.get("vendor_or_customer", ""),
-                    "amount_cents": row.get("amount_cents", 0),
-                    "due_date": due_date_str,
-                    "account_balance_cents": row.get("account_balance_cents"),
-                    "bank_transaction_type": row.get("bank_transaction_type", "") or "",
-                    "bank_reference": row.get("bank_reference", "") or "",
-                    "now": now,
-                },
-            )
-
-        existing_ids.add(source_id)
-        result.rows_inserted += 1
-        new_events.append({"id": event_id, **row})
+    if rows_to_insert:
+        with get_engine().begin() as conn:
+            for row in rows_to_insert:
+                source_id = row.get("source_id", "")
+                event_id = str(uuid.uuid4())
+                due_date = row.get("due_date")
+                due_date_str = (
+                    due_date.isoformat()
+                    if hasattr(due_date, "isoformat")
+                    else str(due_date)[:10] if due_date else None
+                )
+                conn.execute(
+                    text("""
+                        INSERT INTO cash_events (
+                            id, source, source_id, event_type, category,
+                            subcategory, description, name, vendor_or_customer,
+                            amount_cents, due_date, status, confidence,
+                            account_balance_cents,
+                            bank_transaction_type, bank_reference,
+                            notes, recurring_rule, clickup_task_id,
+                            created_at, updated_at
+                        ) VALUES (
+                            :id, 'csv', :source_id, :event_type, :category,
+                            :subcategory, :description, :name, :vendor_or_customer,
+                            :amount_cents, :due_date, 'posted', 'confirmed',
+                            :account_balance_cents,
+                            :bank_transaction_type, :bank_reference,
+                            '', '', '',
+                            :now, :now
+                        )
+                    """),
+                    {
+                        "id": event_id,
+                        "source_id": source_id,
+                        "event_type": row.get("event_type", "outflow"),
+                        "category": row.get("category", "other"),
+                        "subcategory": row.get("subcategory", ""),
+                        "description": row.get("description", "") or "",
+                        "name": row.get("name", ""),
+                        "vendor_or_customer": row.get("vendor_or_customer", ""),
+                        "amount_cents": row.get("amount_cents", 0),
+                        "due_date": due_date_str,
+                        "account_balance_cents": row.get("account_balance_cents"),
+                        "bank_transaction_type": row.get("bank_transaction_type", "") or "",
+                        "bank_reference": row.get("bank_reference", "") or "",
+                        "now": now,
+                    },
+                )
+                existing_ids.add(source_id)
+                result.rows_inserted += 1
+                new_events.append({"id": event_id, **row})
 
     # -- Auto-match against planned obligations -----------------------------
     if new_events:
@@ -192,7 +195,7 @@ def run_csv_upload(
         for mr in match_results:
             if mr.planned_event_id is None:
                 continue
-            with engine.begin() as conn:
+            with get_engine().begin() as conn:
                 conn.execute(
                     text("""
                         UPDATE cash_events

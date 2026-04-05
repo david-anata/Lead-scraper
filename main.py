@@ -117,6 +117,16 @@ app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 from sales_support_agent.api.cashflow_router import router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
 
+
+@app.on_event("startup")
+async def _startup_init():
+    """Ensure cashflow DB tables exist before serving requests."""
+    from sales_support_agent.models.database import init_cashflow_db
+    from sales_support_agent.config import load_settings
+    settings = load_settings()
+    init_cashflow_db(settings.sales_agent_db_url)
+
+
 LEAD_RUN_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lead-build")
 ACTIVE_LEAD_RUNS: dict[str, Future[Any]] = {}
 ADMIN_SYNC_LOCK = threading.Lock()

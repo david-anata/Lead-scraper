@@ -182,7 +182,7 @@ def _next_monthly_dates(base: date, count: int) -> list[date]:
 
 def sync_clickup_finance(settings):
     """Sync AP and AR ClickUp tasks into cash_events. Returns UploadResult."""
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sales_support_agent.services.cashflow.upload import UploadResult
     from sqlalchemy import text
 
@@ -220,7 +220,7 @@ def sync_clickup_finance(settings):
                     skipped += 1
                     continue
 
-                upsert_result = _upsert_event(engine, ev)
+                upsert_result = _upsert_event(get_engine(), ev)
                 if upsert_result == "created":
                     created += 1
                 elif upsert_result == "updated":
@@ -249,7 +249,7 @@ def sync_clickup_finance(settings):
                         fev["due_date"] = fdate
                         fev["status"] = "planned"
                         fev["source"] = "clickup-recurring"
-                        upsert_result = _upsert_event(engine, fev)
+                        upsert_result = _upsert_event(get_engine(), fev)
                         if upsert_result == "created":
                             created += 1
                         elif upsert_result == "updated":

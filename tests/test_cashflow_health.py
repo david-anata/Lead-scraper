@@ -42,16 +42,26 @@ def _src(module_path: str) -> str:
 # ===========================================================================
 
 class TestHealthEndpointNoDB(unittest.TestCase):
-    """Health route must return 200 JSON even when no DB engine is wired up."""
+    """Health route must return 200 JSON when authenticated (no DB engine wired up)."""
 
     def setUp(self) -> None:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from sales_support_agent.api.cashflow_router import router
+        from unittest.mock import patch
 
         app = FastAPI()
         app.include_router(router)
         self.client = TestClient(app, raise_server_exceptions=False)
+        # Patch auth so health endpoint behaves as if user has finance access
+        self._auth_patcher = patch(
+            "sales_support_agent.api.cashflow_router.has_finance_access",
+            return_value=True,
+        )
+        self._auth_patcher.start()
+
+    def tearDown(self) -> None:
+        self._auth_patcher.stop()
 
     def test_returns_200(self) -> None:
         resp = self.client.get("/admin/finances/health")
@@ -70,10 +80,14 @@ class TestHealthEndpointNoDB(unittest.TestCase):
         resp = self.client.get("/admin/finances/health")
         self.assertIn(resp.json()["status"], {"ok", "degraded", "error"})
 
-    def test_no_auth_cookie_required(self) -> None:
-        """Must not redirect to login (303)."""
-        resp = self.client.get("/admin/finances/health")
-        self.assertNotEqual(resp.status_code, 303)
+    def test_auth_guard_redirects_unauthenticated(self) -> None:
+        """Unauthenticated request must redirect to login (303)."""
+        self._auth_patcher.stop()
+        try:
+            resp = self.client.get("/admin/finances/health", follow_redirects=False)
+            self.assertEqual(resp.status_code, 303)
+        finally:
+            self._auth_patcher.start()
 
 
 # ===========================================================================
@@ -92,6 +106,7 @@ class TestHealthEndpointWithDB(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from sales_support_agent.api.cashflow_router import router
+        from unittest.mock import patch
 
         # StaticPool forces all connections to reuse the same in-memory DB
         engine = create_engine(
@@ -135,11 +150,19 @@ class TestHealthEndpointWithDB(unittest.TestCase):
         self._db_mod = _db_mod
         self._original_engine = None  # already replaced above
 
+        # Patch auth so health endpoint behaves as if user has finance access
+        self._auth_patcher = patch(
+            "sales_support_agent.api.cashflow_router.has_finance_access",
+            return_value=True,
+        )
+        self._auth_patcher.start()
+
         app = FastAPI()
         app.include_router(router)
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
+        self._auth_patcher.stop()
         self._db_mod.engine = None  # reset
 
     def test_returns_200(self) -> None:

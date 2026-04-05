@@ -63,11 +63,14 @@ def _redirect_login() -> RedirectResponse:
 # ---------------------------------------------------------------------------
 
 @router.get("/health")
-async def cashflow_health():
+async def cashflow_health(request: Request):
     """
     Self-test endpoint.  Returns JSON with DB column state and static INSERT
-    coverage for every cashflow write path.  No session cookie required.
+    coverage for every cashflow write path.
     """
+    if not has_finance_access(request):
+        return _redirect_login()
+
     import importlib as _importlib
     import inspect as _inspect
     from fastapi.responses import JSONResponse
@@ -89,10 +92,10 @@ async def cashflow_health():
 
     # -- Live DB check -------------------------------------------------------
     try:
-        from sales_support_agent.models.database import engine
+        from sales_support_agent.models.database import get_engine
         from sqlalchemy import inspect as _sainsp
 
-        insp = _sainsp(engine)
+        insp = _sainsp(get_engine())
         tables = set(insp.get_table_names())
         checks["cash_events_table_exists"] = "cash_events" in tables
 
@@ -167,7 +170,7 @@ async def patch_event(event_id: str, request: Request):
     if not has_finance_access(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
     body = await request.json()
@@ -182,7 +185,7 @@ async def patch_event(event_id: str, request: Request):
     updates["event_id"] = event_id
     updates["now"] = now
 
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         result = conn.execute(
             text(f"UPDATE cash_events SET {set_clauses}, updated_at = :now WHERE id = :event_id"),
             updates
@@ -603,10 +606,10 @@ async def calendar_page(request: Request):
 async def dismiss_alert(alert_id: str, request: Request):
     if not has_finance_access(request):
         return _redirect_login()
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
     now = datetime.utcnow().isoformat()
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(text("""
             INSERT INTO kv_store (key, value, updated_at) VALUES (:key, 'dismissed', :now)
             ON CONFLICT(key) DO UPDATE SET value='dismissed', updated_at=excluded.updated_at
@@ -619,10 +622,10 @@ async def dismiss_alert(alert_id: str, request: Request):
 async def dismiss_all_alerts(request: Request):
     if not has_finance_access(request):
         return _redirect_login()
-    from sales_support_agent.models.database import engine
+    from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
     now = datetime.utcnow().isoformat()
-    with engine.begin() as conn:
+    with get_engine().begin() as conn:
         conn.execute(text("""
             INSERT INTO kv_store (key, value, updated_at) VALUES ('alerts_bulk_dismissed_at', :now, :now)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
