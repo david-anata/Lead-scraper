@@ -180,78 +180,90 @@ def _next_monthly_dates(base: date, count: int) -> list[date]:
     return dates
 
 
-def sync_clickup_finance(settings) -> dict[str, int]:
-    """Sync AP and AR ClickUp tasks into cash_events. Returns counts."""
+def sync_clickup_finance(settings):
+    """Sync AP and AR ClickUp tasks into cash_events. Returns UploadResult."""
     from sales_support_agent.models.database import engine
+    from sales_support_agent.services.cashflow.upload import UploadResult
     from sqlalchemy import text
 
-    if not settings.clickup_api_token:
-        logger.warning("CLICKUP_API_TOKEN not set — skipping ClickUp finance sync")
-        return {"created": 0, "updated": 0, "skipped": 0}
+    result = UploadResult()
 
-    today = datetime.utcnow().date()
-    created = updated = skipped = 0
+    try:
+        if not settings.clickup_api_token:
+            logger.warning("CLICKUP_API_TOKEN not set — skipping ClickUp finance sync")
+            return result
 
-    list_configs = [
-        (settings.clickup_ap_list_id, "outflow"),
-        (settings.clickup_ar_list_id, "inflow"),
-    ]
+        today = datetime.utcnow().date()
+        created = updated = skipped = 0
 
-    for list_id, event_type in list_configs:
-        if not list_id:
-            continue
-        try:
-            tasks = _fetch_tasks(settings.clickup_api_token, list_id)
-        except Exception as exc:
-            logger.error("Failed to fetch ClickUp list %s: %s", list_id, exc)
-            continue
+        list_configs = [
+            (settings.clickup_ap_list_id, "outflow"),
+            (settings.clickup_ar_list_id, "inflow"),
+        ]
 
-        # Track which task IDs generate forward occurrences so we don't duplicate
-        forward_generated: set[str] = set()
-
-        for task in tasks:
-            ev = _task_to_event_dict(task, event_type, today)
-            if ev["amount_cents"] == 0 and ev["status"] != "paid":
-                skipped += 1
+        for list_id, event_type in list_configs:
+            if not list_id:
+                continue
+            try:
+                tasks = _fetch_tasks(settings.clickup_api_token, list_id)
+            except Exception as exc:
+                logger.error("Failed to fetch ClickUp list %s: %s", list_id, exc)
+                result.errors.append(f"Failed to fetch list {list_id}: {exc}")
                 continue
 
-            result = _upsert_event(engine, ev)
-            if result == "created":
-                created += 1
-            elif result == "updated":
-                updated += 1
+            # Track which task IDs generate forward occurrences so we don't duplicate
+            forward_generated: set[str] = set()
 
-            # Generate forward occurrences for recurring tasks
-            rule = ev.get("recurring_rule", "")
-            base_due = ev.get("due_date")
-            task_id = task["id"]
-            if rule and base_due and task_id not in forward_generated and ev["status"] != "paid":
-                forward_generated.add(task_id)
-                if rule == "weekly":
-                    future_dates = _next_weekly_dates(base_due, 12)
-                elif rule == "monthly":
-                    future_dates = _next_monthly_dates(base_due, 3)
-                else:
-                    future_dates = []
+            for task in tasks:
+                ev = _task_to_event_dict(task, event_type, today)
+                if ev["amount_cents"] == 0 and ev["status"] != "paid":
+                    skipped += 1
+                    continue
 
-                for fdate in future_dates:
-                    if fdate <= today:
-                        continue
-                    fev = dict(ev)
-                    fev["id"] = f"clickup-{task_id}-{fdate.isoformat()}"
-                    fev["source_id"] = f"{task_id}-{fdate.isoformat()}"
-                    fev["clickup_task_id"] = task_id
-                    fev["due_date"] = fdate
-                    fev["status"] = "planned"
-                    fev["source"] = "clickup-recurring"
-                    result = _upsert_event(engine, fev)
-                    if result == "created":
-                        created += 1
-                    elif result == "updated":
-                        updated += 1
+                upsert_result = _upsert_event(engine, ev)
+                if upsert_result == "created":
+                    created += 1
+                elif upsert_result == "updated":
+                    updated += 1
 
-    logger.info("ClickUp finance sync complete: created=%d updated=%d skipped=%d", created, updated, skipped)
-    return {"created": created, "updated": updated, "skipped": skipped}
+                # Generate forward occurrences for recurring tasks
+                rule = ev.get("recurring_rule", "")
+                base_due = ev.get("due_date")
+                task_id = task["id"]
+                if rule and base_due and task_id not in forward_generated and ev["status"] != "paid":
+                    forward_generated.add(task_id)
+                    if rule == "weekly":
+                        future_dates = _next_weekly_dates(base_due, 12)
+                    elif rule == "monthly":
+                        future_dates = _next_monthly_dates(base_due, 3)
+                    else:
+                        future_dates = []
+
+                    for fdate in future_dates:
+                        if fdate <= today:
+                            continue
+                        fev = dict(ev)
+                        fev["id"] = f"clickup-{task_id}-{fdate.isoformat()}"
+                        fev["source_id"] = f"{task_id}-{fdate.isoformat()}"
+                        fev["clickup_task_id"] = task_id
+                        fev["due_date"] = fdate
+                        fev["status"] = "planned"
+                        fev["source"] = "clickup-recurring"
+                        upsert_result = _upsert_event(engine, fev)
+                        if upsert_result == "created":
+                            created += 1
+                        elif upsert_result == "updated":
+                            updated += 1
+
+        logger.info("ClickUp finance sync complete: created=%d updated=%d skipped=%d", created, updated, skipped)
+        result.rows_inserted = created
+        result.rows_skipped_duplicate = updated + skipped
+
+    except Exception as exc:
+        logger.error("ClickUp sync error: %s", exc)
+        result.errors.append(str(exc))
+
+    return result
 
 
 def _upsert_event(engine, ev: dict) -> str:

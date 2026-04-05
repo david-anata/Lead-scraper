@@ -7,6 +7,61 @@ from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 
+def get_events_for_range(
+    from_date,
+    to_date,
+    *,
+    event_type=None,       # "inflow" | "outflow" | None = both
+    include_statuses=None, # list of statuses; None = all non-cancelled
+    limit=5000,
+) -> list[dict]:
+    """Fetch cash_events with due_date in [from_date, to_date].
+
+    Used by Calendar and Ledger views. Faster than list_obligations()
+    for date-bounded queries because it uses the due_date index.
+    """
+    from sales_support_agent.models.database import engine
+    from sqlalchemy import text
+
+    from_str = from_date.isoformat() if hasattr(from_date, "isoformat") else str(from_date)
+    to_str = to_date.isoformat() if hasattr(to_date, "isoformat") else str(to_date)
+
+    where_clauses = ["due_date >= :from_date", "due_date <= :to_date", "status != 'cancelled'"]
+    params = {"from_date": from_str, "to_date": to_str, "limit": limit}
+
+    if event_type:
+        where_clauses.append("event_type = :event_type")
+        params["event_type"] = event_type
+
+    if include_statuses:
+        placeholders = ", ".join(f":s{i}" for i in range(len(include_statuses)))
+        where_clauses.append(f"status IN ({placeholders})")
+        for i, s in enumerate(include_statuses):
+            params[f"s{i}"] = s
+
+    sql = f"""
+        SELECT id, source, source_id, event_type, category, subcategory,
+               description, name, vendor_or_customer, amount_cents,
+               due_date, status, confidence, account_balance_cents,
+               bank_transaction_type, bank_reference, notes, recurring_rule,
+               clickup_task_id, friendly_name, created_at, updated_at
+        FROM cash_events
+        WHERE {" AND ".join(where_clauses)}
+        ORDER BY due_date ASC, created_at ASC
+        LIMIT :limit
+    """
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).fetchall()
+
+    cols = ["id","source","source_id","event_type","category","subcategory",
+            "description","name","vendor_or_customer","amount_cents","due_date",
+            "status","confidence","account_balance_cents","bank_transaction_type",
+            "bank_reference","notes","recurring_rule","clickup_task_id","friendly_name",
+            "created_at","updated_at"]
+    return [dict(zip(cols, row)) for row in rows]
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers

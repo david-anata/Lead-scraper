@@ -6,13 +6,13 @@ import html
 from datetime import date, datetime
 from typing import Any
 
-from sales_support_agent.services.cashflow.engine import aggregate_weeks, flag_risks
-from sales_support_agent.services.cashflow.obligations import list_obligations
-from sales_support_agent.services.cashflow.overview import (
+from sales_support_agent.services.cashflow.cashflow_helpers import (
     _dollar,
     _events_to_dtos,
     _page_shell,
 )
+from sales_support_agent.services.cashflow.engine import aggregate_weeks, flag_risks
+from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
 def render_weekly_forecast_page(*, flash: str = "") -> str:

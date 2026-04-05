@@ -247,166 +247,174 @@ def _invoice_to_event(inv: dict) -> Optional[dict]:
 # Main sync function
 # ---------------------------------------------------------------------------
 
-def sync_qbo_invoices(settings) -> dict[str, int]:
+def sync_qbo_invoices(settings):
     """Pull open QBO invoices into cash_events.
 
-    Returns {"created": N, "updated": N, "paid": N, "cancelled": N, "skipped": N}
+    Returns UploadResult (rows_inserted=created, rows_skipped_duplicate=updated+paid+cancelled).
     """
     from sales_support_agent.models.database import engine
+    from sales_support_agent.services.cashflow.upload import UploadResult
     from sqlalchemy import text
 
-    if not all([settings.qbo_client_id, settings.qbo_client_secret,
-                settings.qbo_realm_id]):
-        logger.warning("QBO credentials not configured — skipping QBO sync")
-        return {"created": 0, "updated": 0, "paid": 0, "cancelled": 0, "skipped": 0}
-
-    realm_id = settings.qbo_realm_id
-    base_url = QBO_SAND_BASE if settings.qbo_sandbox else QBO_PROD_BASE
+    result = UploadResult()
     counts = {"created": 0, "updated": 0, "paid": 0, "cancelled": 0, "skipped": 0}
 
-    # -- OAuth: get fresh access token ----------------------------------------
-    refresh_token = _load_refresh_token(realm_id, settings.qbo_refresh_token)
     try:
-        token_data = _refresh_access_token(
-            settings.qbo_client_id,
-            settings.qbo_client_secret,
-            refresh_token,
-        )
-    except Exception as exc:
-        logger.error("QBO OAuth token refresh failed: %s", exc)
-        raise
+        if not all([settings.qbo_client_id, settings.qbo_client_secret,
+                    settings.qbo_realm_id]):
+            logger.warning("QBO credentials not configured — skipping QBO sync")
+            return result
 
-    access_token = token_data["access_token"]
-    new_refresh_token = token_data.get("refresh_token", refresh_token)
-    if new_refresh_token != refresh_token:
-        _save_refresh_token(realm_id, new_refresh_token)
+        realm_id = settings.qbo_realm_id
+        base_url = QBO_SAND_BASE if settings.qbo_sandbox else QBO_PROD_BASE
 
-    # -- Fetch invoices -------------------------------------------------------
-    # Pull all non-void invoices modified in last 365 days (captures new, updated, paid)
-    try:
-        invoices = _query(
-            base_url, realm_id, access_token,
-            "SELECT * FROM Invoice MAXRESULTS 1000",
-        )
-    except Exception as exc:
-        logger.error("QBO Invoice query failed: %s", exc)
-        raise
+        # -- OAuth: get fresh access token ----------------------------------------
+        refresh_token = _load_refresh_token(realm_id, settings.qbo_refresh_token)
+        try:
+            token_data = _refresh_access_token(
+                settings.qbo_client_id,
+                settings.qbo_client_secret,
+                refresh_token,
+            )
+        except Exception as exc:
+            logger.error("QBO OAuth token refresh failed: %s", exc)
+            raise
 
-    logger.info("QBO sync: fetched %d invoices", len(invoices))
+        access_token = token_data["access_token"]
+        new_refresh_token = token_data.get("refresh_token", refresh_token)
+        if new_refresh_token != refresh_token:
+            _save_refresh_token(realm_id, new_refresh_token)
 
-    # -- Upsert into cash_events ----------------------------------------------
-    now_str = datetime.utcnow().isoformat()
+        # -- Fetch invoices -------------------------------------------------------
+        try:
+            invoices = _query(
+                base_url, realm_id, access_token,
+                "SELECT * FROM Invoice MAXRESULTS 1000",
+            )
+        except Exception as exc:
+            logger.error("QBO Invoice query failed: %s", exc)
+            raise
 
-    for raw_inv in invoices:
-        inv_id = str(raw_inv.get("Id", ""))
-        if not inv_id:
-            counts["skipped"] += 1
-            continue
+        logger.info("QBO sync: fetched %d invoices", len(invoices))
 
-        parsed = _invoice_to_event(raw_inv)
-        if parsed is None:
-            counts["skipped"] += 1
-            continue
+        # -- Upsert into cash_events ----------------------------------------------
+        now_str = datetime.utcnow().isoformat()
 
-        event_id = f"qbo-inv-{inv_id}"
+        for raw_inv in invoices:
+            inv_id = str(raw_inv.get("Id", ""))
+            if not inv_id:
+                counts["skipped"] += 1
+                continue
 
-        with engine.connect() as conn:
-            existing = conn.execute(
-                text("SELECT id, status FROM cash_events WHERE id = :id"),
-                {"id": event_id},
-            ).fetchone()
+            parsed = _invoice_to_event(raw_inv)
+            if parsed is None:
+                counts["skipped"] += 1
+                continue
 
-        # Handle paid / cancelled updates
-        terminal_status = parsed.get("status") if "source" not in parsed else None
-        if terminal_status in ("paid", "cancelled"):
+            event_id = f"qbo-inv-{inv_id}"
+
+            with engine.connect() as conn:
+                existing = conn.execute(
+                    text("SELECT id, status FROM cash_events WHERE id = :id"),
+                    {"id": event_id},
+                ).fetchone()
+
+            # Handle paid / cancelled updates
+            terminal_status = parsed.get("status") if "source" not in parsed else None
+            if terminal_status in ("paid", "cancelled"):
+                if existing:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("UPDATE cash_events SET status=:s, updated_at=:now WHERE id=:id"),
+                            {"s": terminal_status, "now": now_str, "id": event_id},
+                        )
+                    counts[terminal_status] += 1
+                continue
+
+            due_date_val = parsed.get("due_date")
+            due_str = due_date_val.isoformat() if isinstance(due_date_val, date) else None
+
             if existing:
                 with engine.begin() as conn:
                     conn.execute(
-                        text("UPDATE cash_events SET status=:s, updated_at=:now WHERE id=:id"),
-                        {"s": terminal_status, "now": now_str, "id": event_id},
+                        text("""
+                            UPDATE cash_events SET
+                                amount_cents=:amount_cents,
+                                due_date=:due_date,
+                                description=:description,
+                                notes=:notes,
+                                vendor_or_customer=:vendor_or_customer,
+                                name=:name,
+                                status=:status,
+                                updated_at=:now
+                            WHERE id=:id
+                        """),
+                        {
+                            "amount_cents": parsed["amount_cents"],
+                            "due_date": due_str,
+                            "description": parsed["description"],
+                            "notes": parsed["notes"],
+                            "vendor_or_customer": parsed["vendor_or_customer"],
+                            "name": parsed["name"],
+                            "status": parsed["status"],
+                            "now": now_str,
+                            "id": event_id,
+                        },
                     )
-                counts[terminal_status] += 1
-            # If it was never in our DB, skip — no need to create a paid invoice
-            continue
+                counts["updated"] += 1
+            else:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            INSERT INTO cash_events (
+                                id, source, source_id, event_type, category,
+                                subcategory, description, name, vendor_or_customer,
+                                amount_cents, due_date, status, confidence,
+                                recurring_rule, clickup_task_id,
+                                bank_transaction_type, bank_reference, notes,
+                                created_at, updated_at
+                            ) VALUES (
+                                :id, :source, :source_id, :event_type, :category,
+                                :subcategory, :description, :name, :vendor_or_customer,
+                                :amount_cents, :due_date, :status, :confidence,
+                                :recurring_rule, :clickup_task_id,
+                                :bank_transaction_type, :bank_reference, :notes,
+                                :now, :now
+                            )
+                        """),
+                        {
+                            "id": event_id,
+                            "source": parsed["source"],
+                            "source_id": parsed["source_id"],
+                            "event_type": parsed["event_type"],
+                            "category": parsed["category"],
+                            "subcategory": parsed["subcategory"],
+                            "description": parsed["description"],
+                            "name": parsed["name"],
+                            "vendor_or_customer": parsed["vendor_or_customer"],
+                            "amount_cents": parsed["amount_cents"],
+                            "due_date": due_str,
+                            "status": parsed["status"],
+                            "confidence": parsed["confidence"],
+                            "recurring_rule": parsed["recurring_rule"],
+                            "clickup_task_id": parsed["clickup_task_id"],
+                            "bank_transaction_type": parsed["bank_transaction_type"],
+                            "bank_reference": parsed["bank_reference"],
+                            "notes": parsed["notes"],
+                            "now": now_str,
+                        },
+                    )
+                counts["created"] += 1
 
-        due_date_val = parsed.get("due_date")
-        due_str = due_date_val.isoformat() if isinstance(due_date_val, date) else None
+        logger.info(
+            "QBO sync complete: created=%d updated=%d paid=%d cancelled=%d skipped=%d",
+            counts["created"], counts["updated"], counts["paid"], counts["cancelled"], counts["skipped"],
+        )
 
-        if existing:
-            # Update outstanding balance and date
-            with engine.begin() as conn:
-                conn.execute(
-                    text("""
-                        UPDATE cash_events SET
-                            amount_cents=:amount_cents,
-                            due_date=:due_date,
-                            description=:description,
-                            notes=:notes,
-                            vendor_or_customer=:vendor_or_customer,
-                            name=:name,
-                            status=:status,
-                            updated_at=:now
-                        WHERE id=:id
-                    """),
-                    {
-                        "amount_cents": parsed["amount_cents"],
-                        "due_date": due_str,
-                        "description": parsed["description"],
-                        "notes": parsed["notes"],
-                        "vendor_or_customer": parsed["vendor_or_customer"],
-                        "name": parsed["name"],
-                        "status": parsed["status"],
-                        "now": now_str,
-                        "id": event_id,
-                    },
-                )
-            counts["updated"] += 1
-        else:
-            with engine.begin() as conn:
-                conn.execute(
-                    text("""
-                        INSERT INTO cash_events (
-                            id, source, source_id, event_type, category,
-                            subcategory, description, name, vendor_or_customer,
-                            amount_cents, due_date, status, confidence,
-                            recurring_rule, clickup_task_id,
-                            bank_transaction_type, bank_reference, notes,
-                            created_at, updated_at
-                        ) VALUES (
-                            :id, :source, :source_id, :event_type, :category,
-                            :subcategory, :description, :name, :vendor_or_customer,
-                            :amount_cents, :due_date, :status, :confidence,
-                            :recurring_rule, :clickup_task_id,
-                            :bank_transaction_type, :bank_reference, :notes,
-                            :now, :now
-                        )
-                    """),
-                    {
-                        "id": event_id,
-                        "source": parsed["source"],
-                        "source_id": parsed["source_id"],
-                        "event_type": parsed["event_type"],
-                        "category": parsed["category"],
-                        "subcategory": parsed["subcategory"],
-                        "description": parsed["description"],
-                        "name": parsed["name"],
-                        "vendor_or_customer": parsed["vendor_or_customer"],
-                        "amount_cents": parsed["amount_cents"],
-                        "due_date": due_str,
-                        "status": parsed["status"],
-                        "confidence": parsed["confidence"],
-                        "recurring_rule": parsed["recurring_rule"],
-                        "clickup_task_id": parsed["clickup_task_id"],
-                        "bank_transaction_type": parsed["bank_transaction_type"],
-                        "bank_reference": parsed["bank_reference"],
-                        "notes": parsed["notes"],
-                        "now": now_str,
-                    },
-                )
-            counts["created"] += 1
+    except Exception as exc:
+        logger.error("QBO sync error: %s", exc)
+        result.errors.append(str(exc))
 
-    logger.info(
-        "QBO sync complete: created=%d updated=%d paid=%d cancelled=%d skipped=%d",
-        counts["created"], counts["updated"], counts["paid"], counts["cancelled"], counts["skipped"],
-    )
-    return counts
+    result.rows_inserted = counts["created"]
+    result.rows_skipped_duplicate = counts["updated"] + counts["paid"] + counts["cancelled"] + counts["skipped"]
+    return result

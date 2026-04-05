@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import os
 from threading import Lock
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from sales_support_agent.api.auth_router import router as auth_router
 from sales_support_agent.api.cashflow_router import router as cashflow_router
@@ -23,6 +25,9 @@ def create_app() -> FastAPI:
     init_cashflow_db(settings.sales_agent_db_url)
 
     app = FastAPI(title="Sales Support Agent")
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    os.makedirs(static_dir, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.state.settings = settings
     # Also expose as agent_settings so auth_deps._get_auth_settings() finds it
     # via the preferred code path (agent_settings → admin_dashboard_settings → settings).

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from sales_support_agent.services.cashflow.alerts import render_risk_alerts_page
 from sales_support_agent.services.cashflow.ap import (
@@ -356,7 +357,9 @@ async def sync_clickup(request: Request):
     )
     try:
         result = await asyncio.to_thread(sync_clickup_finance, settings)
-        flash = f"ok:Synced from ClickUp — {result['created']} added · {result['updated']} updated · {result['skipped']} skipped"
+        flash = f"ok:Synced from ClickUp — {result.rows_inserted} added · {result.rows_skipped_duplicate} updated/skipped"
+        if result.errors:
+            flash = f"err:ClickUp sync errors: {'; '.join(result.errors[:2])}"
     except Exception as exc:
         flash = f"err:ClickUp sync failed: {exc}"
     from urllib.parse import quote
@@ -437,10 +440,9 @@ async def sync_qbo(request: Request):
     )
     try:
         result = await asyncio.to_thread(sync_qbo_invoices, settings)
-        flash = (
-            f"ok:QBO synced — {result['created']} new · {result['updated']} updated · "
-            f"{result['paid']} paid · {result['cancelled']} void"
-        )
+        flash = f"ok:QBO synced — {result.rows_inserted} new · {result.rows_skipped_duplicate} updated/skipped"
+        if result.errors:
+            flash = f"err:QBO sync errors: {'; '.join(result.errors[:2])}"
     except Exception as exc:
         flash = f"err:QBO sync failed: {exc}"
     from urllib.parse import quote

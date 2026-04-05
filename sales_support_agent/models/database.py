@@ -110,6 +110,7 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "expected_date":         "ALTER TABLE cash_events ADD COLUMN expected_date DATETIME",
             "recurring_template_id": "ALTER TABLE cash_events ADD COLUMN recurring_template_id TEXT",
             "matched_to_id":         "ALTER TABLE cash_events ADD COLUMN matched_to_id TEXT",
+            "friendly_name":         "ALTER TABLE cash_events ADD COLUMN friendly_name TEXT",
         },
     }
 
@@ -122,6 +123,12 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                 if column_name in existing_columns:
                     continue
                 connection.execute(text(statement))
+
+    # Add indexes for Calendar/Ledger range queries
+    with engine.begin() as conn:
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_due_date ON cash_events(due_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_source ON cash_events(source)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_status ON cash_events(status)"))
 
 
 def _apply_postgres_compat_migrations(engine: Any) -> None:
@@ -354,3 +361,42 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_clickup_task_id ON cash_events (clickup_task_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_is_active ON recurring_templates (is_active)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_next_due_date ON recurring_templates (next_due_date)"))
+        # friendly_name column — additive migration for existing Postgres deployments
+        connection.execute(text("ALTER TABLE cash_events ADD COLUMN IF NOT EXISTS friendly_name TEXT NULL"))
+
+
+def insert_cash_event(conn, *, id, source, source_id, event_type, category,
+                       subcategory="", description="", name="", vendor_or_customer="",
+                       amount_cents=0, due_date=None, status="planned",
+                       confidence="estimated", account_balance_cents=None,
+                       bank_transaction_type="", bank_reference="", notes="",
+                       recurring_rule="", clickup_task_id="", friendly_name=None,
+                       created_at, updated_at):
+    """Single canonical INSERT for cash_events. Use this everywhere instead of inline SQL."""
+    due_str = due_date.isoformat() if hasattr(due_date, "isoformat") else (str(due_date)[:10] if due_date else None)
+    conn.execute(text("""
+        INSERT INTO cash_events (
+            id, source, source_id, event_type, category,
+            subcategory, description, name, vendor_or_customer,
+            amount_cents, due_date, status, confidence,
+            account_balance_cents, bank_transaction_type, bank_reference,
+            notes, recurring_rule, clickup_task_id, friendly_name,
+            created_at, updated_at
+        ) VALUES (
+            :id, :source, :source_id, :event_type, :category,
+            :subcategory, :description, :name, :vendor_or_customer,
+            :amount_cents, :due_date, :status, :confidence,
+            :account_balance_cents, :bank_transaction_type, :bank_reference,
+            :notes, :recurring_rule, :clickup_task_id, :friendly_name,
+            :created_at, :updated_at
+        )
+    """), {
+        "id": id, "source": source, "source_id": source_id, "event_type": event_type,
+        "category": category, "subcategory": subcategory, "description": description,
+        "name": name, "vendor_or_customer": vendor_or_customer, "amount_cents": amount_cents,
+        "due_date": due_str, "status": status, "confidence": confidence,
+        "account_balance_cents": account_balance_cents,
+        "bank_transaction_type": bank_transaction_type, "bank_reference": bank_reference,
+        "notes": notes, "recurring_rule": recurring_rule, "clickup_task_id": clickup_task_id,
+        "friendly_name": friendly_name, "created_at": created_at, "updated_at": updated_at,
+    })

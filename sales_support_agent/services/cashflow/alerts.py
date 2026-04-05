@@ -5,9 +5,9 @@ from __future__ import annotations
 import html
 from datetime import datetime
 
+from sales_support_agent.services.cashflow.cashflow_helpers import _dollar, _events_to_dtos, _page_shell
 from sales_support_agent.services.cashflow.engine import aggregate_weeks, flag_risks
 from sales_support_agent.services.cashflow.obligations import list_obligations
-from sales_support_agent.services.cashflow.overview import _dollar, _events_to_dtos, _page_shell
 
 
 def render_risk_alerts_page(*, flash: str = "") -> str:
