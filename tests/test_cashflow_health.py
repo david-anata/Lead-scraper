@@ -276,6 +276,7 @@ class TestCashflowModuleImports(unittest.TestCase):
         "sales_support_agent.services.cashflow.engine",
         "sales_support_agent.api.cashflow_router",
         "sales_support_agent.services.auth_deps",
+        "sales_support_agent.services.cashflow.qbo_sync",
     ]
 
     def _importable(self, path: str) -> None:
@@ -298,6 +299,7 @@ class TestCashflowModuleImports(unittest.TestCase):
     def test_engine(self):           self._importable("sales_support_agent.services.cashflow.engine")
     def test_cashflow_router(self):  self._importable("sales_support_agent.api.cashflow_router")
     def test_auth_deps(self):        self._importable("sales_support_agent.services.auth_deps")
+    def test_qbo_sync(self):         self._importable("sales_support_agent.services.cashflow.qbo_sync")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,16 @@ from sales_support_agent.services.cashflow.overview import (
 
 
 def render_weekly_forecast_page(*, flash: str = "") -> str:
+    # Auto-expand recurring templates so forecast always shows full 12-week horizon.
+    # This is a no-op if all upcoming events already exist (upsert by template+date).
+    try:
+        from sales_support_agent.services.cashflow.obligations import (
+            generate_upcoming_from_templates,
+        )
+        generate_upcoming_from_templates(horizon_days=90, advance_template=True)
+    except Exception:
+        pass  # never let template expansion crash the forecast page
+
     rows = list_obligations(limit=2000)
     events = _events_to_dtos(rows)
 

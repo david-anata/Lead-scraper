@@ -647,6 +647,9 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
       <a href="/admin/finances/ap/new" class="btn btn-secondary">+ Add Payable</a>
       <a href="/admin/finances/ar/new" class="btn btn-secondary">+ Add Receivable</a>
       <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring Templates</a>
+      <form method="post" action="/admin/finances/sync-qbo" style="display:inline;margin:0">
+        <button type="submit" class="btn btn-secondary">Sync QBO Invoices</button>
+      </form>
     </div>"""
 
     return _page_shell("Finance Overview", "overview", body, flash=flash)

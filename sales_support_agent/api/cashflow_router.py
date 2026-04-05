@@ -44,6 +44,7 @@ from sales_support_agent.services.cashflow.upload_page import (
 )
 from sales_support_agent.services.auth_deps import has_finance_access
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
+from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 
 router = APIRouter(prefix="/admin/finances", tags=["finance"])
 
@@ -419,6 +420,31 @@ async def recurring_delete(request: Request, template_id: str):
         return _redirect_login()
     delete_recurring_template(template_id)
     return RedirectResponse("/admin/finances/recurring?flash=ok:Deleted", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# QBO invoice sync
+# ---------------------------------------------------------------------------
+
+@router.post("/sync-qbo", response_class=HTMLResponse)
+async def sync_qbo(request: Request):
+    if not has_finance_access(request):
+        return _redirect_login()
+    settings = (
+        getattr(request.app.state, "agent_settings", None)
+        or getattr(request.app.state, "admin_dashboard_settings", None)
+        or request.app.state.settings
+    )
+    try:
+        result = await asyncio.to_thread(sync_qbo_invoices, settings)
+        flash = (
+            f"ok:QBO synced — {result['created']} new · {result['updated']} updated · "
+            f"{result['paid']} paid · {result['cancelled']} void"
+        )
+    except Exception as exc:
+        flash = f"err:QBO sync failed: {exc}"
+    from urllib.parse import quote
+    return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
 
 
 @router.post("/recurring/generate", response_class=HTMLResponse)

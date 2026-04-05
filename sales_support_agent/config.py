@@ -169,6 +169,12 @@ class Settings:
     amazon_sp_api_aws_session_token: str
     clickup_ap_list_id: str = "901104880724"
     clickup_ar_list_id: str = "901113065688"
+    # QuickBooks Online (QBO) — AR invoice sync
+    qbo_client_id: str = ""
+    qbo_client_secret: str = ""
+    qbo_refresh_token: str = ""
+    qbo_realm_id: str = ""           # Company ID shown in QBO URL
+    qbo_sandbox: bool = False        # True = use sandbox API endpoint
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_allowed_domain: str = "anatainc.com"
@@ -560,6 +566,11 @@ def load_settings() -> Settings:
         amazon_sp_api_aws_session_token=os.getenv("AMAZON_SP_API_AWS_SESSION_TOKEN", "").strip(),
         clickup_ap_list_id=os.getenv("CLICKUP_AP_LIST_ID", "901104880724").strip() or "901104880724",
         clickup_ar_list_id=os.getenv("CLICKUP_AR_LIST_ID", "901113065688").strip() or "901113065688",
+        qbo_client_id=os.getenv("QBO_CLIENT_ID", "").strip(),
+        qbo_client_secret=os.getenv("QBO_CLIENT_SECRET", "").strip(),
+        qbo_refresh_token=os.getenv("QBO_REFRESH_TOKEN", "").strip(),
+        qbo_realm_id=os.getenv("QBO_REALM_ID", "").strip(),
+        qbo_sandbox=_parse_bool(os.getenv("QBO_SANDBOX", "false"), default=False),
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
         google_oauth_allowed_domain=(os.getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN", "anatainc.com").strip() or "anatainc.com"),
