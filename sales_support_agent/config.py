@@ -317,7 +317,10 @@ def _parse_gmail_mailbox_accounts(
 
 
 def normalize_status_key(value: str) -> str:
-    return " ".join((value or "").strip().lower().split())
+    import re as _re
+    # Strip hyphens/dashes so "won - active" == "won active"
+    cleaned = _re.sub(r"\s*-\s*", " ", (value or "").strip().lower())
+    return " ".join(cleaned.split())
 
 
 def build_normalized_status_policies(status_policies: dict[str, StatusPolicy]) -> dict[str, StatusPolicy]:

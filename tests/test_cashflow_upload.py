@@ -65,6 +65,8 @@ class TestRunCsvUpload(unittest.TestCase):
                     source_id TEXT,
                     event_type TEXT,
                     category TEXT,
+                    subcategory TEXT DEFAULT '',
+                    description TEXT DEFAULT '',
                     name TEXT,
                     vendor_or_customer TEXT,
                     amount_cents INTEGER,
@@ -77,27 +79,23 @@ class TestRunCsvUpload(unittest.TestCase):
                     recurring_template_id TEXT,
                     clickup_task_id TEXT,
                     recurring_rule TEXT,
+                    bank_transaction_type TEXT DEFAULT '',
+                    bank_reference TEXT DEFAULT '',
+                    friendly_name TEXT,
                     created_at TEXT,
                     updated_at TEXT
                 )
             """))
 
-        # Patch the engine import inside the upload module
+        # Patch the shared database engine used by all cashflow modules
         self._patcher = patch(
-            "sales_support_agent.services.cashflow.upload.engine",
+            "sales_support_agent.models.database.engine",
             self._engine,
         )
         self._patcher.start()
-        # Also patch obligations.engine so list_obligations works
-        self._patcher2 = patch(
-            "sales_support_agent.services.cashflow.obligations.engine",
-            self._engine,
-        )
-        self._patcher2.start()
 
     def tearDown(self) -> None:
         self._patcher.stop()
-        self._patcher2.stop()
 
     def test_basic_upload_inserts_rows(self) -> None:
         from sales_support_agent.services.cashflow.upload import run_csv_upload

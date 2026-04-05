@@ -102,12 +102,12 @@ _RAW_RULES: list[tuple[str, str]] = [
     (r"CITI AUTOPAY|CITIBANK|Payment to Citibank", "credit_card"),
 
     # ── Owner draws / personal transfers ──────────────────────────────────
-    (r"CANYON VIEW FEDE|CHARLENE NARAYAN", "owner_draw"),
-    (r"BILL PAYMT.*DAVID NARAYAN|DAVID NARAYAN.*BILL PAYMT", "owner_draw"),
-    (r"Payment to David Narayan|Withdrawal.*DAVID NARAYAN", "owner_draw"),
+    (r"CANYON VIEW", "owner_draw"),
+    (r"CHARLENE NARAYAN", "owner_draw"),
+    (r"DAVID NARAYAN", "owner_draw"),
 
     # ── Transfers ─────────────────────────────────────────────────────────
-    (r"WISE US INC|TYPE:\s*WISE", "transfer"),
+    (r"WISE", "transfer"),
     (r"From Share|To Share", "transfer"),
 
     # ── Equipment ─────────────────────────────────────────────────────────
@@ -175,13 +175,13 @@ _BANK_CATEGORY_MAP: dict[str, str] = {
     "credit card payments": "credit_card",
     "cable & satellite": "utilities",
     "restaurants & dining": "meals",
-    "entertainment": "uncategorized",
-    "hobbies": "uncategorized",
-    "other expenses": "uncategorized",
+    "entertainment": "other",
+    "hobbies": "other",
+    "other expenses": "other",
 }
 
 
 def _normalise_bank_category(bank_category: str) -> str:
     """Map a bank-supplied category label to our internal category."""
     key = (bank_category or "").strip().lower()
-    return _BANK_CATEGORY_MAP.get(key, "uncategorized")
+    return _BANK_CATEGORY_MAP.get(key, "other")

@@ -19,6 +19,8 @@ def _make_engine():
                 source_id TEXT,
                 event_type TEXT,
                 category TEXT,
+                subcategory TEXT DEFAULT '',
+                description TEXT DEFAULT '',
                 name TEXT,
                 vendor_or_customer TEXT,
                 amount_cents INTEGER,
@@ -31,6 +33,9 @@ def _make_engine():
                 recurring_template_id TEXT,
                 clickup_task_id TEXT,
                 recurring_rule TEXT,
+                bank_transaction_type TEXT DEFAULT '',
+                bank_reference TEXT DEFAULT '',
+                friendly_name TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -58,7 +63,7 @@ class TestObligationsCRUD(unittest.TestCase):
     def setUp(self) -> None:
         self._engine = _make_engine()
         self._patcher = patch(
-            "sales_support_agent.services.cashflow.obligations.engine",
+            "sales_support_agent.models.database.engine",
             self._engine,
         )
         self._patcher.start()
@@ -155,7 +160,7 @@ class TestRecurringTemplates(unittest.TestCase):
     def setUp(self) -> None:
         self._engine = _make_engine()
         self._patcher = patch(
-            "sales_support_agent.services.cashflow.obligations.engine",
+            "sales_support_agent.models.database.engine",
             self._engine,
         )
         self._patcher.start()

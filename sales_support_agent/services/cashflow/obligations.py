@@ -134,6 +134,7 @@ def create_obligation(
     notes: str = "",
     recurring_template_id: Optional[str] = None,
     clickup_task_id: Optional[str] = None,
+    db=None,  # legacy/unused — kept for backwards compatibility
 ) -> dict[str, Any]:
     """Insert a new manual CashEvent and return it as a dict."""
     from sales_support_agent.models.database import engine

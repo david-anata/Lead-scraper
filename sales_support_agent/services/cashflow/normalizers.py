@@ -71,14 +71,14 @@ def normalize_bank_csv_row(row: dict[str, str]) -> dict[str, Any]:
         return ""
 
     raw_id         = _get("Transaction ID")
-    posting_date   = _get("Posting Date")
+    posting_date   = _get("Posting Date", "Date")
     effective_date = _get("Effective Date")
     txn_type       = _get("Transaction Type")   # Debit | Credit | Check
     raw_amount     = _get("Amount")
     description    = _get("Description")
     bank_category  = _get("Transaction Category")
     txn_subtype    = _get("Type")               # Card | Retail ACH | POS | Check
-    raw_balance    = _get("Balance")
+    raw_balance    = _get("Balance", "Account Balance")
     ext_desc       = _get("Extended Description")
 
     # Prefer Extended Description when richer than Description
