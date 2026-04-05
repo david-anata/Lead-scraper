@@ -327,10 +327,13 @@ async def ar_delete(request: Request, event_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/alerts", response_class=HTMLResponse)
-async def finance_alerts(request: Request):
+async def finance_alerts(request: Request, flash: str = ""):
     if not has_finance_access(request):
         return _redirect_login()
-    return render_risk_alerts_page()
+    params = dict(request.query_params)
+    severity = params.get("severity", "all")
+    from sales_support_agent.services.cashflow.alerts_view import render_alerts_view_page
+    return HTMLResponse(render_alerts_view_page(flash=flash, severity_filter=severity))
 
 
 # ---------------------------------------------------------------------------
