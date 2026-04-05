@@ -134,15 +134,19 @@ def run_csv_upload(
                 text("""
                     INSERT INTO cash_events (
                         id, source, source_id, event_type, category,
-                        subcategory, name, vendor_or_customer, amount_cents,
-                        due_date, status, confidence,
+                        subcategory, description, name, vendor_or_customer,
+                        amount_cents, due_date, status, confidence,
                         account_balance_cents,
+                        bank_transaction_type, bank_reference,
+                        notes, recurring_rule, clickup_task_id,
                         created_at, updated_at
                     ) VALUES (
                         :id, 'csv', :source_id, :event_type, :category,
-                        :subcategory, :name, :vendor_or_customer, :amount_cents,
-                        :due_date, 'posted', 'confirmed',
+                        :subcategory, :description, :name, :vendor_or_customer,
+                        :amount_cents, :due_date, 'posted', 'confirmed',
                         :account_balance_cents,
+                        :bank_transaction_type, :bank_reference,
+                        '', '', '',
                         :now, :now
                     )
                 """),
@@ -152,11 +156,14 @@ def run_csv_upload(
                     "event_type": row.get("event_type", "outflow"),
                     "category": row.get("category", "other"),
                     "subcategory": row.get("subcategory", ""),
+                    "description": row.get("description", "") or "",
                     "name": row.get("name", ""),
                     "vendor_or_customer": row.get("vendor_or_customer", ""),
                     "amount_cents": row.get("amount_cents", 0),
                     "due_date": due_date_str,
                     "account_balance_cents": row.get("account_balance_cents"),
+                    "bank_transaction_type": row.get("bank_transaction_type", "") or "",
+                    "bank_reference": row.get("bank_reference", "") or "",
                     "now": now,
                 },
             )

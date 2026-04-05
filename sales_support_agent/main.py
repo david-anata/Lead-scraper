@@ -24,6 +24,9 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Sales Support Agent")
     app.state.settings = settings
+    # Also expose as agent_settings so auth_deps._get_auth_settings() finds it
+    # via the preferred code path (agent_settings → admin_dashboard_settings → settings).
+    app.state.agent_settings = settings
     app.state.session_factory = session_factory
     app.state.dashboard_sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dashboard-sync")
     app.state.dashboard_sync_lock = Lock()
