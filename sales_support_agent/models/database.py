@@ -142,6 +142,26 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                     continue
                 connection.execute(text(statement))
 
+        # QuickBooks OAuth tables for SQLite deployments
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS quickbooks_tokens (
+                id            TEXT PRIMARY KEY DEFAULT 'singleton',
+                access_token  TEXT NOT NULL DEFAULT '',
+                refresh_token TEXT NOT NULL DEFAULT '',
+                realm_id      TEXT NOT NULL DEFAULT '',
+                expires_at    TEXT NULL,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS qb_oauth_state (
+                state      TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """))
+
     # Add indexes for Calendar/Ledger range queries
     with engine.begin() as conn:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_due_date ON cash_events(due_date)"))
@@ -381,6 +401,27 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_next_due_date ON recurring_templates (next_due_date)"))
         # friendly_name column — additive migration for existing Postgres deployments
         connection.execute(text("ALTER TABLE cash_events ADD COLUMN IF NOT EXISTS friendly_name TEXT NULL"))
+
+    # QuickBooks OAuth token + state tables
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS quickbooks_tokens (
+                id           TEXT        PRIMARY KEY DEFAULT 'singleton',
+                access_token TEXT        NOT NULL DEFAULT '',
+                refresh_token TEXT       NOT NULL DEFAULT '',
+                realm_id     TEXT        NOT NULL DEFAULT '',
+                expires_at   TIMESTAMPTZ NULL,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS qb_oauth_state (
+                state      TEXT        PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
 
 
 # Canonical column order for cash_events upsert

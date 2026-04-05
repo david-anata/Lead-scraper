@@ -117,14 +117,46 @@ app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 from sales_support_agent.api.cashflow_router import router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
 
+# QuickBooks OAuth routes — NO auth guard, Intuit reviewer must reach these directly
+from sales_support_agent.api.qbo_auth_router import router as _qbo_auth_router  # noqa: E402
+app.include_router(_qbo_auth_router)
+
 
 @app.on_event("startup")
 async def _startup_init():
-    """Ensure cashflow DB tables exist before serving requests."""
+    """Ensure cashflow DB tables exist, then kick off background ClickUp sync."""
+    import asyncio as _asyncio
     from sales_support_agent.models.database import init_cashflow_db
     from sales_support_agent.config import load_settings
     settings = load_settings()
     init_cashflow_db(settings.sales_agent_db_url)
+
+    # Fire-and-forget: sync ClickUp finance tasks + expand recurring templates.
+    # Runs in a thread so it never delays the first request.
+    async def _background_finance_sync():
+        await _asyncio.sleep(5)   # give the server time to fully start
+        try:
+            from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
+            from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
+            result = await _asyncio.to_thread(sync_clickup_finance, settings)
+            logger.info(
+                "[Finance startup sync] ClickUp: %d inserted, %d skipped, %d errors",
+                result.rows_inserted, result.rows_skipped_duplicate, len(result.errors),
+            )
+        except Exception as exc:
+            logger.warning("[Finance startup sync] ClickUp sync failed: %s", exc)
+        try:
+            from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
+            created = await _asyncio.to_thread(
+                generate_upcoming_from_templates,
+                horizon_days=400,
+                advance_template=True,
+            )
+            logger.info("[Finance startup sync] Templates expanded: %d obligations created", len(created))
+        except Exception as exc:
+            logger.warning("[Finance startup sync] Template expansion failed: %s", exc)
+
+    _asyncio.create_task(_background_finance_sync())
 
 
 LEAD_RUN_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lead-build")

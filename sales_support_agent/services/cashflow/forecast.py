@@ -1,4 +1,4 @@
-"""Weekly Forecast page — 12-week rolling cashflow view."""
+"""Weekly Forecast page — rolling cashflow view (default 52 weeks / 1 year)."""
 
 from __future__ import annotations
 
@@ -17,13 +17,14 @@ from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
 def render_weekly_forecast_page(*, flash: str = "") -> str:
-    # Auto-expand recurring templates so forecast always shows full 12-week horizon.
-    # This is a no-op if all upcoming events already exist (upsert by template+date).
+    # Auto-expand recurring templates to cover the full 1-year forecast window.
+    # horizon_days=400 ensures every monthly/weekly template has events through 52 weeks.
+    # respect_cooldown=False so the page always reflects the latest template state.
     try:
         from sales_support_agent.services.cashflow.obligations import (
             generate_upcoming_from_templates,
         )
-        generate_upcoming_from_templates(horizon_days=90, advance_template=True)
+        generate_upcoming_from_templates(horizon_days=400, advance_template=True)
     except Exception as exc:
         import logging as _logging
         _logging.getLogger(__name__).warning("Template expansion failed (forecast page): %s", exc)
@@ -48,7 +49,7 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
     ]
     events = _events_to_dtos(forecast_rows)
 
-    weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=12)
+    weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=52)
     alerts = flag_risks(weeks, events)
 
     alert_week_starts = {a.week_start for a in alerts if a.week_start}
@@ -57,7 +58,7 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
     if not weeks:
         body = """
         <h1>Weekly Forecast</h1>
-        <p class="page-sub">12-week cashflow projection</p>
+        <p class="page-sub">52-week cashflow projection</p>
         <div class="card">
           <div class="empty-state">No cashflow data yet. Upload a bank CSV and add obligations to see the forecast.</div>
         </div>"""
@@ -110,7 +111,7 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
 
     body = f"""
     <h1>Weekly Forecast</h1>
-    <p class="page-sub">12-week rolling projection · Starting balance: {_dollar(balance_cents)}</p>
+    <p class="page-sub">52-week rolling projection · Starting balance: {_dollar(balance_cents)}</p>
     <div class="card">
       <h2>Week-by-Week Summary</h2>
       <table>
