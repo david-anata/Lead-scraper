@@ -10,7 +10,11 @@ from datetime import datetime
 from typing import Any, Optional
 
 from sales_support_agent.services.cashflow.matcher import auto_match_transactions
-from sales_support_agent.services.cashflow.normalizers import normalize_bank_csv_row
+from sales_support_agent.services.cashflow.normalizers import (
+    detect_csv_format,
+    normalize_bank_csv_row,
+    normalize_qbo_open_invoices_csv,
+)
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
@@ -57,6 +61,10 @@ def run_csv_upload(
     """
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
+
+    # -- Auto-detect format and delegate ------------------------------------
+    if detect_csv_format(csv_bytes) == "qbo_open_invoices":
+        return _run_qbo_open_invoices_upload(csv_bytes, engine=engine)
 
     result = UploadResult()
 
@@ -203,5 +211,145 @@ def run_csv_upload(
                     {"planned_id": mr.planned_event_id, "now": now},
                 )
             result.matches_made += 1
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# QBO Open Invoices upload path
+# ---------------------------------------------------------------------------
+
+def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
+    """Import a QBO Open Invoices Report CSV into cash_events.
+
+    Behaviour:
+    - source='qbo-csv', event_type='inflow', status='planned'|'overdue'
+    - Dedup by source_id — re-uploading updates the outstanding balance and
+      due date instead of inserting a duplicate.
+    - Already-matched or paid invoices are left untouched on re-upload.
+    - Bank CSV and QBO-CSV events never double-count: bank rows are
+      source='csv'/status='posted' (actuals); QBO rows are source='qbo-csv'/
+      status='planned' (expected). The auto-matcher links them when a bank
+      CSV is uploaded later.
+    """
+    from sqlalchemy import text
+
+    result = UploadResult()
+    now = datetime.utcnow().isoformat()
+
+    invoices = normalize_qbo_open_invoices_csv(csv_bytes)
+    result.rows_read = len(invoices)
+
+    if not invoices:
+        result.errors.append("No open invoices found — check the file is a QBO Open Invoices Report export.")
+        return result
+
+    # Fetch existing qbo-csv source_ids (for dedup / update logic)
+    with engine.connect() as conn:
+        existing: dict[str, str] = {
+            row[0]: row[1]
+            for row in conn.execute(
+                text("SELECT source_id, status FROM cash_events WHERE source = 'qbo-csv'")
+            ).fetchall()
+        }
+
+    new_events: list[dict[str, Any]] = []
+
+    for row in invoices:
+        source_id = row["source_id"]
+        due_date = row.get("due_date")
+        due_date_str = (
+            due_date.isoformat() if hasattr(due_date, "isoformat")
+            else str(due_date)[:10] if due_date else None
+        )
+
+        if source_id in existing:
+            # Re-upload: update balance + status, but leave matched/paid alone
+            existing_status = existing[source_id]
+            if existing_status in ("matched", "paid", "cancelled"):
+                result.rows_skipped_duplicate += 1
+                continue
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE cash_events SET
+                            amount_cents = :amount_cents,
+                            due_date     = :due_date,
+                            status       = :status,
+                            description  = :description,
+                            notes        = :notes,
+                            updated_at   = :now
+                        WHERE source_id = :source_id AND source = 'qbo-csv'
+                    """),
+                    {
+                        "amount_cents": row["amount_cents"],
+                        "due_date": due_date_str,
+                        "status": row["status"],
+                        "description": row["description"],
+                        "notes": row.get("notes", ""),
+                        "now": now,
+                        "source_id": source_id,
+                    },
+                )
+            result.rows_skipped_duplicate += 1  # counted as update, not new insert
+            continue
+
+        # New invoice — insert
+        event_id = str(uuid.uuid4())
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO cash_events (
+                        id, source, source_id, event_type, category,
+                        subcategory, description, name, vendor_or_customer,
+                        amount_cents, due_date, status, confidence,
+                        bank_transaction_type, bank_reference,
+                        notes, recurring_rule, clickup_task_id,
+                        created_at, updated_at
+                    ) VALUES (
+                        :id, 'qbo-csv', :source_id, 'inflow', 'revenue',
+                        '', :description, :name, :vendor_or_customer,
+                        :amount_cents, :due_date, :status, 'confirmed',
+                        '', '', :notes, '', '',
+                        :now, :now
+                    )
+                """),
+                {
+                    "id": event_id,
+                    "source_id": source_id,
+                    "description": row.get("description", ""),
+                    "name": row.get("name", ""),
+                    "vendor_or_customer": row.get("vendor_or_customer", ""),
+                    "amount_cents": row["amount_cents"],
+                    "due_date": due_date_str,
+                    "status": row["status"],
+                    "notes": row.get("notes", ""),
+                    "now": now,
+                },
+            )
+        existing[source_id] = row["status"]
+        result.rows_inserted += 1
+        new_events.append({"id": event_id, **row})
+
+    # Auto-match new QBO invoices against already-posted bank CSV inflows
+    # (catches cases where bank CSV was uploaded before the QBO report)
+    if new_events:
+        posted_bank = list_obligations(status="posted", from_date=None, to_date=None)
+        posted_inflows = [r for r in posted_bank if r.get("event_type") == "inflow"]
+        if posted_inflows:
+            match_results = auto_match_transactions(posted_inflows, new_events)
+            for mr in match_results:
+                if mr.planned_event_id is None:
+                    continue
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("UPDATE cash_events SET status='matched', updated_at=:now WHERE id=:id"),
+                        {"now": now, "id": mr.csv_event_id},
+                    )
+                    conn.execute(
+                        text("UPDATE cash_events SET status='matched', updated_at=:now WHERE id=:id AND status IN ('planned','overdue')"),
+                        {"now": now, "id": mr.planned_event_id},
+                    )
+                result.matches_made += 1
 
     return result

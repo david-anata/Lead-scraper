@@ -6,12 +6,16 @@ are responsible for DB writes.
 
 Supported sources
 -----------------
-    normalize_bank_csv_row(row)   bank export CSV (13-column format)
-    normalize_clickup_task(task)  ClickUp task dict from ClickUpClient
+    normalize_bank_csv_row(row)          bank export CSV (13-column format)
+    normalize_clickup_task(task)         ClickUp task dict from ClickUpClient
+    normalize_qbo_open_invoices_csv(b)   QBO "Open Invoices Report" CSV export
+    detect_csv_format(csv_bytes)         sniff bytes → 'bank' | 'qbo_open_invoices'
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -358,3 +362,136 @@ def _cu_detect_recurring(task: dict[str, Any]) -> str:
     if "monthly" in name:
         return "monthly"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# QBO Open Invoices Report normalizer
+# ---------------------------------------------------------------------------
+
+def detect_csv_format(csv_bytes: bytes) -> str:
+    """Sniff the first 2 KB to determine which CSV format was uploaded.
+
+    Returns:
+        'qbo_open_invoices'  — QBO "Open Invoices Report" export
+        'bank'               — standard bank statement CSV (default)
+    """
+    try:
+        head = csv_bytes[:2000].decode("utf-8", errors="replace")
+    except Exception:
+        return "bank"
+    # QBO Open Invoices Report has these two strings near the top
+    if "Open Invoices" in head and "Open balance" in head:
+        return "qbo_open_invoices"
+    return "bank"
+
+
+def normalize_qbo_open_invoices_csv(csv_bytes: bytes) -> list[dict[str, Any]]:
+    """Parse a QBO 'Open Invoices Report' CSV export into cash_event dicts.
+
+    Format quirks handled:
+    - 4-row preamble (title, company, date, blank) before the header row
+    - Hierarchical: customer-name rows (col 0 non-empty) then transaction rows
+    - "Total for …" subtotal rows and a final ",TOTAL,…" row are skipped
+    - Only Transaction type == "Invoice" with positive Open balance imported
+    - Payment and Journal Entry rows are skipped entirely
+    - Invoice numbers used as dedup key; fallback to customer+date+amount
+
+    Returns:
+        List of dicts ready for INSERT into cash_events, one per open invoice.
+        source='qbo-csv', event_type='inflow', status='planned'|'overdue',
+        confidence='confirmed'.
+    """
+    today = datetime.now(timezone.utc).date()
+    results: list[dict[str, Any]] = []
+
+    lines = csv_bytes.decode("utf-8", errors="replace").splitlines(keepends=True)
+
+    # Find the header row — contains both "Due date" and "Open balance"
+    header_idx: int | None = None
+    for i, line in enumerate(lines):
+        if "Due date" in line and "Open balance" in line:
+            header_idx = i
+            break
+    if header_idx is None:
+        return results  # unrecognised format
+
+    data_text = "".join(lines[header_idx:])
+    reader = csv.DictReader(io.StringIO(data_text))
+
+    current_customer = ""
+
+    for row in reader:
+        # Column 0 has no header → DictReader key is empty string
+        col0 = (row.get("") or "").strip()
+        date_raw = (row.get("Date") or "").strip()
+        txn_type = (row.get("Transaction type") or "").strip()
+        num = (row.get("Num") or "").strip()
+        term = (row.get("Term") or "").strip()
+        due_date_raw = (row.get("Due date") or "").strip()
+        balance_raw = (row.get("Open balance") or "").strip()
+
+        # Stop at the grand-total row
+        if date_raw == "TOTAL":
+            break
+
+        # Customer name row (non-empty col0, not a subtotal)
+        if col0 and not col0.startswith("Total"):
+            current_customer = col0
+            continue
+
+        # Subtotal rows
+        if col0.startswith("Total"):
+            continue
+
+        # Only process Invoice rows
+        if txn_type != "Invoice":
+            continue
+
+        # Parse outstanding balance — skip zero or negative (credits)
+        amount_cents = _parse_amount_cents(balance_raw)
+        if amount_cents <= 0:
+            continue
+
+        # Parse dates
+        due_dt = _parse_date(due_date_raw) or _parse_date(date_raw)
+        inv_dt = _parse_date(date_raw)
+
+        # Determine due date as a plain date for status check
+        due_date_obj = None
+        if due_dt is not None:
+            due_date_obj = due_dt.date() if hasattr(due_dt, "date") else due_dt
+
+        status = "overdue" if (due_date_obj and due_date_obj < today) else "planned"
+
+        # Stable dedup key: invoice number preferred, then slug+date+cents
+        customer_slug = re.sub(r"[^a-z0-9]+", "-", current_customer.lower()).strip("-")
+        if num:
+            source_id = f"qbo-ar-{num}"
+        else:
+            date_str = inv_dt.strftime("%Y%m%d") if inv_dt else "nodate"
+            source_id = f"qbo-ar-{customer_slug}-{date_str}-{amount_cents}"
+
+        description = f"Invoice #{num}" if num else f"Invoice — {current_customer}"
+        if term:
+            description += f" · {term}"
+
+        results.append({
+            "source": "qbo-csv",
+            "source_id": source_id,
+            "event_type": "inflow",
+            "category": "revenue",
+            "subcategory": "",
+            "name": current_customer,
+            "description": description,
+            "vendor_or_customer": current_customer,
+            "amount_cents": amount_cents,
+            "due_date": due_dt,
+            "status": status,
+            "confidence": "confirmed",
+            "bank_transaction_type": "",
+            "bank_reference": "",
+            "account_balance_cents": None,
+            "notes": f"Terms: {term}" if term else "",
+        })
+
+    return results
