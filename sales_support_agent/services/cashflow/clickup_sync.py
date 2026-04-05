@@ -267,62 +267,15 @@ def sync_clickup_finance(settings):
 
 
 def _upsert_event(engine, ev: dict) -> str:
-    """Insert or update a cash_event row. Returns 'created', 'updated', or 'skipped'."""
-    from sqlalchemy import text
+    """Insert or update a cash_event row. Returns 'created' or 'updated'.
 
-    due_val = ev.get("due_date")
-    if isinstance(due_val, date):
-        due_str = due_val.isoformat()
-    else:
-        due_str = None
-
-    now_str = datetime.utcnow().isoformat()
+    Delegates to upsert_cash_event() in database.py which handles all columns:
+    id, source, source_id, event_type, category, subcategory, description,
+    name, vendor_or_customer, amount_cents, due_date, status, confidence,
+    recurring_rule, clickup_task_id, bank_transaction_type, bank_reference,
+    notes, friendly_name, created_at, updated_at.
+    """
+    from sales_support_agent.models.database import upsert_cash_event
 
     with engine.begin() as conn:
-        # Check existing
-        existing = conn.execute(
-            text("SELECT id, status FROM cash_events WHERE id = :id"),
-            {"id": ev["id"]},
-        ).fetchone()
-
-        if existing:
-            conn.execute(
-                text("""
-                    UPDATE cash_events SET
-                        source=:source, source_id=:source_id,
-                        event_type=:event_type, category=:category,
-                        subcategory=:subcategory, description=:description,
-                        name=:name, vendor_or_customer=:vendor_or_customer,
-                        amount_cents=:amount_cents, due_date=:due_date,
-                        status=:status, confidence=:confidence,
-                        recurring_rule=:recurring_rule, notes=:notes,
-                        clickup_task_id=:clickup_task_id,
-                        bank_transaction_type=:bank_transaction_type,
-                        bank_reference=:bank_reference,
-                        updated_at=:updated_at
-                    WHERE id=:id
-                """),
-                {**ev, "due_date": due_str, "updated_at": now_str},
-            )
-            return "updated"
-        else:
-            conn.execute(
-                text("""
-                    INSERT INTO cash_events
-                        (id, source, source_id, event_type, category,
-                         subcategory, description, name, vendor_or_customer,
-                         amount_cents, due_date, status, confidence,
-                         recurring_rule, notes, clickup_task_id,
-                         bank_transaction_type, bank_reference,
-                         created_at, updated_at)
-                    VALUES
-                        (:id, :source, :source_id, :event_type, :category,
-                         :subcategory, :description, :name, :vendor_or_customer,
-                         :amount_cents, :due_date, :status, :confidence,
-                         :recurring_rule, :notes, :clickup_task_id,
-                         :bank_transaction_type, :bank_reference,
-                         :created_at, :updated_at)
-                """),
-                {**ev, "due_date": due_str, "created_at": now_str, "updated_at": now_str},
-            )
-            return "created"
+        return upsert_cash_event(conn, ev)

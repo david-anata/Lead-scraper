@@ -383,6 +383,132 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("ALTER TABLE cash_events ADD COLUMN IF NOT EXISTS friendly_name TEXT NULL"))
 
 
+# Canonical column order for cash_events upsert
+_CASH_EVENT_UPSERT_COLS = (
+    "id", "source", "source_id", "event_type", "category", "subcategory",
+    "description", "name", "vendor_or_customer", "amount_cents", "due_date",
+    "status", "confidence", "recurring_rule", "clickup_task_id",
+    "bank_transaction_type", "bank_reference", "notes", "friendly_name",
+)
+
+
+def upsert_cash_event(conn, event: dict) -> str:
+    """Insert or update a cash_event row.
+
+    Args:
+        conn: An active SQLAlchemy connection (inside engine.begin()).
+        event: Dict with cash_event fields. Must include 'id'.
+            Due dates should be str (ISO format) or date objects.
+
+    Returns:
+        'created' if a new row was inserted, 'updated' if an existing row was updated.
+    """
+    from datetime import date, datetime
+
+    now_str = datetime.utcnow().isoformat()
+
+    # Normalize due_date to ISO string
+    due_date_val = event.get("due_date")
+    if isinstance(due_date_val, (date, datetime)):
+        due_str = due_date_val.isoformat()[:10]
+    elif due_date_val:
+        due_str = str(due_date_val)[:10]
+    else:
+        due_str = None
+
+    existing = conn.execute(
+        text("SELECT id FROM cash_events WHERE id = :id"),
+        {"id": event["id"]},
+    ).fetchone()
+
+    if existing:
+        conn.execute(
+            text("""
+                UPDATE cash_events SET
+                    source=:source, source_id=:source_id,
+                    event_type=:event_type, category=:category,
+                    subcategory=:subcategory, description=:description,
+                    name=:name, vendor_or_customer=:vendor_or_customer,
+                    amount_cents=:amount_cents, due_date=:due_date,
+                    status=:status, confidence=:confidence,
+                    recurring_rule=:recurring_rule,
+                    clickup_task_id=:clickup_task_id,
+                    bank_transaction_type=:bank_transaction_type,
+                    bank_reference=:bank_reference,
+                    notes=:notes, friendly_name=:friendly_name,
+                    updated_at=:updated_at
+                WHERE id=:id
+            """),
+            {
+                "id": event["id"],
+                "source": event.get("source", ""),
+                "source_id": event.get("source_id", event["id"]),
+                "event_type": event.get("event_type", "outflow"),
+                "category": event.get("category", "other"),
+                "subcategory": event.get("subcategory", ""),
+                "description": event.get("description", ""),
+                "name": event.get("name", ""),
+                "vendor_or_customer": event.get("vendor_or_customer", ""),
+                "amount_cents": event.get("amount_cents", 0),
+                "due_date": due_str,
+                "status": event.get("status", "planned"),
+                "confidence": event.get("confidence", "estimated"),
+                "recurring_rule": event.get("recurring_rule", ""),
+                "clickup_task_id": event.get("clickup_task_id", ""),
+                "bank_transaction_type": event.get("bank_transaction_type", ""),
+                "bank_reference": event.get("bank_reference", ""),
+                "notes": event.get("notes", ""),
+                "friendly_name": event.get("friendly_name"),
+                "updated_at": now_str,
+            },
+        )
+        return "updated"
+    else:
+        conn.execute(
+            text("""
+                INSERT INTO cash_events (
+                    id, source, source_id, event_type, category,
+                    subcategory, description, name, vendor_or_customer,
+                    amount_cents, due_date, status, confidence,
+                    recurring_rule, clickup_task_id,
+                    bank_transaction_type, bank_reference,
+                    notes, friendly_name, created_at, updated_at
+                ) VALUES (
+                    :id, :source, :source_id, :event_type, :category,
+                    :subcategory, :description, :name, :vendor_or_customer,
+                    :amount_cents, :due_date, :status, :confidence,
+                    :recurring_rule, :clickup_task_id,
+                    :bank_transaction_type, :bank_reference,
+                    :notes, :friendly_name, :created_at, :updated_at
+                )
+            """),
+            {
+                "id": event["id"],
+                "source": event.get("source", ""),
+                "source_id": event.get("source_id", event["id"]),
+                "event_type": event.get("event_type", "outflow"),
+                "category": event.get("category", "other"),
+                "subcategory": event.get("subcategory", ""),
+                "description": event.get("description", ""),
+                "name": event.get("name", ""),
+                "vendor_or_customer": event.get("vendor_or_customer", ""),
+                "amount_cents": event.get("amount_cents", 0),
+                "due_date": due_str,
+                "status": event.get("status", "planned"),
+                "confidence": event.get("confidence", "estimated"),
+                "recurring_rule": event.get("recurring_rule", ""),
+                "clickup_task_id": event.get("clickup_task_id", ""),
+                "bank_transaction_type": event.get("bank_transaction_type", ""),
+                "bank_reference": event.get("bank_reference", ""),
+                "notes": event.get("notes", ""),
+                "friendly_name": event.get("friendly_name"),
+                "created_at": now_str,
+                "updated_at": now_str,
+            },
+        )
+        return "created"
+
+
 def insert_cash_event(conn, *, id, source, source_id, event_type, category,
                        subcategory="", description="", name="", vendor_or_customer="",
                        amount_cents=0, due_date=None, status="planned",

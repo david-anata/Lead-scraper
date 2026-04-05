@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def get_events_for_range(
@@ -54,12 +57,7 @@ def get_events_for_range(
     with get_engine().connect() as conn:
         rows = conn.execute(text(sql), params).fetchall()
 
-    cols = ["id","source","source_id","event_type","category","subcategory",
-            "description","name","vendor_or_customer","amount_cents","due_date",
-            "status","confidence","account_balance_cents","bank_transaction_type",
-            "bank_reference","notes","recurring_rule","clickup_task_id","friendly_name",
-            "created_at","updated_at"]
-    return [dict(zip(cols, row)) for row in rows]
+    return [dict(row._mapping) for row in rows]
 
 
 
@@ -421,8 +419,8 @@ def generate_upcoming_from_templates(
             last_run = datetime.fromisoformat(row[0])
             if (datetime.utcnow() - last_run).total_seconds() < 21600:  # 6 hours
                 return []  # skip
-    except Exception:
-        pass  # kv_store may not exist yet — proceed
+    except Exception as exc:
+        logger.warning("Could not read template_gen cooldown from kv_store (will proceed): %s", exc)
 
     cutoff = _today() + timedelta(days=horizon_days)
     templates = list_recurring_templates(active_only=True)
@@ -479,8 +477,8 @@ def generate_upcoming_from_templates(
                 INSERT INTO kv_store (key, value, updated_at) VALUES ('template_gen_last_run', :now, :now)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
             """), {"now": datetime.utcnow().isoformat()})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not persist template_gen_last_run to kv_store: %s", exc)
 
     return created
 

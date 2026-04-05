@@ -24,8 +24,9 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
             generate_upcoming_from_templates,
         )
         generate_upcoming_from_templates(horizon_days=90, advance_template=True)
-    except Exception:
-        pass  # never let template expansion crash the forecast page
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning("Template expansion failed (forecast page): %s", exc)
 
     rows = list_obligations(limit=2000)
     events = _events_to_dtos(rows)

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import html
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from sales_support_agent.services.cashflow.cashflow_helpers import _dollar, _events_to_dtos, _page_shell
 from sales_support_agent.services.cashflow.engine import aggregate_weeks, flag_risks
@@ -17,7 +20,8 @@ def _get_dismissed_keys() -> set:
         with get_engine().connect() as conn:
             rows = conn.execute(text("SELECT key FROM kv_store WHERE key LIKE 'alert_dismissed:%'")).fetchall()
         return {row[0] for row in rows}
-    except Exception:
+    except Exception as exc:
+        logger.warning("Could not load dismissed alert keys from kv_store: %s", exc)
         return set()
 
 
@@ -30,8 +34,8 @@ def _get_bulk_dismiss_time():
             row = conn.execute(text("SELECT value FROM kv_store WHERE key='alerts_bulk_dismissed_at'")).fetchone()
         if row:
             return datetime.fromisoformat(row[0])
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Could not load bulk dismiss timestamp from kv_store: %s", exc)
     return None
 
 

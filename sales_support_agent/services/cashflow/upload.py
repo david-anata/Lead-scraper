@@ -235,6 +235,7 @@ def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
       status='planned' (expected). The auto-matcher links them when a bank
       CSV is uploaded later.
     """
+    from sales_support_agent.models.database import upsert_cash_event
     from sqlalchemy import text
 
     result = UploadResult()
@@ -260,11 +261,6 @@ def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
 
     for row in invoices:
         source_id = row["source_id"]
-        due_date = row.get("due_date")
-        due_date_str = (
-            due_date.isoformat() if hasattr(due_date, "isoformat")
-            else str(due_date)[:10] if due_date else None
-        )
 
         if source_id in existing:
             # Re-upload: update balance + status, but leave matched/paid alone
@@ -272,64 +268,24 @@ def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
             if existing_status in ("matched", "paid", "cancelled"):
                 result.rows_skipped_duplicate += 1
                 continue
-            with engine.begin() as conn:
-                conn.execute(
-                    text("""
-                        UPDATE cash_events SET
-                            amount_cents = :amount_cents,
-                            due_date     = :due_date,
-                            status       = :status,
-                            description  = :description,
-                            notes        = :notes,
-                            updated_at   = :now
-                        WHERE source_id = :source_id AND source = 'qbo-csv'
-                    """),
-                    {
-                        "amount_cents": row["amount_cents"],
-                        "due_date": due_date_str,
-                        "status": row["status"],
-                        "description": row["description"],
-                        "notes": row.get("notes", ""),
-                        "now": now,
-                        "source_id": source_id,
-                    },
-                )
+            # Use shared upsert; fetch the existing row id first
+            with engine.connect() as conn:
+                id_row = conn.execute(
+                    text("SELECT id FROM cash_events WHERE source_id = :source_id AND source = 'qbo-csv'"),
+                    {"source_id": source_id},
+                ).fetchone()
+            if id_row:
+                event_dict = {"id": id_row[0], "source": "qbo-csv", **row}
+                with engine.begin() as conn:
+                    upsert_cash_event(conn, event_dict)
             result.rows_skipped_duplicate += 1  # counted as update, not new insert
             continue
 
-        # New invoice — insert
+        # New invoice — use shared upsert helper
         event_id = str(uuid.uuid4())
+        event_dict = {"id": event_id, "source": "qbo-csv", **row}
         with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO cash_events (
-                        id, source, source_id, event_type, category,
-                        subcategory, description, name, vendor_or_customer,
-                        amount_cents, due_date, status, confidence,
-                        bank_transaction_type, bank_reference,
-                        notes, recurring_rule, clickup_task_id,
-                        created_at, updated_at
-                    ) VALUES (
-                        :id, 'qbo-csv', :source_id, 'inflow', 'revenue',
-                        '', :description, :name, :vendor_or_customer,
-                        :amount_cents, :due_date, :status, 'confirmed',
-                        '', '', :notes, '', '',
-                        :now, :now
-                    )
-                """),
-                {
-                    "id": event_id,
-                    "source_id": source_id,
-                    "description": row.get("description", ""),
-                    "name": row.get("name", ""),
-                    "vendor_or_customer": row.get("vendor_or_customer", ""),
-                    "amount_cents": row["amount_cents"],
-                    "due_date": due_date_str,
-                    "status": row["status"],
-                    "notes": row.get("notes", ""),
-                    "now": now,
-                },
-            )
+            upsert_cash_event(conn, event_dict)
         existing[source_id] = row["status"]
         result.rows_inserted += 1
         new_events.append({"id": event_id, **row})

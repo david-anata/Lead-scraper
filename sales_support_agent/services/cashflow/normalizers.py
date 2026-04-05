@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from sales_support_agent.services.cashflow.categorizer import categorize
 
@@ -377,7 +380,8 @@ def detect_csv_format(csv_bytes: bytes) -> str:
     """
     try:
         head = csv_bytes[:2000].decode("utf-8", errors="replace")
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to decode CSV bytes for format detection (defaulting to bank): %s", exc)
         return "bank"
     # QBO Open Invoices Report has these two strings near the top
     if "Open Invoices" in head and "Open balance" in head:

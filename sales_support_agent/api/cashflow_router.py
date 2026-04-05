@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from sales_support_agent.services.cashflow.alerts import render_risk_alerts_page
@@ -47,11 +47,26 @@ from sales_support_agent.services.auth_deps import has_finance_access
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 
-router = APIRouter(prefix="/admin/finances", tags=["finance"])
+def _check_finance_access(request: Request) -> None:
+    """FastAPI dependency that enforces finance access.
+    Raises HTTPException(303) redirecting to login if not authorized.
+    """
+    if not has_finance_access(request):
+        raise HTTPException(
+            status_code=303,
+            headers={"Location": "/admin/login"},
+        )
+
+
+router = APIRouter(
+    prefix="/admin/finances",
+    tags=["finance"],
+    dependencies=[Depends(_check_finance_access)],
+)
 
 
 # ---------------------------------------------------------------------------
-# Auth guard helper
+# Auth guard helper (kept for compatibility)
 # ---------------------------------------------------------------------------
 
 def _redirect_login() -> RedirectResponse:
@@ -68,9 +83,6 @@ async def cashflow_health(request: Request):
     Self-test endpoint.  Returns JSON with DB column state and static INSERT
     coverage for every cashflow write path.
     """
-    if not has_finance_access(request):
-        return _redirect_login()
-
     import importlib as _importlib
     import inspect as _inspect
     from fastapi.responses import JSONResponse
@@ -151,15 +163,11 @@ async def cashflow_health(request: Request):
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def finance_overview(request: Request, flash: str = ""):
-    if not has_finance_access(request):
-        return _redirect_login()
     return await render_cashflow_overview_page(flash=flash)
 
 
 @router.get("/chart-data")
 async def chart_data(request: Request, weeks: int = 12):
-    if not has_finance_access(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
     from sales_support_agent.services.cashflow.overview import _build_chart_data
     return JSONResponse(_build_chart_data(period_weeks=weeks))
 
@@ -167,9 +175,6 @@ async def chart_data(request: Request, weeks: int = 12):
 @router.patch("/events/{event_id}")
 async def patch_event(event_id: str, request: Request):
     """Update friendly_name or notes on a cash event. Called by inline edit JS."""
-    if not has_finance_access(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
@@ -202,8 +207,6 @@ async def patch_event(event_id: str, request: Request):
 
 @router.get("/forecast", response_class=HTMLResponse)
 async def finance_forecast(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_weekly_forecast_page()
 
 
@@ -213,22 +216,16 @@ async def finance_forecast(request: Request):
 
 @router.get("/ap", response_class=HTMLResponse)
 async def ap_list(request: Request, flash: str = ""):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_upcoming_ap_page(flash=flash)
 
 
 @router.get("/ap/new", response_class=HTMLResponse)
 async def ap_new_form(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_ap_new_page()
 
 
 @router.post("/ap/new", response_class=HTMLResponse)
 async def ap_new_submit(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
     try:
@@ -240,15 +237,11 @@ async def ap_new_submit(request: Request):
 
 @router.get("/ap/{event_id}/edit", response_class=HTMLResponse)
 async def ap_edit_form(request: Request, event_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_ap_edit_page(event_id)
 
 
 @router.post("/ap/{event_id}/edit", response_class=HTMLResponse)
 async def ap_edit_submit(request: Request, event_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
     try:
@@ -260,8 +253,6 @@ async def ap_edit_submit(request: Request, event_id: str):
 
 @router.post("/ap/{event_id}/delete")
 async def ap_delete(request: Request, event_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     delete_obligation(event_id)
     return RedirectResponse("/admin/finances/ap?flash=ok:Deleted", status_code=303)
 
@@ -272,22 +263,16 @@ async def ap_delete(request: Request, event_id: str):
 
 @router.get("/ar", response_class=HTMLResponse)
 async def ar_list(request: Request, flash: str = ""):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_expected_ar_page(flash=flash)
 
 
 @router.get("/ar/new", response_class=HTMLResponse)
 async def ar_new_form(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_ar_new_page()
 
 
 @router.post("/ar/new", response_class=HTMLResponse)
 async def ar_new_submit(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
     try:
@@ -299,15 +284,11 @@ async def ar_new_submit(request: Request):
 
 @router.get("/ar/{event_id}/edit", response_class=HTMLResponse)
 async def ar_edit_form(request: Request, event_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_ar_edit_page(event_id)
 
 
 @router.post("/ar/{event_id}/edit", response_class=HTMLResponse)
 async def ar_edit_submit(request: Request, event_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_obligation_form(form)
     try:
@@ -319,8 +300,6 @@ async def ar_edit_submit(request: Request, event_id: str):
 
 @router.post("/ar/{event_id}/delete")
 async def ar_delete(request: Request, event_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     delete_obligation(event_id)
     return RedirectResponse("/admin/finances/ar?flash=ok:Deleted", status_code=303)
 
@@ -331,8 +310,6 @@ async def ar_delete(request: Request, event_id: str):
 
 @router.get("/alerts", response_class=HTMLResponse)
 async def finance_alerts(request: Request, flash: str = ""):
-    if not has_finance_access(request):
-        return _redirect_login()
     params = dict(request.query_params)
     severity = params.get("severity", "all")
     from sales_support_agent.services.cashflow.alerts_view import render_alerts_view_page
@@ -345,15 +322,11 @@ async def finance_alerts(request: Request, flash: str = ""):
 
 @router.get("/scenario", response_class=HTMLResponse)
 async def scenario_get(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_scenario_page()
 
 
 @router.post("/scenario", response_class=HTMLResponse)
 async def scenario_post(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     adj = {
         "event_id": form.get("event_id", ""),
@@ -370,15 +343,11 @@ async def scenario_post(request: Request):
 
 @router.get("/upload", response_class=HTMLResponse)
 async def upload_form(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_upload_page()
 
 
 @router.post("/upload", response_class=HTMLResponse)
 async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     merge_mode = str(form.get("merge_mode", "append"))
     csv_bytes = await csv_file.read()
@@ -394,8 +363,6 @@ async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
 
 @router.post("/sync-clickup", response_class=HTMLResponse)
 async def sync_clickup(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     settings = (
         getattr(request.app.state, "agent_settings", None)
         or getattr(request.app.state, "admin_dashboard_settings", None)
@@ -418,22 +385,16 @@ async def sync_clickup(request: Request):
 
 @router.get("/recurring", response_class=HTMLResponse)
 async def recurring_list(request: Request, flash: str = ""):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_recurring_page(flash=flash)
 
 
 @router.get("/recurring/new", response_class=HTMLResponse)
 async def recurring_new_form(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_recurring_new_page()
 
 
 @router.post("/recurring/new", response_class=HTMLResponse)
 async def recurring_new_submit(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_template_form(form)
     try:
@@ -445,15 +406,11 @@ async def recurring_new_submit(request: Request):
 
 @router.get("/recurring/{template_id}/edit", response_class=HTMLResponse)
 async def recurring_edit_form(request: Request, template_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     return render_recurring_edit_page(template_id)
 
 
 @router.post("/recurring/{template_id}/edit", response_class=HTMLResponse)
 async def recurring_edit_submit(request: Request, template_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     form = dict(await request.form())
     kwargs = parse_template_form(form)
     try:
@@ -465,8 +422,6 @@ async def recurring_edit_submit(request: Request, template_id: str):
 
 @router.post("/recurring/{template_id}/delete")
 async def recurring_delete(request: Request, template_id: str):
-    if not has_finance_access(request):
-        return _redirect_login()
     delete_recurring_template(template_id)
     return RedirectResponse("/admin/finances/recurring?flash=ok:Deleted", status_code=303)
 
@@ -477,8 +432,6 @@ async def recurring_delete(request: Request, template_id: str):
 
 @router.post("/sync-qbo", response_class=HTMLResponse)
 async def sync_qbo(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     settings = (
         getattr(request.app.state, "agent_settings", None)
         or getattr(request.app.state, "admin_dashboard_settings", None)
@@ -497,8 +450,6 @@ async def sync_qbo(request: Request):
 
 @router.post("/recurring/generate", response_class=HTMLResponse)
 async def recurring_generate(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     created = generate_upcoming_from_templates(horizon_days=90)
     return RedirectResponse(
         f"/admin/finances/recurring?flash=ok:{len(created)}+obligations+generated",
@@ -512,8 +463,6 @@ async def recurring_generate(request: Request):
 
 @router.get("/ledger", response_class=HTMLResponse)
 async def ledger_page(request: Request, **kwargs):
-    if not has_finance_access(request):
-        return _redirect_login()
     from sales_support_agent.services.cashflow.ledger import render_ledger_page
     params = dict(request.query_params)
     return HTMLResponse(render_ledger_page(
@@ -525,8 +474,6 @@ async def ledger_page(request: Request, **kwargs):
 
 @router.get("/ledger/export")
 async def ledger_export(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     from sales_support_agent.services.cashflow.obligations import list_obligations
     from sales_support_agent.services.cashflow.cashflow_helpers import _display_name
     import csv, io
@@ -585,8 +532,6 @@ async def ledger_export(request: Request):
 
 @router.get("/calendar", response_class=HTMLResponse)
 async def calendar_page(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     from sales_support_agent.services.cashflow.calendar_view import render_calendar_page
     params = dict(request.query_params)
     year = int(params["year"]) if params.get("year") else None
@@ -604,8 +549,6 @@ async def calendar_page(request: Request):
 
 @router.post("/alerts/dismiss/{alert_id}", response_class=HTMLResponse)
 async def dismiss_alert(alert_id: str, request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
     now = datetime.utcnow().isoformat()
@@ -620,8 +563,6 @@ async def dismiss_alert(alert_id: str, request: Request):
 
 @router.post("/alerts/dismiss-all", response_class=HTMLResponse)
 async def dismiss_all_alerts(request: Request):
-    if not has_finance_access(request):
-        return _redirect_login()
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
     now = datetime.utcnow().isoformat()

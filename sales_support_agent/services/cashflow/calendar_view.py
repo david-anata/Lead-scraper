@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import html
+import logging
 import calendar
 from datetime import date, datetime, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from sales_support_agent.services.cashflow.cashflow_helpers import (
     _dollar,
@@ -41,7 +44,8 @@ def render_calendar_page(
 
     try:
         events = get_events_for_range(month_start, month_end)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to fetch calendar events for %s-%s: %s", month_start, month_end, exc)
         events = []
 
     # Apply filter
@@ -59,8 +63,8 @@ def render_calendar_page(
         try:
             d = date.fromisoformat(d_str)
             events_by_date.setdefault(d, []).append(ev)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Skipping event with unparseable due_date: %s", exc)
 
     # Get starting balance for running totals
     from sales_support_agent.services.cashflow.obligations import list_obligations
@@ -71,7 +75,8 @@ def render_calendar_page(
             key=lambda r: str(r.get("due_date",""))
         )
         running = int(csv_rows[-1].get("account_balance_cents",0)) if csv_rows else 0
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to compute starting balance for calendar: %s", exc)
         running = 0
 
     # Build calendar grid — weeks starting Monday

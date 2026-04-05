@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import html
+import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from sales_support_agent.services.cashflow.cashflow_helpers import (
     _dollar,
@@ -74,7 +77,8 @@ def render_ledger_page(
         due_str = str(row.get("due_date",""))[:10]
         try:
             due = date.fromisoformat(due_str)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Skipping ledger row with unparseable due_date %r: %s", due_str, exc)
             continue
 
         week_end = get_week_sunday(due)
