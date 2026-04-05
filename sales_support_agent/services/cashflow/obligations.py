@@ -412,6 +412,17 @@ def generate_upcoming_from_templates(
     from sales_support_agent.models.database import engine
     from sqlalchemy import text
 
+    # Check cooldown — skip if ran within last 6 hours
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT value FROM kv_store WHERE key='template_gen_last_run'")).fetchone()
+        if row:
+            last_run = datetime.fromisoformat(row[0])
+            if (datetime.utcnow() - last_run).total_seconds() < 21600:  # 6 hours
+                return []  # skip
+    except Exception:
+        pass  # kv_store may not exist yet — proceed
+
     cutoff = _today() + timedelta(days=horizon_days)
     templates = list_recurring_templates(active_only=True)
     created: list[dict[str, Any]] = []
@@ -459,6 +470,16 @@ def generate_upcoming_from_templates(
             day_of_month = tmpl.get("day_of_month")
             new_next = _next_occurrence(next_due, frequency, day_of_month)
             update_recurring_template(tmpl["id"], next_due_date=new_next.isoformat())
+
+    # Update last-run timestamp
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO kv_store (key, value, updated_at) VALUES ('template_gen_last_run', :now, :now)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """), {"now": datetime.utcnow().isoformat()})
+    except Exception:
+        pass
 
     return created
 

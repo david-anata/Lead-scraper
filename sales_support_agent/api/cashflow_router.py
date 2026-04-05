@@ -153,6 +153,14 @@ async def finance_overview(request: Request, flash: str = ""):
     return await render_cashflow_overview_page(flash=flash)
 
 
+@router.get("/chart-data")
+async def chart_data(request: Request, weeks: int = 12):
+    if not has_finance_access(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from sales_support_agent.services.cashflow.overview import _build_chart_data
+    return JSONResponse(_build_chart_data(period_weeks=weeks))
+
+
 # ---------------------------------------------------------------------------
 # Forecast
 # ---------------------------------------------------------------------------

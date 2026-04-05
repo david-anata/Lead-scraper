@@ -225,39 +225,42 @@ def flag_risks(
             ))
 
     # ── 3. Duplicate obligations ───────────────────────────────────────────
+    # Bucket by vendor first (O(n)), then compare within bucket (O(k²) where k is small)
     outflows = [e for e in events if e.event_type == "outflow" and e.due_date is not None]
+    vendor_buckets: dict[str, list] = {}
+    for e in outflows:
+        key = (e.vendor_or_customer or "").lower().strip()
+        if key:
+            vendor_buckets.setdefault(key, []).append(e)
+
     seen: set[str] = set()
-    for i, a in enumerate(outflows):
-        if a.id in seen:
-            continue
-        date_a = a.due_date if isinstance(a.due_date, date) else a.due_date.date()
-        for b in outflows[i + 1:]:
-            if b.id in seen:
+    for vendor_key, bucket in vendor_buckets.items():
+        for i, a in enumerate(bucket):
+            if a.id in seen:
                 continue
-            if not a.vendor_or_customer or not b.vendor_or_customer:
-                continue
-            if a.vendor_or_customer.lower() != b.vendor_or_customer.lower():
-                continue
-            date_b = b.due_date if isinstance(b.due_date, date) else b.due_date.date()
-            if abs((date_a - date_b).days) > duplicate_window_days:
-                continue
-            # Same vendor within the window — check amount similarity (±10%)
-            if a.amount_cents == 0:
-                continue
-            ratio = abs(a.amount_cents - b.amount_cents) / a.amount_cents
-            if ratio <= 0.10:
-                seen.add(b.id)
-                alerts.append(RiskAlert(
-                    severity="warning",
-                    alert_type="duplicate",
-                    title=f"Possible duplicate: {a.vendor_or_customer}",
-                    detail=(
-                        f"Two {_fmt(a.amount_cents)} outflows to "
-                        f"{a.vendor_or_customer} within {duplicate_window_days} days "
-                        f"({date_a.strftime('%b %d')} and {date_b.strftime('%b %d')})."
-                    ),
-                    event_ids=[a.id, b.id],
-                ))
+            date_a = a.due_date if isinstance(a.due_date, date) else a.due_date.date()
+            for b in bucket[i + 1:]:
+                if b.id in seen:
+                    continue
+                date_b = b.due_date if isinstance(b.due_date, date) else b.due_date.date()
+                if abs((date_a - date_b).days) > duplicate_window_days:
+                    continue
+                if a.amount_cents == 0:
+                    continue
+                ratio = abs(a.amount_cents - b.amount_cents) / a.amount_cents
+                if ratio <= 0.10:
+                    seen.add(b.id)
+                    alerts.append(RiskAlert(
+                        severity="warning",
+                        alert_type="duplicate",
+                        title=f"Possible duplicate: {a.vendor_or_customer}",
+                        detail=(
+                            f"Two {_fmt(a.amount_cents)} outflows to "
+                            f"{a.vendor_or_customer} within {duplicate_window_days} days "
+                            f"({date_a.strftime('%b %d')} and {date_b.strftime('%b %d')})."
+                        ),
+                        event_ids=[a.id, b.id],
+                    ))
 
     # ── 4. Category outliers ───────────────────────────────────────────────
     by_category: dict[str, list[int]] = {}

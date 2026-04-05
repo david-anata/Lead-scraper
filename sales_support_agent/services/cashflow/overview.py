@@ -24,7 +24,68 @@ from sales_support_agent.services.cashflow.engine import (
     aggregate_weeks,
     flag_risks,
 )
-from sales_support_agent.services.cashflow.obligations import list_obligations
+from sales_support_agent.services.cashflow.obligations import list_obligations, get_events_for_range
+
+
+def _build_chart_data(period_weeks: int = 12) -> dict:
+    """Build Chart.js dataset for the cashflow chart.
+    Returns dict with labels, actual_data, projected_data, threshold.
+    """
+    today = date.today()
+
+    # Historical: bank CSV rows sorted by date, build running balance
+    all_rows = list_obligations(limit=5000)
+    csv_rows = sorted(
+        [r for r in all_rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None],
+        key=lambda r: str(r.get("due_date", ""))
+    )
+
+    # Get starting balance
+    starting_balance = 0
+    if csv_rows:
+        starting_balance = int(csv_rows[-1].get("account_balance_cents") or 0)
+
+    # Build weekly labels for the period
+    monday = today - timedelta(days=today.weekday())
+    start_monday = monday - timedelta(weeks=4)  # 4 weeks back
+
+    labels = []
+    actual_data = []
+    projected_data = []
+
+    for i in range(period_weeks + 4):
+        week_date = start_monday + timedelta(weeks=i)
+        labels.append(week_date.strftime("%b %d"))
+
+        if week_date <= today:
+            # Find the closest CSV balance point
+            week_csv = [r for r in csv_rows if str(r.get("due_date", ""))[:10] <= week_date.isoformat()]
+            if week_csv:
+                actual_data.append(int(week_csv[-1].get("account_balance_cents") or 0) / 100)
+            else:
+                actual_data.append(None)
+            projected_data.append(None)
+        else:
+            actual_data.append(None)
+            # Project forward from starting balance
+            week_events = get_events_for_range(
+                today, week_date,
+                include_statuses=["planned", "overdue", "pending"]
+            )
+            net = sum(
+                (e["amount_cents"] if e["event_type"] == "inflow" else -e["amount_cents"])
+                for e in week_events
+            ) / 100
+            proj = starting_balance / 100 + net
+            projected_data.append(proj)
+
+    return {
+        "labels": labels,
+        "actual": actual_data,
+        "projected": projected_data,
+        "threshold": 10000,  # $10,000 default floor
+        "starting_balance": starting_balance / 100,
+    }
 
 
 def _render_weekly_table(events: list, today) -> str:
@@ -115,17 +176,18 @@ def _render_weekly_table(events: list, today) -> str:
                     amount_cls = "amount-out" if ev.event_type == "outflow" else "amount-in"
                     amount_s = _dollar(ev.amount_cents)
                     status_cls = f"status-{ev.status}"
-                    vendor = getattr(ev, "vendor_or_customer", "") or ""
-                    display_name = ev.name or vendor or "(unnamed)"
                     due_str = ev.due_date.strftime("%-m/%-d") if ev.due_date else ""
+                    # Build a row dict for _name_cell
+                    row_dict = {
+                        "id": ev.id, "name": ev.name,
+                        "vendor_or_customer": ev.vendor_or_customer,
+                        "description": "", "friendly_name": None,
+                    }
 
                     rows_html += f"""
                     <tr class="cat-item-row">
                       <td style="padding-left:28px;color:var(--muted);font-size:12px">{html.escape(due_str)}</td>
-                      <td style="padding-left:6px">
-                        <span style="font-size:13px">{html.escape(display_name)}</span>
-                        {f'<br><span style="color:var(--muted);font-size:11px">{html.escape(vendor)}</span>' if vendor and vendor != display_name else ''}
-                      </td>
+                      <td style="padding-left:6px;font-size:13px">{_name_cell(row_dict)}</td>
                       <td class="{amount_cls}" style="font-size:13px">{amount_s}</td>
                       <td><span class="status-pill {status_cls}" style="font-size:10px">{html.escape(ev.status)}</span></td>
                       <td></td>
@@ -328,6 +390,101 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
     # 8-week rolling cashflow table
     weekly_table_html = _render_weekly_table(events, today)
 
+    chart_html = """
+<!-- Load Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<div class="card" style="margin-bottom:1rem">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+    <h2 style="margin:0">Cash Flow</h2>
+    <div>
+      <select id="chart-period" onchange="loadChart(this.value)" style="padding:4px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:0.85rem">
+        <option value="4">4 weeks</option>
+        <option value="8">8 weeks</option>
+        <option value="12" selected>3 months</option>
+        <option value="26">6 months</option>
+        <option value="52">12 months</option>
+      </select>
+    </div>
+  </div>
+  <p style="color:#6b7280;font-size:0.85rem;margin:0 0 0.75rem">Today&#39;s balance: <strong id="chart-balance">loading...</strong></p>
+  <div style="height:280px;position:relative">
+    <canvas id="cashflowChart"></canvas>
+  </div>
+</div>
+
+<script>
+let cashflowChart = null;
+function loadChart(weeks) {
+  fetch('/admin/finances/chart-data?weeks=' + weeks)
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('chart-balance').textContent = '$' + (data.starting_balance || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      const ctx = document.getElementById('cashflowChart').getContext('2d');
+      if (cashflowChart) cashflowChart.destroy();
+      cashflowChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: data.labels,
+          datasets: [
+            {
+              label: 'Cash balance',
+              data: data.actual,
+              borderColor: '#0D9488',
+              backgroundColor: 'rgba(13,148,136,0.08)',
+              borderWidth: 2,
+              tension: 0.3,
+              fill: true,
+              spanGaps: false,
+              pointRadius: 3,
+            },
+            {
+              label: 'Projected balance',
+              data: data.projected,
+              borderColor: '#2563EB',
+              backgroundColor: 'transparent',
+              borderWidth: 2,
+              borderDash: [6, 3],
+              tension: 0.3,
+              fill: false,
+              spanGaps: false,
+              pointRadius: 3,
+            },
+            {
+              label: 'Threshold ($10k)',
+              data: data.labels.map(() => data.threshold),
+              borderColor: '#9CA3AF',
+              backgroundColor: 'transparent',
+              borderWidth: 1,
+              borderDash: [4, 4],
+              pointRadius: 0,
+              fill: false,
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 12 } } },
+            tooltip: {
+              callbacks: {
+                label: ctx => ctx.dataset.label + ': $' + (ctx.parsed.y || 0).toLocaleString('en-US', {minimumFractionDigits:2})
+              }
+            }
+          },
+          scales: {
+            y: { ticks: { callback: v => '$' + (v/1000).toFixed(0) + 'k' } },
+            x: { ticks: { maxTicksLimit: 8 } }
+          }
+        }
+      });
+    });
+}
+document.addEventListener('DOMContentLoaded', () => loadChart(12));
+</script>"""
+
     body = f"""
     <div>
       <p class="eyebrow" style="margin:0 0 10px;text-transform:uppercase;letter-spacing:.18em;font-size:12px;font-weight:800;color:var(--accent);font-family:'Montserrat',sans-serif;">Finance</p>
@@ -336,6 +493,7 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
       {ai_block}
     </div>
     {cards_html}
+    {chart_html}
     <div class="card">
       <h2>Risk Alerts</h2>
       <div style="margin-top:14px">{alerts_table}</div>

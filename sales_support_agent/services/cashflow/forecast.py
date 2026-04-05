@@ -8,6 +8,7 @@ from typing import Any
 
 from sales_support_agent.services.cashflow.cashflow_helpers import (
     _dollar,
+    _display_name,
     _events_to_dtos,
     _page_shell,
 )
@@ -92,7 +93,7 @@ def render_weekly_forecast_page(*, flash: str = "") -> str:
         event_rows_html += f"""
         <tr>
           <td>{date_s}</td>
-          <td>{html.escape(e.name or e.vendor_or_customer or "—")}</td>
+          <td>{html.escape(_display_name({"name": e.name, "vendor_or_customer": e.vendor_or_customer, "description": ""}))}</td>
           <td>{html.escape(e.category)}</td>
           <td class="{type_class}">{_dollar(e.amount_cents) if e.event_type == "inflow" else ""}</td>
           <td class="{type_class}">{_dollar(e.amount_cents) if e.event_type == "outflow" else ""}</td>
