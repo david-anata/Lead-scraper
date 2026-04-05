@@ -458,6 +458,32 @@ async def recurring_generate(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Reconcile — Actuals vs Planned + trend suggestions
+# ---------------------------------------------------------------------------
+
+@router.get("/reconcile", response_class=HTMLResponse)
+async def reconcile_page(request: Request, flash: str = ""):
+    from sales_support_agent.services.cashflow.reconcile import render_reconcile_page
+    return HTMLResponse(render_reconcile_page(flash=flash))
+
+
+@router.post("/reconcile/accept-pattern", response_class=HTMLResponse)
+async def reconcile_accept_pattern(request: Request):
+    """Turn a detected recurring pattern into a recurring_template."""
+    from sales_support_agent.services.cashflow.trend_detector import accept_pattern_as_template
+    from urllib.parse import quote
+    form = dict(await request.form())
+    try:
+        accept_pattern_as_template(form)
+        flash = f"ok:Template created for {form.get('normalized_vendor','pattern')}. Edit it to fine-tune the amount and due date."
+    except Exception as exc:
+        flash = f"err:Could not create template: {exc}"
+    return RedirectResponse(
+        f"/admin/finances/reconcile?flash={quote(flash)}", status_code=303
+    )
+
+
+# ---------------------------------------------------------------------------
 # Ledger
 # ---------------------------------------------------------------------------
 

@@ -244,6 +244,7 @@ def _finance_subnav(active: str) -> str:
         ("Scenario", "/admin/finances/scenario", "scenario"),
         ("Upload CSV", "/admin/finances/upload", "upload"),
         ("Recurring", "/admin/finances/recurring", "recurring"),
+        ("Reconcile", "/admin/finances/reconcile", "reconcile"),
     ]
     links = "".join(
         f'<a href="{href}" class="subnav-link{"" if key != active else " active"}">{_html.escape(label)}</a>'
