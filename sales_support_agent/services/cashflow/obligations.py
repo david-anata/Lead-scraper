@@ -92,15 +92,19 @@ def create_obligation(
             text("""
                 INSERT INTO cash_events (
                     id, source, source_id, event_type, category,
-                    name, vendor_or_customer, amount_cents,
-                    due_date, status, confidence, notes,
+                    subcategory, description, name, vendor_or_customer,
+                    amount_cents, due_date, status, confidence, notes,
                     recurring_template_id, clickup_task_id,
+                    bank_transaction_type, bank_reference,
+                    recurring_rule,
                     created_at, updated_at
                 ) VALUES (
                     :id, 'manual', :id, :event_type, :category,
-                    :name, :vendor_or_customer, :amount_cents,
-                    :due_date, :status, :confidence, :notes,
+                    '', '', :name, :vendor_or_customer,
+                    :amount_cents, :due_date, :status, :confidence, :notes,
                     :recurring_template_id, :clickup_task_id,
+                    '', '',
+                    '',
                     :now, :now
                 )
             """),
@@ -116,7 +120,7 @@ def create_obligation(
                 "confidence": confidence,
                 "notes": notes,
                 "recurring_template_id": recurring_template_id,
-                "clickup_task_id": clickup_task_id,
+                "clickup_task_id": clickup_task_id or "",
                 "now": now.isoformat(),
             },
         )
@@ -463,15 +467,17 @@ def import_clickup_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
                     text("""
                         INSERT INTO cash_events (
                             id, source, source_id, event_type, category,
-                            name, vendor_or_customer, amount_cents,
-                            due_date, status, confidence,
+                            subcategory, description, name, vendor_or_customer,
+                            amount_cents, due_date, status, confidence,
                             clickup_task_id, recurring_rule,
+                            bank_transaction_type, bank_reference, notes,
                             created_at, updated_at
                         ) VALUES (
                             :id, 'clickup', :source_id, :event_type, :category,
-                            :name, :vendor_or_customer, :amount_cents,
-                            :due_date, :status, 'estimated',
+                            '', '', :name, :vendor_or_customer,
+                            :amount_cents, :due_date, :status, 'estimated',
                             :clickup_task_id, :recurring_rule,
+                            '', '', '',
                             :now, :now
                         )
                     """),
@@ -486,7 +492,7 @@ def import_clickup_tasks(tasks: list[dict[str, Any]]) -> dict[str, int]:
                         "due_date": due_date_str,
                         "status": normalised.get("status", "planned"),
                         "clickup_task_id": clickup_id,
-                        "recurring_rule": normalised.get("recurring_rule"),
+                        "recurring_rule": normalised.get("recurring_rule") or "",
                         "now": now,
                     },
                 )

@@ -265,7 +265,11 @@ async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
 async def sync_clickup(request: Request):
     if not has_finance_access(request):
         return _redirect_login()
-    settings = getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+    settings = (
+        getattr(request.app.state, "agent_settings", None)
+        or getattr(request.app.state, "admin_dashboard_settings", None)
+        or request.app.state.settings
+    )
     try:
         result = await asyncio.to_thread(sync_clickup_finance, settings)
         flash = f"ok:Synced from ClickUp — {result['created']} added · {result['updated']} updated · {result['skipped']} skipped"

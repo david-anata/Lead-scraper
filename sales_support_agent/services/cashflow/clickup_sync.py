@@ -145,6 +145,8 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
         "clickup_task_id": task["id"],
         "event_type": event_type,
         "category": category,
+        "subcategory": "",
+        "description": description[:500] if description else "",
         "name": name,
         "vendor_or_customer": name,
         "amount_cents": amount_cents,
@@ -152,6 +154,8 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
         "status": status,
         "confidence": confidence,
         "recurring_rule": frequency,
+        "bank_transaction_type": "",
+        "bank_reference": "",
         "notes": notes,
     }
 
@@ -275,11 +279,15 @@ def _upsert_event(engine, ev: dict) -> str:
                     UPDATE cash_events SET
                         source=:source, source_id=:source_id,
                         event_type=:event_type, category=:category,
+                        subcategory=:subcategory, description=:description,
                         name=:name, vendor_or_customer=:vendor_or_customer,
                         amount_cents=:amount_cents, due_date=:due_date,
                         status=:status, confidence=:confidence,
                         recurring_rule=:recurring_rule, notes=:notes,
-                        clickup_task_id=:clickup_task_id, updated_at=:updated_at
+                        clickup_task_id=:clickup_task_id,
+                        bank_transaction_type=:bank_transaction_type,
+                        bank_reference=:bank_reference,
+                        updated_at=:updated_at
                     WHERE id=:id
                 """),
                 {**ev, "due_date": due_str, "updated_at": now_str},
@@ -289,14 +297,18 @@ def _upsert_event(engine, ev: dict) -> str:
             conn.execute(
                 text("""
                     INSERT INTO cash_events
-                        (id, source, source_id, event_type, category, name,
-                         vendor_or_customer, amount_cents, due_date, status,
-                         confidence, recurring_rule, notes, clickup_task_id,
+                        (id, source, source_id, event_type, category,
+                         subcategory, description, name, vendor_or_customer,
+                         amount_cents, due_date, status, confidence,
+                         recurring_rule, notes, clickup_task_id,
+                         bank_transaction_type, bank_reference,
                          created_at, updated_at)
                     VALUES
-                        (:id, :source, :source_id, :event_type, :category, :name,
-                         :vendor_or_customer, :amount_cents, :due_date, :status,
-                         :confidence, :recurring_rule, :notes, :clickup_task_id,
+                        (:id, :source, :source_id, :event_type, :category,
+                         :subcategory, :description, :name, :vendor_or_customer,
+                         :amount_cents, :due_date, :status, :confidence,
+                         :recurring_rule, :notes, :clickup_task_id,
+                         :bank_transaction_type, :bank_reference,
                          :created_at, :updated_at)
                 """),
                 {**ev, "due_date": due_str, "created_at": now_str, "updated_at": now_str},

@@ -97,6 +97,20 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         "communication_events": {
             "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
         },
+        "cash_events": {
+            "subcategory":           "ALTER TABLE cash_events ADD COLUMN subcategory VARCHAR(64) NOT NULL DEFAULT ''",
+            "description":           "ALTER TABLE cash_events ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+            "bank_transaction_type": "ALTER TABLE cash_events ADD COLUMN bank_transaction_type VARCHAR(32) NOT NULL DEFAULT ''",
+            "bank_reference":        "ALTER TABLE cash_events ADD COLUMN bank_reference VARCHAR(128) NOT NULL DEFAULT ''",
+            "notes":                 "ALTER TABLE cash_events ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
+            "recurring_rule":        "ALTER TABLE cash_events ADD COLUMN recurring_rule VARCHAR(64) NOT NULL DEFAULT ''",
+            "clickup_task_id":       "ALTER TABLE cash_events ADD COLUMN clickup_task_id VARCHAR(64) NOT NULL DEFAULT ''",
+            "account_balance_cents": "ALTER TABLE cash_events ADD COLUMN account_balance_cents INTEGER",
+            "effective_date":        "ALTER TABLE cash_events ADD COLUMN effective_date DATETIME",
+            "expected_date":         "ALTER TABLE cash_events ADD COLUMN expected_date DATETIME",
+            "recurring_template_id": "ALTER TABLE cash_events ADD COLUMN recurring_template_id TEXT",
+            "matched_to_id":         "ALTER TABLE cash_events ADD COLUMN matched_to_id TEXT",
+        },
     }
 
     with engine.begin() as connection:
@@ -305,6 +319,27 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     ALTER TABLE recurring_templates ADD PRIMARY KEY (id);
                   END IF;
                 END $$;
+                """
+            )
+        )
+        # Additive migrations — ensure columns added after initial deployment exist.
+        # ADD COLUMN IF NOT EXISTS is a no-op when the column already exists.
+        connection.execute(
+            text(
+                """
+                ALTER TABLE cash_events
+                    ADD COLUMN IF NOT EXISTS subcategory           VARCHAR(64)  NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS description           TEXT         NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS bank_transaction_type VARCHAR(32)  NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS bank_reference        VARCHAR(128) NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS notes                 TEXT         NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS recurring_rule        VARCHAR(64)  NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS clickup_task_id       VARCHAR(64)  NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS account_balance_cents INTEGER      NULL,
+                    ADD COLUMN IF NOT EXISTS effective_date        TIMESTAMPTZ  NULL,
+                    ADD COLUMN IF NOT EXISTS expected_date         TIMESTAMPTZ  NULL,
+                    ADD COLUMN IF NOT EXISTS recurring_template_id TEXT         NULL,
+                    ADD COLUMN IF NOT EXISTS matched_to_id         TEXT         NULL
                 """
             )
         )
