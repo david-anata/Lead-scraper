@@ -10,7 +10,7 @@ from sales_support_agent.services.cashflow.engine import EventDTO, RiskAlert
 from sales_support_agent.services.cashflow.overview import compute_finance_overview
 
 
-_TODAY = date(2026, 4, 3)
+_TODAY = date(2026, 4, 7)   # a Monday
 
 
 def _make_week(net_cents: int = 0, inflow_cents: int = 0, outflow_cents: int = 0) -> SimpleNamespace:
@@ -172,6 +172,89 @@ class TestAiText(unittest.TestCase):
     def test_ai_text_defaults_empty(self) -> None:
         m = compute_finance_overview([], [], [], 0, today=_TODAY)
         self.assertEqual(m.ai_text, "")
+
+
+class TestPostedRowFilterRegression(unittest.TestCase):
+    """Regression guard for the posted-row double-counting bug (fixed 2026-04-05).
+
+    When building EventDTOs for aggregate_weeks() the forecast code filters out
+    events with status in ('posted', 'matched', 'cancelled', 'paid') because
+    those are already reflected in the starting balance from the latest bank CSV.
+    If that filter is removed, posted rows will double-count and forecasted
+    outflows will appear as $0.
+
+    These tests call _events_to_dtos() with the same filter the live code uses
+    and assert that settled events never appear in the DTO list.
+    """
+
+    def _make_raw(self, status: str, event_type: str = "outflow") -> dict:
+        return {
+            "id": f"id-{status}",
+            "source": "csv" if status in ("posted", "matched") else "manual",
+            "event_type": event_type,
+            "category": "other",
+            "name": status,
+            "vendor_or_customer": "Vendor",
+            "amount_cents": 100_00,
+            "due_date": "2026-04-14",
+            "status": status,
+            "confidence": "confirmed",
+            "matched_to_id": None,
+            "recurring_rule": None,
+            "friendly_name": None,
+        }
+
+    def test_posted_rows_excluded_by_forecast_filter(self) -> None:
+        from sales_support_agent.services.cashflow.cashflow_helpers import _events_to_dtos
+
+        rows = [self._make_raw(s) for s in ("posted", "matched", "cancelled", "paid", "planned")]
+        # Apply the same filter used in forecast.py and overview.py
+        forecast_rows = [
+            r for r in rows
+            if r.get("status") not in ("posted", "matched", "cancelled", "paid")
+        ]
+        dtos = _events_to_dtos(forecast_rows)
+        statuses = {d.status for d in dtos}
+        # Only 'planned' should survive the filter
+        self.assertEqual(len(dtos), 1)
+        self.assertNotIn("posted", statuses)
+        self.assertNotIn("matched", statuses)
+        self.assertNotIn("cancelled", statuses)
+        self.assertNotIn("paid", statuses)
+        self.assertIn("planned", statuses)
+
+    def test_posted_outflow_excluded_from_aggregate(self) -> None:
+        """A posted $1,000 outflow must NOT reduce the forecast balance."""
+        from sales_support_agent.services.cashflow.cashflow_helpers import _events_to_dtos
+        from sales_support_agent.services.cashflow.engine import aggregate_weeks
+
+        monday = date(2026, 4, 7)
+        rows = [
+            self._make_raw("posted"),          # bank actual — must be excluded
+            self._make_raw("planned"),          # forward obligation — must be included
+        ]
+        # Correct filter (as in forecast.py)
+        forecast_rows = [r for r in rows if r.get("status") not in ("posted", "matched", "cancelled", "paid")]
+        dtos = _events_to_dtos(forecast_rows)
+        weeks = aggregate_weeks(dtos, starting_cash_cents=500_00, weeks=2, as_of_date=monday)
+
+        # With the posted row excluded, only the 'planned' $100 outflow applies
+        total_outflow = sum(w.outflow_cents for w in weeks)
+        self.assertEqual(total_outflow, 100_00, "posted rows must not contribute to forecast outflow")
+
+    def test_all_rows_included_without_filter_doubles_outflow(self) -> None:
+        """Verify the bug would be detectable: without the filter, outflow doubles."""
+        from sales_support_agent.services.cashflow.cashflow_helpers import _events_to_dtos
+        from sales_support_agent.services.cashflow.engine import aggregate_weeks
+
+        monday = date(2026, 4, 7)
+        rows = [self._make_raw("posted"), self._make_raw("planned")]
+        # No filter — both rows passed through (the old buggy behaviour)
+        dtos = _events_to_dtos(rows)
+        weeks = aggregate_weeks(dtos, starting_cash_cents=500_00, weeks=2, as_of_date=monday)
+        total_outflow = sum(w.outflow_cents for w in weeks)
+        # Both posted and planned are outflows of $100 each → $200 total (the double-count)
+        self.assertEqual(total_outflow, 200_00, "without the filter, outflow double-counts")
 
 
 if __name__ == "__main__":

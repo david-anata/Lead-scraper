@@ -157,6 +157,97 @@ class TestFlagRisks(unittest.TestCase):
                 )
 
 
+class TestFlagRisksAdditional(unittest.TestCase):
+    """Tests for the three flag_risks alert types not covered by TestFlagRisks:
+    duplicate, outlier, and large_outflow."""
+
+    def test_duplicate_outflows_trigger_warning(self) -> None:
+        """Two outflows to the same vendor, same amount, within 7 days → duplicate warning."""
+        monday = date(2026, 4, 6)
+        e1 = _event(
+            event_type="outflow", amount_cents=500_00, due_date=monday,
+            event_id="dup1", source="manual", category="software",
+        )
+        e1.vendor_or_customer = "Acme SaaS"
+        e2 = _event(
+            event_type="outflow", amount_cents=500_00, due_date=monday + timedelta(days=3),
+            event_id="dup2", source="manual", category="software",
+        )
+        e2.vendor_or_customer = "Acme SaaS"
+        weeks = aggregate_weeks([e1, e2], starting_cash_cents=5000_00, weeks=4, as_of_date=monday)
+        alerts = flag_risks(weeks, [e1, e2], as_of_date=monday)
+        alert_types = {a.alert_type for a in alerts}
+        self.assertIn("duplicate", alert_types, "Expected a duplicate alert for same vendor+amount within 7 days")
+        dup_alerts = [a for a in alerts if a.alert_type == "duplicate"]
+        self.assertEqual(dup_alerts[0].severity, "warning")
+
+    def test_no_duplicate_when_amounts_differ_significantly(self) -> None:
+        """Two outflows to the same vendor but very different amounts → no duplicate."""
+        monday = date(2026, 4, 6)
+        e1 = _event(event_type="outflow", amount_cents=100_00, due_date=monday, event_id="d1")
+        e1.vendor_or_customer = "Widget Corp"
+        e2 = _event(event_type="outflow", amount_cents=500_00, due_date=monday + timedelta(days=2), event_id="d2")
+        e2.vendor_or_customer = "Widget Corp"
+        weeks = aggregate_weeks([e1, e2], starting_cash_cents=5000_00, weeks=4, as_of_date=monday)
+        alerts = flag_risks(weeks, [e1, e2], as_of_date=monday)
+        alert_types = {a.alert_type for a in alerts}
+        self.assertNotIn("duplicate", alert_types)
+
+    def test_outlier_amount_triggers_warning(self) -> None:
+        """An outflow 4× the category median triggers an outlier warning."""
+        monday = date(2026, 4, 6)
+        # Three 'normal' software expenses at $100 establish the median
+        normals = [
+            _event(event_type="outflow", amount_cents=100_00,
+                   due_date=monday + timedelta(weeks=i), event_id=f"n{i}", category="software")
+            for i in range(3)
+        ]
+        # One spike at $500 (5× the median)
+        spike = _event(
+            event_type="outflow", amount_cents=500_00,
+            due_date=monday + timedelta(weeks=3), event_id="spike", category="software",
+        )
+        all_events = normals + [spike]
+        weeks = aggregate_weeks(all_events, starting_cash_cents=10000_00, weeks=6, as_of_date=monday)
+        alerts = flag_risks(weeks, all_events, as_of_date=monday, outlier_multiplier=3.0)
+        alert_types = {a.alert_type for a in alerts}
+        self.assertIn("outlier", alert_types, "Expected an outlier alert for 5× median outflow")
+        outlier_alerts = [a for a in alerts if a.alert_type == "outlier"]
+        self.assertEqual(outlier_alerts[0].severity, "warning")
+
+    def test_no_outlier_with_fewer_than_three_samples(self) -> None:
+        """Need at least 3 category samples for outlier detection — fewer samples → no alert."""
+        monday = date(2026, 4, 6)
+        e1 = _event(event_type="outflow", amount_cents=100_00, due_date=monday, event_id="e1", category="rent")
+        e2 = _event(event_type="outflow", amount_cents=500_00, due_date=monday + timedelta(weeks=1), event_id="e2", category="rent")
+        weeks = aggregate_weeks([e1, e2], starting_cash_cents=5000_00, weeks=4, as_of_date=monday)
+        alerts = flag_risks(weeks, [e1, e2], as_of_date=monday)
+        alert_types = {a.alert_type for a in alerts}
+        self.assertNotIn("outlier", alert_types)
+
+    def test_large_outflow_triggers_info_alert(self) -> None:
+        """A single outflow above the $2,000 threshold triggers a large_outflow info alert."""
+        monday = date(2026, 4, 6)
+        big = _event(
+            event_type="outflow", amount_cents=250_000,  # $2,500
+            due_date=monday, event_id="big1",
+        )
+        weeks = aggregate_weeks([big], starting_cash_cents=100_000_00, weeks=4, as_of_date=monday)
+        alerts = flag_risks(weeks, [big], as_of_date=monday, large_outflow_threshold_cents=200_000)
+        alert_types = {a.alert_type for a in alerts}
+        self.assertIn("large_outflow", alert_types)
+        large_alerts = [a for a in alerts if a.alert_type == "large_outflow"]
+        self.assertEqual(large_alerts[0].severity, "info")
+
+    def test_small_outflow_does_not_trigger_large_outflow_alert(self) -> None:
+        monday = date(2026, 4, 6)
+        small = _event(event_type="outflow", amount_cents=50_00, due_date=monday, event_id="sm1")
+        weeks = aggregate_weeks([small], starting_cash_cents=5000_00, weeks=4, as_of_date=monday)
+        alerts = flag_risks(weeks, [small], as_of_date=monday, large_outflow_threshold_cents=200_000)
+        alert_types = {a.alert_type for a in alerts}
+        self.assertNotIn("large_outflow", alert_types)
+
+
 class TestApplyScenario(unittest.TestCase):
     def test_remove_event(self) -> None:
         e = _event(event_id="e1")
