@@ -57,6 +57,89 @@ def _redirect_login() -> RedirectResponse:
 
 
 # ---------------------------------------------------------------------------
+# Health check — no auth, used for post-deploy self-testing
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def cashflow_health():
+    """
+    Self-test endpoint.  Returns JSON with DB column state and static INSERT
+    coverage for every cashflow write path.  No session cookie required.
+    """
+    import importlib as _importlib
+    import inspect as _inspect
+    from fastapi.responses import JSONResponse
+
+    # NOT NULL columns that every INSERT must explicitly provide
+    REQUIRED_COLUMNS: set = {
+        "id", "source", "source_id", "event_type", "category",
+        "subcategory", "description", "name", "vendor_or_customer",
+        "amount_cents", "status", "confidence",
+        "recurring_rule", "clickup_task_id",
+        "bank_transaction_type", "bank_reference", "notes",
+        "created_at", "updated_at",
+    }
+
+    checks: dict = {}
+    db_columns: list = []
+    missing_columns: list = []
+    overall = "ok"
+
+    # -- Live DB check -------------------------------------------------------
+    try:
+        from sales_support_agent.models.database import engine
+        from sqlalchemy import inspect as _sainsp
+
+        insp = _sainsp(engine)
+        tables = set(insp.get_table_names())
+        checks["cash_events_table_exists"] = "cash_events" in tables
+
+        if checks["cash_events_table_exists"]:
+            db_columns = sorted(c["name"] for c in insp.get_columns("cash_events"))
+            missing_columns = sorted(REQUIRED_COLUMNS - set(db_columns))
+            checks["all_required_columns_present"] = len(missing_columns) == 0
+        else:
+            checks["all_required_columns_present"] = False
+            missing_columns = sorted(REQUIRED_COLUMNS)
+            overall = "degraded"
+
+        if missing_columns:
+            overall = "degraded"
+
+    except Exception as exc:
+        return JSONResponse(status_code=200, content={
+            "status": "error", "detail": str(exc),
+        })
+
+    # -- Static INSERT coverage check ----------------------------------------
+    def _coverage(module_path: str) -> dict:
+        try:
+            src = _inspect.getsource(_importlib.import_module(module_path))
+            missing = sorted(c for c in REQUIRED_COLUMNS if c not in src)
+            return {"covered": not missing, "missing": missing}
+        except Exception as exc:
+            return {"covered": False, "error": str(exc)}
+
+    checks["upload_insert_coverage"]       = _coverage("sales_support_agent.services.cashflow.upload")
+    checks["clickup_sync_insert_coverage"] = _coverage("sales_support_agent.services.cashflow.clickup_sync")
+    checks["obligations_insert_coverage"]  = _coverage("sales_support_agent.services.cashflow.obligations")
+
+    if any(
+        not v.get("covered", False)
+        for k, v in checks.items()
+        if k.endswith("_insert_coverage")
+    ):
+        overall = "degraded"
+
+    return JSONResponse(status_code=200, content={
+        "status": overall,
+        "db_columns": db_columns,
+        "missing_columns": missing_columns,
+        "checks": checks,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Overview
 # ---------------------------------------------------------------------------
 
