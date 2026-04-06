@@ -156,6 +156,37 @@ async def _startup_init():
         except Exception as exc:
             logger.warning("[Finance startup sync] Template expansion failed: %s", exc)
 
+        # Warn if QB access token is expiring soon (within 24 h) so ops
+        # doesn't get a surprise outage.  Non-fatal — missing tokens just skip.
+        try:
+            from sales_support_agent.api.qbo_auth_router import _load_tokens
+            from datetime import datetime, timezone, timedelta
+            token_row = await _asyncio.to_thread(_load_tokens)
+            if token_row and token_row.get("expires_at"):
+                exp_str = token_row["expires_at"]
+                # Handle both aware and naïve ISO strings from the DB
+                try:
+                    exp = datetime.fromisoformat(exp_str)
+                    if exp.tzinfo is None:
+                        exp = exp.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    exp = None
+                if exp is not None:
+                    remaining = exp - datetime.now(timezone.utc)
+                    if remaining < timedelta(hours=24):
+                        logger.warning(
+                            "[Finance startup] QB access token expires in %s — "
+                            "visit /connect to re-authenticate before it lapses.",
+                            str(remaining).split(".")[0],
+                        )
+                    else:
+                        logger.info(
+                            "[Finance startup] QB access token valid for %s.",
+                            str(remaining).split(".")[0],
+                        )
+        except Exception as exc:
+            logger.debug("[Finance startup] QB token expiry check skipped: %s", exc)
+
     _asyncio.create_task(_background_finance_sync())
 
 

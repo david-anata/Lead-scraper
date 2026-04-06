@@ -229,6 +229,78 @@ def qb_disconnect_get(request: Request) -> JSONResponse:
     return _do_disconnect()
 
 
+def get_valid_access_token() -> str | None:
+    """Return a valid QB access token, refreshing it first if it expires within 5 minutes.
+
+    Returns None when no tokens are stored or when both refresh attempts fail.
+    Call this before every Intuit API request instead of _load_tokens() directly.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    token_row = _load_tokens()
+    if not token_row or not token_row.get("access_token"):
+        return None
+
+    # Check expiry — refresh proactively if within 5 minutes of expiry
+    expires_at_str = token_row.get("expires_at") or ""
+    try:
+        exp = datetime.fromisoformat(expires_at_str)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        needs_refresh = (exp - datetime.now(timezone.utc)) < timedelta(minutes=5)
+    except (ValueError, TypeError):
+        needs_refresh = True  # Unknown expiry → attempt refresh defensively
+
+    if not needs_refresh:
+        return token_row["access_token"]
+
+    # Attempt token refresh using the stored refresh_token
+    refresh_token = token_row.get("refresh_token", "")
+    if not refresh_token:
+        logger.warning("QB token expired and no refresh_token stored — re-authentication required")
+        return None
+
+    try:
+        resp = requests.post(
+            _QB_TOKEN_URL,
+            headers={
+                "Authorization": _basic_auth_header(),
+                "Content-Type":  "application/x-www-form-urlencoded",
+                "Accept":        "application/json",
+            },
+            data={
+                "grant_type":    "refresh_token",
+                "refresh_token": refresh_token,
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        new_tokens = resp.json()
+    except Exception as exc:
+        logger.error("QB token refresh failed: %s — re-authentication required", exc)
+        return None
+
+    new_access  = new_tokens.get("access_token", "")
+    new_refresh = new_tokens.get("refresh_token", refresh_token)  # Intuit may rotate refresh token
+    new_expires_in = int(new_tokens.get("expires_in", 3600))
+    new_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=new_expires_in)).isoformat()
+
+    try:
+        _store_tokens(
+            access_token=new_access,
+            refresh_token=new_refresh,
+            realm_id=token_row.get("realm_id", ""),
+            expires_at=new_expires_at,
+        )
+    except Exception as exc:
+        logger.error("QB token refresh succeeded but failed to persist new tokens: %s", exc)
+        # Return the new access token anyway — it's valid even if we couldn't store it
+        return new_access
+
+    logger.info("QB access token refreshed successfully (expires in %ds)", new_expires_in)
+    return new_access
+
+
 def _do_disconnect() -> JSONResponse:
     token_row = _load_tokens()
     if not token_row or not token_row.get("access_token"):

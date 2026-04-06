@@ -17,9 +17,12 @@ so the view is always current without a separate sync step.
 from __future__ import annotations
 
 import html
+import logging
 import time as _time
 from datetime import date, datetime, timedelta
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from sales_support_agent.services.cashflow.cashflow_helpers import (
     _dollar,
@@ -62,12 +65,14 @@ def render_reconcile_page(*, flash: str = "") -> str:
     )
 
     if cache_fresh:
+        logger.debug("[reconcile] cache hit (age=%.0fs)", _time.monotonic() - _REC_CACHE_TS)
         c = _REC_CACHE
         matched_pairs     = c["matched_pairs"]
         unmatched_planned = c["unmatched_planned"]
         unmatched_posted  = c["unmatched_posted"]
         patterns          = c["patterns"]
     else:
+        logger.debug("[reconcile] cache miss — running full DB + matching + trend pass")
         # ── Expensive DB + matching + trend pass ────────────────────────────
         lookback = today - timedelta(days=90)   # 90-day reconciliation window
 

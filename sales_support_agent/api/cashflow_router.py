@@ -212,16 +212,28 @@ async def patch_event(event_id: str, request: Request):
 # Forecast
 # ---------------------------------------------------------------------------
 
+import logging as _logging
+_forecast_logger = _logging.getLogger(__name__)
+
+
 @router.get("/forecast", response_class=HTMLResponse)
 async def finance_forecast(request: Request):
     # Fire-and-forget: expand recurring templates in the background so the
-    # page load is never blocked by template generation.  Errors are swallowed
-    # so a broken template never prevents the forecast from rendering.
-    asyncio.create_task(
-        asyncio.to_thread(
-            generate_upcoming_from_templates, horizon_days=400, advance_template=True
-        )
-    )
+    # page load is never blocked by template generation.
+    async def _expand_templates():
+        try:
+            created = await asyncio.to_thread(
+                generate_upcoming_from_templates, horizon_days=400, advance_template=True
+            )
+            _forecast_logger.debug(
+                "[forecast] background template expansion: %d obligations created", len(created)
+            )
+        except Exception as exc:
+            _forecast_logger.error(
+                "[forecast] background template expansion failed: %s", exc, exc_info=True
+            )
+
+    asyncio.create_task(_expand_templates())
     return render_weekly_forecast_page()
 
 
