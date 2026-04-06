@@ -524,6 +524,9 @@ document.addEventListener('DOMContentLoaded', () => loadChart(12));
       <a href="/admin/finances/ar/new" class="btn btn-secondary">+ Add Receivable</a>
       <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring Templates</a>
       <a href="/admin/finances/reconcile" class="btn btn-secondary">Actuals vs Planned</a>
+      <form method="post" action="/admin/finances/sync-qbo" style="display:inline">
+        <button type="submit" class="btn btn-secondary">Sync QuickBooks</button>
+      </form>
     </div>"""
 
     return _page_shell("Finance Overview", "overview", body, flash=flash)

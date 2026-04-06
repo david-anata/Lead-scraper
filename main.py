@@ -117,9 +117,12 @@ app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 from sales_support_agent.api.cashflow_router import router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
 
-# QuickBooks OAuth routes — NO auth guard, Intuit reviewer must reach these directly
+# QuickBooks OAuth routes — NO auth guard on /connect, /callback, /disconnect
+# so Intuit's reviewer can complete the flow without an Anata session.
+# Prefix: /admin/finances/qbo — redirect URI must be registered in Intuit portal as
+#   https://agent.anatainc.com/admin/finances/qbo/callback
 from sales_support_agent.api.qbo_auth_router import router as _qbo_auth_router  # noqa: E402
-app.include_router(_qbo_auth_router)
+app.include_router(_qbo_auth_router, prefix="/admin/finances/qbo")
 
 
 @app.on_event("startup")

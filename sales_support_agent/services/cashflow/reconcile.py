@@ -7,11 +7,12 @@ Three-section view:
      (overdue flagged red, upcoming flagged amber).
   3. Trend suggestions — recurring patterns inferred from bank history that
      aren't yet captured as recurring templates, with one-click "Add" action.
-     Prioritises AR (inflow) patterns since ClickUp AR recurring hasn't been
-     set up yet.
+     AR (inflow) patterns are shown first since they tend to be underrepresented
+     in the forecast until QBO invoices are synced.
 
 All matching is run in-memory on page load using matcher.auto_match_transactions()
 so the view is always current without a separate sync step.
+Results are cached for 10 minutes; the cache is bypassed after any form action.
 """
 
 from __future__ import annotations
@@ -497,7 +498,7 @@ def _render_trend_section(patterns: list[RecurringPattern]) -> str:
         ar_section = f"""
         <div style="margin-bottom:20px">
           <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:var(--good)">
-            💰 New AR Patterns — not yet in ClickUp ({len(ar_new)})
+            💰 New AR Patterns — not yet tracked ({len(ar_new)})
           </h3>
           <p class="page-sub" style="margin:0 0 12px">
             These inflows appear regularly in your bank but have no planned AR entry.

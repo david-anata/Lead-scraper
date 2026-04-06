@@ -485,6 +485,16 @@ async def recurring_generate(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# QuickBooks settings / connection status
+# ---------------------------------------------------------------------------
+
+@router.get("/qbo", response_class=HTMLResponse)
+async def qbo_settings_page(request: Request, flash: str = ""):
+    from sales_support_agent.services.cashflow.qbo_settings import render_qbo_settings_page
+    return HTMLResponse(render_qbo_settings_page(flash=flash))
+
+
+# ---------------------------------------------------------------------------
 # Reconcile — Actuals vs Planned + trend suggestions
 # ---------------------------------------------------------------------------
 

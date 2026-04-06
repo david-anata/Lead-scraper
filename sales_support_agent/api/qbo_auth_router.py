@@ -334,7 +334,7 @@ def _do_disconnect() -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 def _redirect_uri() -> str:
-    return os.getenv("QB_REDIRECT_URI", "https://agent.anatainc.com/callback").strip()
+    return os.getenv("QB_REDIRECT_URI", "https://agent.anatainc.com/admin/finances/qbo/callback").strip()
 
 
 def _basic_auth_header() -> str:

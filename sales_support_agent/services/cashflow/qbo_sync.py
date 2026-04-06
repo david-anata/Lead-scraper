@@ -250,6 +250,15 @@ def _invoice_to_event(inv: dict) -> Optional[dict]:
 def sync_qbo_invoices(settings):
     """Pull open QBO invoices into cash_events.
 
+    Token resolution order:
+      1. DB (quickbooks_tokens table) — populated by the web OAuth flow at
+         /admin/finances/qbo/connect.  Tokens are auto-refreshed via
+         get_valid_access_token() before every sync.
+      2. Env-var fallback — if DB tokens are absent, falls back to the legacy
+         QBO_REFRESH_TOKEN / QBO_CLIENT_ID / QBO_CLIENT_SECRET / QBO_REALM_ID
+         env vars.  This keeps the app working for deployments that haven't
+         completed the web OAuth flow yet.
+
     Returns UploadResult (rows_inserted=created, rows_skipped_duplicate=updated+paid+cancelled).
     """
     from sales_support_agent.models.database import get_engine, upsert_cash_event
@@ -260,30 +269,58 @@ def sync_qbo_invoices(settings):
     counts = {"created": 0, "updated": 0, "paid": 0, "cancelled": 0, "skipped": 0}
 
     try:
-        if not all([settings.qbo_client_id, settings.qbo_client_secret,
-                    settings.qbo_realm_id]):
-            logger.warning("QBO credentials not configured — skipping QBO sync")
-            return result
+        # -- Resolve access token + realm ID (DB-first, env-var fallback) -------
+        access_token: str = ""
+        realm_id:     str = ""
+        sandbox:      bool = False
 
-        realm_id = settings.qbo_realm_id
-        base_url = QBO_SAND_BASE if settings.qbo_sandbox else QBO_PROD_BASE
-
-        # -- OAuth: get fresh access token ----------------------------------------
-        refresh_token = _load_refresh_token(realm_id, settings.qbo_refresh_token)
+        # Path 1: DB tokens (set via web OAuth flow at /admin/finances/qbo/connect)
         try:
-            token_data = _refresh_access_token(
-                settings.qbo_client_id,
-                settings.qbo_client_secret,
-                refresh_token,
+            from sales_support_agent.api.qbo_auth_router import (
+                get_valid_access_token as _get_token,
+                _load_tokens,
             )
+            token_row = _load_tokens()
+            if token_row and token_row.get("access_token") and token_row.get("realm_id"):
+                access_token = _get_token() or ""
+                realm_id = token_row.get("realm_id", "")
+                sandbox = getattr(settings, "qbo_sandbox", False)
+                logger.info("QBO sync: using DB OAuth tokens (realm=%s)", realm_id)
         except Exception as exc:
-            logger.error("QBO OAuth token refresh failed: %s", exc)
-            raise
+            logger.debug("QBO DB token load skipped: %s", exc)
 
-        access_token = token_data["access_token"]
-        new_refresh_token = token_data.get("refresh_token", refresh_token)
-        if new_refresh_token != refresh_token:
-            _save_refresh_token(realm_id, new_refresh_token)
+        # Path 2: env-var fallback
+        if not access_token or not realm_id:
+            client_id     = getattr(settings, "qbo_client_id", "") or ""
+            client_secret = getattr(settings, "qbo_client_secret", "") or ""
+            env_realm_id  = getattr(settings, "qbo_realm_id", "") or ""
+            env_refresh   = getattr(settings, "qbo_refresh_token", "") or ""
+            sandbox       = getattr(settings, "qbo_sandbox", False)
+
+            if not all([client_id, client_secret, env_realm_id]):
+                msg = (
+                    "QBO not connected. Complete the OAuth flow at "
+                    "/admin/finances/qbo/connect, or set QBO_CLIENT_ID, "
+                    "QBO_CLIENT_SECRET, QBO_REALM_ID, and QBO_REFRESH_TOKEN env vars."
+                )
+                logger.warning(msg)
+                result.errors.append(msg)
+                return result
+
+            realm_id = env_realm_id
+            refresh_token = _load_refresh_token(realm_id, env_refresh)
+            try:
+                token_data = _refresh_access_token(client_id, client_secret, refresh_token)
+            except Exception as exc:
+                logger.error("QBO OAuth token refresh failed: %s", exc)
+                raise
+            access_token = token_data["access_token"]
+            new_refresh = token_data.get("refresh_token", refresh_token)
+            if new_refresh != refresh_token:
+                _save_refresh_token(realm_id, new_refresh)
+            logger.info("QBO sync: using env-var OAuth tokens (realm=%s)", realm_id)
+
+        base_url = QBO_SAND_BASE if sandbox else QBO_PROD_BASE
 
         # -- Fetch invoices -------------------------------------------------------
         try:

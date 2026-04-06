@@ -142,6 +142,11 @@ def run_csv_upload(
                     if hasattr(due_date, "isoformat")
                     else str(due_date)[:10] if due_date else None
                 )
+                # Auto-label: use vendor_or_customer as the initial friendly_name
+                # so rows don't show "⚠ Unlabeled" immediately after upload.
+                vendor = row.get("vendor_or_customer", "") or ""
+                auto_friendly = vendor[:255] if vendor.strip() else None
+
                 conn.execute(
                     text("""
                         INSERT INTO cash_events (
@@ -151,6 +156,7 @@ def run_csv_upload(
                             account_balance_cents,
                             bank_transaction_type, bank_reference,
                             notes, recurring_rule, clickup_task_id,
+                            friendly_name,
                             created_at, updated_at
                         ) VALUES (
                             :id, 'csv', :source_id, :event_type, :category,
@@ -159,6 +165,7 @@ def run_csv_upload(
                             :account_balance_cents,
                             :bank_transaction_type, :bank_reference,
                             '', '', '',
+                            :friendly_name,
                             :now, :now
                         )
                     """),
@@ -170,12 +177,13 @@ def run_csv_upload(
                         "subcategory": row.get("subcategory", ""),
                         "description": row.get("description", "") or "",
                         "name": row.get("name", ""),
-                        "vendor_or_customer": row.get("vendor_or_customer", ""),
+                        "vendor_or_customer": vendor,
                         "amount_cents": row.get("amount_cents", 0),
                         "due_date": due_date_str,
                         "account_balance_cents": row.get("account_balance_cents"),
                         "bank_transaction_type": row.get("bank_transaction_type", "") or "",
                         "bank_reference": row.get("bank_reference", "") or "",
+                        "friendly_name": auto_friendly,
                         "now": now,
                     },
                 )
