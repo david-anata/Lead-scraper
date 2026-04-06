@@ -178,6 +178,13 @@ async def patch_event(event_id: str, request: Request):
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
+    # Coerce to int to reject non-numeric IDs early (defence-in-depth; the
+    # parameterised query below already prevents SQL injection).
+    try:
+        int(event_id)
+    except ValueError:
+        return JSONResponse({"error": "invalid event_id"}, status_code=422)
+
     body = await request.json()
     allowed_fields = {"friendly_name", "notes"}
     updates = {k: v for k, v in body.items() if k in allowed_fields}

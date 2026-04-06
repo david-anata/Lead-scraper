@@ -175,12 +175,18 @@ class TestQBOAuthRoutes(unittest.TestCase):
 
     # ── /disconnect ───────────────────────────────────────────────────────
 
-    def test_disconnect_returns_200(self):
+    def test_disconnect_post_requires_auth(self):
+        """POST /disconnect must return 401 without an authenticated session."""
         resp = self.client.post("/disconnect")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_disconnect_returns_200(self):
+        """GET /disconnect (unguarded for Intuit reviewer compat) returns 200."""
+        resp = self.client.get("/disconnect")
         self.assertEqual(resp.status_code, 200)
 
     def test_disconnect_not_connected_when_no_tokens(self):
-        resp = self.client.post("/disconnect")
+        resp = self.client.get("/disconnect")
         body = resp.json()
         self.assertEqual(body.get("status"), "not_connected")
 
@@ -191,7 +197,7 @@ class TestQBOAuthRoutes(unittest.TestCase):
         self.assertEqual(resp.json().get("status"), "not_connected")
 
     def test_disconnect_returns_disconnected_after_revoke(self):
-        """When tokens exist, disconnect revokes and returns 'disconnected'."""
+        """When tokens exist, GET /disconnect revokes and returns 'disconnected'."""
         from sqlalchemy import text
         now = datetime.utcnow().isoformat()
         # Insert a fake token row
@@ -209,7 +215,7 @@ class TestQBOAuthRoutes(unittest.TestCase):
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_post.return_value = mock_resp
-            resp = self.client.post("/disconnect")
+            resp = self.client.get("/disconnect")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json().get("status"), "disconnected")
@@ -236,7 +242,7 @@ class TestQBOAuthRoutes(unittest.TestCase):
             )
         with patch("sales_support_agent.api.qbo_auth_router.requests.post") as mock_post:
             mock_post.side_effect = Exception("Network error")
-            resp = self.client.post("/disconnect")
+            resp = self.client.get("/disconnect")
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json().get("status"), "disconnected")

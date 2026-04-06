@@ -215,12 +215,12 @@ def accept_pattern_as_template(pattern_dict: dict) -> dict:
         next_due = datetime.utcnow().date()
 
     return create_recurring_template(
-        name=str(pattern_dict.get("normalized_vendor") or "Unknown"),
-        vendor_or_customer=str(pattern_dict.get("normalized_vendor") or ""),
-        event_type=str(pattern_dict.get("event_type") or "inflow"),
-        category=str(pattern_dict.get("category") or "other"),
+        name=str(pattern_dict.get("normalized_vendor") or "Unknown")[:255],
+        vendor_or_customer=str(pattern_dict.get("normalized_vendor") or "")[:255],
+        event_type=str(pattern_dict.get("event_type") or "inflow")[:32],
+        category=str(pattern_dict.get("category") or "other")[:100],
         amount_cents=int(pattern_dict.get("avg_amount_cents") or 0),
-        frequency=str(pattern_dict.get("frequency") or "monthly"),
+        frequency=str(pattern_dict.get("frequency") or "monthly")[:32],
         next_due_date=next_due,
     )
 

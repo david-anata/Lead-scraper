@@ -4,23 +4,28 @@ Three endpoints required for Intuit production approval:
 
     GET  /connect      — starts the OAuth flow (redirects to Intuit)
     GET  /callback     — receives the auth code, exchanges for tokens
-    POST /disconnect   — revokes tokens and clears local storage
-    GET  /disconnect   — same, for Intuit reviewer compatibility
+    POST /disconnect   — revokes tokens and clears local storage (auth-guarded)
+    GET  /disconnect   — same, for Intuit reviewer compatibility (unguarded)
 
 Security design:
     - State parameter stored in DB (qb_oauth_state table) with 10-min TTL;
       validated on /callback before code exchange (CSRF protection).
-    - Tokens stored server-side only in quickbooks_tokens table (singleton row).
+    - Tokens stored server-side only in quickbooks_tokens table (singleton row),
+      encrypted with seal_token() using QB_TOKEN_SECRET env var.
       Never exposed to the browser.
     - Basic Auth header used for token exchange (client_id:client_secret
       base64-encoded), NOT as body params — per Intuit spec.
-    - /connect, /callback, /disconnect intentionally have NO auth guard so
-      Intuit's reviewer can hit them without an Anata session.
+    - /connect and /callback have no Anata auth guard so Intuit's reviewer
+      can complete the flow without an active session.
+    - POST /disconnect requires an authenticated finance/admin session.
+      GET /disconnect is intentionally left unguarded for Intuit reviewer
+      compatibility; this is a known trade-off documented here.
 """
 
 from __future__ import annotations
 
 import base64
+import html as _html
 import logging
 import os
 import secrets
@@ -31,6 +36,9 @@ from urllib.parse import urlencode
 import requests
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+from sales_support_agent.services.auth_deps import has_finance_access
+from sales_support_agent.services.token_seal import seal_token, unseal_token
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +112,15 @@ def qb_callback(
     Validates the CSRF state, exchanges the auth code for tokens, stores
     them server-side, then sends the user to /admin.
     """
-    # Intuit sends error= when the user denies access
+    # Intuit sends error= when the user denies access.
+    # Both values are reflected in the response — escape to prevent XSS.
     if error:
         logger.warning("QB OAuth denied: %s — %s", error, error_description)
+        safe_err  = _html.escape(error[:200])
+        safe_desc = _html.escape(error_description[:500])
         return HTMLResponse(
             f"<h2>QuickBooks authorization denied.</h2>"
-            f"<p>{error}: {error_description}</p>"
+            f"<p>{safe_err}: {safe_desc}</p>"
             f'<p><a href="/connect">Try again</a></p>',
             status_code=400,
         )
@@ -150,23 +161,25 @@ def qb_callback(
         resp.raise_for_status()
         token_data = resp.json()
     except requests.HTTPError as exc:
-        body = exc.response.text if exc.response else str(exc)
-        logger.error("QB token exchange HTTP error %s: %s", exc.response.status_code if exc.response else "?", body)
+        body = _html.escape((exc.response.text if exc.response else str(exc))[:500])
+        status = exc.response.status_code if exc.response else "error"
+        logger.error("QB token exchange HTTP error %s: %s", status, body)
         return HTMLResponse(
-            f"<h2>Token exchange failed (HTTP {exc.response.status_code if exc.response else 'error'}).</h2>"
-            f"<pre>{body[:500]}</pre>"
+            f"<h2>Token exchange failed (HTTP {_html.escape(str(status))}).</h2>"
+            f"<pre>{body}</pre>"
             '<p><a href="/connect">Try again</a></p>',
             status_code=400,
         )
     except Exception as exc:
         logger.error("QB token exchange error: %s", exc)
         return HTMLResponse(
-            f"<h2>Token exchange failed: {exc}</h2>"
+            f"<h2>Token exchange failed.</h2>"
+            f"<p>{_html.escape(str(exc)[:200])}</p>"
             '<p><a href="/connect">Try again</a></p>',
             status_code=400,
         )
 
-    # Persist tokens server-side
+    # Persist tokens server-side (encrypted)
     access_token  = token_data.get("access_token", "")
     refresh_token = token_data.get("refresh_token", "")
     expires_in    = int(token_data.get("expires_in", 3600))
@@ -182,7 +195,8 @@ def qb_callback(
     except Exception as exc:
         logger.error("QB token storage failed: %s", exc)
         return HTMLResponse(
-            f"<h2>Tokens received but could not be stored: {exc}</h2>",
+            f"<h2>Tokens received but could not be stored.</h2>"
+            f"<p>{_html.escape(str(exc)[:200])}</p>",
             status_code=500,
         )
 
@@ -191,18 +205,31 @@ def qb_callback(
 
 
 # ---------------------------------------------------------------------------
-# POST /disconnect  (also GET for Intuit reviewer compatibility)
+# POST /disconnect — auth-guarded; destroys tokens
+# GET  /disconnect  — unguarded, for Intuit reviewer compatibility only
 # ---------------------------------------------------------------------------
 
 @router.post("/disconnect")
-@router.get("/disconnect")
-def qb_disconnect(request: Request) -> JSONResponse:
-    """Revoke QuickBooks tokens and clear local storage.
+def qb_disconnect_post(request: Request) -> JSONResponse:
+    """Revoke QuickBooks tokens (requires authenticated finance/admin session)."""
+    if not has_finance_access(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return _do_disconnect()
 
-    Always returns 200.  If no tokens are stored, returns
-    {"status": "not_connected"}.  On successful revoke (or even if Intuit's
-    revoke call fails), returns {"status": "disconnected"}.
+
+@router.get("/disconnect")
+def qb_disconnect_get(request: Request) -> JSONResponse:
+    """Revoke QuickBooks tokens.
+
+    This GET variant is intentionally unauthenticated so Intuit's OAuth
+    reviewer can test the disconnect flow without an Anata session.  It is
+    a known trade-off: any client that knows the URL can trigger a
+    disconnect.  Keep this URL out of public documentation.
     """
+    return _do_disconnect()
+
+
+def _do_disconnect() -> JSONResponse:
     token_row = _load_tokens()
     if not token_row or not token_row.get("access_token"):
         return JSONResponse({"status": "not_connected"}, status_code=200)
@@ -245,12 +272,17 @@ def _basic_auth_header() -> str:
     return f"Basic {encoded}"
 
 
+def _token_secret() -> str:
+    """Return the QB_TOKEN_SECRET env var.  Empty string → no encryption (dev only)."""
+    return os.getenv("QB_TOKEN_SECRET", "").strip()
+
+
 def _store_oauth_state(state: str) -> None:
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    now = datetime.utcnow().isoformat()
-    expires = (datetime.utcnow() + timedelta(minutes=_STATE_TTL_MIN)).isoformat()
+    now     = datetime.now(timezone.utc).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=_STATE_TTL_MIN)).isoformat()
     with get_engine().begin() as conn:
         # Clean up expired states first
         conn.execute(text("DELETE FROM qb_oauth_state WHERE expires_at < :now"), {"now": now})
@@ -265,7 +297,7 @@ def _validate_and_consume_state(state: str) -> bool:
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     with get_engine().begin() as conn:
         row = conn.execute(
             text("SELECT state FROM qb_oauth_state WHERE state = :s AND expires_at > :now"),
@@ -277,11 +309,24 @@ def _validate_and_consume_state(state: str) -> bool:
 
 
 def _store_tokens(*, access_token: str, refresh_token: str, realm_id: str, expires_at: str) -> None:
-    """Upsert the singleton quickbooks_tokens row."""
+    """Upsert the singleton quickbooks_tokens row (tokens encrypted at rest)."""
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
-    now = datetime.utcnow().isoformat()
+    secret = _token_secret()
+    if secret:
+        stored_access  = seal_token(secret, access_token)
+        stored_refresh = seal_token(secret, refresh_token)
+    else:
+        # No secret configured — store plaintext with a warning (dev/review env only)
+        logger.warning(
+            "QB_TOKEN_SECRET is not set; storing QB tokens in plaintext. "
+            "Set QB_TOKEN_SECRET in production."
+        )
+        stored_access  = access_token
+        stored_refresh = refresh_token
+
+    now = datetime.now(timezone.utc).isoformat()
     with get_engine().begin() as conn:
         existing = conn.execute(
             text("SELECT id FROM quickbooks_tokens WHERE id = 'singleton'")
@@ -294,7 +339,7 @@ def _store_tokens(*, access_token: str, refresh_token: str, realm_id: str, expir
                         expires_at=:exp, updated_at=:now
                     WHERE id = 'singleton'
                 """),
-                {"at": access_token, "rt": refresh_token, "rid": realm_id, "exp": expires_at, "now": now},
+                {"at": stored_access, "rt": stored_refresh, "rid": realm_id, "exp": expires_at, "now": now},
             )
         else:
             conn.execute(
@@ -304,12 +349,12 @@ def _store_tokens(*, access_token: str, refresh_token: str, realm_id: str, expir
                     VALUES
                         ('singleton', :at, :rt, :rid, :exp, :now, :now)
                 """),
-                {"at": access_token, "rt": refresh_token, "rid": realm_id, "exp": expires_at, "now": now},
+                {"at": stored_access, "rt": stored_refresh, "rid": realm_id, "exp": expires_at, "now": now},
             )
 
 
 def _load_tokens() -> dict | None:
-    """Return the stored token row as a dict, or None if no tokens are stored."""
+    """Return the stored token row with decrypted tokens, or None if not stored."""
     try:
         from sales_support_agent.models.database import get_engine
         from sqlalchemy import text
@@ -318,7 +363,18 @@ def _load_tokens() -> dict | None:
             row = conn.execute(
                 text("SELECT access_token, refresh_token, realm_id, expires_at FROM quickbooks_tokens WHERE id = 'singleton'")
             ).fetchone()
-        return dict(row._mapping) if row else None
+        if not row:
+            return None
+
+        d = dict(row._mapping)
+        secret = _token_secret()
+        if secret:
+            try:
+                d["access_token"]  = unseal_token(secret, d["access_token"])
+                d["refresh_token"] = unseal_token(secret, d["refresh_token"])
+            except Exception as exc:
+                logger.warning("Could not decrypt QB tokens (may be stored plaintext): %s", exc)
+        return d
     except Exception as exc:
         logger.warning("Could not load QB tokens: %s", exc)
         return None

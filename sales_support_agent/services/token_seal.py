@@ -12,7 +12,7 @@ def seal_token(secret: str, plaintext: str) -> str:
     if not plaintext:
         return ""
     if not secret:
-        raise RuntimeError("CANVA_TOKEN_SECRET is required to seal tokens.")
+        raise RuntimeError("A token secret is required to seal tokens.")
 
     salt = os.urandom(16)
     nonce = os.urandom(16)
@@ -36,7 +36,7 @@ def unseal_token(secret: str, sealed: str) -> str:
     if not sealed:
         return ""
     if not secret:
-        raise RuntimeError("CANVA_TOKEN_SECRET is required to unseal tokens.")
+        raise RuntimeError("A token secret is required to unseal tokens.")
 
     try:
         version, salt_b64, nonce_b64, ciphertext_b64, mac_b64 = sealed.encode("utf-8").split(b"|", 4)
@@ -47,12 +47,12 @@ def unseal_token(secret: str, sealed: str) -> str:
         ciphertext = base64.urlsafe_b64decode(ciphertext_b64)
         provided_mac = base64.urlsafe_b64decode(mac_b64)
     except Exception as exc:
-        raise RuntimeError("Stored Canva token could not be decoded.") from exc
+        raise RuntimeError("Stored token could not be decoded.") from exc
 
     key = hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), salt, 120_000, dklen=32)
     expected_mac = hmac.new(key, nonce + ciphertext, hashlib.sha256).digest()
     if not hmac.compare_digest(provided_mac, expected_mac):
-        raise RuntimeError("Stored Canva token failed verification.")
+        raise RuntimeError("Stored token failed verification.")
 
     plaintext = _xor_keystream(ciphertext, key=key, nonce=nonce)
     return plaintext.decode("utf-8")
