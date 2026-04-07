@@ -163,6 +163,18 @@ async def cashflow_health(request: Request):
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def finance_overview(request: Request, flash: str = ""):
+    # Ensure future recurring events exist — runs fast after first call
+    # (subsequent calls just verify existing rows and return quickly).
+    async def _expand():
+        try:
+            created = await asyncio.to_thread(
+                generate_upcoming_from_templates, horizon_days=400, advance_template=True
+            )
+            if created:
+                _forecast_logger.debug("[overview] template expansion: %d events created", len(created))
+        except Exception as exc:
+            _forecast_logger.error("[overview] template expansion failed: %s", exc, exc_info=True)
+    asyncio.create_task(_expand())
     return await render_cashflow_overview_page(flash=flash)
 
 
@@ -596,6 +608,15 @@ async def ledger_export(request: Request):
 @router.get("/calendar", response_class=HTMLResponse)
 async def calendar_page(request: Request):
     from sales_support_agent.services.cashflow.calendar_view import render_calendar_page
+    # Kick off template expansion so the current and upcoming months are populated.
+    async def _expand():
+        try:
+            await asyncio.to_thread(
+                generate_upcoming_from_templates, horizon_days=400, advance_template=True
+            )
+        except Exception as exc:
+            _forecast_logger.error("[calendar] template expansion failed: %s", exc, exc_info=True)
+    asyncio.create_task(_expand())
     params = dict(request.query_params)
     year = int(params["year"]) if params.get("year") else None
     month = int(params["month"]) if params.get("month") else None

@@ -134,30 +134,40 @@ async def _startup_init():
     settings = load_settings()
     init_cashflow_db(settings.sales_agent_db_url)
 
-    # Fire-and-forget: sync ClickUp finance tasks + expand recurring templates.
-    # Runs in a thread so it never delays the first request.
+    # --- Step 1: Expand recurring templates SYNCHRONOUSLY before first request.
+    # This ensures the calendar, overview, and forecast all have populated
+    # cash_events rows on first page load — no more blank future weeks.
+    try:
+        from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
+        created = await _asyncio.to_thread(
+            generate_upcoming_from_templates,
+            horizon_days=400,
+            advance_template=True,
+        )
+        logger.info("[Finance startup] Templates expanded: %d obligations created/verified", len(created))
+    except Exception as exc:
+        logger.warning("[Finance startup] Template expansion failed (non-fatal): %s", exc)
+
+    # --- Step 2: ClickUp + QB expiry check run in background (non-blocking).
     async def _background_finance_sync():
         await _asyncio.sleep(5)   # give the server time to fully start
         try:
             from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
-            from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
             result = await _asyncio.to_thread(sync_clickup_finance, settings)
             logger.info(
                 "[Finance startup sync] ClickUp: %d inserted, %d skipped, %d errors",
                 result.rows_inserted, result.rows_skipped_duplicate, len(result.errors),
             )
-        except Exception as exc:
-            logger.warning("[Finance startup sync] ClickUp sync failed: %s", exc)
-        try:
+            # Re-expand templates to capture any newly synced ClickUp recurring tasks
             from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
             created = await _asyncio.to_thread(
                 generate_upcoming_from_templates,
                 horizon_days=400,
                 advance_template=True,
             )
-            logger.info("[Finance startup sync] Templates expanded: %d obligations created", len(created))
+            logger.info("[Finance startup sync] Post-ClickUp template expansion: %d events", len(created))
         except Exception as exc:
-            logger.warning("[Finance startup sync] Template expansion failed: %s", exc)
+            logger.warning("[Finance startup sync] ClickUp sync failed: %s", exc)
 
         # Warn if QB access token is expiring soon (within 24 h) so ops
         # doesn't get a surprise outage.  Non-fatal — missing tokens just skip.

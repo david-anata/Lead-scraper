@@ -437,42 +437,51 @@ def generate_upcoming_from_templates(
         else:
             next_due = next_due_raw
 
-        if next_due > cutoff:
-            continue
+        frequency   = tmpl["frequency"]
+        day_of_month = tmpl.get("day_of_month")
 
-        # Check if an event already exists for this template + date
-        with get_engine().connect() as conn:
-            existing = conn.execute(
-                text("""
-                    SELECT id FROM cash_events
-                    WHERE recurring_template_id = :tid AND due_date = :due
-                """),
-                {"tid": tmpl["id"], "due": next_due.isoformat()},
-            ).fetchone()
+        # --- Fill the FULL horizon in one call ----------------------------
+        # Previously this loop only created ONE occurrence per template per
+        # call (the single next_due_date), then stopped.  That meant the
+        # calendar/overview only ever showed the very next bill and nothing
+        # further out.  Now we walk forward through every occurrence up to
+        # the cutoff date so that all future events exist in cash_events
+        # immediately after this function returns.
+        while next_due <= cutoff:
+            # Check if an event already exists for this template + date
+            with get_engine().connect() as conn:
+                existing = conn.execute(
+                    text("""
+                        SELECT id FROM cash_events
+                        WHERE recurring_template_id = :tid AND due_date = :due
+                    """),
+                    {"tid": tmpl["id"], "due": next_due.isoformat()},
+                ).fetchone()
 
-        if existing:
-            event = get_obligation(existing[0])
-        else:
-            event = create_obligation(
-                name=tmpl["name"],
-                event_type=tmpl["event_type"],
-                category=tmpl["category"],
-                vendor_or_customer=tmpl.get("vendor_or_customer", ""),
-                amount_cents=tmpl["amount_cents"],
-                due_date=next_due,
-                status="planned",
-                confidence="estimated",
-                recurring_template_id=tmpl["id"],
-            )
+            if existing:
+                event = get_obligation(existing[0])
+            else:
+                event = create_obligation(
+                    name=tmpl["name"],
+                    event_type=tmpl["event_type"],
+                    category=tmpl["category"],
+                    vendor_or_customer=tmpl.get("vendor_or_customer", ""),
+                    amount_cents=tmpl["amount_cents"],
+                    due_date=next_due,
+                    status="planned",
+                    confidence="estimated",
+                    recurring_template_id=tmpl["id"],
+                )
 
-        if event:
-            created.append(event)
+            if event:
+                created.append(event)
 
+            next_due = _next_occurrence(next_due, frequency, day_of_month)
+
+        # Advance the template pointer to the first date beyond the horizon
+        # so the next call knows where to continue from.
         if advance_template:
-            frequency = tmpl["frequency"]
-            day_of_month = tmpl.get("day_of_month")
-            new_next = _next_occurrence(next_due, frequency, day_of_month)
-            update_recurring_template(tmpl["id"], next_due_date=new_next.isoformat())
+            update_recurring_template(tmpl["id"], next_due_date=next_due.isoformat())
 
     # Update last-run timestamp
     try:
