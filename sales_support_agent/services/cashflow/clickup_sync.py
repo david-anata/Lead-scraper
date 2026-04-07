@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 import requests
@@ -77,6 +77,105 @@ def _map_status(clickup_status: str, due: Optional[date], today: date) -> str:
     return "planned"
 
 
+# ---------------------------------------------------------------------------
+# Recurring template upsert
+# ---------------------------------------------------------------------------
+
+def _upsert_recurring_template(task_id: str, ev: dict) -> str:
+    """Create or update a RecurringTemplate for a ClickUp recurring task.
+
+    Uses a deterministic ID ``clickup-tmpl-{task_id}`` so re-syncing is
+    idempotent.  After upserting the template it back-fills any existing
+    cash_events for this task with the template ID so the horizon generator
+    won't create duplicates.
+
+    Returns 'created' or 'updated'.
+    """
+    from sales_support_agent.models.database import get_engine
+    from sqlalchemy import text
+
+    engine = get_engine()
+    now_str = datetime.utcnow().isoformat()
+    template_id = f"clickup-tmpl-{task_id}"
+
+    due = ev.get("due_date")
+    due_str = due.isoformat() if due else None
+    day_of_month = due.day if due else None
+
+    with engine.connect() as conn:
+        existing = conn.execute(
+            text("SELECT id FROM recurring_templates WHERE id = :id OR clickup_task_id = :cid"),
+            {"id": template_id, "cid": task_id},
+        ).fetchone()
+
+    if existing:
+        tmpl_id = existing[0]
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE recurring_templates SET
+                        name=:name, vendor_or_customer=:vendor,
+                        event_type=:event_type, category=:category,
+                        amount_cents=:amount_cents, frequency=:frequency,
+                        is_active=TRUE, updated_at=:now
+                    WHERE id=:id
+                """),
+                {
+                    "id": tmpl_id,
+                    "name": ev["name"][:255],
+                    "vendor": ev.get("vendor_or_customer", "")[:255],
+                    "event_type": ev["event_type"],
+                    "category": ev.get("category", "other"),
+                    "amount_cents": ev["amount_cents"],
+                    "frequency": ev["recurring_rule"],
+                    "now": now_str,
+                },
+            )
+        # Back-fill existing ClickUp cash_events with template linkage so the
+        # horizon generator doesn't create duplicates for already-existing rows.
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE cash_events
+                    SET recurring_template_id = :tmpl_id
+                    WHERE clickup_task_id = :cid
+                      AND source IN ('clickup', 'clickup-recurring')
+                      AND (recurring_template_id IS NULL OR recurring_template_id = '')
+                """),
+                {"tmpl_id": tmpl_id, "cid": task_id},
+            )
+        return "updated"
+    else:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO recurring_templates (
+                        id, name, vendor_or_customer, event_type, category,
+                        amount_cents, frequency, next_due_date, day_of_month,
+                        is_active, clickup_task_id, created_at, updated_at
+                    ) VALUES (
+                        :id, :name, :vendor, :event_type, :category,
+                        :amount_cents, :frequency, :next_due_date, :day_of_month,
+                        TRUE, :clickup_task_id, :now, :now
+                    )
+                """),
+                {
+                    "id": template_id,
+                    "name": ev["name"][:255],
+                    "vendor": ev.get("vendor_or_customer", "")[:255],
+                    "event_type": ev["event_type"],
+                    "category": ev.get("category", "other"),
+                    "amount_cents": ev["amount_cents"],
+                    "frequency": ev["recurring_rule"],
+                    "next_due_date": due_str,
+                    "day_of_month": day_of_month,
+                    "clickup_task_id": task_id,
+                    "now": now_str,
+                },
+            )
+        return "created"
+
+
 def _fetch_tasks(api_token: str, list_id: str) -> list[dict]:
     """Fetch all tasks from a ClickUp list (paginated, including closed)."""
     tasks = []
@@ -110,11 +209,13 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
     man_auto_val = _get_custom_field_value(custom_fields, FIELD_MAN_AUTO_ID)
     service_val = _get_custom_field_value(custom_fields, FIELD_SERVICE_ID) or ""
 
-    # Frequency: 0=Weekly, 1=Monthly, None=one-time
+    # Frequency: 0=Weekly, 1=Monthly, 2=Bi-weekly, None=one-time
     if frequency_val == 0:
         frequency = "weekly"
     elif frequency_val == 1:
         frequency = "monthly"
+    elif frequency_val == 2:
+        frequency = "biweekly"
     else:
         frequency = ""
 
@@ -160,46 +261,50 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
     }
 
 
-def _next_weekly_dates(base: date, count: int) -> list[date]:
-    return [base + timedelta(weeks=i) for i in range(1, count + 1)]
-
-
-def _next_monthly_dates(base: date, count: int) -> list[date]:
-    dates = []
-    d = base
-    for _ in range(count):
-        month = d.month + 1
-        year = d.year
-        if month > 12:
-            month = 1
-            year += 1
-        import calendar
-        last_day = calendar.monthrange(year, month)[1]
-        d = d.replace(year=year, month=month, day=min(d.day, last_day))
-        dates.append(d)
-    return dates
-
 
 def sync_clickup_finance(settings):
-    """Sync AP and AR ClickUp tasks into cash_events. Returns UploadResult."""
+    """Sync AP and AR ClickUp tasks into cash_events / recurring_templates.
+
+    Routing logic
+    -------------
+    recurring task (weekly / biweekly / monthly) that is NOT yet paid
+        → upsert a RecurringTemplate (keyed ``clickup-tmpl-{task_id}``)
+          The template drives all future CashEvent rows via
+          ``generate_upcoming_from_templates()``.  This gives us the full
+          400-day horizon instead of the previous hard-coded 52/12 future
+          occurrences.
+
+    paid / closed recurring task
+        → update the matching CashEvent's status to ``paid`` so the
+          forecast removes it from the open AP/AR totals.
+
+    one-time task (no frequency)
+        → direct CashEvent upsert (existing behaviour).
+
+    Returns UploadResult.
+    """
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services.cashflow.upload import UploadResult
-    from sqlalchemy import text
 
     result = UploadResult()
 
     try:
         if not settings.clickup_api_token:
-            logger.warning("CLICKUP_API_TOKEN not set — skipping ClickUp finance sync")
+            logger.warning(
+                "CLICKUP_API_TOKEN not set — skipping ClickUp finance sync. "
+                "Get your token from ClickUp → Profile → Apps → API Token (starts with pk_)."
+            )
             return result
 
         today = datetime.utcnow().date()
-        created = updated = skipped = 0
+        tmpl_created = tmpl_updated = ev_created = ev_updated = skipped = 0
 
         list_configs = [
             (settings.clickup_ap_list_id, "outflow"),
             (settings.clickup_ar_list_id, "inflow"),
         ]
+
+        engine = get_engine()
 
         for list_id, event_type in list_configs:
             if not list_id:
@@ -207,57 +312,64 @@ def sync_clickup_finance(settings):
             try:
                 tasks = _fetch_tasks(settings.clickup_api_token, list_id)
             except Exception as exc:
-                logger.error("Failed to fetch ClickUp list %s: %s", list_id, exc)
+                err_str = str(exc)
+                if "401" in err_str or "Unauthorized" in err_str:
+                    logger.warning(
+                        "ClickUp 401 for list %s — API token invalid or expired. "
+                        "Refresh at ClickUp → Profile → Apps → API Token and update CLICKUP_API_TOKEN on Render.",
+                        list_id,
+                    )
+                else:
+                    logger.error("Failed to fetch ClickUp list %s: %s", list_id, exc)
                 result.errors.append(f"Failed to fetch list {list_id}: {exc}")
                 continue
 
-            # Track which task IDs generate forward occurrences so we don't duplicate
-            forward_generated: set[str] = set()
-
             for task in tasks:
                 ev = _task_to_event_dict(task, event_type, today)
+                rule = ev.get("recurring_rule", "")
+                task_id = task["id"]
+
+                # Skip zero-amount tasks that aren't already marked paid
                 if ev["amount_cents"] == 0 and ev["status"] != "paid":
                     skipped += 1
                     continue
 
-                upsert_result = _upsert_event(get_engine(), ev)
-                if upsert_result == "created":
-                    created += 1
-                elif upsert_result == "updated":
-                    updated += 1
-
-                # Generate forward occurrences for recurring tasks
-                rule = ev.get("recurring_rule", "")
-                base_due = ev.get("due_date")
-                task_id = task["id"]
-                if rule and base_due and task_id not in forward_generated and ev["status"] != "paid":
-                    forward_generated.add(task_id)
-                    if rule == "weekly":
-                        future_dates = _next_weekly_dates(base_due, 52)   # 1 year of weekly
-                    elif rule == "monthly":
-                        future_dates = _next_monthly_dates(base_due, 12)  # 1 year of monthly
+                if rule and ev["status"] != "paid":
+                    # ---- Recurring, open → upsert template ----------------
+                    tmpl_result = _upsert_recurring_template(task_id, ev)
+                    if tmpl_result == "created":
+                        tmpl_created += 1
                     else:
-                        future_dates = []
+                        tmpl_updated += 1
+                    # Note: generate_upcoming_from_templates() (called by the
+                    # caller after sync) will fill all future CashEvent rows.
 
-                    for fdate in future_dates:
-                        if fdate <= today:
-                            continue
-                        fev = dict(ev)
-                        fev["id"] = f"clickup-{task_id}-{fdate.isoformat()}"
-                        fev["source_id"] = f"{task_id}-{fdate.isoformat()}"
-                        fev["clickup_task_id"] = task_id
-                        fev["due_date"] = fdate
-                        fev["status"] = "planned"
-                        fev["source"] = "clickup-recurring"
-                        upsert_result = _upsert_event(get_engine(), fev)
-                        if upsert_result == "created":
-                            created += 1
-                        elif upsert_result == "updated":
-                            updated += 1
+                elif ev["status"] == "paid":
+                    # ---- Paid / closed → mark the cash_event paid ----------
+                    # For recurring tasks that became paid: also deactivate
+                    # the template's cash_event for that specific due_date.
+                    upsert_result = _upsert_event(engine, ev)
+                    if upsert_result == "created":
+                        ev_created += 1
+                    else:
+                        ev_updated += 1
 
-        logger.info("ClickUp finance sync complete: created=%d updated=%d skipped=%d", created, updated, skipped)
-        result.rows_inserted = created
-        result.rows_skipped_duplicate = updated + skipped
+                else:
+                    # ---- One-time task → direct cash_event -----------------
+                    upsert_result = _upsert_event(engine, ev)
+                    if upsert_result == "created":
+                        ev_created += 1
+                    else:
+                        ev_updated += 1
+
+        logger.info(
+            "ClickUp finance sync complete: "
+            "templates created=%d updated=%d | "
+            "events created=%d updated=%d | skipped=%d",
+            tmpl_created, tmpl_updated, ev_created, ev_updated, skipped,
+        )
+        result.rows_inserted = tmpl_created + ev_created
+        result.rows_skipped_duplicate = tmpl_updated + ev_updated + skipped
 
     except Exception as exc:
         logger.error("ClickUp sync error: %s", exc)

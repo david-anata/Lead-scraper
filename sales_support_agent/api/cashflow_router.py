@@ -46,6 +46,7 @@ from sales_support_agent.services.cashflow.upload_page import (
 from sales_support_agent.services.auth_deps import has_finance_access
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
+from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_transactions
 
 def _check_finance_access(request: Request) -> None:
     """FastAPI dependency that enforces finance access.
@@ -182,6 +183,15 @@ async def finance_overview(request: Request, flash: str = ""):
 async def chart_data(request: Request, weeks: int = 12):
     from sales_support_agent.services.cashflow.overview import _build_chart_data
     return JSONResponse(_build_chart_data(period_weeks=weeks))
+
+
+@router.get("/chart-data-daily")
+async def chart_data_daily(request: Request, days_back: int = 14, days_forward: int = 42):
+    """Daily bar+line chart data — 14 days actual + 42 days forecast."""
+    from sales_support_agent.services.cashflow.overview import _build_daily_chart_data
+    return JSONResponse(await asyncio.to_thread(
+        _build_daily_chart_data, days_back, days_forward,
+    ))
 
 
 @router.patch("/events/{event_id}")
@@ -471,18 +481,54 @@ async def recurring_delete(request: Request, template_id: str):
 
 @router.post("/sync-qbo", response_class=HTMLResponse)
 async def sync_qbo(request: Request):
+    """Full finance sync: ClickUp templates → template expansion → QBO invoices → QBO bank."""
     settings = (
         getattr(request.app.state, "agent_settings", None)
         or getattr(request.app.state, "admin_dashboard_settings", None)
         or request.app.state.settings
     )
+    parts: list[str] = []
+    errors: list[str] = []
+
+    # 1. ClickUp sync → recurring templates
     try:
-        result = await asyncio.to_thread(sync_qbo_invoices, settings)
-        flash = f"ok:QBO synced — {result.rows_inserted} new · {result.rows_skipped_duplicate} updated/skipped"
-        if result.errors:
-            flash = f"err:QBO sync errors: {'; '.join(result.errors[:2])}"
+        from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
+        cu = await asyncio.to_thread(sync_clickup_finance, settings)
+        parts.append(f"ClickUp {cu.rows_inserted} new")
+        errors.extend(cu.errors[:1])
     except Exception as exc:
-        flash = f"err:QBO sync failed: {exc}"
+        errors.append(f"ClickUp: {exc}")
+
+    # 2. Template expansion → fill 400-day horizon
+    try:
+        expanded = await asyncio.to_thread(
+            generate_upcoming_from_templates, horizon_days=400, advance_template=True,
+        )
+        parts.append(f"{len(expanded)} events")
+    except Exception as exc:
+        errors.append(f"Templates: {exc}")
+
+    # 3. QBO invoice sync (AR planned events)
+    try:
+        inv = await asyncio.to_thread(sync_qbo_invoices, settings)
+        parts.append(f"Invoices {inv.rows_inserted} new")
+        errors.extend(inv.errors[:1])
+    except Exception as exc:
+        errors.append(f"Invoices: {exc}")
+
+    # 4. QBO bank sync (posted actuals — replaces manual CSV upload)
+    try:
+        bank = await asyncio.to_thread(sync_qbo_bank_transactions, settings)
+        parts.append(f"Bank {bank.rows_inserted} new")
+        errors.extend(bank.errors[:1])
+    except Exception as exc:
+        errors.append(f"Bank: {exc}")
+
+    if errors:
+        flash = f"err:Sync issues: {'; '.join(errors[:2])}"
+    else:
+        flash = f"ok:Synced — {' · '.join(parts)}"
+
     from urllib.parse import quote
     return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
 

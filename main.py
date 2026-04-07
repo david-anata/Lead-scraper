@@ -125,6 +125,93 @@ from sales_support_agent.api.qbo_auth_router import router as _qbo_auth_router  
 app.include_router(_qbo_auth_router, prefix="/admin/finances/qbo")
 
 
+async def _run_finance_sync(settings, *, label: str = "manual") -> None:
+    """Run the full finance data pipeline in sequence:
+
+    1. ClickUp sync      → upserts RecurringTemplates for recurring AP/AR tasks
+    2. Template expand   → fills CashEvent rows for the next 400 days
+    3. QBO invoice sync  → AR events from open QBO invoices
+    4. QBO bank sync     → posted Purchase / Deposit / Payment actuals (replaces CSV)
+    5. QB token expiry   → logs a warning if token expires within 24 h
+
+    All steps are non-fatal: failures are logged but do not crash the app.
+    """
+    import asyncio as _asyncio
+
+    logger.info("[Finance sync/%s] Starting...", label)
+
+    # 1. ClickUp
+    try:
+        from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
+        cu_result = await _asyncio.to_thread(sync_clickup_finance, settings)
+        logger.info(
+            "[Finance sync/%s] ClickUp: %d inserted, %d skipped, %d errors",
+            label, cu_result.rows_inserted, cu_result.rows_skipped_duplicate, len(cu_result.errors),
+        )
+    except Exception as exc:
+        logger.warning("[Finance sync/%s] ClickUp sync failed: %s", label, exc)
+
+    # 2. Template expansion (pick up new templates from ClickUp sync above)
+    try:
+        from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
+        created = await _asyncio.to_thread(
+            generate_upcoming_from_templates,
+            horizon_days=400,
+            advance_template=True,
+        )
+        logger.info("[Finance sync/%s] Template expansion: %d events created/verified", label, len(created))
+    except Exception as exc:
+        logger.warning("[Finance sync/%s] Template expansion failed: %s", label, exc)
+
+    # 3. QBO invoice sync (open AR invoices → planned inflow events)
+    try:
+        from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
+        inv_result = await _asyncio.to_thread(sync_qbo_invoices, settings)
+        logger.info(
+            "[Finance sync/%s] QBO invoices: %d inserted, %d skipped, %d errors",
+            label, inv_result.rows_inserted, inv_result.rows_skipped_duplicate, len(inv_result.errors),
+        )
+    except Exception as exc:
+        logger.warning("[Finance sync/%s] QBO invoice sync failed: %s", label, exc)
+
+    # 4. QBO bank sync (posted transactions → actuals, replaces manual CSV upload)
+    try:
+        from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_transactions
+        bank_result = await _asyncio.to_thread(sync_qbo_bank_transactions, settings)
+        logger.info(
+            "[Finance sync/%s] QBO bank: %d inserted, %d skipped, %d errors",
+            label, bank_result.rows_inserted, bank_result.rows_skipped_duplicate, len(bank_result.errors),
+        )
+    except Exception as exc:
+        logger.warning("[Finance sync/%s] QBO bank sync failed: %s", label, exc)
+
+    # 5. QB token expiry warning
+    try:
+        from sales_support_agent.api.qbo_auth_router import _load_tokens
+        token_row = await _asyncio.to_thread(_load_tokens)
+        if token_row and token_row.get("expires_at"):
+            exp_str = token_row["expires_at"]
+            exp = datetime.fromisoformat(exp_str)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            remaining = exp - datetime.now(timezone.utc)
+            if remaining < timedelta(hours=24):
+                logger.warning(
+                    "[Finance sync/%s] QB access token expires in %s — "
+                    "visit /admin/finances/qbo/connect to re-authenticate.",
+                    label, str(remaining).split(".")[0],
+                )
+            else:
+                logger.info(
+                    "[Finance sync/%s] QB access token valid for %s.",
+                    label, str(remaining).split(".")[0],
+                )
+    except Exception as exc:
+        logger.debug("[Finance sync/%s] QB token expiry check skipped: %s", label, exc)
+
+    logger.info("[Finance sync/%s] Done.", label)
+
+
 @app.on_event("startup")
 async def _startup_init():
     """Ensure cashflow DB tables exist, then kick off background ClickUp sync."""
@@ -148,59 +235,26 @@ async def _startup_init():
     except Exception as exc:
         logger.warning("[Finance startup] Template expansion failed (non-fatal): %s", exc)
 
-    # --- Step 2: ClickUp + QB expiry check run in background (non-blocking).
+    # --- Step 2: Initial background sync (runs 5 s after boot, non-blocking).
     async def _background_finance_sync():
         await _asyncio.sleep(5)   # give the server time to fully start
-        try:
-            from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
-            result = await _asyncio.to_thread(sync_clickup_finance, settings)
-            logger.info(
-                "[Finance startup sync] ClickUp: %d inserted, %d skipped, %d errors",
-                result.rows_inserted, result.rows_skipped_duplicate, len(result.errors),
-            )
-            # Re-expand templates to capture any newly synced ClickUp recurring tasks
-            from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
-            created = await _asyncio.to_thread(
-                generate_upcoming_from_templates,
-                horizon_days=400,
-                advance_template=True,
-            )
-            logger.info("[Finance startup sync] Post-ClickUp template expansion: %d events", len(created))
-        except Exception as exc:
-            logger.warning("[Finance startup sync] ClickUp sync failed: %s", exc)
-
-        # Warn if QB access token is expiring soon (within 24 h) so ops
-        # doesn't get a surprise outage.  Non-fatal — missing tokens just skip.
-        try:
-            from sales_support_agent.api.qbo_auth_router import _load_tokens
-            from datetime import datetime, timezone, timedelta
-            token_row = await _asyncio.to_thread(_load_tokens)
-            if token_row and token_row.get("expires_at"):
-                exp_str = token_row["expires_at"]
-                # Handle both aware and naïve ISO strings from the DB
-                try:
-                    exp = datetime.fromisoformat(exp_str)
-                    if exp.tzinfo is None:
-                        exp = exp.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    exp = None
-                if exp is not None:
-                    remaining = exp - datetime.now(timezone.utc)
-                    if remaining < timedelta(hours=24):
-                        logger.warning(
-                            "[Finance startup] QB access token expires in %s — "
-                            "visit /connect to re-authenticate before it lapses.",
-                            str(remaining).split(".")[0],
-                        )
-                    else:
-                        logger.info(
-                            "[Finance startup] QB access token valid for %s.",
-                            str(remaining).split(".")[0],
-                        )
-        except Exception as exc:
-            logger.debug("[Finance startup] QB token expiry check skipped: %s", exc)
+        await _run_finance_sync(settings, label="startup")
 
     _asyncio.create_task(_background_finance_sync())
+
+    # --- Step 3: Automated periodic sync every 2 hours.
+    async def _periodic_finance_sync_loop():
+        """Run ClickUp → QBO invoices → QBO bank → template expansion every 2 h."""
+        sync_interval_seconds = int(os.getenv("FINANCE_SYNC_INTERVAL_SECONDS", "7200"))
+        await _asyncio.sleep(sync_interval_seconds)   # first run offset so startup completes
+        while True:
+            try:
+                await _run_finance_sync(settings, label="periodic")
+            except Exception as exc:
+                logger.error("[Finance periodic sync] Unhandled error: %s", exc)
+            await _asyncio.sleep(sync_interval_seconds)
+
+    _asyncio.create_task(_periodic_finance_sync_loop())
 
 
 LEAD_RUN_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lead-build")

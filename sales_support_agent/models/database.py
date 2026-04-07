@@ -161,6 +161,13 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                 expires_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+        """))
 
     # Add indexes for Calendar/Ledger range queries
     with engine.begin() as conn:
@@ -420,6 +427,13 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 state      TEXT        PRIMARY KEY,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
             )
         """))
 
