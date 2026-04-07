@@ -139,14 +139,16 @@ def render_calendar_page(
     week_running = running  # tracks EOD balance at end of each week for summary
 
     for week in month_weeks:
-        week_in = sum(
-            sum(e.get("amount_cents", 0) for e in events_by_date.get(d, []) if e.get("event_type") == "inflow")
-            for d in week
-        )
-        week_out = sum(
-            sum(e.get("amount_cents", 0) for e in events_by_date.get(d, []) if e.get("event_type") == "outflow")
-            for d in week
-        )
+        # Prefer actual (posted/matched) amounts where available; fall back to planned
+        week_in = week_out = 0
+        for d in week:
+            for e in events_by_date.get(d, []):
+                amt = e.get("amount_cents", 0)
+                status = e.get("status", "")
+                if e.get("event_type") == "inflow":
+                    week_in  += amt
+                else:
+                    week_out += amt
 
         day_cells = ""
         for day_date in week:
@@ -190,43 +192,88 @@ def render_calendar_page(
             else:
                 bal_str = ""
 
-            events_html = ""
-            for ev in sorted(day_events, key=lambda e: (e.get("event_type") != "outflow", -int(e.get("amount_cents") or 0)))[:4]:
+            # Separate actual (confirmed bank transactions) from planned
+            actual_evs  = [e for e in day_events if e.get("status") in ("posted", "matched")]
+            planned_evs = [e for e in day_events if e.get("status") not in ("posted", "matched")]
+
+            # Sort each group: outflows first, then by amount descending
+            def _ev_sort(e):
+                return (e.get("event_type") != "outflow", -int(e.get("amount_cents") or 0))
+            actual_evs.sort(key=_ev_sort)
+            planned_evs.sort(key=_ev_sort)
+
+            # Notification dot for days with actual transactions (past days)
+            actual_notif = ""
+            if actual_evs and not is_other_month:
+                actual_out_total = sum(e.get("amount_cents", 0) for e in actual_evs if e.get("event_type") == "outflow")
+                actual_in_total  = sum(e.get("amount_cents", 0) for e in actual_evs if e.get("event_type") == "inflow")
+                parts = []
+                if actual_out_total:
+                    parts.append(f'<span style="color:#dc2626">▼{_dollar(actual_out_total)}</span>')
+                if actual_in_total:
+                    parts.append(f'<span style="color:#16a34a">▲{_dollar(actual_in_total)}</span>')
+                actual_notif = (
+                    f'<div style="font-size:0.58rem;background:#fff7ed;border:1px solid #fed7aa;border-radius:3px;'
+                    f'padding:1px 4px;margin-bottom:2px;display:flex;align-items:center;gap:3px;flex-wrap:wrap">'
+                    f'<span style="background:#ea580c;color:#fff;border-radius:2px;padding:0 3px;font-weight:700;font-size:0.55rem">ACTUAL</span>'
+                    f'{" ".join(parts)}'
+                    f'</div>'
+                )
+
+            def _render_ev(ev, is_actual_ev=False):
                 is_in = ev.get("event_type") == "inflow"
                 source = ev.get("source", "")
                 status = ev.get("status", "")
                 badge = _status_badge(status, source)
-
-                if status in ("posted", "matched"):
-                    card_bg = "#f0fdf4" if is_in else "#f1f5f9"
-                    card_color = "#14532d" if is_in else "#374151"
-                    card_border = "1px solid #bbf7d0" if is_in else "1px solid #e2e8f0"
+                if is_actual_ev:
+                    # Actual (posted/matched) — stronger border, clear color
+                    if is_in:
+                        card_bg, card_color = "#f0fdf4", "#14532d"
+                        card_border = "1.5px solid #4ade80"
+                    else:
+                        card_bg, card_color = "#fff1f2", "#7f1d1d"
+                        card_border = "1.5px solid #f87171"
                 elif is_in:
                     card_bg, card_color, card_border = "#ede9fe", "#5b21b6", "1px solid #ddd6fe"
                 else:
-                    card_bg, card_color, card_border = "#fff1f2", "#9d174d", "1px solid #fecdd3"
+                    card_bg, card_color, card_border = "#fafafa", "#374151", "1px solid #fecdd3"
 
                 name = _display_name(ev)
                 amt = _dollar(ev.get("amount_cents", 0))
-                est_marker = " <span style='color:#d97706;font-size:0.6rem'>est.</span>" if is_future and ev.get("confidence") != "confirmed" else ""
+                is_ev_future = not is_actual_ev and day_date > today
+                est_marker = " <span style='color:#d97706;font-size:0.58rem'>est.</span>" if is_ev_future and ev.get("confidence") != "confirmed" else ""
+                return (
+                    f'<div style="background:{card_bg};color:{card_color};border:{card_border};border-radius:4px;'
+                    f'padding:2px 5px;margin-bottom:2px;font-size:0.67rem;cursor:pointer;line-height:1.4"'
+                    f' title="{html.escape(name)} | {amt} | {ev.get("category", "")} | {status}"'
+                    f' onclick="showEventDetail(\'{ev.get("id", "")}\');">'
+                    f'<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                    f'{html.escape(name[:24])}{"…" if len(name)>24 else ""}{badge}</div>'
+                    f'<div style="opacity:0.9">{"▲" if is_in else "▼"} {amt}{est_marker}</div>'
+                    f'</div>'
+                )
 
-                events_html += f"""
-                <div style="background:{card_bg};color:{card_color};border:{card_border};border-radius:4px;padding:2px 5px;margin-bottom:2px;font-size:0.68rem;cursor:pointer;line-height:1.4"
-                     title="{html.escape(name)} | {amt} | {ev.get('category', '')} | {status}"
-                     onclick="showEventDetail('{ev.get('id', '')}')">
-                  <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{html.escape(name[:24])}{'…' if len(name)>24 else ''}{badge}</div>
-                  <div style="opacity:0.85">{'▲' if is_in else '▼'} {amt}{est_marker}</div>
-                </div>"""
+            # Render: actuals first (prominent), then planned (up to 3 total planned shown)
+            events_html = actual_notif
+            for ev in actual_evs:
+                events_html += _render_ev(ev, is_actual_ev=True)
+            shown_planned = 0
+            max_planned = max(0, 3 - len(actual_evs))  # fewer planned slots if many actuals
+            for ev in planned_evs[:max_planned]:
+                events_html += _render_ev(ev, is_actual_ev=False)
+                shown_planned += 1
 
-            if len(day_events) > 4:
-                more_out = sum(e.get("amount_cents", 0) for e in day_events[4:] if e.get("event_type") == "outflow")
-                more_in  = sum(e.get("amount_cents", 0) for e in day_events[4:] if e.get("event_type") == "inflow")
+            # "+N more" summary for overflow
+            overflow_evs = planned_evs[max_planned:]
+            if overflow_evs:
+                more_out = sum(e.get("amount_cents", 0) for e in overflow_evs if e.get("event_type") == "outflow")
+                more_in  = sum(e.get("amount_cents", 0) for e in overflow_evs if e.get("event_type") == "inflow")
                 summary_parts = []
                 if more_out:
                     summary_parts.append(f'<span style="color:#dc2626">▼{_dollar(more_out)}</span>')
                 if more_in:
                     summary_parts.append(f'<span style="color:#16a34a">▲{_dollar(more_in)}</span>')
-                events_html += f'<div style="font-size:0.65rem;color:#6b7280;margin-top:1px">+{len(day_events)-4} more {" ".join(summary_parts)}</div>'
+                events_html += f'<div style="font-size:0.63rem;color:#6b7280;margin-top:1px">+{len(overflow_evs)} planned {" ".join(summary_parts)}</div>'
 
             day_cells += f"""
             <td style="{cell_style}">
@@ -243,20 +290,49 @@ def render_calendar_page(
         week_running += week_net
         eow_bal = eod_balance.get(week[-1], week_running)
         eow_color = "#16a34a" if eow_bal >= MIN_BALANCE_CENTS else ("#d97706" if eow_bal >= 0 else "#dc2626")
-        est_label = ' <span style="font-size:0.6rem;color:#9ca3af">(est.)</span>' if is_future_month else ""
+        has_past  = any(d <= today for d in week)
         has_future = any(d > today for d in week)
-        est_label = ' <span style="font-size:0.6rem;color:#9ca3af">forecast</span>' if has_future else ""
+        if has_past and has_future:
+            week_label = '<span style="font-size:0.58rem;color:#9ca3af">partial</span>'
+        elif has_future:
+            week_label = '<span style="font-size:0.58rem;color:#6366f1">forecast</span>'
+        else:
+            week_label = '<span style="font-size:0.58rem;background:#ea580c;color:#fff;border-radius:2px;padding:0 3px">actual</span>'
+
+        # Tally actual vs planned for the week summary
+        week_actual_out = sum(
+            e.get("amount_cents", 0)
+            for d in week
+            for e in events_by_date.get(d, [])
+            if e.get("event_type") == "outflow" and e.get("status") in ("posted", "matched")
+        )
+        week_actual_in = sum(
+            e.get("amount_cents", 0)
+            for d in week
+            for e in events_by_date.get(d, [])
+            if e.get("event_type") == "inflow" and e.get("status") in ("posted", "matched")
+        )
+        actual_row = ""
+        if week_actual_out or week_actual_in:
+            actual_row = (
+                f'<div style="border-top:1px solid #fed7aa;margin-top:3px;padding-top:3px">'
+                f'<div style="font-size:0.58rem;color:#ea580c;font-weight:700;margin-bottom:1px">✓ Actual</div>'
+                + (f'<div style="color:#16a34a;font-size:0.65rem">▲ {_dollar(week_actual_in)}</div>' if week_actual_in else '')
+                + (f'<div style="color:#dc2626;font-size:0.65rem">▼ {_dollar(week_actual_out)}</div>' if week_actual_out else '')
+                + '</div>'
+            )
 
         week_summary = f"""
         <td style="border:1px solid #e5e7eb;vertical-align:middle;padding:6px 4px;background:#f8fafc;width:96px;font-size:0.72rem;text-align:center">
+          <div style="margin-bottom:2px">{week_label}</div>
           <div style="color:#16a34a;font-weight:600;font-size:0.75rem">▲ {_dollar(week_in)}</div>
           <div style="color:#dc2626;font-weight:600;font-size:0.75rem">▼ {_dollar(week_out)}</div>
           <div style="color:{net_color};font-weight:700;margin:2px 0">{'+' if week_net>=0 else ''}{_dollar(week_net)}</div>
           <div style="border-top:1px solid #e5e7eb;margin-top:4px;padding-top:4px">
             <div style="font-size:0.65rem;color:#6b7280">EOW Balance</div>
             <div style="color:{eow_color};font-weight:700;font-size:0.8rem">{_dollar(eow_bal)}</div>
-            {est_label}
           </div>
+          {actual_row}
         </td>"""
 
         grid_html += f"<tr>{day_cells}{week_summary}</tr>"

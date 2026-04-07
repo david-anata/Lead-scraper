@@ -91,11 +91,12 @@ def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict
         status = r.get("status", "")
 
         tooltip_day[d].append({
-            "name":     (r.get("name") or r.get("vendor_or_customer") or "")[:40],
-            "category": r.get("category") or "other",
-            "amount":   amt / 100,
-            "dir":      "in" if is_in else "out",
-            "status":   status,
+            "name":      (r.get("name") or r.get("vendor_or_customer") or "")[:40],
+            "category":  r.get("category") or "other",
+            "amount":    amt / 100,
+            "dir":       "in" if is_in else "out",
+            "status":    status,
+            "is_actual": status in ("posted", "matched"),
         })
 
         if status in ("posted", "matched") and d <= today:
@@ -143,10 +144,15 @@ def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict
 
         is_past_or_today = d <= today
 
+        # Actual: past/today only (posted or matched transactions)
         actual_out_list.append( -(actual_out_day.get(d, 0) / 100)  if is_past_or_today else None)
         actual_in_list.append(   actual_in_day.get(d, 0) / 100     if is_past_or_today else None)
-        planned_out_list.append( -(planned_out_day.get(d, 0) / 100) if not is_past_or_today else None)
-        planned_in_list.append(   planned_in_day.get(d, 0) / 100   if not is_past_or_today else None)
+        # Planned: ALL dates — so you can see what was scheduled vs what happened
+        # (past planned = overdue/unpaid scheduled items; future planned = upcoming)
+        pout = planned_out_day.get(d, 0)
+        pin  = planned_in_day.get(d, 0)
+        planned_out_list.append( -(pout / 100) if pout else None)
+        planned_in_list.append(    pin / 100   if pin  else None)
         bal_actual_list.append(  actual_bal[d] / 100               if d in actual_bal else None)
         bal_proj_list.append(    proj_bal[d] / 100                  if d in proj_bal else None)
 
@@ -714,11 +720,25 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
       </p>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
-      <span style="font-size:0.75rem;color:#6b7280">
-        <span style="display:inline-block;width:10px;height:10px;background:rgba(220,38,38,0.85);border-radius:2px;margin-right:3px"></span>Actual out
-        <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,0.85);border-radius:2px;margin:0 3px 0 8px"></span>Actual in
-        <span style="display:inline-block;width:10px;height:10px;background:rgba(220,38,38,0.22);border:1px solid rgba(220,38,38,0.5);border-radius:2px;margin:0 3px 0 8px"></span>Planned out
-        <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,0.22);border:1px solid rgba(22,163,74,0.5);border-radius:2px;margin:0 3px 0 8px"></span>Planned in
+      <span style="font-size:0.75rem;color:#6b7280;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span style="display:inline-flex;align-items:center;gap:3px">
+          <span style="display:inline-block;width:10px;height:10px;background:rgba(220,38,38,0.18);border:1px solid rgba(220,38,38,0.45);border-radius:2px"></span>Planned out
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:3px">
+          <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,0.18);border:1px solid rgba(22,163,74,0.45);border-radius:2px"></span>Planned in
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:3px">
+          <span style="display:inline-block;width:10px;height:10px;background:rgba(220,38,38,0.82);border-radius:2px"></span>Actual out
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:3px">
+          <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,0.82);border-radius:2px"></span>Actual in
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:3px">
+          <span style="display:inline-block;width:10px;height:3px;background:#0D9488;border-radius:2px"></span>Balance
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:3px">
+          <span style="display:inline-block;width:10px;height:3px;background:#2563EB;border-radius:2px;opacity:0.6;border-top:1px dashed #2563EB"></span>Projected
+        </span>
       </span>
     </div>
   </div>
@@ -781,42 +801,42 @@ function loadDailyChart() {
         data: {
           labels: data.labels,
           datasets: [
-            // ---- ACTUALS (past) ----------------------------------------
+            // ---- PLANNED (rendered first = behind actuals) ---------------
+            {
+              label: 'Planned Expenses',
+              data: data.planned_out,     // negative values, ALL dates
+              backgroundColor: 'rgba(220,38,38,0.18)',
+              borderColor: 'rgba(220,38,38,0.45)',
+              borderWidth: 1,
+              borderRadius: 3,
+              stack: 'planned',
+              order: 3,
+            },
+            {
+              label: 'Planned Income',
+              data: data.planned_in,      // positive values, ALL dates
+              backgroundColor: 'rgba(22,163,74,0.18)',
+              borderColor: 'rgba(22,163,74,0.45)',
+              borderWidth: 1,
+              borderRadius: 3,
+              stack: 'planned',
+              order: 3,
+            },
+            // ---- ACTUALS (rendered second = in front of planned) ---------
             {
               label: 'Actual Expenses',
-              data: data.actual_out,      // negative values
-              backgroundColor: 'rgba(220,38,38,0.85)',
+              data: data.actual_out,      // negative values, past only
+              backgroundColor: 'rgba(220,38,38,0.82)',
               borderRadius: 3,
               stack: 'actual',
               order: 2,
             },
             {
               label: 'Actual Income',
-              data: data.actual_in,       // positive values
-              backgroundColor: 'rgba(22,163,74,0.85)',
+              data: data.actual_in,       // positive values, past only
+              backgroundColor: 'rgba(22,163,74,0.82)',
               borderRadius: 3,
               stack: 'actual',
-              order: 2,
-            },
-            // ---- PLANNED (future) ----------------------------------------
-            {
-              label: 'Planned Expenses',
-              data: data.planned_out,     // negative values
-              backgroundColor: 'rgba(220,38,38,0.22)',
-              borderColor: 'rgba(220,38,38,0.5)',
-              borderWidth: 1,
-              borderRadius: 3,
-              stack: 'planned',
-              order: 2,
-            },
-            {
-              label: 'Planned Income',
-              data: data.planned_in,      // positive values
-              backgroundColor: 'rgba(22,163,74,0.22)',
-              borderColor: 'rgba(22,163,74,0.5)',
-              borderWidth: 1,
-              borderRadius: 3,
-              stack: 'planned',
               order: 2,
             },
             // ---- BALANCE LINES ------------------------------------------
@@ -880,31 +900,52 @@ function loadDailyChart() {
                 if (idx == null || !data.tooltips[idx]) { card.style.display='none'; return; }
 
                 const tip = data.tooltips[idx];
-                const isActual = idx <= data.cutoff_index;
+                const isPast = idx <= data.cutoff_index;
                 const label = data.labels[idx];
 
-                // Group items by category
-                const outItems = tip.items.filter(i => i.dir === 'out').sort((a,b) => b.amount-a.amount);
-                const inItems  = tip.items.filter(i => i.dir === 'in').sort((a,b)  => b.amount-a.amount);
-                const totalOut = outItems.reduce((s,i) => s+i.amount, 0);
-                const totalIn  = inItems.reduce((s,i)  => s+i.amount, 0);
+                // Separate actual (posted/matched) from planned
+                const actualOut   = tip.items.filter(i => i.dir==='out' && i.is_actual).sort((a,b) => b.amount-a.amount);
+                const actualIn    = tip.items.filter(i => i.dir==='in'  && i.is_actual).sort((a,b) => b.amount-a.amount);
+                const plannedOut  = tip.items.filter(i => i.dir==='out' && !i.is_actual).sort((a,b) => b.amount-a.amount);
+                const plannedIn   = tip.items.filter(i => i.dir==='in'  && !i.is_actual).sort((a,b) => b.amount-a.amount);
 
-                const rows = (items, color) => items.slice(0,6).map(i =>
-                  `<tr><td style="color:#6b7280;padding:1px 6px 1px 0;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.name||i.cat}</td>
-                   <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap">${fmt$(i.amount)}</td></tr>`
-                ).join('') + (items.length>6 ? `<tr><td colspan="2" style="color:#9ca3af;font-size:0.75rem">+${items.length-6} more</td></tr>` : '');
+                const totalActualOut  = actualOut.reduce((s,i)  => s+i.amount, 0);
+                const totalActualIn   = actualIn.reduce((s,i)   => s+i.amount, 0);
+                const totalPlannedOut = plannedOut.reduce((s,i) => s+i.amount, 0);
+                const totalPlannedIn  = plannedIn.reduce((s,i)  => s+i.amount, 0);
+
+                const itemRows = (items, color) => items.slice(0,5).map(i =>
+                  `<tr>
+                    <td style="color:#6b7280;padding:1px 6px 1px 0;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.name||i.category}</td>
+                    <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap">${fmt$(i.amount)}</td>
+                  </tr>`
+                ).join('') + (items.length>5 ? `<tr><td colspan="2" style="color:#9ca3af;font-size:0.72rem">+${items.length-5} more</td></tr>` : '');
+
+                const section = (label, outItems, inItems, outTotal, inTotal, accent) => {
+                  if (!outItems.length && !inItems.length) return '';
+                  return `
+                    <div style="border-top:1px solid #f3f4f6;margin-top:6px;padding-top:5px">
+                      <div style="font-size:0.68rem;font-weight:700;color:${accent};letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px">${label}</div>
+                      ${outItems.length ? `
+                        <div style="color:#dc2626;font-size:0.72rem;font-weight:600;margin-bottom:1px">▼ Out — ${fmt$(outTotal)}</div>
+                        <table style="width:100%;font-size:0.75rem;margin-bottom:3px">${itemRows(outItems,'#dc2626')}</table>` : ''}
+                      ${inItems.length ? `
+                        <div style="color:#16a34a;font-size:0.72rem;font-weight:600;margin-bottom:1px">▲ In — ${fmt$(inTotal)}</div>
+                        <table style="width:100%;font-size:0.75rem">${itemRows(inItems,'#16a34a')}</table>` : ''}
+                    </div>`;
+                };
+
+                const hasActual  = actualOut.length  || actualIn.length;
+                const hasPlanned = plannedOut.length || plannedIn.length;
 
                 card.innerHTML = `
-                  <div style="font-weight:700;font-size:0.875rem;margin-bottom:6px;border-bottom:1px solid #f3f4f6;padding-bottom:4px">
-                    ${label} <span style="font-weight:400;color:#9ca3af;font-size:0.75rem">${isActual?'Actual':'Forecast'}</span>
+                  <div style="font-weight:700;font-size:0.875rem;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center">
+                    <span>${label}</span>
+                    <span style="font-size:0.7rem;font-weight:500;color:#9ca3af">${isPast ? 'Historical' : 'Forecast'}</span>
                   </div>
-                  ${outItems.length ? `
-                    <div style="color:#dc2626;font-size:0.75rem;font-weight:600;margin-bottom:2px">▼ OUT — ${fmt$(totalOut)}</div>
-                    <table style="width:100%;font-size:0.78rem">${rows(outItems,'#dc2626')}</table>` : ''}
-                  ${inItems.length ? `
-                    <div style="color:#16a34a;font-size:0.75rem;font-weight:600;margin-bottom:2px;margin-top:${outItems.length?'6px':'0'}">▲ IN — ${fmt$(totalIn)}</div>
-                    <table style="width:100%;font-size:0.78rem">${rows(inItems,'#16a34a')}</table>` : ''}
-                  ${!outItems.length && !inItems.length ? '<div style="color:#9ca3af;font-size:0.8rem">No transactions</div>' : ''}
+                  ${hasActual  ? section('✓ Actual',  actualOut,  actualIn,  totalActualOut,  totalActualIn,  '#0D9488') : ''}
+                  ${hasPlanned ? section('⟳ Planned', plannedOut, plannedIn, totalPlannedOut, totalPlannedIn, '#6366f1') : ''}
+                  ${!hasActual && !hasPlanned ? '<div style="color:#9ca3af;font-size:0.8rem;padding-top:4px">No transactions</div>' : ''}
                 `;
 
                 // Position card — caretX/Y are canvas-relative pixels; card is
