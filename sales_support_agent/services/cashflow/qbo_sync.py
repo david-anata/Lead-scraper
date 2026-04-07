@@ -284,7 +284,9 @@ def sync_qbo_invoices(settings):
             if token_row and token_row.get("access_token") and token_row.get("realm_id"):
                 access_token = _get_token() or ""
                 realm_id = token_row.get("realm_id", "")
-                sandbox = getattr(settings, "qbo_sandbox", False)
+                # DB tokens come from the production OAuth web flow — never sandbox.
+                # QBO_SANDBOX only applies to the env-var legacy path below.
+                sandbox = False
                 logger.info("QBO sync: using DB OAuth tokens (realm=%s)", realm_id)
         except Exception as exc:
             logger.debug("QBO DB token load skipped: %s", exc)
