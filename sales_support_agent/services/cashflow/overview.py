@@ -724,9 +724,9 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
   </div>
   <div style="height:340px;position:relative">
     <canvas id="cashflowChart"></canvas>
+    <!-- Hover detail card — must be inside position:relative container so absolute coords align with caretX/Y -->
+    <div id="chart-tooltip-card" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.13);padding:12px 14px;min-width:220px;max-width:300px;font-size:0.82rem;pointer-events:none"></div>
   </div>
-  <!-- Hover detail card -->
-  <div id="chart-tooltip-card" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.13);padding:12px 14px;min-width:220px;max-width:300px;font-size:0.82rem;pointer-events:none"></div>
 </div>
 
 <script>
@@ -907,19 +907,22 @@ function loadDailyChart() {
                   ${!outItems.length && !inItems.length ? '<div style="color:#9ca3af;font-size:0.8rem">No transactions</div>' : ''}
                 `;
 
-                // Position card
-                const pos = context.chart.canvas.getBoundingClientRect();
+                // Position card — caretX/Y are canvas-relative pixels; card is
+                // inside the same position:relative container so coords align directly.
+                const chartW = context.chart.width;
                 const x = context.tooltip.caretX;
                 const cardW = 240;
-                const left = x + cardW > pos.width ? x - cardW - 8 : x + 12;
+                const left = (x + cardW + 12) > chartW ? x - cardW - 8 : x + 12;
+                const top  = Math.max(0, context.tooltip.caretY - 20);
                 card.style.left = left + 'px';
-                card.style.top  = (context.tooltip.caretY - 20) + 'px';
+                card.style.top  = top + 'px';
                 card.style.display = 'block';
               }
             }
           },
           scales: {
             x: {
+              stacked: true,
               ticks: {
                 maxTicksLimit: 14,
                 maxRotation: 45,
@@ -930,6 +933,7 @@ function loadDailyChart() {
             },
             y: {
               // Bar axis — daily flows
+              stacked: true,
               position: 'left',
               ticks: {
                 callback: v => fmt$(v),
