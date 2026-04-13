@@ -185,6 +185,16 @@ async def _run_finance_sync(settings, *, label: str = "manual") -> None:
     except Exception as exc:
         logger.warning("[Finance sync/%s] QBO bank sync failed: %s", label, exc)
 
+    # 4b. Persist sync audit record to kv_store (non-fatal)
+    try:
+        from sales_support_agent.models.database import kv_set_json
+        kv_set_json("last_sync", {
+            "label":     label,
+            "synced_at": datetime.utcnow().isoformat(),
+        })
+    except Exception as _e:
+        pass
+
     # 5. QB token expiry warning
     try:
         from sales_support_agent.api.qbo_auth_router import _load_tokens

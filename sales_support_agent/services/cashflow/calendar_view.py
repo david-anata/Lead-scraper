@@ -66,25 +66,47 @@ def render_calendar_page(
         except Exception as exc:
             logger.debug("Skipping event with unparseable due_date: %s", exc)
 
-    # Get starting balance for running daily totals
+    # Get starting balance — kv_store snapshot first, CSV scan fallback
     from sales_support_agent.services.cashflow.obligations import list_obligations
     from collections import defaultdict
-    try:
-        all_rows = list_obligations(limit=5000)
-        csv_rows = sorted(
-            [r for r in all_rows
-             if r.get("source") == "csv"
-             and r.get("account_balance_cents") is not None
-             and str(r.get("due_date", ""))[:10] <= first_day.isoformat()],
-            key=lambda r: str(r.get("due_date", ""))
-        )
-        running = int(csv_rows[-1].get("account_balance_cents", 0)) if csv_rows else 0
-    except Exception as exc:
-        logger.warning("Failed to compute starting balance for calendar: %s", exc)
-        running = 0
+    running = 0
+    csv_rows = []
+    is_est = True  # set False below if we find a real balance
 
-    # Build per-day net map so we can compute EOD balance for each cell
-    daily_net: dict[date, int] = defaultdict(int)
+    try:
+        from sales_support_agent.models.database import kv_get_json
+        snap = kv_get_json("balance_snapshot")
+        if snap and snap.get("balance_cents") is not None:
+            running = int(snap["balance_cents"])
+            is_est = False
+    except Exception:
+        pass
+
+    if running == 0:
+        # Fallback: scan CSV rows up to first_day
+        try:
+            all_rows = list_obligations(limit=5000)
+            csv_rows = sorted(
+                [r for r in all_rows
+                 if r.get("source") == "csv"
+                 and r.get("account_balance_cents") is not None
+                 and str(r.get("due_date", ""))[:10] <= first_day.isoformat()],
+                key=lambda r: str(r.get("due_date", ""))
+            )
+            if csv_rows:
+                running = int(csv_rows[-1].get("account_balance_cents", 0))
+                is_est = False
+        except Exception as exc:
+            logger.warning("Failed to compute starting balance for calendar: %s", exc)
+
+    # Build separate net maps for actuals (posted/matched) vs planned.
+    # Past days use actual_net so posted transactions are the truth.
+    # Future days use planned_net for the projection.
+    # Mixing them on past days was causing double-counting when a planned
+    # event and its matching posted transaction both existed for the same day.
+    actual_net:  dict[date, int] = defaultdict(int)  # posted / matched
+    planned_net: dict[date, int] = defaultdict(int)  # planned / pending / overdue
+
     for ev in events:
         d_str = str(ev.get("due_date", ""))[:10]
         if not d_str:
@@ -94,17 +116,22 @@ def render_calendar_page(
         except Exception:
             continue
         amt = int(ev.get("amount_cents") or 0)
-        if ev.get("event_type") == "inflow":
-            daily_net[d] += amt
-        else:
-            daily_net[d] -= amt
+        signed = amt if ev.get("event_type") == "inflow" else -amt
+        status = ev.get("status", "")
+        if status in ("posted", "matched"):
+            actual_net[d] += signed
+        elif status in ("planned", "pending", "overdue"):
+            planned_net[d] += signed
 
-    # Pre-compute EOD balance for every visible day (rolling forward from `running`)
+    # Pre-compute EOD balance: actual net for past days, planned net for future
     eod_balance: dict[date, int] = {}
     walk = month_start
     bal = running
     while walk <= month_end:
-        bal += daily_net.get(walk, 0)
+        if walk <= today:
+            bal += actual_net.get(walk, 0)
+        else:
+            bal += planned_net.get(walk, 0)
         eod_balance[walk] = bal
         walk += timedelta(days=1)
 
@@ -139,12 +166,20 @@ def render_calendar_page(
     week_running = running  # tracks EOD balance at end of each week for summary
 
     for week in month_weeks:
-        # Prefer actual (posted/matched) amounts where available; fall back to planned
+        # For past days: count only actuals (posted/matched) to avoid double-counting
+        # with planned items that have already cleared. For future days: count planned.
         week_in = week_out = 0
         for d in week:
+            is_past_day = d <= today
             for e in events_by_date.get(d, []):
-                amt = e.get("amount_cents", 0)
                 status = e.get("status", "")
+                is_actual = status in ("posted", "matched")
+                is_planned = status in ("planned", "pending", "overdue")
+                if is_past_day and not is_actual:
+                    continue   # skip planned items on past days
+                if not is_past_day and not is_planned:
+                    continue   # skip actuals on future days (shouldn't happen)
+                amt = e.get("amount_cents", 0)
                 if e.get("event_type") == "inflow":
                     week_in  += amt
                 else:
@@ -359,7 +394,6 @@ def render_calendar_page(
 
     # Opening balance display
     bal_color = "#16a34a" if running >= MIN_BALANCE_CENTS else ("#d97706" if running >= 0 else "#dc2626")
-    is_est = not csv_rows
 
     body = f"""
     <div>

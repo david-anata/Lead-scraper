@@ -546,16 +546,36 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
     ]
     events = _events_to_dtos(forecast_rows)
 
-    # Latest balance from CSV
+    # Balance: read from kv_store snapshot first (fastest, most accurate),
+    # fall back to scanning CSV rows if snapshot not yet written.
     balance_cents = 0
+    balance_as_of = ""
+    balance_source_label = ""
+
+    try:
+        from sales_support_agent.models.database import kv_get_json
+        snap = kv_get_json("balance_snapshot")
+        if snap and snap.get("balance_cents") is not None:
+            balance_cents = int(snap["balance_cents"])
+            balance_as_of = str(snap.get("as_of_date", ""))[:10]
+            _src = snap.get("source", "")
+            balance_source_label = "CSV" if _src == "csv" else "QBO bank"
+    except Exception:
+        pass
+
     csv_rows = [r for r in rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None]
-    if csv_rows:
-        csv_rows_sorted = sorted(
-            csv_rows,
-            key=lambda r: str(r.get("due_date", "")).ljust(10, "0"),
-            reverse=True,
-        )
-        balance_cents = int(csv_rows_sorted[0]["account_balance_cents"] or 0)
+
+    if balance_cents == 0:
+        # kv_store not populated yet — scan CSV rows as fallback
+        if csv_rows:
+            csv_rows_sorted = sorted(
+                csv_rows,
+                key=lambda r: str(r.get("due_date", "")).ljust(10, "0"),
+                reverse=True,
+            )
+            balance_cents = int(csv_rows_sorted[0]["account_balance_cents"] or 0)
+            balance_as_of = str(csv_rows_sorted[0].get("due_date", ""))[:10]
+            balance_source_label = "CSV"
 
     # 4-week summary
     weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=4)
@@ -571,21 +591,7 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
         result = await asyncio.to_thread(generate_cashflow_summary, weeks, alerts, balance_cents, api_key=api_key)
         ai_text = result.text
 
-    # Also pull the balance from QBO bank actuals if no CSV balance is available
-    if balance_cents == 0:
-        qbo_bank_rows = [
-            r for r in rows
-            if r.get("source") == "qbo_bank"
-            and r.get("status") == "posted"
-            and r.get("account_balance_cents") is not None
-        ]
-        if qbo_bank_rows:
-            qbo_sorted = sorted(
-                qbo_bank_rows,
-                key=lambda r: str(r.get("due_date", "")).ljust(10, "0"),
-                reverse=True,
-            )
-            balance_cents = int(qbo_sorted[0]["account_balance_cents"] or 0)
+    # (QBO bank transactions don't carry a running balance — no fallback needed here)
 
     # Compute metrics using the extracted function
     metrics = compute_finance_overview(
@@ -612,15 +618,63 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
         runway_note = "12+ months — looking good"
     runway_display = f"{metrics.runway_days}d" if metrics.runway_days < 365 else "365d+"
 
-    balance_note = "From latest CSV upload" if csv_rows else "From QBO bank sync"
+    # Balance staleness — warn if the snapshot is more than 3 days old
+    balance_stale = False
+    if balance_as_of:
+        try:
+            days_old = (today - date.fromisoformat(balance_as_of)).days
+            if days_old > 3:
+                balance_stale = True
+        except Exception:
+            pass
+
+    if balance_source_label and balance_as_of:
+        try:
+            _d = date.fromisoformat(balance_as_of)
+            _age = (today - _d).days
+            _age_str = "today" if _age == 0 else f"{_age}d ago"
+        except Exception:
+            _age_str = balance_as_of
+        balance_note = f"From {balance_source_label} · {_age_str}"
+        if balance_stale:
+            balance_note += " ⚠"
+    elif csv_rows:
+        balance_note = "From latest CSV upload"
+    else:
+        balance_note = "No bank data — upload CSV or connect QBO"
+
+    # Last sync info
+    last_sync_html = ""
+    try:
+        from sales_support_agent.models.database import kv_get_json
+        ls = kv_get_json("last_sync")
+        if ls and ls.get("synced_at"):
+            _synced = datetime.fromisoformat(ls["synced_at"])
+            _mins = int((datetime.utcnow() - _synced).total_seconds() / 60)
+            if _mins < 60:
+                _sync_age = f"{_mins}m ago"
+            elif _mins < 1440:
+                _sync_age = f"{_mins // 60}h ago"
+            else:
+                _sync_age = f"{_mins // 1440}d ago"
+            _lbl = ls.get("label", "")
+            last_sync_html = (
+                f'<div style="font-size:0.7rem;color:#9ca3af;margin-top:6px">'
+                f'Last sync: <strong style="color:#6b7280">{_sync_age}</strong>'
+                f'{" · " + _lbl if _lbl else ""}'
+                f'</div>'
+            )
+    except Exception:
+        pass
 
     # Metric cards
     cards_html = f"""
     <div class="card-grid">
-      <div class="metric-card">
+      <div class="metric-card" style="{'border-left:3px solid #f59e0b' if balance_stale else ''}">
         <div class="metric-label">Bank Balance</div>
         <div class="metric-value {metrics.balance_class}">{_dollar(metrics.balance_cents)}</div>
-        <div class="metric-note">{balance_note}</div>
+        <div class="metric-note" style="{'color:#f59e0b' if balance_stale else ''}">{balance_note}</div>
+        {last_sync_html}
       </div>
       <div class="metric-card">
         <div class="metric-label">Cash Runway</div>

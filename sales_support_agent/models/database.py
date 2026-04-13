@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import create_engine, inspect, text
@@ -599,3 +601,51 @@ def insert_cash_event(conn, *, id, source, source_id, event_type, category,
         "notes": notes, "recurring_rule": recurring_rule, "clickup_task_id": clickup_task_id,
         "friendly_name": friendly_name, "created_at": created_at, "updated_at": updated_at,
     })
+
+
+# ---------------------------------------------------------------------------
+# KV store helpers — lightweight key-value persistence (kv_store table)
+# ---------------------------------------------------------------------------
+
+def kv_set(key: str, value: str) -> None:
+    """Upsert a single key-value pair into kv_store."""
+    now = datetime.utcnow().isoformat()
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(text("""
+                INSERT INTO kv_store (key, value, updated_at)
+                VALUES (:key, :value, :now)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """), {"key": key, "value": value, "now": now})
+    except Exception as exc:
+        logger.warning("kv_set('%s') failed: %s", key, exc)
+
+
+def kv_get(key: str, default: str | None = None) -> str | None:
+    """Read a single value from kv_store by key, or return default."""
+    try:
+        with get_engine().connect() as conn:
+            row = conn.execute(
+                text("SELECT value FROM kv_store WHERE key = :key"),
+                {"key": key},
+            ).fetchone()
+        return row[0] if row else default
+    except Exception as exc:
+        logger.warning("kv_get('%s') failed: %s", key, exc)
+        return default
+
+
+def kv_set_json(key: str, data: dict) -> None:
+    """Serialize *data* to JSON and store under *key*."""
+    kv_set(key, json.dumps(data, default=str))
+
+
+def kv_get_json(key: str, default: dict | None = None) -> dict | None:
+    """Read a JSON-encoded dict from kv_store, or return *default*."""
+    raw = kv_get(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default

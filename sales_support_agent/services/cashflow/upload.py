@@ -191,6 +191,25 @@ def run_csv_upload(
                 result.rows_inserted += 1
                 new_events.append({"id": event_id, **row})
 
+    # -- Persist balance snapshot so pages don't have to scan all CSV rows ---
+    if result.latest_balance_cents is not None:
+        # Find the date of the last row that carries the balance
+        latest_date = ""
+        for row in reversed(normalised_rows):
+            if row.get("account_balance_cents") is not None and row.get("due_date"):
+                raw_d = row["due_date"]
+                latest_date = raw_d.isoformat() if hasattr(raw_d, "isoformat") else str(raw_d)[:10]
+                break
+        try:
+            from sales_support_agent.models.database import kv_set_json
+            kv_set_json("balance_snapshot", {
+                "balance_cents": result.latest_balance_cents,
+                "as_of_date": latest_date,
+                "source": "csv",
+            })
+        except Exception as _e:
+            pass  # non-fatal; overview falls back to scanning CSV rows
+
     # -- Auto-match against planned obligations -----------------------------
     if new_events:
         planned = list_obligations(
