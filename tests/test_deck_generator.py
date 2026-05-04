@@ -173,8 +173,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                google_client=object(),
-                canva_client=object(),
                 shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
@@ -220,8 +218,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                google_client=object(),
-                canva_client=object(),
                 shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
@@ -246,8 +242,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                google_client=object(),
-                canva_client=object(),
                 shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )

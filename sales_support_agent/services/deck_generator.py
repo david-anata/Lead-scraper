@@ -10,7 +10,6 @@ import json
 import mimetypes
 import re
 import secrets
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -24,10 +23,8 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.amazon_sp_api import AmazonSpApiClient
-from sales_support_agent.integrations.canva import CanvaClient
-from sales_support_agent.integrations.google_sheets import GoogleSheetsClient
 from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
-from sales_support_agent.models.entities import AutomationRun, CanvaConnection
+from sales_support_agent.models.entities import AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.helium10 import (
     CerebroKeywordInsight,
@@ -46,7 +43,6 @@ from sales_support_agent.services.helium10 import (
     parse_xray_csvs,
 )
 from sales_support_agent.services.product_research import EnrichedHeroProduct, ProductResearchService
-from sales_support_agent.services.token_seal import seal_token, unseal_token
 
 
 @dataclass(frozen=True)
@@ -138,15 +134,11 @@ class DeckGenerationService:
         settings: Settings,
         session: Session,
         *,
-        google_client: GoogleSheetsClient | None = None,
-        canva_client: CanvaClient | None = None,
         shopify_client: ShopifyStorefrontClient | None = None,
         amazon_client: AmazonSpApiClient | None = None,
     ):
         self.settings = settings
         self.session = session
-        self.google_client = google_client or GoogleSheetsClient(settings)
-        self.canva_client = canva_client or CanvaClient(settings)
         self.shopify_client = shopify_client or ShopifyStorefrontClient(settings)
         self.amazon_client = amazon_client or AmazonSpApiClient(settings)
         self.audit = AuditService(session)
@@ -154,29 +146,6 @@ class DeckGenerationService:
             shopify_client=self.shopify_client,
             amazon_client=self.amazon_client,
         )
-
-    def connect_canva(self, *, code: str, code_verifier: str) -> CanvaConnection:
-        payload = self.canva_client.exchange_code(code=code, code_verifier=code_verifier)
-        access_token = str(payload.get("access_token") or "").strip()
-        refresh_token = str(payload.get("refresh_token") or "").strip()
-        if not access_token or not refresh_token:
-            raise RuntimeError("Canva OAuth did not return both access and refresh tokens.")
-
-        capabilities_payload = self.canva_client.get_user_capabilities(access_token)
-        connection = self._latest_canva_connection() or CanvaConnection()
-        connection.canva_user_id = str(payload.get("user_id") or connection.canva_user_id or "").strip()
-        connection.display_name = str(payload.get("username") or connection.display_name or "Connected Canva user").strip()
-        connection.scope = self._scope_string(payload.get("scope"))
-        connection.access_token_encrypted = seal_token(self.settings.canva_token_secret, access_token)
-        connection.refresh_token_encrypted = seal_token(self.settings.canva_token_secret, refresh_token)
-        connection.token_type = str(payload.get("token_type") or "Bearer").strip() or "Bearer"
-        connection.expires_at = _expires_at_from_payload(payload)
-        connection.capabilities_json = _normalize_capabilities(capabilities_payload)
-        connection.last_validated_at = datetime.now(timezone.utc)
-        connection.updated_at = datetime.now(timezone.utc)
-        self.session.add(connection)
-        self.session.flush()
-        return connection
 
     def list_recent_runs(self, *, limit: int = 5) -> list[dict[str, Any]]:
         runs = list(
@@ -188,19 +157,6 @@ class DeckGenerationService:
             ).scalars()
         )
         return [self._run_summary(run) for run in runs]
-
-    def get_connection_summary(self) -> dict[str, Any]:
-        connection = self._latest_canva_connection()
-        capabilities = dict(connection.capabilities_json) if connection else {}
-        return {
-            "connected": connection is not None,
-            "display_name": connection.display_name if connection else "",
-            "capabilities": {
-                "autofill": bool(capabilities.get("autofill")),
-                "brand_template": bool(capabilities.get("brand_template")),
-            },
-            "last_validated_at": connection.last_validated_at.isoformat() if connection and connection.last_validated_at else "",
-        }
 
     def generate_deck(
         self,
@@ -323,66 +279,6 @@ class DeckGenerationService:
             return f"Anata Sales Deck | {cleaned}"[:255]
         return f"Anata Sales Deck | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"[:255]
 
-    def _generate_deliverable(
-        self,
-        *,
-        run: AutomationRun,
-        title: str,
-        dataset: DeckDataset,
-        warnings: list[str],
-    ) -> DeckGenerationResult:
-        return self._generate_html_deck(run=run, title=title, dataset=dataset, warnings=warnings)
-
-    def _generate_canva_deck(
-        self,
-        *,
-        run: AutomationRun,
-        title: str,
-        dataset: DeckDataset,
-        warnings: list[str],
-    ) -> DeckGenerationResult:
-        access_token = self._ensure_canva_access_token()
-        template_payload = self.canva_client.get_brand_template_dataset(
-            self.settings.canva_brand_template_id,
-            access_token,
-        )
-        template_dataset = dict(template_payload.get("dataset", {}) or {})
-        canva_data, canva_warnings = self._prepare_canva_data(template_dataset, dataset)
-        warnings = [*warnings, *canva_warnings]
-
-        job_payload = self.canva_client.create_autofill_job(
-            access_token=access_token,
-            brand_template_id=self.settings.canva_brand_template_id,
-            title=title,
-            data=canva_data,
-        )
-        job_id = str(dict(job_payload.get("job", {})).get("id") or job_payload.get("id") or "").strip()
-        if not job_id:
-            raise RuntimeError(f"Canva autofill did not return a job id: {job_payload}")
-
-        final_payload = self._wait_for_autofill(job_id=job_id, access_token=access_token)
-        job_details = dict(final_payload.get("job", {}) or {})
-        if job_details.get("status") != "success":
-            error_details = dict(job_details.get("error", {}) or {})
-            raise RuntimeError(error_details.get("message") or f"Canva autofill failed: {job_details}")
-
-        design = dict(dict(job_details.get("result", {}) or {}).get("design", {}) or {})
-        urls = dict(design.get("urls", {}) or {})
-        return DeckGenerationResult(
-            run_id=run.id,
-            status="success",
-            message="Deck generated successfully.",
-            output_type="canva",
-            design_id=str(design.get("id") or "").strip(),
-            design_title=str(design.get("title") or title).strip(),
-            edit_url=str(urls.get("edit_url") or design.get("url") or "").strip(),
-            view_url=str(urls.get("view_url") or design.get("url") or "").strip(),
-            warnings=warnings,
-            sales_row_count=dataset.sales_row_count,
-            competitor_row_count=dataset.competitor_row_count,
-            template_fields=len(template_dataset),
-        )
-
     def _generate_html_deck(
         self,
         *,
@@ -437,99 +333,6 @@ class DeckGenerationService:
             competitor_row_count=dataset.competitor_row_count,
             template_fields=0,
         )
-
-    def _build_dataset(
-        self,
-        *,
-        sales_payload: dict[str, Any],
-        competitor_csv_bytes: bytes,
-        report_date: date | None,
-        reporting_period: str,
-    ) -> DeckDataset:
-        text_fields: dict[str, str] = {}
-        chart_fields: dict[str, dict[str, Any]] = {}
-        warnings: list[str] = []
-
-        values = [[str(cell) for cell in row] for row in sales_payload.get("values", [])]
-        if not values:
-            raise RuntimeError("Google Sheets returned no sales data for the configured range.")
-        sales_rows, sales_scalar_fields = _normalize_sales_rows(values)
-        text_fields.update(sales_scalar_fields)
-        chart_fields["sales_table"] = _build_chart_data(sales_rows)
-        top_products_rows = _build_top_products_by_bsr_rows(sales_rows)
-        if top_products_rows is not None:
-            chart_fields["top_products_by_bsr"] = _build_chart_data(top_products_rows)
-            text_fields["top_products_by_bsr_row_count"] = str(max(len(top_products_rows) - 1, 0))
-        text_fields["sales_source_range"] = str(sales_payload.get("range") or self.settings.google_sheets_sales_range)
-        text_fields["sales_row_count"] = str(max(len(sales_rows) - 1, 0))
-
-        competitor_rows, competitor_scalar_fields, competitor_warnings = self._parse_competitor_csv(competitor_csv_bytes)
-        warnings.extend(competitor_warnings)
-        text_fields.update(competitor_scalar_fields)
-        chart_fields["competitor_table"] = _build_chart_data(competitor_rows)
-        text_fields["competitor_row_count"] = str(max(len(competitor_rows) - 1, 0))
-
-        effective_date = report_date or date.today()
-        text_fields["report_generated_date"] = effective_date.isoformat()
-        if reporting_period.strip():
-            text_fields["reporting_period"] = reporting_period.strip()
-
-        return DeckDataset(
-            text_fields=text_fields,
-            chart_fields=chart_fields,
-            warnings=warnings,
-            sales_row_count=max(len(sales_rows) - 1, 0),
-            competitor_row_count=max(len(competitor_rows) - 1, 0),
-            deck_payload={},
-        )
-
-    def _parse_competitor_csv(self, content: bytes) -> tuple[list[list[str]], dict[str, str], list[str]]:
-        decoded = content.decode("utf-8-sig").strip()
-        if not decoded:
-            raise RuntimeError("Competitor CSV upload is empty.")
-        reader = csv.DictReader(io.StringIO(decoded))
-        raw_headers = [str(header or "").strip() for header in (reader.fieldnames or [])]
-        if not raw_headers or any(not header for header in raw_headers):
-            raise RuntimeError("Competitor CSV must contain a single header row with non-empty column names.")
-
-        normalized_headers = [_normalize_key(header) for header in raw_headers]
-        if len(set(normalized_headers)) != len(normalized_headers):
-            raise RuntimeError("Competitor CSV contains duplicate headers after normalization.")
-
-        required_headers = {_normalize_key(value) for value in self.settings.deck_competitor_required_columns}
-        allowed_headers = {_normalize_key(value) for value in self.settings.deck_competitor_allowed_columns}
-        header_set = set(normalized_headers)
-        missing_required = sorted(required_headers - header_set)
-        if missing_required:
-            raise RuntimeError(f"Competitor CSV is missing required columns: {', '.join(missing_required)}")
-        if allowed_headers:
-            unexpected = sorted(header_set - allowed_headers)
-            if unexpected:
-                raise RuntimeError(f"Competitor CSV contains unsupported columns: {', '.join(unexpected)}")
-
-        rows = []
-        text_fields: dict[str, str] = {}
-        data_rows = list(reader)
-        if not data_rows:
-            raise RuntimeError("Competitor CSV must include at least one data row.")
-        rows.append(raw_headers)
-        for row_index, row in enumerate(data_rows, start=1):
-            ordered_values = [str(row.get(header, "") or "").strip() for header in raw_headers]
-            rows.append(ordered_values)
-            for header, value in zip(normalized_headers, ordered_values):
-                text_fields[f"competitor_row_{row_index}_{header}"] = value
-            if row_index == 1:
-                for header, value in zip(normalized_headers, ordered_values):
-                    text_fields[f"competitor_{header}"] = value
-
-        warnings: list[str] = []
-        if len(data_rows) > 99:
-            warnings.append("Canva chart fields support up to 100 rows including headers; only the first 99 data rows were sent.")
-            rows = rows[:100]
-        if len(raw_headers) > 20:
-            warnings.append("Canva chart fields support up to 20 columns; only the first 20 columns were sent.")
-            rows = [[cell for cell in row[:20]] for row in rows]
-        return rows, text_fields, warnings
 
     def _build_amazon_first_dataset(
         self,
@@ -804,126 +607,6 @@ class DeckGenerationService:
                 "include_recommended_plan": include_recommended_plan,
             },
         )
-
-    def _prepare_canva_data(
-        self,
-        template_dataset: dict[str, dict[str, Any]],
-        dataset: DeckDataset,
-    ) -> tuple[dict[str, Any], list[str]]:
-        if not template_dataset:
-            raise RuntimeError("The configured Canva brand template does not expose any autofill fields yet.")
-
-        canva_data: dict[str, Any] = {}
-        warnings: list[str] = []
-        missing_fields: list[str] = []
-        unsupported_fields: list[str] = []
-
-        required_fields = {_normalize_key(value) for value in self.settings.deck_required_template_fields}
-        for field_name, definition in template_dataset.items():
-            field_type = str(dict(definition).get("type") or "").strip().lower()
-            normalized_name = _normalize_key(field_name)
-            is_required = not required_fields or normalized_name in required_fields
-            if field_type == "text":
-                value = dataset.text_fields.get(normalized_name)
-                if value is None:
-                    if is_required:
-                        missing_fields.append(normalized_name)
-                    continue
-                canva_data[field_name] = {"type": "text", "text": value}
-            elif field_type == "chart":
-                chart_data = dataset.chart_fields.get(normalized_name)
-                if chart_data is None:
-                    if is_required:
-                        missing_fields.append(normalized_name)
-                    continue
-                canva_data[field_name] = {"type": "chart", "chart_data": chart_data}
-            elif field_type == "image":
-                unsupported_fields.append(normalized_name)
-            else:
-                warnings.append(f"Skipped unsupported Canva field type '{field_type}' for '{normalized_name}'.")
-
-        if missing_fields:
-            raise RuntimeError(
-                "Template fields are missing matching backend data keys: "
-                + ", ".join(sorted(missing_fields))
-            )
-        if unsupported_fields:
-            raise RuntimeError(
-                "Image autofill fields are not wired in this v1 implementation: "
-                + ", ".join(sorted(unsupported_fields))
-            )
-        if not canva_data:
-            raise RuntimeError("No overlapping template fields were found between the Canva template and the generated dataset.")
-        return canva_data, warnings
-
-    def _ensure_canva_access_token(self) -> str:
-        connection = self._latest_canva_connection()
-        if connection is None:
-            raise RuntimeError("Canva is not connected yet. Connect Canva from the admin dashboard first.")
-
-        now = datetime.now(timezone.utc)
-        expires_at = connection.expires_at
-        if expires_at is not None and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at is None or expires_at <= now + timedelta(minutes=2):
-            refresh_token = unseal_token(self.settings.canva_token_secret, connection.refresh_token_encrypted)
-            payload = self.canva_client.refresh_access_token(refresh_token)
-            refreshed_access_token = str(payload.get("access_token") or "").strip()
-            if not refreshed_access_token:
-                raise RuntimeError(f"Canva token refresh failed: {payload}")
-            refreshed_refresh_token = str(payload.get("refresh_token") or refresh_token).strip()
-            connection.access_token_encrypted = seal_token(self.settings.canva_token_secret, refreshed_access_token)
-            connection.refresh_token_encrypted = seal_token(self.settings.canva_token_secret, refreshed_refresh_token)
-            connection.scope = self._scope_string(payload.get("scope")) or connection.scope
-            connection.expires_at = _expires_at_from_payload(payload)
-            access_token = refreshed_access_token
-        else:
-            access_token = unseal_token(self.settings.canva_token_secret, connection.access_token_encrypted)
-
-        capabilities_payload = self.canva_client.get_user_capabilities(access_token)
-        capabilities = _normalize_capabilities(capabilities_payload)
-        connection.capabilities_json = capabilities
-        connection.last_validated_at = now
-        connection.updated_at = now
-        self.session.add(connection)
-        self.session.flush()
-
-        if not capabilities.get("autofill"):
-            raise RuntimeError("The connected Canva user does not have the autofill capability enabled.")
-        if not capabilities.get("brand_template"):
-            raise RuntimeError("The connected Canva user does not have the brand_template capability enabled.")
-        return access_token
-
-    def _wait_for_autofill(self, *, job_id: str, access_token: str) -> dict[str, Any]:
-        last_payload: dict[str, Any] = {}
-        for attempt in range(self.settings.deck_canva_poll_attempts):
-            payload = self.canva_client.get_autofill_job(job_id, access_token)
-            last_payload = payload
-            status = str(dict(payload.get("job", {})).get("status") or "").strip().lower()
-            if status in {"success", "failed"}:
-                return payload
-            if attempt < self.settings.deck_canva_poll_attempts - 1:
-                time.sleep(max(self.settings.deck_canva_poll_interval_seconds, 1))
-        raise RuntimeError(f"Canva autofill job did not complete in time: {last_payload}")
-
-    def _latest_canva_connection(self) -> CanvaConnection | None:
-        return self.session.execute(
-            select(CanvaConnection).order_by(CanvaConnection.updated_at.desc(), CanvaConnection.id.desc()).limit(1)
-        ).scalar_one_or_none()
-
-    def _required_data_settings(self, *, include_google_sheets: bool) -> list[str]:
-        missing: list[str] = []
-        if include_google_sheets:
-            if not self.settings.google_sheets_spreadsheet_id:
-                missing.append("GOOGLE_SHEETS_SPREADSHEET_ID")
-            if not self.settings.google_sheets_sales_range:
-                missing.append("GOOGLE_SHEETS_SALES_RANGE")
-            if not self.settings.google_service_account_json:
-                missing.append("GOOGLE_SERVICE_ACCOUNT_JSON")
-        return missing
-
-    def _canva_delivery_ready(self) -> bool:
-        return True
 
     def _build_export_url(self, *, run_id: int, deck_slug: str, token: str) -> str:
         public_base_url = str(getattr(self.settings, "deck_public_base_url", "") or "").strip()
@@ -1298,11 +981,6 @@ class DeckGenerationService:
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
         }
-
-    def _scope_string(self, value: Any) -> str:
-        if isinstance(value, (list, tuple)):
-            return " ".join(str(item).strip() for item in value if str(item).strip())
-        return str(value or "").strip()
 
     def _load_brand_stylesheet(self) -> str:
         for path in _candidate_brand_paths(self.settings, "style.css"):
@@ -3217,30 +2895,6 @@ def _titleize_slug(value: str) -> str:
     if not cleaned:
         return ""
     return " ".join(token.capitalize() for token in cleaned.split(" "))
-
-
-def _normalize_capabilities(payload: dict[str, Any]) -> dict[str, bool]:
-    capabilities = payload.get("capabilities")
-    if not capabilities and isinstance(payload.get("user"), dict):
-        capabilities = dict(payload.get("user", {})).get("capabilities")
-    if isinstance(capabilities, dict):
-        return {str(key): bool(value) for key, value in capabilities.items()}
-    if isinstance(capabilities, list):
-        return {str(item): True for item in capabilities}
-    return {
-        "autofill": False,
-        "brand_template": False,
-    }
-
-
-def _expires_at_from_payload(payload: dict[str, Any]) -> datetime | None:
-    expires_in = payload.get("expires_in")
-    if expires_in is None:
-        return None
-    try:
-        return datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
-    except Exception:
-        return None
 
 
 def _normalize_sales_rows(values: list[list[str]]) -> tuple[list[list[str]], dict[str, str]]:
