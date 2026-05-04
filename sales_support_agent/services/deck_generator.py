@@ -3001,7 +3001,7 @@ def _normalize_custom_offer_cards(*, offer_payload_json: str, offers: list[str])
 def _extract_listing_copy_points(description: str, *, limit: int = 4) -> list[str]:
     cleaned = _clean_listing_title(description)
     cleaned = re.sub(r"(?i)^about this item[:\s-]*", "", cleaned)
-    cleaned = re.sub(r"(?<!^)(?=(?:[A-Z][A-Z0-9 '&/\\-]{4,}:))", "\n", cleaned)
+    cleaned = re.sub(r"(?<=[^A-Z ][ ])(?=[A-Z]{2,}(?: [A-Z]{2,})*:)", "\n", cleaned)
     parts = re.split(r"\n+|[•●▪]+", cleaned)
     bullets: list[str] = []
     for part in parts:
