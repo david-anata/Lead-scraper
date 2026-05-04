@@ -2690,9 +2690,10 @@ def _format_metric_delta(
 
     `unit` controls how the absolute delta is rendered:
     - "currency": prefixed with `$` and 0 decimal places when >= $1000, else 2 dp
-    - "percent":  suffixed with `%`
+    - "percent":  suffixed with `%`, 1 decimal place
     - "float":    1 decimal place (e.g. ratings)
-    - "number":   integer with thousand separators (default; for BSR, review counts, etc.)
+    - "number":   integer with thousand separators (default; for BSR, review counts,
+                  and other integer-only metrics — no spurious decimals)
     """
     if target_value is None or benchmark_value is None:
         return "Benchmark only"
@@ -2713,13 +2714,8 @@ def _format_metric_delta(
         magnitude = f"{abs_delta:,.1f}%"
     elif unit == "float":
         magnitude = f"{abs_delta:,.1f}"
-    else:  # "number"
-        if abs_delta >= 1000:
-            magnitude = f"{abs_delta:,.0f}"
-        elif abs_delta >= 10:
-            magnitude = f"{abs_delta:,.1f}"
-        else:
-            magnitude = f"{abs_delta:,.2f}"
+    else:  # "number" → always integer, no decimals
+        magnitude = f"{abs_delta:,.0f}"
 
     return f"{sign}{magnitude} vs best seller"
 
