@@ -1013,8 +1013,8 @@ class DeckGenerationService:
     <section class="slide">
       <div class="slide-head">
         <div>
-          <p class="eyebrow">Recommended plan</p>
-          <h2>Recommended engagement and next step</h2>
+          <p class="eyebrow">Proposed offers</p>
+          <h2>Proposed offers and next step</h2>
         </div>
         <p class="muted">Choose the operating model, then move directly into the first growth sprint with clear ownership and the next action already mapped.</p>
       </div>
@@ -2249,6 +2249,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.price if best_seller else None,
                 inverse=False,
                 missing_reason="Unavailable from the target page.",
+                unit="currency",
             ),
             _render_plain_metric(best_seller.price_label if best_seller else "n/a"),
         ),
@@ -2260,6 +2261,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.bsr if best_seller else None,
                 inverse=True,
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
+                unit="number",
             ),
             _render_plain_metric(best_seller.bsr_label if best_seller else "n/a"),
         ),
@@ -2271,6 +2273,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.revenue if best_seller else None,
                 inverse=False,
                 missing_reason=benchmark_metric_reason,
+                unit="currency",
             ),
             _render_plain_metric(best_seller.revenue_label if best_seller else "n/a"),
         ),
@@ -2282,6 +2285,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.rating if best_seller else None,
                 inverse=False,
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
+                unit="float",
             ),
             _render_plain_metric(best_seller.rating_label if best_seller else "n/a"),
         ),
@@ -2293,13 +2297,9 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 float(best_seller.review_count or 0) if best_seller else None,
                 inverse=False,
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
+                unit="number",
             ),
             _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
-        ),
-        (
-            "Listing copy snapshot",
-            _render_comparison_copy_snapshot(str(target.get("description", "") or "")),
-            _render_benchmark_copy_snapshot(best_seller),
         ),
         (
             "Dims",
@@ -2622,14 +2622,6 @@ def _render_offer_card(card: dict[str, Any]) -> str:
     )
 
 
-def _render_listing_copy_snapshot(description: str) -> str:
-    bullets = _extract_listing_copy_points(description)
-    if not bullets:
-        return "<p>No product-story summary was captured from the target page.</p>"
-    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets)
-    return f"<div class='signal-list'><strong>Listing copy snapshot</strong><ul>{items}</ul></div>"
-
-
 def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, emphasized: bool, missing_image_asset: str = "") -> str:
     media = (
         f"<img src='{html.escape(image_url, quote=True)}' alt='{html.escape(title)}' />"
@@ -2660,8 +2652,8 @@ def _render_target_plain_metric(value: str, *, missing_reason: str) -> str:
     )
 
 
-def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
-    delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse)
+def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool, unit: str = "number") -> str:
+    delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse, unit=unit)
     delta_html = f"<span class='metric-delta'>{html.escape(delta)}</span>" if delta else ""
     return f"<div class='comparison-metric'><strong>{html.escape(_format_metric_display(display_value))}</strong>{delta_html}</div>"
 
@@ -2673,10 +2665,11 @@ def _render_target_metric(
     *,
     inverse: bool,
     missing_reason: str,
+    unit: str = "number",
 ) -> str:
     cleaned = str(display_value or "").strip()
     if cleaned and cleaned.lower() not in {"n/a", "na", "unavailable"}:
-        return _render_metric_with_delta(cleaned, target_value, benchmark_value, inverse=inverse)
+        return _render_metric_with_delta(cleaned, target_value, benchmark_value, inverse=inverse, unit=unit)
     return (
         "<div class='comparison-metric comparison-metric-missing'>"
         "<strong>Unavailable</strong>"
@@ -2685,33 +2678,23 @@ def _render_target_metric(
     )
 
 
-def _render_comparison_copy_snapshot(text: str) -> str:
-    bullets = _extract_listing_copy_points(text)
-    if not bullets:
-        return "<div class='comparison-copy muted'>Copy snapshot unavailable.</div>"
-    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
-    return f"<div class='comparison-copy'><ul>{items}</ul></div>"
+def _format_metric_delta(
+    target_value: float | None,
+    benchmark_value: float | None,
+    *,
+    inverse: bool,
+    unit: str = "number",
+) -> str:
+    """
+    Format a target-vs-benchmark delta as a human-readable string.
 
-
-def _render_benchmark_copy_snapshot(product: XrayProduct | None) -> str:
-    if product is None:
-        return "<div class='comparison-copy muted'>Benchmark copy snapshot unavailable.</div>"
-    bullets = [
-        f"{_trim_text(product.title, 42)} is the current page-one benchmark for this niche.",
-    ]
-    if product.price_label != "n/a":
-        bullets.append(f"It anchors the market at {product.price_label} while sustaining {product.revenue_label} in 30-day revenue.")
-    if product.rating_label != "n/a" or product.review_count:
-        bullets.append(
-            f"It pairs a {product.rating_label if product.rating_label != 'n/a' else 'visible'} rating signal with {product.review_count or 0} reviews to reinforce trust."
-        )
-    if product.dimensions:
-        bullets.append(f"Current size / pack context reads as {product.dimensions}.")
-    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
-    return f"<div class='comparison-copy'><ul>{items}</ul></div>"
-
-
-def _format_metric_delta(target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
+    `unit` controls how the absolute delta is rendered:
+    - "currency": prefixed with `$` and 0 decimal places when >= $1000, else 2 dp
+    - "percent":  suffixed with `%`, 1 decimal place
+    - "float":    1 decimal place (e.g. ratings)
+    - "number":   integer with thousand separators (default; for BSR, review counts,
+                  and other integer-only metrics — no spurious decimals)
+    """
     if target_value is None or benchmark_value is None:
         return "Benchmark only"
     delta = target_value - benchmark_value
@@ -2719,15 +2702,22 @@ def _format_metric_delta(target_value: float | None, benchmark_value: float | No
         delta *= -1
     if abs(delta) < 0.01:
         return "In line"
-    prefix = "+" if delta > 0 else "-"
+    sign = "+" if delta > 0 else "-"
     abs_delta = abs(delta)
-    if abs_delta >= 1000:
-        value = f"{abs_delta:,.0f}"
-    elif abs_delta >= 10:
-        value = f"{abs_delta:,.1f}"
-    else:
-        value = f"{abs_delta:,.2f}"
-    return f"{prefix}{value} vs best seller"
+
+    if unit == "currency":
+        if abs_delta >= 1000:
+            magnitude = f"${abs_delta:,.0f}"
+        else:
+            magnitude = f"${abs_delta:,.2f}"
+    elif unit == "percent":
+        magnitude = f"{abs_delta:,.1f}%"
+    elif unit == "float":
+        magnitude = f"{abs_delta:,.1f}"
+    else:  # "number" → always integer, no decimals
+        magnitude = f"{abs_delta:,.0f}"
+
+    return f"{sign}{magnitude} vs best seller"
 
 
 def _render_help_badge(text: str) -> str:

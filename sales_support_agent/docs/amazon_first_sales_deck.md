@@ -115,7 +115,7 @@ The current deck is built from these sections:
 5. Search behavior
 6. Conversion and PDP
 7. Channel offering slides
-8. Recommended plan / closing
+8. Proposed offers / closing
 
 ## Implementation notes
 

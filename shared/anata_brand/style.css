@@ -1243,9 +1243,17 @@ mark {
   }
 }
 
+@page {
+  size: Letter;
+  margin: 0.5in;
+}
+
 @media print {
   body {
     background: white;
+    color: var(--anata-ink);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .deck {
@@ -1253,15 +1261,94 @@ mark {
     padding: 0;
   }
 
-  .deck-toolbar {
+  /* Hide screen-only chrome */
+  .deck-toolbar,
+  details summary {
     display: none;
   }
+  details {
+    display: block;
+  }
+  details > * {
+    display: block !important;
+  }
 
+  /* Slides: start each on a fresh page, but DO NOT force a full viewport
+     of empty space. The previous min-height: 100vh + page-break-after rule
+     created blank pages and arbitrary mid-content breaks. */
   .slide {
     box-shadow: none;
     border-radius: 0;
-    margin-bottom: 0;
-    min-height: 100vh;
-    page-break-after: always;
+    margin: 0;
+    padding: 0.25in 0;
+    page-break-before: always;
+    break-before: page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .slide:first-of-type {
+    page-break-before: auto;
+    break-before: auto;
+  }
+
+  /* Keep semantically-grouped components on one page */
+  .comparison-table,
+  .comparison-table tr,
+  .niche-summary,
+  .niche-summary tr,
+  table thead,
+  table tr,
+  .channel-card,
+  .gallery-card,
+  .recommendation-card,
+  .dashboard-card,
+  .offer-card,
+  .plan-card,
+  .donut-card,
+  .distribution-card,
+  .metric-card,
+  .resource-preview-card {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Headings should stay attached to following content */
+  h1, h2, h3, .slide-head {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* Two-column layouts: stack to full width to avoid the squished
+     left-column print problem (audit item 4b) */
+  .two-col,
+  .split-top {
+    display: block;
+  }
+  .two-col > *,
+  .split-top > * {
+    width: 100%;
+    margin-bottom: 0.25in;
+  }
+
+  /* SVG donuts and inline images: don't allow them to clip across pages */
+  svg,
+  .donut,
+  .donut-card,
+  img {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Anchor links print without underlines bleeding into the text */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  /* Suppress the help-badge tooltip dots; they print as floating "?" otherwise */
+  .help-badge {
+    display: none;
   }
 }

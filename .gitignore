@@ -8,3 +8,6 @@ daily_import_counts.csv
 runtime/
 *.sqlite3
 *.db
+
+# Local Claude Code worktrees
+.claude/worktrees/
