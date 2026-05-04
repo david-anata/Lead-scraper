@@ -43,9 +43,9 @@ from sales_support_agent.services.helium10 import (
 )
 from sales_support_agent.services.product_research import EnrichedHeroProduct, ProductResearchService
 
-from sales_support_agent.services.deck.brand_assets import (  # noqa: F401
-    _candidate_brand_asset_paths,
-    _candidate_brand_paths,
+from sales_support_agent.services.deck.brand_assets import (
+    load_brand_asset,
+    load_brand_stylesheet,
 )
 from sales_support_agent.services.deck.dataset import (  # noqa: F401
     DeckDataset,
@@ -244,14 +244,22 @@ class DeckGenerationService:
                     "sales_row_count": result.sales_row_count,
                     "competitor_row_count": result.competitor_row_count,
                     "template_fields": result.template_fields,
-                    "export_token": run.summary_json.get("export_token") if isinstance(run.summary_json, dict) else "",
-                    "deck_html": run.summary_json.get("deck_html") if isinstance(run.summary_json, dict) else "",
-                    "deck_slug": run.summary_json.get("deck_slug") if isinstance(run.summary_json, dict) else "",
-                    "target_product_identifier": run.summary_json.get("target_product_identifier") if isinstance(run.summary_json, dict) else "",
-                    "channels": run.summary_json.get("channels") if isinstance(run.summary_json, dict) else [],
-                    "view_count": run.summary_json.get("view_count") if isinstance(run.summary_json, dict) else 0,
-                    "first_viewed_at": run.summary_json.get("first_viewed_at") if isinstance(run.summary_json, dict) else "",
-                    "last_viewed_at": run.summary_json.get("last_viewed_at") if isinstance(run.summary_json, dict) else "",
+                    **{
+                        # Forward the persisted snapshot fields from
+                        # _generate_html_deck so the audit summary mirrors
+                        # what's on the AutomationRun row.
+                        key: (run.summary_json or {}).get(key, default)
+                        for key, default in (
+                            ("export_token", ""),
+                            ("deck_html", ""),
+                            ("deck_slug", ""),
+                            ("target_product_identifier", ""),
+                            ("channels", []),
+                            ("view_count", 0),
+                            ("first_viewed_at", ""),
+                            ("last_viewed_at", ""),
+                        )
+                    },
                 },
             )
             return result
@@ -284,11 +292,17 @@ class DeckGenerationService:
         html_content = self._render_html_deck(title=title, dataset=dataset, warnings=warnings)
         deck_slug = _slugify(title) or f"deck-{run.id}"
         view_url = self._build_export_url(run_id=run.id, deck_slug=deck_slug, token=export_token)
-        target_identifier = str(
-            dataset.deck_payload.get("target", {}).get("asin")
-            or dataset.deck_payload.get("target", {}).get("source_url")
-            or ""
-        ).strip()
+        target = dataset.deck_payload.get("target", {})
+        target_identifier = str(target.get("asin") or target.get("source_url") or "").strip()
+
+        # If this run already has view-tracking state (e.g. an admin-triggered
+        # re-render of an existing run), preserve it. On first generation the
+        # snapshot is empty, so the values default to zero / empty string.
+        prior = dict(run.summary_json or {})
+        prior_view_count = int(prior.get("view_count", 0) or 0)
+        prior_first_viewed_at = str(prior.get("first_viewed_at", "") or "")
+        prior_last_viewed_at = str(prior.get("last_viewed_at", "") or "")
+
         run.summary_json = {
             "status": "success",
             "message": "Deck generated successfully as an HTML report.",
@@ -306,9 +320,9 @@ class DeckGenerationService:
             "deck_slug": deck_slug,
             "target_product_identifier": target_identifier,
             "channels": list(dataset.deck_payload.get("channels", [])),
-            "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
-            "first_viewed_at": str(dict(run.summary_json or {}).get("first_viewed_at", "") or ""),
-            "last_viewed_at": str(dict(run.summary_json or {}).get("last_viewed_at", "") or ""),
+            "view_count": prior_view_count,
+            "first_viewed_at": prior_first_viewed_at,
+            "last_viewed_at": prior_last_viewed_at,
         }
         self.session.add(run)
         self.session.flush()
@@ -976,17 +990,7 @@ class DeckGenerationService:
         }
 
     def _load_brand_stylesheet(self) -> str:
-        for path in _candidate_brand_paths(self.settings, "style.css"):
-            if path.exists():
-                return path.read_text(encoding="utf-8")
-        return "body{font-family:Arial,sans-serif;background:#fff;color:#172033;}"
+        return load_brand_stylesheet(self.settings)
 
     def _load_brand_asset(self, relative_path: str) -> str:
-        for path in _candidate_brand_asset_paths(self.settings, relative_path):
-            if path.exists():
-                if path.suffix.lower() == ".svg":
-                    return path.read_text(encoding="utf-8")
-                mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-                return f"<img src='data:{mime_type};base64,{encoded}' alt='Anata brand asset' />"
-        return ""
+        return load_brand_asset(self.settings, relative_path)

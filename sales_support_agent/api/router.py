@@ -1226,24 +1226,28 @@ def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: 
     return _render_deck_export(request, run_id, token)
 
 
-@router.post("/admin/api/generate-deck", response_model=ApiMessage)
-async def admin_generate_deck(
+async def _run_generate_deck(
     request: Request,
-    competitor_xray_csv: list[UploadFile] = File(...),
-    keyword_xray_csv: list[UploadFile] = File(default=[]),
-    cerebro_csv: Optional[UploadFile] = File(default=None),
-    word_frequency_csv: Optional[UploadFile] = File(default=None),
-    target_product_input: str = Form(default=""),
-    channels: list[str] = Form(default=[]),
-    creative_mockup_url: str = Form(default=""),
-    case_study_url: str = Form(default=""),
-    offers: list[str] = Form(default=[]),
-    offer_payload_json: str = Form(default=""),
-    include_recommended_plan: bool = Form(default=True),
+    *,
+    competitor_xray_csv: list[UploadFile],
+    keyword_xray_csv: list[UploadFile],
+    cerebro_csv: Optional[UploadFile],
+    word_frequency_csv: Optional[UploadFile],
+    target_product_input: str,
+    channels: list[str],
+    creative_mockup_url: str,
+    case_study_url: str,
+    offers: list[str],
+    offer_payload_json: str,
+    include_recommended_plan: bool,
+    trigger: str = "admin_dashboard",
 ) -> ApiMessage:
-    _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        raise HTTPException(status_code=401, detail="Admin login required.")
+    """Shared body for the two generate-deck routes.
+
+    Both `/admin/api/generate-deck` (cookie-auth web admin) and
+    `/api/admin/generate-deck` (internal-key) share this implementation;
+    only the auth gate and `trigger` label differ at the route level.
+    """
     competitor_files = [file for file in competitor_xray_csv if file.filename]
     keyword_files = [file for file in keyword_xray_csv if file.filename]
     settings = request.app.state.settings
@@ -1269,6 +1273,7 @@ async def admin_generate_deck(
                 offers=offers,
                 offer_payload_json=offer_payload_json,
                 include_recommended_plan=include_recommended_plan,
+                trigger=trigger,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1291,6 +1296,41 @@ async def admin_generate_deck(
     )
 
 
+@router.post("/admin/api/generate-deck", response_model=ApiMessage)
+async def admin_generate_deck(
+    request: Request,
+    competitor_xray_csv: list[UploadFile] = File(...),
+    keyword_xray_csv: list[UploadFile] = File(default=[]),
+    cerebro_csv: Optional[UploadFile] = File(default=None),
+    word_frequency_csv: Optional[UploadFile] = File(default=None),
+    target_product_input: str = Form(default=""),
+    channels: list[str] = Form(default=[]),
+    creative_mockup_url: str = Form(default=""),
+    case_study_url: str = Form(default=""),
+    offers: list[str] = Form(default=[]),
+    offer_payload_json: str = Form(default=""),
+    include_recommended_plan: bool = Form(default=True),
+) -> ApiMessage:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Admin login required.")
+    return await _run_generate_deck(
+        request,
+        competitor_xray_csv=competitor_xray_csv,
+        keyword_xray_csv=keyword_xray_csv,
+        cerebro_csv=cerebro_csv,
+        word_frequency_csv=word_frequency_csv,
+        target_product_input=target_product_input,
+        channels=channels,
+        creative_mockup_url=creative_mockup_url,
+        case_study_url=case_study_url,
+        offers=offers,
+        offer_payload_json=offer_payload_json,
+        include_recommended_plan=include_recommended_plan,
+        trigger="admin_dashboard",
+    )
+
+
 @router.post("/api/admin/generate-deck", response_model=ApiMessage)
 async def internal_admin_generate_deck(
     request: Request,
@@ -1308,52 +1348,20 @@ async def internal_admin_generate_deck(
     include_recommended_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
-    competitor_files = [file for file in competitor_xray_csv if file.filename]
-    keyword_files = [file for file in keyword_xray_csv if file.filename]
-    settings = request.app.state.settings
-    try:
-        with session_scope(request.app.state.session_factory) as session:
-            result = DeckGenerationService(settings, session).generate_deck(
-                competitor_xray_csv_payloads=[
-                    (file.filename or "competitors.csv", await file.read())
-                    for file in competitor_files
-                ],
-                keyword_xray_csv_payloads=[
-                    (file.filename or "keywords.csv", await file.read())
-                    for file in keyword_files
-                ],
-                cerebro_csv_bytes=(await cerebro_csv.read()) if cerebro_csv and cerebro_csv.filename else None,
-                cerebro_filename=(cerebro_csv.filename or "") if cerebro_csv else "",
-                word_frequency_csv_bytes=(await word_frequency_csv.read()) if word_frequency_csv and word_frequency_csv.filename else None,
-                word_frequency_filename=(word_frequency_csv.filename or "") if word_frequency_csv else "",
-                target_product_input=target_product_input,
-                channels=channels,
-                creative_mockup_url=creative_mockup_url,
-                case_study_url=case_study_url,
-                offers=offers,
-                offer_payload_json=offer_payload_json,
-                include_recommended_plan=include_recommended_plan,
-                trigger="internal_api",
-            )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return ApiMessage(
-        status="ok",
-        message=result.message,
-        details={
-            "run_id": result.run_id,
-            "status": result.status,
-            "output_type": result.output_type,
-            "design_id": result.design_id,
-            "design_title": result.design_title,
-            "edit_url": result.edit_url,
-            "view_url": result.view_url,
-            "warnings": result.warnings,
-            "sales_row_count": result.sales_row_count,
-            "competitor_row_count": result.competitor_row_count,
-            "template_fields": result.template_fields,
-        },
+    return await _run_generate_deck(
+        request,
+        competitor_xray_csv=competitor_xray_csv,
+        keyword_xray_csv=keyword_xray_csv,
+        cerebro_csv=cerebro_csv,
+        word_frequency_csv=word_frequency_csv,
+        target_product_input=target_product_input,
+        channels=channels,
+        creative_mockup_url=creative_mockup_url,
+        case_study_url=case_study_url,
+        offers=offers,
+        offer_payload_json=offer_payload_json,
+        include_recommended_plan=include_recommended_plan,
+        trigger="internal_api",
     )
 
 

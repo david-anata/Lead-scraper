@@ -499,6 +499,12 @@ def _render_embedded_resource_tabs(*, case_study_url: str, creative_mockup_url: 
             )
     return "<div class='embedded-resource-section'><div class='embedded-tabs'>" + "".join(tabs) + "</div><div class='embedded-panels'>" + "".join(panels) + "</div></div>"
 def _fetch_embed_preview(url: str) -> dict[str, str]:
+    """Fetch a Canva/case-study URL and pull og:title + og:image for the embed card.
+
+    Hard-capped at 5s so a slow/down third-party host can't stall an entire
+    deck render. Any network/HTTP/parse error is silently treated as "no
+    preview available" — the renderer falls back to a plain link card.
+    """
     safe_url = str(url or "").strip()
     if not safe_url:
         return {}
@@ -508,10 +514,10 @@ def _fetch_embed_preview(url: str) -> dict[str, str]:
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             },
-            timeout=12,
+            timeout=5,
         )
         response.raise_for_status()
-    except Exception:
+    except (requests.RequestException, ValueError):
         return {}
     content = response.text or ""
     title = _extract_first(
