@@ -268,5 +268,206 @@ class DeckGeneratorTests(unittest.TestCase):
             self.assertIn("Top keyword opportunities from the Cerebro rank set", deck_html)
 
 
+    def test_generated_deck_html_contains_brand_target_and_competitor(self) -> None:
+        """Regression guard: after the module split (PR2) and rendering refactors,
+        the rendered HTML must still contain the target ASIN, at least one
+        competitor brand, and the brand-package monogram or fallback text.
+        """
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(),
+                session,
+                shopify_client=object(),
+                amazon_client=_FakeAmazonClient(),
+            )
+            service.product_research = _FakeProductResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="https://www.amazon.com/dp/B0TARGET01",
+            )
+
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            deck_html = str(dict(run.summary_json or {}).get("deck_html") or "")
+
+        self.assertIn("B0TARGET01", deck_html, "target ASIN must appear in deck HTML")
+        # Competitor brands from _xray_csv() — at least one should render.
+        self.assertTrue(
+            "Rival A" in deck_html or "Rival B" in deck_html,
+            "expected at least one competitor brand to render",
+        )
+        # The renderer either inlines the brand monogram (data: URI) or — if the
+        # asset isn't found in test env — emits an empty string. Either way
+        # the deck shell selector should be present.
+        self.assertIn("brand-monogram", deck_html, "deck shell missing")
+
+    def test_generate_deck_persists_when_embed_preview_fails(self) -> None:
+        """`_fetch_embed_preview` makes an outbound HTTP request during render.
+        A slow / down third-party host must not stall or break deck generation.
+        """
+        from unittest import mock
+        import requests as real_requests
+
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        with mock.patch(
+            "sales_support_agent.services.deck.rendering.requests.get",
+            side_effect=real_requests.exceptions.ConnectTimeout("simulated timeout"),
+        ):
+            with session_scope(session_factory) as session:
+                service = DeckGenerationService(
+                    _build_settings(),
+                    session,
+                    shopify_client=object(),
+                    amazon_client=_FakeAmazonClient(),
+                )
+                service.product_research = _FakeProductResearch()
+                result = service.generate_deck(
+                    competitor_xray_csv_bytes=_xray_csv(),
+                    competitor_xray_filename="xray.csv",
+                    target_product_input="B0TARGET01",
+                    case_study_url="https://this-host-will-timeout.example.com/case-study",
+                )
+
+        self.assertEqual(result.output_type, "html")
+        self.assertGreater(result.competitor_row_count, 0)
+
+
+@unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck routing tests")
+class DeckRoutingTests(unittest.TestCase):
+    """End-to-end tests for the deck export and admin generate-deck routes.
+
+    These spin up a minimal FastAPI app with just the deck routes mounted
+    plus the in-memory session factory.
+    """
+
+    def _make_client(self, *, internal_api_key: str = ""):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from sales_support_agent.api.router import router as deck_router
+        import tempfile, os
+
+        # Use a temp file DB instead of :memory: because TestClient runs the
+        # route on a worker thread; with :memory: the worker thread's connection
+        # isn't shared with the seeding thread, so the table is "missing" when
+        # the route looks it up.
+        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        tmp.close()
+        self.addCleanup(lambda: os.unlink(tmp.name))
+        session_factory = create_session_factory(f"sqlite:///{tmp.name}")
+        init_database(session_factory)
+
+        settings = _build_settings()
+        # Routes used by these tests need a few extra settings attributes.
+        settings.admin_cookie_name = "test_admin"
+        settings.admin_session_secret = "test-session-secret"
+        settings.admin_password_hash = ""
+        settings.admin_username = ""
+        settings.internal_api_key = internal_api_key
+        settings.allow_admin_dashboard = True
+
+        app = FastAPI()
+        app.state.settings = settings
+        app.state.agent_settings = settings
+        app.state.admin_dashboard_settings = settings
+        app.state.session_factory = session_factory
+        app.include_router(deck_router)
+        return TestClient(app, raise_server_exceptions=False), session_factory
+
+    def _seed_deck(self, session_factory) -> tuple[int, str, str]:
+        """Run the service end-to-end once and return (run_id, token, slug)."""
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(),
+                session,
+                shopify_client=object(),
+                amazon_client=_FakeAmazonClient(),
+            )
+            service.product_research = _FakeProductResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="B0TARGET01",
+            )
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+            return run.id, str(summary["export_token"]), str(summary["deck_slug"])
+
+    def test_deck_export_route_increments_view_count(self) -> None:
+        client, sf = self._make_client()
+        run_id, token, slug = self._seed_deck(sf)
+
+        first = client.get(f"/decks/{slug}/{run_id}/{token}")
+        self.assertEqual(first.status_code, 200)
+        self.assertIn("brand-monogram", first.text)
+
+        # First-touch view count should now be 1
+        with session_scope(sf) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.id == run_id)
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+            self.assertEqual(summary.get("view_count"), 1)
+            self.assertTrue(summary.get("first_viewed_at"))
+            self.assertTrue(summary.get("last_viewed_at"))
+
+        # Second hit from a different visitor key (different UA) should also increment.
+        second = client.get(
+            f"/decks/{slug}/{run_id}/{token}",
+            headers={"User-Agent": "different-test-ua/1.0"},
+        )
+        self.assertEqual(second.status_code, 200)
+        with session_scope(sf) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.id == run_id)
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+            self.assertEqual(summary.get("view_count"), 2)
+
+    def test_deck_export_token_mismatch_returns_404_not_500(self) -> None:
+        client, sf = self._make_client()
+        run_id, _real_token, slug = self._seed_deck(sf)
+
+        wrong_token_resp = client.get(f"/decks/{slug}/{run_id}/THIS-TOKEN-IS-WRONG")
+        self.assertEqual(wrong_token_resp.status_code, 404)
+        self.assertIn("not found", wrong_token_resp.text.lower())
+
+    def test_deck_export_unknown_run_id_returns_404(self) -> None:
+        client, sf = self._make_client()
+        # Don't seed; ask for a run that doesn't exist.
+        resp = client.get("/decks/some-slug/9999/anytoken")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_internal_generate_deck_requires_api_key(self) -> None:
+        """`/api/admin/generate-deck` must reject requests without the
+        configured internal-key header."""
+        client, _sf = self._make_client(internal_api_key="real-internal-key")
+        resp = client.post(
+            "/api/admin/generate-deck",
+            files={"competitor_xray_csv": ("x.csv", _xray_csv(), "text/csv")},
+            data={"target_product_input": "B0TARGET01"},
+        )
+        self.assertIn(resp.status_code, (401, 403))
+
+        # And with the wrong key, also rejected.
+        resp_bad = client.post(
+            "/api/admin/generate-deck",
+            files={"competitor_xray_csv": ("x.csv", _xray_csv(), "text/csv")},
+            data={"target_product_input": "B0TARGET01"},
+            headers={"X-Internal-API-Key": "wrong-key"},
+        )
+        self.assertIn(resp_bad.status_code, (401, 403))
+
+
 if __name__ == "__main__":
     unittest.main()
