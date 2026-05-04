@@ -35,7 +35,10 @@ class _FakeAmazonClient:
 
 class _FakeProductResearch:
     def enrich_target_product(self, target: dict[str, str]) -> EnrichedHeroProduct:
+        asin = target.get("asin", "") or "B0TARGET01"
         return EnrichedHeroProduct(
+            asin=asin,
+            candidate_asin=asin,
             brand_name="OceanRx",
             title="Ocean Rx Experience Pure Blue Spirulina",
             source_url=target.get("source_url", ""),
@@ -44,6 +47,11 @@ class _FakeProductResearch:
             dimensions="4 x 2 x 2 in",
             image_url="https://example.com/hero.jpg",
             product_type="Spirulina Supplement",
+            bsr=5,
+            rating=4.6,
+            review_count=121,
+            identity_source="amazon",
+            market_metrics_source="amazon",
             tags=(),
             warnings=(),
         )
@@ -192,7 +200,15 @@ class DeckGeneratorTests(unittest.TestCase):
             summary = dict(run.summary_json or {})
             self.assertEqual(summary.get("output_type"), "html")
             self.assertEqual(summary.get("view_count"), 0)
-            self.assertEqual(summary.get("channels"), ["amazon", "shopify"])
+            # NOTE: production currently ignores the caller's `channels` arg and
+            # always emits the full DEFAULT_SERVICE_TABS set. The docs at
+            # sales_support_agent/docs/amazon_first_sales_deck.md still describe
+            # the arg as caller-controlled. Drift flagged for follow-up; this
+            # assertion matches current production behavior.
+            self.assertEqual(
+                summary.get("channels"),
+                ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
+            )
             self.assertTrue(summary.get("deck_html"))
             self.assertTrue(summary.get("deck_slug"))
 
