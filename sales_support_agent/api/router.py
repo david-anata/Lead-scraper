@@ -26,7 +26,6 @@ from main import (
 )
 
 from sales_support_agent.config import get_missing_runtime_settings
-from sales_support_agent.integrations.canva import CanvaClient
 from sales_support_agent.integrations.clickup import ClickUpAPIError, ClickUpClient
 from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
 from sales_support_agent.integrations.slack import SlackClient
@@ -178,10 +177,6 @@ def _admin_cookie_options(request: Request) -> dict[str, object]:
         "max_age": settings.admin_session_ttl_hours * 3600,
         "path": "/",
     }
-
-
-def _canva_oauth_cookie_name(request: Request) -> str:
-    return f"{request.app.state.settings.admin_cookie_name}_canva_oauth"
 
 
 def _normalize_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -427,13 +422,6 @@ def _start_dashboard_sync(request: Request, *, trigger: str, force: bool) -> dic
     details["status"] = status
     details["message"] = message
     return details
-
-
-def _canva_oauth_cookie_options(request: Request) -> dict[str, object]:
-    return {
-        **_admin_cookie_options(request),
-        "max_age": 900,
-    }
 
 
 def _enforce_instantly_webhook_auth(request: Request) -> None:
@@ -1142,136 +1130,6 @@ async def admin_create_gmail_drafts(
             "details": details,
         },
     )
-
-
-@router.get("/admin/api/canva/connect", response_model=None)
-def admin_canva_connect(request: Request) -> Response:
-    _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return RedirectResponse(url="/admin/login", status_code=302)
-
-    settings = request.app.state.settings
-    missing = [
-        env_name
-        for env_name, attr_name in (
-            ("CANVA_CLIENT_ID", "canva_client_id"),
-            ("CANVA_CLIENT_SECRET", "canva_client_secret"),
-            ("CANVA_REDIRECT_URI", "canva_redirect_uri"),
-        )
-        if not getattr(settings, attr_name, "")
-    ]
-    if missing:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": f"Canva OAuth is missing environment variables: {', '.join(missing)}"},
-        )
-
-    state = secrets.token_urlsafe(18)
-    code_verifier = secrets.token_urlsafe(64)
-    signed_state = create_signed_state_token(
-        settings.admin_session_secret,
-        {
-            "state": state,
-            "code_verifier": code_verifier,
-            "issued_at": str(int(datetime.now(timezone.utc).timestamp())),
-            "return_to": str(request.query_params.get("return_to", "") or "").strip(),
-        },
-    )
-    authorize_url = CanvaClient(settings).build_authorize_url(
-        state=state,
-        code_verifier=code_verifier,
-    )
-    response = RedirectResponse(url=authorize_url, status_code=302)
-    response.set_cookie(
-        value=signed_state,
-        **{
-            **_canva_oauth_cookie_options(request),
-            "key": _canva_oauth_cookie_name(request),
-        },
-    )
-    return response
-
-
-@router.get("/api/admin/canva/connect", response_model=None)
-def internal_canva_connect(
-    request: Request,
-    x_internal_api_key: Optional[str] = Header(default=None),
-) -> Response:
-    _enforce_api_key_from_header_or_query(request, x_internal_api_key)
-
-    settings = request.app.state.settings
-    missing = [
-        env_name
-        for env_name, attr_name in (
-            ("CANVA_CLIENT_ID", "canva_client_id"),
-            ("CANVA_CLIENT_SECRET", "canva_client_secret"),
-            ("CANVA_REDIRECT_URI", "canva_redirect_uri"),
-        )
-        if not getattr(settings, attr_name, "")
-    ]
-    if missing:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": f"Canva OAuth is missing environment variables: {', '.join(missing)}"},
-        )
-
-    state = secrets.token_urlsafe(18)
-    code_verifier = secrets.token_urlsafe(64)
-    signed_state = create_signed_state_token(
-        settings.admin_session_secret,
-        {
-            "state": state,
-            "code_verifier": code_verifier,
-            "issued_at": str(int(datetime.now(timezone.utc).timestamp())),
-            "return_to": str(request.query_params.get("return_to", "") or "").strip(),
-        },
-    )
-    authorize_url = CanvaClient(settings).build_authorize_url(
-        state=state,
-        code_verifier=code_verifier,
-    )
-    response = RedirectResponse(url=authorize_url, status_code=302)
-    response.set_cookie(
-        value=signed_state,
-        **{
-            **_canva_oauth_cookie_options(request),
-            "key": _canva_oauth_cookie_name(request),
-        },
-    )
-    return response
-
-
-@router.get("/admin/api/canva/callback", response_model=None)
-def admin_canva_callback(
-    request: Request,
-    code: str = "",
-    state: str = "",
-    error: str = "",
-    error_description: str = "",
-) -> Response:
-    if error:
-        return JSONResponse(status_code=400, content={"detail": error_description or error})
-
-    signed_state = request.cookies.get(_canva_oauth_cookie_name(request), "")
-    state_payload = read_signed_state_token(request.app.state.settings.admin_session_secret, signed_state)
-    if not state_payload or state_payload.get("state") != state or not code:
-        return JSONResponse(status_code=400, content={"detail": "Canva OAuth state validation failed."})
-
-    issued_at = int(state_payload.get("issued_at", "0") or 0)
-    if issued_at and datetime.now(timezone.utc) > datetime.fromtimestamp(issued_at, tz=timezone.utc) + timedelta(minutes=15):
-        return JSONResponse(status_code=400, content={"detail": "Canva OAuth state expired. Start the connection flow again."})
-
-    settings = request.app.state.settings
-    with session_scope(request.app.state.session_factory) as session:
-        DeckGenerationService(settings, session).connect_canva(
-            code=code,
-            code_verifier=state_payload.get("code_verifier", ""),
-        )
-
-    redirect_target = str(state_payload.get("return_to", "") or "").strip() or "/admin"
-    response = RedirectResponse(url=redirect_target, status_code=302)
-    response.delete_cookie(_canva_oauth_cookie_name(request), path="/")
-    return response
 
 
 def _hash_deck_visitor_key(request: Request) -> str:

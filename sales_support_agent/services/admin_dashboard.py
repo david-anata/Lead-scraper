@@ -13,7 +13,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings, is_active_pipeline_status, normalize_status_key
-from sales_support_agent.models.entities import AutomationRun, CanvaConnection, CommunicationEvent, LeadMirror, MailboxSignal
+from sales_support_agent.models.entities import AutomationRun, CommunicationEvent, LeadMirror, MailboxSignal
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
