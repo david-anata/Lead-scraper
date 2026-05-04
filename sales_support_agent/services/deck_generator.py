@@ -2249,6 +2249,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.price if best_seller else None,
                 inverse=False,
                 missing_reason="Unavailable from the target page.",
+                unit="currency",
             ),
             _render_plain_metric(best_seller.price_label if best_seller else "n/a"),
         ),
@@ -2260,6 +2261,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.bsr if best_seller else None,
                 inverse=True,
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
+                unit="number",
             ),
             _render_plain_metric(best_seller.bsr_label if best_seller else "n/a"),
         ),
@@ -2271,6 +2273,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.revenue if best_seller else None,
                 inverse=False,
                 missing_reason=benchmark_metric_reason,
+                unit="currency",
             ),
             _render_plain_metric(best_seller.revenue_label if best_seller else "n/a"),
         ),
@@ -2282,6 +2285,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 best_seller.rating if best_seller else None,
                 inverse=False,
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
+                unit="float",
             ),
             _render_plain_metric(best_seller.rating_label if best_seller else "n/a"),
         ),
@@ -2293,6 +2297,7 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 float(best_seller.review_count or 0) if best_seller else None,
                 inverse=False,
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
+                unit="number",
             ),
             _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
         ),
@@ -2647,8 +2652,8 @@ def _render_target_plain_metric(value: str, *, missing_reason: str) -> str:
     )
 
 
-def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
-    delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse)
+def _render_metric_with_delta(display_value: str, target_value: float | None, benchmark_value: float | None, *, inverse: bool, unit: str = "number") -> str:
+    delta = _format_metric_delta(target_value, benchmark_value, inverse=inverse, unit=unit)
     delta_html = f"<span class='metric-delta'>{html.escape(delta)}</span>" if delta else ""
     return f"<div class='comparison-metric'><strong>{html.escape(_format_metric_display(display_value))}</strong>{delta_html}</div>"
 
@@ -2660,10 +2665,11 @@ def _render_target_metric(
     *,
     inverse: bool,
     missing_reason: str,
+    unit: str = "number",
 ) -> str:
     cleaned = str(display_value or "").strip()
     if cleaned and cleaned.lower() not in {"n/a", "na", "unavailable"}:
-        return _render_metric_with_delta(cleaned, target_value, benchmark_value, inverse=inverse)
+        return _render_metric_with_delta(cleaned, target_value, benchmark_value, inverse=inverse, unit=unit)
     return (
         "<div class='comparison-metric comparison-metric-missing'>"
         "<strong>Unavailable</strong>"
@@ -2672,7 +2678,22 @@ def _render_target_metric(
     )
 
 
-def _format_metric_delta(target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
+def _format_metric_delta(
+    target_value: float | None,
+    benchmark_value: float | None,
+    *,
+    inverse: bool,
+    unit: str = "number",
+) -> str:
+    """
+    Format a target-vs-benchmark delta as a human-readable string.
+
+    `unit` controls how the absolute delta is rendered:
+    - "currency": prefixed with `$` and 0 decimal places when >= $1000, else 2 dp
+    - "percent":  suffixed with `%`
+    - "float":    1 decimal place (e.g. ratings)
+    - "number":   integer with thousand separators (default; for BSR, review counts, etc.)
+    """
     if target_value is None or benchmark_value is None:
         return "Benchmark only"
     delta = target_value - benchmark_value
@@ -2680,15 +2701,27 @@ def _format_metric_delta(target_value: float | None, benchmark_value: float | No
         delta *= -1
     if abs(delta) < 0.01:
         return "In line"
-    prefix = "+" if delta > 0 else "-"
+    sign = "+" if delta > 0 else "-"
     abs_delta = abs(delta)
-    if abs_delta >= 1000:
-        value = f"{abs_delta:,.0f}"
-    elif abs_delta >= 10:
-        value = f"{abs_delta:,.1f}"
-    else:
-        value = f"{abs_delta:,.2f}"
-    return f"{prefix}{value} vs best seller"
+
+    if unit == "currency":
+        if abs_delta >= 1000:
+            magnitude = f"${abs_delta:,.0f}"
+        else:
+            magnitude = f"${abs_delta:,.2f}"
+    elif unit == "percent":
+        magnitude = f"{abs_delta:,.1f}%"
+    elif unit == "float":
+        magnitude = f"{abs_delta:,.1f}"
+    else:  # "number"
+        if abs_delta >= 1000:
+            magnitude = f"{abs_delta:,.0f}"
+        elif abs_delta >= 10:
+            magnitude = f"{abs_delta:,.1f}"
+        else:
+            magnitude = f"{abs_delta:,.2f}"
+
+    return f"{sign}{magnitude} vs best seller"
 
 
 def _render_help_badge(text: str) -> str:
