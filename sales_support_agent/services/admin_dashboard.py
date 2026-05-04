@@ -4489,9 +4489,9 @@ def render_sales_deck_page(data: DashboardData) -> str:
             </label>
             <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
             <fieldset class="offer-toggle-group">
-              <legend>Recommended plan options</legend>
+              <legend>Proposed offers</legend>
               <label class="checkbox-label">
-                <span>Include recommended plan slide</span>
+                <span>Include proposed offers slide</span>
                 <span class="toggle-switch"><input type="checkbox" id="deck-include-plan" name="include_recommended_plan" value="true" checked /><span aria-hidden="true"></span></span>
               </label>
               <div class="offer-builder">

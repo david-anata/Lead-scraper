@@ -1013,8 +1013,8 @@ class DeckGenerationService:
     <section class="slide">
       <div class="slide-head">
         <div>
-          <p class="eyebrow">Recommended plan</p>
-          <h2>Recommended engagement and next step</h2>
+          <p class="eyebrow">Proposed offers</p>
+          <h2>Proposed offers and next step</h2>
         </div>
         <p class="muted">Choose the operating model, then move directly into the first growth sprint with clear ownership and the next action already mapped.</p>
       </div>
