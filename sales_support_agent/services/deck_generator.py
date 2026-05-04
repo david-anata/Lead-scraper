@@ -2297,11 +2297,6 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
             _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
         ),
         (
-            "Listing copy snapshot",
-            _render_comparison_copy_snapshot(str(target.get("description", "") or "")),
-            _render_benchmark_copy_snapshot(best_seller),
-        ),
-        (
             "Dims",
             _render_target_plain_metric(
                 str(target.get("dimensions", "") or ""),
@@ -2622,14 +2617,6 @@ def _render_offer_card(card: dict[str, Any]) -> str:
     )
 
 
-def _render_listing_copy_snapshot(description: str) -> str:
-    bullets = _extract_listing_copy_points(description)
-    if not bullets:
-        return "<p>No product-story summary was captured from the target page.</p>"
-    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets)
-    return f"<div class='signal-list'><strong>Listing copy snapshot</strong><ul>{items}</ul></div>"
-
-
 def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, emphasized: bool, missing_image_asset: str = "") -> str:
     media = (
         f"<img src='{html.escape(image_url, quote=True)}' alt='{html.escape(title)}' />"
@@ -2683,32 +2670,6 @@ def _render_target_metric(
         f"<span class='metric-delta'>{html.escape(missing_reason)}</span>"
         "</div>"
     )
-
-
-def _render_comparison_copy_snapshot(text: str) -> str:
-    bullets = _extract_listing_copy_points(text)
-    if not bullets:
-        return "<div class='comparison-copy muted'>Copy snapshot unavailable.</div>"
-    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
-    return f"<div class='comparison-copy'><ul>{items}</ul></div>"
-
-
-def _render_benchmark_copy_snapshot(product: XrayProduct | None) -> str:
-    if product is None:
-        return "<div class='comparison-copy muted'>Benchmark copy snapshot unavailable.</div>"
-    bullets = [
-        f"{_trim_text(product.title, 42)} is the current page-one benchmark for this niche.",
-    ]
-    if product.price_label != "n/a":
-        bullets.append(f"It anchors the market at {product.price_label} while sustaining {product.revenue_label} in 30-day revenue.")
-    if product.rating_label != "n/a" or product.review_count:
-        bullets.append(
-            f"It pairs a {product.rating_label if product.rating_label != 'n/a' else 'visible'} rating signal with {product.review_count or 0} reviews to reinforce trust."
-        )
-    if product.dimensions:
-        bullets.append(f"Current size / pack context reads as {product.dimensions}.")
-    items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets[:3])
-    return f"<div class='comparison-copy'><ul>{items}</ul></div>"
 
 
 def _format_metric_delta(target_value: float | None, benchmark_value: float | None, *, inverse: bool) -> str:
