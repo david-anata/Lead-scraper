@@ -1799,9 +1799,6 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           <div>
             <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
             <p class="muted">Created {html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</p>
-            <ul class="deck-run-bullets">
-              {''.join(f"<li>{html.escape(_format_deck_channel_label(channel))}</li>" for channel in (run.get("channels") or []))}
-            </ul>
           </div>
           <div class="deck-run-links">
             {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
@@ -2557,13 +2554,6 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       .deck-run-item p {{
         margin: 0;
         font-size: 14px;
-      }}
-      .deck-run-bullets {{
-        margin: 8px 0 0;
-        padding-left: 18px;
-        display: grid;
-        gap: 4px;
-        color: var(--alt-dark-blue);
       }}
       .deck-run-links {{
         display: flex;
@@ -3489,17 +3479,14 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       }}
 
       function buildDeckRunHtml(run) {{
-        const channels = Array.isArray(run.channels) && run.channels.length ? run.channels : ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"];
         const viewUrl = run.view_url || "";
         const safeTitle = escapeHtml(run.design_title || `Run ${{run.id || ""}}`);
-        const bulletHtml = channels.map((channel) => `<li>${{escapeHtml(formatDeckChannelLabel(channel))}}</li>`).join("");
         const analyticsPayload = escapeHtml(JSON.stringify(run.view_analytics || {{}}));
         return `
           <article class="deck-run-item">
             <div>
               <strong>${{safeTitle}}</strong>
               <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}}</p>
-              <ul class="deck-run-bullets">${{bulletHtml}}</ul>
             </div>
             <div class="deck-run-links">
               ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
@@ -3939,9 +3926,6 @@ def render_sales_deck_page(data: DashboardData) -> str:
           <div>
             <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
             <p class="muted">Created {html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</p>
-            <ul class="deck-run-bullets">
-              {''.join(f"<li>{html.escape(_format_deck_channel_label(channel))}</li>" for channel in (run.get("channels") or []))}
-            </ul>
           </div>
           <div class="deck-run-links">
             {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
@@ -4330,10 +4314,6 @@ def render_sales_deck_page(data: DashboardData) -> str:
       }}
       .muted {{
         color: rgba(43, 54, 68, 0.68);
-      }}
-      .deck-run-bullets {{
-        margin: 10px 0 0;
-        padding-left: 18px;
       }}
       .deck-run-links {{
         display: flex;
@@ -4767,17 +4747,14 @@ def render_sales_deck_page(data: DashboardData) -> str:
       }}
 
       function buildDeckRunHtml(run) {{
-        const channels = Array.isArray(run.channels) && run.channels.length ? run.channels : ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"];
         const viewUrl = run.view_url || "";
         const safeTitle = escapeHtml(run.design_title || `Run ${{run.id || ""}}`);
-        const bulletHtml = channels.map((channel) => `<li>${{escapeHtml(formatDeckChannelLabel(channel))}}</li>`).join("");
         const analyticsPayload = escapeHtml(JSON.stringify(run.view_analytics || {{}}));
         return `
           <article class="deck-run-item">
             <div>
               <strong>${{safeTitle}}</strong>
               <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}}</p>
-              <ul class="deck-run-bullets">${{bulletHtml}}</ul>
             </div>
             <div class="deck-run-links">
               ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
