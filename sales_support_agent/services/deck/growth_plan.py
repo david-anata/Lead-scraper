@@ -396,10 +396,222 @@ def _money(value: float) -> str:
     return f"${value:,.2f}"
 
 
+def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
+    """Render the customer-funnel SVG: traffic sources → PDP visits →
+    units → revenue. Channel boxes at the top are sized proportional to
+    their session share. All flow lines drawn in pure SVG so it prints
+    crisp from the browser.
+    """
+    # Pull data
+    cvr = max(plan.cvr_pct, 0.01)
+    delivered = max(plan.total_sessions_delivered, 1)
+    # Use total sessions delivered (delta-driven) as the funnel mouth
+    pdp_visits = plan.total_sessions_delivered
+    expected_units = int(round(pdp_visits * cvr / 100.0))
+    expected_revenue = expected_units * max(target_aov, 0.0)
+
+    # Layout constants (viewBox units)
+    VB_W = 1000
+    VB_H = 540
+    MARGIN_X = 24
+    GAP = 8
+    BOX_HEIGHT = 110
+    Y_TOP = 16
+
+    # Filter to non-zero channels for the funnel. Even if a channel has a
+    # mix% but zero sessions (e.g. organic with delta=0) keep it; visual
+    # presence matters for the "5 channels feeding the funnel" story.
+    channels = [c for c in plan.channels if c.mix_pct > 0]
+    if not channels:
+        return ""
+
+    total_pct = sum(c.mix_pct for c in channels) or 100.0
+    inner_w = VB_W - 2 * MARGIN_X - GAP * (len(channels) - 1)
+    # Minimum visual width per box so the label remains readable
+    min_box = 110
+
+    # Compute widths: proportional but no smaller than min_box. If
+    # proportional widths sum < inner_w (because of mins), distribute
+    # the slack proportionally on top.
+    raw_widths = [inner_w * (c.mix_pct / total_pct) for c in channels]
+    widths = [max(w, min_box) for w in raw_widths]
+    overflow = sum(widths) - inner_w
+    if overflow > 0:
+        # Shrink the largest boxes proportionally to fit
+        shrinkable = [(i, w) for i, w in enumerate(widths) if w > min_box]
+        shrinkable_total = sum(w - min_box for _, w in shrinkable) or 1
+        for i, w in shrinkable:
+            widths[i] = max(min_box, w - overflow * (w - min_box) / shrinkable_total)
+
+    # X positions
+    x_positions: list[float] = []
+    cursor = MARGIN_X
+    for w in widths:
+        x_positions.append(cursor)
+        cursor += w + GAP
+
+    # Channel colors (CSS-var-friendly fallbacks too)
+    color_map = {
+        "organic":          ("#dceaf5", "#4f84c4", "#1d2d44"),  # bg, border, text
+        "on_channel_paid":  ("#cfe1ee", "#3f6da6", "#1d2d44"),
+        "off_channel_paid": ("#bcd6e9", "#2c5d99", "#0f1d33"),
+        "affiliate":        ("#f1ead8", "#bfa889", "#3a3528"),
+        "retargeting":      ("#cfd6e1", "#33445c", "#1d2d44"),
+    }
+    # Short labels for the funnel boxes — full labels are tooltip / detail copy.
+    short_label_map = {
+        "organic":          "Organic",
+        "on_channel_paid":  "On-channel paid",
+        "off_channel_paid": "Off-channel paid",
+        "affiliate":        "Affiliate",
+        "retargeting":      "Retargeting",
+    }
+
+    # Build top-row channel boxes
+    top_boxes_svg = ""
+    flow_paths_svg = ""
+    pdp_x = MARGIN_X + 220  # left edge of the merge box
+    pdp_w = VB_W - 2 * (MARGIN_X + 220)
+    pdp_cx = VB_W / 2
+    pdp_y = Y_TOP + BOX_HEIGHT + 80  # 80px of flow runway
+
+    for w, x, ch in zip(widths, x_positions, channels):
+        bg, border, text = color_map.get(ch.key, ("#e9eef4", "#85bbda", "#1d2d44"))
+        cx = x + w / 2
+        cy = Y_TOP + BOX_HEIGHT
+        # Box rectangle
+        top_boxes_svg += (
+            f'<rect x="{x:.1f}" y="{Y_TOP}" width="{w:.1f}" height="{BOX_HEIGHT}" '
+            f'rx="14" fill="{bg}" stroke="{border}" stroke-width="1.5"/>'
+        )
+        # Channel name (top line) — short label so it fits the box
+        short_label = short_label_map.get(ch.key, ch.label.split(" (")[0])
+        top_boxes_svg += (
+            f'<text x="{cx:.1f}" y="{Y_TOP + 26}" text-anchor="middle" '
+            f'font-size="13" font-weight="700" fill="{text}">'
+            f'{html.escape(short_label)}</text>'
+        )
+        # Mix percentage
+        top_boxes_svg += (
+            f'<text x="{cx:.1f}" y="{Y_TOP + 50}" text-anchor="middle" '
+            f'font-size="11" font-weight="600" fill="{text}" opacity="0.78">'
+            f'{ch.mix_pct:.0f}% of mix</text>'
+        )
+        # Sessions
+        top_boxes_svg += (
+            f'<text x="{cx:.1f}" y="{Y_TOP + 76}" text-anchor="middle" '
+            f'font-size="20" font-weight="800" fill="{text}">'
+            f'{ch.sessions:,}</text>'
+        )
+        # Cost line
+        if ch.key == "organic":
+            cost_label = "SEO investment"
+        else:
+            cost_label = f"${ch.monthly_cost:,.0f}/mo"
+        top_boxes_svg += (
+            f'<text x="{cx:.1f}" y="{Y_TOP + 98}" text-anchor="middle" '
+            f'font-size="10" font-weight="500" fill="{text}" opacity="0.72">'
+            f'{html.escape(cost_label)}</text>'
+        )
+        # Flow path: cubic bezier from box bottom-center down to PDP top-center
+        target_x = pdp_cx
+        target_y = pdp_y
+        # Control points create a smooth converge into the merge point
+        c1y = cy + 30
+        c2y = target_y - 30
+        flow_paths_svg += (
+            f'<path d="M {cx:.1f} {cy} C {cx:.1f} {c1y}, {target_x:.1f} {c2y}, {target_x:.1f} {target_y}" '
+            f'stroke="{border}" stroke-width="2" fill="none" opacity="0.55"/>'
+        )
+
+    # PDP visits middle box
+    pdp_h = 64
+    pdp_box_svg = (
+        f'<rect x="{pdp_x}" y="{pdp_y}" width="{pdp_w:.1f}" height="{pdp_h}" rx="14" '
+        f'fill="#10233d" stroke="#10233d"/>'
+        f'<text x="{pdp_cx:.1f}" y="{pdp_y + 22}" text-anchor="middle" '
+        f'font-size="11" font-weight="600" fill="#85bbda" letter-spacing="0.06em" '
+        f'text-transform="uppercase">PDP VISITS</text>'
+        f'<text x="{pdp_cx:.1f}" y="{pdp_y + 50}" text-anchor="middle" '
+        f'font-size="26" font-weight="800" fill="#fffdf9">{pdp_visits:,} sessions</text>'
+    )
+
+    # Arrow + multiplier label between PDP and Units
+    arrow1_y_top = pdp_y + pdp_h + 8
+    arrow1_y_bot = arrow1_y_top + 36
+    arrow1_svg = (
+        f'<line x1="{pdp_cx:.1f}" y1="{arrow1_y_top}" x2="{pdp_cx:.1f}" y2="{arrow1_y_bot - 8}" '
+        f'stroke="#33445c" stroke-width="2"/>'
+        f'<polygon points="{pdp_cx - 6:.1f},{arrow1_y_bot - 8} {pdp_cx + 6:.1f},{arrow1_y_bot - 8} '
+        f'{pdp_cx:.1f},{arrow1_y_bot}" fill="#33445c"/>'
+        f'<text x="{pdp_cx + 18:.1f}" y="{arrow1_y_top + 24}" font-size="11" font-weight="600" '
+        f'fill="#33445c">× {plan.cvr_pct:.1f}% CVR</text>'
+    )
+
+    # Units sold box
+    units_y = arrow1_y_bot + 8
+    units_h = 56
+    units_w = pdp_w * 0.75
+    units_x = pdp_cx - units_w / 2
+    units_box_svg = (
+        f'<rect x="{units_x:.1f}" y="{units_y}" width="{units_w:.1f}" height="{units_h}" rx="12" '
+        f'fill="#fffdf9" stroke="#bfa889" stroke-width="2"/>'
+        f'<text x="{pdp_cx:.1f}" y="{units_y + 20}" text-anchor="middle" '
+        f'font-size="10" font-weight="600" fill="#33445c" letter-spacing="0.06em" '
+        f'text-transform="uppercase">UNITS SOLD</text>'
+        f'<text x="{pdp_cx:.1f}" y="{units_y + 44}" text-anchor="middle" '
+        f'font-size="22" font-weight="800" fill="#1d2d44">{expected_units:,} units</text>'
+    )
+
+    # Arrow + AOV multiplier
+    arrow2_y_top = units_y + units_h + 8
+    arrow2_y_bot = arrow2_y_top + 32
+    aov_label = f"× ${target_aov:,.2f} AOV" if target_aov > 0 else "× AOV"
+    arrow2_svg = (
+        f'<line x1="{pdp_cx:.1f}" y1="{arrow2_y_top}" x2="{pdp_cx:.1f}" y2="{arrow2_y_bot - 8}" '
+        f'stroke="#33445c" stroke-width="2"/>'
+        f'<polygon points="{pdp_cx - 6:.1f},{arrow2_y_bot - 8} {pdp_cx + 6:.1f},{arrow2_y_bot - 8} '
+        f'{pdp_cx:.1f},{arrow2_y_bot}" fill="#33445c"/>'
+        f'<text x="{pdp_cx + 18:.1f}" y="{arrow2_y_top + 22}" font-size="11" font-weight="600" '
+        f'fill="#33445c">{html.escape(aov_label)}</text>'
+    )
+
+    # Revenue box
+    rev_y = arrow2_y_bot + 8
+    rev_h = 56
+    rev_w = pdp_w * 0.6
+    rev_x = pdp_cx - rev_w / 2
+    rev_box_svg = (
+        f'<rect x="{rev_x:.1f}" y="{rev_y}" width="{rev_w:.1f}" height="{rev_h}" rx="12" '
+        f'fill="#10233d" stroke="#10233d"/>'
+        f'<text x="{pdp_cx:.1f}" y="{rev_y + 20}" text-anchor="middle" '
+        f'font-size="10" font-weight="600" fill="#85bbda" letter-spacing="0.06em" '
+        f'text-transform="uppercase">PROJECTED REVENUE</text>'
+        f'<text x="{pdp_cx:.1f}" y="{rev_y + 44}" text-anchor="middle" '
+        f'font-size="22" font-weight="800" fill="#fffdf9">${expected_revenue:,.0f}/mo</text>'
+    )
+
+    return (
+        f'<div class="growth-funnel">'
+        f'<svg viewBox="0 0 {VB_W} {VB_H}" xmlns="http://www.w3.org/2000/svg" '
+        f'role="img" aria-label="Customer funnel: traffic sources to revenue">'
+        f'{flow_paths_svg}'
+        f'{top_boxes_svg}'
+        f'{pdp_box_svg}'
+        f'{arrow1_svg}'
+        f'{units_box_svg}'
+        f'{arrow2_svg}'
+        f'{rev_box_svg}'
+        f'</svg>'
+        f'</div>'
+    )
+
+
 def render_growth_plan_section(
     plan: GrowthPlan,
     *,
     target_brand: str,
+    target_aov: float = 0.0,
 ) -> str:
     """Emit the HTML for the single 'Growth plan synopsis' slide."""
     if plan.delta_sessions <= 0:
@@ -448,6 +660,8 @@ def render_growth_plan_section(
         f"<li>{html.escape(line)}</li>" for line in plan.methodology_lines
     )
 
+    funnel_svg = _render_funnel_svg(plan, target_aov=target_aov) if plan.delta_sessions > 0 else ""
+
     return f"""
     <section class="slide growth-plan-slide">
       <div class="slide-head">
@@ -458,6 +672,7 @@ def render_growth_plan_section(
         <p class="muted">{gap_caption}</p>
       </div>
       {kpi_strip}
+      {funnel_svg}
       <div class="channel-grid">{cards_html}</div>
       <div class="growth-summary">
         <div><strong>Total monthly spend:</strong> {_money(plan.total_monthly_spend)}

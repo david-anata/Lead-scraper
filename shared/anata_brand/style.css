@@ -1492,6 +1492,22 @@ mark {
   margin-bottom: 20px;
 }
 
+/* Customer-funnel SVG (PR21): traffic sources at top, sized by session
+   share, flowing through PDP visits → units → revenue. */
+.growth-plan-slide .growth-funnel {
+  margin: 24px 0 28px;
+  padding: 18px 8px 8px;
+  background: rgba(133, 187, 218, 0.04);
+  border: 1px solid var(--anata-line);
+  border-radius: 18px;
+}
+.growth-plan-slide .growth-funnel svg {
+  width: 100%;
+  height: auto;
+  max-height: 540px;
+  display: block;
+}
+
 .growth-plan-slide .channel-card {
   background: var(--anata-paper);
   border: 1px solid var(--anata-line);
