@@ -331,32 +331,124 @@ def _build_gap(catalog: AmazonCatalogSnapshot | None) -> str:
     return "Use the catalog details to compare claim clarity, content depth, and conversion proof against the hero product."
 
 
+_AMAZON_DESKTOP_USER_AGENTS: tuple[str, ...] = (
+    # Recent Chrome on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    # Recent Chrome on Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    # Recent Safari on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    # Recent Firefox on macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:127.0) Gecko/20100101 Firefox/127.0",
+)
+_AMAZON_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/17.5 Mobile/15E148 Safari/604.1"
+)
+
+
+def _amazon_browser_headers(user_agent: str, *, referer: str = "https://www.amazon.com/") -> dict[str, str]:
+    """Headers that match what a real Chrome/Safari/Firefox sends to Amazon.
+
+    A bare User-Agent is the #1 scraper fingerprint Amazon flags. Sending the
+    same Accept / Accept-Language / Sec-Fetch-* / Sec-Ch-Ua quartet a real
+    browser would send substantially raises the success rate without paid
+    proxies.
+    """
+    is_chrome = "Chrome/" in user_agent and "Chromium" not in user_agent
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Referer": referer,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin" if "amazon.com" in referer else "none",
+        "Sec-Fetch-User": "?1",
+    }
+    if is_chrome:
+        headers["Sec-Ch-Ua"] = '"Chromium";v="126", "Not.A/Brand";v="24", "Google Chrome";v="126"'
+        headers["Sec-Ch-Ua-Mobile"] = "?1" if "iPhone" in user_agent else "?0"
+        headers["Sec-Ch-Ua-Platform"] = (
+            '"iOS"' if "iPhone" in user_agent
+            else '"Windows"' if "Windows" in user_agent
+            else '"macOS"'
+        )
+    return headers
+
+
+def _amazon_session_get(url: str, *, attempts: int = 3) -> tuple[str, list[str]]:
+    """GET an Amazon URL with browser-realistic headers, rotating UA on each
+    retry. Returns (html_content, warnings). Empty content means we gave up.
+
+    Rotation strategy:
+      attempt 1: desktop UA (Chrome macOS)
+      attempt 2: alternate desktop UA (Chrome Windows)
+      attempt 3: mobile Safari → mobile.amazon.com if path supports it
+    """
+    import random
+    warnings: list[str] = []
+    session = requests.Session()
+    # Warm up cookies by hitting the homepage first — gives us
+    # session-id / csm-hit cookies that Amazon expects.
+    try:
+        session.get(
+            "https://www.amazon.com/",
+            headers=_amazon_browser_headers(_AMAZON_DESKTOP_USER_AGENTS[0], referer="https://www.google.com/"),
+            timeout=10,
+        )
+    except Exception:
+        pass  # Warmup is best-effort; the real fetch can still succeed.
+
+    last_block = False
+    for attempt in range(attempts):
+        if attempt < 2:
+            ua = _AMAZON_DESKTOP_USER_AGENTS[attempt % len(_AMAZON_DESKTOP_USER_AGENTS)]
+            target_url = url
+        else:
+            # Mobile fallback — often less aggressive bot detection.
+            ua = _AMAZON_MOBILE_USER_AGENT
+            target_url = url.replace("www.amazon.com", "www.amazon.com")  # mobile UA is enough; same URL
+        try:
+            response = session.get(
+                target_url,
+                headers=_amazon_browser_headers(ua),
+                timeout=20,
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            warnings.append(f"Amazon page fetch attempt {attempt + 1} failed: {exc}")
+            continue
+        content = response.text or ""
+        if _is_amazon_block_page(content):
+            last_block = True
+            warnings.append(f"Amazon page fetch attempt {attempt + 1}: anti-bot challenge")
+            continue
+        return content, warnings
+    if last_block:
+        warnings.append("All Amazon page fetch attempts hit the anti-bot challenge.")
+    return "", warnings
+
+
 def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
     if not source_url:
         return {"warnings": ["Amazon target product URL was missing."]}
-    warnings: list[str] = []
-    try:
-        response = requests.get(
-            source_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-    except Exception as exc:
+    content, fetch_warnings = _amazon_session_get(source_url)
+    if not content:
         return {
             "source_url": source_url,
-            "warnings": [f"Amazon product-page enrichment failed for {source_url}: {exc}"],
+            "warnings": fetch_warnings or [
+                "Amazon product page returned an anti-bot response, so public-page enrichment was skipped."
+            ],
         }
-
-    content = response.text or ""
-    if _is_amazon_block_page(content):
-        return {
-            "source_url": source_url,
-            "warnings": ["Amazon product page returned an anti-bot response, so public-page enrichment was skipped."],
-        }
+    warnings: list[str] = list(fetch_warnings)
     title = _extract_first(
         content,
         r'<meta\s+property="og:title"\s+content="([^"]+)"',
@@ -504,20 +596,8 @@ def _fetch_remote_catalog_data(asin: str) -> dict[str, str]:
 def _fetch_amazon_search_data(asin: str) -> dict[str, str]:
     if not asin:
         return {}
-    try:
-        response = requests.get(
-            f"https://www.amazon.com/s?k={asin}",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-    except Exception:
-        return {}
-    content = response.text or ""
-    if _is_amazon_block_page(content):
+    content, _ = _amazon_session_get(f"https://www.amazon.com/s?k={asin}")
+    if not content:
         return {}
     title = _clean_scraped_text(
         _extract_first(
