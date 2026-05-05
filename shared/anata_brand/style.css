@@ -808,6 +808,86 @@ th {
   font-size: 12px;
 }
 
+/* Audit item 6: support-term demand redesign — color tiers, hover lift,
+   full-width parent, list-view fallback. */
+
+.support-term-card.is-fullwidth {
+  /* Override the parent grid cell so the card spans the full row.
+     Both .dashboard-grid and .two-col use grid; column: 1 / -1 wins
+     in either layout. */
+  grid-column: 1 / -1;
+}
+
+.term-bubble {
+  cursor: default;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.term-bubble:hover,
+.term-bubble:focus-visible {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 22px var(--anata-shadow);
+  outline: none;
+}
+
+.term-bubble.tier-primary {
+  background: radial-gradient(
+    circle at top,
+    rgba(133, 187, 218, 0.55),
+    rgba(79, 132, 196, 0.32)
+  );
+  border-color: var(--anata-sky-deep);
+}
+.term-bubble.tier-primary strong {
+  color: var(--anata-ink);
+}
+
+.term-bubble.tier-secondary {
+  background: radial-gradient(
+    circle at top,
+    rgba(133, 187, 218, 0.30),
+    rgba(133, 187, 218, 0.10)
+  );
+  border-color: var(--anata-sky);
+}
+
+.term-bubble.tier-tertiary {
+  background: radial-gradient(
+    circle at top,
+    rgba(191, 168, 137, 0.20),
+    rgba(191, 168, 137, 0.06)
+  );
+  border-color: rgba(191, 168, 137, 0.5);
+}
+.term-bubble.tier-tertiary strong {
+  color: var(--anata-ink-soft);
+}
+
+.support-term-list {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--anata-ink-soft);
+}
+.support-term-list summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.support-term-list ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 16px;
+}
+.support-term-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--anata-line);
+}
+
 .help-badge {
   display: inline-flex;
   width: 18px;
