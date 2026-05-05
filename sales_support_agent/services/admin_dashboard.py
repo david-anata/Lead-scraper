@@ -3270,6 +3270,35 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       const deckOfferPayloadInput = document.getElementById("deck-offer-payload-json");
       const deckAddOfferButton = document.getElementById("deck-add-offer");
       const deckRunList = document.getElementById("deck-run-list");
+
+      // Audit item 2c: filterable past-decks table.
+      const deckRunTbody = document.getElementById("deck-run-tbody");
+      const deckFilterBrand = document.getElementById("deck-filter-brand");
+      const deckFilterTimeframe = document.getElementById("deck-filter-timeframe");
+      const deckFilterSearch = document.getElementById("deck-filter-search");
+      function applyDeckFilters() {{
+        if (!deckRunTbody) return;
+        const brand = (deckFilterBrand?.value || "").trim();
+        const timeframe = deckFilterTimeframe?.value || "all";
+        const search = (deckFilterSearch?.value || "").toLowerCase().trim();
+        const cutoffMs = timeframe === "all" ? null : Date.now() - (parseInt(timeframe, 10) * 24 * 60 * 60 * 1000);
+        deckRunTbody.querySelectorAll("tr.deck-row").forEach((row) => {{
+          let visible = true;
+          if (brand && row.dataset.brand !== brand) visible = false;
+          if (visible && cutoffMs !== null) {{
+            const t = row.dataset.startedAt ? Date.parse(row.dataset.startedAt) : NaN;
+            if (isNaN(t) || t < cutoffMs) visible = false;
+          }}
+          if (visible && search && !row.textContent.toLowerCase().includes(search)) {{
+            visible = false;
+          }}
+          row.hidden = !visible;
+        }});
+      }}
+      deckFilterBrand?.addEventListener("change", applyDeckFilters);
+      deckFilterTimeframe?.addEventListener("change", applyDeckFilters);
+      deckFilterSearch?.addEventListener("input", applyDeckFilters);
+
       const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
       const deckAnalyticsClose = document.getElementById("deck-analytics-close");
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
@@ -3920,21 +3949,87 @@ def render_sales_deck_page(data: DashboardData) -> str:
         if data.deck_generator_missing
         else '<div class="notice success">Deck generator is configured for the Amazon-first HTML workflow.</div>'
     )
-    recent_deck_runs_html = "".join(
+    # Audit item 2c: replace per-run cards with a compact filterable table.
+    # Build the table rows + collect the unique brand list for the filter
+    # dropdown.
+    def _brand_from_title(title: str) -> str:
+        return (title.split(" x ")[0] or "").strip() or "—"
+
+    brand_set: set[str] = set()
+    for run in data.recent_deck_runs:
+        brand_set.add(_brand_from_title(str(run.get("design_title") or "")))
+    brand_options_html = "".join(
+        f'<option value="{html.escape(b)}">{html.escape(b)}</option>'
+        for b in sorted(brand_set)
+        if b and b != "—"
+    )
+
+    def _ext_views(run_dict: dict[str, object]) -> int:
+        analytics = dict(run_dict.get("view_analytics") or {})
+        return int(dict(analytics.get("external") or {}).get("total_visits", 0) or 0)
+
+    def _int_views(run_dict: dict[str, object]) -> int:
+        analytics = dict(run_dict.get("view_analytics") or {})
+        return int(dict(analytics.get("internal") or {}).get("total_visits", 0) or 0)
+
+    recent_deck_rows_html = "".join(
         f"""
-        <article class="deck-run-item">
-          <div>
-            <strong>{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</strong>
-            <p class="muted">Created {html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</p>
-          </div>
-          <div class="deck-run-links">
-            {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>' if run.get("view_url") else ""}
-            <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>View analytics</button>
-          </div>
-        </article>
+        <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}">
+          <td><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
+          <td class="muted">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
+          <td class="muted">{html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</td>
+          <td class="num">{_ext_views(run)}</td>
+          <td class="num">{_int_views(run)}</td>
+          <td class="deck-row-actions">
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open</a>' if run.get("view_url") else ""}
+            <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>Analytics</button>
+          </td>
+        </tr>
         """
         for run in data.recent_deck_runs
     )
+
+    if data.recent_deck_runs:
+        recent_deck_runs_html = f"""
+        <div class="deck-run-filters">
+          <label>Brand
+            <select id="deck-filter-brand">
+              <option value="">All brands</option>
+              {brand_options_html}
+            </select>
+          </label>
+          <label>Timeframe
+            <select id="deck-filter-timeframe">
+              <option value="all">All time</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+          </label>
+          <label class="deck-run-search-wrap">Search
+            <input type="search" id="deck-filter-search" placeholder="Brand, ASIN, or design title…" />
+          </label>
+        </div>
+        <div class="table-wrap deck-run-table-wrap">
+          <table class="deck-run-table">
+            <thead>
+              <tr>
+                <th>Brand</th>
+                <th>Deck title</th>
+                <th>Created</th>
+                <th class="num">Ext. views</th>
+                <th class="num">Int. views</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="deck-run-tbody">
+              {recent_deck_rows_html}
+            </tbody>
+          </table>
+        </div>
+        """
+    else:
+        recent_deck_runs_html = ""
 
     return f"""<!doctype html>
 <html lang="en">
@@ -4298,6 +4393,90 @@ def render_sales_deck_page(data: DashboardData) -> str:
         display: grid;
         gap: 12px;
         margin-top: 18px;
+      }}
+      /* Audit item 2c: filterable past-decks table */
+      .deck-run-filters {{
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin: 18px 0 10px;
+        align-items: end;
+      }}
+      .deck-run-filters label {{
+        display: grid;
+        gap: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--dark-blue);
+      }}
+      .deck-run-filters select,
+      .deck-run-filters input {{
+        padding: 6px 10px;
+        font-size: 13px;
+        border: 1px solid rgba(43, 54, 68, 0.18);
+        border-radius: 8px;
+        background: white;
+        color: var(--dark-blue);
+        min-width: 140px;
+      }}
+      .deck-run-filters .deck-run-search-wrap input {{
+        min-width: 240px;
+      }}
+      .deck-run-table-wrap {{
+        max-height: 520px;
+        overflow-y: auto;
+        border: 1px solid rgba(43, 54, 68, 0.10);
+        border-radius: 10px;
+      }}
+      .deck-run-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }}
+      .deck-run-table thead th {{
+        position: sticky;
+        top: 0;
+        background: rgba(133, 187, 218, 0.18);
+        text-align: left;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 8px 12px;
+        color: var(--dark-blue);
+        border-bottom: 1px solid rgba(43, 54, 68, 0.10);
+      }}
+      .deck-run-table tbody td {{
+        padding: 8px 12px;
+        border-bottom: 1px solid rgba(43, 54, 68, 0.06);
+        vertical-align: middle;
+      }}
+      .deck-run-table tbody tr:hover {{
+        background: rgba(133, 187, 218, 0.06);
+      }}
+      .deck-run-table .num {{
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }}
+      .deck-row-actions {{
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }}
+      .deck-row-actions a,
+      .deck-row-actions button {{
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        text-decoration: none;
+        border: 1px solid rgba(43, 54, 68, 0.20);
+        background: white;
+        color: var(--dark-blue);
+        cursor: pointer;
+      }}
+      .deck-row-actions a {{
+        background: var(--dark-blue);
+        color: white;
+        border-color: var(--dark-blue);
       }}
       .deck-run-item {{
         display: flex;
@@ -4674,6 +4853,35 @@ def render_sales_deck_page(data: DashboardData) -> str:
       const deckOfferPayloadInput = document.getElementById("deck-offer-payload-json");
       const deckAddOfferButton = document.getElementById("deck-add-offer");
       const deckRunList = document.getElementById("deck-run-list");
+
+      // Audit item 2c: filterable past-decks table.
+      const deckRunTbody = document.getElementById("deck-run-tbody");
+      const deckFilterBrand = document.getElementById("deck-filter-brand");
+      const deckFilterTimeframe = document.getElementById("deck-filter-timeframe");
+      const deckFilterSearch = document.getElementById("deck-filter-search");
+      function applyDeckFilters() {{
+        if (!deckRunTbody) return;
+        const brand = (deckFilterBrand?.value || "").trim();
+        const timeframe = deckFilterTimeframe?.value || "all";
+        const search = (deckFilterSearch?.value || "").toLowerCase().trim();
+        const cutoffMs = timeframe === "all" ? null : Date.now() - (parseInt(timeframe, 10) * 24 * 60 * 60 * 1000);
+        deckRunTbody.querySelectorAll("tr.deck-row").forEach((row) => {{
+          let visible = true;
+          if (brand && row.dataset.brand !== brand) visible = false;
+          if (visible && cutoffMs !== null) {{
+            const t = row.dataset.startedAt ? Date.parse(row.dataset.startedAt) : NaN;
+            if (isNaN(t) || t < cutoffMs) visible = false;
+          }}
+          if (visible && search && !row.textContent.toLowerCase().includes(search)) {{
+            visible = false;
+          }}
+          row.hidden = !visible;
+        }});
+      }}
+      deckFilterBrand?.addEventListener("change", applyDeckFilters);
+      deckFilterTimeframe?.addEventListener("change", applyDeckFilters);
+      deckFilterSearch?.addEventListener("input", applyDeckFilters);
+
       const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
       const deckAnalyticsClose = document.getElementById("deck-analytics-close");
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
