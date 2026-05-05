@@ -459,12 +459,35 @@ def _fetch_amazon_page_data(source_url: str) -> dict[str, Any]:
         r"<title>\s*(.*?)\s*</title>",
     )
     title = _clean_scraped_text(title).replace(": Amazon.com", "").strip()
-    image_url = _extract_first(
+    # Amazon's product image data lives in the imageBlock JSON as
+    # `colorImages.initial = [{...}, {...}, ...]` where index 0 is the hero.
+    # Earlier we matched the FIRST `"hiRes":"..."` anywhere on the page,
+    # which often hit a video poster or a sponsored card before the actual
+    # hero. Anchor the match to `colorImages` first so we get the hero.
+    image_url = ""
+    color_images_match = re.search(
+        r"['\"]colorImages['\"]\s*:\s*\{[^{}]*?['\"]initial['\"]\s*:\s*\[(.*?)\]",
         content,
-        r'<meta\s+property="og:image"\s+content="([^"]+)"',
-        r'"hiRes":"([^"]+)"',
-        r'"large":"([^"]+)"',
-    ).replace("\\u0026", "&").replace("\\/", "/")
+        flags=re.DOTALL,
+    )
+    if color_images_match:
+        initial_block = color_images_match.group(1)
+        # Pick the first hiRes / large in the initial array (= hero).
+        hero_match = re.search(r'["\']hiRes["\']\s*:\s*["\']([^"\']+)["\']', initial_block)
+        if not hero_match:
+            hero_match = re.search(r'["\']large["\']\s*:\s*["\']([^"\']+)["\']', initial_block)
+        if hero_match:
+            image_url = hero_match.group(1)
+    # Fallbacks if the imageBlock parse didn't land. og:image last because
+    # it's the most likely to be a thumbnail rather than the hero.
+    if not image_url:
+        image_url = _extract_first(
+            content,
+            r'data-a-dynamic-image="\{&quot;([^&]+)&quot;',  # first dynamic image
+            r'<img[^>]+id="landingImage"[^>]+src="([^"]+)"',
+            r'<meta\s+property="og:image"\s+content="([^"]+)"',
+        )
+    image_url = (image_url or "").replace("\\u0026", "&").replace("\\/", "/")
     price = _extract_first(
         content,
         r'<span class="a-offscreen">\s*([$][^<]+)\s*</span>',

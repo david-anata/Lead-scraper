@@ -4988,7 +4988,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
               <legend>Growth plan synopsis</legend>
               <label class="checkbox-label">
                 <span>Include growth plan slide (Closing the sessions gap)</span>
-                <span class="toggle-switch"><input type="checkbox" id="deck-include-growth" name="include_growth_plan" value="true" /><span aria-hidden="true"></span></span>
+                <span class="toggle-switch"><input type="checkbox" id="deck-include-growth" name="include_growth_plan" value="true" checked /><span aria-hidden="true"></span></span>
               </label>
               <details id="deck-growth-inputs" style="margin-top: 12px;">
                 <summary style="cursor: pointer; font-weight: 600;">Growth plan inputs (defaults shown; override per deck)</summary>
