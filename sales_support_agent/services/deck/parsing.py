@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.amazon_sp_api import AmazonSpApiClient
-from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
 from sales_support_agent.models.entities import AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.helium10 import (
@@ -58,17 +57,6 @@ def _parse_target_product_input(value: str) -> dict[str, str]:
             "brand_name": "",
             "product_handle": "",
             "product_name": "",
-            "asin": "",
-        }
-    shopify_candidate = _parse_shopify_product_url(cleaned)
-    if shopify_candidate["source_url"] and shopify_candidate["product_handle"]:
-        return {
-            "source_type": "shopify",
-            "source_url": shopify_candidate["source_url"],
-            "domain": shopify_candidate["domain"],
-            "brand_name": shopify_candidate["brand_name"],
-            "product_handle": shopify_candidate["product_handle"],
-            "product_name": shopify_candidate["product_name"],
             "asin": "",
         }
     amazon_candidate = _parse_competitor_reference(cleaned)
@@ -127,35 +115,6 @@ def _looks_like_amazon_target(raw_value: str, asin: str) -> bool:
     parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
     host = (parsed.netloc or "").lower()
     return "amazon." in host or host.endswith("amzn.to")
-def _parse_shopify_product_url(value: str) -> dict[str, str]:
-    cleaned = str(value or "").strip()
-    if not cleaned:
-        return {
-            "source_url": "",
-            "domain": "",
-            "brand_name": "",
-            "product_handle": "",
-            "product_name": "",
-        }
-    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
-    domain = (parsed.netloc or parsed.path).strip().lower().split("/")[0]
-    path = parsed.path or ""
-    handle = ""
-    match = re.search(r"/products/([^/?#]+)", path, flags=re.IGNORECASE)
-    if match:
-        handle = match.group(1).strip()
-    brand_source = domain.split(".")
-    brand_token = brand_source[-2] if len(brand_source) >= 2 else domain
-    brand_name = _titleize_slug(brand_token) or "Brand"
-    product_name = _titleize_slug(handle) or f"{brand_name} Hero Product"
-    canonical_url = cleaned if "://" in cleaned else f"https://{cleaned}"
-    return {
-        "source_url": canonical_url,
-        "domain": domain,
-        "brand_name": brand_name,
-        "product_handle": handle,
-        "product_name": product_name,
-    }
 def _parse_competitor_reference(value: str) -> dict[str, str]:
     cleaned = str(value or "").strip()
     asin_match = re.search(r"\b([A-Z0-9]{10})\b", cleaned.upper())

@@ -197,7 +197,7 @@ class DeckGeneratorTests(unittest.TestCase):
         with session_scope(session_factory) as session:
             service = DeckGenerationService(
                 _build_settings(), session,
-                shopify_client=object(), amazon_client=_FakeAmazonClient(),
+                amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _EmptyResearch()
             service.generate_deck(
@@ -282,7 +282,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()
@@ -327,7 +326,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()
@@ -351,7 +349,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()
@@ -389,7 +386,6 @@ class DeckGeneratorTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()
@@ -434,7 +430,6 @@ class DeckGeneratorTests(unittest.TestCase):
                 service = DeckGenerationService(
                     _build_settings(),
                     session,
-                    shopify_client=object(),
                     amazon_client=_FakeAmazonClient(),
                 )
                 service.product_research = _FakeProductResearch()
@@ -524,7 +519,7 @@ class GrowthPlanTests(unittest.TestCase):
         with session_scope(session_factory) as session:
             service = DeckGenerationService(
                 _build_settings(), session,
-                shopify_client=object(), amazon_client=_FakeAmazonClient(),
+                amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()
             service.generate_deck(
@@ -559,7 +554,7 @@ class GrowthPlanTests(unittest.TestCase):
         with session_scope(session_factory) as session:
             service = DeckGenerationService(
                 _build_settings(), session,
-                shopify_client=object(), amazon_client=_FakeAmazonClient(),
+                amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()
             service.generate_deck(
@@ -628,7 +623,6 @@ class DeckRoutingTests(unittest.TestCase):
             service = DeckGenerationService(
                 _build_settings(),
                 session,
-                shopify_client=object(),
                 amazon_client=_FakeAmazonClient(),
             )
             service.product_research = _FakeProductResearch()

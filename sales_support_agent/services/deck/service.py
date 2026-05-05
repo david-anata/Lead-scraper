@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.amazon_sp_api import AmazonSpApiClient
-from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
 from sales_support_agent.models.entities import AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.helium10 import (
@@ -185,16 +184,13 @@ class DeckGenerationService:
         settings: Settings,
         session: Session,
         *,
-        shopify_client: ShopifyStorefrontClient | None = None,
         amazon_client: AmazonSpApiClient | None = None,
     ):
         self.settings = settings
         self.session = session
-        self.shopify_client = shopify_client or ShopifyStorefrontClient(settings)
         self.amazon_client = amazon_client or AmazonSpApiClient(settings)
         self.audit = AuditService(session)
         self.product_research = ProductResearchService(
-            shopify_client=self.shopify_client,
             amazon_client=self.amazon_client,
         )
 
@@ -422,8 +418,8 @@ class DeckGenerationService:
         growth_plan_inputs: dict[str, Any] | None = None,
     ) -> DeckDataset:
         parsed_target = _parse_target_product_input(target_product_input)
-        if parsed_target["source_type"] not in {"amazon", "shopify", "website"}:
-            raise RuntimeError("Target product must be a product URL or an Amazon ASIN.")
+        if parsed_target["source_type"] not in {"amazon", "website"}:
+            raise RuntimeError("Target product must be an Amazon ASIN/URL or a product website URL.")
         if not competitor_xray_csv_payloads:
             raise RuntimeError("Competitor Xray CSV is required.")
 
