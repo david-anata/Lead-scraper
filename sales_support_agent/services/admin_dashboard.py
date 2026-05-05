@@ -3299,6 +3299,34 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       deckFilterTimeframe?.addEventListener("change", applyDeckFilters);
       deckFilterSearch?.addEventListener("input", applyDeckFilters);
 
+      // Audit redesign: global "Copy share link" handler. Lives at document
+      // level so it works for the per-row buttons in the past-decks table
+      // AND for the success-card buttons after a fresh deck is generated.
+      document.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const btn = target.closest(".deck-url-copy");
+        if (!btn) return;
+        const url = btn.dataset.copy || "";
+        if (!url) return;
+        const original = btn.textContent;
+        const flash = (text) => {{
+          btn.textContent = text;
+          setTimeout(() => {{ btn.textContent = original; }}, 1400);
+        }};
+        if (navigator.clipboard?.writeText) {{
+          navigator.clipboard.writeText(url).then(() => flash("Copied!"), () => flash("Copy failed"));
+        }} else {{
+          // Fallback for older browsers
+          const ta = document.createElement("textarea");
+          ta.value = url; document.body.appendChild(ta);
+          ta.select();
+          try {{ document.execCommand("copy"); flash("Copied!"); }}
+          catch (_) {{ flash("Copy failed"); }}
+          document.body.removeChild(ta);
+        }}
+      }});
+
       const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
       const deckAnalyticsClose = document.getElementById("deck-analytics-close");
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
@@ -3981,7 +4009,8 @@ def render_sales_deck_page(data: DashboardData) -> str:
           <td class="num">{_ext_views(run)}</td>
           <td class="num">{_int_views(run)}</td>
           <td class="deck-row-actions">
-            {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer">Open</a>' if run.get("view_url") else ""}
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer" title="Open as internal preview (counts as Internal view)">Open</a>' if run.get("view_url") else ""}
+            {f'<button type="button" class="deck-url-copy" data-copy="{html.escape(str(run.get("view_url") or ""), quote=True)}" title="Copy share link to send to a prospect (counts as External view when they open it)">Copy share link</button>' if run.get("view_url") else ""}
             <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>Analytics</button>
           </td>
         </tr>
@@ -4188,6 +4217,98 @@ def render_sales_deck_page(data: DashboardData) -> str:
         font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+      }}
+      /* Audit redesign: grouped intake sections (target / xray / cerebro / creative) */
+      .intake-form {{
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 18px;
+      }}
+      .intake-section {{
+        grid-column: 1 / -1;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        border-radius: 14px;
+        padding: 20px 22px;
+        margin: 0;
+        background: rgba(133, 187, 218, 0.04);
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px 24px;
+      }}
+      .intake-section > legend {{
+        grid-column: 1 / -1;
+        padding: 0 6px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 700;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--dark-blue);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .intake-legend-tag {{
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: none;
+        letter-spacing: 0;
+        color: var(--alt-dark-blue);
+        opacity: 0.75;
+      }}
+      .intake-target {{ background: rgba(133, 187, 218, 0.08); }}
+      .intake-xray {{ background: rgba(133, 187, 218, 0.05); }}
+      .intake-cerebro {{ background: rgba(191, 168, 137, 0.06); }}
+      .intake-creative {{ background: rgba(43, 54, 68, 0.03); }}
+      .intake-label {{
+        display: grid;
+        gap: 6px;
+        margin: 0;
+        font-family: "Inter", "Segoe UI", sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+        text-transform: none !important;
+        letter-spacing: 0 !important;
+      }}
+      .intake-label-row {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--dark-blue);
+      }}
+      .intake-badge {{
+        font-size: 10px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        background: rgba(43, 54, 68, 0.08);
+        color: var(--alt-dark-blue);
+      }}
+      .intake-badge-required {{
+        background: rgba(133, 187, 218, 0.30);
+        color: var(--dark-blue);
+      }}
+      .intake-help {{
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--alt-dark-blue);
+        line-height: 1.4;
+        opacity: 0.8;
+      }}
+      .intake-form input[type="text"],
+      .intake-form input[type="url"],
+      .intake-form input[type="file"] {{
+        font-size: 13px;
+        padding: 10px 12px;
+      }}
+      @media (max-width: 768px) {{
+        .intake-section {{
+          grid-template-columns: 1fr;
+        }}
       }}
       .lead-form input,
       .lead-form textarea {{
@@ -4478,6 +4599,70 @@ def render_sales_deck_page(data: DashboardData) -> str:
         color: white;
         border-color: var(--dark-blue);
       }}
+      /* Audit redesign: success card after Generate Deck completes,
+         shows internal-preview + share-link URLs explicitly with Copy
+         buttons. Per-row Copy share link button uses the same affordance. */
+      .deck-success-card {{
+        margin-top: 14px;
+        padding: 16px 18px;
+        border: 1px solid rgba(133, 187, 218, 0.5);
+        border-radius: 12px;
+        background: rgba(133, 187, 218, 0.10);
+        display: grid;
+        gap: 14px;
+      }}
+      .deck-success-head {{
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: baseline;
+        flex-wrap: wrap;
+      }}
+      .deck-success-row {{
+        display: grid;
+        gap: 6px;
+      }}
+      .deck-success-row > label {{
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--dark-blue);
+      }}
+      .deck-url-group {{
+        display: flex;
+        gap: 8px;
+        align-items: stretch;
+      }}
+      .deck-url-group input {{
+        flex: 1;
+        min-width: 0;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: white;
+        border: 1px solid rgba(43, 54, 68, 0.16);
+        border-radius: 8px;
+        color: var(--dark-blue);
+      }}
+      .deck-url-group button,
+      .deck-url-group a {{
+        padding: 8px 14px;
+        font-size: 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(43, 54, 68, 0.20);
+        background: white;
+        color: var(--dark-blue);
+        cursor: pointer;
+        text-decoration: none;
+        white-space: nowrap;
+        font-weight: 600;
+      }}
+      .deck-url-group a {{
+        background: var(--dark-blue);
+        color: white;
+        border-color: var(--dark-blue);
+      }}
       .deck-run-item {{
         display: flex;
         justify-content: space-between;
@@ -4621,41 +4806,74 @@ def render_sales_deck_page(data: DashboardData) -> str:
           <h2>Generate sales deck</h2>
           <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
           {deck_ready_notice}
-          <form class="lead-form" id="deck-generator-form">
-            <label>
-              Target product URL or ASIN
-              <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
-            </label>
-            <label>
-              Xray — Target listing CSV (optional)
-              <input type="file" name="target_xray_csv" accept=".csv,text/csv" />
-              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Xray, run on the target ASIN only (single-row export). Optional — populates target price/BSR/revenue/rating/reviews/dimensions when the prospect ASIN isn't in the competitor niche set.</small>
-            </label>
-            <label>
-              Xray — Competitors CSVs <span class="muted" style="font-weight:400;">(required)</span>
-              <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple required />
-              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Xray, run on the niche keyword. Drives the page-one competitor table, donuts, and revenue breakdown. Multiple files accepted and merged.</small>
-            </label>
-            <label>
-              Xray — Keywords CSVs (optional)
-              <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
-              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Keyword Tracker / Xray Keywords, run on the niche keyword. Feeds the SEO opportunity table. Multiple files accepted and merged.</small>
-            </label>
-            <label>
-              Cerebro — Competitors CSV (optional)
-              <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
-              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Cerebro, reverse-ASIN lookup on the target + 1–2 top competitors. Drives the ranking-path chart and "where the listing already wins / lifts available" story.</small>
-            </label>
-            <label>
-              Cerebro — Keyword Frequency CSV (optional)
-              <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
-              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Cerebro → Word Frequency tab. Powers the support-term demand bubbles slide.</small>
-            </label>
-            <label>
-              Creative mockup URL
-              <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
-            </label>
-            <div class="draft-help full-width">Only the Xray Competitors CSV is required. Everything else is optional and adds detail. Case studies embed automatically from the shared public deck link.</div>
+          <form class="lead-form intake-form" id="deck-generator-form">
+            <fieldset class="intake-section intake-target">
+              <legend>1. Target product</legend>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Product URL or ASIN</span>
+                  <span class="intake-badge intake-badge-required">Required</span>
+                </span>
+                <input type="text" name="target_product_input" placeholder="https://www.amazon.com/dp/B0ABC12345 or B0ABC12345" required />
+                <small class="intake-help">Image, title, brand, price, BSR, rating, and reviews auto-pull from the Amazon page.</small>
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Xray — Target listing CSV</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <input type="file" name="target_xray_csv" accept=".csv,text/csv" />
+                <small class="intake-help">H10 → Xray on the target ASIN (single-row export). Use only when the target isn't in the competitor niche set.</small>
+              </label>
+            </fieldset>
+
+            <fieldset class="intake-section intake-xray">
+              <legend>2. Helium 10 — Xray</legend>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Competitors CSVs</span>
+                  <span class="intake-badge intake-badge-required">Required</span>
+                </span>
+                <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple required />
+                <small class="intake-help">Xray on the niche keyword. Drives the competitor table, donuts, and revenue breakdown. Multiple files merge.</small>
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Keywords CSVs</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
+                <small class="intake-help">Xray Keywords on the niche keyword. Feeds the SEO opportunity table. Multiple files merge.</small>
+              </label>
+            </fieldset>
+
+            <fieldset class="intake-section intake-cerebro">
+              <legend>3. Helium 10 — Cerebro <span class="intake-legend-tag">all optional</span></legend>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Competitors CSV</span>
+                </span>
+                <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
+                <small class="intake-help">Reverse-ASIN lookup on the target + 1–2 top competitors. Drives the ranking-path chart.</small>
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Keyword Frequency CSV</span>
+                </span>
+                <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
+                <small class="intake-help">Cerebro → Word Frequency tab. Powers the support-term bubbles slide.</small>
+              </label>
+            </fieldset>
+
+            <fieldset class="intake-section intake-creative">
+              <legend>4. Creative reference <span class="intake-legend-tag">optional</span></legend>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Mockup URL</span>
+                </span>
+                <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
+              </label>
+            </fieldset>
             <fieldset class="offer-toggle-group">
               <legend>Proposed offers</legend>
               <label class="checkbox-label">
@@ -4891,6 +5109,34 @@ def render_sales_deck_page(data: DashboardData) -> str:
       deckFilterTimeframe?.addEventListener("change", applyDeckFilters);
       deckFilterSearch?.addEventListener("input", applyDeckFilters);
 
+      // Audit redesign: global "Copy share link" handler. Lives at document
+      // level so it works for the per-row buttons in the past-decks table
+      // AND for the success-card buttons after a fresh deck is generated.
+      document.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const btn = target.closest(".deck-url-copy");
+        if (!btn) return;
+        const url = btn.dataset.copy || "";
+        if (!url) return;
+        const original = btn.textContent;
+        const flash = (text) => {{
+          btn.textContent = text;
+          setTimeout(() => {{ btn.textContent = original; }}, 1400);
+        }};
+        if (navigator.clipboard?.writeText) {{
+          navigator.clipboard.writeText(url).then(() => flash("Copied!"), () => flash("Copy failed"));
+        }} else {{
+          // Fallback for older browsers
+          const ta = document.createElement("textarea");
+          ta.value = url; document.body.appendChild(ta);
+          ta.select();
+          try {{ document.execCommand("copy"); flash("Copied!"); }}
+          catch (_) {{ flash("Copy failed"); }}
+          document.body.removeChild(ta);
+        }}
+      }});
+
       const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
       const deckAnalyticsClose = document.getElementById("deck-analytics-close");
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
@@ -5122,10 +5368,41 @@ def render_sales_deck_page(data: DashboardData) -> str:
             if (empty) empty.remove();
             deckRunList.insertAdjacentHTML("afterbegin", buildDeckRunHtml(createdRun));
           }}
-          if (openUrl) {{
-            window.open(openUrl, "_blank", "noopener,noreferrer");
+          // Don't auto-open. Browsers (esp. Chrome) sometimes refocus an
+          // already-open tab matching the URL, which made re-runs feel like
+          // they were "pushing me to the existing deck". Show both URLs in
+          // the success card with copy buttons; user clicks what they want.
+          const externalUrl = details.view_url || "";
+          const internalUrl = externalUrl ? `${{externalUrl}}?viewer=internal` : "";
+          if (externalUrl) {{
+            const safeExt = escapeHtml(externalUrl);
+            const safeInt = escapeHtml(internalUrl);
+            deckStatus.innerHTML = `
+              <div class="deck-success-card">
+                <div class="deck-success-head">
+                  <strong>Deck #${{details.run_id}} generated.</strong>
+                  <span class="muted">${{escapeHtml(details.design_title || "")}}</span>
+                </div>
+                <div class="deck-success-row">
+                  <label>Internal preview <span class="muted">(counts as Internal view)</span></label>
+                  <div class="deck-url-group">
+                    <input type="text" readonly value="${{safeInt}}" />
+                    <button type="button" class="deck-url-copy" data-copy="${{safeInt}}">Copy</button>
+                    <a href="${{safeInt}}" target="_blank" rel="noreferrer">Open</a>
+                  </div>
+                </div>
+                <div class="deck-success-row">
+                  <label>Share with prospect <span class="muted">(counts as External view)</span></label>
+                  <div class="deck-url-group">
+                    <input type="text" readonly value="${{safeExt}}" />
+                    <button type="button" class="deck-url-copy" data-copy="${{safeExt}}">Copy</button>
+                    <a href="${{safeExt}}" target="_blank" rel="noreferrer">Open</a>
+                  </div>
+                </div>
+              </div>`;
+          }} else {{
+            deckStatus.textContent = "Deck generated.";
           }}
-          deckStatus.innerHTML = `Deck generated. ${{openUrl ? `<a href="${{openUrl}}" target="_blank" rel="noreferrer">Open deck</a>` : ""}}`;
           if (deckSubmitButton) {{
             deckSubmitButton.disabled = false;
             deckSubmitButton.textContent = "GENERATE DECK";
