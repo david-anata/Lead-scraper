@@ -165,6 +165,62 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertEqual(words.words[0].word, "spirulina")
         self.assertEqual(words.total_frequency, 1410)
 
+    def test_target_xray_csv_overrides_when_target_not_in_competitor_set(self) -> None:
+        """Regression: when the prospect's ASIN isn't in the competitor Xray
+        and product-research enrichment returns nothing (no SP-API), uploading
+        a separate Target Xray CSV must populate the target metrics so the
+        deck doesn't render "Unavailable" for every cell."""
+        from sales_support_agent.services.product_research import EnrichedHeroProduct
+
+        # Empty enrichment — simulates no SP-API in production.
+        class _EmptyResearch:
+            def enrich_target_product(self, target):
+                return EnrichedHeroProduct(
+                    asin="", candidate_asin="", brand_name="", title="",
+                    source_url=target.get("source_url", ""), description="",
+                    price="", dimensions="", image_url="", product_type="",
+                    bsr=None, rating=None, review_count=None,
+                    identity_source="", market_metrics_source="",
+                    tags=(), warnings=(),
+                )
+
+        # Single-row target Xray (just the prospect listing). ASIN is NOT
+        # present in _xray_csv() (the competitor set), so without this
+        # upload the target would fall back to "Unavailable" everywhere.
+        target_xray = (
+            "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count,Category,Seller Country/Region,Size Tier,Fulfillment,Dimensions,Weight\n"
+            "Zantrex Shred GLP Drink,B0FML8PTJH,https://www.amazon.com/dp/B0FML8PTJH,https://example.com/zantrex.jpg,Zantrex,43.64,823.07,18,344373,4.2,25,Health,US,Large,FBA,3.66 x 3.42 x 3.58 in,0.54\n"
+        ).encode("utf-8")
+
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(), session,
+                shopify_client=object(), amazon_client=_FakeAmazonClient(),
+            )
+            service.product_research = _EmptyResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="competitors.csv",
+                target_xray_csv_bytes=target_xray,
+                target_xray_filename="target.csv",
+                target_product_input="B0FML8PTJH",
+            )
+
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            html = str(dict(run.summary_json or {}).get("deck_html") or "")
+
+        # Target metrics from the target-only Xray must appear in the deck.
+        self.assertIn("Zantrex", html)
+        self.assertIn("$43.64", html)
+        # And the deck should NOT render the "Unavailable" placeholder
+        # on the target column anywhere — the upload populated everything.
+        self.assertEqual(html.count("Unavailable"), 0)
+
     def test_aggregate_brands_groups_xray_products(self) -> None:
         """Audit item 3: brand aggregation rolls up multiple ASINs per brand."""
         from sales_support_agent.services.deck.rendering import _aggregate_brands

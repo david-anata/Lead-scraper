@@ -1245,6 +1245,7 @@ async def _run_generate_deck(
     request: Request,
     *,
     competitor_xray_csv: list[UploadFile],
+    target_xray_csv: Optional[UploadFile],
     keyword_xray_csv: list[UploadFile],
     cerebro_csv: Optional[UploadFile],
     word_frequency_csv: Optional[UploadFile],
@@ -1285,11 +1286,21 @@ async def _run_generate_deck(
 
     try:
         with session_scope(request.app.state.session_factory) as session:
+            target_xray_csv_bytes = (
+                await target_xray_csv.read()
+                if target_xray_csv and target_xray_csv.filename
+                else None
+            )
+            target_xray_filename = (
+                target_xray_csv.filename or "" if target_xray_csv else ""
+            )
             result = DeckGenerationService(settings, session).generate_deck(
                 competitor_xray_csv_payloads=[
                     (file.filename or "competitors.csv", await file.read())
                     for file in competitor_files
                 ],
+                target_xray_csv_bytes=target_xray_csv_bytes,
+                target_xray_filename=target_xray_filename,
                 keyword_xray_csv_payloads=[
                     (file.filename or "keywords.csv", await file.read())
                     for file in keyword_files
@@ -1333,6 +1344,7 @@ async def _run_generate_deck(
 async def admin_generate_deck(
     request: Request,
     competitor_xray_csv: list[UploadFile] = File(...),
+    target_xray_csv: Optional[UploadFile] = File(default=None),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
     cerebro_csv: Optional[UploadFile] = File(default=None),
     word_frequency_csv: Optional[UploadFile] = File(default=None),
@@ -1351,6 +1363,7 @@ async def admin_generate_deck(
     return await _run_generate_deck(
         request,
         competitor_xray_csv=competitor_xray_csv,
+        target_xray_csv=target_xray_csv,
         keyword_xray_csv=keyword_xray_csv,
         cerebro_csv=cerebro_csv,
         word_frequency_csv=word_frequency_csv,
@@ -1371,6 +1384,7 @@ async def internal_admin_generate_deck(
     request: Request,
     x_internal_api_key: Optional[str] = Header(default=None),
     competitor_xray_csv: list[UploadFile] = File(...),
+    target_xray_csv: Optional[UploadFile] = File(default=None),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
     cerebro_csv: Optional[UploadFile] = File(default=None),
     word_frequency_csv: Optional[UploadFile] = File(default=None),
@@ -1387,6 +1401,7 @@ async def internal_admin_generate_deck(
     return await _run_generate_deck(
         request,
         competitor_xray_csv=competitor_xray_csv,
+        target_xray_csv=target_xray_csv,
         keyword_xray_csv=keyword_xray_csv,
         cerebro_csv=cerebro_csv,
         word_frequency_csv=word_frequency_csv,
