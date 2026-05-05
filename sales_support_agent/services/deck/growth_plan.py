@@ -156,6 +156,11 @@ class GrowthChannel:
     monthly_cost: float
     detail: str  # short subtitle line ("@ $0.15 CPC", "8 videos × 50,000 imps × 2% CTR", etc.)
     source_label: str
+    # Richer per-channel detail (PR22):
+    campaign_description: str = ""  # what tactics actually run (2–3 lines)
+    strategic_why: str = ""  # why this channel exists in the mix (1–2 lines)
+    expected_units: int = 0
+    expected_revenue: float = 0.0
     is_directional: bool = False
 
 
@@ -249,8 +254,21 @@ def _alloc(delta: int, mix_pct: float) -> int:
     return int(round(delta * mix_pct / 100.0))
 
 
+def _channel_outcome(sessions: int, cvr: float, aov: float, cvr_mult: float = 1.0) -> tuple[int, float]:
+    """Compute (expected_units, expected_revenue) for a channel given its sessions.
+    `cvr_mult` lets specific channels (off-channel storefront drag, retargeting lift)
+    deviate from the baseline CVR without changing the math elsewhere.
+    """
+    units = int(round(sessions * cvr * cvr_mult))
+    revenue = units * max(aov, 0.0)
+    return units, revenue
+
+
 def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChannel:
     sessions = _alloc(delta, inputs.mix_organic)
+    aov = inputs.average_order_value or 0.0
+    cvr = max(inputs.conversion_rate_pct / 100.0, 0.001)
+    units, revenue = _channel_outcome(sessions, cvr, aov)
     return GrowthChannel(
         key="organic",
         label="Organic",
@@ -259,12 +277,25 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
         monthly_cost=0.0,
         detail="SEO listing optimization; 60–90 day ramp",
         source_label="No paid spend — investment in title/bullet/imagery work",
+        campaign_description=(
+            "Listing optimization (title, bullets, A+ content), brand story refresh, "
+            "indexed-keyword expansion, and Q&A injection. SEO investment, no paid spend."
+        ),
+        strategic_why=(
+            "Compounding equity. Every organic session won here is sticky and "
+            "reduces ACoS pressure on every other paid channel. Expect 60–90 day ramp."
+        ),
+        expected_units=units,
+        expected_revenue=revenue,
     )
 
 
 def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChannel:
     sessions = _alloc(delta, inputs.mix_on_channel_paid)
     cost = sessions * inputs.on_channel_cpc
+    aov = inputs.average_order_value or 0.0
+    cvr = max(inputs.conversion_rate_pct / 100.0, 0.001)
+    units, revenue = _channel_outcome(sessions, cvr, aov)
     return GrowthChannel(
         key="on_channel_paid",
         label="On-channel paid (SP / SB / DSP cold)",
@@ -273,12 +304,28 @@ def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Grow
         monthly_cost=cost,
         detail=f"@ ${inputs.on_channel_cpc:,.2f} CPC",
         source_label="Source: Pacvue Q1 2026 Health & Household",
+        campaign_description=(
+            f"Sponsored Products on top-30 niche keywords @ ${inputs.on_channel_cpc:,.2f} CPC, "
+            "Sponsored Brands defending the brand search term, Sponsored Display "
+            "retargeting cart abandoners. Lower-funnel intent."
+        ),
+        strategic_why=(
+            "Captures in-market buyers searching today — fastest channel to convert. "
+            "Defends brand search from competitor conquesting."
+        ),
+        expected_units=units,
+        expected_revenue=revenue,
     )
 
 
 def _build_off_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChannel:
     sessions = _alloc(delta, inputs.mix_off_channel_paid)
     cost = sessions * inputs.off_channel_cpc
+    aov = inputs.average_order_value or 0.0
+    cvr = max(inputs.conversion_rate_pct / 100.0, 0.001)
+    # Off-channel storefront-link traffic converts at a slight drag vs cold paid
+    # because the engagement ask is lighter (storefront before PDP).
+    units, revenue = _channel_outcome(sessions, cvr, aov, cvr_mult=inputs.tiktok_to_amazon_cvr_uplift)
     return GrowthChannel(
         key="off_channel_paid",
         label="Off-channel paid (Meta / TikTok storefront-link)",
@@ -287,6 +334,18 @@ def _build_off_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Gro
         monthly_cost=cost,
         detail=f"@ ${inputs.off_channel_cpc:,.2f} CPC, routed to storefront for Amazon external-traffic signal",
         source_label="Anata storefront-link strategy (see methodology footnote)",
+        campaign_description=(
+            f"Meta and TikTok video ads driving to the brand's Amazon storefront @ "
+            f"~${inputs.off_channel_cpc:,.2f} CPC. Lightweight engagement ask keeps "
+            "click cost low. Optimized for traffic volume + acceptable CTR, not direct ROAS."
+        ),
+        strategic_why=(
+            "Amazon's algorithm rewards external-traffic signal with stronger organic "
+            "rank on adjacent keywords. The flywheel compounds with #1 (Organic). "
+            "Direct conversions are a bonus, not the goal."
+        ),
+        expected_units=units,
+        expected_revenue=revenue,
     )
 
 
@@ -330,6 +389,7 @@ def _build_affiliate_channel(
         f"{required_videos} videos × {inputs.avg_impressions_per_video:,} imps × "
         f"{inputs.shoppable_ctr_pct:.1f}% CTR → ~{int(round(units_from_affiliate)):,} units"
     )
+    affiliate_revenue = int(round(units_from_affiliate)) * aov
     return GrowthChannel(
         key="affiliate",
         label="Affiliate (TikTok creators)",
@@ -338,6 +398,20 @@ def _build_affiliate_channel(
         monthly_cost=total_cost,
         detail=detail,
         source_label="Directional — calibrate with first-party data",
+        campaign_description=(
+            f"{required_videos} mid-tier TikTok creators per month (10K–100K followers), "
+            "shoppable affiliate links direct to PDP. Hybrid model: "
+            f"{inputs.creator_commission_pct:.0f}% creator commission + "
+            f"{inputs.tiktok_platform_commission_pct:.0f}% TikTok Shop platform fee on each sale, "
+            f"plus COGS + shipping per unit."
+        ),
+        strategic_why=(
+            "Creator-driven social proof at lower CAC than paid. Trust signal "
+            "compounds — prospect trust transfers to brand without buying-intent "
+            "fatigue. Calibrate impressions and CTR against first 30 days of real data."
+        ),
+        expected_units=int(round(units_from_affiliate)),
+        expected_revenue=affiliate_revenue,
         is_directional=True,
     )
 
@@ -373,6 +447,8 @@ def _build_retargeting_channel(
         f"~{int(round(returning_sessions)):,} returning sessions, ~{int(round(repeat_units)):,} repeat units, "
         f"~{int(round(btp_redemptions)):,} BTP redemptions @ ${inputs.dsp_retargeting_cpm:.2f} CPM"
     )
+    aov = inputs.average_order_value or 0.0
+    retarget_revenue = int(round(repeat_units)) * aov
     return GrowthChannel(
         key="retargeting",
         label="Retargeting / LTV (DSP retargeting + Brand Tailored)",
@@ -381,6 +457,19 @@ def _build_retargeting_channel(
         monthly_cost=spend,
         detail=detail,
         source_label="Repeat CVR + BTP redemption are directional; calibrate with first-party data",
+        campaign_description=(
+            f"Amazon DSP retargeting past-{inputs.audience_window_days}-day PDP viewers, "
+            f"frequency cap {inputs.frequency_cap} @ ${inputs.dsp_retargeting_cpm:.2f} CPM. "
+            "Brand Tailored Promotions to past purchasers. Sponsored Display Product "
+            "Retargeting audiences for cart-abandoners and category browsers."
+        ),
+        strategic_why=(
+            f"Past viewers convert {inputs.repeat_cvr_multiplier:.1f}× higher than cold "
+            "traffic — cheapest CAC in the mix. Compounds the harder you push the top "
+            "of the funnel: every new session today seeds tomorrow's retargeting pool."
+        ),
+        expected_units=int(round(repeat_units)),
+        expected_revenue=retarget_revenue,
         is_directional=True,
     )
 
@@ -694,20 +783,51 @@ def _render_channel_card(channel: GrowthChannel) -> str:
         if channel.is_directional
         else ""
     )
-    cost_line = (
-        "<div class='card-cost'>SEO investment</div>"
+    cost_text = (
+        "SEO investment, no paid spend"
         if channel.key == "organic"
-        else f"<div class='card-cost'><strong>{_money(channel.monthly_cost)}</strong> / month</div>"
+        else f"{_money(channel.monthly_cost)} / month"
     )
+
+    # Outcome line: sessions → units → revenue
+    if channel.expected_revenue > 0:
+        outcome_line = (
+            f"<div class='card-outcome'>"
+            f"<strong>{channel.sessions:,}</strong> sessions "
+            f"→ <strong>{channel.expected_units:,}</strong> units "
+            f"→ <strong>{_money(channel.expected_revenue)}</strong> / mo"
+            f"</div>"
+        )
+    else:
+        outcome_line = f"<div class='card-outcome'><strong>{channel.sessions:,}</strong> sessions</div>"
+
+    campaign_block = (
+        f"<div class='card-block'>"
+        f"<span class='card-block-label'>Campaign</span>"
+        f"<p>{html.escape(channel.campaign_description)}</p>"
+        f"</div>"
+        if channel.campaign_description
+        else ""
+    )
+    why_block = (
+        f"<div class='card-block'>"
+        f"<span class='card-block-label'>Why this channel</span>"
+        f"<p>{html.escape(channel.strategic_why)}</p>"
+        f"</div>"
+        if channel.strategic_why
+        else ""
+    )
+
     return (
         f"<article class='channel-card channel-{channel.key}'>"
         f"<div class='card-head'>"
         f"<h3>{html.escape(channel.label)}</h3>"
         f"<span class='card-mix'>{channel.mix_pct:.0f}% of mix</span>"
         f"</div>"
-        f"<div class='card-sessions'>{channel.sessions:,} sessions</div>"
-        f"{cost_line}"
-        f"<p class='card-detail'>{html.escape(channel.detail)}</p>"
+        f"<div class='card-cost'>{html.escape(cost_text)}</div>"
+        f"{outcome_line}"
+        f"{campaign_block}"
+        f"{why_block}"
         f"<small class='card-source'>{html.escape(channel.source_label)}</small>"
         f"{directional_badge}"
         f"</article>"

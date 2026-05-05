@@ -1571,6 +1571,41 @@ mark {
 .growth-plan-slide .channel-card .card-cost {
   font-size: 14px;
   color: var(--anata-ink-soft);
+  font-weight: 600;
+}
+
+.growth-plan-slide .channel-card .card-outcome {
+  font-size: 13px;
+  color: var(--anata-ink);
+  background: rgba(133, 187, 218, 0.10);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 4px 0 8px;
+  line-height: 1.4;
+}
+.growth-plan-slide .channel-card .card-outcome strong {
+  color: var(--anata-ink);
+  font-weight: 700;
+}
+
+.growth-plan-slide .channel-card .card-block {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+.growth-plan-slide .channel-card .card-block-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--anata-ink-soft);
+  opacity: 0.78;
+}
+.growth-plan-slide .channel-card .card-block p {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--anata-ink);
+  margin: 0;
 }
 
 .growth-plan-slide .channel-card .card-detail {
@@ -1583,6 +1618,7 @@ mark {
   font-size: 11px;
   color: var(--anata-muted);
   font-style: italic;
+  margin-top: 6px;
 }
 
 .growth-plan-slide .channel-card .directional {
