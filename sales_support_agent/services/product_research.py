@@ -12,7 +12,6 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import requests
 
 from sales_support_agent.integrations.amazon_sp_api import AmazonCatalogSnapshot, AmazonSpApiClient
-from sales_support_agent.integrations.shopify import ShopifyProductSnapshot, ShopifyStorefrontClient
 
 
 @dataclass(frozen=True)
@@ -58,73 +57,17 @@ class ProductResearchService:
     def __init__(
         self,
         *,
-        shopify_client: ShopifyStorefrontClient,
         amazon_client: AmazonSpApiClient,
     ) -> None:
-        self.shopify_client = shopify_client
         self.amazon_client = amazon_client
-
-    def enrich_hero_product(self, product_url: str) -> EnrichedHeroProduct:
-        warnings: list[str] = []
-        snapshot = self.shopify_client.fetch_product(product_url)
-        amazon_reference = _fetch_public_amazon_reference(_build_public_product_query(snapshot.title, snapshot.brand_name))
-        candidate_asin = ""
-        if _is_verified_public_reference(amazon_reference, title=snapshot.title, brand_name=snapshot.brand_name):
-            candidate_asin = amazon_reference.get("asin", "")
-        if not snapshot.description:
-            warnings.append("Shopify description was empty, so the hero-product slide will need a manually written summary.")
-        if not snapshot.price:
-            warnings.append("Shopify price was unavailable from storefront data.")
-        return EnrichedHeroProduct(
-            asin="",
-            candidate_asin=candidate_asin,
-            brand_name=snapshot.brand_name,
-            title=snapshot.title,
-            source_url=snapshot.source_url,
-            description=snapshot.description,
-            price=snapshot.price,
-            dimensions="Pending SP-API enrichment",
-            image_url=snapshot.image_url,
-            product_type=snapshot.product_type,
-            bsr=None,
-            rating=None,
-            review_count=None,
-            identity_source="shopify",
-            market_metrics_source="",
-            tags=snapshot.tags,
-            warnings=tuple(warnings),
-        )
 
     def enrich_target_product(self, target: dict[str, str]) -> EnrichedHeroProduct:
         source_type = target.get("source_type", "")
-        if source_type == "shopify":
-            try:
-                return self.enrich_hero_product(target.get("source_url", ""))
-            except Exception as exc:
-                return EnrichedHeroProduct(
-                    asin="",
-                    candidate_asin="",
-                    brand_name=target.get("brand_name", ""),
-                    title=target.get("product_name", ""),
-                    source_url=target.get("source_url", ""),
-                    description="",
-                    price="",
-                    dimensions="",
-                    image_url="",
-                    product_type="",
-                    bsr=None,
-                    rating=None,
-                    review_count=None,
-                    identity_source="shopify_fallback",
-                    market_metrics_source="",
-                    tags=(),
-                    warnings=(f"Shopify enrichment failed for {target.get('source_url', '')}: {exc}",),
-                )
         if source_type == "website":
             return self._enrich_generic_target(target)
         if source_type == "amazon":
             return self._enrich_amazon_target(target)
-        raise RuntimeError("Target product must be a website URL, Shopify product URL, or Amazon ASIN/URL.")
+        raise RuntimeError("Target product must be an Amazon ASIN/URL or a generic product URL.")
 
     def enrich_competitor_product(self, competitor: dict[str, str]) -> EnrichedCompetitorProduct:
         warnings: list[str] = []

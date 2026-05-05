@@ -22,7 +22,6 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
 from sales_support_agent.integrations.amazon_sp_api import AmazonSpApiClient
-from sales_support_agent.integrations.shopify import ShopifyStorefrontClient
 from sales_support_agent.models.entities import AutomationRun
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.helium10 import (
