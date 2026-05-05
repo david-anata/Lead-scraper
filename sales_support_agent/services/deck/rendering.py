@@ -155,23 +155,65 @@ def _render_cerebro_rank_summary(cerebro_report: Helium10CerebroReport | None) -
         "</div>"
     )
 def _render_word_frequency_bubbles(report: Any) -> str:
+    """Audit item 6: redesigned support-term viz.
+
+    Renders the word-frequency cloud as a full-width card (the parent grid
+    is overridden via `.dashboard-card.support-term-card.is-fullwidth`).
+    Each bubble:
+      - has size proportional to frequency (existing behavior),
+      - gets a color tier based on frequency rank (top 3 / next 5 / rest),
+      - lifts on hover and shows a tooltip with the absolute frequency,
+      - is clickable (focusable) so a presenter can keyboard-navigate.
+
+    A list-view fallback at the bottom shows the same data as a table for
+    accessibility and print fidelity (it stacks below the cloud).
+    """
     if not isinstance(report, WordFrequencyReport) or not report.words:
         return ""
     words = report.words[:12]
     max_frequency = max((item.frequency for item in words), default=1) or 1
+
+    # Color tiers: rank 0–2 = primary, 3–7 = secondary, 8+ = tertiary.
+    def _tier(rank: int) -> str:
+        if rank < 3:
+            return "tier-primary"
+        if rank < 8:
+            return "tier-secondary"
+        return "tier-tertiary"
+
     bubbles = "".join(
-        "<li class='term-bubble' "
-        f"style='--bubble-size:{72 + int((item.frequency / max_frequency) * 84)}px'>"
-        f"<strong>{html.escape(item.word)}</strong>"
-        f"<span>{_label_integer(item.frequency)}</span>"
-        "</li>"
+        "<li class='term-bubble {tier_cls}' "
+        "tabindex='0' "
+        "title='{title_attr}' "
+        "style='--bubble-size:{size}px'>"
+        "<strong>{word}</strong>"
+        "<span>{freq}</span>"
+        "</li>".format(
+            tier_cls=_tier(rank),
+            title_attr=html.escape(
+                f"{item.word}: {_label_integer(item.frequency)} mentions across the keyword corpus",
+                quote=True,
+            ),
+            size=72 + int((item.frequency / max_frequency) * 84),
+            word=html.escape(item.word),
+            freq=_label_integer(item.frequency),
+        )
+        for rank, item in enumerate(words)
+    )
+
+    list_rows = "".join(
+        f"<li><strong>{html.escape(item.word)}</strong>"
+        f"<span class='muted'>{_label_integer(item.frequency)}</span></li>"
         for item in words
     )
     return (
-        "<div class='dashboard-card'>"
-        "<div class='card-head'><h3>Support-term demand</h3>"
-        "<span class='muted'>Single-word demand from the word-frequency file to guide bullet and copy expansion</span></div>"
+        "<div class='dashboard-card support-term-card is-fullwidth'>"
+        "<div class='card-head'>"
+        "<h3>Support-term demand</h3>"
+        "<span class='muted'>Single-word demand from the word-frequency file — color tier signals relative weight, hover for the count.</span>"
+        "</div>"
         f"<ul class='bubble-cloud'>{bubbles}</ul>"
+        f"<details class='support-term-list'><summary>List view</summary><ul>{list_rows}</ul></details>"
         "</div>"
     )
 def _render_revenue_bar(product: XrayProduct, total_revenue: float) -> str:
