@@ -683,6 +683,9 @@ class DeckGenerationService:
                 target_units=target_units_int,
                 top3_competitor_avg_sessions=top3_avg_sessions,
             )
+            # Stash the resolved AOV (user override OR target-price fallback)
+            # so the funnel renderer can use it for projected-revenue math.
+            self._growth_plan_aov = float(inputs_obj.average_order_value or 0.0)
 
         return DeckDataset(
             text_fields=text_fields,
@@ -794,9 +797,21 @@ class DeckGenerationService:
                 render_growth_plan_section,
             )
             if isinstance(growth_plan_obj, GrowthPlan):
+                # Use the AOV that was resolved at dataset-build time (user
+                # override OR target-price fallback). Stashed on self by
+                # _build_amazon_first_dataset.
+                _target_aov = float(getattr(self, "_growth_plan_aov", 0.0) or 0.0)
+                if _target_aov <= 0:
+                    # Defensive fallback if the dataset didn't stash it
+                    _target_price_str = str(payload.get("target", {}).get("price") or "")
+                    try:
+                        _target_aov = float(re.sub(r"[^0-9.]", "", _target_price_str) or 0)
+                    except ValueError:
+                        _target_aov = 0.0
                 growth_plan_html = render_growth_plan_section(
                     growth_plan_obj,
                     target_brand=str(payload.get("target", {}).get("brand_name") or "the prospect"),
+                    target_aov=_target_aov,
                 )
             else:
                 growth_plan_html = ""
