@@ -888,6 +888,88 @@ th {
   border-bottom: 1px solid var(--anata-line);
 }
 
+/* Audit item 7: visual proof panel on the conversion-and-PDP slide.
+   Side-by-side target vs best-seller hero images so the prospect sees
+   the visual delta literally instead of just reading text bullets. */
+.visual-proof-panel {
+  margin: 16px 0 20px;
+  background: var(--anata-paper);
+  border: 1px solid var(--anata-line);
+  border-radius: 14px;
+  padding: 18px 20px;
+  break-inside: avoid;
+}
+.visual-proof-grid {
+  display: grid;
+  grid-template-columns: 1fr 28px 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+.visual-proof-card {
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 10px;
+}
+.visual-proof-card.visual-proof-target .visual-proof-thumb {
+  border-color: var(--anata-sky-deep);
+  box-shadow: 0 6px 18px rgba(79, 132, 196, 0.18);
+}
+.visual-proof-thumb {
+  border: 2px solid var(--anata-line);
+  border-radius: 10px;
+  padding: 12px;
+  background: white;
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.visual-proof-thumb img {
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+}
+.visual-proof-card figcaption {
+  display: grid;
+  gap: 2px;
+}
+.visual-proof-card figcaption strong {
+  font-size: 14px;
+  line-height: 1.25;
+}
+.visual-proof-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: var(--anata-muted);
+  font-weight: 300;
+}
+.visual-proof-caption {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--anata-line);
+  font-size: 13px;
+  color: var(--anata-ink-soft);
+}
+.visual-proof-caption ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.visual-proof-caption li {
+  margin: 4px 0;
+}
+@media (max-width: 720px) {
+  .visual-proof-grid {
+    grid-template-columns: 1fr;
+  }
+  .visual-proof-arrow {
+    transform: rotate(90deg);
+    height: 28px;
+  }
+}
+
 .help-badge {
   display: inline-flex;
   width: 18px;

@@ -740,6 +740,83 @@ def _render_emphasis_list_item(text: str) -> str:
     highlighted = html.escape(text)
     highlighted = re.sub(r"'([^']+)'", r"<mark>\1</mark>", highlighted)
     return f"<li>{highlighted}</li>"
+def render_visual_proof_panel(
+    *,
+    target: dict[str, Any],
+    best_seller: Any,
+    cro_recommendations: list[str],
+    creative_recommendations: list[str],
+    missing_image_asset: str = "",
+) -> str:
+    """Audit item 7: side-by-side visual proof panel for the
+    "Where the listing needs to improve" slide.
+
+    Shows the target listing's hero image next to the best-seller's hero
+    image with a short caption underneath that surfaces the most concrete
+    CRO/Creative deltas. Gives the prospect a literal visual comparison
+    instead of just text bullets telling them what to fix.
+    """
+    target_image = str(target.get("image_url") or "").strip()
+    target_brand = str(target.get("brand_name") or "Your listing").strip()
+    target_title = str(target.get("title") or target.get("asin") or "Your listing").strip()
+
+    bs_image = ""
+    bs_brand = "Best seller"
+    bs_title = "Best seller"
+    if best_seller is not None:
+        bs_image = str(getattr(best_seller, "image_url", "") or "").strip()
+        bs_brand = str(getattr(best_seller, "brand", "") or "Best seller").strip()
+        bs_title = str(getattr(best_seller, "title", "") or "Best seller").strip()
+
+    def _media(url: str) -> str:
+        if url:
+            return f"<img src='{html.escape(url, quote=True)}' alt='{html.escape(target_title)}' />"
+        if missing_image_asset:
+            return missing_image_asset
+        return "<div class='image-fallback'>No image available</div>"
+
+    # Pick the first concrete CRO recommendation and the first creative
+    # recommendation as the visual-proof captions. Skip generic ones that
+    # don't reference a specific element of the listing.
+    proof_lines: list[str] = []
+    for rec in cro_recommendations[:1]:
+        proof_lines.append(rec)
+    for rec in creative_recommendations[:1]:
+        proof_lines.append(rec)
+    caption_html = "".join(
+        f"<li>{html.escape(_trim_text(line, 220))}</li>" for line in proof_lines if line
+    )
+
+    return (
+        "<div class='visual-proof-panel'>"
+        "<div class='visual-proof-grid'>"
+        "<figure class='visual-proof-card visual-proof-target'>"
+        f"<div class='visual-proof-thumb'>{_media(target_image)}</div>"
+        "<figcaption>"
+        f"<span class='eyebrow-subtle'>Your listing today</span>"
+        f"<strong>{html.escape(_trim_text(target_title, 48))}</strong>"
+        f"<span class='muted'>{html.escape(target_brand)}</span>"
+        "</figcaption>"
+        "</figure>"
+        "<div class='visual-proof-arrow' aria-hidden='true'>→</div>"
+        "<figure class='visual-proof-card visual-proof-benchmark'>"
+        f"<div class='visual-proof-thumb'>{_media(bs_image)}</div>"
+        "<figcaption>"
+        f"<span class='eyebrow-subtle'>Best-seller benchmark</span>"
+        f"<strong>{html.escape(_trim_text(bs_title, 48))}</strong>"
+        f"<span class='muted'>{html.escape(bs_brand)}</span>"
+        "</figcaption>"
+        "</figure>"
+        "</div>"
+        + (
+            f"<div class='visual-proof-caption'><strong>What the side-by-side shows:</strong><ul>{caption_html}</ul></div>"
+            if caption_html
+            else ""
+        )
+        + "</div>"
+    )
+
+
 def _render_recommendation_item(text: str) -> str:
     return f"<li>{_highlight_competitor_names(html.escape(text))}</li>"
 def _render_action_item(text: str) -> str:

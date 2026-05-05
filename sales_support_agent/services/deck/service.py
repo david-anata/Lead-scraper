@@ -115,6 +115,7 @@ from sales_support_agent.services.deck.rendering import (  # noqa: F401
     _render_offer_card,
     _render_offering_tabs,
     _render_recommendation_item,
+    render_visual_proof_panel,
     _render_revenue_bar,
     _render_signal_list,
     _render_target_comparison_table,
@@ -1038,6 +1039,13 @@ class DeckGenerationService:
         </div>
         <p class="muted">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
       </div>
+      {render_visual_proof_panel(
+          target=target,
+          best_seller=best_seller,
+          cro_recommendations=cro_recommendations,
+          creative_recommendations=creative_recommendations,
+          missing_image_asset=no_product_image,
+      )}
       <div class="two-col split-top">
         <div class="recommendation-card">
           <h3>CRO recommendations {_render_help_badge("CRO recommendations focus on PDP clarity, proof, and the path to purchase.")}</h3>
