@@ -170,12 +170,13 @@ class DeckGeneratorTests(unittest.TestCase):
         from sales_support_agent.services.deck.rendering import _aggregate_brands
         from sales_support_agent.services.helium10 import parse_xray_csv
 
-        # Xray with two products from same brand "Rival A"
+        # Xray with two products from same brand "Rival A". ASINs need to be
+        # real-looking (10-char, B0…) for the parser to extract them.
         csv_bytes = (
             "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count,Category,Seller Country/Region,Size Tier,Fulfillment,Dimensions,Weight\n"
-            "Item One,AAA1,https://x.com/a,,Rival A,10.00,10000.00,1000,5,4.5,50,Cat,USA,Std,FBA,1in,1lb\n"
-            "Item Two,AAA2,https://x.com/b,,Rival A,15.00,5000.00,500,12,4.2,30,Cat,USA,Std,FBA,1in,1lb\n"
-            "Item Three,BBB1,https://x.com/c,,Rival B,20.00,20000.00,2000,3,4.8,200,Cat,USA,Std,FBA,1in,1lb\n"
+            "Item One,B00AAAA001,https://www.amazon.com/dp/B00AAAA001,,Rival A,10.00,10000.00,1000,5,4.5,50,Cat,USA,Std,FBA,1in,1lb\n"
+            "Item Two,B00AAAA002,https://www.amazon.com/dp/B00AAAA002,,Rival A,15.00,5000.00,500,12,4.2,30,Cat,USA,Std,FBA,1in,1lb\n"
+            "Item Three,B00BBBB001,https://www.amazon.com/dp/B00BBBB001,,Rival B,20.00,20000.00,2000,3,4.8,200,Cat,USA,Std,FBA,1in,1lb\n"
         ).encode("utf-8")
         report = parse_xray_csv(csv_bytes)
         buckets = _aggregate_brands(report.products)
