@@ -507,6 +507,38 @@ h3 {
   gap: 16px;
 }
 
+/* Audit item 3: ASIN ↔ Brand segmented toggle on the competitor revenue
+   breakdown table. */
+.niche-toggle {
+  display: inline-flex;
+  border: 1px solid var(--anata-line);
+  border-radius: 999px;
+  background: var(--anata-paper);
+  padding: 2px;
+  gap: 0;
+}
+
+.niche-toggle-btn {
+  border: 0;
+  background: transparent;
+  color: var(--anata-ink-soft);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.niche-toggle-btn:hover {
+  color: var(--anata-ink);
+}
+
+.niche-toggle-btn.is-active {
+  background: var(--anata-ink);
+  color: white;
+}
+
 .niche-table-wrap {
   max-height: 520px;
 }

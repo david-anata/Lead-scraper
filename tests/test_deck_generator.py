@@ -165,6 +165,28 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertEqual(words.words[0].word, "spirulina")
         self.assertEqual(words.total_frequency, 1410)
 
+    def test_aggregate_brands_groups_xray_products(self) -> None:
+        """Audit item 3: brand aggregation rolls up multiple ASINs per brand."""
+        from sales_support_agent.services.deck.rendering import _aggregate_brands
+        from sales_support_agent.services.helium10 import parse_xray_csv
+
+        # Xray with two products from same brand "Rival A"
+        csv_bytes = (
+            "Product Details,ASIN,URL,Image URL,Brand,Price  $,ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count,Category,Seller Country/Region,Size Tier,Fulfillment,Dimensions,Weight\n"
+            "Item One,AAA1,https://x.com/a,,Rival A,10.00,10000.00,1000,5,4.5,50,Cat,USA,Std,FBA,1in,1lb\n"
+            "Item Two,AAA2,https://x.com/b,,Rival A,15.00,5000.00,500,12,4.2,30,Cat,USA,Std,FBA,1in,1lb\n"
+            "Item Three,BBB1,https://x.com/c,,Rival B,20.00,20000.00,2000,3,4.8,200,Cat,USA,Std,FBA,1in,1lb\n"
+        ).encode("utf-8")
+        report = parse_xray_csv(csv_bytes)
+        buckets = _aggregate_brands(report.products)
+        # Sorted by total revenue desc → Rival B ($20k) first, Rival A ($15k) second.
+        self.assertEqual(buckets[0]["brand"], "Rival B")
+        self.assertEqual(buckets[0]["listing_count"], 1)
+        self.assertEqual(buckets[1]["brand"], "Rival A")
+        self.assertEqual(buckets[1]["listing_count"], 2)
+        self.assertEqual(buckets[1]["total_revenue"], 15000.0)
+        self.assertEqual(buckets[1]["best_bsr"], 5)  # min BSR across the two
+
     def test_detect_niche_mismatch_aligned_returns_empty(self) -> None:
         """Aligned datasets (same niche tokens) → no warning."""
         from sales_support_agent.services.deck.service import _detect_niche_mismatch

@@ -210,6 +210,73 @@ def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str
         f"<td>{share:.1f}%</td>"
         "</tr>"
     )
+
+
+def _aggregate_brands(products: list[Any]) -> list[dict[str, Any]]:
+    """Group XrayProducts by brand. Returns list of dicts ordered by total
+    revenue descending. Each dict has: brand, listing_count, total_revenue,
+    revenue_label, best_bsr, image_url, top_title."""
+    by_brand: dict[str, dict[str, Any]] = {}
+    for product in products:
+        brand_key = (getattr(product, "brand", "") or "Unbranded").strip() or "Unbranded"
+        revenue = getattr(product, "revenue", 0.0) or 0.0
+        bsr = getattr(product, "bsr", None)
+        bucket = by_brand.setdefault(
+            brand_key,
+            {
+                "brand": brand_key,
+                "listing_count": 0,
+                "total_revenue": 0.0,
+                "best_bsr": None,
+                "image_url": "",
+                "top_title": "",
+                "top_revenue": 0.0,
+            },
+        )
+        bucket["listing_count"] += 1
+        bucket["total_revenue"] += revenue
+        if bsr is not None and (bucket["best_bsr"] is None or bsr < bucket["best_bsr"]):
+            bucket["best_bsr"] = bsr
+        # Track the brand's top listing for the thumbnail/title preview.
+        if revenue > bucket["top_revenue"]:
+            bucket["top_revenue"] = revenue
+            bucket["image_url"] = getattr(product, "image_url", "") or ""
+            bucket["top_title"] = getattr(product, "title", "") or ""
+    return sorted(by_brand.values(), key=lambda r: r["total_revenue"], reverse=True)
+
+
+def _render_niche_summary_brand_row(
+    bucket: dict[str, Any], total_revenue: float, display_order: int
+) -> str:
+    share = 0.0 if total_revenue <= 0 else (bucket["total_revenue"] / total_revenue) * 100
+    image_html = (
+        f"<img src='{html.escape(bucket['image_url'])}' alt='{html.escape(bucket['brand'])}' />"
+        if bucket["image_url"]
+        else "<div class='image-fallback compact'>No image</div>"
+    )
+    listing_word = "listing" if bucket["listing_count"] == 1 else "listings"
+    revenue_label = (
+        f"${bucket['total_revenue']:,.2f}" if bucket["total_revenue"] >= 1 else "n/a"
+    )
+    bsr_label = f"BSR {int(bucket['best_bsr']):,}" if bucket["best_bsr"] is not None else ""
+    return (
+        "<tr>"
+        f"<td>{display_order}</td>"
+        "<td>"
+        "<div class='niche-product-cell'>"
+        f"<div class='niche-product-thumb'>{image_html}</div>"
+        "<div>"
+        f"<strong>{html.escape(_trim_text(bucket['brand'], 40))}</strong>"
+        f"<div class='muted'>{bucket['listing_count']} {listing_word}"
+        f"{f' · {html.escape(bsr_label)}' if bsr_label else ''}</div>"
+        "</div>"
+        "</div>"
+        "</td>"
+        f"<td>—</td>"
+        f"<td>{html.escape(revenue_label)}</td>"
+        f"<td>{share:.1f}%</td>"
+        "</tr>"
+    )
 def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None, missing_image_asset: str = "") -> str:
     comparison_mode = str(target.get("comparison_mode", "") or "")
     launch_mode = comparison_mode == "concept_only"

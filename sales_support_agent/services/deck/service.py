@@ -803,6 +803,17 @@ class DeckGenerationService:
             _render_niche_summary_row(product, xray_report.total_revenue)
             for product in xray_report.products[:10]
         )
+        # Audit item 3: brand-aggregated view of the same data, toggled by a
+        # button group above the table.
+        from sales_support_agent.services.deck.rendering import (
+            _aggregate_brands,
+            _render_niche_summary_brand_row,
+        )
+        brand_buckets = _aggregate_brands(xray_report.products)[:10]
+        niche_table_brand_rows = "".join(
+            _render_niche_summary_brand_row(b, xray_report.total_revenue, i + 1)
+            for i, b in enumerate(brand_buckets)
+        )
         search_title_html = _render_signal_list("Title coverage", search_insights.get("title_hits", []), search_insights.get("title_misses", []), "Missing title targets")
         search_copy_html = _render_signal_list("Bullet / copy coverage", search_insights.get("copy_hits", []), search_insights.get("copy_misses", []), "Missing copy targets")
         target_strength_html = "".join(_render_action_item(item) for item in target_strengths)
@@ -906,21 +917,28 @@ class DeckGenerationService:
         <div class="dashboard-card niche-table-card">
           <div class="card-head">
             <h3>Competitor revenue breakdown</h3>
-            <span class="muted">Top listings from the current page-one market set</span>
+            <div class="niche-toggle" role="tablist" aria-label="Competitor breakdown view">
+              <button type="button" class="niche-toggle-btn is-active" data-niche-view="asin" aria-pressed="true">By ASIN</button>
+              <button type="button" class="niche-toggle-btn" data-niche-view="brand" aria-pressed="false">By Brand</button>
+            </div>
           </div>
           <div class="table-wrap niche-table-wrap">
-            <table class="niche-table">
+            <table class="niche-table" data-niche-view-target>
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Product</th>
+                  <th data-asin-only>Product</th>
+                  <th data-brand-only hidden>Brand</th>
                   <th>Price</th>
                   <th>Revenue</th>
                   <th>Share</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody data-view="asin">
                 {niche_table_rows}
+              </tbody>
+              <tbody data-view="brand" hidden>
+                {niche_table_brand_rows}
               </tbody>
             </table>
           </div>
@@ -1062,6 +1080,29 @@ class DeckGenerationService:
             const isActive = panel.dataset.panel === target;
             panel.classList.toggle("is-active", isActive);
             panel.hidden = !isActive;
+          }});
+        }});
+      }});
+    }});
+    // Audit item 3: ASIN ↔ Brand toggle on competitor revenue breakdown table.
+    document.querySelectorAll(".niche-toggle").forEach((toggleRoot) => {{
+      const card = toggleRoot.closest(".niche-table-card") || toggleRoot.closest(".dashboard-card");
+      toggleRoot.querySelectorAll(".niche-toggle-btn").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const view = button.dataset.nicheView;
+          toggleRoot.querySelectorAll(".niche-toggle-btn").forEach((node) => {{
+            const isActive = node === button;
+            node.classList.toggle("is-active", isActive);
+            node.setAttribute("aria-pressed", isActive ? "true" : "false");
+          }});
+          card?.querySelectorAll("tbody[data-view]").forEach((tbody) => {{
+            tbody.hidden = tbody.dataset.view !== view;
+          }});
+          card?.querySelectorAll("[data-asin-only]").forEach((node) => {{
+            node.hidden = view !== "asin";
+          }});
+          card?.querySelectorAll("[data-brand-only]").forEach((node) => {{
+            node.hidden = view !== "brand";
           }});
         }});
       }});
