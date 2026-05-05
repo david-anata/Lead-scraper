@@ -171,6 +171,7 @@ class DeckGenerationService:
         offers: list[str] | None = None,
         offer_payload_json: str = "",
         include_recommended_plan: bool = True,
+        growth_plan_inputs: dict[str, Any] | None = None,
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
         effective_target_input = target_product_input.strip()
@@ -221,6 +222,7 @@ class DeckGenerationService:
                 offers=enabled_offers,
                 offer_cards=offer_cards,
                 include_recommended_plan=bool(include_recommended_plan),
+                growth_plan_inputs=growth_plan_inputs,
             )
             title = str(dataset.deck_payload.get("deck_title") or self._build_design_title(title_hint=effective_target_input)).strip()
             result = self._generate_html_deck(
@@ -355,6 +357,7 @@ class DeckGenerationService:
         offers: list[str],
         offer_cards: list[dict[str, str]],
         include_recommended_plan: bool,
+        growth_plan_inputs: dict[str, Any] | None = None,
     ) -> DeckDataset:
         parsed_target = _parse_target_product_input(target_product_input)
         if parsed_target["source_type"] not in {"amazon", "shopify", "website"}:
@@ -553,6 +556,39 @@ class DeckGenerationService:
 
         text_fields["competitor_row_count"] = str(max(len(competitor_rows) - 1, 0))
         text_fields["sales_row_count"] = str(len(xray_report.products))
+
+        # Build the optional Growth Plan Synopsis section.
+        growth_plan = None
+        if growth_plan_inputs is not None:
+            from sales_support_agent.services.deck.growth_plan import (
+                build_growth_plan,
+                parse_growth_plan_inputs,
+            )
+            inputs_obj = parse_growth_plan_inputs(growth_plan_inputs)
+            target_units_int = int(round(target_row.units_sold or 0)) if target_row else 0
+            top3_avg_sessions = None
+            if xray_report.products:
+                top3 = xray_report.products[:3]
+                cvr_decimal = max(inputs_obj.conversion_rate_pct / 100.0, 0.001)
+                top3_avg_units = sum(p.units_sold or 0.0 for p in top3) / len(top3)
+                top3_avg_sessions = int(round(top3_avg_units / cvr_decimal))
+            if inputs_obj.average_order_value is None:
+                # Fall back to target's price as AOV proxy.
+                price_str = str(target_price_label or "").lstrip("$").replace(",", "")
+                try:
+                    aov_fallback = float(price_str) if price_str else None
+                except ValueError:
+                    aov_fallback = None
+                if aov_fallback is not None:
+                    inputs_obj = type(inputs_obj)(
+                        **{**inputs_obj.__dict__, "average_order_value": aov_fallback}
+                    )
+            growth_plan = build_growth_plan(
+                inputs=inputs_obj,
+                target_units=target_units_int,
+                top3_competitor_avg_sessions=top3_avg_sessions,
+            )
+
         return DeckDataset(
             text_fields=text_fields,
             chart_fields={
@@ -612,6 +648,7 @@ class DeckGenerationService:
                 "case_study_url": case_study_url or DEFAULT_CASE_STUDY_URL,
                 "offer_cards": offer_cards,
                 "include_recommended_plan": include_recommended_plan,
+                "growth_plan": growth_plan,
             },
         )
 
@@ -655,6 +692,21 @@ class DeckGenerationService:
         case_study_url = str(payload.get("case_study_url", "") or "").strip()
         offer_cards = list(payload.get("offer_cards", []))
         include_recommended_plan = bool(payload.get("include_recommended_plan", True))
+        growth_plan_obj = payload.get("growth_plan")
+        if growth_plan_obj is not None:
+            from sales_support_agent.services.deck.growth_plan import (
+                GrowthPlan,
+                render_growth_plan_section,
+            )
+            if isinstance(growth_plan_obj, GrowthPlan):
+                growth_plan_html = render_growth_plan_section(
+                    growth_plan_obj,
+                    target_brand=str(payload.get("target", {}).get("brand_name") or "the prospect"),
+                )
+            else:
+                growth_plan_html = ""
+        else:
+            growth_plan_html = ""
         monogram = self._load_brand_asset("assets/monogram.png")
         no_product_image = self._load_brand_asset("assets/no-product-image-available.png")
         stylesheet = self._load_brand_stylesheet()
@@ -885,6 +937,8 @@ class DeckGenerationService:
         "</div>"
       ) if (keyword_rank_summary_html or keyword_bubble_html) else ""}
     </section>
+
+    {growth_plan_html}
 
     <section class="slide">
       <div class="slide-head">
