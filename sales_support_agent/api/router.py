@@ -1226,6 +1226,21 @@ def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: 
     return _render_deck_export(request, run_id, token)
 
 
+_GROWTH_PLAN_FORM_KEYS = {
+    "growth_cvr_pct", "growth_goal_sessions", "growth_goal_multiplier", "growth_aov",
+    "growth_mix_organic", "growth_mix_on_channel_paid", "growth_mix_off_channel_paid",
+    "growth_mix_affiliate", "growth_mix_retargeting",
+    "growth_on_channel_cpc", "growth_off_channel_cpc",
+    "growth_dsp_prospecting_cpm", "growth_dsp_retargeting_cpm", "growth_retargeting_ctr_pct",
+    "growth_videos_per_month", "growth_avg_impressions_per_video", "growth_shoppable_ctr_pct",
+    "growth_tiktok_platform_commission_pct", "growth_creator_commission_pct",
+    "growth_hybrid_flat_fee_per_video", "growth_cogs_per_unit", "growth_shipping_per_unit",
+    "growth_tiktok_to_amazon_cvr_uplift",
+    "growth_audience_window_days", "growth_frequency_cap",
+    "growth_repeat_cvr_multiplier", "growth_btp_redemption_pct",
+}
+
+
 async def _run_generate_deck(
     request: Request,
     *,
@@ -1240,6 +1255,7 @@ async def _run_generate_deck(
     offers: list[str],
     offer_payload_json: str,
     include_recommended_plan: bool,
+    include_growth_plan: bool = False,
     trigger: str = "admin_dashboard",
 ) -> ApiMessage:
     """Shared body for the two generate-deck routes.
@@ -1251,6 +1267,22 @@ async def _run_generate_deck(
     competitor_files = [file for file in competitor_xray_csv if file.filename]
     keyword_files = [file for file in keyword_xray_csv if file.filename]
     settings = request.app.state.settings
+
+    # Pull growth-plan inputs out of the request form. We don't define them as
+    # FastAPI Form() params to keep the function signature manageable; instead
+    # we read them straight from the form payload and forward as a dict.
+    growth_plan_inputs: Optional[dict[str, str]] = None
+    if include_growth_plan:
+        try:
+            form_data = await request.form()
+            growth_plan_inputs = {
+                key: str(form_data.get(key))
+                for key in _GROWTH_PLAN_FORM_KEYS
+                if form_data.get(key) not in (None, "")
+            }
+        except Exception:
+            growth_plan_inputs = {}
+
     try:
         with session_scope(request.app.state.session_factory) as session:
             result = DeckGenerationService(settings, session).generate_deck(
@@ -1273,6 +1305,7 @@ async def _run_generate_deck(
                 offers=offers,
                 offer_payload_json=offer_payload_json,
                 include_recommended_plan=include_recommended_plan,
+                growth_plan_inputs=growth_plan_inputs,
                 trigger=trigger,
             )
     except Exception as exc:
@@ -1310,6 +1343,7 @@ async def admin_generate_deck(
     offers: list[str] = Form(default=[]),
     offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
+    include_growth_plan: bool = Form(default=False),
 ) -> ApiMessage:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -1327,6 +1361,7 @@ async def admin_generate_deck(
         offers=offers,
         offer_payload_json=offer_payload_json,
         include_recommended_plan=include_recommended_plan,
+        include_growth_plan=include_growth_plan,
         trigger="admin_dashboard",
     )
 
@@ -1346,6 +1381,7 @@ async def internal_admin_generate_deck(
     offers: list[str] = Form(default=[]),
     offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
+    include_growth_plan: bool = Form(default=False),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     return await _run_generate_deck(
@@ -1361,6 +1397,7 @@ async def internal_admin_generate_deck(
         offers=offers,
         offer_payload_json=offer_payload_json,
         include_recommended_plan=include_recommended_plan,
+        include_growth_plan=include_growth_plan,
         trigger="internal_api",
     )
 

@@ -4578,6 +4578,59 @@ def render_sales_deck_page(data: DashboardData) -> str:
                 </div>
               </div>
             </fieldset>
+            <fieldset class="offer-toggle-group" id="deck-growth-fieldset">
+              <legend>Growth plan synopsis</legend>
+              <label class="checkbox-label">
+                <span>Include growth plan slide (Closing the sessions gap)</span>
+                <span class="toggle-switch"><input type="checkbox" id="deck-include-growth" name="include_growth_plan" value="true" /><span aria-hidden="true"></span></span>
+              </label>
+              <details id="deck-growth-inputs" style="margin-top: 12px;">
+                <summary style="cursor: pointer; font-weight: 600;">Growth plan inputs (defaults shown; override per deck)</summary>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; margin-top: 12px;">
+                  <label>Conversion rate (%) <input type="number" name="growth_cvr_pct" value="15" step="0.1" min="0.1" max="100" /></label>
+                  <label>Goal monthly sessions <input type="number" name="growth_goal_sessions" placeholder="auto from top-3 avg" min="0" /></label>
+                  <label>Average order value ($) <input type="number" name="growth_aov" placeholder="defaults to target price" step="0.01" min="0" /></label>
+                  <label>Goal multiplier (if no goal set) <input type="number" name="growth_goal_multiplier" value="3" step="0.1" min="1" /></label>
+                </div>
+                <p style="margin-top: 12px; font-weight: 600;">Channel mix (must sum to 100)</p>
+                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
+                  <label>Organic % <input type="number" name="growth_mix_organic" value="25" step="1" min="0" max="100" /></label>
+                  <label>On-channel % <input type="number" name="growth_mix_on_channel_paid" value="25" step="1" min="0" max="100" /></label>
+                  <label>Off-channel % <input type="number" name="growth_mix_off_channel_paid" value="25" step="1" min="0" max="100" /></label>
+                  <label>Affiliate % <input type="number" name="growth_mix_affiliate" value="15" step="1" min="0" max="100" /></label>
+                  <label>Retargeting % <input type="number" name="growth_mix_retargeting" value="10" step="1" min="0" max="100" /></label>
+                </div>
+                <p style="margin-top: 12px; font-weight: 600;">Channel cost defaults</p>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px;">
+                  <label>On-channel paid CPC ($) <input type="number" name="growth_on_channel_cpc" value="3.00" step="0.01" min="0" /></label>
+                  <label>Off-channel paid CPC ($) <input type="number" name="growth_off_channel_cpc" value="0.15" step="0.01" min="0" /></label>
+                  <label>DSP prospecting CPM ($) <input type="number" name="growth_dsp_prospecting_cpm" value="10" step="0.5" min="0" /></label>
+                  <label>DSP retargeting CPM ($) <input type="number" name="growth_dsp_retargeting_cpm" value="13" step="0.5" min="0" /></label>
+                  <label>Retargeting CTR (%) <input type="number" name="growth_retargeting_ctr_pct" value="1.26" step="0.01" min="0" /></label>
+                </div>
+                <p style="margin-top: 12px; font-weight: 600;">Affiliate sub-model</p>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px;">
+                  <label>Videos per month <input type="number" name="growth_videos_per_month" value="8" step="1" min="0" /></label>
+                  <label>Avg impressions per video <input type="number" name="growth_avg_impressions_per_video" value="50000" step="1000" min="0" /></label>
+                  <label>Shoppable creator CTR (%) <input type="number" name="growth_shoppable_ctr_pct" value="2" step="0.1" min="0" /></label>
+                  <label>TikTok Shop platform commission (%) <input type="number" name="growth_tiktok_platform_commission_pct" value="7" step="0.5" min="0" /></label>
+                  <label>Creator commission (%) <input type="number" name="growth_creator_commission_pct" value="13" step="0.5" min="0" /></label>
+                  <label>Hybrid flat fee per video ($) <input type="number" name="growth_hybrid_flat_fee_per_video" value="0" step="50" min="0" /></label>
+                  <label><strong>COGS per unit ($)</strong> <input type="number" name="growth_cogs_per_unit" placeholder="REQUIRED if affiliate mix > 0" step="0.01" min="0" /></label>
+                  <label><strong>Shipping per unit ($)</strong> <input type="number" name="growth_shipping_per_unit" placeholder="REQUIRED if affiliate mix > 0" step="0.01" min="0" /></label>
+                </div>
+                <p style="margin-top: 12px; font-weight: 600;">Retargeting sub-model</p>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px;">
+                  <label>Audience eligibility window (days) <input type="number" name="growth_audience_window_days" value="60" step="1" min="1" /></label>
+                  <label>Frequency cap (impressions/user) <input type="number" name="growth_frequency_cap" value="4" step="1" min="1" /></label>
+                  <label>Repeat-purchase CVR multiplier <input type="number" name="growth_repeat_cvr_multiplier" value="2.5" step="0.1" min="1" /></label>
+                  <label>Brand-tailored promo redemption (%) <input type="number" name="growth_btp_redemption_pct" value="5" step="0.5" min="0" max="100" /></label>
+                </div>
+                <p style="margin-top: 12px; font-size: 12px; color: var(--anata-muted, #6b7688);">
+                  Defaults sourced from Tinuiti Q1 2026, Pacvue Q1 2026, WordStream 2025, Digital Applied 2026, and Shortform Nation 2026. The four directional defaults (TikTok→Amazon CVR uplift, repeat-purchase multiplier, BTP redemption, per-video impressions) are starters — calibrate after the first 30 days of first-party data.
+                </p>
+              </details>
+            </fieldset>
             <div class="lead-submit">
               <button type="submit" id="deck-submit-button">GENERATE DECK</button>
             </div>

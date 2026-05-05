@@ -340,6 +340,138 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertGreater(result.competitor_row_count, 0)
 
 
+@unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for growth-plan tests")
+class GrowthPlanTests(unittest.TestCase):
+    """Tests for the new Growth Plan Synopsis section (PR5)."""
+
+    def test_growth_plan_basic_math_matches_napkin(self) -> None:
+        from sales_support_agent.services.deck.growth_plan import (
+            GrowthPlanInputs,
+            build_growth_plan,
+        )
+        # User's napkin: 3,000 units / 15% CVR = 20,000 sessions; goal 60,000 → delta 40,000
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(
+                conversion_rate_pct=15.0,
+                goal_monthly_sessions=60_000,
+                average_order_value=29.99,
+                cogs_per_unit=4.5,
+                shipping_per_unit=2.5,
+            ),
+            target_units=3_000,
+        )
+        self.assertEqual(plan.current_sessions, 20_000)
+        self.assertEqual(plan.goal_sessions, 60_000)
+        self.assertEqual(plan.delta_sessions, 40_000)
+        # Channel mix sums (approximately) to delta sessions
+        self.assertAlmostEqual(
+            sum(c.sessions for c in plan.channels),
+            plan.delta_sessions,
+            delta=4,  # rounding tolerance across 5 buckets
+        )
+        # Off-channel paid uses Anata's $0.15 storefront-traffic CPC
+        off_channel = next(c for c in plan.channels if c.key == "off_channel_paid")
+        self.assertIn("$0.15", off_channel.detail)
+        # On-channel paid spend = sessions × $3 CPC
+        on_channel = next(c for c in plan.channels if c.key == "on_channel_paid")
+        self.assertAlmostEqual(on_channel.monthly_cost, on_channel.sessions * 3.0, delta=0.01)
+
+    def test_growth_plan_validation_flags_mix_and_missing_cogs(self) -> None:
+        from sales_support_agent.services.deck.growth_plan import GrowthPlanInputs
+        bad_mix = GrowthPlanInputs(mix_organic=50, mix_on_channel_paid=10)  # sums to 95
+        errors = bad_mix.validate()
+        self.assertTrue(any("sum to 100" in e for e in errors))
+
+        affiliate_no_cogs = GrowthPlanInputs(mix_affiliate=20, cogs_per_unit=0.0)
+        errors = affiliate_no_cogs.validate()
+        self.assertTrue(any("COGS" in e for e in errors))
+
+    def test_growth_plan_shortfall_flagged_when_mix_underdelivers(self) -> None:
+        from sales_support_agent.services.deck.growth_plan import (
+            GrowthPlanInputs,
+            build_growth_plan,
+        )
+        # Goal needs 1000 delta sessions; assign all 100% to one channel — it
+        # will deliver the full delta, no shortfall. So contrive shortfall by
+        # zero-ing all channels (sum 0 != 100, but build still runs).
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(
+                conversion_rate_pct=15.0,
+                goal_monthly_sessions=10_000,
+                mix_organic=0, mix_on_channel_paid=0, mix_off_channel_paid=0,
+                mix_affiliate=0, mix_retargeting=0,
+                average_order_value=29.99,
+            ),
+            target_units=100,  # current_sessions = ~666
+        )
+        self.assertGreater(plan.delta_sessions, 0)
+        self.assertEqual(plan.total_sessions_delivered, 0)
+        self.assertEqual(plan.shortfall_sessions, plan.delta_sessions)
+
+    def test_generate_deck_includes_growth_section_when_inputs_provided(self) -> None:
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(), session,
+                shopify_client=object(), amazon_client=_FakeAmazonClient(),
+            )
+            service.product_research = _FakeProductResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="B0TARGET01",
+                growth_plan_inputs={
+                    "growth_cvr_pct": "15",
+                    "growth_goal_sessions": "60000",
+                    "growth_aov": "29.99",
+                    "growth_cogs_per_unit": "4.5",
+                    "growth_shipping_per_unit": "2.5",
+                },
+            )
+
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            html = str(dict(run.summary_json or {}).get("deck_html") or "")
+
+        self.assertIn("Closing the sessions gap", html)
+        self.assertIn("growth-plan-slide", html)
+        self.assertIn("Methodology and sources", html)
+
+    def test_generate_deck_omits_growth_section_when_no_inputs(self) -> None:
+        """Without growth_plan_inputs the section must not appear — preserves
+        backward compatibility for callers that don't opt in."""
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(), session,
+                shopify_client=object(), amazon_client=_FakeAmazonClient(),
+            )
+            service.product_research = _FakeProductResearch()
+            service.generate_deck(
+                competitor_xray_csv_bytes=_xray_csv(),
+                competitor_xray_filename="xray.csv",
+                target_product_input="B0TARGET01",
+            )
+
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            html = str(dict(run.summary_json or {}).get("deck_html") or "")
+
+        # The CSS rules for .growth-plan-slide are always present in the
+        # inlined brand stylesheet — assert on the actual section markup
+        # and the visible heading instead.
+        self.assertNotIn('<section class="slide growth-plan-slide"', html)
+        self.assertNotIn("Closing the sessions gap", html)
+
+
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck routing tests")
 class DeckRoutingTests(unittest.TestCase):
     """End-to-end tests for the deck export and admin generate-deck routes.

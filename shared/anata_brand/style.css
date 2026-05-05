@@ -1243,6 +1243,196 @@ mark {
   }
 }
 
+/* ============================================================ */
+/* Growth Plan Synopsis slide                                   */
+/* ============================================================ */
+
+.growth-plan-slide .growth-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 16px 0 24px;
+}
+
+.growth-plan-slide .growth-kpi {
+  background: var(--anata-paper);
+  border: 1px solid var(--anata-line);
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.growth-plan-slide .growth-kpi .label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--anata-muted);
+}
+
+.growth-plan-slide .growth-kpi strong {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--anata-ink);
+  font-family: "Montserrat", "Inter", sans-serif;
+}
+
+.growth-plan-slide .growth-kpi small {
+  font-size: 12px;
+  color: var(--anata-muted);
+}
+
+.growth-plan-slide .channel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.growth-plan-slide .channel-card {
+  background: var(--anata-paper);
+  border: 1px solid var(--anata-line);
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  break-inside: avoid;
+}
+
+.growth-plan-slide .channel-card.channel-organic {
+  border-left: 4px solid var(--anata-sand);
+}
+
+.growth-plan-slide .channel-card.channel-on_channel_paid {
+  border-left: 4px solid var(--anata-sky-deep);
+}
+
+.growth-plan-slide .channel-card.channel-off_channel_paid {
+  border-left: 4px solid var(--anata-sky);
+}
+
+.growth-plan-slide .channel-card.channel-affiliate {
+  border-left: 4px solid #d28b8b;
+}
+
+.growth-plan-slide .channel-card.channel-retargeting {
+  border-left: 4px solid #8bb59a;
+}
+
+.growth-plan-slide .channel-card .card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.growth-plan-slide .channel-card .card-head h3 {
+  font-size: 15px;
+  margin: 0;
+  color: var(--anata-ink);
+}
+
+.growth-plan-slide .channel-card .card-mix {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--anata-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.growth-plan-slide .channel-card .card-sessions {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--anata-ink);
+  font-family: "Montserrat", "Inter", sans-serif;
+}
+
+.growth-plan-slide .channel-card .card-cost {
+  font-size: 14px;
+  color: var(--anata-ink-soft);
+}
+
+.growth-plan-slide .channel-card .card-detail {
+  font-size: 12px;
+  color: var(--anata-muted);
+  margin: 0;
+}
+
+.growth-plan-slide .channel-card .card-source {
+  font-size: 11px;
+  color: var(--anata-muted);
+  font-style: italic;
+}
+
+.growth-plan-slide .channel-card .directional {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(191, 168, 137, 0.18);
+  color: var(--anata-sand);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-style: normal;
+}
+
+.growth-plan-slide .growth-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  background: rgba(133, 187, 218, 0.10);
+  border-radius: 10px;
+  font-size: 14px;
+  color: var(--anata-ink-soft);
+}
+
+.growth-plan-slide .growth-shortfall {
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: rgba(210, 139, 139, 0.12);
+  border: 1px solid #d28b8b;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #8a3a3a;
+}
+
+.growth-plan-slide .growth-methodology {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--anata-muted);
+}
+
+.growth-plan-slide .growth-methodology summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--anata-ink-soft);
+}
+
+.growth-plan-slide .growth-methodology ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+@media (max-width: 720px) {
+  .growth-plan-slide .growth-kpis,
+  .growth-plan-slide .channel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .growth-plan-slide .growth-summary {
+    flex-direction: column;
+  }
+}
+
 @page {
   size: Letter;
   margin: 0.5in;
