@@ -4627,31 +4627,35 @@ def render_sales_deck_page(data: DashboardData) -> str:
               <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
             </label>
             <label>
-              Target Xray CSV (optional)
+              Xray — Target listing CSV (optional)
               <input type="file" name="target_xray_csv" accept=".csv,text/csv" />
-              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Single-row Helium 10 Xray export of the target listing. Use this when the target ASIN isn't in the competitor niche set so the deck can populate price, BSR, revenue, rating, reviews, and dimensions for the target.</small>
+              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Xray, run on the target ASIN only (single-row export). Optional — populates target price/BSR/revenue/rating/reviews/dimensions when the prospect ASIN isn't in the competitor niche set.</small>
             </label>
             <label>
-              Competitor CSVs
-              <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
+              Xray — Competitors CSVs <span class="muted" style="font-weight:400;">(required)</span>
+              <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple required />
+              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Xray, run on the niche keyword. Drives the page-one competitor table, donuts, and revenue breakdown. Multiple files accepted and merged.</small>
             </label>
             <label>
-              Keyword CSVs
+              Xray — Keywords CSVs (optional)
               <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
+              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Keyword Tracker / Xray Keywords, run on the niche keyword. Feeds the SEO opportunity table. Multiple files accepted and merged.</small>
             </label>
             <label>
-              Cerebro CSV
+              Cerebro — Competitors CSV (optional)
               <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
+              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Cerebro, reverse-ASIN lookup on the target + 1–2 top competitors. Drives the ranking-path chart and "where the listing already wins / lifts available" story.</small>
             </label>
             <label>
-              Word frequency CSV
+              Cerebro — Keyword Frequency CSV (optional)
               <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
+              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Helium 10 → Cerebro → Word Frequency tab. Powers the support-term demand bubbles slide.</small>
             </label>
             <label>
               Creative mockup URL
               <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
             </label>
-            <div class="draft-help full-width">Case studies are embedded automatically from the shared public deck link. Xray and keyword uploads accept multiple files and merge them before deck generation. Cerebro and word frequency uploads are optional and feed the search-behavior story.</div>
+            <div class="draft-help full-width">Only the Xray Competitors CSV is required. Everything else is optional and adds detail. Case studies embed automatically from the shared public deck link.</div>
             <fieldset class="offer-toggle-group">
               <legend>Proposed offers</legend>
               <label class="checkbox-label">
