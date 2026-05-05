@@ -452,10 +452,17 @@ h3 {
 
 .comparison-table-wrap {
   margin-bottom: 16px;
+  /* Audit item 4b: on narrow viewports the metric column was getting
+     squished (target/best-seller cells crammed against the labels).
+     Allow horizontal scroll instead so each cell keeps its breathing
+     room and the user can swipe right to see the full row. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .comparison-table {
   width: 100%;
+  min-width: 640px;
   border-collapse: collapse;
 }
 

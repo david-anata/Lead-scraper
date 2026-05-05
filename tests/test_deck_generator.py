@@ -165,6 +165,36 @@ class DeckGeneratorTests(unittest.TestCase):
         self.assertEqual(words.words[0].word, "spirulina")
         self.assertEqual(words.total_frequency, 1410)
 
+    def test_detect_niche_mismatch_aligned_returns_empty(self) -> None:
+        """Aligned datasets (same niche tokens) → no warning."""
+        from sales_support_agent.services.deck.service import _detect_niche_mismatch
+        from sales_support_agent.services.helium10 import parse_xray_csv, parse_keyword_csv
+        warning = _detect_niche_mismatch(
+            target_title="Ocean Rx Experience Pure Blue Spirulina",
+            keyword_report=parse_keyword_csv(_keyword_csv()),
+            cerebro_report=None,
+            xray_report=parse_xray_csv(_xray_csv()),
+        )
+        self.assertEqual(warning, "")
+
+    def test_detect_niche_mismatch_misaligned_returns_warning(self) -> None:
+        """Wrong CSVs (different niche from target title) → warning."""
+        from sales_support_agent.services.deck.service import _detect_niche_mismatch
+        from sales_support_agent.services.helium10 import parse_keyword_csv
+        wrong_keyword_csv = (
+            "Keyword Phrase,Search Volume,Keyword Sales,Suggested PPC Bid,Competing Products,Title Density,Competitor Rank (avg)\n"
+            "moroccanoil,23000,710,2.50,150,10,8.0\n"
+            "frizz ease serum,5000,180,1.80,90,7,12.0\n"
+        ).encode("utf-8")
+        warning = _detect_niche_mismatch(
+            target_title="Portable Breast Milk Cooler — Keeps Milk Cold Up to 15 Hours",
+            keyword_report=parse_keyword_csv(wrong_keyword_csv),
+            cerebro_report=None,
+            xray_report=None,
+        )
+        self.assertIn("different niches", warning)
+        self.assertIn("keyword CSV", warning)
+
     def test_generate_deck_returns_html_output_and_persists_run_metadata(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)

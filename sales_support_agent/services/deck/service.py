@@ -91,6 +91,7 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
     _preferred_target_title,
     _slugify,
     _target_reference_label,
+    _title_token_set,
     _titleize_slug,
     _trim_text,
 )
@@ -119,6 +120,62 @@ from sales_support_agent.services.deck.rendering import (  # noqa: F401
     _render_target_comparison_table,
     _render_word_frequency_bubbles,
 )
+
+
+# ---------------------------------------------------------------------------
+# Sanity check: detect when the uploaded CSVs reference a different niche
+# than the target product. Surfaces as a warning on the deck so a sales
+# audit catches the mismatch before sending to a prospect.
+# (Audit follow-up — direct ask after reviewing the Waiu Bottles deck.)
+# ---------------------------------------------------------------------------
+
+_NICHE_OVERLAP_THRESHOLD = 0.30  # need 30%+ token overlap to consider niches aligned
+
+
+def _detect_niche_mismatch(
+    *,
+    target_title: str,
+    keyword_report: Any,
+    cerebro_report: Any,
+    xray_report: Any,
+) -> str:
+    """Return a warning string if the keyword/cerebro CSVs reference a different
+    niche than the target product. Empty string when datasets look aligned."""
+    target_tokens = _title_token_set(target_title)
+    if not target_tokens:
+        return ""
+
+    keyword_tokens: set[str] = set()
+    if keyword_report and getattr(keyword_report, "keywords", None):
+        for kw in keyword_report.keywords[:10]:
+            keyword_tokens |= _title_token_set(getattr(kw, "phrase", ""))
+    if cerebro_report and getattr(cerebro_report, "keywords", None):
+        for kw in cerebro_report.keywords[:10]:
+            keyword_tokens |= _title_token_set(getattr(kw, "phrase", ""))
+
+    xray_tokens: set[str] = set()
+    if xray_report and getattr(xray_report, "products", None):
+        for product in xray_report.products[:10]:
+            xray_tokens |= _title_token_set(getattr(product, "title", ""))
+
+    issues: list[str] = []
+    if keyword_tokens:
+        overlap = len(target_tokens & keyword_tokens) / max(len(target_tokens), 1)
+        if overlap < _NICHE_OVERLAP_THRESHOLD:
+            issues.append("keyword CSV")
+    if xray_tokens:
+        overlap = len(target_tokens & xray_tokens) / max(len(target_tokens), 1)
+        if overlap < _NICHE_OVERLAP_THRESHOLD:
+            issues.append("Xray CSV")
+
+    if not issues:
+        return ""
+    return (
+        "Heads up — the target product and the "
+        + " + ".join(issues)
+        + " appear to reference different niches (token overlap below 30%). "
+        + "Verify you uploaded the right datasets before sharing this deck."
+    )
 
 
 class DeckGenerationService:
@@ -387,6 +444,21 @@ class DeckGenerationService:
             warnings.extend(cerebro_report.warnings)
         if word_frequency_report:
             warnings.extend(word_frequency_report.warnings)
+
+        # Audit follow-up: CSV-niche-mismatch sanity check.
+        # If the target product title and the keyword/cerebro CSVs reference
+        # totally different niches (low token overlap), surface a warning so
+        # the deck doesn't silently glue mismatched datasets together (as
+        # happened with the Waiu Bottles deck — breast milk cooler target
+        # paired with hair-care keywords and a dog-food category).
+        mismatch_warning = _detect_niche_mismatch(
+            target_title=hero_product.title or parsed_target.get("product_name", ""),
+            keyword_report=keyword_report,
+            cerebro_report=cerebro_report,
+            xray_report=xray_report,
+        )
+        if mismatch_warning:
+            warnings.append(mismatch_warning)
 
         verified_target_asin = (parsed_target["asin"] or hero_product.asin).strip()
         target_match = _find_target_row(
