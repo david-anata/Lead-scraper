@@ -1732,6 +1732,76 @@ mark {
     height: auto;
   }
 
+  /* Print image sizing: in print, images that fill the screen viewport at
+     ~210px feel oddly small on Letter, but the gallery/comparison cards
+     were also sometimes blowing up to ~5in tall when the source image was
+     2000px+. Cap heights so a single page can fit the whole comparison
+     table including images. */
+  .comparison-thumb {
+    width: 160px;
+    height: 160px;
+    aspect-ratio: 1 / 1;
+  }
+  .comparison-thumb img {
+    max-height: 100%;
+  }
+  .gallery-card img,
+  .niche-product-thumb img,
+  .resource-preview-card img,
+  .visual-proof-thumb img {
+    max-height: 220px;
+    width: auto;
+    object-fit: contain;
+  }
+  .visual-proof-thumb {
+    min-height: auto;
+    height: 220px;
+  }
+  /* The hero/cover slide image was filling half the cover at ~600px tall
+     in print which broke pagination. Cap to a reasonable share. */
+  .cover-art img,
+  .cover-media img,
+  .slide-cover img {
+    max-height: 3in;
+    width: auto;
+    object-fit: contain;
+  }
+  /* Donuts use SVG with min-width set on screen; in print they were
+     stretching to full container width and forcing the donut card to
+     break across pages. Constrain them. */
+  .donut,
+  .donut-card svg {
+    max-width: 200px;
+    max-height: 200px;
+  }
+
+  /* Slide-head (eyebrow + h2 + caption) was getting orphaned on a fresh
+     page with the next content on the page after. Glue them. */
+  .slide-head {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* Tighten slide spacing in print — the screen padding was adding 32px
+     per slide which shoved content past the page break. */
+  .slide {
+    padding: 0.15in 0;
+  }
+  .slide-head {
+    margin-bottom: 0.15in;
+  }
+
+  /* Visual proof panel: the colored borders and shadows print noisily;
+     the side-by-side layout doesn't survive the .two-col → block
+     stacking rule above (the arrow ends up between vertically-stacked
+     boxes pointing the wrong way). Keep the grid layout for this one. */
+  .visual-proof-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 28px 1fr !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
   /* Anchor links print without underlines bleeding into the text */
   a {
     color: inherit;
@@ -1741,5 +1811,13 @@ mark {
   /* Suppress the help-badge tooltip dots; they print as floating "?" otherwise */
   .help-badge {
     display: none;
+  }
+
+  /* Channel grid (Growth Plan) was wrapping awkwardly in print. Lock
+     to 5 columns so all channel cards fit on a single page. */
+  .channel-grid {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    gap: 0.1in !important;
   }
 }
