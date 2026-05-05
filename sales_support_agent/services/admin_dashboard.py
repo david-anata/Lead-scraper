@@ -4627,6 +4627,11 @@ def render_sales_deck_page(data: DashboardData) -> str:
               <input type="text" name="target_product_input" placeholder="Prospect product URL or B0ABC12345" />
             </label>
             <label>
+              Target Xray CSV (optional)
+              <input type="file" name="target_xray_csv" accept=".csv,text/csv" />
+              <small class="muted" style="display:block;margin-top:4px;font-weight:400;">Single-row Helium 10 Xray export of the target listing. Use this when the target ASIN isn't in the competitor niche set so the deck can populate price, BSR, revenue, rating, reviews, and dimensions for the target.</small>
+            </label>
+            <label>
               Competitor CSVs
               <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
             </label>

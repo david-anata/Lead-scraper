@@ -215,6 +215,8 @@ class DeckGenerationService:
         competitor_xray_csv_bytes: bytes | None = None,
         competitor_xray_filename: str = "",
         competitor_xray_csv_payloads: list[tuple[str, bytes]] | None = None,
+        target_xray_csv_bytes: bytes | None = None,
+        target_xray_filename: str = "",
         keyword_xray_csv_bytes: bytes | None = None,
         keyword_xray_filename: str = "",
         keyword_xray_csv_payloads: list[tuple[str, bytes]] | None = None,
@@ -271,6 +273,7 @@ class DeckGenerationService:
             dataset = self._build_amazon_first_dataset(
                 target_product_input=effective_target_input,
                 competitor_xray_csv_payloads=competitor_payloads,
+                target_xray_csv_bytes=target_xray_csv_bytes,
                 keyword_xray_csv_payloads=keyword_payloads,
                 cerebro_csv_bytes=cerebro_csv_bytes,
                 word_frequency_csv_bytes=word_frequency_csv_bytes,
@@ -406,6 +409,7 @@ class DeckGenerationService:
         *,
         target_product_input: str,
         competitor_xray_csv_payloads: list[tuple[str, bytes]],
+        target_xray_csv_bytes: bytes | None,
         keyword_xray_csv_payloads: list[tuple[str, bytes]],
         cerebro_csv_bytes: bytes | None,
         word_frequency_csv_bytes: bytes | None,
@@ -424,6 +428,22 @@ class DeckGenerationService:
             raise RuntimeError("Competitor Xray CSV is required.")
 
         xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
+
+        # When the user uploads a separate Target Xray CSV (single-row export
+        # of just the prospect listing), parse it and use that row as the
+        # canonical target. Solves the failure mode where the prospect's
+        # ASIN isn't in the page-one competitor set, SP-API enrichment
+        # isn't configured, and every target metric ends up "Unavailable".
+        target_xray_row = None
+        if target_xray_csv_bytes:
+            try:
+                target_xray_report = parse_xray_csvs([target_xray_csv_bytes])
+                if target_xray_report.products:
+                    target_xray_row = target_xray_report.products[0]
+            except RuntimeError as exc:
+                # Surface as a warning so the deck still renders.
+                pass  # Will be added to warnings list below
+
         keyword_report = parse_keyword_csvs([content for _, content in keyword_xray_csv_payloads])
         try:
             cerebro_report = parse_cerebro_csv(cerebro_csv_bytes)
@@ -471,6 +491,12 @@ class DeckGenerationService:
             brand_name=hero_product.brand_name or parsed_target.get("brand_name", ""),
         )
         target_row = target_match.product
+        # If the user uploaded a separate Target Xray CSV, that row wins —
+        # it's the most authoritative single-row export of the target's H10
+        # data and supersedes whatever fuzzy match we got out of the
+        # competitor set.
+        if target_xray_row is not None:
+            target_row = target_xray_row
         resolved_target_asin = (
             verified_target_asin
             or (target_row.asin if target_row else "")
