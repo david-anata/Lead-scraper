@@ -206,7 +206,7 @@ def _render_word_frequency_bubbles(report: Any) -> str:
         for item in words
     )
     return (
-        "<div class='dashboard-card support-term-card is-fullwidth'>"
+        "<div class='dashboard-card support-term-card'>"
         "<div class='card-head'>"
         "<h3>Support-term demand</h3>"
         "<span class='muted'>Single-word demand from the word-frequency file — color tier signals relative weight, hover for the count.</span>"
