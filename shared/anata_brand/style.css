@@ -1810,13 +1810,35 @@ mark {
     height: 220px;
   }
   /* The hero/cover slide image was filling half the cover at ~600px tall
-     in print which broke pagination. Cap to a reasonable share. */
+     in print which broke pagination. Cap aggressively. v3 user feedback:
+     cover image was still pushing the cover slide to 2 pages. The
+     `.hero-media` rule above also sets `aspect-ratio: 1/1; min-height: 220px`
+     which fights the height cap — override it explicitly here. */
   .cover-art img,
   .cover-media img,
-  .slide-cover img {
-    max-height: 3in;
+  .slide-cover img,
+  .hero-media img {
+    max-height: 1.8in !important;
+    max-width: 100%;
     width: auto;
     object-fit: contain;
+  }
+  .hero-media {
+    min-height: 0 !important;
+    aspect-ratio: auto !important;
+    padding: 6px !important;
+    height: auto !important;
+  }
+  .cover-grid {
+    /* Keep the cover's 2-col layout in print (the responsive collapse rule
+       at <960px otherwise makes the title text take page 1 and the image
+       takes page 2). */
+    display: grid !important;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) !important;
+    gap: 0.2in !important;
+  }
+  .slide-cover .cover-card {
+    padding: 0 !important;
   }
   /* Donuts use SVG with min-width set on screen; in print they were
      stretching to full container width and forcing the donut card to
@@ -1901,5 +1923,48 @@ mark {
     display: grid !important;
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
     gap: 0.12in !important;
+  }
+  /* User feedback (PR24): service offerings was burning pages because the
+     service-grid also collapses at <960px. Override to 2-col in print. */
+  .service-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.12in !important;
+  }
+  .service-card {
+    padding: 0.1in !important;
+  }
+  .offering-panel-head {
+    margin: 0 0 0.1in !important;
+  }
+  /* The resource/case-study area was getting sliced ("ase Study." in
+     v3 PDF). The Canva-embed iframe placeholder is unpredictable in
+     print; force the resource card to start on its own page if it
+     would otherwise break mid-element. */
+  .embedded-resource-section,
+  .resource-preview-card,
+  .resource-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  /* Hide the live Canva iframe in print (it renders as a blank
+     rectangle). The card's title + link still print. */
+  .resource-preview-card iframe,
+  .canva-embed iframe,
+  iframe {
+    display: none !important;
+  }
+  /* Visual proof images on the Conversion-and-PDP slide were still
+     200px+ tall, pushing the slide past one page. Tighten further. */
+  .visual-proof-thumb img,
+  .visual-proof-thumb {
+    max-height: 1.6in !important;
+    height: auto !important;
+    min-height: 0 !important;
+  }
+  /* Offer cards on the Proposed Offers slide were squeezing per-page.
+     Cap their image content so all offers fit on one slide. */
+  .offer-card img {
+    max-height: 100px !important;
   }
 }
