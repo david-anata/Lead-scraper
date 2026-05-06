@@ -1226,8 +1226,12 @@ def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: 
     return _render_deck_export(request, run_id, token)
 
 
-def _load_story_markdown(request: Request, run_id: int, token: str) -> tuple[str, str] | None:
-    """Return (markdown, deck_title) for the run, or None if not found / forbidden."""
+def _load_story_markdown(
+    request: Request, run_id: int, token: str
+) -> tuple[str, str, bool] | None:
+    """Return (markdown, deck_title, is_fallback) for the run, or None if the
+    run/token isn't valid. `is_fallback=True` means the run pre-dates the Story
+    feature and we synthesized a placeholder pointing at re-generation."""
     with session_scope(request.app.state.session_factory) as session:
         run = session.execute(
             select(AutomationRun).where(
@@ -1240,11 +1244,38 @@ def _load_story_markdown(request: Request, run_id: int, token: str) -> tuple[str
         summary = dict(run.summary_json or {})
         if summary.get("export_token") != token:
             return None
-        markdown_text = str(summary.get("story_markdown") or "")
-        if not markdown_text:
-            return None
         deck_title = str(summary.get("design_title") or "Anata Sales Story")
-        return markdown_text, deck_title
+        markdown_text = str(summary.get("story_markdown") or "").strip()
+        if markdown_text:
+            return markdown_text, deck_title, False
+
+        # Fallback for decks generated BEFORE the Story feature shipped:
+        # craft a minimal markdown with the data we still have on the run row,
+        # plus a clear instruction to re-generate the deck for the full Story.
+        view_url = str(summary.get("view_url") or "").strip()
+        target_id = str(summary.get("target_product_identifier") or "").strip()
+        channels = list(summary.get("channels") or [])
+        bullets: list[str] = []
+        if target_id:
+            bullets.append(f"- **Target listing:** `{target_id}`")
+        if channels:
+            bullets.append(f"- **Channels in scope:** {', '.join(str(c) for c in channels)}")
+        if view_url:
+            bullets.append(f"- **Open the deck:** [{view_url}]({view_url})")
+        bullets_block = "\n".join(bullets) if bullets else ""
+
+        fallback_md = (
+            f"# {deck_title}\n\n"
+            "## Story not yet generated for this deck\n\n"
+            "This deck was created before the Story markdown companion was added. "
+            "Re-generate the deck from the admin dashboard with the same inputs "
+            "and the new Story will be saved automatically — including the full "
+            "executive summary, market & competitive landscape, search behavior, "
+            "conversion recommendations, growth-plan synopsis, 4-phase implementation "
+            "roadmap with cited sources, and proposed offers.\n\n"
+            f"{bullets_block}\n"
+        )
+        return fallback_md, deck_title, True
 
 
 @router.get("/decks/{deck_slug}/{run_id}/{token}/story", response_class=HTMLResponse)
@@ -1252,7 +1283,7 @@ def deck_story_view(request: Request, deck_slug: str, run_id: int, token: str) -
     loaded = _load_story_markdown(request, run_id, token)
     if loaded is None:
         return HTMLResponse("Story not found.", status_code=404)
-    markdown_text, deck_title = loaded
+    markdown_text, deck_title, _is_fallback = loaded
     try:
         import markdown as _markdown  # type: ignore
 
@@ -1360,7 +1391,7 @@ def deck_story_download(request: Request, deck_slug: str, run_id: int, token: st
     loaded = _load_story_markdown(request, run_id, token)
     if loaded is None:
         return PlainTextResponse("Story not found.", status_code=404)
-    markdown_text, _ = loaded
+    markdown_text, _, _is_fallback = loaded
     safe_slug = deck_slug or f"deck-{run_id}"
     filename = f"{safe_slug}-story.md"
     return PlainTextResponse(

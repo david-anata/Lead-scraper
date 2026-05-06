@@ -541,9 +541,18 @@ class GrowthPlanTests(unittest.TestCase):
             ).scalar_one()
             html = str(dict(run.summary_json or {}).get("deck_html") or "")
 
-        self.assertIn("Closing the sessions gap", html)
+        self.assertIn("Closing the gap", html)
         self.assertIn("growth-plan-slide", html)
         self.assertIn("Methodology and sources", html)
+        # PR28: per-phase ramp visualization is rendered.
+        self.assertIn("growth-ramp", html)
+        self.assertIn("Growth path", html)
+        # All four phase tiles plus the "Today" tile are present.
+        self.assertIn("Today", html)
+        self.assertIn("Phase 1", html)
+        self.assertIn("Phase 4", html)
+        # Steady-state funnel panel is marked default for print.
+        self.assertIn('data-default="1"', html)
 
     def test_generate_deck_omits_growth_section_when_no_inputs(self) -> None:
         """Without growth_plan_inputs the section must not appear — preserves
@@ -573,7 +582,7 @@ class GrowthPlanTests(unittest.TestCase):
         # inlined brand stylesheet — assert on the actual section markup
         # and the visible heading instead.
         self.assertNotIn('<section class="slide growth-plan-slide"', html)
-        self.assertNotIn("Closing the sessions gap", html)
+        self.assertNotIn("Closing the gap", html)
 
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck routing tests")
@@ -747,6 +756,35 @@ class DeckRoutingTests(unittest.TestCase):
         self.assertEqual(bad_html.status_code, 404)
         bad_md = client.get(f"/decks/{slug}/{run_id}/WRONG-TOKEN/story.md")
         self.assertEqual(bad_md.status_code, 404)
+
+
+    def test_story_routes_serve_fallback_for_old_decks_without_story(self) -> None:
+        """Older decks generated before PR27 don't have story_markdown saved.
+        The Story routes must NOT 404 — they should render a fallback that
+        explains the deck pre-dates the feature and links to re-generation."""
+        client, sf = self._make_client()
+        run_id, token, slug = self._seed_deck(sf)
+
+        # Simulate a pre-PR27 deck by clearing the story_markdown field.
+        with session_scope(sf) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.id == run_id)
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+            summary.pop("story_markdown", None)
+            run.summary_json = summary
+            session.add(run)
+
+        # HTML viewer returns a 200 with the fallback messaging.
+        story_resp = client.get(f"/decks/{slug}/{run_id}/{token}/story")
+        self.assertEqual(story_resp.status_code, 200)
+        self.assertIn("Story not yet generated", story_resp.text)
+        self.assertIn("Re-generate", story_resp.text)
+
+        # The .md route also serves the fallback markdown (200, not 404).
+        md_resp = client.get(f"/decks/{slug}/{run_id}/{token}/story.md")
+        self.assertEqual(md_resp.status_code, 200)
+        self.assertIn("Story not yet generated", md_resp.text)
 
 
 if __name__ == "__main__":
