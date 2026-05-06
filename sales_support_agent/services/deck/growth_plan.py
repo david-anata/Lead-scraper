@@ -423,19 +423,31 @@ def _build_retargeting_channel(
     current_sessions: int,
 ) -> GrowthChannel:
     sessions = _alloc(delta, inputs.mix_retargeting)
-    if sessions <= 0 or current_sessions <= 0:
+    if sessions <= 0:
         return GrowthChannel(
             key="retargeting",
             label="Retargeting / LTV (DSP retargeting + Brand Tailored)",
             mix_pct=inputs.mix_retargeting,
             sessions=0,
             monthly_cost=0.0,
-            detail="Needs current sessions > 0 and retargeting mix > 0",
+            detail="Mix set to 0% — channel skipped",
             source_label="Directional — calibrate with first-party data",
             is_directional=True,
         )
 
-    eligible_audience = current_sessions * (inputs.audience_window_days / 30.0)
+    # When current_sessions is 0 (target units unknown — e.g., user didn't
+    # upload Target Xray CSV and Amazon's public page doesn't expose units),
+    # we still allocate sessions to retargeting from the delta_sessions pool.
+    # The audience-math just uses `sessions` as a proxy for the future
+    # eligible audience after the first 30 days of paid + organic acquisition.
+    audience_basis = current_sessions if current_sessions > 0 else sessions
+    audience_basis_note = (
+        ""
+        if current_sessions > 0
+        else " (basis: projected post-30-day acquisition; calibrate after first month)"
+    )
+
+    eligible_audience = audience_basis * (inputs.audience_window_days / 30.0)
     impressions = eligible_audience * inputs.frequency_cap
     spend = impressions / 1000.0 * inputs.dsp_retargeting_cpm
     returning_sessions = impressions * inputs.retargeting_ctr_pct / 100.0
@@ -446,6 +458,7 @@ def _build_retargeting_channel(
         f"audience ~{int(round(eligible_audience)):,} × {inputs.frequency_cap} freq → "
         f"~{int(round(returning_sessions)):,} returning sessions, ~{int(round(repeat_units)):,} repeat units, "
         f"~{int(round(btp_redemptions)):,} BTP redemptions @ ${inputs.dsp_retargeting_cpm:.2f} CPM"
+        f"{audience_basis_note}"
     )
     aov = inputs.average_order_value or 0.0
     retarget_revenue = int(round(repeat_units)) * aov

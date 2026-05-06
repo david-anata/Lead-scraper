@@ -7,3 +7,4 @@ psycopg2-binary
 google-auth
 python-multipart
 anthropic>=0.25.0
+markdown
