@@ -490,6 +490,64 @@ class GrowthPlanTests(unittest.TestCase):
         errors = affiliate_no_cogs.validate()
         self.assertTrue(any("COGS" in e for e in errors))
 
+    def test_growth_ramp_phase1_below_full_organic_and_paid(self) -> None:
+        """PR29: Phase 1 cumulative must reflect ramp curves (organic 10%,
+        on-channel paid 50%) — NOT the at-goal step function. Without this,
+        the deck claimed Phase 1 delivers organic.sessions + on_channel_paid.sessions
+        instantly, which a sharp prospect would call out as false data."""
+        from sales_support_agent.services.deck.growth_plan import (
+            GrowthPlanInputs,
+            build_growth_plan,
+            cumulative_sessions_at_phase,
+        )
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(
+                conversion_rate_pct=15.0,
+                goal_monthly_sessions=60_000,
+                average_order_value=29.99,
+                cogs_per_unit=4.5,
+                shipping_per_unit=2.5,
+            ),
+            target_units=3_000,
+        )
+        organic = next(c for c in plan.channels if c.key == "organic")
+        on_paid = next(c for c in plan.channels if c.key == "on_channel_paid")
+        # Step-function would have given us organic.sessions + on_paid.sessions
+        # (= 20,000 since each is 25% of 40,000 delta). With the ramp, P1
+        # should deliver ~ organic*0.10 + on_paid*0.50 = 1,000 + 5,000 = 6,000.
+        step_function_total = organic.sessions + on_paid.sessions
+        ramp_p1_total = cumulative_sessions_at_phase(plan.channels, 1)
+        self.assertLess(
+            ramp_p1_total,
+            step_function_total,
+            "Phase 1 must reflect ramp, not deliver full at-goal allocation immediately",
+        )
+        expected_p1 = int(round(organic.sessions * 0.10 + on_paid.sessions * 0.50))
+        self.assertEqual(ramp_p1_total, expected_p1)
+
+    def test_growth_ramp_phase4_equals_steady_state(self) -> None:
+        """PR29: by the end of Phase 4 every channel runs at 100% of its
+        sessions allocation, so cumulative ramp == total_sessions_delivered."""
+        from sales_support_agent.services.deck.growth_plan import (
+            GrowthPlanInputs,
+            build_growth_plan,
+            cumulative_sessions_at_phase,
+        )
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(
+                conversion_rate_pct=15.0,
+                goal_monthly_sessions=60_000,
+                average_order_value=29.99,
+                cogs_per_unit=4.5,
+                shipping_per_unit=2.5,
+            ),
+            target_units=3_000,
+        )
+        ramp_p4_total = cumulative_sessions_at_phase(plan.channels, 4)
+        # Allow rounding tolerance — cumulative_sessions_at_phase rounds at
+        # the end, total_sessions_delivered sums int channel.sessions directly.
+        self.assertAlmostEqual(ramp_p4_total, plan.total_sessions_delivered, delta=2)
+
     def test_growth_plan_shortfall_flagged_when_mix_underdelivers(self) -> None:
         from sales_support_agent.services.deck.growth_plan import (
             GrowthPlanInputs,
@@ -553,6 +611,12 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn("Phase 4", html)
         # Steady-state funnel panel is marked default for print.
         self.assertIn('data-default="1"', html)
+        # PR29: ramp tiles use new "this phase" parenthetical, not the
+        # misleading "from delta" that just restated the cumulative number.
+        self.assertIn("this phase", html)
+        self.assertNotIn("from delta", html)
+        # PR29: caption explains end-of-phase steady state framing.
+        self.assertIn("end-of-phase steady state", html)
 
     def test_generate_deck_omits_growth_section_when_no_inputs(self) -> None:
         """Without growth_plan_inputs the section must not appear — preserves

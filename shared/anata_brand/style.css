@@ -2067,21 +2067,26 @@ mark {
     display: none;
   }
 
-  /* Channel grid (Growth Plan): in v4 PDF the 5-col print layout made each
-     card 1.5" wide which forced campaign + why text to wrap to many lines,
-     making each card 5"+ tall and breaking pages mid-grid. Drop to 2 columns
-     in print — wider cards, less wrap, ~3 rows of short cards = one page. */
+  /* Channel grid (Growth Plan): v4 PDF showed 5-col print made each card
+     1.5" wide and text wrapped to 5"+ tall. PR28's 2-col fix still cut
+     mid-text on Affiliate. PR29 decision: print one card per row (full
+     Letter width) so Campaign + Why prose reads cleanly, and let the
+     section span 2-3 pages with `break-inside: avoid` keeping each card
+     intact. The printed deck is a review artifact — readability beats
+     density. */
   .channel-grid {
-    display: grid !important;
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-    gap: 0.1in !important;
+    display: block !important;
   }
   .channel-card {
-    padding: 0.08in 0.12in !important;
-    font-size: 11.5px !important;
+    width: 100% !important;
+    margin: 0 0 0.12in 0 !important;
+    padding: 0.12in 0.18in !important;
+    font-size: 12px !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
   .channel-card .card-head h3 {
-    font-size: 13px !important;
+    font-size: 14px !important;
     margin: 0 !important;
   }
 
@@ -2111,15 +2116,25 @@ mark {
     display: block !important;
   }
 
-  /* Competitor revenue breakdown was spilling page 3 → page 4 leaving
-     2 lonely items on page 4. Glue the table-like blocks together. */
-  .competitor-revenue,
-  .competitor-revenue-row,
-  .competitor-revenue-list,
-  .niche-summary,
-  .niche-summary-block,
-  .niche-products,
-  .market-distribution {
+  /* Competitor revenue breakdown spilling page 3 → page 4. PR28 rule used
+     class names that don't actually exist in the rendered HTML — the actual
+     classes are `.niche-table-card` (the dashboard card), `.niche-table-wrap`
+     (table wrapper), `.niche-table` (the table itself), `.revenue-bars` (bars
+     below the table), and `.market-summary-grid` (the outer 2-col grid). */
+  .niche-table-card,
+  .niche-table-wrap,
+  .niche-table,
+  .niche-table thead,
+  .niche-table tbody,
+  .revenue-bars,
+  .market-summary-grid,
+  .compact-donut-grid {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  /* Each row of the competitor table should also stay together so a row
+     never gets sliced horizontally across a page. */
+  .niche-table tr {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }

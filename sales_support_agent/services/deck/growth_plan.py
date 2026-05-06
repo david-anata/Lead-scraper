@@ -166,6 +166,12 @@ class GrowthChannel:
     # Used to filter the funnel visual per phase tab and to order the
     # implementation roadmap.
     first_active_phase: int = 1
+    # PR29: per-phase ramp curve (P1, P2, P3, P4) — fraction of full
+    # `sessions` allocation actually delivered by END of each phase.
+    # Default (1.0, 1.0, 1.0, 1.0) preserves prior step-function behavior
+    # for any caller that doesn't override; per-channel factories below
+    # set realistic curves grounded in published industry timelines.
+    ramp_pct_by_phase: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -276,12 +282,38 @@ PHASE_CITATIONS: list[tuple[str, str]] = [
 
 
 def _cumulative_active_keys(through_phase: int) -> list[str]:
-    """Return all channel keys active through a given phase (cumulative)."""
+    """Return all channel keys active through a given phase (cumulative).
+
+    Kept for the funnel SVG, which still wants a binary "lit / not lit" call
+    per channel. The session-totals math now uses `cumulative_sessions_at_phase`
+    (PR29) so the displayed numbers reflect realistic ramp curves rather than
+    a step function.
+    """
     keys: list[str] = []
     for phase in PHASES:
         if phase.id <= through_phase:
             keys.extend(phase.channels_added)
     return keys
+
+
+def cumulative_sessions_at_phase(
+    channels: list[GrowthChannel],
+    phase_id: int,
+) -> int:
+    """Sessions delivered by END of `phase_id` across all channels, applying
+    each channel's per-phase `ramp_pct_by_phase` curve.
+
+    Single source of truth for the per-phase ramp display and the Story
+    markdown. Phase IDs are 1-indexed (1..4).
+    """
+    if phase_id < 1 or not channels:
+        return 0
+    idx = min(phase_id, 4) - 1  # tuple is (P1, P2, P3, P4)
+    total = 0.0
+    for ch in channels:
+        ramp = ch.ramp_pct_by_phase[idx] if idx < len(ch.ramp_pct_by_phase) else 1.0
+        total += ch.sessions * ramp
+    return int(round(total))
 
 
 @dataclass(frozen=True)
@@ -408,6 +440,9 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
         ),
         expected_units=units,
         expected_revenue=revenue,
+        # 60–90 day ramp; compounds with external traffic from Phase 2.
+        # Source: Helium 10 listing-optimization guide; BeBold PPC ramp-up.
+        ramp_pct_by_phase=(0.10, 0.40, 0.75, 1.00),
     )
 
 
@@ -437,6 +472,9 @@ def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Grow
         ),
         expected_units=units,
         expected_revenue=revenue,
+        # First signal 3–7 days; trends stable in 2–4 weeks (Wk 2 launch).
+        # Source: Amazon Ads first-30-days SP tips; Pacvue Q1 2026.
+        ramp_pct_by_phase=(0.50, 0.85, 1.00, 1.00),
     )
 
 
@@ -469,6 +507,9 @@ def _build_off_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Gro
         ),
         expected_units=units,
         expected_revenue=revenue,
+        # Launches Wk 3–4 (P2); storefront-link traffic stabilizes fast.
+        # Source: Amazon Attribution guide; Digital Applied 2026.
+        ramp_pct_by_phase=(0.0, 0.50, 0.95, 1.00),
     )
 
 
@@ -537,6 +578,10 @@ def _build_affiliate_channel(
         expected_units=int(round(units_from_affiliate)),
         expected_revenue=affiliate_revenue,
         is_directional=True,
+        # 4–6 weeks before videos go live; roster scales W11–14 (P3) toward
+        # full slate by P4. Source: Later influencer-campaign timeline;
+        # Canopy Mgmt TikTok Shop eligibility 2026.
+        ramp_pct_by_phase=(0.0, 0.0, 0.40, 1.00),
     )
 
 
@@ -609,6 +654,10 @@ def _build_retargeting_channel(
         expected_units=int(round(repeat_units)),
         expected_revenue=retarget_revenue,
         is_directional=True,
+        # Requires ≥1,000-customer audience pool (BTP eligibility) — only
+        # accumulates after months of upstream traffic. Comes online in P4.
+        # Source: Amazon Sell Brand-Tailored Promotions; Sequence Commerce 2026.
+        ramp_pct_by_phase=(0.0, 0.0, 0.0, 1.00),
     )
 
 
@@ -877,8 +926,11 @@ def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
     last_phase_id = PHASES[-1].id
     for phase in PHASES:
         active_keys = _cumulative_active_keys(phase.id)
-        # Sum the active channels for the tab summary line
-        tab_sessions = sum(c.sessions for c in plan.channels if c.key in active_keys)
+        # PR29: tab-summary "sessions" reflects ramped delivery at end of
+        # this phase, not the at-goal step-function. Spend stays linear
+        # because monthly cost is set when the channel comes online (it
+        # doesn't ramp the same way; CPC × sessions auto-scales).
+        tab_sessions = cumulative_sessions_at_phase(plan.channels, phase.id)
         tab_spend = sum(c.monthly_cost for c in plan.channels if c.key in active_keys)
         is_default = phase.id == last_phase_id  # default to steady state
         active_class = " is-active" if is_default else ""
@@ -970,10 +1022,15 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
         "</li>"
     )
 
+    # PR29: realistic per-phase ramp — apply each channel's ramp_pct_by_phase
+    # curve so phase-end totals reflect what's actually deliverable, not the
+    # at-goal step function. Track the previous phase's cumulative so we can
+    # show the ADDED-this-phase delta cleanly.
+    previous_cumulative = current
     for phase in PHASES:
-        active_keys = _cumulative_active_keys(phase.id)
-        cumulative_added = sum(c.sessions for c in plan.channels if c.key in active_keys)
-        cumulative_total = current + cumulative_added
+        ramped_added = cumulative_sessions_at_phase(plan.channels, phase.id)
+        cumulative_total = current + ramped_added
+        added_this_phase = max(0, cumulative_total - previous_cumulative)
         pct_of_goal = min(100.0, (cumulative_total / goal) * 100.0) if goal else 0.0
         added_labels = ", ".join(
             label_map.get(k, k) for k in phase.channels_added
@@ -986,7 +1043,7 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
             f"<span class='ramp-step-window'>{html.escape(phase.window_label)}</span>"
             "</div>"
             f"<div class='ramp-step-sessions'><strong>{cumulative_total:,}</strong> sessions"
-            f" <small class='muted'>(+{cumulative_added:,} from delta)</small></div>"
+            f" <small class='muted'>(+{added_this_phase:,} this phase)</small></div>"
             "<div class='ramp-step-bar'>"
             f"<span class='ramp-step-bar-fill' style='width:{pct_of_goal:.1f}%'></span>"
             "</div>"
@@ -994,13 +1051,18 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
             f"<div class='ramp-step-new'>+ {html.escape(added_labels)}</div>"
             "</li>"
         )
+        previous_cumulative = cumulative_total
 
     return (
         "<div class='growth-ramp'>"
         "<div class='growth-ramp-head'>"
         "<h3>Growth path — how sessions ramp from today to goal</h3>"
-        f"<p class='muted'>Each phase brings a new channel online. Cumulative session "
-        f"delivery climbs from <strong>{current:,}</strong> to "
+        f"<p class='muted'>Each phase brings a new channel online. Numbers reflect "
+        f"<strong>end-of-phase steady state</strong>; actual session delivery within "
+        f"each phase ramps from the prior phase's end-state to the next "
+        f"(SEO compounds across 60–90 days; SP/SB stabilize in 2–4 weeks; "
+        f"affiliate creators take 4–6 weeks to first videos). "
+        f"Cumulative climbs from <strong>{current:,}</strong> to "
         f"<strong>{plan.current_sessions + plan.total_sessions_delivered:,}</strong> "
         f"against the <strong>{goal:,}</strong> goal.</p>"
         "</div>"

@@ -4412,12 +4412,33 @@ async def admin_generate_deck_proxy(
     return JSONResponse(status_code=status_code, content=payload)
 
 
-@app.get("/decks/{deck_slug}/{run_id}/{token}")
-def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+def _proxy_deck_subpath(
+    request: Request,
+    deck_slug: str,
+    run_id: int,
+    token: str,
+    *,
+    suffix: str = "",
+) -> Response:
+    """Forward a deck request to the backend sales-support-agent service.
+
+    `suffix` is appended after `/decks/{slug}/{run_id}/{token}` — empty for
+    the main deck view, "/story" for the HTML story viewer, "/story.md" for
+    the raw markdown download. Same retry / error / passthrough behavior for
+    all three so the public host doesn't need to know which sub-path the
+    backend supports.
+    """
     admin_settings = load_admin_dashboard_settings()
     if not admin_settings.sales_support_agent_url:
-        return JSONResponse(status_code=500, content={"detail": "Sales support agent URL is not configured on this service."})
-    backend_url = f"{admin_settings.sales_support_agent_url}/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}"
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Sales support agent URL is not configured on this service."},
+        )
+    backend_url = (
+        f"{admin_settings.sales_support_agent_url}"
+        f"/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}"
+        f"{suffix}"
+    )
     if request.url.query:
         backend_url = f"{backend_url}?{request.url.query}"
     attempt_count = 1 + len(DECK_PROXY_RETRY_DELAYS_SECONDS)
@@ -4426,10 +4447,11 @@ def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str)
             response = requests.get(backend_url, timeout=DECK_PROXY_TIMEOUT_SECONDS)
         except requests.RequestException as exc:
             logger.warning(
-                "[DeckProxy] upstream request failed attempt=%s slug=%s run_id=%s url=%s error=%s",
+                "[DeckProxy] upstream request failed attempt=%s slug=%s run_id=%s suffix=%s url=%s error=%s",
                 attempt,
                 deck_slug,
                 run_id,
+                suffix or "(none)",
                 backend_url,
                 exc,
             )
@@ -4440,10 +4462,11 @@ def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str)
 
         if response.status_code in {502, 503, 504}:
             logger.warning(
-                "[DeckProxy] upstream retryable status attempt=%s slug=%s run_id=%s url=%s status=%s",
+                "[DeckProxy] upstream retryable status attempt=%s slug=%s run_id=%s suffix=%s url=%s status=%s",
                 attempt,
                 deck_slug,
                 run_id,
+                suffix or "(none)",
                 backend_url,
                 response.status_code,
             )
@@ -4452,15 +4475,40 @@ def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str)
                 continue
             return _deck_proxy_error_response()
 
+        # Pass through the upstream's Content-Type — backend uses
+        # text/html for /story, text/markdown for /story.md, etc.
         content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
+        passthrough_headers = _deck_proxy_headers(content_type)
+        # Preserve Content-Disposition (attachment filename) on /story.md
+        # downloads so the browser triggers a save dialog.
+        upstream_disposition = response.headers.get("Content-Disposition")
+        if upstream_disposition:
+            passthrough_headers["Content-Disposition"] = upstream_disposition
         return Response(
             content=response.content,
             status_code=response.status_code,
             media_type=content_type.split(";")[0],
-            headers=_deck_proxy_headers(content_type),
+            headers=passthrough_headers,
         )
 
     return _deck_proxy_error_response()
+
+
+@app.get("/decks/{deck_slug}/{run_id}/{token}")
+def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    return _proxy_deck_subpath(request, deck_slug, run_id, token)
+
+
+@app.get("/decks/{deck_slug}/{run_id}/{token}/story")
+def public_deck_story_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    """HTML viewer for the markdown story companion (PR27/PR29)."""
+    return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/story")
+
+
+@app.get("/decks/{deck_slug}/{run_id}/{token}/story.md")
+def public_deck_story_md_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    """Raw markdown download — backend sets Content-Disposition: attachment."""
+    return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/story.md")
 
 
 @app.get("/")
