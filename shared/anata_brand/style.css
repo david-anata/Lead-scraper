@@ -1508,6 +1508,89 @@ mark {
   display: block;
 }
 
+/* PR26: tabbed funnel — phase-by-phase reveals */
+.growth-plan-slide .growth-funnel-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.growth-plan-slide .growth-funnel-tab {
+  border: 1px solid var(--anata-line);
+  background: var(--anata-paper);
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+.growth-plan-slide .growth-funnel-tab:hover {
+  border-color: var(--anata-sky);
+}
+.growth-plan-slide .growth-funnel-tab.is-active {
+  border-color: var(--anata-sky-deep);
+  background: rgba(133, 187, 218, 0.10);
+  box-shadow: 0 4px 14px rgba(79, 132, 196, 0.18);
+}
+.growth-plan-slide .growth-funnel-tab .tab-num {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--anata-sky-deep);
+}
+.growth-plan-slide .growth-funnel-tab .tab-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--anata-ink);
+}
+.growth-plan-slide .growth-funnel-tab .tab-window {
+  font-size: 11px;
+  color: var(--anata-ink-soft);
+}
+.growth-plan-slide .growth-funnel-tab .tab-metric {
+  font-size: 10px;
+  color: var(--anata-muted);
+  font-weight: 600;
+  margin-top: 2px;
+}
+.growth-plan-slide .growth-funnel-panel[hidden] {
+  display: none;
+}
+.growth-plan-slide .funnel-tab-caption {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  background: rgba(133, 187, 218, 0.08);
+  border-left: 3px solid var(--anata-sky-deep);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--anata-ink);
+}
+.growth-plan-slide .funnel-tab-caption strong {
+  display: block;
+  margin-bottom: 2px;
+}
+.growth-plan-slide .funnel-tab-caption em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--anata-sky-deep);
+}
+
+/* Print: drop the tab strip and show all phase panels (the user is
+   walking through them on screen; a printed PDF should show the
+   steady-state funnel only — the LAST panel, which is unhidden). */
+@media print {
+  .growth-plan-slide .growth-funnel-tabs {
+    display: none !important;
+  }
+  .growth-plan-slide .growth-funnel-panel[hidden] {
+    display: none !important;  /* keep them hidden in print too */
+  }
+}
+
 .growth-plan-slide .channel-card {
   background: var(--anata-paper);
   border: 1px solid var(--anata-line);
