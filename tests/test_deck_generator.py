@@ -617,6 +617,11 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertNotIn("from delta", html)
         # PR29: caption explains end-of-phase steady state framing.
         self.assertIn("end-of-phase steady state", html)
+        # PR30: heavy slides get semantic classes so the print stylesheet
+        # can force page-breaks on them while letting small slides flow.
+        self.assertIn("slide slide-conversion", html)
+        self.assertIn("slide slide-offers", html)
+        self.assertIn("slide slide-cover", html)
 
     def test_generate_deck_omits_growth_section_when_no_inputs(self) -> None:
         """Without growth_plan_inputs the section must not appear — preserves

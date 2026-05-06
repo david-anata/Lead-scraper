@@ -1896,18 +1896,43 @@ mark {
     display: block !important;
   }
 
-  /* Slides: start each on a fresh page, but DO NOT force a full viewport
-     of empty space. The previous min-height: 100vh + page-break-after rule
-     created blank pages and arbitrary mid-content breaks. */
+  /* PR30: smart pagination — let slides flow naturally so small sections
+     (Support-term demand, Case studies, Next action) can share a page with
+     their neighbors instead of each burning a full sheet. Critical: keep
+     `page-break-inside: avoid` so a single slide is never sliced
+     mid-content; only the page-break-BEFORE rule changes. */
   .slide {
     box-shadow: none;
     border-radius: 0;
     margin: 0;
-    padding: 0.25in 0;
-    page-break-before: always;
-    break-before: page;
+    padding: 0.18in 0;
+    page-break-before: auto;
+    break-before: auto;
     page-break-inside: avoid;
     break-inside: avoid;
+  }
+  /* When two slides land on the same page, separate them with a thin rule
+     and a little extra top spacing so they don't visually run together. */
+  .slide + .slide {
+    border-top: 1px solid var(--anata-line);
+    margin-top: 0.18in;
+    padding-top: 0.22in;
+  }
+  /* Heavy slides that genuinely need their own page get a hard page-break
+     BEFORE so they don't get squished onto the bottom of the previous
+     page. The cover slide ends with page-break-after so the market
+     summary always starts on page 2. */
+  .slide.slide-cover {
+    page-break-before: auto;
+    break-before: auto;
+    page-break-after: always;
+    break-after: page;
+  }
+  .slide.growth-plan-slide,
+  .slide.slide-conversion,
+  .slide.slide-offers {
+    page-break-before: always;
+    break-before: page;
   }
   .slide:first-of-type {
     page-break-before: auto;

@@ -907,7 +907,7 @@ class DeckGenerationService:
         if include_recommended_plan:
             offer_html = "".join(_render_offer_card(card) for card in offer_cards)
             recommended_plan_html = f"""
-    <section class="slide">
+    <section class="slide slide-offers">
       <div class="slide-head">
         <div>
           <p class="eyebrow">Proposed offers</p>
@@ -1102,7 +1102,7 @@ class DeckGenerationService:
 
     {growth_plan_html}
 
-    <section class="slide">
+    <section class="slide slide-conversion">
       <div class="slide-head">
         <div>
           <p class="eyebrow">Conversion and PDP</p>
