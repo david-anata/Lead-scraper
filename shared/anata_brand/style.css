@@ -1872,4 +1872,34 @@ mark {
     grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
     gap: 0.1in !important;
   }
+
+  /* User feedback (PR23): each gallery card was getting its own page in
+     the printed PDF. Cause: the @media (max-width: 960px) rule above
+     collapses .gallery-grid to single column, and Letter at 96dpi
+     (~816px viewport) matches that breakpoint. Override back to a 4-col
+     compact grid in print so multiple cards fit per page. */
+  .gallery-grid {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 0.12in !important;
+  }
+  .gallery-card {
+    /* Tighter card padding in print so 4 fit cleanly. */
+    padding: 6px !important;
+  }
+  .gallery-card img {
+    max-height: 140px !important;  /* was 220 — too tall for 4-up layout */
+  }
+  /* Same regression for the dashboard / two-col / metric grids — they
+     also collapse to single column at <960px and explode in print. */
+  .dashboard-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.12in !important;
+  }
+  .metric-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 0.12in !important;
+  }
 }

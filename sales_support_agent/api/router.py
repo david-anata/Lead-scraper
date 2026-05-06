@@ -1256,7 +1256,7 @@ async def _run_generate_deck(
     offers: list[str],
     offer_payload_json: str,
     include_recommended_plan: bool,
-    include_growth_plan: bool = False,
+    include_growth_plan: bool = True,
     trigger: str = "admin_dashboard",
 ) -> ApiMessage:
     """Shared body for the two generate-deck routes.
@@ -1355,7 +1355,7 @@ async def admin_generate_deck(
     offers: list[str] = Form(default=[]),
     offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
-    include_growth_plan: bool = Form(default=False),
+    include_growth_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -1395,7 +1395,7 @@ async def internal_admin_generate_deck(
     offers: list[str] = Form(default=[]),
     offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
-    include_growth_plan: bool = Form(default=False),
+    include_growth_plan: bool = Form(default=True),
 ) -> ApiMessage:
     _enforce_api_key(request, x_internal_api_key)
     return await _run_generate_deck(
