@@ -26,7 +26,7 @@ from sales_support_agent.services.deck.growth_plan import (
     PHASES,
     PHASE_CITATIONS,
     GrowthPlan,
-    _cumulative_active_keys,
+    cumulative_sessions_at_phase,
 )
 
 
@@ -188,12 +188,16 @@ def _section_growth_plan(plan: GrowthPlan, target_aov: float) -> str:
         "",
         "### Growth path — how sessions ramp from today to goal",
         "",
-        "Each phase brings a new channel online. Sessions accumulate as "
-        "the funnel widens; we don't reach the full goal on day one.",
+        "Each phase brings a new channel online. Numbers reflect "
+        "**end-of-phase steady state** — actual delivery within each phase "
+        "ramps from the prior phase's end-state to the next. SEO compounds "
+        "across 60–90 days; SP/SB stabilize in 2–4 weeks; affiliate creators "
+        "take 4–6 weeks to first videos. We don't reach the full goal on day one.",
         "",
     ]
 
-    # Per-phase ramp table (matches the new visual on the deck slide).
+    # Per-phase ramp table (matches the new visual on the deck slide,
+    # using the same realistic ramp curves — PR29).
     label_map = {
         "organic": "Organic",
         "on_channel_paid": "On-channel paid",
@@ -205,17 +209,19 @@ def _section_growth_plan(plan: GrowthPlan, target_aov: float) -> str:
     goal = max(plan.goal_sessions, current + 1)
     parts.append(f"- **Today (starting point):** {current:,} sessions "
                  f"({(current / goal * 100):.0f}% of goal)")
+    previous_cumulative = current
     for phase in PHASES:
-        active_keys = _cumulative_active_keys(phase.id)
-        cumulative_added = sum(c.sessions for c in plan.channels if c.key in active_keys)
-        cumulative_total = current + cumulative_added
+        ramped_added = cumulative_sessions_at_phase(plan.channels, phase.id)
+        cumulative_total = current + ramped_added
+        added_this_phase = max(0, cumulative_total - previous_cumulative)
         pct_of_goal = min(100.0, (cumulative_total / goal) * 100.0)
         added_labels = ", ".join(label_map.get(k, k) for k in phase.channels_added) or "—"
         parts.append(
             f"- **Phase {phase.id} — {phase.label} ({phase.window_label}):** "
-            f"{cumulative_total:,} sessions ({pct_of_goal:.0f}% of goal) · "
-            f"+ {added_labels}"
+            f"{cumulative_total:,} sessions ({pct_of_goal:.0f}% of goal, "
+            f"+{added_this_phase:,} this phase) · + {added_labels}"
         )
+        previous_cumulative = cumulative_total
     parts.append("")
 
     parts.extend([
