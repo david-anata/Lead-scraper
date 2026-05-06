@@ -162,6 +162,126 @@ class GrowthChannel:
     expected_units: int = 0
     expected_revenue: float = 0.0
     is_directional: bool = False
+    # PR26: which phase the channel first comes online in (1–4).
+    # Used to filter the funnel visual per phase tab and to order the
+    # implementation roadmap.
+    first_active_phase: int = 1
+
+
+# ---------------------------------------------------------------------------
+# Implementation phases (PR26)
+# ---------------------------------------------------------------------------
+# Maps the 5-channel mix onto a 4-phase rollout. Phase mapping derives from
+# typical setup time + dependency requirements per channel:
+#   Phase 1 (Foundation, D0–14):  organic, on_channel_paid (SP launches first)
+#   Phase 2 (Acceleration, W3–8): + off_channel_paid
+#   Phase 3 (Scale, W8–16):       + affiliate (creator outreach lead time)
+#   Phase 4 (LTV, M4+):           + retargeting (audience build prerequisite)
+#
+# Sources / citations populated by the research agent (PR27 will replace
+# placeholder citations with real ones).
+
+
+@dataclass(frozen=True)
+class GrowthPhase:
+    id: int
+    key: str  # e.g. "foundation", "acceleration"
+    label: str
+    window_label: str  # human-readable window: "Days 0–14"
+    summary: str  # one-line summary of phase intent
+    channels_added: list[str]  # channel keys that come online THIS phase
+    milestones: list[str] = field(default_factory=list)  # week-by-week tasks
+
+
+PHASES: list[GrowthPhase] = [
+    GrowthPhase(
+        id=1,
+        key="foundation",
+        label="Foundation",
+        window_label="Days 0–14",
+        summary="Brand Registry + listing optimization + first paid demand capture.",
+        channels_added=["organic", "on_channel_paid"],
+        milestones=[
+            "Wk 1: Submit/confirm Brand Registry (~10 business days approval).",
+            "Wk 1: Rewrite title (≤200 chars), 5 bullets, 7 backend keywords, image stack on hero SKU.",
+            "Wk 1–2: Publish A+ Content (auto-eligible once Brand Registry approves); build Storefront v1 (4–8 hr build, 24–72 hr Amazon review).",
+            "Wk 2: Launch Sponsored Products auto + manual exact campaigns. First signal in 3–7 days; trends stable in 2–4 weeks.",
+            "Wk 2: Sponsored Display Views retargeting on (no minimum spend; uses 30-day view audience).",
+        ],
+    ),
+    GrowthPhase(
+        id=2,
+        key="acceleration",
+        label="Acceleration",
+        window_label="Weeks 3–8",
+        summary="Defend brand search + open the external-traffic flywheel.",
+        channels_added=["off_channel_paid"],
+        milestones=[
+            "Wk 3: Sponsored Brands live on the brand search term (requires Brand Registry + active Storefront as landing page).",
+            "Wk 3–4: Generate Amazon Attribution tags; launch Meta + TikTok Ads pointing to Storefront / PDP. 14-day last-touch attribution window.",
+            "Wk 4: Submit TikTok Shop seller application (1–3 business days approval).",
+            "Wk 5–6: First creator outreach wave — assume 4–6 weeks end-to-end before videos go live.",
+            "Wk 7–8: Read Attribution data; reallocate budget to top-converting creatives.",
+        ],
+    ),
+    GrowthPhase(
+        id=3,
+        key="scale",
+        label="Scale",
+        window_label="Weeks 8–16",
+        summary="Layer DSP cold prospecting + ramp the creator program.",
+        channels_added=["affiliate"],
+        milestones=[
+            "Wk 8–10: DSP onboarding — agency self-service path (~$10K/mo practical floor) or Amazon-managed ($50K/mo minimum).",
+            "Wk 10–12: Launch DSP cold prospecting against in-market + lifestyle audiences. Build 30-day audience windows.",
+            "Wk 11–14: Scale TikTok Shop creator roster from pilot (~8 creators) to 15–30 creators; layer commission tiers.",
+            "Wk 14–16: First read on DSP-assisted new-to-brand rate vs SP/SB-only baseline.",
+        ],
+    ),
+    GrowthPhase(
+        id=4,
+        key="ltv",
+        label="LTV",
+        window_label="Months 4+",
+        summary="Compound past-viewer + past-purchaser audiences.",
+        channels_added=["retargeting"],
+        milestones=[
+            "Mo 4 wk 1: Confirm Brand-Tailored Promotion audience pools ≥ 1,000 customers (BTP eligibility floor).",
+            "Mo 4 wk 2: First BTP coupon to repeat-buyer audience. Featured Offer status required for badge display.",
+            "Mo 4 wk 3: DSP retargeting layered on top of cold prospecting using PDP-viewer + cart-abandon audiences.",
+            "Mo 5+: Quarterly creator refresh; DSP audience expansion; Premium A+ Content evaluation (Amazon re-checks eligibility monthly).",
+        ],
+    ),
+]
+
+
+# Citations for the timelines above (used by Story / methodology footnote)
+PHASE_CITATIONS: list[tuple[str, str]] = [
+    ("Amazon Sell — Brand Registry requirements", "https://sell.amazon.com/blog/brand-registry-requirements"),
+    ("Amazon Sell — Brand Registry main", "https://sell.amazon.com/brand-registry"),
+    ("Trellis — Storefront setup guide", "https://gotrellis.com/resources/blog/amazon-storefront-setup-guide/"),
+    ("Helium 10 — Listing optimization guide", "https://www.helium10.com/blog/amazon-listing-optimization-guide/"),
+    ("Amazon Ads — First-30-days SP tips", "https://advertising.amazon.com/library/case-studies/tips-for-first-30-days-on-sponsored-products"),
+    ("BeBold — How long does Amazon PPC take", "https://www.bebolddigital.com/blog/how-long-does-it-take-for-amazon-ppc-to-work"),
+    ("Amazon Ads — SB eligibility", "https://advertising.amazon.com/help/G5DAD7ZM3N639QF4"),
+    ("Tinuiti — Sponsored Display ads guide", "https://tinuiti.com/blog/amazon/amazon-sponsored-display-ads-guide/"),
+    ("Amazon Ads — Attribution guide", "https://advertising.amazon.com/library/guides/basics-of-amazon-attribution"),
+    ("Canopy Mgmt — TikTok Shop eligibility 2026", "https://canopymanagement.com/tiktok-shop-eligibility-what-you-need-to-get-started/"),
+    ("Later — Influencer marketing campaign timeline", "https://later.com/blog/timeline-for-influencer-marketing-campaigns/"),
+    ("Amazon Ads — DSP", "https://advertising.amazon.com/solutions/products/amazon-dsp"),
+    ("Trellis — Amazon DSP cost", "https://gotrellis.com/resources/blog/amazon-dsp-cost/"),
+    ("Amazon Sell — Brand-Tailored Promotions", "https://sell.amazon.com/blog/brand-tailored-promotions"),
+    ("Amazon Ads — Display purchases remarketing", "https://advertising.amazon.com/library/guides/display-ads-purchases-remarketing"),
+]
+
+
+def _cumulative_active_keys(through_phase: int) -> list[str]:
+    """Return all channel keys active through a given phase (cumulative)."""
+    keys: list[str] = []
+    for phase in PHASES:
+        if phase.id <= through_phase:
+            keys.extend(phase.channels_added)
+    return keys
 
 
 @dataclass(frozen=True)
@@ -277,6 +397,7 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
         monthly_cost=0.0,
         detail="SEO listing optimization; 60–90 day ramp",
         source_label="No paid spend — investment in title/bullet/imagery work",
+        first_active_phase=1,
         campaign_description=(
             "Listing optimization (title, bullets, A+ content), brand story refresh, "
             "indexed-keyword expansion, and Q&A injection. SEO investment, no paid spend."
@@ -304,6 +425,7 @@ def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Grow
         monthly_cost=cost,
         detail=f"@ ${inputs.on_channel_cpc:,.2f} CPC",
         source_label="Source: Pacvue Q1 2026 Health & Household",
+        first_active_phase=1,
         campaign_description=(
             f"Sponsored Products on top-30 niche keywords @ ${inputs.on_channel_cpc:,.2f} CPC, "
             "Sponsored Brands defending the brand search term, Sponsored Display "
@@ -334,6 +456,7 @@ def _build_off_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Gro
         monthly_cost=cost,
         detail=f"@ ${inputs.off_channel_cpc:,.2f} CPC, routed to storefront for Amazon external-traffic signal",
         source_label="Anata storefront-link strategy (see methodology footnote)",
+        first_active_phase=2,
         campaign_description=(
             f"Meta and TikTok video ads driving to the brand's Amazon storefront @ "
             f"~${inputs.off_channel_cpc:,.2f} CPC. Lightweight engagement ask keeps "
@@ -398,6 +521,7 @@ def _build_affiliate_channel(
         monthly_cost=total_cost,
         detail=detail,
         source_label="Directional — calibrate with first-party data",
+        first_active_phase=3,
         campaign_description=(
             f"{required_videos} mid-tier TikTok creators per month (10K–100K followers), "
             "shoppable affiliate links direct to PDP. Hybrid model: "
@@ -470,6 +594,7 @@ def _build_retargeting_channel(
         monthly_cost=spend,
         detail=detail,
         source_label="Repeat CVR + BTP redemption are directional; calibrate with first-party data",
+        first_active_phase=4,
         campaign_description=(
             f"Amazon DSP retargeting past-{inputs.audience_window_days}-day PDP viewers, "
             f"frequency cap {inputs.frequency_cap} @ ${inputs.dsp_retargeting_cpm:.2f} CPM. "
@@ -498,17 +623,31 @@ def _money(value: float) -> str:
     return f"${value:,.2f}"
 
 
-def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
+def _render_funnel_svg(
+    plan: GrowthPlan,
+    *,
+    target_aov: float,
+    active_keys: list[str] | None = None,
+) -> str:
     """Render the customer-funnel SVG: traffic sources → PDP visits →
     units → revenue. Channel boxes at the top are sized proportional to
     their session share. All flow lines drawn in pure SVG so it prints
     crisp from the browser.
+
+    PR26: when `active_keys` is provided, only those channels contribute
+    to PDP / units / revenue totals. Inactive channels still render in
+    the top row but dimmed, so the layout doesn't reflow when the user
+    toggles between phase tabs.
     """
     # Pull data
     cvr = max(plan.cvr_pct, 0.01)
-    delivered = max(plan.total_sessions_delivered, 1)
-    # Use total sessions delivered (delta-driven) as the funnel mouth
-    pdp_visits = plan.total_sessions_delivered
+
+    # Cumulative sessions delivered = sum across active channels only.
+    if active_keys is None:
+        active_set = {ch.key for ch in plan.channels}
+    else:
+        active_set = set(active_keys)
+    pdp_visits = sum(ch.sessions for ch in plan.channels if ch.key in active_set)
     expected_units = int(round(pdp_visits * cvr / 100.0))
     expected_revenue = expected_units * max(target_aov, 0.0)
 
@@ -578,13 +717,27 @@ def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
     pdp_y = Y_TOP + BOX_HEIGHT + 80  # 80px of flow runway
 
     for w, x, ch in zip(widths, x_positions, channels):
-        bg, border, text = color_map.get(ch.key, ("#e9eef4", "#85bbda", "#1d2d44"))
+        is_active = ch.key in active_set
+        # Inactive channels render dimmed; active in full color.
+        if is_active:
+            bg, border, text = color_map.get(ch.key, ("#e9eef4", "#85bbda", "#1d2d44"))
+            box_opacity = 1.0
+            text_opacity_label = 0.78
+            text_opacity_cost = 0.72
+        else:
+            # Same color family but desaturated + transparent so the box still
+            # holds the layout but reads as "future phase".
+            bg, border, text = ("#f1f3f6", "#c8cfd9", "#7c8696")
+            box_opacity = 0.45
+            text_opacity_label = 0.5
+            text_opacity_cost = 0.5
         cx = x + w / 2
         cy = Y_TOP + BOX_HEIGHT
         # Box rectangle
         top_boxes_svg += (
             f'<rect x="{x:.1f}" y="{Y_TOP}" width="{w:.1f}" height="{BOX_HEIGHT}" '
-            f'rx="14" fill="{bg}" stroke="{border}" stroke-width="1.5"/>'
+            f'rx="14" fill="{bg}" stroke="{border}" stroke-width="1.5" '
+            f'opacity="{box_opacity}"/>'
         )
         # Channel name (top line) — short label so it fits the box
         short_label = short_label_map.get(ch.key, ch.label.split(" (")[0])
@@ -596,7 +749,7 @@ def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
         # Mix percentage
         top_boxes_svg += (
             f'<text x="{cx:.1f}" y="{Y_TOP + 50}" text-anchor="middle" '
-            f'font-size="11" font-weight="600" fill="{text}" opacity="0.78">'
+            f'font-size="11" font-weight="600" fill="{text}" opacity="{text_opacity_label}">'
             f'{ch.mix_pct:.0f}% of mix</text>'
         )
         # Sessions
@@ -605,26 +758,30 @@ def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
             f'font-size="20" font-weight="800" fill="{text}">'
             f'{ch.sessions:,}</text>'
         )
-        # Cost line
-        if ch.key == "organic":
+        # Cost line — show "Phase N" tag for inactive channels instead of cost
+        if not is_active:
+            cost_label = f"Phase {ch.first_active_phase}"
+        elif ch.key == "organic":
             cost_label = "SEO investment"
         else:
             cost_label = f"${ch.monthly_cost:,.0f}/mo"
         top_boxes_svg += (
             f'<text x="{cx:.1f}" y="{Y_TOP + 98}" text-anchor="middle" '
-            f'font-size="10" font-weight="500" fill="{text}" opacity="0.72">'
+            f'font-size="10" font-weight="500" fill="{text}" opacity="{text_opacity_cost}">'
             f'{html.escape(cost_label)}</text>'
         )
         # Flow path: cubic bezier from box bottom-center down to PDP top-center
-        target_x = pdp_cx
-        target_y = pdp_y
-        # Control points create a smooth converge into the merge point
-        c1y = cy + 30
-        c2y = target_y - 30
-        flow_paths_svg += (
-            f'<path d="M {cx:.1f} {cy} C {cx:.1f} {c1y}, {target_x:.1f} {c2y}, {target_x:.1f} {target_y}" '
-            f'stroke="{border}" stroke-width="2" fill="none" opacity="0.55"/>'
-        )
+        # Only draw flow paths for ACTIVE channels — inactive ones don't feed
+        # the funnel yet.
+        if is_active:
+            target_x = pdp_cx
+            target_y = pdp_y
+            c1y = cy + 30
+            c2y = target_y - 30
+            flow_paths_svg += (
+                f'<path d="M {cx:.1f} {cy} C {cx:.1f} {c1y}, {target_x:.1f} {c2y}, {target_x:.1f} {target_y}" '
+                f'stroke="{border}" stroke-width="2" fill="none" opacity="0.55"/>'
+            )
 
     # PDP visits middle box
     pdp_h = 64
@@ -694,7 +851,6 @@ def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
     )
 
     return (
-        f'<div class="growth-funnel">'
         f'<svg viewBox="0 0 {VB_W} {VB_H}" xmlns="http://www.w3.org/2000/svg" '
         f'role="img" aria-label="Customer funnel: traffic sources to revenue">'
         f'{flow_paths_svg}'
@@ -705,7 +861,73 @@ def _render_funnel_svg(plan: GrowthPlan, *, target_aov: float) -> str:
         f'{arrow2_svg}'
         f'{rev_box_svg}'
         f'</svg>'
+    )
+
+
+def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
+    """Wrap the funnel in a tabbed control — one tab per implementation phase.
+    Each tab shows the cumulative funnel state at that phase (which channels
+    are lit, what PDP/units/revenue accumulate). Defaults to the last phase
+    (steady state — all channels active)."""
+    if not plan.channels:
+        return ""
+
+    tab_buttons = ""
+    panels = ""
+    last_phase_id = PHASES[-1].id
+    for phase in PHASES:
+        active_keys = _cumulative_active_keys(phase.id)
+        # Sum the active channels for the tab summary line
+        tab_sessions = sum(c.sessions for c in plan.channels if c.key in active_keys)
+        tab_spend = sum(c.monthly_cost for c in plan.channels if c.key in active_keys)
+        is_default = phase.id == last_phase_id  # default to steady state
+        active_class = " is-active" if is_default else ""
+        aria_pressed = "true" if is_default else "false"
+        tab_buttons += (
+            f'<button type="button" class="growth-funnel-tab{active_class}" '
+            f'data-phase="{phase.id}" aria-pressed="{aria_pressed}">'
+            f'<span class="tab-num">Phase {phase.id}</span>'
+            f'<span class="tab-label">{html.escape(phase.label)}</span>'
+            f'<span class="tab-window">{html.escape(phase.window_label)}</span>'
+            f'<span class="tab-metric">{tab_sessions:,} sessions · {_money(tab_spend)}/mo</span>'
+            f'</button>'
+        )
+        panel_hidden = "" if is_default else " hidden"
+        funnel_svg = _render_funnel_svg(plan, target_aov=target_aov, active_keys=active_keys)
+        # Per-phase summary copy
+        added_labels = ", ".join(
+            short
+            for short in (
+                {
+                    "organic": "Organic",
+                    "on_channel_paid": "On-channel paid",
+                    "off_channel_paid": "Off-channel paid",
+                    "affiliate": "Affiliate",
+                    "retargeting": "Retargeting",
+                }.get(k, k)
+                for k in phase.channels_added
+            )
+        )
+        panel_caption = (
+            f"<p class='funnel-tab-caption'>"
+            f"<strong>{html.escape(phase.summary)}</strong>"
+            f" New this phase: <em>{html.escape(added_labels)}</em>."
+            f"</p>"
+        )
+        panels += (
+            f'<div class="growth-funnel-panel" data-phase="{phase.id}"{panel_hidden}>'
+            f'{panel_caption}'
+            f'{funnel_svg}'
+            f'</div>'
+        )
+
+    return (
+        '<div class="growth-funnel growth-funnel-tabbed">'
+        f'<div class="growth-funnel-tabs" role="tablist" aria-label="Implementation phases">'
+        f'{tab_buttons}'
         f'</div>'
+        f'{panels}'
+        '</div>'
     )
 
 
@@ -762,7 +984,9 @@ def render_growth_plan_section(
         f"<li>{html.escape(line)}</li>" for line in plan.methodology_lines
     )
 
-    funnel_svg = _render_funnel_svg(plan, target_aov=target_aov) if plan.delta_sessions > 0 else ""
+    # PR26: tabbed funnel by implementation phase. Default tab is steady-state
+    # (all channels active) so the static deck PDF still shows the full picture.
+    funnel_svg = _render_funnel_with_tabs(plan, target_aov=target_aov) if plan.delta_sessions > 0 else ""
 
     return f"""
     <section class="slide growth-plan-slide">

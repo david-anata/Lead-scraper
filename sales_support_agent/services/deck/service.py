@@ -1152,6 +1152,22 @@ class DeckGenerationService:
         }});
       }});
     }});
+    // PR26: Growth Plan funnel — phase tabs
+    document.querySelectorAll(".growth-funnel-tabbed").forEach((funnelRoot) => {{
+      funnelRoot.querySelectorAll(".growth-funnel-tab").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const phase = button.dataset.phase;
+          funnelRoot.querySelectorAll(".growth-funnel-tab").forEach((node) => {{
+            const isActive = node === button;
+            node.classList.toggle("is-active", isActive);
+            node.setAttribute("aria-pressed", isActive ? "true" : "false");
+          }});
+          funnelRoot.querySelectorAll(".growth-funnel-panel").forEach((panel) => {{
+            panel.hidden = panel.dataset.phase !== phase;
+          }});
+        }});
+      }});
+    }});
   </script>
 </body>
 </html>"""
