@@ -1226,6 +1226,150 @@ def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: 
     return _render_deck_export(request, run_id, token)
 
 
+def _load_story_markdown(request: Request, run_id: int, token: str) -> tuple[str, str] | None:
+    """Return (markdown, deck_title) for the run, or None if not found / forbidden."""
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.execute(
+            select(AutomationRun).where(
+                AutomationRun.id == run_id,
+                AutomationRun.run_type == "deck_generation",
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            return None
+        summary = dict(run.summary_json or {})
+        if summary.get("export_token") != token:
+            return None
+        markdown_text = str(summary.get("story_markdown") or "")
+        if not markdown_text:
+            return None
+        deck_title = str(summary.get("design_title") or "Anata Sales Story")
+        return markdown_text, deck_title
+
+
+@router.get("/decks/{deck_slug}/{run_id}/{token}/story", response_class=HTMLResponse)
+def deck_story_view(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    loaded = _load_story_markdown(request, run_id, token)
+    if loaded is None:
+        return HTMLResponse("Story not found.", status_code=404)
+    markdown_text, deck_title = loaded
+    try:
+        import markdown as _markdown  # type: ignore
+
+        body_html = _markdown.markdown(
+            markdown_text,
+            extensions=["extra", "sane_lists", "toc"],
+        )
+    except Exception:
+        # Fallback: plain <pre> rendering if the markdown package is unavailable.
+        from html import escape as _escape
+
+        body_html = f"<pre>{_escape(markdown_text)}</pre>"
+
+    download_url = f"/decks/{deck_slug}/{run_id}/{token}/story.md"
+    page = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>{deck_title} — Story</title>
+  <style>
+    :root {{
+      --ink: #0d1f24;
+      --muted: #5f6f73;
+      --accent: #1a4f4a;
+      --bg: #f6f3ec;
+      --card: #ffffff;
+      --rule: #e3decf;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }}
+    .story-shell {{
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 56px 32px 96px;
+    }}
+    .story-toolbar {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      margin-bottom: 24px;
+    }}
+    .story-toolbar a {{
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 8px 14px;
+      border-radius: 999px;
+      text-decoration: none;
+    }}
+    .story-toolbar a:hover {{ background: var(--accent); color: #fff; }}
+    .story-body {{
+      background: var(--card);
+      padding: 48px 56px;
+      border-radius: 14px;
+      box-shadow: 0 18px 40px -28px rgba(13,31,36,0.35);
+      border: 1px solid var(--rule);
+    }}
+    .story-body h1 {{ font-size: 30px; margin-top: 0; }}
+    .story-body h2 {{ font-size: 22px; margin-top: 36px; border-top: 1px solid var(--rule); padding-top: 28px; }}
+    .story-body h3 {{ font-size: 17px; margin-top: 24px; }}
+    .story-body h4 {{ font-size: 15px; margin-top: 18px; color: var(--accent); }}
+    .story-body code {{ background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
+    .story-body blockquote {{
+      border-left: 3px solid var(--accent);
+      margin: 16px 0;
+      padding: 4px 16px;
+      color: var(--muted);
+      background: rgba(26,79,74,0.04);
+    }}
+    .story-body ul, .story-body ol {{ padding-left: 22px; }}
+    .story-body li {{ margin: 6px 0; }}
+    .story-body a {{ color: var(--accent); }}
+    @media (max-width: 640px) {{
+      .story-shell {{ padding: 24px 16px 64px; }}
+      .story-body {{ padding: 28px 22px; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class=\"story-shell\">
+    <div class=\"story-toolbar\">
+      <a href=\"{download_url}\" download>Download .md</a>
+    </div>
+    <article class=\"story-body\">
+      {body_html}
+    </article>
+  </div>
+</body>
+</html>
+"""
+    return HTMLResponse(page)
+
+
+@router.get("/decks/{deck_slug}/{run_id}/{token}/story.md")
+def deck_story_download(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    loaded = _load_story_markdown(request, run_id, token)
+    if loaded is None:
+        return PlainTextResponse("Story not found.", status_code=404)
+    markdown_text, _ = loaded
+    safe_slug = deck_slug or f"deck-{run_id}"
+    filename = f"{safe_slug}-story.md"
+    return PlainTextResponse(
+        markdown_text,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+    )
+
+
 _GROWTH_PLAN_FORM_KEYS = {
     "growth_cvr_pct", "growth_goal_sessions", "growth_goal_multiplier", "growth_aov",
     "growth_mix_organic", "growth_mix_on_channel_paid", "growth_mix_off_channel_paid",
