@@ -317,6 +317,7 @@ class DeckGenerationService:
                             ("view_count", 0),
                             ("first_viewed_at", ""),
                             ("last_viewed_at", ""),
+                            ("story_markdown", ""),
                         )
                     },
                 },
@@ -354,6 +355,38 @@ class DeckGenerationService:
         target = dataset.deck_payload.get("target", {})
         target_identifier = str(target.get("asin") or target.get("source_url") or "").strip()
 
+        # Build the Story markdown companion (text-based deck for sales calls).
+        # Persisted alongside the HTML so the Story routes can serve it without
+        # re-running the dataset pipeline.
+        try:
+            from sales_support_agent.services.deck.growth_plan import GrowthPlan
+            from sales_support_agent.services.deck.story import build_story_markdown
+
+            _growth_plan_obj = dataset.deck_payload.get("growth_plan")
+            _plan_for_story = (
+                _growth_plan_obj if isinstance(_growth_plan_obj, GrowthPlan) else None
+            )
+            _target_aov_for_story = float(getattr(self, "_growth_plan_aov", 0.0) or 0.0)
+            if _target_aov_for_story <= 0:
+                _price_str = str(target.get("price") or "")
+                try:
+                    _target_aov_for_story = float(re.sub(r"[^0-9.]", "", _price_str) or 0)
+                except ValueError:
+                    _target_aov_for_story = 0.0
+            story_markdown = build_story_markdown(
+                payload=dataset.deck_payload,
+                plan=_plan_for_story,
+                target_brand=str(target.get("brand_name") or "the prospect"),
+                target_aov=_target_aov_for_story,
+            )
+        except Exception as _story_exc:  # pragma: no cover - defensive only
+            # Story is a nice-to-have; never block deck creation.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Story markdown generation failed: %s", _story_exc, exc_info=True
+            )
+            story_markdown = ""
+
         # If this run already has view-tracking state (e.g. an admin-triggered
         # re-render of an existing run), preserve it. On first generation the
         # snapshot is empty, so the values default to zero / empty string.
@@ -382,6 +415,7 @@ class DeckGenerationService:
             "view_count": prior_view_count,
             "first_viewed_at": prior_first_viewed_at,
             "last_viewed_at": prior_last_viewed_at,
+            "story_markdown": story_markdown,
         }
         self.session.add(run)
         self.session.flush()

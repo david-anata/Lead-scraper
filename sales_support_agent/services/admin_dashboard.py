@@ -4010,6 +4010,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
           <td class="num">{_int_views(run)}</td>
           <td class="deck-row-actions">
             {f'<a href="{html.escape(str(run.get("view_url") or ""))}?viewer=internal" target="_blank" rel="noreferrer" title="Open as internal preview (counts as Internal view)">Open</a>' if run.get("view_url") else ""}
+            {f'<a href="{html.escape(str(run.get("view_url") or ""))}/story" target="_blank" rel="noreferrer" title="Open the markdown story companion to read through on a sales call">Story</a>' if run.get("view_url") else ""}
             {f'<button type="button" class="deck-url-copy" data-copy="{html.escape(str(run.get("view_url") or ""), quote=True)}" title="Copy share link to send to a prospect (counts as External view when they open it)">Copy share link</button>' if run.get("view_url") else ""}
             <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>Analytics</button>
           </td>
@@ -5397,6 +5398,13 @@ def render_sales_deck_page(data: DashboardData) -> str:
                     <input type="text" readonly value="${{safeExt}}" />
                     <button type="button" class="deck-url-copy" data-copy="${{safeExt}}">Copy</button>
                     <a href="${{safeExt}}" target="_blank" rel="noreferrer">Open</a>
+                  </div>
+                </div>
+                <div class="deck-success-row">
+                  <label>Story (markdown companion) <span class="muted">read-aloud version for sales calls</span></label>
+                  <div class="deck-url-group">
+                    <a href="${{safeExt}}/story" target="_blank" rel="noreferrer">Open Story</a>
+                    <a href="${{safeExt}}/story.md" target="_blank" rel="noreferrer">Download .md</a>
                   </div>
                 </div>
               </div>`;

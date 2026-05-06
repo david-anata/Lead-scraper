@@ -704,5 +704,50 @@ class DeckRoutingTests(unittest.TestCase):
         self.assertIn(resp_bad.status_code, (401, 403))
 
 
+    def test_story_markdown_is_persisted_and_served_by_routes(self) -> None:
+        """Generating a deck should persist `story_markdown` in summary_json
+        and the two new routes should serve it as HTML and as a .md
+        attachment."""
+        client, sf = self._make_client()
+        run_id, token, slug = self._seed_deck(sf)
+
+        # 1. Persisted on the run row.
+        with session_scope(sf) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.id == run_id)
+            ).scalar_one()
+            summary = dict(run.summary_json or {})
+            story_md = str(summary.get("story_markdown") or "")
+            self.assertTrue(story_md, "story_markdown should be saved on creation")
+            # Required section headers from the canonical structure.
+            self.assertIn("Executive summary", story_md)
+            self.assertIn("Market & competitive landscape", story_md)
+            self.assertIn("Search behavior & keyword opportunities", story_md)
+            self.assertIn("Conversion & PDP", story_md)
+            self.assertIn("Proposed offers & next step", story_md)
+
+        # 2. HTML viewer route renders markdown as HTML.
+        story_resp = client.get(f"/decks/{slug}/{run_id}/{token}/story")
+        self.assertEqual(story_resp.status_code, 200)
+        self.assertIn("text/html", story_resp.headers.get("content-type", ""))
+        # Content from the markdown should appear in the rendered body.
+        self.assertIn("Executive summary", story_resp.text)
+        self.assertIn("/story.md", story_resp.text)  # download link present
+
+        # 3. .md route returns the raw markdown with attachment headers.
+        md_resp = client.get(f"/decks/{slug}/{run_id}/{token}/story.md")
+        self.assertEqual(md_resp.status_code, 200)
+        self.assertIn("text/markdown", md_resp.headers.get("content-type", ""))
+        self.assertIn("attachment", md_resp.headers.get("content-disposition", "").lower())
+        self.assertIn(f"{slug}-story.md", md_resp.headers.get("content-disposition", ""))
+        self.assertIn("Executive summary", md_resp.text)
+
+        # 4. Wrong token → 404 on both routes (defense-in-depth).
+        bad_html = client.get(f"/decks/{slug}/{run_id}/WRONG-TOKEN/story")
+        self.assertEqual(bad_html.status_code, 404)
+        bad_md = client.get(f"/decks/{slug}/{run_id}/WRONG-TOKEN/story.md")
+        self.assertEqual(bad_md.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
