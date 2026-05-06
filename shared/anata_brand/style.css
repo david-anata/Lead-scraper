@@ -1591,6 +1591,103 @@ mark {
   }
 }
 
+/* PR28: per-phase ramp visualization — shows cumulative session delivery
+   climbing from current → goal as channels come online. Print-friendly
+   stepped layout that complements the (interactive) tabbed funnel above. */
+.growth-plan-slide .growth-ramp {
+  margin: 18px 0 22px;
+  border: 1px solid var(--anata-line);
+  border-radius: 12px;
+  padding: 16px 20px;
+  background: var(--anata-paper);
+  break-inside: avoid;
+}
+.growth-plan-slide .growth-ramp-head h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.growth-plan-slide .growth-ramp-head p {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.growth-plan-slide .growth-ramp-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.growth-plan-slide .growth-ramp-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--anata-line);
+  border-radius: 8px;
+  background: white;
+  break-inside: avoid;
+}
+.growth-plan-slide .growth-ramp-step.is-today {
+  background: var(--anata-paper);
+  border-style: dashed;
+}
+.growth-plan-slide .ramp-step-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.growth-plan-slide .ramp-step-num {
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--anata-ink-soft, #5f6f73);
+}
+.growth-plan-slide .ramp-step-label {
+  font-size: 13px;
+  font-weight: 700;
+}
+.growth-plan-slide .ramp-step-window {
+  font-size: 11px;
+  color: var(--anata-ink-soft, #5f6f73);
+}
+.growth-plan-slide .ramp-step-sessions {
+  font-size: 13px;
+  margin-top: 2px;
+}
+.growth-plan-slide .ramp-step-sessions strong {
+  font-size: 17px;
+}
+.growth-plan-slide .ramp-step-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--anata-line);
+  overflow: hidden;
+  margin-top: 4px;
+}
+.growth-plan-slide .ramp-step-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--anata-sky-deep, #1a4f4a);
+}
+.growth-plan-slide .ramp-step-pct {
+  font-size: 11px;
+  color: var(--anata-ink-soft, #5f6f73);
+}
+.growth-plan-slide .ramp-step-new {
+  font-size: 11px;
+  margin-top: 2px;
+  color: var(--anata-ink);
+}
+@media (max-width: 960px) {
+  .growth-plan-slide .growth-ramp-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .growth-plan-slide .channel-card {
   background: var(--anata-paper);
   border: 1px solid var(--anata-line);
@@ -1970,12 +2067,61 @@ mark {
     display: none;
   }
 
-  /* Channel grid (Growth Plan) was wrapping awkwardly in print. Lock
-     to 5 columns so all channel cards fit on a single page. */
+  /* Channel grid (Growth Plan): in v4 PDF the 5-col print layout made each
+     card 1.5" wide which forced campaign + why text to wrap to many lines,
+     making each card 5"+ tall and breaking pages mid-grid. Drop to 2 columns
+     in print — wider cards, less wrap, ~3 rows of short cards = one page. */
   .channel-grid {
     display: grid !important;
-    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     gap: 0.1in !important;
+  }
+  .channel-card {
+    padding: 0.08in 0.12in !important;
+    font-size: 11.5px !important;
+  }
+  .channel-card .card-head h3 {
+    font-size: 13px !important;
+    margin: 0 !important;
+  }
+
+  /* Per-phase growth ramp: keep all 5 steps on a single row in print so
+     the climb from today → goal reads at a glance. */
+  .growth-plan-slide .growth-ramp {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+  .growth-plan-slide .growth-ramp-steps {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    gap: 0.08in !important;
+  }
+  .growth-plan-slide .growth-ramp-step {
+    padding: 0.06in 0.08in !important;
+    font-size: 10.5px !important;
+  }
+
+  /* Force the steady-state (last) funnel panel to be the one printed,
+     regardless of which tab the user happened to have open at print time.
+     Without this rule, clicking Phase 1 on screen and then printing showed
+     the Phase 1 funnel (only 2 channels) on the printed deck. */
+  .growth-plan-slide .growth-funnel-panel {
+    display: none !important;
+  }
+  .growth-plan-slide .growth-funnel-panel[data-default="1"] {
+    display: block !important;
+  }
+
+  /* Competitor revenue breakdown was spilling page 3 → page 4 leaving
+     2 lonely items on page 4. Glue the table-like blocks together. */
+  .competitor-revenue,
+  .competitor-revenue-row,
+  .competitor-revenue-list,
+  .niche-summary,
+  .niche-summary-block,
+  .niche-products,
+  .market-distribution {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 
   /* User feedback (PR23): each gallery card was getting its own page in

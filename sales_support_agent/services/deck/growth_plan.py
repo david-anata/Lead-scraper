@@ -914,8 +914,9 @@ def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
             f" New this phase: <em>{html.escape(added_labels)}</em>."
             f"</p>"
         )
+        default_attr = ' data-default="1"' if is_default else ''
         panels += (
-            f'<div class="growth-funnel-panel" data-phase="{phase.id}"{panel_hidden}>'
+            f'<div class="growth-funnel-panel" data-phase="{phase.id}"{default_attr}{panel_hidden}>'
             f'{panel_caption}'
             f'{funnel_svg}'
             f'</div>'
@@ -928,6 +929,83 @@ def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
         f'</div>'
         f'{panels}'
         '</div>'
+    )
+
+
+def _render_growth_ramp(plan: GrowthPlan) -> str:
+    """Print-friendly per-phase ramp showing how sessions accumulate from
+    `current_sessions` to `goal_sessions` as channels come online phase by
+    phase. Each step shows: phase label, channels NEW this phase, cumulative
+    sessions delivered, % of the way to goal.
+
+    This complements the (interactive) tabbed funnel above by giving a single
+    glanceable "growth path" view that prints cleanly on a single page."""
+    if plan.delta_sessions <= 0 or not plan.channels:
+        return ""
+
+    label_map = {
+        "organic": "Organic",
+        "on_channel_paid": "On-channel paid",
+        "off_channel_paid": "Off-channel paid",
+        "affiliate": "Affiliate",
+        "retargeting": "Retargeting",
+    }
+    current = max(0, plan.current_sessions)
+    goal = max(plan.goal_sessions, current + 1)  # avoid div by zero
+
+    # Starting point is the "Today" tile — current sessions, 0% added.
+    steps_html: list[str] = []
+    today_pct = int(round(min(100.0, (current / goal) * 100.0))) if goal else 0
+    steps_html.append(
+        "<li class='growth-ramp-step is-today'>"
+        "<div class='ramp-step-head'>"
+        "<span class='ramp-step-num'>Today</span>"
+        "<span class='ramp-step-label'>Starting point</span>"
+        "</div>"
+        f"<div class='ramp-step-sessions'><strong>{current:,}</strong> sessions</div>"
+        "<div class='ramp-step-bar'>"
+        f"<span class='ramp-step-bar-fill' style='width:{today_pct}%'></span>"
+        "</div>"
+        f"<div class='ramp-step-pct'>{today_pct}% of goal</div>"
+        "</li>"
+    )
+
+    for phase in PHASES:
+        active_keys = _cumulative_active_keys(phase.id)
+        cumulative_added = sum(c.sessions for c in plan.channels if c.key in active_keys)
+        cumulative_total = current + cumulative_added
+        pct_of_goal = min(100.0, (cumulative_total / goal) * 100.0) if goal else 0.0
+        added_labels = ", ".join(
+            label_map.get(k, k) for k in phase.channels_added
+        ) or "—"
+        steps_html.append(
+            "<li class='growth-ramp-step'>"
+            "<div class='ramp-step-head'>"
+            f"<span class='ramp-step-num'>Phase {phase.id}</span>"
+            f"<span class='ramp-step-label'>{html.escape(phase.label)}</span>"
+            f"<span class='ramp-step-window'>{html.escape(phase.window_label)}</span>"
+            "</div>"
+            f"<div class='ramp-step-sessions'><strong>{cumulative_total:,}</strong> sessions"
+            f" <small class='muted'>(+{cumulative_added:,} from delta)</small></div>"
+            "<div class='ramp-step-bar'>"
+            f"<span class='ramp-step-bar-fill' style='width:{pct_of_goal:.1f}%'></span>"
+            "</div>"
+            f"<div class='ramp-step-pct'>{pct_of_goal:.0f}% of goal</div>"
+            f"<div class='ramp-step-new'>+ {html.escape(added_labels)}</div>"
+            "</li>"
+        )
+
+    return (
+        "<div class='growth-ramp'>"
+        "<div class='growth-ramp-head'>"
+        "<h3>Growth path — how sessions ramp from today to goal</h3>"
+        f"<p class='muted'>Each phase brings a new channel online. Cumulative session "
+        f"delivery climbs from <strong>{current:,}</strong> to "
+        f"<strong>{plan.current_sessions + plan.total_sessions_delivered:,}</strong> "
+        f"against the <strong>{goal:,}</strong> goal.</p>"
+        "</div>"
+        f"<ol class='growth-ramp-steps'>{''.join(steps_html)}</ol>"
+        "</div>"
     )
 
 
@@ -988,16 +1066,22 @@ def render_growth_plan_section(
     # (all channels active) so the static deck PDF still shows the full picture.
     funnel_svg = _render_funnel_with_tabs(plan, target_aov=target_aov) if plan.delta_sessions > 0 else ""
 
+    # PR28: print-friendly per-phase ramp — shows cumulative session delivery
+    # climbing from current → goal as channels come online. Always rendered on
+    # paper (the tabbed funnel is interactive only).
+    ramp_html = _render_growth_ramp(plan)
+
     return f"""
     <section class="slide growth-plan-slide">
       <div class="slide-head">
         <div>
           <p class="eyebrow">Growth plan</p>
-          <h2>Closing the sessions gap</h2>
+          <h2>Closing the gap</h2>
         </div>
         <p class="muted">{gap_caption}</p>
       </div>
       {kpi_strip}
+      {ramp_html}
       {funnel_svg}
       <div class="channel-grid">{cards_html}</div>
       <div class="growth-summary">

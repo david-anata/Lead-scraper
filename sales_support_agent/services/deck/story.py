@@ -26,6 +26,7 @@ from sales_support_agent.services.deck.growth_plan import (
     PHASES,
     PHASE_CITATIONS,
     GrowthPlan,
+    _cumulative_active_keys,
 )
 
 
@@ -178,18 +179,51 @@ def _section_growth_plan(plan: GrowthPlan, target_aov: float) -> str:
     expected_revenue = expected_units * max(target_aov, 0.0)
 
     parts = [
-        "## Growth plan synopsis — closing the sessions gap",
+        "## Growth plan synopsis — closing the gap",
         "",
         f"- **Current sessions:** {plan.current_sessions:,}  "
         f"(_= {plan.target_units:,} units ÷ {plan.cvr_pct:.1f}% CVR_)",
         f"- **Goal sessions:** {plan.goal_sessions:,}",
         f"- **Sessions delta:** {plan.delta_sessions:,}",
         "",
+        "### Growth path — how sessions ramp from today to goal",
+        "",
+        "Each phase brings a new channel online. Sessions accumulate as "
+        "the funnel widens; we don't reach the full goal on day one.",
+        "",
+    ]
+
+    # Per-phase ramp table (matches the new visual on the deck slide).
+    label_map = {
+        "organic": "Organic",
+        "on_channel_paid": "On-channel paid",
+        "off_channel_paid": "Off-channel paid",
+        "affiliate": "Affiliate",
+        "retargeting": "Retargeting",
+    }
+    current = max(0, plan.current_sessions)
+    goal = max(plan.goal_sessions, current + 1)
+    parts.append(f"- **Today (starting point):** {current:,} sessions "
+                 f"({(current / goal * 100):.0f}% of goal)")
+    for phase in PHASES:
+        active_keys = _cumulative_active_keys(phase.id)
+        cumulative_added = sum(c.sessions for c in plan.channels if c.key in active_keys)
+        cumulative_total = current + cumulative_added
+        pct_of_goal = min(100.0, (cumulative_total / goal) * 100.0)
+        added_labels = ", ".join(label_map.get(k, k) for k in phase.channels_added) or "—"
+        parts.append(
+            f"- **Phase {phase.id} — {phase.label} ({phase.window_label}):** "
+            f"{cumulative_total:,} sessions ({pct_of_goal:.0f}% of goal) · "
+            f"+ {added_labels}"
+        )
+    parts.append("")
+
+    parts.extend([
         "### Funnel math",
         "",
         f"5 traffic sources converge on PDP visits → CVR conversion → AOV multiplier → revenue.",
         "",
-        f"- **PDP visits per month:** {plan.total_sessions_delivered:,}",
+        f"- **PDP visits per month (steady state):** {plan.total_sessions_delivered:,}",
         f"- **Expected units (at {plan.cvr_pct:.1f}% CVR):** {expected_units:,}",
         f"- **Projected monthly revenue (at {_money(target_aov)} AOV):** "
         f"**{_money(expected_revenue)}**",
@@ -198,7 +232,7 @@ def _section_growth_plan(plan: GrowthPlan, target_aov: float) -> str:
         "",
         "### Channel mix — what runs and why",
         "",
-    ]
+    ])
 
     for channel in plan.channels:
         cost_line = (
