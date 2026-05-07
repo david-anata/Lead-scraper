@@ -1163,14 +1163,32 @@ class DeckGenerationService:
         _findings_html = "".join(_findings_html_parts)
 
         # Left rail — section list w/ optional dots for growth plan / offers.
-        def _rail_item(href: str, num: str, label: str, *, optional: bool = False, summary_class: str = "", active: bool = False) -> str:
+        # PR33: optional sections that aren't included render as `.is-disabled`
+        # rail items (30% opacity, click is a no-op) per the design handoff,
+        # rather than disappearing entirely. Keeps the wayfinding stable so
+        # AEs always see the same 9-item rail across decks.
+        def _rail_item(
+            href: str,
+            num: str,
+            label: str,
+            *,
+            optional: bool = False,
+            disabled: bool = False,
+            summary_class: str = "",
+            active: bool = False,
+        ) -> str:
             cls = "rail-item"
             if summary_class:
                 cls += f" {summary_class}"
             if active:
                 cls += " active"
+            if disabled:
+                cls += " is-disabled"
+            href_attr = "#" if disabled else f"#{href}"
+            click_attr = ' onclick="event.preventDefault();return false;"' if disabled else ""
+            aria_attr = ' aria-disabled="true" tabindex="-1"' if disabled else ""
             return (
-                f'<li><a class="{cls}" href="#{href}">'
+                f'<li><a class="{cls}" href="{href_attr}"{click_attr}{aria_attr}>'
                 f'<span class="num">{num}</span>{html.escape(label)}'
                 + ('<span class="opt-dot" title="optional"></span>' if optional else '')
                 + '</a></li>'
@@ -1182,10 +1200,10 @@ class DeckGenerationService:
             + _rail_item("sec-02", "02", "Target listing")
             + _rail_item("sec-03", "03", "Competitors")
             + _rail_item("sec-04", "04", "Search behavior")
-            + (_rail_item("sec-05", "05", "Growth plan", optional=True) if _has_growth else "")
+            + _rail_item("sec-05", "05", "Growth plan", optional=True, disabled=not _has_growth)
             + _rail_item("sec-06", "06", "Conversion & PDP")
             + _rail_item("sec-07", "07", "Service offerings")
-            + (_rail_item("sec-08", "08", "Proposed offers", optional=True) if include_recommended_plan else "")
+            + _rail_item("sec-08", "08", "Proposed offers", optional=True, disabled=not include_recommended_plan)
         )
 
         def _section_divider(anchor: str, num: str, eyebrow: str, head: str, thesis: str, bullets: list[str]) -> str:
@@ -1263,10 +1281,6 @@ class DeckGenerationService:
 </head>
 <body>
 
-<section class="deck-toolbar">
-  <button class="print-button" onclick="window.print()">Print / Save PDF</button>
-</section>
-
 <div class="app">
 
   <!-- ============= LEFT RAIL ============= -->
@@ -1286,6 +1300,8 @@ class DeckGenerationService:
     <div class="rail-progress-label"><span id="rail-progress-text">Section ★ of {7 + (1 if _has_growth else 0) + (1 if include_recommended_plan else 0)}</span><span id="rail-pct">12%</span></div>
 
     <div class="rail-foot">
+      <a class="rail-util" id="rail-open-story" href="#" onclick="event.preventDefault();window.open(location.pathname.replace(/\\/$/, '') + '/story', '_blank');return false;">Open one-pager <span class="arrow">↗</span></a>
+      <a class="rail-util" id="rail-print" href="#" onclick="event.preventDefault();window.print();return false;">Print PDF <span class="arrow">↗</span></a>
       <a class="rail-util primary" href="#sec-08">Get started <span class="arrow">→</span></a>
     </div>
   </aside>
@@ -1455,13 +1471,22 @@ class DeckGenerationService:
         <p class="caption">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
       </header>
 
-      {render_visual_proof_panel(
-          target=target,
-          best_seller=best_seller,
-          cro_recommendations=cro_recommendations,
-          creative_recommendations=creative_recommendations,
-          missing_image_asset=no_product_image,
-      )}
+      <div class="two-col">
+        <div class="takeaway">
+          <p class="lab">What this means</p>
+          <p class="h">PDP mechanics, not the product, are the unlock.</p>
+          <p>{html.escape((dataset.text_fields.get("expected_impact_summary") or "Closing CRO + creative gaps lifts conversion without changing product, price, or supply chain. The benchmark sets the ceiling — copy what's working.")[:300])}</p>
+        </div>
+        <div>
+          {render_visual_proof_panel(
+              target=target,
+              best_seller=best_seller,
+              cro_recommendations=cro_recommendations,
+              creative_recommendations=creative_recommendations,
+              missing_image_asset=no_product_image,
+          )}
+        </div>
+      </div>
 
       <div class="rec-grid" style="margin-top:24px">
         <div class="rec-card">
@@ -1569,17 +1594,15 @@ class DeckGenerationService:
       }});
     }});
 
-    // ---- Service offerings tabs ----
-    document.querySelectorAll('.offering-tabs').forEach((tabsRoot) => {{
-      tabsRoot.querySelectorAll('.offering-tab').forEach((button) => {{
+    // ---- Service offerings tabs (PR33: matches deck.css `.off-tabs`/`.off-pane`) ----
+    document.querySelectorAll('#off-tabs').forEach((tabsRoot) => {{
+      tabsRoot.querySelectorAll('button').forEach((button) => {{
         button.addEventListener('click', () => {{
-          const target = button.dataset.tab;
+          const target = button.dataset.off;
           const section = tabsRoot.closest('.slide');
-          section?.querySelectorAll('.offering-tab').forEach((node) => node.classList.toggle('is-active', node === button));
-          section?.querySelectorAll('.offering-panel').forEach((panel) => {{
-            const isActive = panel.dataset.panel === target;
-            panel.classList.toggle('is-active', isActive);
-            panel.hidden = !isActive;
+          tabsRoot.querySelectorAll('button').forEach((node) => node.classList.toggle('active', node === button));
+          section?.querySelectorAll('.off-pane').forEach((pane) => {{
+            pane.hidden = pane.dataset.pane !== target;
           }});
         }});
       }});

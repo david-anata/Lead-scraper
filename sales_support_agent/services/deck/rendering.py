@@ -487,39 +487,55 @@ def _render_donut(slices: list[DistributionSlice]) -> str:
     tooltip = ", ".join(f"{item.label}: {item.count} ({item.share * 100:.1f}%)" for item in slices[:6])
     return f"<div class='donut-chart'><div class='donut-visual' title=\"{html.escape(tooltip)}\" style=\"{style}\"></div></div>"
 def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
+    """PR33: emits the design's class names (`.off-tabs`/`.off-pane`/
+    `.off-grid`/`.off-block`) — `deck.css` only styles those, not the old
+    `.offering-*` set. Cap blocks per pane at 4 so the Amazon section
+    matches the other tabs' 2×2 grid (David's feedback in design review).
+    """
     if not sections:
         return ""
     tabs = []
-    panels = []
+    panes = []
     for index, section in enumerate(sections):
-        active_class = " is-active" if index == 0 else ""
+        active_attr = ' class="active"' if index == 0 else ""
         hidden_attr = "" if index == 0 else " hidden"
         key = html.escape(str(section.get("active_key", "")))
+        label = html.escape(_format_channel_label(str(section.get("active_key", ""))))
         tabs.append(
-            f"<button class='offering-tab{active_class}' type='button' data-tab='{key}'>{html.escape(_format_channel_label(str(section.get('active_key', ''))))}</button>"
+            f'<button{active_attr} type="button" data-off="{key}">{label}</button>'
         )
-        items = "".join(
-            "<article class='service-card'>"
-            f"<h3>{html.escape(str(item.get('title', '')))}</h3>"
+        # Cap at 4 blocks so every pane reads as a clean 2×2 grid.
+        items_html = "".join(
+            "<div class='off-block'>"
+            f"<h4>{html.escape(str(item.get('title', '')))}</h4>"
             f"<p>{html.escape(str(item.get('description', '')))}</p>"
-            "</article>"
-            for item in section.get("items", [])
+            "</div>"
+            for item in (section.get("items", []) or [])[:4]
         )
-        panels.append(
-            "<div class='offering-panel{active_class}' data-panel='{key}'{hidden_attr}>"
-            .format(active_class=active_class, key=key, hidden_attr=hidden_attr)
-            + "<div class='offering-panel-head'>"
-            + f"<h3>{html.escape(str(section.get('title', '')))}</h3>"
-            + "</div>"
-            + f"<div class='service-grid'>{items}</div></div>"
+        pane_title = html.escape(str(section.get("title", "")))
+        pane_desc = html.escape(str(section.get("description", "")) or "")
+        head_html = (
+            f'<h3 style="font-size:18px;font-weight:700;margin:0 0 4px;letter-spacing:-0.015em">{pane_title}</h3>'
+            + (f'<p class="muted small" style="margin:0 0 16px">{pane_desc}</p>' if pane_desc else "")
+        )
+        panes.append(
+            f'<div class="off-pane" data-pane="{key}"{hidden_attr}>'
+            f'{head_html}'
+            f'<div class="off-grid">{items_html}</div>'
+            f'</div>'
         )
     return (
-        "<section class='slide'>"
-        "<div class='slide-head'><div><p class='eyebrow'>Service offerings</p><h2>Integrated support model</h2></div>"
-        "<p class='muted'>Marketplace, DTC, fulfillment, and shipping support are organized into one operating model with service-specific workstreams.</p></div>"
-        f"<div class='offering-tabs'>{''.join(tabs)}</div>"
-        f"<div class='offering-panels'>{''.join(panels)}</div>"
-        "</section>"
+        '<section class="slide" data-screen-label="07 Service offerings">'
+        '<header class="slide-head">'
+        '<div class="heading-stack">'
+        '<p class="eyebrow">Service offerings</p>'
+        '<h2 class="slide-title">Integrated support model</h2>'
+        '</div>'
+        '<p class="caption">Five channels, one contract. Each tab shows the operating commitments we make per channel.</p>'
+        '</header>'
+        f'<div class="off-tabs" id="off-tabs">{"".join(tabs)}</div>'
+        f'{"".join(panes)}'
+        '</section>'
     )
 def _render_hero_media(target: dict[str, Any], missing_image_asset: str) -> str:
     image_url = str(target.get("image_url", "") or "").strip()

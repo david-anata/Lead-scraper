@@ -1736,178 +1736,40 @@ h2.slide-title {
   .metric-grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
 }
 
-/* Toolbar (above the rail-app on screen, hidden in print). The deck
-   already has a print button + brand monogram; carry those over. */
-.deck-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 14px 22px;
-  background: rgba(255, 253, 249, 0.85);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--anata-line);
-  position: sticky;
-  top: 0;
-  z-index: 40;
-}
-.print-button {
-  border: 0;
-  border-radius: 999px;
-  background: var(--anata-ink);
-  color: white;
-  padding: 9px 18px;
-  font-weight: 700;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-}
-
 /* ============================================ */
-/* PRINT                                        */
+/* PRINT — minimal stub (PR33)                  */
+/* Per design directive: a dedicated print PDF  */
+/* artifact will ship in a follow-up PR. For    */
+/* now, just hide the rail and let the browser  */
+/* lay out the content column at Letter size.   */
 /* ============================================ */
 @page { size: Letter; margin: 0.5in; }
 
 @media print {
-  body { background: white; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-  /* Hide screen-only chrome — left rail, toolbar, tabs */
+  body {
+    background: white;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* Hide screen-only chrome */
   .rail,
-  .deck-toolbar,
   .funnel-tabs,
   .off-tabs,
-  .seg,
-  details summary { display: none !important; }
-  details { display: block !important; }
-  details > * { display: block !important; }
-
-  /* App becomes single column once the rail is hidden */
-  .app { display: block; }
+  .seg { display: none !important; }
+  /* App collapses to single column */
+  .app { display: block !important; }
   .content {
-    padding: 0;
-    max-width: 100%;
-  }
-
-  /* Slide: drop the screen drop-shadow + soft radius. Keep page-break-inside
-     intact so a slide doesn't get sliced mid-content. Heavy slides get
-     hard page-breaks; small ones can share. */
-  .slide {
-    box-shadow: none;
-    border-radius: 0;
-    margin: 0 0 0.18in;
-    padding: 0.18in 0;
-    background: white;
-    page-break-before: auto;
-    break-before: auto;
-    page-break-inside: avoid;
-    break-inside: avoid;
-  }
-  .slide + .slide {
-    border-top: 1px solid var(--anata-line);
-    margin-top: 0.18in;
-    padding-top: 0.22in;
-  }
-
-  /* Executive summary: it's a hard navy bg with white text — keep the
-     navy in print (with print-color-adjust: exact) but tighten margin. */
-  .exec {
-    page-break-after: always;
-    margin: 0 0 0.18in;
-    padding: 0.4in 0.4in 0.32in;
-    border-radius: 0;
-  }
-
-  /* Findings strip flows naturally into the page after exec. */
-  .findings {
-    grid-template-columns: repeat(3, 1fr) !important;
-    gap: 0.1in !important;
-    margin: 0 0 0.18in;
-    page-break-inside: avoid;
-  }
-
-  /* Section dividers should NOT each take their own page — they are
-     visual landmarks. Keep them attached to the slide that follows. */
-  .section-divider {
-    page-break-after: avoid;
-    break-after: avoid;
-    page-break-inside: avoid;
-    break-inside: avoid;
-    padding: 0.16in 0.22in;
-    margin: 0 0 0.12in;
-    border-radius: 0;
-  }
-  .sd-num { font-size: 60px !important; }
-  .sd-h { font-size: 22px !important; }
-
-  /* Heavy slides force a fresh page so they get full Letter for layout. */
-  .slide.growth-plan-slide,
-  .slide.slide-conversion,
-  .slide.slide-offers {
-    page-break-before: always;
-    break-before: page;
-  }
-
-  /* Slide head goes from "title left, caption right" to stacked so the
-     caption doesn't get squeezed against the page margin. */
-  .slide-head {
-    flex-direction: column !important;
-    gap: 6px !important;
-    margin-bottom: 0.14in !important;
-  }
-  .slide-head .caption {
-    text-align: left !important;
+    padding: 0 !important;
     max-width: 100% !important;
   }
-  h2.slide-title { font-size: 24px !important; }
-
-  /* Grids that collapse at <1100px would explode on Letter. Force them
-     back to multi-col in print so the layouts still fit. */
-  .metric-grid.cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
-  .metric-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
-  .channel-grid { grid-template-columns: repeat(1, minmax(0, 1fr)) !important; gap: 0.1in !important; }
-  .ramp { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; gap: 0.06in !important; }
-  .gallery { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
-  .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
-  .two-col { grid-template-columns: 220px 1fr !important; }
-  .two-col.even { grid-template-columns: 1fr 1fr !important; }
-  .compare { grid-template-columns: 1fr 32px 1fr !important; }
-  .rec-grid { grid-template-columns: 1fr 1fr !important; }
-  .next-steps { grid-template-columns: 1fr 1fr 1fr !important; }
-  .offer-grid { grid-template-columns: 1fr 1fr !important; }
-
-  /* Funnel: in print show only the steady-state panel (last phase) and
-     drop the tab strip. JS doesn't run server-side, but the active
-     state is set in HTML so the active panel is already the steady one. */
-  .funnel-classic {
-    grid-template-columns: 1fr 1.2fr !important;
-    gap: 0.18in !important;
-  }
-
-  /* Channel cards: stack full width 1-col so the Campaign + Why prose
-     reads cleanly without mid-text cutoffs. */
-  .channel-card {
-    width: 100% !important;
-    padding: 0.1in 0.14in !important;
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
-  }
-
-  /* Cap big assets so they don't blow out a page. */
-  .compare-card .pic { height: 1.4in !important; }
-  .gallery-item .pic { height: 1.0in !important; }
-
-  /* Keep table rows whole. */
-  .tbl thead, .tbl tr {
+  /* Don't slice a slide across pages mid-content. */
+  .slide {
     page-break-inside: avoid;
     break-inside: avoid;
+    box-shadow: none;
+    border-radius: 0;
+    margin-bottom: 12px;
   }
-  .tbl tbody { page-break-inside: auto; }
-
-  /* Headlines glue to the content beneath them. */
-  h1, h2, h3, .slide-head, .gp-section-h {
-    page-break-after: avoid;
-    break-after: avoid;
-  }
-
-  /* Anchor links print without underlines bleeding into the prose. */
+  /* Anchor links print without color/underline noise. */
   a { color: inherit; text-decoration: none; }
 }
