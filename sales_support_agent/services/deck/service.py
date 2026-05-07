@@ -1533,7 +1533,6 @@ class DeckGenerationService:
       </div>
 
       {f'<div class="gallery">{gallery_html}</div>' if gallery_html else ''}
-      {resource_embed_html}
     </section>
 
     <!-- ===== 07 SERVICE OFFERINGS ===== -->
