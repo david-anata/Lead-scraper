@@ -170,10 +170,18 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
 
     products: list[XrayProduct] = []
     warnings: list[str] = []
+    sponsored_skipped = 0
     for index, row in enumerate(reader, start=1):
         title = _clean_text(row.get(headers["product details"], ""))
         asin = _extract_asin(row.get(headers["asin"], "")) or _extract_asin(row.get(headers["url"], ""))
         if not title or not asin:
+            continue
+        # PR34: filter Helium 10 Xray's "($)" prefix on sponsored ads.
+        # These are paid placements in the SERP at scrape time, not organic
+        # rankers — leaving them in inflates competitor revenue, distorts
+        # share-of-voice math, and pollutes every product list downstream.
+        if title.startswith("($)") or title.startswith("$") and title.lstrip().startswith("($)"):
+            sponsored_skipped += 1
             continue
         products.append(
             XrayProduct(
@@ -205,6 +213,12 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
 
     if not products:
         raise RuntimeError("Competitor Xray CSV did not contain any usable product rows.")
+
+    if sponsored_skipped:
+        warnings.append(
+            f"Filtered out {sponsored_skipped} sponsored-ad row{'s' if sponsored_skipped != 1 else ''} "
+            f"(title prefixed with '($)') so the deck reflects organic rankers only."
+        )
 
     total_revenue = sum(product.revenue or 0.0 for product in products)
     total_units = sum(product.units_sold or 0.0 for product in products)

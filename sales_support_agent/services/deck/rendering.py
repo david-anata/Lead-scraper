@@ -58,16 +58,20 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
 
 
 def _render_metric_card(card: dict[str, str]) -> str:
+    """PR34: emit the design's `.metric` markup with `.lab` / `.val` / `.sub`
+    so tiles get the proper label/value/footnote spacing. Old `.metric-card`
+    class isn't styled in deck.css, which made tiles render as plain run-on
+    text in the market and search behaviour slides."""
     label = str(card.get("label", "") or "")
     label_html = html.escape(label)
     if _normalize_key(label) == "open_opportunity":
         label_html += " " + _render_help_badge("This compares low-review listings against those already generating meaningful revenue to estimate how much whitespace is still available in the niche.")
     return (
-        "<article class='metric-card'>"
-        f"<span>{label_html}</span>"
-        f"<strong>{html.escape(card.get('value', ''))}</strong>"
-        f"<small>{html.escape(card.get('meta', ''))}</small>"
-        "</article>"
+        "<div class='metric'>"
+        f"<span class='lab'>{label_html}</span>"
+        f"<span class='val'>{html.escape(card.get('value', ''))}</span>"
+        f"<span class='sub'>{html.escape(card.get('meta', ''))}</span>"
+        "</div>"
     )
 def _render_competitor_card(product: XrayProduct, total_revenue: float) -> str:
     image = f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />" if product.image_url else "<div class='image-fallback'>No image</div>"
@@ -113,44 +117,52 @@ def _render_keyword_table(rows: list[list[str]]) -> str:
     )
     return f"<thead><tr>{header_html}</tr></thead><tbody>{body_html}</tbody>"
 def _render_cerebro_rank_summary(cerebro_report: Helium10CerebroReport | None) -> str:
+    """PR34: redesigned ranking-path renderer. Each rank bucket gets a
+    horizontal bar (sky-deep on track), the keyword count + search-volume
+    proxy aligned right. Reads as a stacked-bar instead of a bulleted list."""
     if not cerebro_report or not cerebro_report.keywords:
         return ""
     buckets = [
-        ("Rank 1-5", 0, 0),
-        ("Rank 6-10", 0, 0),
-        ("Rank 11-20", 0, 0),
-        ("Rank 21-50", 0, 0),
-        ("Unranked", 0, 0),
+        ("Rank 1–5", "win", 0, 0),
+        ("Rank 6–10", "win", 0, 0),
+        ("Rank 11–20", "mid", 0, 0),
+        ("Rank 21–50", "mid", 0, 0),
+        ("Unranked", "miss", 0, 0),
     ]
     for keyword in cerebro_report.keywords:
         rank = keyword.target_rank
         volume = keyword.search_volume or 0
         if rank is not None and 1 <= rank <= 5:
-            index = 0
+            i = 0
         elif rank is not None and 6 <= rank <= 10:
-            index = 1
+            i = 1
         elif rank is not None and 11 <= rank <= 20:
-            index = 2
+            i = 2
         elif rank is not None and 21 <= rank <= 50:
-            index = 3
+            i = 3
         else:
-            index = 4
-        label, count, proxy = buckets[index]
-        buckets[index] = (label, count + 1, proxy + volume)
-    max_count = max((count for _, count, _ in buckets), default=1) or 1
-    rows = "".join(
-        "<li>"
-        f"<div><strong>{html.escape(label)}</strong><span>{_label_integer(count)} keywords</span></div>"
-        f"<div class='rank-track'><span style='width:{max(8, int((count / max_count) * 100))}%'></span></div>"
-        f"<small>{_label_integer(proxy)} search volume</small>"
+            i = 4
+        label, tier, count, proxy = buckets[i]
+        buckets[i] = (label, tier, count + 1, proxy + volume)
+    max_count = max((count for _, _, count, _ in buckets), default=1) or 1
+    rows_html = "".join(
+        f"<li class='rank-row tier-{tier}'>"
+        f"<span class='rank-name'>{html.escape(label)}</span>"
+        "<div class='rank-bar'>"
+        f"<span class='rank-bar-fill' style='width:{max(2, int((count / max_count) * 100))}%'></span>"
+        "</div>"
+        f"<span class='rank-count'>{_label_integer(count)} keywords</span>"
+        f"<span class='rank-volume'>{_label_integer(proxy)} search vol.</span>"
         "</li>"
-        for label, count, proxy in buckets
+        for label, tier, count, proxy in buckets
     )
     return (
-        "<div class='dashboard-card'>"
-        "<div class='card-head'><h3>Ranking path</h3>"
-        "<span class='muted'>Where the target already ranks and where the next keyword lifts can come from</span></div>"
-        f"<ul class='rank-summary-list'>{rows}</ul>"
+        "<div class='card'>"
+        "<div class='card-h'>"
+        "<h3>Ranking path</h3>"
+        "<span class='meta'>Where the target ranks today and where the next keyword lifts can come from</span>"
+        "</div>"
+        f"<ul class='rank-list'>{rows_html}</ul>"
         "</div>"
     )
 def _render_word_frequency_bubbles(report: Any) -> str:
@@ -180,39 +192,32 @@ def _render_word_frequency_bubbles(report: Any) -> str:
             return "tier-secondary"
         return "tier-tertiary"
 
+    # PR34: switch to design's .bubble system (lg / md / sm sized pills).
+    # Map tier→bubble class so the cloud matches the design language used
+    # elsewhere in the deck (see deck.css `.bubble`, `.bubble.lg/.md/.sm`).
+    def _bubble_class(rank: int) -> str:
+        if rank < 3:
+            return "bubble lg"
+        if rank < 7:
+            return "bubble md"
+        return "bubble sm"
+
     bubbles = "".join(
-        "<li class='term-bubble {tier_cls}' "
-        "tabindex='0' "
-        "title='{title_attr}' "
-        "style='--bubble-size:{size}px'>"
-        "<strong>{word}</strong>"
-        "<span>{freq}</span>"
-        "</li>".format(
-            tier_cls=_tier(rank),
-            title_attr=html.escape(
-                f"{item.word}: {_label_integer(item.frequency)} mentions across the keyword corpus",
-                quote=True,
-            ),
-            size=72 + int((item.frequency / max_frequency) * 84),
-            word=html.escape(item.word),
-            freq=_label_integer(item.frequency),
-        )
+        f"<span class='{_bubble_class(rank)}' "
+        f"title='{html.escape(item.word)}: {_label_integer(item.frequency)} mentions'>"
+        f"{html.escape(item.word)}"
+        f"<span class='bubble-count'>{_label_integer(item.frequency)}</span>"
+        f"</span>"
         for rank, item in enumerate(words)
     )
 
-    list_rows = "".join(
-        f"<li><strong>{html.escape(item.word)}</strong>"
-        f"<span class='muted'>{_label_integer(item.frequency)}</span></li>"
-        for item in words
-    )
     return (
-        "<div class='dashboard-card support-term-card'>"
-        "<div class='card-head'>"
+        "<div class='card'>"
+        "<div class='card-h'>"
         "<h3>Support-term demand</h3>"
-        "<span class='muted'>Single-word demand from the word-frequency file — color tier signals relative weight, hover for the count.</span>"
+        "<span class='meta'>Single-word frequency · larger pill = more weight</span>"
         "</div>"
-        f"<ul class='bubble-cloud'>{bubbles}</ul>"
-        f"<details class='support-term-list'><summary>List view</summary><ul>{list_rows}</ul></details>"
+        f"<div class='bubble-cloud'>{bubbles}</div>"
         "</div>"
     )
 def _render_revenue_bar(product: XrayProduct, total_revenue: float) -> str:
@@ -228,27 +233,29 @@ def _render_revenue_bar(product: XrayProduct, total_revenue: float) -> str:
         "</article>"
     )
 def _render_niche_summary_row(product: XrayProduct, total_revenue: float) -> str:
+    """PR34: emit the redesign's `.row-product` / `.thumb` / `.product-name`
+    markup — 36×36 thumb keeps the table compact and matches the design.
+    Real Amazon image goes inside the thumb box (object-fit: contain)."""
     share = 0.0 if total_revenue <= 0 else ((product.revenue or 0.0) / total_revenue) * 100
     image_html = (
         f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
         if product.image_url
-        else "<div class='image-fallback compact'>No image</div>"
+        else "&nbsp;"
     )
     return (
         "<tr>"
-        f"<td>{html.escape(str(product.display_order))}</td>"
         "<td>"
-        "<div class='niche-product-cell'>"
-        f"<div class='niche-product-thumb'>{image_html}</div>"
-        "<div>"
-        f"<strong>{html.escape(_trim_text(product.title, 40))}</strong>"
-        f"<div class='muted'>{html.escape(product.asin)} · {html.escape(product.brand)}</div>"
+        "<div class='row-product'>"
+        f"<div class='thumb thumb-img'>{image_html}</div>"
+        "<div class='product-name'>"
+        f"<span class='n'>{html.escape(_trim_text(product.title, 60))}</span>"
+        f"<span class='b'>{html.escape(product.asin)} · {html.escape(product.brand)}</span>"
         "</div>"
         "</div>"
         "</td>"
-        f"<td>{html.escape(product.price_label)}</td>"
-        f"<td>{html.escape(product.revenue_label)}</td>"
-        f"<td>{share:.1f}%</td>"
+        f"<td class='num-col'>{html.escape(product.price_label)}</td>"
+        f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
+        f"<td class='num-col'>{share:.1f}%</td>"
         "</tr>"
     )
 
@@ -302,20 +309,19 @@ def _render_niche_summary_brand_row(
     bsr_label = f"BSR {int(bucket['best_bsr']):,}" if bucket["best_bsr"] is not None else ""
     return (
         "<tr>"
-        f"<td>{display_order}</td>"
         "<td>"
-        "<div class='niche-product-cell'>"
-        f"<div class='niche-product-thumb'>{image_html}</div>"
-        "<div>"
-        f"<strong>{html.escape(_trim_text(bucket['brand'], 40))}</strong>"
-        f"<div class='muted'>{bucket['listing_count']} {listing_word}"
-        f"{f' · {html.escape(bsr_label)}' if bsr_label else ''}</div>"
+        "<div class='row-product'>"
+        f"<div class='thumb thumb-img'>{image_html}</div>"
+        "<div class='product-name'>"
+        f"<span class='n'>{html.escape(_trim_text(bucket['brand'], 40))}</span>"
+        f"<span class='b'>{bucket['listing_count']} {listing_word}"
+        f"{f' · {html.escape(bsr_label)}' if bsr_label else ''}</span>"
         "</div>"
         "</div>"
         "</td>"
-        f"<td>—</td>"
-        f"<td>{html.escape(revenue_label)}</td>"
-        f"<td>{share:.1f}%</td>"
+        f"<td class='num-col'>—</td>"
+        f"<td class='num-col'>{html.escape(revenue_label)}</td>"
+        f"<td class='num-col'>{share:.1f}%</td>"
         "</tr>"
     )
 def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayProduct | None, missing_image_asset: str = "") -> str:
@@ -435,46 +441,77 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
         "</div>"
     )
 def _render_competitor_landscape_table(products: list[XrayProduct], total_revenue: float) -> str:
+    """PR34: emit `.tbl` + `.row-product` markup so this table matches the
+    market-summary table visually. Compact 36×36 image thumbs, num-col
+    right-aligned numerics, num-col tabular-nums."""
     rows = []
     for product in products:
         image_html = (
             f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
             if product.image_url
-            else "<div class='image-fallback compact'>No image</div>"
+            else "&nbsp;"
         )
         rows.append(
             "<tr>"
-            f"<td><div class='table-product-cell'><div class='table-product-thumb'>{image_html}</div><div><strong>{html.escape(_trim_text(product.title, 40))}</strong><div class='muted'>{html.escape(product.asin)}</div></div></div></td>"
-            f"<td>{html.escape(product.price_label)}</td>"
-            f"<td>{html.escape(product.revenue_label)}</td>"
-            f"<td>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
-            f"<td>{html.escape(product.bsr_label)}</td>"
-            f"<td>{html.escape(product.rating_label)}</td>"
-            f"<td>{html.escape(str(product.review_count or ''))}</td>"
+            "<td>"
+            "<div class='row-product'>"
+            f"<div class='thumb thumb-img'>{image_html}</div>"
+            "<div class='product-name'>"
+            f"<span class='n'>{html.escape(_trim_text(product.title, 60))}</span>"
+            f"<span class='b'>{html.escape(product.asin)} · {html.escape(product.brand)}</span>"
+            "</div>"
+            "</div>"
+            "</td>"
+            f"<td class='num-col'>{html.escape(product.price_label)}</td>"
+            f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
+            f"<td class='num-col'>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
+            f"<td class='num-col'>{html.escape(product.bsr_label)}</td>"
+            f"<td class='num-col'>{html.escape(product.rating_label)}</td>"
+            f"<td class='num-col'>{html.escape(str(product.review_count or ''))}</td>"
             "</tr>"
         )
     return (
-        "<table class='landscape-table'>"
-        "<thead><tr><th>Product</th><th>Price</th><th>Revenue</th><th>Market share</th><th>BSR</th><th>Rating</th><th>Reviews</th></tr></thead>"
+        "<table class='tbl'>"
+        "<thead><tr>"
+        "<th style='width:38%'>Product</th>"
+        "<th class='num-col'>Price</th>"
+        "<th class='num-col'>Revenue</th>"
+        "<th class='num-col'>Share</th>"
+        "<th class='num-col'>BSR</th>"
+        "<th class='num-col'>★</th>"
+        "<th class='num-col'>Reviews</th>"
+        "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
     )
 def _render_distribution_card(title: str, slices: list[DistributionSlice]) -> str:
+    """PR34: emit the design's `.donut-card` markup so the distribution
+    blocks render as proper donut+legend cards (donut on the left, legend
+    on the right). The old `.distribution-card` had no styles in deck.css
+    and was rendering as a bullet list."""
     donut = _render_donut(slices)
-    palette = ["#d39a49", "#8d4e54", "#85bbda", "#c3a46d", "#d26b36", "#cdd7e3"]
-    items = "".join(
-        f"<li title='{html.escape(f'{item.label}: {item.count} listings ({item.share * 100:.1f}%)')}' style='--legend-color:{palette[index % len(palette)]}'><span>{html.escape(item.label)}</span><strong>{item.count}</strong></li>"
-        for index, item in enumerate(slices[:6])
+    palette = ["#bfa889", "#dcc8a3", "#85bbda", "#c3a46d", "#d26b36", "#eee9dc"]
+    legend_rows = "".join(
+        "<div class='lg-row'>"
+        f"<span><span class='swatch' style='background:{palette[index % len(palette)]}'></span>"
+        f"{html.escape(item.label)}</span>"
+        f"<span class='pct'>{item.share * 100:.0f}%</span>"
+        "</div>"
+        for index, item in enumerate(slices[:4])
     )
     return (
-        "<article class='distribution-card'>"
-        f"<h3>{html.escape(title)}</h3>"
-        f"{donut}"
-        f"<ul>{items}</ul>"
-        "</article>"
+        "<div class='donut-card'>"
+        f"<div class='ring'>{donut}</div>"
+        "<div class='legend'>"
+        f"<h4>{html.escape(title)}</h4>"
+        f"{legend_rows}"
+        "</div>"
+        "</div>"
     )
 def _render_donut(slices: list[DistributionSlice]) -> str:
-    palette = ["#d39a49", "#8d4e54", "#85bbda", "#c3a46d", "#d26b36", "#cdd7e3"]
+    """PR34: 90×90 conic-gradient donut sized to fit inside `.donut-card .ring`.
+    Centered hole created with a smaller white circle on top."""
+    palette = ["#bfa889", "#dcc8a3", "#85bbda", "#c3a46d", "#d26b36", "#eee9dc"]
     stops: list[str] = []
     start = 0.0
     for index, item in enumerate(slices[:6]):
@@ -482,10 +519,16 @@ def _render_donut(slices: list[DistributionSlice]) -> str:
         stops.append(f"{palette[index % len(palette)]} {start:.2f}% {end:.2f}%")
         start = end
     if start < 100:
-        stops.append(f"#edf2f7 {start:.2f}% 100%")
-    style = f"background: conic-gradient({', '.join(stops)});"
+        stops.append(f"#eee9dc {start:.2f}% 100%")
     tooltip = ", ".join(f"{item.label}: {item.count} ({item.share * 100:.1f}%)" for item in slices[:6])
-    return f"<div class='donut-chart'><div class='donut-visual' title=\"{html.escape(tooltip)}\" style=\"{style}\"></div></div>"
+    return (
+        f"<div class='donut-visual' title=\"{html.escape(tooltip)}\" "
+        f"style=\"width:90px;height:90px;border-radius:50%;"
+        f"background:conic-gradient({', '.join(stops)});"
+        f"position:relative;"
+        f"-webkit-mask:radial-gradient(circle, transparent 28%, black 30%);"
+        f"mask:radial-gradient(circle, transparent 28%, black 30%);\"></div>"
+    )
 def _render_offering_tabs(sections: list[dict[str, Any]]) -> str:
     """PR33: emits the design's class names (`.off-tabs`/`.off-pane`/
     `.off-grid`/`.off-block`) — `deck.css` only styles those, not the old
@@ -567,23 +610,33 @@ def _render_gallery_card(item: dict[str, Any]) -> str:
         "</article>"
     )
 def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_label: str) -> str:
-    hit_items = "".join(
-        f"<li><span class='signal-icon positive'>+</span><span>{html.escape(item)}</span></li>"
-        for item in hits[:5]
-    ) or "<li><span class='signal-icon positive'>+</span><span>None identified yet.</span></li>"
-    miss_items = "".join(
-        f"<li><span class='signal-icon negative'>+</span><span>{html.escape(item)}</span></li>"
-        for item in misses[:5]
-    ) or "<li><span class='signal-icon negative'>+</span><span>No immediate gaps from the current keyword dataset.</span></li>"
-    help_text = (
-        "Title coverage checks whether exact high-intent keyword phrases are already present in the title."
-        if "title" in title.lower()
-        else "Bullet / copy coverage checks whether the supporting concepts, modifiers, and use-case terms appear across bullets and descriptive copy."
-    )
+    """PR34: emit the design's `.cov-list` markup (term · has/miss pill).
+    Each row is a single keyword status (✓ covered / ✕ missing), so the
+    presenter can scan title-coverage and bullet-coverage at a glance."""
+    in_label = "in title" if "title" in title.lower() else "in copy"
+    miss_label_short = "missing"
+    items: list[str] = []
+    for term in hits[:5]:
+        items.append(
+            f"<li><span class='term'>{html.escape(term)}</span>"
+            f"<span class='has'>✓ {in_label}</span></li>"
+        )
+    if not hits:
+        items.append(
+            f"<li><span class='term muted'>None identified yet</span>"
+            f"<span class='has' style='visibility:hidden'>—</span></li>"
+        )
+    for term in misses[:5]:
+        items.append(
+            f"<li><span class='term'>{html.escape(term)}</span>"
+            f"<span class='miss'>✕ {miss_label_short}</span></li>"
+        )
     return (
-        f"<h3>{html.escape(title)} {_render_help_badge(help_text)}</h3>"
-        f"<div class='signal-list'><strong>Already covered</strong><ul class='signal-bullets'>{hit_items}</ul></div>"
-        f"<div class='signal-list'><strong>{html.escape(miss_label)}</strong><ul class='signal-bullets'>{miss_items}</ul></div>"
+        "<div class='card-h'>"
+        f"<h3>{html.escape(title)}</h3>"
+        f"<span class='meta'>{len(hits[:5])} covered · {len(misses[:5])} {miss_label_short}</span>"
+        "</div>"
+        f"<ul class='cov-list'>{''.join(items)}</ul>"
     )
 def _render_resource_card(title: str, description: str, url: str) -> str:
     safe_url = html.escape(url, quote=True)
