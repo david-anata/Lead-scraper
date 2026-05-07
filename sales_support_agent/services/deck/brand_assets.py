@@ -77,9 +77,17 @@ def _encode_asset_cached(path_str: str) -> str:
 
 
 def load_brand_stylesheet(settings: Settings) -> str:
-    """Read `style.css` from the configured brand package, falling back to the
-    repo copy and finally to a tiny inline stylesheet. Result is cached by
-    resolved path."""
+    """Read the deck stylesheet from the configured brand package.
+
+    PR32: deck now has its own dedicated stylesheet (`deck.css`) — the
+    redesign introduced a full app shell + left rail nav + executive
+    summary that's specific to the deck and would conflict with the
+    admin dashboard layout. Falls back to the legacy `style.css` if
+    `deck.css` isn't found (for callers running against an older brand
+    package), then to a tiny inline stylesheet."""
+    for path in _candidate_brand_paths(settings, "deck.css"):
+        if path.exists():
+            return _read_text_cached(str(path))
     for path in _candidate_brand_paths(settings, "style.css"):
         if path.exists():
             return _read_text_cached(str(path))

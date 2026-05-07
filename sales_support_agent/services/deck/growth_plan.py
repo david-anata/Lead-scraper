@@ -913,6 +913,106 @@ def _render_funnel_svg(
     )
 
 
+def _render_funnel_classic(
+    plan: GrowthPlan,
+    *,
+    target_aov: float,
+    active_keys: list[str] | None = None,
+) -> str:
+    """Customer-funnel layout (PR32): media-mix bars on the left, journey
+    stages on the right narrowing from total sessions → revenue. Replaces
+    the older SVG flow which David flagged as not matching the original
+    visual language.
+
+    `active_keys` filters which channels light up; non-active channels are
+    hidden so the user sees only what's "on" for the selected phase.
+    """
+    if active_keys is None:
+        active_keys_set = {ch.key for ch in plan.channels}
+    else:
+        active_keys_set = set(active_keys)
+
+    active_channels = [ch for ch in plan.channels if ch.key in active_keys_set and ch.sessions > 0]
+    if not active_channels:
+        active_channels = [ch for ch in plan.channels if ch.sessions > 0]
+
+    total_sessions = sum(ch.sessions for ch in active_channels) or 1
+    cvr = max(plan.cvr_pct, 0.01) / 100.0
+
+    # Category-typical PDP and ATC rates. Anchored on Helium 10 / Pacvue
+    # benchmarks; documented in the Story methodology.
+    pdp_rate = 0.84
+    atc_rate = 0.38
+
+    pdp_visits = int(round(total_sessions * pdp_rate))
+    add_to_cart = int(round(pdp_visits * atc_rate))
+    units = int(round(total_sessions * cvr))
+    revenue = int(round(units * max(target_aov, 0.0)))
+
+    color_map = {
+        "organic": "#bfa889",
+        "on_channel_paid": "#1d2d44",
+        "off_channel_paid": "#85bbda",
+        "affiliate": "#d28b8b",
+        "retargeting": "#8bb59a",
+    }
+    label_map = {
+        "organic": "Organic",
+        "on_channel_paid": "On-channel paid",
+        "off_channel_paid": "Off-channel paid",
+        "affiliate": "Affiliate",
+        "retargeting": "Retargeting",
+    }
+
+    # Sort by sessions desc so the heaviest channel is at the top
+    sorted_channels = sorted(active_channels, key=lambda c: c.sessions, reverse=True)
+    bars_html = ""
+    for ch in sorted_channels:
+        pct = round((ch.sessions / total_sessions) * 100)
+        color = color_map.get(ch.key, "#4f84c4")
+        label = label_map.get(ch.key, ch.label)
+        bars_html += (
+            f'<div class="fc-bar">'
+            f'<span class="fc-bar-fill" style="width:{max(pct, 8)}%;background:{color}"></span>'
+            f'<span class="fc-bar-text"><b>{html.escape(label)}</b> · {ch.sessions:,} · {pct}%</span>'
+            f'</div>'
+        )
+
+    def _stage(name: str, val_text: str, meta: str, w_pct: float, *, is_rev: bool = False) -> str:
+        cls = "fc-stage is-rev" if is_rev else "fc-stage"
+        # Width is set via custom property so the CSS can apply min-width.
+        return (
+            f'<div class="{cls}" style="--w:{max(w_pct, 13):.0f}%">'
+            f'<div class="fc-stage-row">'
+            f'<span class="fc-stage-name">{html.escape(name)}</span>'
+            f'<span class="fc-stage-val">{html.escape(val_text)}</span>'
+            f'</div>'
+            f'<div class="fc-stage-meta">{html.escape(meta)}</div>'
+            f'</div>'
+        )
+
+    stages_html = (
+        _stage("Total sessions", f"{total_sessions:,}", "All active channels combined", 100.0)
+        + _stage("PDP visits", f"{pdp_visits:,}", f"{int(pdp_rate * 100)}% of sessions reach the detail page", pdp_rate * 100)
+        + _stage("Add to cart", f"{add_to_cart:,}", f"{int(atc_rate * 100)}% PDP-to-cart", pdp_rate * atc_rate * 100)
+        + _stage("Units sold", f"{units:,}", f"{plan.cvr_pct:.1f}% session conversion", cvr * 100)
+        + _stage("Revenue / mo", _money(revenue), f"{_money(target_aov)} avg unit price", cvr * 100, is_rev=True)
+    )
+
+    return (
+        '<div class="funnel-classic">'
+        '<div class="fc-mix">'
+        '<p class="fc-label">Media session mix</p>'
+        f'{bars_html}'
+        '</div>'
+        '<div class="fc-funnel">'
+        '<p class="fc-label">Customer journey</p>'
+        f'{stages_html}'
+        '</div>'
+        '</div>'
+    )
+
+
 def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
     """Wrap the funnel in a tabbed control — one tab per implementation phase.
     Each tab shows the cumulative funnel state at that phase (which channels
@@ -945,7 +1045,10 @@ def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
             f'</button>'
         )
         panel_hidden = "" if is_default else " hidden"
-        funnel_svg = _render_funnel_svg(plan, target_aov=target_aov, active_keys=active_keys)
+        # PR32: customer-funnel (media mix bars + journey stages). The old
+        # SVG flow rendering is preserved on disk in case we want to revive
+        # it; the redesign uses the simpler horizontal layout.
+        funnel_svg = _render_funnel_classic(plan, target_aov=target_aov, active_keys=active_keys)
         # Per-phase summary copy
         added_labels = ", ".join(
             short
@@ -1005,20 +1108,20 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
     current = max(0, plan.current_sessions)
     goal = max(plan.goal_sessions, current + 1)  # avoid div by zero
 
+    # PR32: ramp renderer now emits the design's flat class names
+    # (`.ramp` / `.ramp-step` / `.bar`) so the deck.css styles apply directly.
     # Starting point is the "Today" tile — current sessions, 0% added.
     steps_html: list[str] = []
     today_pct = int(round(min(100.0, (current / goal) * 100.0))) if goal else 0
     steps_html.append(
-        "<li class='growth-ramp-step is-today'>"
-        "<div class='ramp-step-head'>"
-        "<span class='ramp-step-num'>Today</span>"
-        "<span class='ramp-step-label'>Starting point</span>"
-        "</div>"
-        f"<div class='ramp-step-sessions'><strong>{current:,}</strong> sessions</div>"
-        "<div class='ramp-step-bar'>"
-        f"<span class='ramp-step-bar-fill' style='width:{today_pct}%'></span>"
-        "</div>"
-        f"<div class='ramp-step-pct'>{today_pct}% of goal</div>"
+        "<li class='ramp-step is-today'>"
+        "<span class='num'>Today</span>"
+        "<span class='name'>Baseline</span>"
+        "<span class='window'>Current state</span>"
+        f"<span class='sessions'>{current:,}</span>"
+        "<span class='delta'>starting point</span>"
+        f"<div class='bar'><span style='width:{today_pct}%'></span></div>"
+        f"<span class='pct'>{today_pct}% of goal</span>"
         "</li>"
     )
 
@@ -1035,39 +1138,29 @@ def _render_growth_ramp(plan: GrowthPlan) -> str:
         added_labels = ", ".join(
             label_map.get(k, k) for k in phase.channels_added
         ) or "—"
+        channel_pills = "".join(
+            f"<span class='ch-pill'>{html.escape(label_map.get(k, k))}</span>"
+            for k in phase.channels_added
+        )
         steps_html.append(
-            "<li class='growth-ramp-step'>"
-            "<div class='ramp-step-head'>"
-            f"<span class='ramp-step-num'>Phase {phase.id}</span>"
-            f"<span class='ramp-step-label'>{html.escape(phase.label)}</span>"
-            f"<span class='ramp-step-window'>{html.escape(phase.window_label)}</span>"
-            "</div>"
-            f"<div class='ramp-step-sessions'><strong>{cumulative_total:,}</strong> sessions"
-            f" <small class='muted'>(+{added_this_phase:,} this phase)</small></div>"
-            "<div class='ramp-step-bar'>"
-            f"<span class='ramp-step-bar-fill' style='width:{pct_of_goal:.1f}%'></span>"
-            "</div>"
-            f"<div class='ramp-step-pct'>{pct_of_goal:.0f}% of goal</div>"
-            f"<div class='ramp-step-new'>+ {html.escape(added_labels)}</div>"
+            "<li class='ramp-step'>"
+            f"<span class='num'>Phase {phase.id}</span>"
+            f"<span class='name'>{html.escape(phase.label)}</span>"
+            f"<span class='window'>{html.escape(phase.window_label)}</span>"
+            f"<span class='sessions'>{cumulative_total:,}</span>"
+            f"<span class='delta'>+{added_this_phase:,} this phase</span>"
+            f"<div class='bar'><span style='width:{pct_of_goal:.1f}%'></span></div>"
+            f"<span class='pct'>{pct_of_goal:.0f}% of goal</span>"
+            f"<div class='channels'>{channel_pills}</div>"
             "</li>"
         )
         previous_cumulative = cumulative_total
 
     return (
-        "<div class='growth-ramp'>"
-        "<div class='growth-ramp-head'>"
-        "<h3>Growth path — how sessions ramp from today to goal</h3>"
-        f"<p class='muted'>Each phase brings a new channel online. Numbers reflect "
-        f"<strong>end-of-phase steady state</strong>; actual session delivery within "
-        f"each phase ramps from the prior phase's end-state to the next "
-        f"(SEO compounds across 60–90 days; SP/SB stabilize in 2–4 weeks; "
-        f"affiliate creators take 4–6 weeks to first videos). "
-        f"Cumulative climbs from <strong>{current:,}</strong> to "
-        f"<strong>{plan.current_sessions + plan.total_sessions_delivered:,}</strong> "
-        f"against the <strong>{goal:,}</strong> goal.</p>"
-        "</div>"
-        f"<ol class='growth-ramp-steps'>{''.join(steps_html)}</ol>"
-        "</div>"
+        "<h3 class='gp-section-h'>Growth path — how sessions ramp from today to goal"
+        "<span class='desc'>End-of-phase steady state · 5 channels</span>"
+        "</h3>"
+        f"<ul class='ramp' style='list-style:none;margin:0;padding:0'>{''.join(steps_html)}</ul>"
     )
 
 
@@ -1090,20 +1183,24 @@ def render_growth_plan_section(
             f"to land at {plan.goal_sessions:,} monthly sessions."
         )
 
+    # PR32: KPI strip uses the redesign's `.gp-kpis` / `.gp-kpi` classes
+    # (sand-tinted tiles; the delta tile gets a sky-tinted variant).
     kpi_strip = (
-        "<div class='growth-kpis'>"
-        "<div class='growth-kpi'>"
-        "<span class='label'>Current sessions</span>"
-        f"<strong>{plan.current_sessions:,}</strong>"
-        f"<small>= {plan.target_units:,} units ÷ {plan.cvr_pct:.1f}%</small>"
+        "<div class='gp-kpis'>"
+        "<div class='gp-kpi'>"
+        "<p class='lab'>Current sessions</p>"
+        f"<p class='val'>{plan.current_sessions:,}</p>"
+        f"<p class='sub'>= {plan.target_units:,} units ÷ {plan.cvr_pct:.1f}% CVR</p>"
         "</div>"
-        "<div class='growth-kpi'>"
-        "<span class='label'>Goal sessions</span>"
-        f"<strong>{plan.goal_sessions:,}</strong>"
+        "<div class='gp-kpi'>"
+        "<p class='lab'>Goal sessions</p>"
+        f"<p class='val'>{plan.goal_sessions:,}</p>"
+        "<p class='sub'>phase-4 steady state</p>"
         "</div>"
-        "<div class='growth-kpi'>"
-        "<span class='label'>Sessions delta</span>"
-        f"<strong>{plan.delta_sessions:,}</strong>"
+        "<div class='gp-kpi delta'>"
+        "<p class='lab'>Sessions delta</p>"
+        f"<p class='val'>+{plan.delta_sessions:,}</p>"
+        "<p class='sub'>to be earned across 4 phases</p>"
         "</div>"
         "</div>"
     )
@@ -1133,41 +1230,73 @@ def render_growth_plan_section(
     # paper (the tabbed funnel is interactive only).
     ramp_html = _render_growth_ramp(plan)
 
+    # PR32: spend-summary strip at the bottom — replaces the simpler
+    # `growth-summary` row with a 4-tile gradient strip per the design.
+    expected_units_steady = int(round(plan.total_sessions_delivered * (plan.cvr_pct / 100.0)))
+    expected_revenue_steady = expected_units_steady * max(target_aov, 0.0)
+    spend_summary = (
+        "<div class='spend-summary'>"
+        f"<div class='item'><div class='lab'>Monthly paid spend</div><div class='val'>{_money(plan.total_monthly_spend)}</div></div>"
+        f"<div class='item'><div class='lab'>Total monthly sessions</div><div class='val'>{plan.total_sessions_delivered:,}</div></div>"
+        f"<div class='item'><div class='lab'>Steady-state revenue</div><div class='val'>{_money(expected_revenue_steady)}</div></div>"
+        f"<div class='item'><div class='lab'>Daily spend</div><div class='val'>{_money(daily_spend)}</div></div>"
+        "</div>"
+    )
+
     return f"""
     <section class="slide growth-plan-slide">
-      <div class="slide-head">
-        <div>
-          <p class="eyebrow">Growth plan</p>
-          <h2>Closing the gap</h2>
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Growth plan synopsis</p>
+          <h2 class="slide-title">Closing the gap</h2>
         </div>
-        <p class="muted">{gap_caption}</p>
-      </div>
+        <p class="caption">{gap_caption}</p>
+      </header>
       {kpi_strip}
       {ramp_html}
+      <h3 class="gp-section-h">Funnel — by phase
+        <span class="desc">Sessions → PDP visits → units → revenue</span>
+      </h3>
       {funnel_svg}
+      <h3 class="gp-section-h">Channel mix — what gets activated, when
+        <span class="desc">5 channels · color-coded ramp</span>
+      </h3>
       <div class="channel-grid">{cards_html}</div>
-      <div class="growth-summary">
-        <div><strong>Total monthly spend:</strong> {_money(plan.total_monthly_spend)}
-        <span class='muted'>({_money(daily_spend)}/day)</span></div>
-        <div><strong>Total sessions delivered:</strong> {plan.total_sessions_delivered:,}</div>
-      </div>
+      {spend_summary}
       {shortfall_html}
-      <details class="growth-methodology">
-        <summary>Methodology and sources</summary>
-        <ul>{methodology_lis}</ul>
+      <details class="methodology">
+        <summary>Sources &amp; methodology</summary>
+        <ul style='margin-top:8px'>{methodology_lis}</ul>
       </details>
     </section>
     """
 
 
 def _render_channel_card(channel: GrowthChannel) -> str:
+    """PR32: emit class names that match `deck.css` (.channel-card.organic /
+    .on_paid / .off_paid / .affiliate / .retargeting). Inner sub-elements use
+    the design's flat class names (`.head`, `.mix`, `.cost`, `.outcome`,
+    `.block-h`).
+
+    Channel `key` comes from the data model as e.g. "on_channel_paid", but
+    the design's CSS uses shorthand "on_paid" for the left-border accent
+    color. Map both forms here so the colors apply correctly."""
+    css_key_map = {
+        "organic": "organic",
+        "on_channel_paid": "on_paid",
+        "off_channel_paid": "off_paid",
+        "affiliate": "affiliate",
+        "retargeting": "retargeting",
+    }
+    css_key = css_key_map.get(channel.key, channel.key)
+
     directional_badge = (
         "<small class='directional'>Directional — calibrate with first-party data</small>"
         if channel.is_directional
         else ""
     )
     cost_text = (
-        "SEO investment, no paid spend"
+        "SEO investment · no paid spend"
         if channel.key == "organic"
         else f"{_money(channel.monthly_cost)} / month"
     )
@@ -1175,43 +1304,38 @@ def _render_channel_card(channel: GrowthChannel) -> str:
     # Outcome line: sessions → units → revenue
     if channel.expected_revenue > 0:
         outcome_line = (
-            f"<div class='card-outcome'>"
-            f"<strong>{channel.sessions:,}</strong> sessions "
-            f"→ <strong>{channel.expected_units:,}</strong> units "
-            f"→ <strong>{_money(channel.expected_revenue)}</strong> / mo"
+            f"<div class='outcome'>"
+            f"<strong>{channel.sessions:,}</strong> sessions · "
+            f"<strong>{channel.expected_units:,}</strong> units · "
+            f"<strong>{_money(channel.expected_revenue)}</strong>/mo"
             f"</div>"
         )
     else:
-        outcome_line = f"<div class='card-outcome'><strong>{channel.sessions:,}</strong> sessions</div>"
+        outcome_line = f"<div class='outcome'><strong>{channel.sessions:,}</strong> sessions</div>"
 
     campaign_block = (
-        f"<div class='card-block'>"
-        f"<span class='card-block-label'>Campaign</span>"
+        f"<span class='block-h'>Campaign</span>"
         f"<p>{html.escape(channel.campaign_description)}</p>"
-        f"</div>"
         if channel.campaign_description
         else ""
     )
     why_block = (
-        f"<div class='card-block'>"
-        f"<span class='card-block-label'>Why this channel</span>"
+        f"<span class='block-h'>Why</span>"
         f"<p>{html.escape(channel.strategic_why)}</p>"
-        f"</div>"
         if channel.strategic_why
         else ""
     )
 
     return (
-        f"<article class='channel-card channel-{channel.key}'>"
-        f"<div class='card-head'>"
-        f"<h3>{html.escape(channel.label)}</h3>"
-        f"<span class='card-mix'>{channel.mix_pct:.0f}% of mix</span>"
+        f"<article class='channel-card {html.escape(css_key)}'>"
+        f"<div class='head'>"
+        f"<h4>{html.escape(channel.label)}</h4>"
+        f"<span class='mix'>{channel.mix_pct:.0f}% mix</span>"
         f"</div>"
-        f"<div class='card-cost'>{html.escape(cost_text)}</div>"
+        f"<div class='cost'>{html.escape(cost_text)}</div>"
         f"{outcome_line}"
         f"{campaign_block}"
         f"{why_block}"
-        f"<small class='card-source'>{html.escape(channel.source_label)}</small>"
         f"{directional_badge}"
         f"</article>"
     )
