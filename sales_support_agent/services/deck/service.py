@@ -943,6 +943,315 @@ class DeckGenerationService:
             case_study_url=case_study_url,
             creative_mockup_url=creative_mockup_url,
         )
+
+        # ============================================================
+        # PR32: Redesigned deck shell — left rail nav + exec summary +
+        # findings strip + section dividers between slides.
+        # ============================================================
+
+        def _money_short(value: float) -> str:
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                return "—"
+            if v >= 1_000_000:
+                return f"${v / 1_000_000:.1f}M"
+            if v >= 1_000:
+                return f"${v / 1_000:.0f}k"
+            return f"${v:,.0f}"
+
+        def _count_short(value: float | int) -> str:
+            try:
+                v = float(value)
+            except (TypeError, ValueError):
+                return "—"
+            if v >= 1_000_000:
+                return f"{v / 1_000_000:.1f}M"
+            if v >= 1_000:
+                return f"{v / 1_000:.0f}k"
+            return f"{int(v):,}"
+
+        # Exec summary headline values
+        _niche_revenue = float(getattr(xray_report, "total_revenue", 0) or 0)
+        _niche_units = int(getattr(xray_report, "total_units", 0) or 0)
+        _current_sessions = (
+            int(growth_plan_obj.current_sessions)
+            if growth_plan_obj is not None and getattr(growth_plan_obj, "current_sessions", None) is not None
+            else 0
+        )
+        _goal_sessions = (
+            int(growth_plan_obj.goal_sessions)
+            if growth_plan_obj is not None and getattr(growth_plan_obj, "goal_sessions", None) is not None
+            else 0
+        )
+        _has_growth = growth_plan_obj is not None and _goal_sessions > 0
+
+        _niche_label = niche_keyword or "this category"
+        _exec_headline = (
+            f"A {_money_short(_niche_revenue)} monthly opportunity"
+            + (f" in the &ldquo;{html.escape(_niche_label)}&rdquo; category." if _niche_label else ".")
+        )
+
+        _exec_sub_text = (
+            dataset.text_fields.get("executive_summary")
+            or dataset.text_fields.get("market_summary")
+            or ""
+        )
+
+        # Exec tiles — last tile becomes "Sessions · 4mo" if growth plan present,
+        # otherwise "Avg price" as a soft fallback.
+        _avg_price = (
+            float(getattr(xray_report, "average_price", 0) or 0)
+            if hasattr(xray_report, "average_price")
+            else 0
+        )
+        _exec_tiles_html = (
+            f'<div class="exec-tile is-primary">'
+            f'<p class="lab">Category revenue</p>'
+            f'<p class="val">{_money_short(_niche_revenue)}</p>'
+            f'<p class="delta">monthly · top {len(getattr(xray_report, "products", []) or [])} brands</p>'
+            f'</div>'
+            f'<div class="exec-tile">'
+            f'<p class="lab">Units sold</p>'
+            f'<p class="val">{_count_short(_niche_units)}</p>'
+            f'<p class="delta">monthly · category-wide</p>'
+            f'</div>'
+        )
+        if _has_growth:
+            _exec_tiles_html += (
+                f'<div class="exec-tile">'
+                f'<p class="lab">Sessions today</p>'
+                f'<p class="val">{_count_short(_current_sessions)}</p>'
+                f'<p class="delta">est. monthly · target</p>'
+                f'</div>'
+                f'<div class="exec-tile is-primary">'
+                f'<p class="lab">Sessions · 4mo</p>'
+                f'<p class="val">{_count_short(_goal_sessions)}</p>'
+                f'<p class="delta">target · 5-channel ramp</p>'
+                f'</div>'
+            )
+        else:
+            _avg_listing_revenue = (
+                float(getattr(xray_report, "average_revenue", 0) or 0)
+                if hasattr(xray_report, "average_revenue")
+                else (_niche_revenue / len(getattr(xray_report, "products", []) or [1]) if _niche_revenue else 0)
+            )
+            _exec_tiles_html += (
+                f'<div class="exec-tile">'
+                f'<p class="lab">Avg price</p>'
+                f'<p class="val">{_money_short(_avg_price) if _avg_price else "—"}</p>'
+                f'<p class="delta">category median</p>'
+                f'</div>'
+                f'<div class="exec-tile">'
+                f'<p class="lab">Avg per listing</p>'
+                f'<p class="val">{_money_short(_avg_listing_revenue)}</p>'
+                f'<p class="delta">monthly · top 11</p>'
+                f'</div>'
+            )
+
+        # Exec product card (right column on the navy hero)
+        _target_thumb_label = (target_brand_display[:6].upper() or "TGT") if target_brand_display else "TGT"
+        _target_meta_bits = []
+        if target.get("asin"):
+            _target_meta_bits.append(html.escape(str(target.get("asin"))))
+        if target.get("rating"):
+            _target_meta_bits.append(f"{html.escape(str(target.get('rating')))} ★")
+        if target.get("review_count_label"):
+            _target_meta_bits.append(html.escape(str(target.get("review_count_label"))))
+        elif target.get("reviews"):
+            _target_meta_bits.append(html.escape(str(target.get("reviews"))))
+        _exec_product_html = (
+            f'<div class="exec-product">'
+            f'<div class="pic">'
+            f'<span class="label-tag">Target</span>'
+            f'<div class="placeholder" data-label="{html.escape(_target_thumb_label)}"></div>'
+            f'</div>'
+            f'<div>'
+            f'<div class="name">{html.escape(_trim_text(_clean_listing_title(str(target.get("title", "") or "the prospect listing")), 60))}</div>'
+            f'<div class="meta">{" · ".join(_target_meta_bits) or "&nbsp;"}</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+        # Pills below the exec headline — derived from data with safe fallbacks.
+        _pills: list[str] = []
+        try:
+            top_products = list(getattr(xray_report, "products", []) or [])[:3]
+            target_reviews = int(target.get("review_count") or 0)
+            top3_avg_reviews = (
+                sum(int(getattr(p, "review_count", 0) or 0) for p in top_products) / max(len(top_products), 1)
+                if top_products else 0
+            )
+            if target_reviews and top3_avg_reviews and target_reviews >= top3_avg_reviews * 0.5:
+                _pills.append("Reviews within striking distance of the top 3")
+        except Exception:
+            pass
+        if _avg_price > 0:
+            _pills.append("Mid-tier price band, no entrenched leader")
+        if keyword_report and getattr(keyword_report, "total_search_volume", None):
+            _kw_total = int(getattr(keyword_report, "total_search_volume", 0) or 0)
+            if _kw_total:
+                _pills.append(f"Search demand strong · {_count_short(_kw_total)} monthly searches")
+        if _has_growth:
+            _phase_count = 4
+            _channel_count = len(getattr(growth_plan_obj, "channels", []) or [])
+            _pills.append(f"{_channel_count} channels mapped · {_phase_count} phases")
+        if not _pills:
+            _pills = [
+                f"{len(getattr(xray_report, 'products', []) or [])} listings tracked",
+                "Mid-tier price band",
+                "Page-one competitors mapped",
+            ]
+        _pills_html = "".join(
+            f'<span class="exec-pill"><span class="dot"></span>{html.escape(p)}</span>'
+            for p in _pills[:4]
+        )
+
+        # Findings strip (3 cards). Take 1 strength + 1 gap and pair with
+        # either the growth opportunity or a third gap as fallback.
+        def _finding_card(num: str, lab: str, head: str, body: str) -> str:
+            return (
+                f'<article class="finding">'
+                f'<div class="ic">{num}</div>'
+                f'<p class="lab">{html.escape(lab)}</p>'
+                f'<h3 class="h">{html.escape(head)}</h3>'
+                f'<p class="body">{html.escape(body)}</p>'
+                f'</article>'
+            )
+
+        def _first_text(items: list, default: str) -> tuple[str, str]:
+            """Extract (heading, body) from a strength/gap item which may be a
+            dict, a dataclass, or a plain string."""
+            if not items:
+                return default, ""
+            first = items[0]
+            if isinstance(first, dict):
+                return str(first.get("title") or first.get("label") or default), str(first.get("description") or first.get("body") or "")
+            if hasattr(first, "title") and hasattr(first, "description"):
+                return str(getattr(first, "title", "") or default), str(getattr(first, "description", "") or "")
+            text = str(first)
+            # Try to split "Title — body" or "Title: body"
+            for sep in (" — ", " - ", ": "):
+                if sep in text:
+                    h, b = text.split(sep, 1)
+                    return h.strip(), b.strip()
+            return text[:64].strip(), text[64:].strip()
+
+        _strength_h, _strength_b = _first_text(target_strengths, "Strong fundamentals")
+        _gap_h, _gap_b = _first_text(target_gaps, "Coverage gaps")
+        _findings_html_parts = [
+            _finding_card("①", "What's working", _strength_h, _strength_b or "The product fundamentals are in place."),
+            _finding_card("②", "What's missing", _gap_h, _gap_b or "There's coverage to add before scaling traffic."),
+        ]
+        if _has_growth:
+            _delta = max(0, _goal_sessions - _current_sessions)
+            _multiplier = (_goal_sessions / max(_current_sessions, 1)) if _current_sessions > 0 else 0
+            _multi_text = f"{_multiplier:.0f}× sessions in 4 months" if _multiplier >= 2 else f"+{_count_short(_delta)} sessions in 4 months"
+            _findings_html_parts.append(
+                _finding_card(
+                    "③",
+                    "The opportunity",
+                    _multi_text,
+                    f"5-channel ramp closes the gap from {_count_short(_current_sessions)} → {_count_short(_goal_sessions)} monthly sessions, anchored on industry-published timelines.",
+                )
+            )
+        else:
+            _h2, _b2 = _first_text(target_gaps[1:] if len(target_gaps) > 1 else [], "Listing optimization is the unlock")
+            _findings_html_parts.append(
+                _finding_card("③", "The opportunity", _h2, _b2 or "Tighten the PDP and SEO foundations before scaling demand.")
+            )
+        _findings_html = "".join(_findings_html_parts)
+
+        # Left rail — section list w/ optional dots for growth plan / offers.
+        def _rail_item(href: str, num: str, label: str, *, optional: bool = False, summary_class: str = "", active: bool = False) -> str:
+            cls = "rail-item"
+            if summary_class:
+                cls += f" {summary_class}"
+            if active:
+                cls += " active"
+            return (
+                f'<li><a class="{cls}" href="#{href}">'
+                f'<span class="num">{num}</span>{html.escape(label)}'
+                + ('<span class="opt-dot" title="optional"></span>' if optional else '')
+                + '</a></li>'
+            )
+
+        _rail_items_html = (
+            _rail_item("summary", "★", "Executive summary", summary_class="is-summary", active=True)
+            + _rail_item("sec-01", "01", "Market")
+            + _rail_item("sec-02", "02", "Target listing")
+            + _rail_item("sec-03", "03", "Competitors")
+            + _rail_item("sec-04", "04", "Search behavior")
+            + (_rail_item("sec-05", "05", "Growth plan", optional=True) if _has_growth else "")
+            + _rail_item("sec-06", "06", "Conversion & PDP")
+            + _rail_item("sec-07", "07", "Service offerings")
+            + (_rail_item("sec-08", "08", "Proposed offers", optional=True) if include_recommended_plan else "")
+        )
+
+        def _section_divider(anchor: str, num: str, eyebrow: str, head: str, thesis: str, bullets: list[str]) -> str:
+            return (
+                f'<div class="section-divider" id="{anchor}">'
+                f'<div class="sd-num">{num}</div>'
+                f'<div>'
+                f'<p class="sd-eye">{html.escape(eyebrow)}</p>'
+                f'<h2 class="sd-h">{html.escape(head)}</h2>'
+                f'<p class="sd-thesis">{html.escape(thesis)}</p>'
+                f'</div>'
+                f'<ul class="sd-bullets">'
+                + "".join(f"<li>{html.escape(b)}</li>" for b in bullets)
+                + '</ul>'
+                f'</div>'
+            )
+        # ---- Section dividers ----
+        _div_market = _section_divider(
+            "sec-01", "01", "Section · The market",
+            f'"{niche_keyword}" — the category at a glance' if niche_keyword else "The category at a glance",
+            "A snapshot of category economics: who's selling, what they sell for, and how concentrated the revenue actually is.",
+            ["6 category metrics", f"Top {min(len(getattr(xray_report, 'products', []) or []), 11)} brands", "Distribution donuts"],
+        )
+        _div_target = _section_divider(
+            "sec-02", "02", "Section · Target listing",
+            f"Where {target_brand_display} stands today",
+            "A side-by-side of your listing against the category benchmark, with what's working and what's missing in plain English.",
+            ["Comparison panel", "What's working", "What's missing"],
+        )
+        _div_competitors = _section_divider(
+            "sec-03", "03", "Section · Competitive landscape",
+            "Who owns the page-one real estate",
+            "The top brands competing for the same buyer — by revenue, share, BSR, and review density.",
+            ["Top 10 ranked", "Share of category", "Where you fit"],
+        )
+        _div_search = _section_divider(
+            "sec-04", "04", "Section · Search behavior",
+            "How buyers find products in this category",
+            "Keyword volume, ranking position, and the search-intent terms your title is missing.",
+            ["Keyword opportunities", "Title & bullet coverage", "Support-term demand"],
+        )
+        _div_growth = _section_divider(
+            "sec-05", "05", "Section · Growth plan · Optional",
+            "Closing the gap — 4 phases, 5 channels",
+            "How sessions ramp from today to goal, anchored on industry-published timelines, with each channel's role and cost.",
+            ["4-phase ramp", "Funnel by phase", "5 channel cards"],
+        ) if _has_growth else ""
+        _div_conversion = _section_divider(
+            "sec-06", "06", "Section · Conversion & PDP",
+            "Where the listing needs to improve",
+            "Visual proof of what the benchmark does that you don't, plus prioritized CRO + creative recommendations.",
+            ["Visual benchmark", "CRO recs", "Creative recs"],
+        )
+        _div_offerings = _section_divider(
+            "sec-07", "07", "Section · Service offerings",
+            "Integrated support model — what we do",
+            "Five channels, one contract. Each tab shows the operating commitments we make per channel.",
+            ["Amazon", "TikTok · Shopify", "3PL · Shipping OS"],
+        )
+        _div_offers = _section_divider(
+            "sec-08", "08", "Section · Proposed offers · Optional",
+            "If you're ready, here's what's next",
+            "Two engagement models. The recommended one aligns our incentives with your growth.",
+            ["2 offer cards", "Why now", "What happens next"],
+        ) if include_recommended_plan else ""
+
         return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -953,166 +1262,199 @@ class DeckGenerationService:
   <style>{stylesheet}</style>
 </head>
 <body>
-  <main class="deck">
-    <section class="deck-toolbar">
-      <div class="brand-toolbar">
-        <div class="brand-monogram">{monogram}</div>
+
+<section class="deck-toolbar">
+  <button class="print-button" onclick="window.print()">Print / Save PDF</button>
+</section>
+
+<div class="app">
+
+  <!-- ============= LEFT RAIL ============= -->
+  <aside class="rail" id="rail">
+    <div class="rail-brand">
+      <div class="rail-logo">a</div>
+      <div>
+        <div class="rail-brand-name">Anata</div>
+        <div class="rail-brand-sub">Strategy deck</div>
       </div>
-      <button class="print-button" onclick="window.print()">Print / Save PDF</button>
+    </div>
+
+    <div class="rail-eye">Contents</div>
+    <ul class="rail-list">{_rail_items_html}</ul>
+
+    <div class="rail-progress" aria-hidden="true"><span id="rail-progress-bar"></span></div>
+    <div class="rail-progress-label"><span id="rail-progress-text">Section ★ of {7 + (1 if _has_growth else 0) + (1 if include_recommended_plan else 0)}</span><span id="rail-pct">12%</span></div>
+
+    <div class="rail-foot">
+      <a class="rail-util primary" href="#sec-08">Get started <span class="arrow">→</span></a>
+    </div>
+  </aside>
+
+  <!-- ============= CONTENT ============= -->
+  <main class="content">
+
+    <!-- ===== EXECUTIVE SUMMARY ===== -->
+    <section class="exec" id="summary" data-screen-label="00 Executive summary">
+      <p class="exec-eyebrow">Strategy summary · {html.escape(target_brand_display)}</p>
+      <h1 class="exec-title">{_exec_headline}</h1>
+      <p class="exec-sub">{html.escape(_exec_sub_text)}</p>
+      <div class="exec-grid">
+        <div class="exec-tiles">{_exec_tiles_html}</div>
+        {_exec_product_html}
+      </div>
+      <div class="exec-pills">{_pills_html}</div>
+      <div class="exec-cta-row">
+        <span class="next">Start here</span>
+        <span class="target">Walk through the category →</span>
+        <span class="spacer"></span>
+        <a class="scroll-link" href="#sec-01">Section 01 · Market</a>
+        {('<a class="scroll-link" href="#sec-05">Section 05 · Growth plan</a>' if _has_growth else "")}
+        {('<a class="scroll-link" href="#sec-08">Section 08 · Offers</a>' if include_recommended_plan else "")}
+      </div>
     </section>
 
-    <section class="slide slide-cover">
-      <div class="cover-grid">
-        <div>
-          <p class="eyebrow">Amazon-first strategy deck</p>
-          <h1>{html.escape(cover_title)}</h1>
-          <p class="lead">{html.escape(dataset.text_fields.get("executive_summary") or "")}</p>
-          <div class="pill-row">
-            <span class="pill">{html.escape(target_reference_label)}</span>
-            <span class="pill">{html.escape(dataset.text_fields.get("report_generated_date") or "")}</span>
-            <span class="pill">{html.escape(" • ".join(_format_channel_label(value) for value in (payload.get("channels", []) or [])) or "Amazon")}</span>
-          </div>
-        </div>
-        <div class="cover-card">
-          {_render_hero_media(target, no_product_image)}
-        </div>
-      </div>
-    </section>
+    <div class="findings">{_findings_html}</div>
 
-    <section class="slide">
-      <div class="slide-head">
-        <div>
+    <!-- ===== 01 MARKET ===== -->
+    {_div_market}
+    <section class="slide" data-screen-label="01 Market summary">
+      <header class="slide-head">
+        <div class="heading-stack">
           <p class="eyebrow">Market summary</p>
-          <h2>Summary of "{html.escape(niche_keyword)}"</h2>
+          <h2 class="slide-title">Summary of "{html.escape(niche_keyword)}"</h2>
         </div>
-        <p class="muted">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
-      </div>
-      <div class="metric-grid">{market_summary_html}</div>
-      <div class="dashboard-grid market-summary-grid">
-        <div class="dashboard-card niche-table-card">
-          <div class="card-head">
+        <p class="caption">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
+      </header>
+
+      <div class="metric-grid cols-6" style="margin-bottom:22px">{market_summary_html}</div>
+
+      <div class="two-col">
+        <div class="takeaway">
+          <p class="lab">What this means</p>
+          <p class="h">Where the category sits today.</p>
+          <p>{html.escape(dataset.text_fields.get("advertising_summary") or dataset.text_fields.get("market_summary") or "Pulled from Helium 10 Xray over the visible market set.")}</p>
+        </div>
+        <div>
+          <div class="card-h">
             <h3>Competitor revenue breakdown</h3>
-            <div class="niche-toggle" role="tablist" aria-label="Competitor breakdown view">
-              <button type="button" class="niche-toggle-btn is-active" data-niche-view="asin" aria-pressed="true">By ASIN</button>
+            <div class="seg niche-toggle" role="tablist" aria-label="Competitor breakdown view">
+              <button type="button" class="niche-toggle-btn active" data-niche-view="asin" aria-pressed="true">By ASIN</button>
               <button type="button" class="niche-toggle-btn" data-niche-view="brand" aria-pressed="false">By Brand</button>
             </div>
           </div>
-          <div class="table-wrap niche-table-wrap">
-            <table class="niche-table" data-niche-view-target>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th data-asin-only>Product</th>
-                  <th data-brand-only hidden>Brand</th>
-                  <th>Price</th>
-                  <th>Revenue</th>
-                  <th>Share</th>
-                </tr>
-              </thead>
-              <tbody data-view="asin">
-                {niche_table_rows}
-              </tbody>
-              <tbody data-view="brand" hidden>
-                {niche_table_brand_rows}
-              </tbody>
-            </table>
-          </div>
-          <div class="revenue-bars">{revenue_bars}</div>
+          <table class="tbl niche-table" data-niche-view-target>
+            <thead>
+              <tr>
+                <th data-asin-only>Product</th>
+                <th data-brand-only hidden>Brand</th>
+                <th class="num-col">Price</th>
+                <th class="num-col">Revenue</th>
+                <th class="num-col">Share</th>
+              </tr>
+            </thead>
+            <tbody data-view="asin">{niche_table_rows}</tbody>
+            <tbody data-view="brand" hidden>{niche_table_brand_rows}</tbody>
+          </table>
         </div>
-        <div class="donut-grid compact-donut-grid">
-          {country_donut}
-          {size_donut}
-          {fulfillment_donut}
+      </div>
+
+      <div class="three-col" style="margin-top:22px">
+        {country_donut}
+        {size_donut}
+        {fulfillment_donut}
+      </div>
+    </section>
+
+    <!-- ===== 02 TARGET LISTING ===== -->
+    {_div_target}
+    <section class="slide" data-screen-label="02 Target listing">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">{'Market entry benchmark' if launch_mode else 'Target listing opportunities'}</p>
+          <h2 class="slide-title">{'Launch benchmark opportunities' if launch_mode else 'Your listing vs. the benchmark'}</h2>
+        </div>
+        <p class="caption">{html.escape(dataset.text_fields.get("hero_product_snapshot") or "")}</p>
+      </header>
+
+      <div class="target-panel target-panel-full">{comparison_table_html}</div>
+
+      <div class="two-col even" style="margin-top:24px">
+        <div>
+          <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:#4d7a5d;letter-spacing:-0.01em">{'What the product already signals well' if launch_mode else "What's working"}</h3>
+          <ul class="cklist good">{target_strength_html}</ul>
+        </div>
+        <div>
+          <h3 style="font-size:14px;font-weight:700;margin:0 0 10px;color:#a55c5c;letter-spacing:-0.01em">{'What needs to be built before launch' if launch_mode else "What's missing"}</h3>
+          <ul class="cklist bad">{target_gap_html}</ul>
         </div>
       </div>
     </section>
 
-    <section class="slide">
-      <div class="slide-head">
-        <div>
-          <p class="eyebrow">{'Market entry benchmark' if launch_mode else 'Target listing'}</p>
-          <h2>{'Launch benchmark opportunities' if launch_mode else 'Target listing opportunities'}</h2>
-        </div>
-        <p class="muted">{html.escape(dataset.text_fields.get("hero_product_snapshot") or "")}</p>
-      </div>
-      <div class="target-panel target-panel-full">
-        {comparison_table_html}
-      </div>
-      <div class="two-col split-top">
-        <div class="recommendation-card">
-          <h3>{'What the product already signals well' if launch_mode else 'What the listing is already doing well'}</h3>
-          <ul>{target_strength_html}</ul>
-        </div>
-        <div class="recommendation-card">
-          <h3>{'What needs to be built before launch' if launch_mode else 'What is missing right now'}</h3>
-          <ul>{target_gap_html}</ul>
-        </div>
-      </div>
-    </section>
-
-    <section class="slide">
-      <div class="slide-head">
-        <div>
+    <!-- ===== 03 COMPETITORS ===== -->
+    {_div_competitors}
+    <section class="slide" data-screen-label="03 Competitors">
+      <header class="slide-head">
+        <div class="heading-stack">
           <p class="eyebrow">Competitor landscape</p>
-          <h2>Who owns the page one real estate</h2>
+          <h2 class="slide-title">Who owns the page-one real estate</h2>
         </div>
-        <p class="muted">This view compares the top page-one listings across price, revenue, reviews, and share of the visible market.</p>
-      </div>
+        <p class="caption">Top brands by 30-day revenue. The brands above you compete on review momentum and creative depth — not price.</p>
+      </header>
       <div class="table-wrap">{competitor_landscape_table}</div>
     </section>
 
-    <section class="slide">
-      <div class="slide-head">
-        <div>
-          <p class="eyebrow">Search behavior</p>
-          <h2>Keyword and customer search objective</h2>
+    <!-- ===== 04 SEARCH BEHAVIOR ===== -->
+    {_div_search}
+    <section class="slide" data-screen-label="04 Search behavior">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Keyword and customer search objective</p>
+          <h2 class="slide-title">How buyers find products like yours</h2>
         </div>
-        <p class="muted">{html.escape(dataset.text_fields.get("seo_summary") or "")}</p>
-      </div>
-      <div class="metric-grid">{keyword_summary_html}</div>
-      <div class="two-col split-top">
-        <div class="recommendation-card">
-          {search_title_html}
-        </div>
-        <div class="recommendation-card">
-          {search_copy_html}
-        </div>
-      </div>
-      <div class="two-col split-top">
-        <div class="dashboard-card">
-          <div class="card-head">
+        <p class="caption">{html.escape(dataset.text_fields.get("seo_summary") or "")}</p>
+      </header>
+
+      <div class="metric-grid cols-4" style="margin-bottom:22px">{keyword_summary_html}</div>
+
+      <div class="search-grid">
+        <div class="card">
+          <div class="card-h">
             <h3>Top keyword opportunities</h3>
-            <span class="muted">{html.escape(keyword_table_caption)}</span>
+            <span class="meta">{html.escape(keyword_table_caption)}</span>
           </div>
-          <div class="table-wrap">
-            <table>
-              {keyword_table_html}
-            </table>
-          </div>
+          <div class="table-wrap"><table>{keyword_table_html}</table></div>
         </div>
-        <div class="recommendation-card">
-          <h3>SEO actions {_render_help_badge("These are directional keyword and copy suggestions based on the current category set. Final indexing and conversion results will vary.")}</h3>
-          <ul class="emphasis-list">{''.join(_render_emphasis_list_item(item) for item in seo_recommendations)}</ul>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div class="card">{search_title_html}</div>
+          <div class="card">{search_copy_html}</div>
+          {keyword_bubble_html if keyword_bubble_html else ""}
         </div>
       </div>
-      {(
-        "<div class='two-col split-top'>"
-        f"{keyword_rank_summary_html}"
-        f"{keyword_bubble_html}"
-        "</div>"
-      ) if (keyword_rank_summary_html or keyword_bubble_html) else ""}
+
+      <div class="takeaway" style="margin-top:20px">
+        <p class="lab">What this means</p>
+        <p class="h">Most of the gap is coverage, not search volume.</p>
+        <p>{html.escape((seo_recommendations[0] if seo_recommendations else "Title rewrites and bullet additions on missing high-intent terms unlock the unranked search volume your listing isn't currently positioned for.")[:280] if isinstance(seo_recommendations[0] if seo_recommendations else "", str) else "Title rewrites and bullet additions on missing high-intent terms unlock the unranked search volume your listing isn't currently positioned for.")}</p>
+      </div>
+
+      {keyword_rank_summary_html if keyword_rank_summary_html else ""}
     </section>
 
+    <!-- ===== 05 GROWTH PLAN (optional) ===== -->
+    {_div_growth}
     {growth_plan_html}
 
-    <section class="slide slide-conversion">
-      <div class="slide-head">
-        <div>
-          <p class="eyebrow">Conversion and PDP</p>
-          <h2>Where the listing needs to improve</h2>
+    <!-- ===== 06 CONVERSION ===== -->
+    {_div_conversion}
+    <section class="slide slide-conversion" data-screen-label="06 Conversion and PDP">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Conversion &amp; PDP</p>
+          <h2 class="slide-title">Where the listing needs to improve</h2>
         </div>
-        <p class="muted">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
-      </div>
+        <p class="caption">{html.escape(dataset.text_fields.get("cro_summary") or "")}</p>
+      </header>
+
       {render_visual_proof_panel(
           target=target,
           best_seller=best_seller,
@@ -1120,24 +1462,161 @@ class DeckGenerationService:
           creative_recommendations=creative_recommendations,
           missing_image_asset=no_product_image,
       )}
-      <div class="two-col split-top">
-        <div class="recommendation-card">
-          <h3>CRO recommendations {_render_help_badge("CRO recommendations focus on PDP clarity, proof, and the path to purchase.")}</h3>
+
+      <div class="rec-grid" style="margin-top:24px">
+        <div class="rec-card">
+          <h3>CRO recommendations</h3>
           <ul>{''.join(_render_recommendation_item(item) for item in cro_recommendations)}</ul>
         </div>
-        <div class="recommendation-card">
-          <h3>Creative recommendations {_render_help_badge("Creative recommendations focus on imagery, comparison frames, and visual proof.")}</h3>
+        <div class="rec-card">
+          <h3>Creative recommendations</h3>
           <ul>{''.join(_render_recommendation_item(item) for item in creative_recommendations)}</ul>
         </div>
       </div>
-      <div class="gallery-grid">{gallery_html}</div>
+
+      {f'<div class="gallery">{gallery_html}</div>' if gallery_html else ''}
       {resource_embed_html}
     </section>
 
+    <!-- ===== 07 SERVICE OFFERINGS ===== -->
+    {_div_offerings}
     {offering_html}
-      {recommended_plan_html}
+
+    <!-- ===== 08 PROPOSED OFFERS (optional) ===== -->
+    {_div_offers}
+    {recommended_plan_html}
+
   </main>
+</div>
+
   <script>
+    // ---- Rail active-section + progress on scroll ----
+    (function() {{
+      const railItems = document.querySelectorAll('.rail-item');
+      const progressBar = document.getElementById('rail-progress-bar');
+      const progressText = document.getElementById('rail-progress-text');
+      const progressPct = document.getElementById('rail-pct');
+
+      // Build sections from rail items so we don't drift if growth/offers are absent.
+      const sections = Array.from(railItems).map(it => {{
+        const a = it.querySelector('a') || it;
+        const href = a.getAttribute('href') || '';
+        return {{
+          id: href.replace('#', ''),
+          name: (a.textContent || '').replace(/\\s+/g, ' ').trim(),
+        }};
+      }});
+
+      function setActive(idx) {{
+        railItems.forEach((it, i) => {{
+          const a = it.querySelector('a') || it;
+          a.classList.toggle('active', i === idx);
+        }});
+        const pct = Math.round(((idx + 1) / sections.length) * 100);
+        if (progressBar) progressBar.style.width = pct + '%';
+        if (progressText && sections[idx]) progressText.textContent = sections[idx].name;
+        if (progressPct) progressPct.textContent = pct + '%';
+      }}
+
+      const observer = new IntersectionObserver((entries) => {{
+        let bestIdx = -1, bestY = Infinity;
+        entries.forEach(e => {{
+          if (e.isIntersecting) {{
+            const idx = sections.findIndex(s => s.id === e.target.id);
+            const y = e.boundingClientRect.top;
+            if (idx >= 0 && y >= -200 && y < bestY) {{ bestY = y; bestIdx = idx; }}
+          }}
+        }});
+        if (bestIdx >= 0) setActive(bestIdx);
+      }}, {{ rootMargin: '-10% 0px -60% 0px', threshold: [0, 0.25, 0.5, 1] }});
+
+      sections.forEach(s => {{
+        const el = document.getElementById(s.id);
+        if (el) observer.observe(el);
+      }});
+
+      // Smooth scroll on rail clicks
+      document.querySelectorAll('a[href^="#"]').forEach(a => {{
+        a.addEventListener('click', (e) => {{
+          const id = a.getAttribute('href').slice(1);
+          const t = document.getElementById(id);
+          if (t) {{ e.preventDefault(); t.scrollIntoView({{ behavior: 'smooth', block: 'start' }}); }}
+        }});
+      }});
+    }})();
+
+    // ---- ASIN/Brand toggle on the niche table ----
+    document.querySelectorAll('.niche-toggle').forEach((toggleRoot) => {{
+      const slide = toggleRoot.closest('.slide');
+      toggleRoot.querySelectorAll('button').forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const view = button.dataset.nicheView;
+          toggleRoot.querySelectorAll('button').forEach((node) => {{
+            const isActive = node === button;
+            node.classList.toggle('active', isActive);
+            node.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+          }});
+          slide?.querySelectorAll('tbody[data-view]').forEach((tbody) => {{
+            tbody.hidden = tbody.dataset.view !== view;
+          }});
+          slide?.querySelectorAll('[data-asin-only]').forEach((node) => {{
+            node.hidden = view !== 'asin';
+          }});
+          slide?.querySelectorAll('[data-brand-only]').forEach((node) => {{
+            node.hidden = view !== 'brand';
+          }});
+        }});
+      }});
+    }});
+
+    // ---- Service offerings tabs ----
+    document.querySelectorAll('.offering-tabs').forEach((tabsRoot) => {{
+      tabsRoot.querySelectorAll('.offering-tab').forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const target = button.dataset.tab;
+          const section = tabsRoot.closest('.slide');
+          section?.querySelectorAll('.offering-tab').forEach((node) => node.classList.toggle('is-active', node === button));
+          section?.querySelectorAll('.offering-panel').forEach((panel) => {{
+            const isActive = panel.dataset.panel === target;
+            panel.classList.toggle('is-active', isActive);
+            panel.hidden = !isActive;
+          }});
+        }});
+      }});
+    }});
+
+    // ---- Embedded resource (Canva / case study) tabs ----
+    document.querySelectorAll('.embedded-tabs').forEach((tabsRoot) => {{
+      tabsRoot.querySelectorAll('.embedded-tab').forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const target = button.dataset.tab;
+          const section = tabsRoot.closest('.embedded-resource-section');
+          section?.querySelectorAll('.embedded-tab').forEach((node) => node.classList.toggle('is-active', node === button));
+          section?.querySelectorAll('.embedded-panel').forEach((panel) => {{
+            const isActive = panel.dataset.panel === target;
+            panel.classList.toggle('is-active', isActive);
+            panel.hidden = !isActive;
+          }});
+        }});
+      }});
+    }});
+
+    // ---- Growth plan funnel tabs (cumulative active state) ----
+    document.querySelectorAll('.growth-funnel-tabbed').forEach((funnelRoot) => {{
+      funnelRoot.querySelectorAll('.growth-funnel-tab').forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const phase = button.dataset.phase;
+          funnelRoot.querySelectorAll('.growth-funnel-tab').forEach((node) => {{
+            const isActive = node === button;
+            node.classList.toggle('is-active', isActive);
+            node.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+          }});
+          funnelRoot.querySelectorAll('.growth-funnel-panel').forEach((panel) => {{
+            panel.hidden = panel.dataset.phase !== phase;
+          }});
+        }});
+      }});
+    }});
     document.querySelectorAll(".offering-tabs").forEach((tabsRoot) => {{
       tabsRoot.querySelectorAll(".offering-tab").forEach((button) => {{
         button.addEventListener("click", () => {{

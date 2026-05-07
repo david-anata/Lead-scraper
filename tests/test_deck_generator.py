@@ -410,7 +410,10 @@ class DeckGeneratorTests(unittest.TestCase):
         # The renderer either inlines the brand monogram (data: URI) or — if the
         # asset isn't found in test env — emits an empty string. Either way
         # the deck shell selector should be present.
-        self.assertIn("brand-monogram", deck_html, "deck shell missing")
+        # PR32: deck shell is now app + rail (left nav). Old `.brand-monogram`
+        # was replaced by the rail logo + brand name in the sidebar.
+        self.assertIn('class="rail"', deck_html, "deck shell missing")
+        self.assertIn("rail-brand-name", deck_html, "rail brand block missing")
 
     def test_generate_deck_persists_when_embed_preview_fails(self) -> None:
         """`_fetch_embed_preview` makes an outbound HTTP request during render.
@@ -601,9 +604,12 @@ class GrowthPlanTests(unittest.TestCase):
 
         self.assertIn("Closing the gap", html)
         self.assertIn("growth-plan-slide", html)
-        self.assertIn("Methodology and sources", html)
+        # PR32: methodology label became "Sources & methodology" per the design.
+        self.assertIn("Sources", html)
+        self.assertIn("methodology", html)
         # PR28: per-phase ramp visualization is rendered.
-        self.assertIn("growth-ramp", html)
+        # PR32: ramp class names match the design (`.ramp` / `.ramp-step`).
+        self.assertIn("class='ramp'", html)
         self.assertIn("Growth path", html)
         # All four phase tiles plus the "Today" tile are present.
         self.assertIn("Today", html)
@@ -615,13 +621,23 @@ class GrowthPlanTests(unittest.TestCase):
         # misleading "from delta" that just restated the cumulative number.
         self.assertIn("this phase", html)
         self.assertNotIn("from delta", html)
-        # PR29: caption explains end-of-phase steady state framing.
-        self.assertIn("end-of-phase steady state", html)
+        # PR32: ramp now puts the steady-state framing in the section
+        # subtitle (`.gp-section-h .desc`) rather than a paragraph caption.
+        self.assertIn("End-of-phase steady state", html)
         # PR30: heavy slides get semantic classes so the print stylesheet
         # can force page-breaks on them while letting small slides flow.
         self.assertIn("slide slide-conversion", html)
         self.assertIn("slide slide-offers", html)
-        self.assertIn("slide slide-cover", html)
+        # PR32: cover slide replaced by full executive summary (`.exec`
+        # element with `id="summary"`) — no more `.slide-cover`.
+        self.assertIn('class="exec"', html)
+        self.assertIn('id="summary"', html)
+        # PR32: 3-card findings strip below the exec summary.
+        self.assertIn('class="findings"', html)
+        # PR32: sticky left-rail nav.
+        self.assertIn('class="rail"', html)
+        # PR32: section dividers between slides.
+        self.assertIn('class="section-divider"', html)
         # PR31: deck <head> now includes the Anata favicon (same source
         # as the admin dashboard) so browser tabs aren't a blank globe.
         self.assertIn('rel="icon"', html)
@@ -727,7 +743,8 @@ class DeckRoutingTests(unittest.TestCase):
 
         first = client.get(f"/decks/{slug}/{run_id}/{token}")
         self.assertEqual(first.status_code, 200)
-        self.assertIn("brand-monogram", first.text)
+        # PR32: deck shell uses left rail nav, not the old brand-monogram bar.
+        self.assertIn('class="rail"', first.text)
 
         # First-touch view count should now be 1
         with session_scope(sf) as session:
