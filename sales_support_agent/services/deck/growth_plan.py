@@ -966,6 +966,8 @@ def _render_funnel_classic(
 
     # Sort by sessions desc so the heaviest channel is at the top
     sorted_channels = sorted(active_channels, key=lambda c: c.sessions, reverse=True)
+    # PR34: each bar = label row + track row. Label sits ABOVE the colored
+    # bar on its own row so it's always readable regardless of channel hue.
     bars_html = ""
     for ch in sorted_channels:
         pct = round((ch.sessions / total_sessions) * 100)
@@ -973,8 +975,13 @@ def _render_funnel_classic(
         label = label_map.get(ch.key, ch.label)
         bars_html += (
             f'<div class="fc-bar">'
-            f'<span class="fc-bar-fill" style="width:{max(pct, 8)}%;background:{color}"></span>'
-            f'<span class="fc-bar-text"><b>{html.escape(label)}</b> · {ch.sessions:,} · {pct}%</span>'
+            f'<span class="fc-bar-text">'
+            f'<b>{html.escape(label)}</b>'
+            f'<span class="muted">{ch.sessions:,} · {pct}%</span>'
+            f'</span>'
+            f'<span class="fc-bar-track">'
+            f'<span class="fc-bar-fill" style="width:{max(pct, 4)}%;background:{color}"></span>'
+            f'</span>'
             f'</div>'
         )
 
@@ -1021,65 +1028,57 @@ def _render_funnel_with_tabs(plan: GrowthPlan, *, target_aov: float) -> str:
     if not plan.channels:
         return ""
 
+    # PR34: emit the design's class names so deck.css styles apply.
+    # Tabs → `.funnel-tabs` (underline-style tab strip), panels →
+    # `.funnel-panel` (paper card). Old `.growth-funnel-*` classes had
+    # no styles in deck.css and rendered as bare buttons.
     tab_buttons = ""
     panels = ""
     last_phase_id = PHASES[-1].id
     for phase in PHASES:
         active_keys = _cumulative_active_keys(phase.id)
-        # PR29: tab-summary "sessions" reflects ramped delivery at end of
-        # this phase, not the at-goal step-function. Spend stays linear
-        # because monthly cost is set when the channel comes online (it
-        # doesn't ramp the same way; CPC × sessions auto-scales).
         tab_sessions = cumulative_sessions_at_phase(plan.channels, phase.id)
-        tab_spend = sum(c.monthly_cost for c in plan.channels if c.key in active_keys)
-        is_default = phase.id == last_phase_id  # default to steady state
-        active_class = " is-active" if is_default else ""
+        is_default = phase.id == last_phase_id
+        active_class = " active" if is_default else ""
         aria_pressed = "true" if is_default else "false"
+        # Tab label is concise: "Phase N · Label" with the per-phase metric
+        # tucked underneath in muted text via a child span.
         tab_buttons += (
-            f'<button type="button" class="growth-funnel-tab{active_class}" '
-            f'data-phase="{phase.id}" aria-pressed="{aria_pressed}">'
-            f'<span class="tab-num">Phase {phase.id}</span>'
-            f'<span class="tab-label">{html.escape(phase.label)}</span>'
-            f'<span class="tab-window">{html.escape(phase.window_label)}</span>'
-            f'<span class="tab-metric">{tab_sessions:,} sessions · {_money(tab_spend)}/mo</span>'
+            f'<button type="button" class="funnel-tab{active_class}" '
+            f'data-phase="{phase.id}" aria-pressed="{aria_pressed}" '
+            f'title="{tab_sessions:,} sessions at end of {html.escape(phase.label)}">'
+            f'Phase {phase.id} · {html.escape(phase.label)}'
             f'</button>'
         )
         panel_hidden = "" if is_default else " hidden"
-        # PR32: customer-funnel (media mix bars + journey stages). The old
-        # SVG flow rendering is preserved on disk in case we want to revive
-        # it; the redesign uses the simpler horizontal layout.
-        funnel_svg = _render_funnel_classic(plan, target_aov=target_aov, active_keys=active_keys)
-        # Per-phase summary copy
+        funnel_body = _render_funnel_classic(plan, target_aov=target_aov, active_keys=active_keys)
         added_labels = ", ".join(
-            short
-            for short in (
-                {
-                    "organic": "Organic",
-                    "on_channel_paid": "On-channel paid",
-                    "off_channel_paid": "Off-channel paid",
-                    "affiliate": "Affiliate",
-                    "retargeting": "Retargeting",
-                }.get(k, k)
-                for k in phase.channels_added
-            )
+            {
+                "organic": "Organic",
+                "on_channel_paid": "On-channel paid",
+                "off_channel_paid": "Off-channel paid",
+                "affiliate": "Affiliate",
+                "retargeting": "Retargeting",
+            }.get(k, k)
+            for k in phase.channels_added
         )
         panel_caption = (
-            f"<p class='funnel-tab-caption'>"
-            f"<strong>{html.escape(phase.summary)}</strong>"
-            f" New this phase: <em>{html.escape(added_labels)}</em>."
+            f"<p class='funnel-caption'>"
+            f"{html.escape(phase.summary)} "
+            f"<strong>New this phase:</strong> {html.escape(added_labels)}."
             f"</p>"
         )
         default_attr = ' data-default="1"' if is_default else ''
         panels += (
-            f'<div class="growth-funnel-panel" data-phase="{phase.id}"{default_attr}{panel_hidden}>'
+            f'<div class="funnel-panel growth-funnel-panel" data-phase="{phase.id}"{default_attr}{panel_hidden}>'
             f'{panel_caption}'
-            f'{funnel_svg}'
+            f'{funnel_body}'
             f'</div>'
         )
 
     return (
         '<div class="growth-funnel growth-funnel-tabbed">'
-        f'<div class="growth-funnel-tabs" role="tablist" aria-label="Implementation phases">'
+        f'<div class="funnel-tabs" id="funnel-tabs" role="tablist" aria-label="Implementation phases">'
         f'{tab_buttons}'
         f'</div>'
         f'{panels}'

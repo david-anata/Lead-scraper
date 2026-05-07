@@ -394,11 +394,21 @@ h2.slide-title {
   line-height: 1.55;
   margin: 0 0 28px;
 }
-.exec-grid {
+/* PR34: exec layout restructured. Target product card now sits at the
+   TOP RIGHT next to the headline + sub-copy (where the eye lands first),
+   not down by the metric tiles. Tiles span full width below the header. */
+.exec-header {
   display: grid;
-  grid-template-columns: 1fr 200px;
-  gap: 28px;
-  align-items: stretch;
+  grid-template-columns: 1fr 220px;
+  gap: 32px;
+  align-items: start;
+  position: relative;
+  z-index: 1;
+  margin-bottom: 22px;
+}
+.exec-header .exec-headline { min-width: 0; }
+.exec-grid {
+  display: block;
   position: relative;
   z-index: 1;
 }
@@ -444,20 +454,26 @@ h2.slide-title {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
-  padding: 14px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 .exec-product .pic {
-  flex: 1;
   background: rgba(255, 255, 255, 0.92);
   border-radius: 10px;
   display: grid;
   place-items: center;
-  min-height: 130px;
+  width: 100%;
+  height: 160px;
   position: relative;
   overflow: hidden;
+}
+.exec-product .pic img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 8px;
 }
 .exec-product .pic .placeholder {
   width: 80px;
@@ -466,16 +482,11 @@ h2.slide-title {
   border-radius: 8px;
   position: relative;
   box-shadow: inset 0 0 0 2px rgba(255,255,255,0.1);
-}
-.exec-product .pic .placeholder::after {
-  content: 'SHRED';
-  position: absolute;
-  inset: 0;
   display: grid;
   place-items: center;
   color: #b6e23a;
   font-weight: 900;
-  font-size: 14px;
+  font-size: 12px;
   letter-spacing: 0.05em;
 }
 .exec-product .pic .label-tag {
@@ -486,17 +497,24 @@ h2.slide-title {
   text-transform: uppercase;
   color: var(--anata-muted);
   font-weight: 800;
+  background: rgba(255,255,255,0.92);
+  padding: 2px 6px;
+  border-radius: 4px;
+  z-index: 2;
 }
 .exec-product .name {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.35;
   color: white;
 }
 .exec-product .meta {
   font-size: 10.5px;
   color: rgba(255, 255, 255, 0.55);
   letter-spacing: 0.04em;
+}
+@media (max-width: 760px) {
+  .exec-header { grid-template-columns: 1fr; }
 }
 .exec-pills {
   display: flex;
@@ -1270,31 +1288,43 @@ h2.slide-title {
   margin: 0 0 12px;
 }
 .fc-mix { display: flex; flex-direction: column; gap: 8px; }
+/* PR34: media-mix bars — text was hard to read on the colored fill,
+   especially on darker channels like on-channel paid (navy). Move the
+   label OUT of the fill bar onto its own row above so it's always
+   readable, and keep the percentage chip inline at the right end. */
 .fc-bar {
-  position: relative;
-  height: 30px;
-  background: rgba(29, 45, 68, 0.05);
-  border-radius: 6px;
-  overflow: hidden;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
   align-items: center;
-}
-.fc-bar-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: 6px;
-  opacity: 0.92;
+  font-size: 11.5px;
 }
 .fc-bar-text {
-  position: relative;
-  z-index: 1;
-  padding: 0 12px;
-  font-size: 11.5px;
+  order: 1;
   color: var(--anata-ink);
-  white-space: nowrap;
-  mix-blend-mode: normal;
+  font-size: 11.5px;
+  letter-spacing: -0.005em;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  grid-column: 1 / -1;
 }
 .fc-bar-text b { font-weight: 700; }
+.fc-bar-track {
+  grid-column: 1 / -1;
+  height: 8px;
+  background: rgba(29, 45, 68, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+.fc-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  opacity: 0.94;
+}
+.fc-bar + .fc-bar { margin-top: 12px; }
 
 .fc-funnel { display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .fc-stage {
@@ -1735,6 +1765,380 @@ h2.slide-title {
   .ramp { grid-template-columns: repeat(2, 1fr); }
   .metric-grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ============================================ */
+/* PR34: visual-proof side-by-side on Conversion */
+/* These classes weren't in deck.css so the      */
+/* images were unconstrained.                    */
+/* ============================================ */
+.visual-proof-panel {
+  background: white;
+  border: 1px solid var(--anata-line);
+  border-radius: var(--radius-card);
+  padding: 18px 22px;
+}
+.visual-proof-grid {
+  display: grid;
+  grid-template-columns: 1fr 32px 1fr;
+  gap: 14px;
+  align-items: stretch;
+}
+.visual-proof-card {
+  margin: 0;
+  background: white;
+  border: 1px solid var(--anata-line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.visual-proof-card.visual-proof-target {
+  border-color: rgba(79, 132, 196, 0.4);
+  background: linear-gradient(180deg, rgba(133, 187, 218, 0.06) 0%, white 60%);
+}
+.visual-proof-card.visual-proof-benchmark {
+  border-color: rgba(191, 168, 137, 0.5);
+}
+.visual-proof-thumb {
+  width: 100%;
+  height: 140px;
+  background: #f6f1e8;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 8px;
+}
+.visual-proof-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.visual-proof-card figcaption {
+  font-size: 13px;
+  color: var(--anata-ink-soft);
+  line-height: 1.4;
+}
+.visual-proof-card figcaption strong {
+  display: block;
+  color: var(--anata-ink);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  margin-bottom: 2px;
+}
+.visual-proof-arrow {
+  align-self: center;
+  color: var(--anata-sky-deep);
+  font-size: 24px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+.visual-proof-caption {
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--anata-ink-soft);
+  line-height: 1.5;
+}
+.visual-proof-caption strong {
+  font-weight: 700;
+  color: var(--anata-ink);
+}
+.visual-proof-caption ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* PR34: gallery-grid (Conversion+PDP creative recs) — match the design's
+   .gallery system. Cap thumbs to keep them small and consistent with
+   table thumbs across the deck. */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.gallery-grid .gallery-card,
+.gallery-grid .gallery-item {
+  background: white;
+  border: 1px solid var(--anata-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.gallery-grid .gallery-card .gallery-thumb,
+.gallery-grid .gallery-item .pic,
+.gallery-grid .gallery-item .gallery-thumb {
+  height: 120px;
+  display: grid;
+  place-items: center;
+  background: #f6f1e8;
+  padding: 6px;
+}
+.gallery-grid .gallery-card img,
+.gallery-grid .gallery-item img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.gallery-grid .gallery-card-body,
+.gallery-grid .gallery-item .meta {
+  padding: 8px 10px;
+  border-top: 1px solid var(--anata-line);
+  font-size: 11px;
+  color: var(--anata-ink-soft);
+  line-height: 1.4;
+}
+.gallery-grid .gallery-card-body .gallery-card-title,
+.gallery-grid .gallery-item .meta .n {
+  color: var(--anata-ink);
+  font-weight: 600;
+  display: block;
+  font-size: 11.5px;
+}
+
+/* ============================================ */
+/* PR34: ranking-path stacked bar layout         */
+/* ============================================ */
+.rank-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rank-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 110px 120px;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+}
+.rank-row .rank-name {
+  font-weight: 700;
+  color: var(--anata-ink);
+  letter-spacing: -0.005em;
+  font-variant-numeric: tabular-nums;
+}
+.rank-row .rank-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--anata-line);
+  overflow: hidden;
+}
+.rank-row .rank-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--anata-sky-deep);
+  border-radius: 999px;
+}
+.rank-row.tier-win .rank-bar-fill { background: #4d7a5d; }
+.rank-row.tier-mid .rank-bar-fill { background: var(--anata-sky-deep); }
+.rank-row.tier-miss .rank-bar-fill { background: var(--anata-sand); }
+.rank-row .rank-count {
+  font-weight: 600;
+  color: var(--anata-ink);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.rank-row .rank-volume {
+  font-size: 11px;
+  color: var(--anata-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+@media (max-width: 720px) {
+  .rank-row {
+    grid-template-columns: 80px 1fr 80px;
+  }
+  .rank-row .rank-volume { display: none; }
+}
+
+/* PR34: support-term bubble cloud counts (small inline number after the
+   word, muted). Pill backgrounds come from .bubble.lg/.md/.sm in design CSS. */
+.bubble-cloud .bubble {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.bubble-cloud .bubble .bubble-count {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--anata-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+/* ============================================ */
+/* PR34: real-image thumbnails inside table rows */
+/* ============================================ */
+.tbl .thumb.thumb-img {
+  background: white;
+  border: 1px solid var(--anata-line);
+  padding: 2px;
+  overflow: hidden;
+}
+.tbl .thumb.thumb-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* Zebra stripes on the data tables for readability (the niche table
+   was hard to scan without alternating rows). */
+.tbl tbody tr:nth-child(even) td {
+  background: rgba(29, 45, 68, 0.025);
+}
+.tbl tbody tr.is-target:nth-child(even) td,
+.tbl tbody tr.is-target:nth-child(odd) td {
+  background: rgba(133, 187, 218, 0.12);
+}
+.tbl tbody tr:hover td {
+  background: rgba(133, 187, 218, 0.06);
+}
+
+/* ============================================ */
+/* PR34: target-listing comparison table        */
+/* (the side-by-side `Your listing vs benchmark` */
+/* on slide 02). PR32 didn't carry over styles  */
+/* from legacy style.css so the table was       */
+/* unconstrained. Restore with redesign tokens. */
+/* ============================================ */
+.comparison-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--anata-line);
+  border-radius: 14px;
+  background: white;
+}
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.comparison-table thead th {
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--anata-muted);
+  font-weight: 800;
+  padding: 12px 16px;
+  background: rgba(29, 45, 68, 0.03);
+  border-bottom: 1.5px solid var(--anata-line);
+}
+.comparison-table tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--anata-line);
+  vertical-align: top;
+}
+/* PR34: alternating-color first column so the metric label tier reads
+   as a column. */
+.comparison-table tbody tr:nth-child(odd) td:first-child {
+  background: rgba(133, 187, 218, 0.05);
+}
+.comparison-table tbody tr:nth-child(even) td:first-child {
+  background: rgba(29, 45, 68, 0.025);
+}
+.comparison-table tbody tr:last-child td { border-bottom: none; }
+.comparison-table tbody td:first-child {
+  font-weight: 700;
+  color: var(--anata-ink);
+  width: 110px;
+  letter-spacing: -0.005em;
+}
+.comparison-table .target-column {
+  background: rgba(133, 187, 218, 0.04);
+}
+.comparison-table colgroup .comparison-metric-col { width: 110px; }
+.comparison-table colgroup .comparison-target-col,
+.comparison-table colgroup .comparison-benchmark-col { width: auto; }
+/* Listing cell: thumb + name. Compact thumb (56×56) so the table
+   doesn't blow up on long titles. */
+.comparison-listing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.comparison-thumb {
+  flex: 0 0 56px;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  background: white;
+  border: 1px solid var(--anata-line);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 3px;
+}
+.comparison-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.comparison-listing > div:last-child {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--anata-ink-soft);
+}
+.comparison-listing strong {
+  display: block;
+  color: var(--anata-ink);
+  font-weight: 700;
+  font-size: 13.5px;
+  letter-spacing: -0.005em;
+  line-height: 1.3;
+}
+.comparison-listing .muted { font-size: 11.5px; }
+.comparison-listing.is-target {
+  position: relative;
+}
+.comparison-listing.is-target::before {
+  content: 'YOU';
+  position: absolute;
+  top: -2px; left: -8px;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--anata-sky-deep);
+  background: rgba(133, 187, 218, 0.18);
+  border: 1px solid rgba(79, 132, 196, 0.35);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Metric values in the value/benchmark columns */
+.comparison-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--anata-ink-soft);
+}
+.comparison-metric strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--anata-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.comparison-metric.comparison-metric-missing strong { color: var(--anata-muted); }
+.metric-delta {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--anata-muted);
+  letter-spacing: 0.02em;
+}
+.metric-delta.is-positive { color: #4d7a5d; }
+.metric-delta.is-negative { color: #a55c5c; }
 
 /* ============================================ */
 /* PRINT — minimal stub (PR33)                  */

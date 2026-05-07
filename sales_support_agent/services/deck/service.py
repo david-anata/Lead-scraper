@@ -1049,8 +1049,23 @@ class DeckGenerationService:
                 f'</div>'
             )
 
-        # Exec product card (right column on the navy hero)
+        # PR34: exec product card uses the real Amazon product image when
+        # available. Falls back to a navy gradient tile + brand-letter
+        # initials only when neither a scraped image_url nor a brand
+        # placeholder asset is present.
+        _target_image_url = str(target.get("image_url", "") or "").strip()
         _target_thumb_label = (target_brand_display[:6].upper() or "TGT") if target_brand_display else "TGT"
+        if _target_image_url:
+            _target_pic_inner = (
+                f'<img src="{html.escape(_target_image_url)}" '
+                f'alt="{html.escape(_trim_text(_clean_listing_title(str(target.get("title", "") or "Target product")), 80))}" '
+                f'loading="lazy" />'
+            )
+        else:
+            _target_pic_inner = (
+                f'<div class="placeholder" data-label="{html.escape(_target_thumb_label)}">'
+                f'{html.escape(_target_thumb_label)}</div>'
+            )
         _target_meta_bits = []
         if target.get("asin"):
             _target_meta_bits.append(html.escape(str(target.get("asin"))))
@@ -1064,7 +1079,7 @@ class DeckGenerationService:
             f'<div class="exec-product">'
             f'<div class="pic">'
             f'<span class="label-tag">Target</span>'
-            f'<div class="placeholder" data-label="{html.escape(_target_thumb_label)}"></div>'
+            f'{_target_pic_inner}'
             f'</div>'
             f'<div>'
             f'<div class="name">{html.escape(_trim_text(_clean_listing_title(str(target.get("title", "") or "the prospect listing")), 60))}</div>'
@@ -1310,13 +1325,20 @@ class DeckGenerationService:
   <main class="content">
 
     <!-- ===== EXECUTIVE SUMMARY ===== -->
+    <!-- PR34: target product card moved to the header row (top-right)
+         next to the headline + sub-copy. Tiles now span the full width
+         below so all 4 stats line up uniformly. -->
     <section class="exec" id="summary" data-screen-label="00 Executive summary">
-      <p class="exec-eyebrow">Strategy summary · {html.escape(target_brand_display)}</p>
-      <h1 class="exec-title">{_exec_headline}</h1>
-      <p class="exec-sub">{html.escape(_exec_sub_text)}</p>
+      <div class="exec-header">
+        <div class="exec-headline">
+          <p class="exec-eyebrow">Strategy summary · {html.escape(target_brand_display)}</p>
+          <h1 class="exec-title">{_exec_headline}</h1>
+          <p class="exec-sub">{html.escape(_exec_sub_text)}</p>
+        </div>
+        {_exec_product_html}
+      </div>
       <div class="exec-grid">
         <div class="exec-tiles">{_exec_tiles_html}</div>
-        {_exec_product_html}
       </div>
       <div class="exec-pills">{_pills_html}</div>
       <div class="exec-cta-row">
@@ -1438,7 +1460,7 @@ class DeckGenerationService:
             <h3>Top keyword opportunities</h3>
             <span class="meta">{html.escape(keyword_table_caption)}</span>
           </div>
-          <div class="table-wrap"><table>{keyword_table_html}</table></div>
+          <div class="table-wrap"><table class="tbl">{keyword_table_html}</table></div>
         </div>
         <div style="display:flex;flex-direction:column;gap:14px">
           <div class="card">{search_title_html}</div>
@@ -1624,14 +1646,14 @@ class DeckGenerationService:
       }});
     }});
 
-    // ---- Growth plan funnel tabs (cumulative active state) ----
+    // ---- Growth plan funnel tabs (PR34: matches .funnel-tabs / .funnel-tab) ----
     document.querySelectorAll('.growth-funnel-tabbed').forEach((funnelRoot) => {{
-      funnelRoot.querySelectorAll('.growth-funnel-tab').forEach((button) => {{
+      funnelRoot.querySelectorAll('.funnel-tab').forEach((button) => {{
         button.addEventListener('click', () => {{
           const phase = button.dataset.phase;
-          funnelRoot.querySelectorAll('.growth-funnel-tab').forEach((node) => {{
+          funnelRoot.querySelectorAll('.funnel-tab').forEach((node) => {{
             const isActive = node === button;
-            node.classList.toggle('is-active', isActive);
+            node.classList.toggle('active', isActive);
             node.setAttribute('aria-pressed', isActive ? 'true' : 'false');
           }});
           funnelRoot.querySelectorAll('.growth-funnel-panel').forEach((panel) => {{
@@ -1687,22 +1709,6 @@ class DeckGenerationService:
           }});
           card?.querySelectorAll("[data-brand-only]").forEach((node) => {{
             node.hidden = view !== "brand";
-          }});
-        }});
-      }});
-    }});
-    // PR26: Growth Plan funnel — phase tabs
-    document.querySelectorAll(".growth-funnel-tabbed").forEach((funnelRoot) => {{
-      funnelRoot.querySelectorAll(".growth-funnel-tab").forEach((button) => {{
-        button.addEventListener("click", () => {{
-          const phase = button.dataset.phase;
-          funnelRoot.querySelectorAll(".growth-funnel-tab").forEach((node) => {{
-            const isActive = node === button;
-            node.classList.toggle("is-active", isActive);
-            node.setAttribute("aria-pressed", isActive ? "true" : "false");
-          }});
-          funnelRoot.querySelectorAll(".growth-funnel-panel").forEach((panel) => {{
-            panel.hidden = panel.dataset.phase !== phase;
           }});
         }});
       }});

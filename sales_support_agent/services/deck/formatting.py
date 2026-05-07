@@ -349,6 +349,11 @@ def _clean_listing_title(value: str) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = html.unescape(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # PR34: defensive strip of Helium 10's "($)" sponsored-ad prefix in
+    # case anything upstream missed the helium10.py filter (cached data,
+    # legacy decks, etc.). The character is otherwise meaningless to the
+    # buyer and clutters every title in the deck.
+    cleaned = re.sub(r"^\(\$\)\s*", "", cleaned).strip()
     return cleaned
 def _brand_possessive(brand_name: str) -> str:
     cleaned = _trim_text(re.sub(r"\s+", " ", str(brand_name or "")).strip(), 40)
