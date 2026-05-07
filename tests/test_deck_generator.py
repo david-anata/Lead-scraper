@@ -638,6 +638,18 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn('class="rail"', html)
         # PR32: section dividers between slides.
         self.assertIn('class="section-divider"', html)
+        # PR33: rail footer has all 3 utility links (Open one-pager, Print
+        # PDF, Get started). The first two were dropped in PR32 by mistake.
+        self.assertIn('rail-open-story', html)
+        self.assertIn('rail-print', html)
+        # PR33: service offerings emit the design's flat class names so
+        # `deck.css` styles apply (the old `.offering-*` classes aren't
+        # in the redesigned stylesheet).
+        self.assertIn('class="off-tabs"', html)
+        self.assertIn('class="off-pane"', html)
+        self.assertIn("class='off-block'", html)
+        # PR33: floating .deck-toolbar removed (not in the design).
+        self.assertNotIn('class="deck-toolbar"', html)
         # PR31: deck <head> now includes the Anata favicon (same source
         # as the admin dashboard) so browser tabs aren't a blank globe.
         self.assertIn('rel="icon"', html)
@@ -673,6 +685,11 @@ class GrowthPlanTests(unittest.TestCase):
         # and the visible heading instead.
         self.assertNotIn('<section class="slide growth-plan-slide"', html)
         self.assertNotIn("Closing the gap", html)
+        # PR33: when the growth section is absent the rail item still
+        # renders, but as `.is-disabled` (30% opacity, click no-op) so the
+        # rail's wayfinding stays the same shape across decks.
+        self.assertIn("is-disabled", html)
+        self.assertIn('aria-disabled="true"', html)
 
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck routing tests")
