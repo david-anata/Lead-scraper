@@ -622,6 +622,11 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn("slide slide-conversion", html)
         self.assertIn("slide slide-offers", html)
         self.assertIn("slide slide-cover", html)
+        # PR31: deck <head> now includes the Anata favicon (same source
+        # as the admin dashboard) so browser tabs aren't a blank globe.
+        self.assertIn('rel="icon"', html)
+        self.assertIn("data:image/png;base64,", html)
+        self.assertIn('rel="apple-touch-icon"', html)
 
     def test_generate_deck_omits_growth_section_when_no_inputs(self) -> None:
         """Without growth_plan_inputs the section must not appear — preserves

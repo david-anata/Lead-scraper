@@ -44,6 +44,7 @@ from sales_support_agent.services.product_research import EnrichedHeroProduct, P
 
 from sales_support_agent.services.deck.brand_assets import (
     load_brand_asset,
+    load_brand_favicon_link,
     load_brand_stylesheet,
 )
 from sales_support_agent.services.deck.dataset import (  # noqa: F401
@@ -854,6 +855,7 @@ class DeckGenerationService:
         monogram = self._load_brand_asset("assets/monogram.png")
         no_product_image = self._load_brand_asset("assets/no-product-image-available.png")
         stylesheet = self._load_brand_stylesheet()
+        favicon_link = load_brand_favicon_link(self.settings)
         keyword_table_rows = payload.get("keyword_table_rows") or []
         if not isinstance(keyword_table_rows, list):
             keyword_table_rows = []
@@ -947,6 +949,7 @@ class DeckGenerationService:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
+  {favicon_link}
   <style>{stylesheet}</style>
 </head>
 <body>
