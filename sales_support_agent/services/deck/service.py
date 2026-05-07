@@ -1312,7 +1312,7 @@ class DeckGenerationService:
   <!-- ============= LEFT RAIL ============= -->
   <aside class="rail" id="rail">
     <div class="rail-brand">
-      <div class="rail-logo">a</div>
+      <div class="rail-logo">{monogram or 'a'}</div>
       <div>
         <div class="rail-brand-name">Anata</div>
         <div class="rail-brand-sub">Strategy deck</div>
@@ -1486,7 +1486,7 @@ class DeckGenerationService:
         <p>{html.escape((seo_recommendations[0] if seo_recommendations else "Title rewrites and bullet additions on missing high-intent terms unlock the unranked search volume your listing isn't currently positioned for.")[:280] if isinstance(seo_recommendations[0] if seo_recommendations else "", str) else "Title rewrites and bullet additions on missing high-intent terms unlock the unranked search volume your listing isn't currently positioned for.")}</p>
       </div>
 
-      {keyword_rank_summary_html if keyword_rank_summary_html else ""}
+      {f'<div style="margin-top:24px">{keyword_rank_summary_html}</div>' if keyword_rank_summary_html else ""}
     </section>
 
     <!-- ===== 05 GROWTH PLAN (optional) ===== -->

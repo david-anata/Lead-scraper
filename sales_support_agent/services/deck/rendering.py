@@ -412,7 +412,9 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
                 missing_reason=direct_metric_reason if comparison_mode == "live_unmatched" else benchmark_metric_reason,
                 unit="number",
             ),
-            _render_plain_metric(str(best_seller.review_count or "n/a") if best_seller else "n/a"),
+            _render_plain_metric(
+                f"{best_seller.review_count:,}" if best_seller and best_seller.review_count else "n/a"
+            ),
         ),
         (
             "Dims",
@@ -467,7 +469,7 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
             f"<td class='num-col'>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
             f"<td class='num-col'>{html.escape(product.bsr_label)}</td>"
             f"<td class='num-col'>{html.escape(product.rating_label)}</td>"
-            f"<td class='num-col'>{html.escape(str(product.review_count or ''))}</td>"
+            f"<td class='num-col'>{f'{product.review_count:,}' if product.review_count else ''}</td>"
             "</tr>"
         )
     return (
@@ -599,14 +601,28 @@ def _product_to_gallery_item(product: XrayProduct) -> dict[str, str]:
         "meta": f"{product.revenue_label} revenue · {product.bsr_label} BSR",
     }
 def _render_gallery_card(item: dict[str, Any]) -> str:
+    """PR36: emit `.gallery-item` / `.pic` / `.meta` markup so deck.css's
+    1:1 aspect-ratio + `object-fit: contain` rules apply. The old
+    `.gallery-media` + `.gallery-card` element wasn't styled and was
+    rendering product photos at natural 2000px+ size — they were
+    dwarfing the rest of the slide on the Conversion + PDP gallery."""
     image_url = str(item.get("image_url", "") or "").strip()
-    media = f"<img src='{html.escape(image_url)}' alt='{html.escape(str(item.get('title', 'Listing image')))}' />" if image_url else "<div class='image-fallback'>Image unavailable</div>"
+    media = (
+        f"<img src='{html.escape(image_url)}' alt='{html.escape(str(item.get('title', 'Listing image')))}' />"
+        if image_url
+        else "&nbsp;"
+    )
+    title = html.escape(_trim_text(str(item.get("title", "")), 40))
+    subtitle = html.escape(str(item.get("subtitle", "")))
+    meta = html.escape(str(item.get("meta", "")))
     return (
-        "<article class='gallery-card'>"
-        f"<div class='gallery-media'>{media}</div>"
-        f"<strong>{html.escape(_trim_text(str(item.get('title', '')), 40))}</strong>"
-        f"<p>{html.escape(str(item.get('subtitle', '')))}</p>"
-        f"<small>{html.escape(str(item.get('meta', '')))}</small>"
+        "<article class='gallery-item'>"
+        f"<div class='pic'>{media}</div>"
+        "<div class='meta'>"
+        f"<span class='n'>{title}</span>"
+        + (f"<div>{subtitle}</div>" if subtitle else "")
+        + (f"<div class='muted small'>{meta}</div>" if meta else "")
+        + "</div>"
         "</article>"
     )
 def _render_signal_list(title: str, hits: list[str], misses: list[str], miss_label: str) -> str:
@@ -721,11 +737,16 @@ def _render_resource_embed(*, label: str, url: str, preview: dict[str, str]) -> 
             if image_url
             else "<div class='image-fallback'>Preview unavailable</div>"
         )
+        # PR36: link text follows the panel label ("Open case studies" /
+        # "Open creative mockup") rather than always saying "Open in Canva"
+        # — the resource may live anywhere, and the destination isn't always
+        # Canva. Cleaner copy when read aloud on a sales call.
+        link_text = f"Open {label.lower()}" if label else "Open resource"
         return (
             "<div class='resource-preview-card'>"
             f"<div class='resource-preview-media'>{media}</div>"
             f"<div class='resource-preview-copy'><h3>{html.escape(label)}</h3><p>{html.escape(preview_title)}</p>"
-            f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noreferrer'>Open in Canva</a></div>"
+            f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noreferrer'>{html.escape(link_text)} →</a></div>"
             "</div>"
         )
     return f"<iframe src='{safe_url}' title='{html.escape(label)}' loading='lazy' referrerpolicy='no-referrer-when-downgrade'></iframe>"
@@ -734,12 +755,15 @@ def _render_canva_embed(*, label: str, url: str) -> str:
     parsed = urlparse(url)
     embed_src = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?embed"
     safe_embed = html.escape(embed_src, quote=True)
+    # PR36: link text follows the panel label rather than the host. The
+    # iframe is still embedded; the text just reads cleaner.
+    link_text = f"Open {label.lower()}" if label else "Open resource"
     return (
         "<div class='canva-embed-wrap'>"
         "<div class='canva-embed-frame'>"
         f"<iframe loading='lazy' src='{safe_embed}' title='{html.escape(label)}' allowfullscreen='allowfullscreen' allow='fullscreen'></iframe>"
         "</div>"
-        f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noopener'>Open in Canva</a>"
+        f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noopener'>{html.escape(link_text)} →</a>"
         "</div>"
     )
 def _render_offer_card(card: dict[str, Any], *, featured: bool = False) -> str:
