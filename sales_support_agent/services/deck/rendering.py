@@ -742,18 +742,65 @@ def _render_canva_embed(*, label: str, url: str) -> str:
         f"<a class='resource-link' href='{safe_url}' target='_blank' rel='noopener'>Open in Canva</a>"
         "</div>"
     )
-def _render_offer_card(card: dict[str, Any]) -> str:
+def _render_offer_card(card: dict[str, Any], *, featured: bool = False) -> str:
+    """PR35: rebuild offer-card markup to match the design spec.
+
+    Structure:
+      <article class="offer-card[ featured]">
+        <h3>{title}</h3>
+        <p class="desc">{description}</p>
+        <dl>
+          <div><dt>Monthly retainer</dt><dd>{price}</dd></div>
+          <div><dt>{commission_label}</dt><dd>{commission}</dd></div>
+          <div><dt>Commission baseline</dt><dd>{baseline}</dd></div>
+          <div><dt>Term</dt><dd>{term}</dd></div>
+        </dl>
+        <p class="bonus">+ {bonus}</p>          <!-- green pill text -->
+        <a class="cta" href="...">Get started →</a>
+      </article>
+
+    `.featured` adds a "Recommended" pill above the card and switches the
+    CTA to sky-deep filled background. Term defaults to a sensible value
+    if the card dict doesn't supply one (legacy callers don't).
+    """
+    cls = "offer-card featured" if featured else "offer-card"
+    title = html.escape(str(card.get("title", "")))
+    desc = html.escape(str(card.get("description", "")))
+    price = html.escape(str(card.get("price", "")))
+    price_label = html.escape(str(card.get("price_label", "Monthly retainer")))
+    commission = html.escape(str(card.get("commission", "")))
+    commission_label = html.escape(str(card.get("commission_label", "Commission on growth")))
+    baseline = html.escape(str(card.get("baseline", "")))
+    baseline_label = html.escape(str(card.get("baseline_label", "Commission baseline")))
+    term = html.escape(str(card.get("term") or card.get("term_label") or "3 months minimum"))
+    term_label = html.escape(str(card.get("term_field_label", "Term")))
+    # PR35: data sometimes stores bonus with a leading "+" already (e.g.
+    # "+TikTok Shop Support"). The renderer prepends "+ " — strip the
+    # leading symbol to avoid the double-plus in "+ +TikTok Shop".
+    bonus_raw = str(card.get("bonus", "") or "").strip()
+    if bonus_raw.startswith("+"):
+        bonus_raw = bonus_raw.lstrip("+ \t").strip()
+    bonus = html.escape(bonus_raw)
+    cta_text = html.escape(str(card.get("cta_text") or "Get started"))
+
+    rows: list[str] = []
+    if price:
+        rows.append(f"<div><dt>{price_label}</dt><dd>{price}</dd></div>")
+    if commission:
+        rows.append(f"<div><dt>{commission_label}</dt><dd>{commission}</dd></div>")
+    if baseline:
+        rows.append(f"<div><dt>{baseline_label}</dt><dd>{baseline}</dd></div>")
+    if term:
+        rows.append(f"<div><dt>{term_label}</dt><dd>{term}</dd></div>")
+    rows_html = "".join(rows)
+    bonus_html = f"<p class='bonus'>+ {bonus}</p>" if bonus else ""
     return (
-        "<article class='offer-card'>"
-        f"<h3>{html.escape(str(card.get('title', '')))}</h3>"
-        f"<p>{html.escape(str(card.get('description', '')))}</p>"
-        "<div class='offer-stats'>"
-        f"<div><span>{html.escape(str(card.get('price_label', '')))}</span><strong>{html.escape(str(card.get('price', '')))}</strong></div>"
-        f"<div><span>{html.escape(str(card.get('commission_label', '')))}</span><strong>{html.escape(str(card.get('commission', '')))}</strong></div>"
-        f"<div><span>{html.escape(str(card.get('baseline_label', '')))}</span><strong>{html.escape(str(card.get('baseline', '')))}</strong></div>"
-        "</div>"
-        f"<small>{html.escape(str(card.get('bonus', '')))}</small>"
-        "<a class='offer-link' href='https://anatainc.com/contact' target='_blank' rel='noreferrer'>Get started</a>"
+        f"<article class='{cls}'>"
+        f"<h3>{title}</h3>"
+        f"<p class='desc'>{desc}</p>"
+        f"<dl>{rows_html}</dl>"
+        f"{bonus_html}"
+        f"<a class='cta' href='https://anatainc.com/contact' target='_blank' rel='noreferrer'>{cta_text} →</a>"
         "</article>"
     )
 def _render_comparison_listing_cell(*, image_url: str, title: str, brand: str, emphasized: bool, missing_image_asset: str = "") -> str:

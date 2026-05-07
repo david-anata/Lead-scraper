@@ -907,33 +907,44 @@ class DeckGenerationService:
             target_reference_label = _target_reference_label(target)
         recommended_plan_html = ""
         if include_recommended_plan:
-            offer_html = "".join(_render_offer_card(card) for card in offer_cards)
+            # PR35: feature the FIRST offer card. Design has a "Recommended"
+            # pill on the lead card + sky-deep filled CTA; subsequent cards
+            # render plain with a navy filled CTA.
+            offer_html = "".join(
+                _render_offer_card(card, featured=(idx == 0))
+                for idx, card in enumerate(offer_cards)
+            )
+            # PR35: Replace the legacy `.plan-grid` (3 stacked cards with
+            # eyebrow-subtle / h3 / p) with the design's `.next-steps` 3-tile
+            # horizontal grid (Step 1 = sky-deep CTA tile + 2 plain tiles).
+            _impact = html.escape(dataset.text_fields.get("expected_impact_summary") or "")
+            _next_step = html.escape(dataset.text_fields.get("why_anata_summary") or "")
             recommended_plan_html = f"""
-    <section class="slide slide-offers">
-      <div class="slide-head">
-        <div>
-          <p class="eyebrow">Proposed offers</p>
-          <h2>Proposed offers and next step</h2>
+    <section class="slide slide-offers" data-screen-label="08 Proposed offers">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Proposed offers and next step</p>
+          <h2 class="slide-title">Choose your engagement</h2>
         </div>
-        <p class="muted">Choose the operating model, then move directly into the first growth sprint with clear ownership and the next action already mapped.</p>
-      </div>
-      {f"<div class='offer-grid'>{offer_html}</div>" if offer_html else ""}
-      <div class="plan-grid">
-        <div class="plan-card plan-card-cta">
-          <p class="eyebrow-subtle">Next action</p>
-          <h3>Schedule a meeting</h3>
-          <p>Review the engagement options, align on the first sprint, and map the next execution window.</p>
-          <a class="plan-link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Schedule a meeting</a>
+        <p class="caption">Choose the operating model, then move directly into the first growth sprint with clear ownership and the next action already mapped.</p>
+      </header>
+      {f'<div class="offer-grid">{offer_html}</div>' if offer_html else ""}
+      <div class="next-steps">
+        <div class="next-step cta">
+          <span class="num">Step 1</span>
+          <h4>Pick your engagement</h4>
+          <p>Confirm which offer fits your stage. We can also tailor scope if neither matches exactly.</p>
+          <a class="link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Schedule kickoff →</a>
         </div>
-        <div class="plan-card">
-          <p class="eyebrow-subtle">Why now</p>
-          <h3>Expected impact</h3>
-          <p>{html.escape(dataset.text_fields.get("expected_impact_summary") or "")}</p>
+        <div class="next-step">
+          <span class="num">Step 2</span>
+          <h4>Why now</h4>
+          <p>{_impact or "The category window is open — review density is within reach of the leaders, and the conversion mechanics are the unlock."}</p>
         </div>
-        <div class="plan-card">
-          <p class="eyebrow-subtle">What happens next</p>
-          <h3>Recommended next step</h3>
-          <p>{html.escape(dataset.text_fields.get("why_anata_summary") or "")}</p>
+        <div class="next-step">
+          <span class="num">Step 3</span>
+          <h4>What happens next</h4>
+          <p>{_next_step or "Within 5 business days: kickoff call, audit access, first listing rewrite drafted. First paid campaigns live in week 2."}</p>
         </div>
       </div>
     </section>"""
