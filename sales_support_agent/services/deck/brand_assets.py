@@ -95,7 +95,36 @@ def load_brand_asset(settings: Settings, relative_path: str) -> str:
     return ""
 
 
+@lru_cache(maxsize=8)
+def _encode_favicon_data_uri_cached(path_str: str) -> str:
+    """Base64-encode a favicon PNG into a `data:` URI once per absolute path."""
+    encoded = base64.b64encode(Path(path_str).read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def load_brand_favicon_link(settings: Settings) -> str:
+    """Return the inline `<link rel="icon">` markup for the deck's `<head>`.
+
+    Uses `shared/anata_brand/assets/agent-favicon.png` — the same favicon
+    served on every admin page, so the deck's browser-tab icon matches the
+    rest of the Anata internal-tooling surface. Embedded as a base64 data
+    URI so the deck stays self-contained (no external requests on view).
+
+    Returns the `<link rel="icon">` plus a matching `apple-touch-icon`.
+    Empty string if no favicon file is found (deck still renders fine).
+    """
+    for path in _candidate_brand_asset_paths(settings, "assets/agent-favicon.png"):
+        if path.exists():
+            href = _encode_favicon_data_uri_cached(str(path))
+            return (
+                f'<link rel="icon" type="image/png" href="{href}">'
+                f'<link rel="apple-touch-icon" href="{href}">'
+            )
+    return ""
+
+
 def clear_caches() -> None:
     """Test/dev helper: drop the path-keyed caches. Production never calls this."""
     _read_text_cached.cache_clear()
     _encode_asset_cached.cache_clear()
+    _encode_favicon_data_uri_cached.cache_clear()
