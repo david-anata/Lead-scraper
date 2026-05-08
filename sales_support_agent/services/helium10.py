@@ -417,6 +417,101 @@ def parse_word_frequency_csv(content: bytes | None) -> WordFrequencyReport | Non
     )
 
 
+# ---------------------------------------------------------------------------
+# PR40: Auto-detection of Helium 10 CSV file types from headers + row count.
+# The admin form now accepts a single multi-file upload and the server
+# routes each CSV to the right slot in the deck pipeline.
+# ---------------------------------------------------------------------------
+
+# Lowercased header signatures per file type. We require ALL of these to be
+# present in the CSV for a match — Helium 10 export columns are stable.
+_XRAY_REQUIRED = {"product details", "asin", "price  $", "asin revenue", "asin sales"}
+_KEYWORD_REQUIRED = {"keyword phrase", "search volume"}
+_CEREBRO_EXTRA = {"position (rank)"}  # added on top of keyword signature
+_WORD_FREQUENCY_REQUIRED = {"word", "frequency"}
+
+
+def detect_csv_kind(content: bytes | None) -> str:
+    """Sniff a Helium 10 CSV's headers + first few rows and return one of:
+
+      "target_xray"      — Xray export with exactly 1 product row
+      "competitor_xray"  — Xray export with 2+ product rows
+      "cerebro"          — Cerebro export (per-keyword target rank)
+      "keyword"          — Magnet/Keyword export (no rank column)
+      "word_frequency"   — Word-frequency single-column export
+      "unknown"          — header doesn't match any known shape
+
+    The Xray target/competitor split is decided by row count: a target Xray
+    is a single-row export of just the prospect's listing; a competitor Xray
+    is the niche page-one set (typically 10–60 rows).
+    """
+    if not content:
+        return "unknown"
+    try:
+        decoded = content.decode("utf-8-sig").strip()
+    except UnicodeDecodeError:
+        return "unknown"
+    if not decoded:
+        return "unknown"
+    try:
+        reader = csv.DictReader(io.StringIO(decoded))
+        headers_raw = list(reader.fieldnames or [])
+    except csv.Error:
+        return "unknown"
+    headers_lc = {str(h or "").strip().lower() for h in headers_raw}
+
+    if _WORD_FREQUENCY_REQUIRED.issubset(headers_lc):
+        return "word_frequency"
+    if _KEYWORD_REQUIRED.issubset(headers_lc):
+        # Cerebro = keyword + per-keyword target rank
+        if _CEREBRO_EXTRA.issubset(headers_lc):
+            return "cerebro"
+        return "keyword"
+    if _XRAY_REQUIRED.issubset(headers_lc):
+        # Count product rows. Stop at 2 — that's all we need to distinguish
+        # target (1 row) from competitor (≥2). Saves parsing 60-row exports.
+        # Re-create the reader since the iterator was consumed by fieldnames.
+        reader = csv.DictReader(io.StringIO(decoded))
+        asin_header_lc = {str(h or "").strip().lower(): h for h in (reader.fieldnames or [])}
+        asin_header = asin_header_lc.get("asin", "")
+        url_header = asin_header_lc.get("url", "")
+        title_header = asin_header_lc.get("product details", "")
+        product_rows = 0
+        for row in reader:
+            title = (row.get(title_header) or "").strip()
+            asin = _extract_asin(row.get(asin_header, "") or "") or _extract_asin(row.get(url_header, "") or "")
+            if title and asin:
+                product_rows += 1
+                if product_rows >= 2:
+                    return "competitor_xray"
+        return "target_xray" if product_rows == 1 else "competitor_xray"
+    return "unknown"
+
+
+def extract_target_asin_from_xray(content: bytes | None) -> str:
+    """Pull the single ASIN from a target Xray CSV (1-row export). Returns
+    "" when the file isn't a single-row Xray. Used to populate the target
+    product input automatically when the user uploads a target Xray instead
+    of typing/pasting the ASIN."""
+    if not content:
+        return ""
+    if detect_csv_kind(content) != "target_xray":
+        return ""
+    try:
+        decoded = content.decode("utf-8-sig").strip()
+    except UnicodeDecodeError:
+        return ""
+    reader = csv.DictReader(io.StringIO(decoded))
+    header_lc = {str(h or "").strip().lower(): h for h in (reader.fieldnames or [])}
+    asin_header = header_lc.get("asin", "")
+    url_header = header_lc.get("url", "")
+    for row in reader:
+        asin = _extract_asin(row.get(asin_header, "") or "") or _extract_asin(row.get(url_header, "") or "")
+        if asin:
+            return asin
+    return ""
+
+
 def _merge_xray_csvs(contents: list[bytes]) -> bytes:
     decoded_inputs = [content.decode("utf-8-sig").strip() for content in contents if content and content.decode("utf-8-sig").strip()]
     if not decoded_inputs:
