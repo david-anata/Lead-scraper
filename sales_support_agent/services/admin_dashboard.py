@@ -4306,6 +4306,51 @@ def render_sales_deck_page(data: DashboardData) -> str:
         font-size: 13px;
         padding: 10px 12px;
       }}
+      /* PR40: auto-detection preview list under the unified CSV input */
+      .intake-csv-preview {{
+        margin-top: 8px;
+        padding: 10px 12px;
+        background: rgba(133, 187, 218, 0.10);
+        border: 1px solid rgba(43, 54, 68, 0.14);
+        border-radius: 8px;
+        font-size: 12px;
+      }}
+      .intake-csv-preview-head {{
+        margin: 0 0 6px;
+        font-weight: 700;
+        color: var(--dark-blue);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }}
+      .intake-csv-preview-list {{
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }}
+      .intake-csv-preview-item {{
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.5);
+      }}
+      .intake-csv-preview-item .n {{
+        font-weight: 600;
+        color: var(--dark-blue);
+        word-break: break-all;
+      }}
+      .intake-csv-preview-item .k {{
+        color: var(--alt-dark-blue);
+        white-space: nowrap;
+      }}
+      .intake-csv-preview-item.is-unknown {{
+        background: rgba(255, 200, 80, 0.18);
+      }}
       @media (max-width: 768px) {{
         .intake-section {{
           grid-template-columns: 1fr;
@@ -4813,56 +4858,25 @@ def render_sales_deck_page(data: DashboardData) -> str:
               <label class="intake-label">
                 <span class="intake-label-row">
                   <span>Product URL or ASIN</span>
-                  <span class="intake-badge intake-badge-required">Required</span>
+                  <span class="intake-badge">Optional if Target Xray uploaded</span>
                 </span>
-                <input type="text" name="target_product_input" placeholder="Amazon ASIN/URL or Shopify product URL (e.g. https://yourbrand.com/products/handle)" required />
-                <small class="intake-help">Amazon: image, title, brand, price, BSR, rating, and reviews auto-pull from the Amazon page. Shopify: title, vendor, price, image, and description pull from the storefront's `/products/&lt;handle&gt;.json` endpoint — competitor Xray CSV becomes optional in DTC mode.</small>
-              </label>
-              <label class="intake-label">
-                <span class="intake-label-row">
-                  <span>Xray — Target listing CSV</span>
-                  <span class="intake-badge">Optional</span>
-                </span>
-                <input type="file" name="target_xray_csv" accept=".csv,text/csv" />
-                <small class="intake-help">H10 → Xray on the target ASIN (single-row export). Use only when the target isn't in the competitor niche set.</small>
+                <input type="text" name="target_product_input" placeholder="Amazon ASIN/URL, Shopify product URL — or leave blank if you upload a Target Xray CSV below" />
+                <small class="intake-help">Amazon: image, title, brand, price, BSR, rating, reviews auto-pull from the Amazon page. Shopify: title, vendor, price, image, description pull from <code>/products/&lt;handle&gt;.json</code> — competitor Xray becomes optional in DTC mode. <strong>Leave blank</strong> when you upload a target Xray CSV — the ASIN is read directly from the file.</small>
               </label>
             </fieldset>
 
             <fieldset class="intake-section intake-xray">
-              <legend>2. Helium 10 — Xray</legend>
+              <legend>2. Helium 10 — drop all CSVs here</legend>
               <label class="intake-label">
                 <span class="intake-label-row">
-                  <span>Competitors CSVs</span>
-                  <span class="intake-badge intake-badge-required">Required for Amazon</span>
+                  <span>All Helium 10 CSVs</span>
+                  <span class="intake-badge">Auto-detected</span>
                 </span>
-                <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
-                <small class="intake-help">Xray on the niche keyword. Drives the competitor table, donuts, and revenue breakdown. Multiple files merge. <strong>Optional</strong> when the target is a Shopify URL — deck still generates with target-only data.</small>
-              </label>
-              <label class="intake-label">
-                <span class="intake-label-row">
-                  <span>Keywords CSVs</span>
-                  <span class="intake-badge">Optional</span>
-                </span>
-                <input type="file" name="keyword_xray_csv" accept=".csv,text/csv" multiple />
-                <small class="intake-help">Xray Keywords on the niche keyword. Feeds the SEO opportunity table. Multiple files merge.</small>
-              </label>
-            </fieldset>
-
-            <fieldset class="intake-section intake-cerebro">
-              <legend>3. Helium 10 — Cerebro <span class="intake-legend-tag">all optional</span></legend>
-              <label class="intake-label">
-                <span class="intake-label-row">
-                  <span>Competitors CSV</span>
-                </span>
-                <input type="file" name="cerebro_csv" accept=".csv,text/csv" />
-                <small class="intake-help">Reverse-ASIN lookup on the target + 1–2 top competitors. Drives the ranking-path chart.</small>
-              </label>
-              <label class="intake-label">
-                <span class="intake-label-row">
-                  <span>Keyword Frequency CSV</span>
-                </span>
-                <input type="file" name="word_frequency_csv" accept=".csv,text/csv" />
-                <small class="intake-help">Cerebro → Word Frequency tab. Powers the support-term bubbles slide.</small>
+                <input type="file" name="csv_files" id="deck-csv-files" accept=".csv,text/csv" multiple />
+                <small class="intake-help">
+                  Drag in any combination of <strong>Xray</strong> (target = single row, competitors = multi-row), <strong>Magnet/Keyword</strong>, <strong>Cerebro</strong>, and <strong>Word Frequency</strong> CSVs. The server reads each file's headers and routes it automatically — no need to match each input to a slot. Detection result appears in the deck's warnings list after generate.
+                </small>
+                <div id="deck-csv-preview" class="intake-csv-preview" hidden></div>
               </label>
             </fieldset>
 
@@ -5081,6 +5095,51 @@ def render_sales_deck_page(data: DashboardData) -> str:
       const deckOfferPayloadInput = document.getElementById("deck-offer-payload-json");
       const deckAddOfferButton = document.getElementById("deck-add-offer");
       const deckRunList = document.getElementById("deck-run-list");
+
+      // PR40: client-side preview of auto-detected CSV file types as the
+      // user picks files. The server is the source of truth (it parses the
+      // full file); this is just a quick hint so the AE can spot a
+      // misnamed/truncated upload before hitting Generate.
+      const deckCsvInput = document.getElementById("deck-csv-files");
+      const deckCsvPreview = document.getElementById("deck-csv-preview");
+      function _detectCsvKindFromHeader(headerLine) {{
+        const lc = (headerLine || "").toLowerCase();
+        if (lc.includes("word") && lc.includes("frequency")) return "word_frequency";
+        if (lc.includes("keyword phrase") && lc.includes("position (rank)")) return "cerebro";
+        if (lc.includes("keyword phrase") && lc.includes("search volume")) return "keyword";
+        if (lc.includes("product details") && lc.includes("asin") && lc.includes("asin sales")) return "xray";
+        return "unknown";
+      }}
+      async function _peekHeader(file) {{
+        const blob = file.slice(0, 4096);
+        const text = await blob.text();
+        return (text.split(/\\r?\\n/)[0] || "").trim();
+      }}
+      async function _renderCsvPreview() {{
+        if (!deckCsvInput || !deckCsvPreview) return;
+        const files = Array.from(deckCsvInput.files || []);
+        if (files.length === 0) {{
+          deckCsvPreview.hidden = true;
+          deckCsvPreview.innerHTML = "";
+          return;
+        }}
+        const labelMap = {{
+          xray: "Xray (target or competitors — decided server-side by row count)",
+          keyword: "Magnet / Keyword",
+          cerebro: "Cerebro (rank table)",
+          word_frequency: "Word Frequency",
+          unknown: "Unknown — will be skipped"
+        }};
+        const lines = await Promise.all(files.map(async (f) => {{
+          const header = await _peekHeader(f);
+          const kind = _detectCsvKindFromHeader(header);
+          const cls = (kind === "unknown") ? " is-unknown" : "";
+          return `<li class="intake-csv-preview-item${{cls}}"><span class="n">${{f.name}}</span><span class="k">${{labelMap[kind] || kind}}</span></li>`;
+        }}));
+        deckCsvPreview.innerHTML = `<p class="intake-csv-preview-head">Detected ${{lines.length}} file${{lines.length === 1 ? "" : "s"}}:</p><ul class="intake-csv-preview-list">${{lines.join("")}}</ul>`;
+        deckCsvPreview.hidden = false;
+      }}
+      deckCsvInput?.addEventListener("change", _renderCsvPreview);
 
       // Audit item 2c: filterable past-decks table.
       const deckRunTbody = document.getElementById("deck-run-tbody");

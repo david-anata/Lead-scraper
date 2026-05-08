@@ -75,6 +75,21 @@ def _build_settings() -> SimpleNamespace:
         deck_required_template_fields=(),
         shared_brand_package_path=repo_root / "shared" / "anata_brand",
         deck_public_base_url="https://sales-support-agent.onrender.com",
+        # Amazon SP-API fields read by AmazonSpApiClient. Empty strings
+        # mean "not configured" — the client falls back to public scraping
+        # paths. Required so service-level instantiation doesn't blow up.
+        amazon_sp_api_base_url="",
+        amazon_sp_api_region="",
+        amazon_sp_api_marketplace_id="",
+        amazon_sp_api_lwa_client_id="",
+        amazon_sp_api_lwa_client_secret="",
+        amazon_sp_api_refresh_token="",
+        amazon_sp_api_aws_access_key_id="",
+        amazon_sp_api_aws_secret_access_key="",
+        amazon_sp_api_aws_session_token="",
+        # Misc deck-generation fields
+        shopify_request_timeout_seconds=15,
+        shopify_user_agent="",
     )
 
 
@@ -965,6 +980,111 @@ class DeckRoutingTests(unittest.TestCase):
         # Don't seed; ask for a run that doesn't exist.
         resp = client.get("/decks/some-slug/9999/anytoken")
         self.assertEqual(resp.status_code, 404)
+
+    def test_csv_kind_detection_routes_files_to_correct_slot(self) -> None:
+        """PR40: header-based detection lets the admin form drop ALL CSVs
+        into one input. Each file kind is uniquely identified by its
+        header signature (target vs competitor xray decided by row count)."""
+        from sales_support_agent.services.helium10 import (
+            detect_csv_kind,
+            extract_target_asin_from_xray,
+        )
+
+        # Single-row Xray = target.
+        target_xray = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count\n'
+            b'"My Target",B0XYZ123AB,https://amzn.com/dp/B0XYZ123AB,,Brand,29.99,$5000,200,1234,4.5,100\n'
+        )
+        self.assertEqual(detect_csv_kind(target_xray), "target_xray")
+        self.assertEqual(extract_target_asin_from_xray(target_xray), "B0XYZ123AB")
+
+        # Multi-row Xray = competitors. ASIN extraction returns "" for
+        # competitor xray so the optional-ASIN derivation only fires on
+        # the single-row target file.
+        competitor_xray = target_xray + (
+            b'"Comp 1",B0AAA111AA,https://amzn.com,,B,9.99,$1000,50,5000,4.2,30\n'
+            b'"Comp 2",B0BBB222BB,https://amzn.com,,B,19.99,$2000,100,2000,4.3,60\n'
+        )
+        self.assertEqual(detect_csv_kind(competitor_xray), "competitor_xray")
+        self.assertEqual(extract_target_asin_from_xray(competitor_xray), "")
+
+        # Magnet/Keyword (no rank column).
+        keyword_csv = (
+            b'Keyword Phrase,Search Volume,Competing Products\n'
+            b'fat burner,12000,500\n'
+        )
+        self.assertEqual(detect_csv_kind(keyword_csv), "keyword")
+
+        # Cerebro (rank column distinguishes from keyword).
+        cerebro_csv = (
+            b'Keyword Phrase,Search Volume,Position (Rank),Keyword Sales\n'
+            b'fat burner,12000,5,250\n'
+        )
+        self.assertEqual(detect_csv_kind(cerebro_csv), "cerebro")
+
+        # Word frequency.
+        word_freq = b'Word,Frequency\nweight,499\nloss,417\n'
+        self.assertEqual(detect_csv_kind(word_freq), "word_frequency")
+
+        # Unknown / empty input.
+        self.assertEqual(detect_csv_kind(b""), "unknown")
+        self.assertEqual(detect_csv_kind(None), "unknown")
+        self.assertEqual(detect_csv_kind(b"Random,Stuff\nfoo,bar\n"), "unknown")
+
+    def test_unified_upload_partitions_files_and_derives_asin(self) -> None:
+        """PR40 end-to-end: drop a target Xray + a competitor Xray into the
+        unified `csv_files` field, leave target_product_input blank, and the
+        deck still generates because the server (a) auto-routes each file
+        and (b) derives the target ASIN from the single-row Xray."""
+        client, sf = self._make_client(internal_api_key="real-internal-key")
+        target_xray = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count\n'
+            b'"My Target",B0TARGET01,https://amzn.com/dp/B0TARGET01,,MyBrand,29.99,$5000,200,1234,4.5,100\n'
+        )
+        # Reuse the existing _xray_csv() fixture as the competitor file.
+        competitor_xray = _xray_csv()
+        resp = client.post(
+            "/api/admin/generate-deck",
+            files=[
+                ("csv_files", ("target.csv", target_xray, "text/csv")),
+                ("csv_files", ("competitors.csv", competitor_xray, "text/csv")),
+            ],
+            data={
+                # NOTE: target_product_input intentionally blank — server
+                # should derive the ASIN from the target Xray.
+                "target_product_input": "",
+                "include_recommended_plan": "false",
+                "include_growth_plan": "false",
+            },
+            headers={"X-Internal-API-Key": "real-internal-key"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        # The auto-detect log is appended to warnings so the AE sees what
+        # was routed to which slot.
+        warnings = " ".join(body["details"].get("warnings", []) or [])
+        self.assertIn("Auto-detected uploads", warnings)
+        self.assertIn("target.csv", warnings)
+        self.assertIn("competitors.csv", warnings)
+        self.assertIn("target_xray", warnings)
+        self.assertIn("competitor_xray", warnings)
+
+    def test_target_product_input_required_when_no_target_xray(self) -> None:
+        """Sanity check: blank target_product_input AND no target Xray
+        should still 400 — we have no way to identify the prospect."""
+        client, _sf = self._make_client(internal_api_key="real-internal-key")
+        resp = client.post(
+            "/api/admin/generate-deck",
+            files=[
+                ("csv_files", ("competitors.csv", _xray_csv(), "text/csv")),
+            ],
+            data={"target_product_input": ""},
+            headers={"X-Internal-API-Key": "real-internal-key"},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Target product is required", resp.text)
 
     def test_internal_generate_deck_requires_api_key(self) -> None:
         """`/api/admin/generate-deck` must reject requests without the

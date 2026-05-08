@@ -1424,6 +1424,7 @@ async def _run_generate_deck(
     keyword_xray_csv: list[UploadFile],
     cerebro_csv: Optional[UploadFile],
     word_frequency_csv: Optional[UploadFile],
+    csv_files: list[UploadFile] | None = None,
     target_product_input: str,
     channels: list[str],
     creative_mockup_url: str,
@@ -1439,10 +1440,51 @@ async def _run_generate_deck(
     Both `/admin/api/generate-deck` (cookie-auth web admin) and
     `/api/admin/generate-deck` (internal-key) share this implementation;
     only the auth gate and `trigger` label differ at the route level.
+
+    PR40: When the form posts the unified `csv_files` field, auto-detect
+    each file's type (target_xray / competitor_xray / keyword / cerebro /
+    word_frequency) and route into the right slot. Legacy per-type fields
+    are still accepted for backward-compat with internal callers.
     """
-    competitor_files = [file for file in competitor_xray_csv if file.filename]
-    keyword_files = [file for file in keyword_xray_csv if file.filename]
+    competitor_files: list[UploadFile] = [file for file in competitor_xray_csv if file.filename]
+    keyword_files: list[UploadFile] = [file for file in keyword_xray_csv if file.filename]
     settings = request.app.state.settings
+
+    # PR40: auto-route unified upload into the appropriate per-type slots.
+    # Buffer each upload's bytes once so we can both detect AND parse without
+    # consuming the underlying stream twice.
+    auto_target_xray_bytes: bytes | None = None
+    auto_target_xray_filename: str = ""
+    auto_cerebro_bytes: bytes | None = None
+    auto_cerebro_filename: str = ""
+    auto_word_freq_bytes: bytes | None = None
+    auto_word_freq_filename: str = ""
+    # Buffered (filename, bytes) tuples for the multi-file slots.
+    auto_competitor_payloads: list[tuple[str, bytes]] = []
+    auto_keyword_payloads: list[tuple[str, bytes]] = []
+    autodetect_log: list[str] = []
+    for upload in (csv_files or []):
+        if not upload or not upload.filename:
+            continue
+        raw = await upload.read()
+        from sales_support_agent.services.helium10 import detect_csv_kind
+        kind = detect_csv_kind(raw)
+        autodetect_log.append(f"{upload.filename} → {kind}")
+        if kind == "target_xray":
+            auto_target_xray_bytes = raw
+            auto_target_xray_filename = upload.filename
+        elif kind == "competitor_xray":
+            auto_competitor_payloads.append((upload.filename, raw))
+        elif kind == "keyword":
+            auto_keyword_payloads.append((upload.filename, raw))
+        elif kind == "cerebro":
+            auto_cerebro_bytes = raw
+            auto_cerebro_filename = upload.filename
+        elif kind == "word_frequency":
+            auto_word_freq_bytes = raw
+            auto_word_freq_filename = upload.filename
+        # "unknown" is silently skipped — surface in the warnings list
+        # below so the AE knows.
 
     # Pull growth-plan inputs out of the request form. We don't define them as
     # FastAPI Form() params to keep the function signature manageable; instead
@@ -1461,30 +1503,72 @@ async def _run_generate_deck(
 
     try:
         with session_scope(request.app.state.session_factory) as session:
-            target_xray_csv_bytes = (
+            # Legacy per-type uploads (still supported for the internal API
+            # callers that wire them explicitly).
+            legacy_target_xray_bytes = (
                 await target_xray_csv.read()
                 if target_xray_csv and target_xray_csv.filename
                 else None
             )
-            target_xray_filename = (
+            legacy_target_xray_filename = (
                 target_xray_csv.filename or "" if target_xray_csv else ""
             )
+            legacy_competitor_payloads = [
+                (file.filename or "competitors.csv", await file.read())
+                for file in competitor_files
+            ]
+            legacy_keyword_payloads = [
+                (file.filename or "keywords.csv", await file.read())
+                for file in keyword_files
+            ]
+            legacy_cerebro_bytes = (await cerebro_csv.read()) if cerebro_csv and cerebro_csv.filename else None
+            legacy_cerebro_filename = (cerebro_csv.filename or "") if cerebro_csv else ""
+            legacy_word_freq_bytes = (await word_frequency_csv.read()) if word_frequency_csv and word_frequency_csv.filename else None
+            legacy_word_freq_filename = (word_frequency_csv.filename or "") if word_frequency_csv else ""
+
+            # PR40: prefer auto-detected uploads when they're present;
+            # legacy per-type fields fill any slot the unified upload
+            # didn't cover (so internal API callers and the new web flow
+            # both work without changes to the service).
+            target_xray_csv_bytes = auto_target_xray_bytes or legacy_target_xray_bytes
+            target_xray_filename = auto_target_xray_filename or legacy_target_xray_filename
+            competitor_payloads = auto_competitor_payloads or legacy_competitor_payloads
+            keyword_payloads = auto_keyword_payloads or legacy_keyword_payloads
+            cerebro_bytes = auto_cerebro_bytes if auto_cerebro_bytes is not None else legacy_cerebro_bytes
+            cerebro_filename = auto_cerebro_filename or legacy_cerebro_filename
+            word_freq_bytes = auto_word_freq_bytes if auto_word_freq_bytes is not None else legacy_word_freq_bytes
+            word_freq_filename = auto_word_freq_filename or legacy_word_freq_filename
+
+            # PR40: target ASIN becomes optional when a target Xray is
+            # uploaded — derive it from the single product row in that file.
+            effective_target_input = target_product_input.strip()
+            if not effective_target_input and target_xray_csv_bytes:
+                from sales_support_agent.services.helium10 import extract_target_asin_from_xray
+                derived_asin = extract_target_asin_from_xray(target_xray_csv_bytes)
+                if derived_asin:
+                    effective_target_input = derived_asin
+
+            if not effective_target_input:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Target product is required. Provide an ASIN/URL OR "
+                        "upload a target Xray CSV (the single-row export of "
+                        "your prospect's listing) — the ASIN will be read "
+                        "from the file."
+                    ),
+                )
+
             result = DeckGenerationService(settings, session).generate_deck(
-                competitor_xray_csv_payloads=[
-                    (file.filename or "competitors.csv", await file.read())
-                    for file in competitor_files
-                ],
+                competitor_xray_csv_payloads=competitor_payloads,
                 target_xray_csv_bytes=target_xray_csv_bytes,
                 target_xray_filename=target_xray_filename,
-                keyword_xray_csv_payloads=[
-                    (file.filename or "keywords.csv", await file.read())
-                    for file in keyword_files
-                ],
-                cerebro_csv_bytes=(await cerebro_csv.read()) if cerebro_csv and cerebro_csv.filename else None,
-                cerebro_filename=(cerebro_csv.filename or "") if cerebro_csv else "",
-                word_frequency_csv_bytes=(await word_frequency_csv.read()) if word_frequency_csv and word_frequency_csv.filename else None,
-                word_frequency_filename=(word_frequency_csv.filename or "") if word_frequency_csv else "",
-                target_product_input=target_product_input,
+                keyword_xray_csv_payloads=keyword_payloads,
+                cerebro_csv_bytes=cerebro_bytes,
+                cerebro_filename=cerebro_filename,
+                word_frequency_csv_bytes=word_freq_bytes,
+                word_frequency_filename=word_freq_filename,
+                target_product_input=effective_target_input,
                 channels=channels,
                 creative_mockup_url=creative_mockup_url,
                 case_study_url=case_study_url,
@@ -1494,8 +1578,22 @@ async def _run_generate_deck(
                 growth_plan_inputs=growth_plan_inputs,
                 trigger=trigger,
             )
+            # Surface the auto-detection result so the AE can see what
+            # was routed where in the deck's warnings list.
+            # PR40: result is a frozen dataclass — can't mutate `warnings`
+            # in place. We return the autodetect log alongside the result
+            # via the API response below instead.
+    except HTTPException:
+        # PR40: pass our deliberate 400/4xx through unchanged. Without this
+        # the catch-all below was turning the "Target product is required"
+        # 400 into a 500.
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    # PR40: append the auto-detect log so the AE sees what was routed where.
+    response_warnings = list(result.warnings or [])
+    if autodetect_log:
+        response_warnings.append("Auto-detected uploads: " + "; ".join(autodetect_log))
     return ApiMessage(
         status="ok",
         message=result.message,
@@ -1507,7 +1605,7 @@ async def _run_generate_deck(
             "design_title": result.design_title,
             "edit_url": result.edit_url,
             "view_url": result.view_url,
-            "warnings": result.warnings,
+            "warnings": response_warnings,
             "sales_row_count": result.sales_row_count,
             "competitor_row_count": result.competitor_row_count,
             "template_fields": result.template_fields,
@@ -1518,7 +1616,11 @@ async def _run_generate_deck(
 @router.post("/admin/api/generate-deck", response_model=ApiMessage)
 async def admin_generate_deck(
     request: Request,
-    competitor_xray_csv: list[UploadFile] = File(...),
+    # PR40: unified upload — drop ALL Helium 10 CSVs into one field, server
+    # auto-routes by header signature. Legacy per-type fields stay so the
+    # /api/admin/generate-deck flow doesn't change for existing callers.
+    csv_files: list[UploadFile] = File(default=[]),
+    competitor_xray_csv: list[UploadFile] = File(default=[]),
     target_xray_csv: Optional[UploadFile] = File(default=None),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
     cerebro_csv: Optional[UploadFile] = File(default=None),
@@ -1537,6 +1639,7 @@ async def admin_generate_deck(
         raise HTTPException(status_code=401, detail="Admin login required.")
     return await _run_generate_deck(
         request,
+        csv_files=csv_files,
         competitor_xray_csv=competitor_xray_csv,
         target_xray_csv=target_xray_csv,
         keyword_xray_csv=keyword_xray_csv,
@@ -1558,7 +1661,8 @@ async def admin_generate_deck(
 async def internal_admin_generate_deck(
     request: Request,
     x_internal_api_key: Optional[str] = Header(default=None),
-    competitor_xray_csv: list[UploadFile] = File(...),
+    csv_files: list[UploadFile] = File(default=[]),
+    competitor_xray_csv: list[UploadFile] = File(default=[]),
     target_xray_csv: Optional[UploadFile] = File(default=None),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
     cerebro_csv: Optional[UploadFile] = File(default=None),
@@ -1575,6 +1679,7 @@ async def internal_admin_generate_deck(
     _enforce_api_key(request, x_internal_api_key)
     return await _run_generate_deck(
         request,
+        csv_files=csv_files,
         competitor_xray_csv=competitor_xray_csv,
         target_xray_csv=target_xray_csv,
         keyword_xray_csv=keyword_xray_csv,
