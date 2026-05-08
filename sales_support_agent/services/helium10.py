@@ -84,6 +84,29 @@ class Helium10XrayReport:
         return None
 
 
+def empty_xray_report(*, warning: str = "") -> Helium10XrayReport:
+    """PR38: synthetic empty Xray report for DTC-mode decks where the user
+    only supplied a Shopify product URL (no Helium 10 competitor CSV).
+    Downstream renderers expect this object to exist; a valid empty report
+    keeps the rest of the pipeline working without "comparable listings"
+    data."""
+    return Helium10XrayReport(
+        products=[],
+        total_revenue=0.0,
+        total_units_sold=0.0,
+        average_bsr=None,
+        average_price=None,
+        average_rating=None,
+        search_results_count=0,
+        revenue_over_5000_count=0,
+        under_75_reviews_count=0,
+        seller_country_distribution=[],
+        size_tier_distribution=[],
+        fulfillment_distribution=[],
+        warnings=[warning] if warning else [],
+    )
+
+
 @dataclass(frozen=True)
 class Helium10KeywordReport:
     keywords: list[KeywordInsight]

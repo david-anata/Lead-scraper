@@ -257,7 +257,16 @@ class ProductResearchService:
         source_url = target.get("source_url", "")
         if not source_url:
             raise RuntimeError("Target product URL was missing.")
-        page_data = _fetch_generic_page_data(source_url)
+        # PR38: Shopify storefronts expose a `/products/<handle>.json` endpoint
+        # that returns the full product record (title, vendor, price,
+        # body_html, all images, variants). Try that FIRST when the URL
+        # looks like a Shopify product page — strictly more data than
+        # scraping OG/JSON-LD off the rendered HTML, with a reliable
+        # vendor/brand and a clean variant price. Fall back to the
+        # generic HTML scraper if the endpoint isn't reachable or the
+        # site isn't Shopify.
+        shopify_data = _fetch_shopify_product_data(source_url)
+        page_data = shopify_data if shopify_data else _fetch_generic_page_data(source_url)
         amazon_reference = _fetch_public_amazon_reference(
             _build_public_product_query(
                 page_data.get("title", "") or target.get("product_name", ""),
@@ -825,6 +834,106 @@ def _is_amazon_block_page(content: str) -> bool:
         or "sorry! something went wrong!" in lower
         or "<title dir=\"ltr\">amazon.com</title>" in lower
     )
+
+
+_SHOPIFY_PRODUCT_PATH_RE = re.compile(r"^/products/([^/?#]+)/?$")
+
+
+def _fetch_shopify_product_data(source_url: str) -> dict[str, Any] | None:
+    """If `source_url` looks like a Shopify product page, fetch the
+    `/products/<handle>.json` endpoint and return the same dict shape that
+    `_fetch_generic_page_data` produces — title, image_url, price,
+    description, brand_name, category, source_url, warnings.
+
+    Returns None when the URL isn't a Shopify product URL, the endpoint
+    isn't reachable, or the response doesn't have a `product` payload.
+    Caller falls back to the generic HTML scraper in that case so the
+    deck pipeline never breaks on a non-Shopify website.
+    """
+    cleaned = str(source_url or "").strip()
+    if not cleaned:
+        return None
+    parsed = urlparse(cleaned)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path_match = _SHOPIFY_PRODUCT_PATH_RE.match(parsed.path or "")
+    if not path_match:
+        return None
+    handle = path_match.group(1)
+    json_url = f"{parsed.scheme}://{parsed.netloc}/products/{handle}.json"
+    warnings: list[str] = []
+    try:
+        response = requests.get(
+            json_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=15,
+        )
+        # Some merchants block the .json endpoint (e.g., Shopify Plus with
+        # custom routing) — treat any non-200 as "not Shopify" and fall back.
+        if response.status_code != 200:
+            return None
+        body = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    product = (body or {}).get("product") or {}
+    if not product or not product.get("title"):
+        return None
+
+    title = _clean_scraped_text(str(product.get("title") or ""))
+    brand_name = _clean_scraped_text(str(product.get("vendor") or ""))
+    category = _clean_scraped_text(str(product.get("product_type") or ""))
+    description = _clean_scraped_text(str(product.get("body_html") or ""))
+
+    # Pick the price for the variant called out in the URL's `?variant=` query
+    # if present, otherwise the first variant. Shopify quotes prices as
+    # decimal strings ("26.00"); format with a leading "$" to match the rest
+    # of the product_research codebase.
+    variants = list(product.get("variants") or [])
+    price = ""
+    selected_variant_id = ""
+    qs = parse_qs(parsed.query or "")
+    if qs.get("variant"):
+        selected_variant_id = str(qs["variant"][0])
+    chosen_variant: dict[str, Any] = {}
+    if selected_variant_id and variants:
+        for v in variants:
+            if str(v.get("id", "")) == selected_variant_id:
+                chosen_variant = v
+                break
+    if not chosen_variant and variants:
+        chosen_variant = variants[0]
+    raw_price = str(chosen_variant.get("price") or "").strip()
+    if raw_price:
+        # Strip trailing zero cents on whole-dollar prices for readability.
+        price = f"${raw_price}" if not raw_price.startswith("$") else raw_price
+
+    images = list(product.get("images") or [])
+    image_url = ""
+    if images:
+        # Prefer the variant's `featured_image` if present; otherwise the
+        # product's first image.
+        if chosen_variant.get("featured_image"):
+            image_url = str(chosen_variant["featured_image"].get("src") or "")
+        if not image_url:
+            image_url = str(images[0].get("src") or "")
+
+    if not title:
+        warnings.append("Shopify endpoint returned a product record without a title.")
+
+    return {
+        "source_url": source_url,
+        "title": title,
+        "image_url": image_url,
+        "price": price,
+        "description": description,
+        "brand_name": brand_name,
+        "category": category,
+        "warnings": warnings,
+    }
 
 
 def _fetch_generic_page_data(source_url: str) -> dict[str, Any]:
