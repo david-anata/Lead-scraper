@@ -691,6 +691,123 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn("is-disabled", html)
         self.assertIn('aria-disabled="true"', html)
 
+    def test_shopify_product_data_extracts_title_vendor_price(self) -> None:
+        """PR38: Shopify storefronts expose `/products/<handle>.json` with the
+        full product record. The scraper extracts title, vendor (brand_name),
+        price, image, description, and category. Detects Shopify by URL path
+        shape and gracefully returns None for non-Shopify URLs so the caller
+        falls back to the generic OG/JSON-LD scraper."""
+        from unittest import mock
+        from sales_support_agent.services.product_research import _fetch_shopify_product_data
+
+        # Non-product paths return None immediately without a network call.
+        self.assertIsNone(_fetch_shopify_product_data(""))
+        self.assertIsNone(_fetch_shopify_product_data("https://example.com/"))
+        self.assertIsNone(_fetch_shopify_product_data("https://example.com/collections/all"))
+
+        # Stub a realistic Shopify product.json response.
+        canned = {
+            "product": {
+                "title": "Grip Stick - Hydrating Lip Treatment",
+                "vendor": "Tilt Beauty",
+                "product_type": "Lip Balm",
+                "body_html": "<p>Instant and lasting hydration.</p>",
+                "handle": "new-grip-stick-hydrating-lip-treatment",
+                "variants": [
+                    {"id": 51562214031681, "price": "26.00", "featured_image": None},
+                    {"id": 51562214031682, "price": "28.00", "featured_image": None},
+                ],
+                "images": [
+                    {"src": "https://cdn.shopify.com/s/files/1/0879/1991/9425/files/main.jpg"},
+                ],
+            }
+        }
+
+        class _StubResponse:
+            status_code = 200
+
+            def json(self):
+                return canned
+
+        with mock.patch(
+            "sales_support_agent.services.product_research.requests.get",
+            return_value=_StubResponse(),
+        ):
+            result = _fetch_shopify_product_data(
+                "https://tiltbeauty.com/products/new-grip-stick-hydrating-lip-treatment?variant=51562214031681"
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["title"], "Grip Stick - Hydrating Lip Treatment")
+        self.assertEqual(result["brand_name"], "Tilt Beauty")
+        self.assertEqual(result["category"], "Lip Balm")
+        # Selected variant from `?variant=` query param drives the price.
+        self.assertEqual(result["price"], "$26.00")
+        self.assertIn("hydration", result["description"])
+        self.assertTrue(result["image_url"].startswith("https://cdn.shopify.com/"))
+
+    def test_dtc_target_url_does_not_require_competitor_xray(self) -> None:
+        """PR38: when the target is a website URL (Shopify/DTC), the deck
+        should still generate WITHOUT a competitor Xray CSV. Synthesizes
+        an empty Xray report so the niche/competitor sections render
+        empty rather than blowing up."""
+        from unittest import mock
+        from sales_support_agent.services.product_research import EnrichedHeroProduct
+
+        session_factory = create_session_factory("sqlite:///:memory:")
+        init_database(session_factory)
+
+        # Stub the product-research enrichment so the test doesn't hit
+        # the live tiltbeauty.com endpoint (we just need the type contract).
+        fake_hero = EnrichedHeroProduct(
+            asin="",
+            candidate_asin="",
+            brand_name="Tilt Beauty",
+            title="Grip Stick - Hydrating Lip Treatment",
+            source_url="https://tiltbeauty.com/products/new-grip-stick-hydrating-lip-treatment",
+            description="Instant and lasting hydration.",
+            price="$26.00",
+            dimensions="",
+            image_url="https://cdn.shopify.com/.../main.jpg",
+            product_type="Lip Balm",
+            bsr=None,
+            rating=None,
+            review_count=None,
+            identity_source="website",
+            market_metrics_source="",
+            tags=(),
+            warnings=(),
+        )
+
+        with session_scope(session_factory) as session:
+            service = DeckGenerationService(
+                _build_settings(), session,
+                amazon_client=_FakeAmazonClient(),
+            )
+            with mock.patch.object(
+                service.product_research,
+                "enrich_target_product",
+                return_value=fake_hero,
+            ):
+                result = service.generate_deck(
+                    target_product_input="https://tiltbeauty.com/products/new-grip-stick-hydrating-lip-treatment",
+                    # NOTE: no competitor_xray_csv_bytes — DTC-only.
+                )
+
+        self.assertEqual(result.status, "success")
+        # The DTC-mode warning is surfaced via the warnings list so the
+        # AE knows the deck was generated without market-level data.
+        warnings_blob = " ".join(result.warnings or [])
+        self.assertIn("DTC mode", warnings_blob)
+        # Sanity-check the rendered deck still has core slides.
+        with session_scope(session_factory) as session:
+            run = session.execute(
+                select(AutomationRun).where(AutomationRun.run_type == "deck_generation")
+            ).scalar_one()
+            html = str(dict(run.summary_json or {}).get("deck_html") or "")
+        self.assertIn("Tilt Beauty", html)
+        self.assertIn("Grip Stick", html)
+
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for deck routing tests")
 class DeckRoutingTests(unittest.TestCase):

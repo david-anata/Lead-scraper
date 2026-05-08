@@ -4815,8 +4815,8 @@ def render_sales_deck_page(data: DashboardData) -> str:
                   <span>Product URL or ASIN</span>
                   <span class="intake-badge intake-badge-required">Required</span>
                 </span>
-                <input type="text" name="target_product_input" placeholder="https://www.amazon.com/dp/B0ABC12345 or B0ABC12345" required />
-                <small class="intake-help">Image, title, brand, price, BSR, rating, and reviews auto-pull from the Amazon page.</small>
+                <input type="text" name="target_product_input" placeholder="Amazon ASIN/URL or Shopify product URL (e.g. https://yourbrand.com/products/handle)" required />
+                <small class="intake-help">Amazon: image, title, brand, price, BSR, rating, and reviews auto-pull from the Amazon page. Shopify: title, vendor, price, image, and description pull from the storefront's `/products/&lt;handle&gt;.json` endpoint — competitor Xray CSV becomes optional in DTC mode.</small>
               </label>
               <label class="intake-label">
                 <span class="intake-label-row">
@@ -4833,10 +4833,10 @@ def render_sales_deck_page(data: DashboardData) -> str:
               <label class="intake-label">
                 <span class="intake-label-row">
                   <span>Competitors CSVs</span>
-                  <span class="intake-badge intake-badge-required">Required</span>
+                  <span class="intake-badge intake-badge-required">Required for Amazon</span>
                 </span>
-                <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple required />
-                <small class="intake-help">Xray on the niche keyword. Drives the competitor table, donuts, and revenue breakdown. Multiple files merge.</small>
+                <input type="file" name="competitor_xray_csv" accept=".csv,text/csv" multiple />
+                <small class="intake-help">Xray on the niche keyword. Drives the competitor table, donuts, and revenue breakdown. Multiple files merge. <strong>Optional</strong> when the target is a Shopify URL — deck still generates with target-only data.</small>
               </label>
               <label class="intake-label">
                 <span class="intake-label-row">

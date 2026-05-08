@@ -455,10 +455,32 @@ class DeckGenerationService:
         parsed_target = _parse_target_product_input(target_product_input)
         if parsed_target["source_type"] not in {"amazon", "website"}:
             raise RuntimeError("Target product must be an Amazon ASIN/URL or a product website URL.")
-        if not competitor_xray_csv_payloads:
-            raise RuntimeError("Competitor Xray CSV is required.")
 
-        xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
+        # PR38: Helium 10 Xray competitor CSV is REQUIRED for Amazon targets
+        # (we need the competitor set to render the market summary, share-of-
+        # voice, and competitor landscape) but OPTIONAL when the target is a
+        # Shopify/DTC URL — a brand may not have an Amazon presence yet, and
+        # the deck still has plenty of value with just the target listing's
+        # data scraped from the Shopify product.json endpoint.
+        is_dtc_target = parsed_target["source_type"] == "website"
+        if not competitor_xray_csv_payloads:
+            if not is_dtc_target:
+                raise RuntimeError("Competitor Xray CSV is required.")
+            # DTC mode: synthesize an empty Xray report. The renderer skips
+            # the niche table / distribution donuts when there are no
+            # products, and the deck still includes the target listing,
+            # search behavior (if a keyword CSV is supplied), and the
+            # growth plan synopsis (if growth-plan inputs are supplied).
+            from sales_support_agent.services.helium10 import empty_xray_report
+            xray_report = empty_xray_report(
+                warning=(
+                    "No Helium 10 Xray competitor CSV supplied — running in "
+                    "DTC mode with target-only data. Upload an Xray CSV later "
+                    "to add the market summary and competitor landscape."
+                )
+            )
+        else:
+            xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
 
         # When the user uploads a separate Target Xray CSV (single-row export
         # of just the prospect listing), parse it and use that row as the
