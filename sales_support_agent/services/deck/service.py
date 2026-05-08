@@ -133,6 +133,51 @@ from sales_support_agent.services.deck.rendering import (  # noqa: F401
 _NICHE_OVERLAP_THRESHOLD = 0.30  # need 30%+ token overlap to consider niches aligned
 
 
+def _estimate_target_units(*, target_row, hero_product) -> int:
+    """PR39: best-available estimate of target listing's monthly unit sales.
+
+    Order of fallback:
+      1. `target_row.units_sold` from Xray (most accurate when present)
+      2. BSR-based estimate (75,000 / rank rule of thumb) — works when
+         the Xray captured a BSR but no units, or when the live page
+         scrape returned a BSR
+      3. 0 (deck still renders; growth plan section will show this as
+         "starting point unknown" if the user opted into it)
+
+    Why this matters: when units_sold is None, the growth-plan math
+    computes `current_sessions = 0 / cvr = 0`, which makes the entire
+    "today → goal" ramp render as 0 → goal_sessions in 4 phases. That
+    misleads buyers — we DO have BSR for almost every target, and a
+    BSR-based estimate is far better than zero.
+    """
+    if target_row is not None and target_row.units_sold:
+        try:
+            return max(0, int(round(target_row.units_sold)))
+        except (TypeError, ValueError):
+            pass
+    # Try BSR — first the matched Xray row (most reliable), then the
+    # live-scrape hero product.
+    candidate_bsrs: list[float | None] = []
+    if target_row is not None:
+        candidate_bsrs.append(getattr(target_row, "bsr", None))
+    if hero_product is not None:
+        candidate_bsrs.append(getattr(hero_product, "bsr", None))
+    for bsr in candidate_bsrs:
+        if bsr is None:
+            continue
+        try:
+            rank = float(bsr)
+        except (TypeError, ValueError):
+            continue
+        if rank <= 0:
+            continue
+        # 75,000 / BSR is the rule-of-thumb estimate Helium 10 / JungleScout
+        # publish for the supplements category. It gets noisy at very low
+        # BSRs (rank 1 → 75k units) so cap at 50,000 monthly units.
+        return min(50_000, max(1, int(round(75_000.0 / rank))))
+    return 0
+
+
 def _detect_niche_mismatch(
     *,
     target_title: str,
@@ -641,6 +686,23 @@ class DeckGenerationService:
         target_revenue_label = (
             (target_row.revenue_label if target_row and target_row.revenue_label != "n/a" else "")
         ).strip()
+        # PR39: when the target wasn't matched in the niche Xray, neither the
+        # competitor xray nor the live Amazon scrape expose revenue. We DO
+        # have BSR (from either path) and a price — that's enough to derive
+        # an estimate using the same 75,000/BSR rule the rest of the deck
+        # already uses for unit estimates. Without this fallback the
+        # comparison table reads "Revenue: Unavailable" for every
+        # live-unmatched target, which the user has flagged repeatedly.
+        if not target_revenue_label:
+            _est_units = _estimate_target_units(target_row=target_row, hero_product=hero_product)
+            _price_str = str(target_price_label or "").lstrip("$").replace(",", "").strip()
+            try:
+                _price_value = float(_price_str) if _price_str else 0.0
+            except ValueError:
+                _price_value = 0.0
+            if _est_units and _price_value > 0:
+                _est_rev = int(round(_est_units * _price_value))
+                target_revenue_label = f"~${_est_rev:,}"  # `~` flags it as derived
         target_dimensions = (hero_product.dimensions or (target_row.dimensions if target_row else "")).strip()
         target_state = _resolve_target_state(parsed_target["source_type"], target_row=target_row, hero_product=hero_product)
         target_strengths, target_gaps = _build_target_opportunities(
@@ -717,7 +779,15 @@ class DeckGenerationService:
                 parse_growth_plan_inputs,
             )
             inputs_obj = parse_growth_plan_inputs(growth_plan_inputs)
-            target_units_int = int(round(target_row.units_sold or 0)) if target_row else 0
+            # PR39: when target_row.units_sold is missing (target wasn't in
+            # the niche export, or the Xray didn't capture sales), reverse-
+            # engineer monthly units from BSR. Helium 10's Xray omits
+            # sales for many niche-mismatched targets, which previously
+            # zeroed out the entire growth plan (current_sessions = 0).
+            target_units_int = _estimate_target_units(
+                target_row=target_row,
+                hero_product=hero_product,
+            )
             top3_avg_sessions = None
             if xray_report.products:
                 top3 = xray_report.products[:3]
@@ -1006,7 +1076,10 @@ class DeckGenerationService:
 
         # Exec summary headline values
         _niche_revenue = float(getattr(xray_report, "total_revenue", 0) or 0)
-        _niche_units = int(getattr(xray_report, "total_units", 0) or 0)
+        # PR39: was reading `total_units` (doesn't exist on Helium10XrayReport).
+        # The actual field is `total_units_sold` — that's why every deck's
+        # "Units Sold" tile read 0.
+        _niche_units = int(getattr(xray_report, "total_units_sold", 0) or 0)
         _current_sessions = (
             int(growth_plan_obj.current_sessions)
             if growth_plan_obj is not None and getattr(growth_plan_obj, "current_sessions", None) is not None

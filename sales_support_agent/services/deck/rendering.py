@@ -144,18 +144,32 @@ def _render_cerebro_rank_summary(cerebro_report: Helium10CerebroReport | None) -
             i = 4
         label, tier, count, proxy = buckets[i]
         buckets[i] = (label, tier, count + 1, proxy + volume)
-    max_count = max((count for _, _, count, _ in buckets), default=1) or 1
-    rows_html = "".join(
-        f"<li class='rank-row tier-{tier}'>"
-        f"<span class='rank-name'>{html.escape(label)}</span>"
-        "<div class='rank-bar'>"
-        f"<span class='rank-bar-fill' style='width:{max(2, int((count / max_count) * 100))}%'></span>"
-        "</div>"
-        f"<span class='rank-count'>{_label_integer(count)} keywords</span>"
-        f"<span class='rank-volume'>{_label_integer(proxy)} search vol.</span>"
-        "</li>"
-        for label, tier, count, proxy in buckets
-    )
+    # PR39: bar widths normalized against the largest RANKED bucket
+    # (excluding Unranked) so the ranked tiers actually have visible
+    # widths instead of being dwarfed by 17,000+ unranked keywords.
+    # Unranked still gets a full-width bar but in sand color so it
+    # reads as "the gap to attack" rather than a competing data point.
+    ranked_counts = [count for _, _, count, _ in buckets[:4]]
+    max_ranked = max(ranked_counts) if any(ranked_counts) else 1
+    rows_html: list[str] = []
+    for label, tier, count, proxy in buckets:
+        if tier == "miss":
+            # Unranked → always full-width sand bar (it IS the biggest bucket;
+            # de-emphasize via color, not width-vs-others).
+            bar_pct = 100
+        else:
+            bar_pct = max(2, int(round((count / max_ranked) * 100))) if count else 0
+        rows_html.append(
+            f"<li class='rank-row tier-{tier}'>"
+            f"<span class='rank-name'>{html.escape(label)}</span>"
+            "<div class='rank-bar'>"
+            f"<span class='rank-bar-fill' style='width:{bar_pct}%'></span>"
+            "</div>"
+            f"<span class='rank-count'>{_label_integer(count)} keywords</span>"
+            f"<span class='rank-volume'>{_label_integer(proxy)} search vol.</span>"
+            "</li>"
+        )
+    rows_html = "".join(rows_html)
     return (
         "<div class='card'>"
         "<div class='card-h'>"

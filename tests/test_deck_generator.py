@@ -691,6 +691,55 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn("is-disabled", html)
         self.assertIn('aria-disabled="true"', html)
 
+    def test_estimate_target_units_falls_back_to_bsr_then_zero(self) -> None:
+        """PR39: when target_row.units_sold is None, derive monthly units
+        from BSR (75,000 / rank rule, capped at 50,000). When BSR is also
+        missing, return 0 cleanly without crashing the growth-plan math."""
+        from sales_support_agent.services.deck.service import _estimate_target_units
+        from sales_support_agent.services.helium10 import XrayProduct
+        from sales_support_agent.services.product_research import EnrichedHeroProduct
+
+        def _row(units, bsr):
+            return XrayProduct(
+                display_order=1, title="X", asin="B0X", url="", image_url="",
+                brand="X", price=10.0, price_label="$10", revenue=None,
+                revenue_label="", units_sold=units, units_label="",
+                bsr=bsr, bsr_label="", rating=None, rating_label="",
+                review_count=None, category="", seller_country="US",
+                size_tier="LARGE STANDARD-SIZE", fulfillment="FBA",
+                dimensions="", weight="",
+            )
+
+        def _hero(bsr):
+            return EnrichedHeroProduct(
+                asin="", candidate_asin="", brand_name="", title="",
+                source_url="", description="", price="", dimensions="",
+                image_url="", product_type="", bsr=bsr, rating=None,
+                review_count=None, identity_source="", market_metrics_source="",
+                tags=(), warnings=(),
+            )
+
+        # Direct units_sold wins.
+        self.assertEqual(_estimate_target_units(target_row=_row(2500, 1000), hero_product=None), 2500)
+
+        # No units → fall back to BSR-based estimate (75000/8903 ≈ 8 units).
+        est = _estimate_target_units(target_row=_row(None, 8903), hero_product=None)
+        self.assertGreater(est, 0)
+        self.assertLess(est, 100)  # 75k/8903 ≈ 8
+
+        # No row, just hero with BSR.
+        est_hero = _estimate_target_units(target_row=None, hero_product=_hero(50.0))
+        # 75000/50 = 1500
+        self.assertEqual(est_hero, 1500)
+
+        # Cap at 50,000 for absurdly low BSRs.
+        est_top = _estimate_target_units(target_row=None, hero_product=_hero(0.5))
+        self.assertEqual(est_top, 50_000)
+
+        # No data at all → 0 (deck still renders).
+        self.assertEqual(_estimate_target_units(target_row=_row(None, None), hero_product=_hero(None)), 0)
+        self.assertEqual(_estimate_target_units(target_row=None, hero_product=None), 0)
+
     def test_shopify_product_data_extracts_title_vendor_price(self) -> None:
         """PR38: Shopify storefronts expose `/products/<handle>.json` with the
         full product record. The scraper extracts title, vendor (brand_name),

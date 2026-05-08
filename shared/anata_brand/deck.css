@@ -1869,6 +1869,45 @@ h2.slide-title {
   gap: 4px;
 }
 
+/* ============================================ */
+/* PR39: global product-image safety net.        */
+/* Any image inside a known thumbnail container  */
+/* across the deck: 1:1 box, contained image,    */
+/* tiny inner padding so the photo doesn't kiss  */
+/* the card edge. Catches any container we miss  */
+/* in a per-component rule.                      */
+/* ============================================ */
+.tbl .thumb,
+.row-product .thumb,
+.exec-product .pic,
+.comparison-thumb,
+.gallery .gallery-item .pic,
+.visual-proof-thumb,
+.rail-logo {
+  aspect-ratio: 1 / 1 !important;
+  overflow: hidden;
+}
+.tbl .thumb img,
+.row-product .thumb img,
+.exec-product .pic img,
+.comparison-thumb img,
+.gallery .gallery-item .pic img,
+.visual-proof-thumb img,
+.rail-logo img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;   /* never crop, never stretch */
+  display: block;
+  padding: 6px;                     /* tiny breathing room */
+  background: white;
+  border-radius: inherit;
+}
+/* The rail-logo gets a smaller pad because the box itself is only 36×36. */
+.rail-logo img { padding: 4px; }
+/* Table thumbs are tiny (36×36); pad less so the image is still legible. */
+.tbl .thumb img,
+.row-product .thumb img { padding: 3px; }
+
 /* PR37: gallery thumbs (Conversion + PDP creative recs).
    Service.py wraps the cards in `<div class="gallery">` (NOT
    `.gallery-grid`), so PR34's `.gallery-grid` rules never applied —
