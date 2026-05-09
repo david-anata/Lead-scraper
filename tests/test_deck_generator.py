@@ -1081,6 +1081,49 @@ class DeckRoutingTests(unittest.TestCase):
         # First Ultima ASIN survives (most-prominent row in sales-desc order)
         self.assertEqual(deduped[0].asin, "B0DWVHD39N")
 
+    def test_xray_totals_dedupe_parent_listings(self) -> None:
+        """PR45: total_units_sold and total_revenue must dedupe parent
+        listings before summing. After PR43 the parser reads Parent Level
+        Sales/Revenue, but those values repeat IDENTICALLY on every child
+        row of a multi-variant listing. Without dedupe a 6-flavor brand
+        with 5,886 parent units gets summed as 35,316 (6×) — and the
+        Units Sold tile inflates accordingly.
+
+        Also asserts distinct_brand_count is the brand count, not the row
+        count — the "top N brands" label should reflect actual brands."""
+        from sales_support_agent.services.helium10 import parse_xray_csv
+
+        # Brand A has 3 variants of one parent (5,886 / $147,150 each).
+        # Brand B has 1 listing (1,000 / $25,000).
+        # Brand C has 2 variants of one parent (2,000 / $40,000 each).
+        # Correct totals: 5,886 + 1,000 + 2,000 = 8,886 units across 3 brands.
+        # Buggy totals would be: 17,658 + 1,000 + 4,000 = 22,658 units across "6 brands".
+        csv_data = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'Parent Level Sales,ASIN Sales,Parent Level Revenue,'
+            b'ASIN Revenue,BSR,Ratings,Review Count\n'
+            b'"BrandA flavor 1",B00AAA0001,https://amzn.com/dp/B00AAA0001,,'
+            b'BrandA,25,5886,2000,147150,50000,1000,4.2,100\n'
+            b'"BrandA flavor 2",B00AAA0002,https://amzn.com/dp/B00AAA0002,,'
+            b'BrandA,25,5886,2000,147150,50000,1000,4.2,100\n'
+            b'"BrandA flavor 3",B00AAA0003,https://amzn.com/dp/B00AAA0003,,'
+            b'BrandA,25,5886,1886,147150,47150,1000,4.2,100\n'
+            b'"BrandB only",B00BBB0001,https://amzn.com/dp/B00BBB0001,,'
+            b'BrandB,25,1000,1000,25000,25000,2000,4.0,50\n'
+            b'"BrandC flavor 1",B00CCC0001,https://amzn.com/dp/B00CCC0001,,'
+            b'BrandC,20,2000,1200,40000,24000,3000,4.1,75\n'
+            b'"BrandC flavor 2",B00CCC0002,https://amzn.com/dp/B00CCC0002,,'
+            b'BrandC,20,2000,800,40000,16000,3000,4.1,75\n'
+        )
+        report = parse_xray_csv(csv_data)
+        # 6 raw rows survive parsing.
+        self.assertEqual(len(report.products), 6)
+        # But totals dedupe to per-parent-listing.
+        self.assertEqual(report.total_units_sold, 8886.0)
+        self.assertEqual(report.total_revenue, 212150.0)
+        # And brand count is distinct brands, not row count.
+        self.assertEqual(report.distinct_brand_count, 3)
+
     def test_csv_kind_detection_routes_files_to_correct_slot(self) -> None:
         """PR40: header-based detection lets the admin form drop ALL CSVs
         into one input. Each file kind is uniquely identified by its

@@ -72,6 +72,9 @@ class Helium10XrayReport:
     size_tier_distribution: list[DistributionSlice]
     fulfillment_distribution: list[DistributionSlice]
     warnings: list[str]
+    # PR45: distinct brand count after parent-listing dedupe.
+    # search_results_count is row count (every variant), this is brand count.
+    distinct_brand_count: int = 0
 
     def find_by_asin(self, asin: str) -> XrayProduct | None:
         normalized = _extract_asin(asin)
@@ -263,8 +266,33 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
             f"(title prefixed with '($)') so the deck reflects organic rankers only."
         )
 
-    total_revenue = sum(product.revenue or 0.0 for product in products)
-    total_units = sum(product.units_sold or 0.0 for product in products)
+    # PR45: dedupe parent listings before summing totals.
+    # After PR43 we read Parent Level Sales/Revenue, but those values are
+    # IDENTICAL on every child row of a multi-variant listing. Summing
+    # naively over `products` therefore double-counts (or 6×-counts for
+    # 6-flavor listings) every brand with variants.
+    # Dedupe on (brand, parent_units, parent_revenue) — that triple
+    # uniquely identifies a parent listing in practice. Children inherit
+    # the same parent values from Helium 10 so they hash identically.
+    _parent_seen: set[tuple[str, int, int]] = set()
+    _unique_parents: list[XrayProduct] = []
+    for _p in products:
+        _brand = (_p.brand or "").strip().lower()
+        _u = int(round(_p.units_sold or 0))
+        _r = int(round(_p.revenue or 0))
+        _key = (_brand, _u, _r)
+        if not _brand or _u <= 0:
+            # Rows without brand/units can't be deduped reliably — keep them.
+            _unique_parents.append(_p)
+            continue
+        if _key in _parent_seen:
+            continue
+        _parent_seen.add(_key)
+        _unique_parents.append(_p)
+
+    total_revenue = sum(product.revenue or 0.0 for product in _unique_parents)
+    total_units = sum(product.units_sold or 0.0 for product in _unique_parents)
+    distinct_brand_count = len({(p.brand or "").strip().lower() for p in _unique_parents if (p.brand or "").strip()})
     prices = [product.price for product in products if product.price is not None]
     bsrs = [product.bsr for product in products if product.bsr is not None]
     ratings = [product.rating for product in products if product.rating is not None]
@@ -283,6 +311,7 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
         size_tier_distribution=_build_distribution(product.size_tier for product in products),
         fulfillment_distribution=_build_distribution(product.fulfillment for product in products),
         warnings=warnings,
+        distinct_brand_count=distinct_brand_count,
     )
 
 
