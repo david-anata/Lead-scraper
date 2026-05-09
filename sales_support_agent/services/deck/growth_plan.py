@@ -199,63 +199,72 @@ class GrowthPhase:
     milestones: list[str] = field(default_factory=list)  # week-by-week tasks
 
 
+# PR48: stretched the phase windows from a 4-month finish line out to a
+# 12-month plan. The previous timeline (P1=D0-14, P4=M4+) implied that a
+# brand could go from $0 → $4M/m monthly demand in 4 months — defensible
+# only for tiny niches, not a credible plan for category-leader scale.
+# The new windows align with realistic compounding timelines for organic
+# SEO (6–12 mo to mature), affiliate creator programs (3–6 mo to scale),
+# and DSP retargeting (requires ≥3-month upstream traffic to build
+# audience pools above BTP's 1,000-customer floor). Setup work still
+# happens early — only the revenue-achievement curve stretches.
 PHASES: list[GrowthPhase] = [
     GrowthPhase(
         id=1,
         key="foundation",
         label="Foundation",
-        window_label="Days 0–14",
-        summary="Brand Registry + listing optimization + first paid demand capture.",
+        window_label="Months 1–3",
+        summary="Brand Registry + listing optimization + first paid demand capture; organic indexing begins compounding.",
         channels_added=["organic", "on_channel_paid"],
         milestones=[
-            "Wk 1: Submit/confirm Brand Registry (~10 business days approval).",
-            "Wk 1: Rewrite title (≤200 chars), 5 bullets, 7 backend keywords, image stack on hero SKU.",
-            "Wk 1–2: Publish A+ Content (auto-eligible once Brand Registry approves); build Storefront v1 (4–8 hr build, 24–72 hr Amazon review).",
+            "Wk 1–2: Submit/confirm Brand Registry (~10 business days approval); rewrite title (≤200 chars), 5 bullets, 7 backend keywords, image stack on hero SKU.",
+            "Wk 2–4: Publish A+ Content (auto-eligible once Brand Registry approves); build Storefront v1 (4–8 hr build, 24–72 hr Amazon review).",
             "Wk 2: Launch Sponsored Products auto + manual exact campaigns. First signal in 3–7 days; trends stable in 2–4 weeks.",
             "Wk 2: Sponsored Display Views retargeting on (no minimum spend; uses 30-day view audience).",
+            "Mo 2–3: Organic ranking begins to index off the optimized listing + paid traffic signal — first measurable lift in non-brand impressions by week 8.",
         ],
     ),
     GrowthPhase(
         id=2,
         key="acceleration",
         label="Acceleration",
-        window_label="Weeks 3–8",
-        summary="Defend brand search + open the external-traffic flywheel.",
+        window_label="Months 3–6",
+        summary="Defend brand search + open the external-traffic flywheel; first creator wave goes live.",
         channels_added=["off_channel_paid"],
         milestones=[
-            "Wk 3: Sponsored Brands live on the brand search term (requires Brand Registry + active Storefront as landing page).",
-            "Wk 3–4: Generate Amazon Attribution tags; launch Meta + TikTok Ads pointing to Storefront / PDP. 14-day last-touch attribution window.",
-            "Wk 4: Submit TikTok Shop seller application (1–3 business days approval).",
-            "Wk 5–6: First creator outreach wave — assume 4–6 weeks end-to-end before videos go live.",
-            "Wk 7–8: Read Attribution data; reallocate budget to top-converting creatives.",
+            "Mo 3: Sponsored Brands live on the brand search term (requires Brand Registry + active Storefront as landing page).",
+            "Mo 3–4: Generate Amazon Attribution tags; launch Meta + TikTok Ads pointing to Storefront / PDP. 14-day last-touch attribution window.",
+            "Mo 3: Submit TikTok Shop seller application (1–3 business days approval); first creator outreach wave.",
+            "Mo 4–5: Creator videos go live (4–6 weeks after first outreach); first attribution read on external-traffic to PDP CVR.",
+            "Mo 5–6: Reallocate Meta/TikTok budget to top-converting creatives; organic compounds further from the external-traffic signal.",
         ],
     ),
     GrowthPhase(
         id=3,
         key="scale",
         label="Scale",
-        window_label="Weeks 8–16",
-        summary="Layer DSP cold prospecting + ramp the creator program.",
+        window_label="Months 6–9",
+        summary="Layer DSP cold prospecting + scale the creator roster; organic SEO matures.",
         channels_added=["affiliate"],
         milestones=[
-            "Wk 8–10: DSP onboarding — agency self-service path (~$10K/mo practical floor) or Amazon-managed ($50K/mo minimum).",
-            "Wk 10–12: Launch DSP cold prospecting against in-market + lifestyle audiences. Build 30-day audience windows.",
-            "Wk 11–14: Scale TikTok Shop creator roster from pilot (~8 creators) to 15–30 creators; layer commission tiers.",
-            "Wk 14–16: First read on DSP-assisted new-to-brand rate vs SP/SB-only baseline.",
+            "Mo 6: DSP onboarding — agency self-service path (~$10K/mo practical floor) or Amazon-managed ($50K/mo minimum).",
+            "Mo 6–7: Launch DSP cold prospecting against in-market + lifestyle audiences. Build 30-day audience windows.",
+            "Mo 7–8: Scale TikTok Shop creator roster from pilot (~8 creators) to 15–30 creators; layer commission tiers.",
+            "Mo 8–9: First read on DSP-assisted new-to-brand rate vs SP/SB-only baseline; organic SEO at ~75% of mature potential.",
         ],
     ),
     GrowthPhase(
         id=4,
         key="ltv",
         label="LTV",
-        window_label="Months 4+",
-        summary="Compound past-viewer + past-purchaser audiences.",
+        window_label="Months 9–12",
+        summary="Compound past-viewer + past-purchaser audiences; full mix at steady state.",
         channels_added=["retargeting"],
         milestones=[
-            "Mo 4 wk 1: Confirm Brand-Tailored Promotion audience pools ≥ 1,000 customers (BTP eligibility floor).",
-            "Mo 4 wk 2: First BTP coupon to repeat-buyer audience. Featured Offer status required for badge display.",
-            "Mo 4 wk 3: DSP retargeting layered on top of cold prospecting using PDP-viewer + cart-abandon audiences.",
-            "Mo 5+: Quarterly creator refresh; DSP audience expansion; Premium A+ Content evaluation (Amazon re-checks eligibility monthly).",
+            "Mo 9: Brand-Tailored Promotion audience pools cross ≥ 1,000 customers (BTP eligibility floor — requires ≥6 mo of upstream traffic).",
+            "Mo 9–10: First BTP coupon to repeat-buyer audience. Featured Offer status required for badge display.",
+            "Mo 10: DSP retargeting layered on top of cold prospecting using PDP-viewer + cart-abandon audiences.",
+            "Mo 11–12: Quarterly creator refresh; DSP audience expansion; Premium A+ Content evaluation; organic SEO at full maturity.",
         ],
     ),
 ]
@@ -442,7 +451,14 @@ def _build_organic_channel(inputs: GrowthPlanInputs, delta: int) -> GrowthChanne
         expected_revenue=revenue,
         # 60–90 day ramp; compounds with external traffic from Phase 2.
         # Source: Helium 10 listing-optimization guide; BeBold PPC ramp-up.
-        ramp_pct_by_phase=(0.10, 0.40, 0.75, 1.00),
+        # PR48: stretched curves to match the 12-month phase timeline
+        # (was 4-month). Organic SEO compounds across 6–12 mo for
+        # category-leader scale, not a 4-month sprint.
+        # P1 (M1-3): listing optimization + initial indexing → 5%
+        # P2 (M3-6): external traffic begins reinforcing organic → 25%
+        # P3 (M6-9): SEO matures, compounds with off-channel → 60%
+        # P4 (M9-12): full equity, top-of-fold rankings → 100%
+        ramp_pct_by_phase=(0.05, 0.25, 0.60, 1.00),
     )
 
 
@@ -474,7 +490,10 @@ def _build_on_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Grow
         expected_revenue=revenue,
         # First signal 3–7 days; trends stable in 2–4 weeks (Wk 2 launch).
         # Source: Amazon Ads first-30-days SP tips; Pacvue Q1 2026.
-        ramp_pct_by_phase=(0.50, 0.85, 1.00, 1.00),
+        # PR48: on-channel paid is fastest to stabilize but still needs
+        # bid optimization across multiple search-volume cycles. P1 hits
+        # 30% (initial campaigns running), P2 60%, P3 85%, full at P4.
+        ramp_pct_by_phase=(0.30, 0.60, 0.85, 1.00),
     )
 
 
@@ -509,7 +528,9 @@ def _build_off_channel_paid_channel(inputs: GrowthPlanInputs, delta: int) -> Gro
         expected_revenue=revenue,
         # Launches Wk 3–4 (P2); storefront-link traffic stabilizes fast.
         # Source: Amazon Attribution guide; Digital Applied 2026.
-        ramp_pct_by_phase=(0.0, 0.50, 0.95, 1.00),
+        # PR48: off-channel paid (Meta/TikTok Ads) launches in P2, ramps
+        # through P3 as creative testing matures, full at P4.
+        ramp_pct_by_phase=(0.0, 0.30, 0.75, 1.00),
     )
 
 
@@ -581,7 +602,11 @@ def _build_affiliate_channel(
         # 4–6 weeks before videos go live; roster scales W11–14 (P3) toward
         # full slate by P4. Source: Later influencer-campaign timeline;
         # Canopy Mgmt TikTok Shop eligibility 2026.
-        ramp_pct_by_phase=(0.0, 0.0, 0.40, 1.00),
+        # PR48: affiliate/creator program. Outreach starts in P2 (M3),
+        # first videos go live mid-P2 (M4-5), roster scales through P3,
+        # mature program by P4. Even at P3 only 30% of steady-state
+        # because creator-driven sessions take time to compound.
+        ramp_pct_by_phase=(0.0, 0.05, 0.30, 1.00),
     )
 
 
@@ -657,6 +682,9 @@ def _build_retargeting_channel(
         # Requires ≥1,000-customer audience pool (BTP eligibility) — only
         # accumulates after months of upstream traffic. Comes online in P4.
         # Source: Amazon Sell Brand-Tailored Promotions; Sequence Commerce 2026.
+        # PR48: retargeting requires ≥6 mo of upstream traffic to build
+        # the BTP-eligible audience pool (≥1,000 customers). Doesn't
+        # turn on at all until P4.
         ramp_pct_by_phase=(0.0, 0.0, 0.0, 1.00),
     )
 

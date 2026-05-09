@@ -1167,7 +1167,7 @@ class DeckGenerationService:
             or ""
         )
 
-        # Exec tiles — last tile becomes "Sessions · 4mo" if growth plan present,
+        # Exec tiles — last tile becomes "Sessions · 12mo" (PR48: was 4mo) if growth plan present,
         # otherwise "Avg price" as a soft fallback.
         _avg_price = (
             float(getattr(xray_report, "average_price", 0) or 0)
@@ -1202,7 +1202,7 @@ class DeckGenerationService:
                 f'<p class="delta">est. monthly · target</p>'
                 f'</div>'
                 f'<div class="exec-tile is-primary">'
-                f'<p class="lab">Sessions · 4mo</p>'
+                f'<p class="lab">Sessions · 12mo</p>'
                 f'<p class="val">{_count_short(_goal_sessions)}</p>'
                 f'<p class="delta">target · 5-channel ramp</p>'
                 f'</div>'
@@ -1338,7 +1338,7 @@ class DeckGenerationService:
         if _has_growth:
             _delta = max(0, _goal_sessions - _current_sessions)
             _multiplier = (_goal_sessions / max(_current_sessions, 1)) if _current_sessions > 0 else 0
-            _multi_text = f"{_multiplier:.0f}× sessions in 4 months" if _multiplier >= 2 else f"+{_count_short(_delta)} sessions in 4 months"
+            _multi_text = f"{_multiplier:.0f}× sessions in 12 months" if _multiplier >= 2 else f"+{_count_short(_delta)} sessions in 12 months"
             _findings_html_parts.append(
                 _finding_card(
                     "③",

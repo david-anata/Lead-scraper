@@ -72,17 +72,21 @@ a { color: inherit; }
 .rail-logo {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #1f3253, #314664);
-  color: white;
+  /* PR48: drop the dark navy gradient + rounded-square frame. The Anata
+     monogram PNG already includes the brand frame as part of the asset,
+     so adding a CSS frame on top creates a double-frame ring around
+     the logo that the user (correctly) doesn't want. */
   display: grid;
   place-items: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  /* Fallback when no PNG is present — render the letter "A" in brand navy
+     on transparent background instead of inside a navy box. */
+  color: var(--anata-ink, #1f3253);
   font-weight: 800;
   font-size: 18px;
   font-family: 'Inter', sans-serif;
   letter-spacing: -0.02em;
-  overflow: hidden;
-  flex-shrink: 0;
 }
 /* PR36: when the monogram PNG is available, brand_assets.py emits a
    full <img> tag inline. Make it fill the rail-logo box and let the
@@ -474,24 +478,24 @@ h2.slide-title {
   gap: 10px;
 }
 .exec-product .pic {
+  /* PR48: same bulletproof pattern as gallery thumbs — position:relative
+     parent + position:absolute img with explicit calc dimensions. This
+     definitively eliminates the bottom-crop the user reported in PR44
+     and PR46 follow-ups. */
   background: rgba(255, 255, 255, 0.92);
   border-radius: 10px;
-  display: grid;
-  place-items: center;
   width: 100%;
-  aspect-ratio: 1 / 1;          /* PR35: 1:1 across all product image containers */
+  aspect-ratio: 1 / 1;
   position: relative;
   overflow: hidden;
-  padding: 8px;                 /* PR46: padding moved from img → parent */
 }
 .exec-product .pic img {
-  /* PR46: padding on the img itself triggered a WebKit object-fit bug
-     (contain scaled against the padded box, leaving the image overflowing
-     the visible area). Padding now lives on the parent `.pic` container
-     where it belongs; the img fills the parent's content area cleanly. */
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  position: absolute !important;
+  inset: 8px !important;
+  width: calc(100% - 16px) !important;
+  height: calc(100% - 16px) !important;
+  object-fit: contain !important;
+  display: block;
 }
 .exec-product .pic .placeholder {
   width: 80px;
@@ -1917,12 +1921,16 @@ h2.slide-title {
   height: 100% !important;
   object-fit: contain !important;   /* fits inside the box; never crop, never stretch */
   display: block;
-  background: white;
+  /* PR48: dropped `background: white` — it was painting a white square over
+     the parent's brand color (e.g. cream gallery background, navy rail
+     background) which created an unintended frame around every product
+     image. Parents already provide their own background. */
   border-radius: inherit;
 }
 /* PR46: padding moved from img → parent containers to avoid the
-   WebKit object-fit + padded-img crop bug. Tiny thumbs use small pads. */
-.rail-logo { padding: 4px; }
+   WebKit object-fit + padded-img crop bug. Tiny thumbs use small pads.
+   PR48: rail-logo padding removed — the Anata monogram PNG should fill
+   the full 36×36 box without a navy gradient ring around it. */
 .tbl .thumb,
 .row-product .thumb { padding: 3px; }
 
@@ -1949,19 +1957,25 @@ h2.slide-title {
   flex-direction: column;
 }
 .gallery .gallery-item .pic {
+  /* PR48: bulletproof image-fit pattern. Switch from grid+aspect-ratio to
+     position:relative + aspect-ratio. The img inside is absolutely
+     positioned with `inset: 8px` (= padding) so its CSS box is exactly
+     the parent content area. Then `width: 100%; height: 100%;
+     object-fit: contain` scales the image content to fit that box.
+     No layout-engine ambiguity, no max-width/max-height resolution
+     timing issues, no padding-on-img + box-sizing interaction. */
+  position: relative;
   width: 100%;
-  aspect-ratio: 1 / 1;       /* override the design's height: 110px */
-  height: auto;
-  display: grid;
-  place-items: center;
+  aspect-ratio: 1 / 1;
   background: #f6f1e8;
-  padding: 8px;
   overflow: hidden;
 }
 .gallery .gallery-item .pic img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;       /* never crop or stretch the source */
+  position: absolute !important;
+  inset: 8px !important;     /* matches the visual breathing room — padding equivalent */
+  width: calc(100% - 16px) !important;
+  height: calc(100% - 16px) !important;
+  object-fit: contain !important;
   display: block;
 }
 .gallery .gallery-item .meta {
