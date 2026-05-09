@@ -4310,7 +4310,13 @@ def admin_canva_connect_proxy(request: Request) -> Response:
 @app.post("/admin/api/generate-deck")
 async def admin_generate_deck_proxy(
     request: Request,
-    competitor_xray_csv: list[UploadFile] = File(...),
+    # PR42: accept the unified upload field PR40 added to the form. Also
+    # made every per-type field optional + added target_xray_csv (which
+    # was missing from the proxy entirely so the previous "Target Xray"
+    # input was being silently dropped).
+    csv_files: list[UploadFile] = File(default=[]),
+    competitor_xray_csv: list[UploadFile] = File(default=[]),
+    target_xray_csv: Optional[UploadFile] = File(default=None),
     keyword_xray_csv: list[UploadFile] = File(default=[]),
     cerebro_csv: Optional[UploadFile] = File(default=None),
     word_frequency_csv: Optional[UploadFile] = File(default=None),
@@ -4321,16 +4327,28 @@ async def admin_generate_deck_proxy(
     offers: list[str] = Form(default=[]),
     offer_payload_json: str = Form(default=""),
     include_recommended_plan: bool = Form(default=True),
+    include_growth_plan: bool = Form(default=True),
 ) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
+    csv_unified_files = [file for file in (csv_files or []) if file and file.filename]
     competitor_files = [file for file in competitor_xray_csv if file.filename]
     keyword_files = [file for file in keyword_xray_csv if file.filename]
     cerebro_bytes = await cerebro_csv.read() if cerebro_csv and cerebro_csv.filename else b""
     word_frequency_bytes = await word_frequency_csv.read() if word_frequency_csv and word_frequency_csv.filename else b""
+    target_xray_bytes = (
+        await target_xray_csv.read()
+        if target_xray_csv and target_xray_csv.filename
+        else b""
+    )
+
+    # PR42: forward the growth-plan form fields too. The backend reads
+    # them off `request.form()` so we need to pass them through.
+    form_data = await request.form()
+
     try:
         status_code, payload = _post_sales_support_multipart(
             "/api/admin/generate-deck",
@@ -4342,8 +4360,28 @@ async def admin_generate_deck_proxy(
                 *[("offers", offer) for offer in offers],
                 ("offer_payload_json", offer_payload_json),
                 ("include_recommended_plan", "true" if include_recommended_plan else "false"),
+                ("include_growth_plan", "true" if include_growth_plan else "false"),
+                # Pass through every growth_* form key the backend expects.
+                *[
+                    (key, str(form_data.get(key)))
+                    for key in form_data.keys()
+                    if isinstance(key, str) and key.startswith("growth_") and form_data.get(key) not in (None, "")
+                ],
             ],
             files_payload=[
+                # PR42: forward the unified `csv_files` upload first — the
+                # backend auto-routes each by header signature.
+                *[
+                    (
+                        "csv_files",
+                        (
+                            file.filename or "upload.csv",
+                            await file.read(),
+                            file.content_type or "text/csv",
+                        ),
+                    )
+                    for file in csv_unified_files
+                ],
                 *[
                     (
                         "competitor_xray_csv",
@@ -4366,6 +4404,20 @@ async def admin_generate_deck_proxy(
                     )
                     for file in keyword_files
                 ],
+                *(
+                    [
+                        (
+                            "target_xray_csv",
+                            (
+                                target_xray_csv.filename or "target.csv",
+                                target_xray_bytes,
+                                target_xray_csv.content_type or "text/csv",
+                            ),
+                        )
+                    ]
+                    if target_xray_csv and target_xray_csv.filename and target_xray_bytes
+                    else []
+                ),
                 *(
                     [
                         (
