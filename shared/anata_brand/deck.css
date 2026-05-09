@@ -1894,11 +1894,18 @@ h2.slide-title {
 .gallery .gallery-item .pic img,
 .visual-proof-thumb img,
 .rail-logo img {
-  width: 100% !important;
-  height: 100% !important;
+  /* PR44: don't lock width/height to 100% — that combines badly with
+     padding on the img in the WebKit print pipeline and crops the
+     bottom of containers like the gallery thumbs. Use max-width/max-height
+     so `object-fit: contain` can scale freely, and let the parent's
+     `place-items: center` (or flex centering) handle alignment. */
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  height: auto !important;
   object-fit: contain !important;   /* never crop, never stretch */
   display: block;
-  padding: 6px;                     /* tiny breathing room */
+  margin: auto;                      /* center inside non-grid parents */
   background: white;
   border-radius: inherit;
 }
