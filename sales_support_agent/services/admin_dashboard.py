@@ -788,12 +788,17 @@ def build_dashboard_data(
     latest_run_summary = latest_run.summary_json if latest_run else {}
 
     deck_generator_missing: list[str] = []
+    # PR50: bumped 5 → 200 so the past-decks table on /admin/sales-decks
+    # actually shows a useful history. The page has Brand / Timeframe /
+    # Search filters for narrowing, so a wider initial load is fine.
+    # 200 covers months of typical usage; if it ever needs to grow, add
+    # pagination.
     deck_runs = list(
         session.execute(
             select(AutomationRun)
             .where(AutomationRun.run_type == "deck_generation")
             .order_by(AutomationRun.started_at.desc())
-            .limit(5)
+            .limit(200)
         ).scalars()
     )
     recent_deck_runs = [
