@@ -4885,6 +4885,16 @@ def render_sales_deck_page(data: DashboardData) -> str:
                 <input type="text" name="target_product_input" placeholder="Amazon ASIN/URL, Shopify product URL — or leave blank if you upload a Target Xray CSV below" />
                 <small class="intake-help">Amazon: image, title, brand, price, BSR, rating, reviews auto-pull from the Amazon page. Shopify: title, vendor, price, image, description pull from <code>/products/&lt;handle&gt;.json</code> — competitor Xray becomes optional in DTC mode. <strong>Leave blank</strong> when you upload a target Xray CSV — the ASIN is read directly from the file.</small>
               </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Category label</span>
+                  <span class="intake-badge">Optional · auto-detected</span>
+                </span>
+                <input type="text" name="category_label" placeholder="e.g. fat burner supplement, weight loss" />
+                <small class="intake-help">
+                  Broad category language used in the deck title and section headers (e.g. <em>fat burner supplement</em>, <em>weight loss</em>). Comma-separate multiple buckets to widen the keyword-relevance filter. Leave blank to auto-derive from the keyword/cerebro report (when the seed keyword is a competitor brand like <em>hydroxycut</em>, the system falls back to the most common non-brand category phrase).
+                </small>
+              </label>
             </fieldset>
 
             <fieldset class="intake-section intake-xray">

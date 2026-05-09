@@ -535,6 +535,108 @@ def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
             }
         )
     return sections
+# PR47/48: stopword list for category-relevance filtering. Generic SEO/structural
+# words are dropped before token-overlap comparison so "best fat burner for women"
+# matches a "fat burner" category bucket on the meaningful tokens (fat, burner)
+# rather than getting counted as overlapping on "for" / "best" with random
+# unrelated keywords.
+_CATEGORY_FILTER_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "and", "or", "of", "for", "with", "to", "in", "on", "at",
+    "by", "from", "is", "are", "be", "as", "this", "that", "best", "top", "new",
+    "premium", "natural", "naturally", "pure", "supplement", "supplements",
+    "for women", "for men", "women", "men",
+})
+
+
+def _category_tokens(category_label: str) -> list[set[str]]:
+    """PR47: split user-entered category_label on commas → list of token-sets.
+
+    Each comma-separated chunk becomes one OR-bucket; a keyword is "relevant"
+    if it shares ≥1 significant token with ANY bucket. Lets the AE write
+    `fat burner, weight loss, thermogenic` and have all three pass.
+    """
+    if not category_label:
+        return []
+    buckets: list[set[str]] = []
+    for chunk in category_label.split(","):
+        tokens = {
+            tok
+            for tok in re.findall(r"[a-z0-9]+", chunk.lower())
+            if tok and tok not in _CATEGORY_FILTER_STOPWORDS and len(tok) > 1
+        }
+        if tokens:
+            buckets.append(tokens)
+    return buckets
+
+
+def resolve_category_label(
+    *,
+    user_input: str,
+    niche_keyword: str,
+    competitor_brands: set[str],
+    keyword_phrases: list[str],
+) -> str:
+    """PR47: derive the broad category label used in deck titles and headers.
+
+    Priority:
+    1. Explicit user input (form field) wins, always.
+    2. If niche_keyword is NOT a brand match → use niche_keyword (existing behavior).
+    3. If niche_keyword IS a brand from the competitor xray (the "hydroxycut"
+       smell where the seed search term is one of the competitors), derive a
+       broader label from the most common non-brand 2-token phrase across
+       keyword phrases.
+    4. Fall back to "this category".
+    """
+    if user_input and user_input.strip():
+        return user_input.strip()
+    niche_lc = (niche_keyword or "").strip().lower()
+    if not niche_lc:
+        return "this category"
+    brands_lc = {b.lower() for b in competitor_brands if b}
+    if niche_lc not in brands_lc:
+        return niche_keyword.strip()
+    # Niche keyword is a brand — derive from non-brand bigrams in the keyword
+    # report. Token-level brand filter; "fat burner" and "weight loss" emerge
+    # naturally as the dominant non-brand phrases.
+    brand_tokens = {tok for b in brands_lc for tok in re.findall(r"[a-z0-9]+", b) if len(tok) > 2}
+    bigram_counts: dict[str, int] = {}
+    for phrase in keyword_phrases:
+        tokens = [
+            tok for tok in re.findall(r"[a-z0-9]+", (phrase or "").lower())
+            if tok not in _CATEGORY_FILTER_STOPWORDS
+            and tok not in brand_tokens
+            and len(tok) > 2
+        ]
+        for i in range(len(tokens) - 1):
+            bg = f"{tokens[i]} {tokens[i+1]}"
+            bigram_counts[bg] = bigram_counts.get(bg, 0) + 1
+    if bigram_counts:
+        best = max(bigram_counts.items(), key=lambda kv: kv[1])
+        return best[0]
+    return "this category"
+
+
+def _phrase_is_category_relevant(phrase: str, category_buckets: list[set[str]]) -> bool:
+    """PR48: token-overlap relevance gate for keyword candidates.
+
+    Returns True if `phrase` shares ≥1 significant token with ANY bucket in
+    `category_buckets`. Buckets are AND-within (all tokens defining the bucket
+    are merged into one set), OR-across (overlap with any bucket passes).
+    Empty buckets list → no filter applied (returns True), preserving legacy
+    behavior when category_label is missing.
+    """
+    if not category_buckets:
+        return True
+    phrase_tokens = {
+        tok
+        for tok in re.findall(r"[a-z0-9]+", phrase.lower())
+        if tok and tok not in _CATEGORY_FILTER_STOPWORDS and len(tok) > 1
+    }
+    if not phrase_tokens:
+        return False
+    return any(bucket & phrase_tokens for bucket in category_buckets)
+
+
 def _build_search_insights(
     *,
     title: str,
@@ -542,8 +644,22 @@ def _build_search_insights(
     keyword_report: Helium10KeywordReport | None,
     cerebro_report: Helium10CerebroReport | None,
     word_frequency_report: WordFrequencyReport | None,
+    category_label: str = "",
 ) -> dict[str, list[str]]:
-    keywords = _build_title_targets(keyword_report, cerebro_report)
+    # PR48: filter the candidate keyword pool by category relevance BEFORE
+    # computing hits/misses. Without this, high-volume but off-category terms
+    # like "protein powder" or "creatine" surface as "missing" suggestions
+    # for a fat-burner listing because Helium 10's Cerebro returns every
+    # keyword the ASIN ranks for, including algorithmic spillover.
+    category_buckets = _category_tokens(category_label)
+    # When a relevance filter is active, widen the candidate pool so we have
+    # enough on-topic terms to surface AFTER filtering out spillover. Without
+    # widening, a target with mostly-spillover top-10 (Zantrex's cerebro is a
+    # good example: protein/creatine/cortisol/waist-trainer dominate the top
+    # by volume) would surface only 1-2 relevant suggestions or none.
+    pool_size = 60 if category_buckets else 10
+    raw_keywords = _build_title_targets(keyword_report, cerebro_report, pool_size=pool_size)
+    keywords = [k for k in raw_keywords if _phrase_is_category_relevant(k, category_buckets)][:10]
     title_lc = _clean_listing_title(title).lower()
     description_lc = _clean_listing_title(description).lower()
     copy_targets = _build_copy_targets(
@@ -551,6 +667,10 @@ def _build_search_insights(
         keyword_report=keyword_report,
         word_frequency_report=word_frequency_report,
     )
+    # Relevance filter copy targets too — same reasoning applies to the
+    # bullets/description "missing" list.
+    if category_buckets:
+        copy_targets = [t for t in copy_targets if _phrase_is_category_relevant(str(t.get("label", "")), category_buckets)]
     return {
         "title_hits": [phrase for phrase in keywords if phrase.lower() in title_lc],
         "title_misses": [phrase for phrase in keywords if phrase.lower() not in title_lc],
@@ -602,14 +722,21 @@ def _build_target_opportunities(
 def _build_title_targets(
     keyword_report: Helium10KeywordReport | None,
     cerebro_report: Helium10CerebroReport | None,
+    *,
+    pool_size: int = 10,
 ) -> list[str]:
+    """PR48: pool_size lets callers widen the candidate pool before relevance
+    filtering. The default 10 preserves legacy behavior for unfiltered callers,
+    but `_build_search_insights` now passes a much larger pool (50–100) so the
+    category-relevance filter has enough on-topic options to surface after
+    spillover keywords get dropped."""
     if cerebro_report and cerebro_report.keywords:
         ordered = sorted(
             cerebro_report.keywords,
             key=lambda item: (-(item.search_volume or 0), 0 if item.target_rank is not None else 1, item.phrase.lower()),
         )
-        return [item.phrase.strip() for item in ordered if item.phrase.strip()][:10]
-    return [keyword.phrase.strip() for keyword in (keyword_report.keywords[:10] if keyword_report else []) if keyword.phrase.strip()]
+        return [item.phrase.strip() for item in ordered if item.phrase.strip()][:pool_size]
+    return [keyword.phrase.strip() for keyword in (keyword_report.keywords[:pool_size] if keyword_report else []) if keyword.phrase.strip()]
 def _build_copy_targets(
     phrases: list[str],
     *,
