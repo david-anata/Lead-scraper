@@ -456,16 +456,53 @@ def _render_target_comparison_table(target: dict[str, Any], best_seller: XrayPro
         "</table>"
         "</div>"
     )
+def _dedupe_by_parent(products: list[XrayProduct]) -> list[XrayProduct]:
+    """PR43: a Helium 10 Xray export of a niche frequently includes the same
+    parent SKU multiple times (one row per variant child). After the parser
+    switch to Parent Level Sales/Revenue, those rows all carry IDENTICAL
+    parent-level numbers — listing them all makes the brand look 6× bigger
+    than it is.
+
+    Dedupe by `(brand_lower, units_sold_int)` — same brand + same parent-
+    level units = same parent SKU. Keep the first occurrence (Helium 10
+    sorts by sales descending so we keep the most prominent row). Falls
+    through cleanly when units are missing — products without a brand or
+    units value pass through individually.
+    """
+    seen: set[tuple[str, int]] = set()
+    out: list[XrayProduct] = []
+    for p in products:
+        brand = (p.brand or "").strip().lower()
+        units = int(round(p.units_sold or 0))
+        key = (brand, units)
+        # Don't dedupe rows missing both signals — better to over-show
+        # than to silently drop unrelated products.
+        if not brand or units <= 0:
+            out.append(p)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
 def _render_competitor_landscape_table(products: list[XrayProduct], total_revenue: float) -> str:
     """PR34: emit `.tbl` + `.row-product` markup so this table matches the
     market-summary table visually. Compact 36×36 image thumbs, num-col
-    right-aligned numerics, num-col tabular-nums."""
+    right-aligned numerics, num-col tabular-nums.
+    PR43: dedupe by parent + new 'Brand units' column showing the parent-
+    level monthly volume."""
+    products = _dedupe_by_parent(products)
     rows = []
     for product in products:
         image_html = (
             f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />"
             if product.image_url
             else "&nbsp;"
+        )
+        units_label = (
+            f"{int(round(product.units_sold)):,}" if product.units_sold else ""
         )
         rows.append(
             "<tr>"
@@ -480,6 +517,7 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
             "</td>"
             f"<td class='num-col'>{html.escape(product.price_label)}</td>"
             f"<td class='num-col'>{html.escape(product.revenue_label)}</td>"
+            f"<td class='num-col'>{html.escape(units_label)}</td>"
             f"<td class='num-col'>{html.escape(_label_share(product.revenue, total_revenue))}</td>"
             f"<td class='num-col'>{html.escape(product.bsr_label)}</td>"
             f"<td class='num-col'>{html.escape(product.rating_label)}</td>"
@@ -489,9 +527,10 @@ def _render_competitor_landscape_table(products: list[XrayProduct], total_revenu
     return (
         "<table class='tbl'>"
         "<thead><tr>"
-        "<th style='width:38%'>Product</th>"
+        "<th style='width:34%'>Product</th>"
         "<th class='num-col'>Price</th>"
         "<th class='num-col'>Revenue</th>"
+        "<th class='num-col'>Brand units</th>"
         "<th class='num-col'>Share</th>"
         "<th class='num-col'>BSR</th>"
         "<th class='num-col'>★</th>"
