@@ -1111,11 +1111,19 @@ class DeckGenerationService:
             if hasattr(xray_report, "average_price")
             else 0
         )
+        # PR45: use distinct brand count, not row count.
+        # `len(products)` is rows-after-sponsored-filter — every variant of
+        # a multi-flavor parent listing counts separately, which inflates
+        # the "top N brands" label. distinct_brand_count is computed in
+        # helium10.py from the deduped parent set.
+        _brand_count = int(getattr(xray_report, "distinct_brand_count", 0) or 0) or len(
+            getattr(xray_report, "products", []) or []
+        )
         _exec_tiles_html = (
             f'<div class="exec-tile is-primary">'
             f'<p class="lab">Category revenue</p>'
             f'<p class="val">{_money_short(_niche_revenue)}</p>'
-            f'<p class="delta">monthly · top {len(getattr(xray_report, "products", []) or [])} brands</p>'
+            f'<p class="delta">monthly · top {_brand_count} brands</p>'
             f'</div>'
             f'<div class="exec-tile">'
             f'<p class="lab">Units sold</p>'
