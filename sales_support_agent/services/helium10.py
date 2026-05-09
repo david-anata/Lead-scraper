@@ -216,10 +216,30 @@ def parse_xray_csv(content: bytes) -> Helium10XrayReport:
                 brand=_clean_text(row.get(headers["brand"], "")),
                 price=_parse_number(row.get(headers["price  $"], "")),
                 price_label=_label_money(row.get(headers["price  $"], "")),
-                revenue=_parse_number(row.get(headers["asin revenue"], "")),
-                revenue_label=_label_money(row.get(headers["asin revenue"], "")),
-                units_sold=_parse_number(row.get(headers["asin sales"], "")),
-                units_label=_clean_text(row.get(headers["asin sales"], "")),
+                # PR43: prefer Parent Level Sales/Revenue when present —
+                # that's the brand's true monthly demand across all variants
+                # of a parent SKU. Falls back to ASIN-level for older Xray
+                # exports that don't include parent-level columns.
+                # Why this matters: Helium 10's "ASIN Sales" only counts a
+                # single variant. A brand selling 5,886 units/mo across 6
+                # flavors of the same listing was being read as 700 units
+                # (just the one variant), making "Sessions today" 8× too low.
+                revenue=(
+                    _parse_number(row.get(headers.get("parent level revenue", ""), ""))
+                    or _parse_number(row.get(headers["asin revenue"], ""))
+                ),
+                revenue_label=(
+                    _label_money(row.get(headers.get("parent level revenue", ""), ""))
+                    or _label_money(row.get(headers["asin revenue"], ""))
+                ),
+                units_sold=(
+                    _parse_number(row.get(headers.get("parent level sales", ""), ""))
+                    or _parse_number(row.get(headers["asin sales"], ""))
+                ),
+                units_label=(
+                    _clean_text(row.get(headers.get("parent level sales", ""), ""))
+                    or _clean_text(row.get(headers["asin sales"], ""))
+                ),
                 bsr=_parse_number(row.get(headers["bsr"], "")),
                 bsr_label=_clean_text(row.get(headers["bsr"], "")),
                 rating=_parse_number(row.get(headers["ratings"], "")),
@@ -468,23 +488,36 @@ def detect_csv_kind(content: bytes | None) -> str:
             return "cerebro"
         return "keyword"
     if _XRAY_REQUIRED.issubset(headers_lc):
-        # Count product rows. Stop at 2 — that's all we need to distinguish
-        # target (1 row) from competitor (≥2). Saves parsing 60-row exports.
-        # Re-create the reader since the iterator was consumed by fieldnames.
+        # PR43: target Xray = an ASIN list where ALL product rows belong to
+        # the SAME LISTING. That covers two real shapes:
+        #   - 1 product row (single-variant listing)
+        #   - parent + multi-variant export (multiple rows, all same Brand)
+        # Competitor Xray = many different brands competing in the niche.
+        # Heuristic: distinct Brand count across populated product rows.
+        # 1 distinct brand → target_xray; 2+ → competitor_xray. Catches the
+        # parent+children case File 2 of the user's Drink Mix data, where
+        # row 1 is fully populated and rows 2-4 are sparse variant rows.
         reader = csv.DictReader(io.StringIO(decoded))
-        asin_header_lc = {str(h or "").strip().lower(): h for h in (reader.fieldnames or [])}
-        asin_header = asin_header_lc.get("asin", "")
-        url_header = asin_header_lc.get("url", "")
-        title_header = asin_header_lc.get("product details", "")
+        header_map = {str(h or "").strip().lower(): h for h in (reader.fieldnames or [])}
+        asin_h = header_map.get("asin", "")
+        url_h = header_map.get("url", "")
+        title_h = header_map.get("product details", "")
+        brand_h = header_map.get("brand", "")
         product_rows = 0
+        brands: set[str] = set()
         for row in reader:
-            title = (row.get(title_header) or "").strip()
-            asin = _extract_asin(row.get(asin_header, "") or "") or _extract_asin(row.get(url_header, "") or "")
+            title = (row.get(title_h) or "").strip()
+            asin = _extract_asin(row.get(asin_h, "") or "") or _extract_asin(row.get(url_h, "") or "")
             if title and asin:
                 product_rows += 1
-                if product_rows >= 2:
-                    return "competitor_xray"
-        return "target_xray" if product_rows == 1 else "competitor_xray"
+                brand_value = (row.get(brand_h) or "").strip().lower()
+                if brand_value:
+                    brands.add(brand_value)
+        if product_rows == 0:
+            return "competitor_xray"  # malformed-but-Xray-shaped — let parser raise
+        if product_rows == 1 or len(brands) <= 1:
+            return "target_xray"
+        return "competitor_xray"
     return "unknown"
 
 

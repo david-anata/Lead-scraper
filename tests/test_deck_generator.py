@@ -981,6 +981,106 @@ class DeckRoutingTests(unittest.TestCase):
         resp = client.get("/decks/some-slug/9999/anytoken")
         self.assertEqual(resp.status_code, 404)
 
+    def test_target_xray_detection_handles_parent_with_multiple_children(self) -> None:
+        """PR43: a target Xray = an ASIN list where ALL rows belong to the
+        SAME LISTING (parent + variants). Pre-PR43 detector required exactly
+        1 product row, which misclassified parent+variants exports as
+        competitor_xray. New rule: 1 distinct Brand → target_xray."""
+        from sales_support_agent.services.helium10 import detect_csv_kind
+
+        # 3 rows, all same brand (parent + 2 variant children)
+        parent_with_variants = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'Parent Level Sales,ASIN Sales,Parent Level Revenue,'
+            b'ASIN Revenue,BSR,Ratings,Review Count\n'
+            b'"Zantrex Berry",B0CC6QQGF3,https://amzn.com/dp/B0CC6QQGF3,,'
+            b'Zantrex,24.99,5886,700,191533,29045,8903,4.2,2950\n'
+            b'"Zantrex Tropical",B0CC6QQGF4,https://amzn.com/dp/B0CC6QQGF4,,'
+            b'Zantrex,24.99,5886,1163,191533,46720,8903,4.2,2950\n'
+            b'"Zantrex Citrus",B0CC6QQGF5,https://amzn.com/dp/B0CC6QQGF5,,'
+            b'Zantrex,24.99,5886,4023,191533,115768,8903,4.2,2950\n'
+        )
+        # All same brand → target_xray (was misclassified as competitor pre-PR43)
+        self.assertEqual(detect_csv_kind(parent_with_variants), "target_xray")
+
+        # Multi-brand → competitor_xray
+        multi_brand = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'Parent Level Sales,ASIN Sales,Parent Level Revenue,'
+            b'ASIN Revenue,BSR,Ratings,Review Count\n'
+            b'"Brand A Product",B000000001,https://amzn.com/dp/B000000001,,'
+            b'BrandA,9.99,1000,500,9990,4995,1000,4.0,100\n'
+            b'"Brand B Product",B000000002,https://amzn.com/dp/B000000002,,'
+            b'BrandB,19.99,2000,1500,39980,29985,500,4.5,200\n'
+        )
+        self.assertEqual(detect_csv_kind(multi_brand), "competitor_xray")
+
+    def test_xray_parser_prefers_parent_level_sales(self) -> None:
+        """PR43: parser reads Parent Level Sales/Revenue when present, falls
+        back to ASIN-level for older Xray exports that don't expose parent
+        columns. The 8x undercount on multi-variant brands (5,886 brand-wide
+        units read as 700 single-variant units) was the root cause of the
+        '53 sessions today' bug on the Zantrex deck."""
+        from sales_support_agent.services.helium10 import parse_xray_csv
+
+        # New-format Xray with both Parent Level and ASIN Sales columns.
+        new_format = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'Parent Level Sales,ASIN Sales,Parent Level Revenue,'
+            b'ASIN Revenue,BSR,Ratings,Review Count\n'
+            b'"Zantrex Berry",B0CC6QQGF3,https://amzn.com/dp/B0CC6QQGF3,,'
+            b'Zantrex,24.99,5886,700,191533,29045,8903,4.2,2950\n'
+        )
+        report = parse_xray_csv(new_format)
+        self.assertEqual(report.products[0].units_sold, 5886.0)
+        self.assertEqual(report.products[0].revenue, 191533.0)
+
+        # Legacy Xray with no Parent Level columns → falls back to ASIN.
+        legacy_format = (
+            b'Product Details,ASIN,URL,Image URL,Brand,Price  $,'
+            b'ASIN Revenue,ASIN Sales,BSR,Ratings,Review Count\n'
+            b'"Old Listing",B0LEGACY01,https://amzn.com/dp/B0LEGACY01,,'
+            b'Brand,9.99,4995,500,1000,4.0,100\n'
+        )
+        report = parse_xray_csv(legacy_format)
+        self.assertEqual(report.products[0].units_sold, 500.0)
+        self.assertEqual(report.products[0].revenue, 4995.0)
+
+    def test_competitor_table_dedupes_by_parent_brand_and_units(self) -> None:
+        """PR43: competitor Xrays often include the same parent SKU multiple
+        times (one row per variant child). After the parser switch to Parent
+        Level Sales, those rows carry IDENTICAL parent-level numbers — listing
+        them all makes the brand look 6x bigger than it is.
+
+        Dedupe by (brand, units_sold). Same brand + same parent units = same
+        parent SKU → keep first occurrence."""
+        from sales_support_agent.services.helium10 import XrayProduct
+        from sales_support_agent.services.deck.rendering import _dedupe_by_parent
+
+        def _row(brand, units, revenue, asin):
+            return XrayProduct(
+                display_order=1, title=f"{brand} variant", asin=asin, url="",
+                image_url="", brand=brand, price=10.0, price_label="$10",
+                revenue=revenue, revenue_label=f"${revenue}", units_sold=units,
+                units_label=str(units), bsr=1000.0, bsr_label="1000",
+                rating=4.0, rating_label="4.0", review_count=100,
+                category="", seller_country="US", size_tier="LARGE STANDARD-SIZE",
+                fulfillment="FBA", dimensions="", weight="",
+            )
+
+        products = [
+            _row("Ultima",  213227, 4874180, "B0DWVHD39N"),
+            _row("Ultima",  213227, 4874180, "B0CY7WSJ86"),  # same parent, different variant
+            _row("Zipfizz",  94252, 2109054, "B00KAWSJYC"),
+            _row("CELSIUS", 112877, 1209184, "B002RSRURY"),
+        ]
+        deduped = _dedupe_by_parent(products)
+        # Ultima collapses 2 → 1
+        self.assertEqual(len(deduped), 3)
+        self.assertEqual([p.brand for p in deduped], ["Ultima", "Zipfizz", "CELSIUS"])
+        # First Ultima ASIN survives (most-prominent row in sales-desc order)
+        self.assertEqual(deduped[0].asin, "B0DWVHD39N")
+
     def test_csv_kind_detection_routes_files_to_correct_slot(self) -> None:
         """PR40: header-based detection lets the admin form drop ALL CSVs
         into one input. Each file kind is uniquely identified by its
