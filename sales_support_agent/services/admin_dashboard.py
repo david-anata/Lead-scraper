@@ -3859,7 +3859,29 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           }});
           const payload = await response.json().catch(() => ({{ detail: "Deck generation failed." }}));
           if (!response.ok) {{
-            deckStatus.textContent = payload.detail || payload.message || "Deck generation failed.";
+            // PR41: FastAPI returns several error shapes. Render each
+            // legibly instead of stringifying objects to "[object Object]":
+            //   - string detail        → "Target product is required."
+            //   - array of validation  → "field required: csv_files"
+            //   - structured object    → JSON.stringify as last resort
+            const _formatErr = (err) => {{
+              if (err == null) return "Deck generation failed.";
+              if (typeof err === "string") return err;
+              if (Array.isArray(err)) {{
+                return err.map((e) => {{
+                  if (typeof e === "string") return e;
+                  const loc = (e && e.loc) ? e.loc.filter((p) => p !== "body").join(".") : "";
+                  const msg = (e && e.msg) || "validation error";
+                  return loc ? `${{loc}}: ${{msg}}` : msg;
+                }}).join("; ");
+              }}
+              if (typeof err === "object") {{
+                if (err.msg) return err.msg;
+                try {{ return JSON.stringify(err); }} catch (_e) {{ return "Deck generation failed."; }}
+              }}
+              return String(err);
+            }};
+            deckStatus.textContent = _formatErr(payload.detail) || payload.message || "Deck generation failed.";
             if (deckSubmitButton) {{
               deckSubmitButton.disabled = false;
               deckSubmitButton.textContent = "GENERATE DECK";
@@ -5403,7 +5425,29 @@ def render_sales_deck_page(data: DashboardData) -> str:
           }});
           const payload = await response.json().catch(() => ({{ detail: "Deck generation failed." }}));
           if (!response.ok) {{
-            deckStatus.textContent = payload.detail || payload.message || "Deck generation failed.";
+            // PR41: FastAPI returns several error shapes. Render each
+            // legibly instead of stringifying objects to "[object Object]":
+            //   - string detail        → "Target product is required."
+            //   - array of validation  → "field required: csv_files"
+            //   - structured object    → JSON.stringify as last resort
+            const _formatErr = (err) => {{
+              if (err == null) return "Deck generation failed.";
+              if (typeof err === "string") return err;
+              if (Array.isArray(err)) {{
+                return err.map((e) => {{
+                  if (typeof e === "string") return e;
+                  const loc = (e && e.loc) ? e.loc.filter((p) => p !== "body").join(".") : "";
+                  const msg = (e && e.msg) || "validation error";
+                  return loc ? `${{loc}}: ${{msg}}` : msg;
+                }}).join("; ");
+              }}
+              if (typeof err === "object") {{
+                if (err.msg) return err.msg;
+                try {{ return JSON.stringify(err); }} catch (_e) {{ return "Deck generation failed."; }}
+              }}
+              return String(err);
+            }};
+            deckStatus.textContent = _formatErr(payload.detail) || payload.message || "Deck generation failed.";
             if (deckSubmitButton) {{
               deckSubmitButton.disabled = false;
               deckSubmitButton.textContent = "GENERATE DECK";

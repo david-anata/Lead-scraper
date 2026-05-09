@@ -1589,7 +1589,16 @@ async def _run_generate_deck(
         # 400 into a 500.
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # PR41: log the full traceback so failures don't disappear into a
+        # bare 500 with a cryptic detail string. Auto-detect log included
+        # so we can reproduce the exact upload partition that failed.
+        logger.exception(
+            "[generate_deck] failed: trigger=%s target_input=%r autodetect=%s",
+            trigger,
+            target_product_input,
+            autodetect_log or "(no auto-detected uploads)",
+        )
+        raise HTTPException(status_code=500, detail=str(exc) or "Deck generation failed.") from exc
     # PR40: append the auto-detect log so the AE sees what was routed where.
     response_warnings = list(result.warnings or [])
     if autodetect_log:
