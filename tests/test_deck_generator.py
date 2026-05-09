@@ -530,9 +530,9 @@ class GrowthPlanTests(unittest.TestCase):
         )
         organic = next(c for c in plan.channels if c.key == "organic")
         on_paid = next(c for c in plan.channels if c.key == "on_channel_paid")
-        # Step-function would have given us organic.sessions + on_paid.sessions
-        # (= 20,000 since each is 25% of 40,000 delta). With the ramp, P1
-        # should deliver ~ organic*0.10 + on_paid*0.50 = 1,000 + 5,000 = 6,000.
+        # PR48: stretched timeline + slower ramp curves. Organic P1 = 5%
+        # (was 10%), on-channel paid P1 = 30% (was 50%). Step-function
+        # would still give us full at-goal — assert ramp is below that.
         step_function_total = organic.sessions + on_paid.sessions
         ramp_p1_total = cumulative_sessions_at_phase(plan.channels, 1)
         self.assertLess(
@@ -540,7 +540,7 @@ class GrowthPlanTests(unittest.TestCase):
             step_function_total,
             "Phase 1 must reflect ramp, not deliver full at-goal allocation immediately",
         )
-        expected_p1 = int(round(organic.sessions * 0.10 + on_paid.sessions * 0.50))
+        expected_p1 = int(round(organic.sessions * 0.05 + on_paid.sessions * 0.30))
         self.assertEqual(ramp_p1_total, expected_p1)
 
     def test_growth_ramp_phase4_equals_steady_state(self) -> None:
@@ -565,6 +565,44 @@ class GrowthPlanTests(unittest.TestCase):
         # Allow rounding tolerance — cumulative_sessions_at_phase rounds at
         # the end, total_sessions_delivered sums int channel.sessions directly.
         self.assertAlmostEqual(ramp_p4_total, plan.total_sessions_delivered, delta=2)
+
+    def test_growth_phases_span_twelve_months(self) -> None:
+        """PR48: phase windows now stretch across 12 months, not 4. Verify
+        the labels reflect the longer timeline and the ramp curves yield
+        non-mature numbers at intermediate phases (50% by P2, ~75% by P3)."""
+        from sales_support_agent.services.deck.growth_plan import (
+            GrowthPlanInputs,
+            PHASES,
+            build_growth_plan,
+            cumulative_sessions_at_phase,
+        )
+        # All four phase windows mention months, not days/weeks.
+        labels = [p.window_label for p in PHASES]
+        self.assertEqual(labels[0], "Months 1–3")
+        self.assertEqual(labels[1], "Months 3–6")
+        self.assertEqual(labels[2], "Months 6–9")
+        self.assertEqual(labels[3], "Months 9–12")
+
+        # And the ramp curves actually compound — P2 should be ≤55% of
+        # total, P3 ≤80%, so a $4M/m goal looks like a 12-month plan
+        # not a 4-month sprint.
+        plan = build_growth_plan(
+            inputs=GrowthPlanInputs(
+                conversion_rate_pct=15.0,
+                goal_monthly_sessions=60_000,
+                average_order_value=29.99,
+                cogs_per_unit=4.5,
+                shipping_per_unit=2.5,
+            ),
+            target_units=3_000,
+        )
+        steady_state = plan.total_sessions_delivered
+        p2 = cumulative_sessions_at_phase(plan.channels, 2)
+        p3 = cumulative_sessions_at_phase(plan.channels, 3)
+        self.assertLess(p2 / max(steady_state, 1), 0.55,
+                        f"P2 must be < 55% of steady state for credible ramp; got {p2}/{steady_state}")
+        self.assertLess(p3 / max(steady_state, 1), 0.85,
+                        f"P3 must be < 85% of steady state; got {p3}/{steady_state}")
 
     def test_growth_plan_shortfall_flagged_when_mix_underdelivers(self) -> None:
         from sales_support_agent.services.deck.growth_plan import (
