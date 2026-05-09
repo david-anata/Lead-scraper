@@ -482,12 +482,16 @@ h2.slide-title {
   aspect-ratio: 1 / 1;          /* PR35: 1:1 across all product image containers */
   position: relative;
   overflow: hidden;
+  padding: 8px;                 /* PR46: padding moved from img → parent */
 }
 .exec-product .pic img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;           /* never "fill" — preserve aspect ratio of the source image */
-  padding: 8px;
+  /* PR46: padding on the img itself triggered a WebKit object-fit bug
+     (contain scaled against the padded box, leaving the image overflowing
+     the visible area). Padding now lives on the parent `.pic` container
+     where it belongs; the img fills the parent's content area cleanly. */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .exec-product .pic .placeholder {
   width: 80px;
@@ -1894,26 +1898,33 @@ h2.slide-title {
 .gallery .gallery-item .pic img,
 .visual-proof-thumb img,
 .rail-logo img {
-  /* PR44: don't lock width/height to 100% — that combines badly with
-     padding on the img in the WebKit print pipeline and crops the
-     bottom of containers like the gallery thumbs. Use max-width/max-height
-     so `object-fit: contain` can scale freely, and let the parent's
-     `place-items: center` (or flex centering) handle alignment. */
-  max-width: 100% !important;
-  max-height: 100% !important;
-  width: auto !important;
-  height: auto !important;
-  object-fit: contain !important;   /* never crop, never stretch */
+  /* PR46: revert PR44's max-w/max-h + width/height:auto pattern.
+     The canonical "letterbox an image inside a fixed-size container"
+     recipe is `width:100%; height:100%; object-fit:contain` — the IMG
+     element's BOX fills the parent square, then `object-fit: contain`
+     scales the IMAGE PIXELS inside that box preserving aspect ratio
+     (letterbox transparent space top/bottom or left/right as needed).
+     This does NOT stretch the image — `contain` ≠ `fill`.
+     PR44 went the other way and let the img size to intrinsic, but
+     `max-height: 100%` on a child of an aspect-ratio parent doesn't
+     resolve reliably in the WebKit print pipeline before the parent's
+     height is pinned, so the img grew past the box and overflow:hidden
+     sliced the bottom off (the bug the user kept reporting).
+     The KEY fix is keeping NO padding on the img — padding under
+     box-sizing border-box was what broke `contain`'s math originally.
+     Per-class parent padding stays where it already is. */
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;   /* fits inside the box; never crop, never stretch */
   display: block;
-  margin: auto;                      /* center inside non-grid parents */
   background: white;
   border-radius: inherit;
 }
-/* The rail-logo gets a smaller pad because the box itself is only 36×36. */
-.rail-logo img { padding: 4px; }
-/* Table thumbs are tiny (36×36); pad less so the image is still legible. */
-.tbl .thumb img,
-.row-product .thumb img { padding: 3px; }
+/* PR46: padding moved from img → parent containers to avoid the
+   WebKit object-fit + padded-img crop bug. Tiny thumbs use small pads. */
+.rail-logo { padding: 4px; }
+.tbl .thumb,
+.row-product .thumb { padding: 3px; }
 
 /* PR37: gallery thumbs (Conversion + PDP creative recs).
    Service.py wraps the cards in `<div class="gallery">` (NOT
