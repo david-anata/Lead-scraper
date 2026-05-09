@@ -4367,6 +4367,12 @@ async def admin_generate_deck_proxy(
                     for key in form_data.keys()
                     if isinstance(key, str) and key.startswith("growth_") and form_data.get(key) not in (None, "")
                 ],
+                # PR47: forward the optional category_label override.
+                *(
+                    [("category_label", str(form_data.get("category_label")))]
+                    if form_data.get("category_label") not in (None, "")
+                    else []
+                ),
             ],
             files_payload=[
                 # PR42: forward the unified `csv_files` upload first — the

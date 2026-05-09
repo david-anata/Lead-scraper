@@ -1124,6 +1124,141 @@ class DeckRoutingTests(unittest.TestCase):
         # And brand count is distinct brands, not row count.
         self.assertEqual(report.distinct_brand_count, 3)
 
+    def test_resolve_category_label_user_input_wins(self) -> None:
+        """PR47: explicit user input always wins over auto-detection."""
+        from sales_support_agent.services.deck.dataset import resolve_category_label
+
+        result = resolve_category_label(
+            user_input="fat burner supplement",
+            niche_keyword="hydroxycut",  # would normally trigger brand fallback
+            competitor_brands={"Hydroxycut", "Zantrex"},
+            keyword_phrases=["weight loss pills", "fat burner"],
+        )
+        self.assertEqual(result, "fat burner supplement")
+
+    def test_resolve_category_label_passes_through_clean_keyword(self) -> None:
+        """PR47: when niche_keyword isn't a brand match, use it as-is
+        (existing behavior, backward-compatible)."""
+        from sales_support_agent.services.deck.dataset import resolve_category_label
+
+        result = resolve_category_label(
+            user_input="",
+            niche_keyword="weight loss",
+            competitor_brands={"Hydroxycut", "Zantrex"},
+            keyword_phrases=["weight loss pills"],
+        )
+        self.assertEqual(result, "weight loss")
+
+    def test_resolve_category_label_falls_back_when_keyword_is_a_brand(self) -> None:
+        """PR47: the 'hydroxycut smell' — niche_keyword IS a competitor brand.
+        Derive a broader label from non-brand bigrams in the keyword report."""
+        from sales_support_agent.services.deck.dataset import resolve_category_label
+
+        result = resolve_category_label(
+            user_input="",
+            niche_keyword="hydroxycut",
+            competitor_brands={"Hydroxycut", "Zantrex", "Animal"},
+            keyword_phrases=[
+                "fat burner pills",
+                "fat burner for women",
+                "fat burner thermogenic",
+                "weight loss pills",
+                "thermogenic fat burner",
+            ],
+        )
+        # "fat burner" is the most frequent non-brand bigram → wins.
+        self.assertEqual(result, "fat burner")
+
+    def test_search_insights_filter_drops_off_category_keywords(self) -> None:
+        """PR48: keyword relevance filter — protein/creatine/cortisol are
+        high-volume but off-category for a fat burner listing. They appear
+        in cerebro because the target ranks for them via Amazon's broad-match
+        spillover, but they shouldn't surface as 'missing title keywords'."""
+        from sales_support_agent.services.deck.dataset import _build_search_insights
+        from sales_support_agent.services.helium10 import (
+            CerebroKeywordInsight,
+            Helium10CerebroReport,
+        )
+
+        def _kw(phrase, vol, rank):
+            return CerebroKeywordInsight(
+                phrase=phrase, search_volume=vol, keyword_sales=None,
+                search_volume_trend="", target_rank=rank, target_impression_proxy=0,
+                competitor_ranks={},
+            )
+
+        cerebro = Helium10CerebroReport(
+            keywords=[
+                _kw("protein powder", 200_000, 45),
+                _kw("creatine", 150_000, 80),
+                _kw("cortisol supplements for women", 80_000, 120),
+                _kw("fat burner pills", 60_000, 25),
+                _kw("weight loss for women", 50_000, 30),
+            ],
+            competitor_asins=[],
+            top_20_ranked_keywords=0,
+            impression_proxy=0,
+            warnings=[],
+        )
+
+        insights = _build_search_insights(
+            title="Zantrex Black Naturally Boost GLP-1",
+            description="Some bullets and prose.",
+            keyword_report=None,
+            cerebro_report=cerebro,
+            word_frequency_report=None,
+            category_label="fat burner, weight loss",
+        )
+        # Off-category keywords are filtered out entirely — neither in hits
+        # nor in misses, because they're never candidates.
+        all_returned = (
+            insights["title_hits"] + insights["title_misses"]
+            + insights["copy_hits"] + insights["copy_misses"]
+        )
+        self.assertNotIn("protein powder", all_returned)
+        self.assertNotIn("creatine", all_returned)
+        self.assertNotIn("cortisol supplements for women", all_returned)
+        # Relevant keywords still surface.
+        self.assertIn("fat burner pills", insights["title_misses"])
+
+    def test_extract_short_product_name_zantrex_black(self) -> None:
+        """PR49: title 'Zantrex Black – Naturally Boost…' → short = 'Black'."""
+        from sales_support_agent.services.deck.formatting import extract_short_product_name
+        result = extract_short_product_name(
+            title="Zantrex Black – Naturally Boost GLP-1 & Metabolism Support | Thermogenic Energy",
+            brand="Zantrex",
+        )
+        self.assertEqual(result, "Black")
+
+    def test_extract_short_product_name_skinnystix(self) -> None:
+        """PR49: title 'Zantrex Skinnystix Mixed Berry Energy Drink Mix' → 'Skinnystix' at default depth."""
+        from sales_support_agent.services.deck.formatting import extract_short_product_name
+        result = extract_short_product_name(
+            title="Zantrex Skinnystix Mixed Berry Energy Drink Mix Powder Sticks",
+            brand="Zantrex",
+        )
+        self.assertEqual(result, "Skinnystix")
+        # Higher max_tokens picks up the variant flavor.
+        result_two = extract_short_product_name(
+            title="Zantrex Skinnystix Mixed Berry Energy Drink Mix Powder Sticks",
+            brand="Zantrex",
+            max_tokens=2,
+        )
+        self.assertEqual(result_two, "Skinnystix Mixed")
+
+    def test_deck_slug_with_timestamp_format(self) -> None:
+        """PR49: slug format = `{brand}-{short_name}-x-anata-strategy-deck-{YYYY-MM-DD-HHMM}`."""
+        from datetime import datetime, timezone
+        from sales_support_agent.services.deck.formatting import deck_slug_with_timestamp
+
+        fixed_when = datetime(2026, 5, 8, 22, 30, tzinfo=timezone.utc)
+        result = deck_slug_with_timestamp(brand="Zantrex", short_name="Black", when=fixed_when)
+        self.assertEqual(result, "zantrex-black-x-anata-strategy-deck-2026-05-08-2230")
+
+        # Empty short_name still produces a valid slug.
+        result_no_short = deck_slug_with_timestamp(brand="Zantrex", short_name="", when=fixed_when)
+        self.assertEqual(result_no_short, "zantrex-x-anata-strategy-deck-2026-05-08-2230")
+
     def test_csv_kind_detection_routes_files_to_correct_slot(self) -> None:
         """PR40: header-based detection lets the admin form drop ALL CSVs
         into one input. Each file kind is uniquely identified by its

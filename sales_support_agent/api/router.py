@@ -1490,6 +1490,7 @@ async def _run_generate_deck(
     # FastAPI Form() params to keep the function signature manageable; instead
     # we read them straight from the form payload and forward as a dict.
     growth_plan_inputs: Optional[dict[str, str]] = None
+    category_label_input: str = ""
     if include_growth_plan:
         try:
             form_data = await request.form()
@@ -1500,6 +1501,14 @@ async def _run_generate_deck(
             }
         except Exception:
             growth_plan_inputs = {}
+    # PR47: read the optional category_label override (works whether or not
+    # growth_plan is included). Falls back to "" → auto-derive in the dataset
+    # builder.
+    try:
+        form_payload = await request.form()
+        category_label_input = str(form_payload.get("category_label") or "").strip()
+    except Exception:
+        category_label_input = ""
 
     try:
         with session_scope(request.app.state.session_factory) as session:
@@ -1576,6 +1585,7 @@ async def _run_generate_deck(
                 offer_payload_json=offer_payload_json,
                 include_recommended_plan=include_recommended_plan,
                 growth_plan_inputs=growth_plan_inputs,
+                category_label=category_label_input,
                 trigger=trigger,
             )
             # Surface the auto-detection result so the AE can see what

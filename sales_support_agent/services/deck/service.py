@@ -69,6 +69,7 @@ from sales_support_agent.services.deck.dataset import (  # noqa: F401
     _build_why_anata_summary,
     _find_target_row,
     _resolve_target_state,
+    resolve_category_label,
 )
 from sales_support_agent.services.deck.formatting import (  # noqa: F401
     DEFAULT_CASE_STUDY_URL,
@@ -93,6 +94,8 @@ from sales_support_agent.services.deck.formatting import (  # noqa: F401
     _target_reference_label,
     _title_token_set,
     _titleize_slug,
+    deck_slug_with_timestamp,
+    extract_short_product_name,
     _trim_text,
 )
 from sales_support_agent.services.deck.parsing import (  # noqa: F401
@@ -274,6 +277,7 @@ class DeckGenerationService:
         offer_payload_json: str = "",
         include_recommended_plan: bool = True,
         growth_plan_inputs: dict[str, Any] | None = None,
+        category_label: str = "",
         trigger: str = "admin_dashboard",
     ) -> DeckGenerationResult:
         effective_target_input = target_product_input.strip()
@@ -326,6 +330,7 @@ class DeckGenerationService:
                 offer_cards=offer_cards,
                 include_recommended_plan=bool(include_recommended_plan),
                 growth_plan_inputs=growth_plan_inputs,
+                category_label=category_label.strip(),
             )
             title = str(dataset.deck_payload.get("deck_title") or self._build_design_title(title_hint=effective_target_input)).strip()
             result = self._generate_html_deck(
@@ -396,7 +401,18 @@ class DeckGenerationService:
     ) -> DeckGenerationResult:
         export_token = secrets.token_urlsafe(18)
         html_content = self._render_html_deck(title=title, dataset=dataset, warnings=warnings)
-        deck_slug = _slugify(title) or f"deck-{run.id}"
+        # PR49: slug = `{brand}-{short_name}-x-anata-strategy-deck-{YYYY-MM-DD-HHMM}`.
+        # Strategic intent reads first, timestamp at the end disambiguates
+        # multiple decks generated for the same brand/SKU on the same day.
+        # Falls back to the legacy slug-from-title path for back-compat with
+        # any caller that bypasses the dataset builder.
+        target_payload = dataset.deck_payload.get("target", {}) or {}
+        _brand_for_slug = str(target_payload.get("brand_name") or target_payload.get("brand") or "").strip()
+        _short_for_slug = str(dataset.deck_payload.get("deck_short_name") or "").strip()
+        if _brand_for_slug:
+            deck_slug = deck_slug_with_timestamp(brand=_brand_for_slug, short_name=_short_for_slug)
+        else:
+            deck_slug = _slugify(title) or f"deck-{run.id}"
         view_url = self._build_export_url(run_id=run.id, deck_slug=deck_slug, token=export_token)
         target = dataset.deck_payload.get("target", {})
         target_identifier = str(target.get("asin") or target.get("source_url") or "").strip()
@@ -496,6 +512,7 @@ class DeckGenerationService:
         offer_cards: list[dict[str, str]],
         include_recommended_plan: bool,
         growth_plan_inputs: dict[str, Any] | None = None,
+        category_label: str = "",
     ) -> DeckDataset:
         parsed_target = _parse_target_product_input(target_product_input)
         if parsed_target["source_type"] not in {"amazon", "website"}:
@@ -608,12 +625,46 @@ class DeckGenerationService:
         market_cards = _build_market_metric_cards(xray_report, keyword_report)
         keyword_cards = _build_keyword_metric_cards(keyword_report)
         keyword_cards.extend(_build_cerebro_metric_cards(cerebro_report, word_frequency_report))
+
+        # PR47: derive niche_keyword (technical / search-volume references)
+        # and the broad `category_label` (user-facing title + section headers)
+        # BEFORE building search insights, so the relevance filter can use
+        # category_label to drop off-category keywords like "protein powder"
+        # / "creatine" from the "missing title keywords" list on a fat-burner
+        # listing. niche_keyword stays as the literal seed term.
+        _niche_keyword_raw = (
+            cerebro_report.keywords[0].phrase
+            if cerebro_report and cerebro_report.keywords
+            else (
+                keyword_report.keywords[0].phrase
+                if keyword_report and keyword_report.keywords
+                else ""
+            )
+        )
+        _competitor_brands = {
+            (p.brand or "").strip()
+            for p in xray_report.products
+            if (p.brand or "").strip()
+        }
+        _all_keyword_phrases: list[str] = []
+        if cerebro_report and cerebro_report.keywords:
+            _all_keyword_phrases.extend(k.phrase for k in cerebro_report.keywords)
+        if keyword_report and keyword_report.keywords:
+            _all_keyword_phrases.extend(k.phrase for k in keyword_report.keywords)
+        resolved_category_label = resolve_category_label(
+            user_input=category_label or "",
+            niche_keyword=_niche_keyword_raw,
+            competitor_brands=_competitor_brands,
+            keyword_phrases=_all_keyword_phrases,
+        )
+
         search_insights = _build_search_insights(
             title=hero_product.title or parsed_target["product_name"],
             description=hero_product.description,
             keyword_report=keyword_report,
             cerebro_report=cerebro_report,
             word_frequency_report=word_frequency_report,
+            category_label=resolved_category_label,
         )
         target_title = _preferred_target_title(
             hero_product.title,
@@ -747,7 +798,15 @@ class DeckGenerationService:
             "recommended_plan_summary": _build_plan_summary(offer_cards, channels),
             "expected_impact_summary": _build_expected_impact_summary(xray_report),
             "why_anata_summary": _build_why_anata_summary(channels),
-            "deck_title": f"{target_brand} x anata strategy deck".strip(" -"),
+            # PR49: include the variant short-name (e.g. "Black", "Skinnystix")
+            # alongside the brand so decks generated for different SKUs of the
+            # same brand are distinguishable from the title alone.
+            "deck_title": (
+                f"{target_brand} {extract_short_product_name(title=target_title, brand=target_brand)} x anata strategy deck"
+                .replace("  ", " ")
+                .strip(" -")
+            ),
+            "deck_short_name": extract_short_product_name(title=target_title, brand=target_brand),
             "target_asin": resolved_target_asin,
             "target_rating": target_rating_label,
             "target_review_count": str(target_review_count or ""),
@@ -858,14 +917,11 @@ class DeckGenerationService:
                 "offering_sections": channel_sections,
                 "channels": channels,
                 "niche_keyword": (
-                    cerebro_report.keywords[0].phrase
-                    if cerebro_report and cerebro_report.keywords
-                    else (
-                        keyword_report.keywords[0].phrase
-                        if keyword_report and keyword_report.keywords
-                        else (parsed_target["product_name"] or display_title)
-                    )
+                    _niche_keyword_raw or parsed_target["product_name"] or display_title
                 ),
+                # PR47: broad category label resolved upstream — used in the
+                # exec headline, market-summary header, and section titles.
+                "category_label": resolved_category_label,
                 "search_insights": search_insights,
                 "target_strengths": target_strengths,
                 "target_gaps": target_gaps,
@@ -961,6 +1017,9 @@ class DeckGenerationService:
         size_donut = _render_distribution_card("Size tier", xray_report.size_tier_distribution)
         fulfillment_donut = _render_distribution_card("Fulfillment", xray_report.fulfillment_distribution)
         niche_keyword = str(payload.get("niche_keyword") or target.get("asin") or "the niche").strip()
+        # PR47: category_label is the user-facing broad category. Falls back
+        # to niche_keyword for back-compat with payloads built before PR47.
+        category_label = str(payload.get("category_label") or niche_keyword or "this category").strip()
         keyword_table_html = _render_keyword_table(keyword_table_rows)
         keyword_table_caption = "Top keyword opportunities from the Cerebro rank set" if cerebro_report else "Highest search volume from the current keyword dataset"
         keyword_rank_summary_html = _render_cerebro_rank_summary(cerebro_report)
@@ -1092,7 +1151,11 @@ class DeckGenerationService:
         )
         _has_growth = growth_plan_obj is not None and _goal_sessions > 0
 
-        _niche_label = niche_keyword or "this category"
+        # PR47: title uses the broad category label, not the raw seed keyword.
+        # The seed keyword could be a competitor brand (the "hydroxycut" smell)
+        # — using it in the title makes the deck look like it's pitching the
+        # wrong category.
+        _niche_label = category_label or "this category"
         _exec_headline = (
             f"A {_money_short(_niche_revenue)} monthly opportunity"
             + (f" in the &ldquo;{html.escape(_niche_label)}&rdquo; category." if _niche_label else ".")
@@ -1352,7 +1415,7 @@ class DeckGenerationService:
         # ---- Section dividers ----
         _div_market = _section_divider(
             "sec-01", "01", "Section · The market",
-            f'"{niche_keyword}" — the category at a glance' if niche_keyword else "The category at a glance",
+            f'"{category_label}" — the category at a glance' if category_label else "The category at a glance",
             "A snapshot of category economics: who's selling, what they sell for, and how concentrated the revenue actually is.",
             ["6 category metrics", f"Top {min(len(getattr(xray_report, 'products', []) or []), 11)} brands", "Distribution donuts"],
         )
@@ -1473,7 +1536,7 @@ class DeckGenerationService:
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Market summary</p>
-          <h2 class="slide-title">Summary of "{html.escape(niche_keyword)}"</h2>
+          <h2 class="slide-title">Summary of "{html.escape(category_label)}"</h2>
         </div>
         <p class="caption">{html.escape(dataset.text_fields.get("market_summary") or "")}</p>
       </header>

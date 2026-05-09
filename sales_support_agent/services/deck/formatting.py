@@ -153,6 +153,64 @@ def _infer_brand_from_title(title: str) -> str:
     return token
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+# PR49: stopword set for variant-name extraction. Generic Amazon-SEO words
+# get dropped so "Zantrex Black – Naturally Boost…" yields "Black", not
+# "Black Naturally Boost".
+_VARIANT_STOPWORDS: frozenset[str] = frozenset({
+    "naturally", "natural", "premium", "pure", "best", "new", "original",
+    "with", "for", "and", "the", "a", "an", "to", "of", "in", "by",
+    "boost", "boosting", "ultimate",
+})
+
+
+def extract_short_product_name(*, title: str, brand: str, max_tokens: int = 1) -> str:
+    """PR49: pull a short, distinguishing variant name out of a product title.
+
+    Strips the brand prefix, slices off everything after the first major
+    title separator (–, —, |, comma, colon, parenthesis), drops generic SEO
+    stopwords, and returns the first `max_tokens` meaningful words.
+
+    Examples:
+      title="Zantrex Black – Naturally Boost GLP-1…", brand="Zantrex"
+        → "Black"
+      title="Zantrex Skinnystix Mixed Berry Energy Drink Mix…", brand="Zantrex"
+        → "Skinnystix" (max_tokens=1) or "Skinnystix Mixed" (max_tokens=2)
+    """
+    title_clean = _clean_listing_title(title or "")
+    if not title_clean:
+        return ""
+    body = title_clean
+    if brand:
+        # Match the brand at the start, case-insensitive, allow trailing space.
+        pattern = re.compile(r"^\s*" + re.escape(brand.strip()) + r"\b\s*", re.IGNORECASE)
+        body = pattern.sub("", body, count=1).strip()
+    # Slice at the first major separator.
+    cut = re.split(r"\s*[–—\-|,:\(]\s*", body, maxsplit=1)
+    head = (cut[0] if cut else body).strip()
+    if not head:
+        return ""
+    tokens = [
+        tok for tok in re.findall(r"[A-Za-z0-9]+", head)
+        if tok.lower() not in _VARIANT_STOPWORDS and len(tok) > 1
+    ]
+    if not tokens:
+        return ""
+    return " ".join(tokens[: max(1, max_tokens)])
+
+
+def deck_slug_with_timestamp(*, brand: str, short_name: str, when: datetime | None = None) -> str:
+    """PR49: canonical deck slug = `{brand}-{short_name}-x-anata-strategy-deck-{YYYY-MM-DD-HHMM}`.
+
+    `short_name` may be empty; in that case the slug is `{brand}-x-anata-...`.
+    Timestamp lives at the end so the strategic intent reads first.
+    """
+    moment = when or datetime.now(timezone.utc)
+    stamp = moment.strftime("%Y-%m-%d-%H%M")
+    pieces = [p for p in (_slugify(brand or ""), _slugify(short_name or "")) if p]
+    head = "-".join(pieces) if pieces else "deck"
+    return f"{head}-x-anata-strategy-deck-{stamp}"
 def _normalize_product_url(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
