@@ -155,6 +155,23 @@ def _format_dashboard_date(value: str) -> str:
         return raw
 
 
+def _format_dashboard_datetime(value: str) -> str:
+    """PR49: same shape as _format_dashboard_date but includes the UTC time
+    so the past-decks table can disambiguate multiple decks generated for
+    the same brand on the same day. UTC is rendered explicitly so there's
+    no ambiguity about which clock the time refers to."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        if "T" in raw:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return dt.strftime("%m/%d/%Y %H:%M UTC")
+        return date.fromisoformat(raw).strftime("%m/%d/%Y")
+    except ValueError:
+        return raw
+
+
 def _format_deck_channel_label(value: str) -> str:
     mapping = {
         "amazon": "Amazon",
@@ -4027,7 +4044,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
         <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}">
           <td><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
           <td class="muted">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
-          <td class="muted">{html.escape(_format_dashboard_date(str(run.get("started_at") or "")) or "Today")}</td>
+          <td class="muted">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
           <td class="num">{_ext_views(run)}</td>
           <td class="num">{_int_views(run)}</td>
           <td class="deck-row-actions">
