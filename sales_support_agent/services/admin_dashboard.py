@@ -4083,6 +4083,13 @@ def render_sales_deck_page(data: DashboardData) -> str:
           <label class="deck-run-search-wrap">Search
             <input type="search" id="deck-filter-search" placeholder="Brand, ASIN, or design title…" />
           </label>
+          <label class="deck-page-size-wrap">Per page
+            <select id="deck-page-size">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+            </select>
+          </label>
         </div>
         <div class="table-wrap deck-run-table-wrap">
           <table class="deck-run-table">
@@ -4101,6 +4108,10 @@ def render_sales_deck_page(data: DashboardData) -> str:
             </tbody>
           </table>
         </div>
+        <nav class="deck-pagination" id="deck-pagination" aria-label="Past decks pagination">
+          <span class="deck-pagination-status" id="deck-pagination-status">—</span>
+          <div class="deck-pagination-controls" id="deck-pagination-controls" role="group" aria-label="Page navigation"></div>
+        </nav>
         """
     else:
         recent_deck_runs_html = ""
@@ -4634,10 +4645,66 @@ def render_sales_deck_page(data: DashboardData) -> str:
         min-width: 240px;
       }}
       .deck-run-table-wrap {{
-        max-height: 520px;
-        overflow-y: auto;
+        /* PR51: removed inner-scroll cap (was max-height: 520px;
+           overflow-y: auto). With pagination, the table is bounded
+           by row count not pixel height, and dropping the inner
+           scroll lets the sticky thead anchor against the page
+           viewport — so the column headers stay visible while
+           scrolling the page itself. NOTE: keep overflow: visible
+           (the default) so sticky positioning resolves to the
+           viewport, not a clipped ancestor. */
         border: 1px solid rgba(43, 54, 68, 0.10);
         border-radius: 10px;
+      }}
+      .deck-page-size-wrap select {{
+        min-width: 80px;
+      }}
+      .deck-pagination {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 14px;
+        padding: 10px 4px 0;
+        flex-wrap: wrap;
+      }}
+      .deck-pagination-status {{
+        font-size: 12px;
+        color: var(--ink-soft, #5b6b7d);
+        font-variant-numeric: tabular-nums;
+      }}
+      .deck-pagination-controls {{
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-wrap: wrap;
+      }}
+      .deck-pagination-controls button {{
+        min-width: 32px;
+        height: 30px;
+        padding: 0 10px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        border: 1px solid rgba(43, 54, 68, 0.20);
+        background: white;
+        color: var(--dark-blue);
+        border-radius: 6px;
+        cursor: pointer;
+      }}
+      .deck-pagination-controls button[disabled] {{
+        opacity: 0.4;
+        cursor: not-allowed;
+      }}
+      .deck-pagination-controls button.is-current {{
+        background: var(--dark-blue);
+        color: white;
+        border-color: var(--dark-blue);
+        font-weight: 700;
+      }}
+      .deck-pagination-controls .deck-pagination-ellipsis {{
+        padding: 0 4px;
+        color: var(--ink-soft, #5b6b7d);
+        font-size: 12px;
       }}
       .deck-run-table {{
         width: 100%;
@@ -5195,33 +5262,155 @@ def render_sales_deck_page(data: DashboardData) -> str:
       }}
       deckCsvInput?.addEventListener("change", _renderCsvPreview);
 
-      // Audit item 2c: filterable past-decks table.
+      // PR51: filterable + paginated past-decks table.
+      // Filter pipeline: brand → timeframe → search → page-slice. Filters
+      // operate on the full server-rendered set; pagination only changes
+      // which subset gets shown. Filter changes reset to page 1.
+      // localStorage remembers the page-size selection across visits.
+      // Keyboard ←/→ navigate pages when no input/select is focused.
       const deckRunTbody = document.getElementById("deck-run-tbody");
       const deckFilterBrand = document.getElementById("deck-filter-brand");
       const deckFilterTimeframe = document.getElementById("deck-filter-timeframe");
       const deckFilterSearch = document.getElementById("deck-filter-search");
+      const deckPageSizeSelect = document.getElementById("deck-page-size");
+      const deckPaginationStatus = document.getElementById("deck-pagination-status");
+      const deckPaginationControls = document.getElementById("deck-pagination-controls");
+      const DECK_PAGE_SIZE_KEY = "deckTable.pageSize";
+
+      let deckCurrentPage = 1;
+      // Restore saved page size from localStorage if valid.
+      try {{
+        const savedSize = window.localStorage?.getItem(DECK_PAGE_SIZE_KEY);
+        if (savedSize && deckPageSizeSelect) {{
+          const allowed = Array.from(deckPageSizeSelect.options).map((o) => o.value);
+          if (allowed.includes(savedSize)) deckPageSizeSelect.value = savedSize;
+        }}
+      }} catch (_e) {{ /* localStorage might be disabled — ignore */ }}
+
+      function _deckRowMatchesFilters(row, brand, cutoffMs, search) {{
+        if (brand && row.dataset.brand !== brand) return false;
+        if (cutoffMs !== null) {{
+          const t = row.dataset.startedAt ? Date.parse(row.dataset.startedAt) : NaN;
+          if (isNaN(t) || t < cutoffMs) return false;
+        }}
+        if (search && !row.textContent.toLowerCase().includes(search)) return false;
+        return true;
+      }}
+
+      function _renderPaginationControls(currentPage, totalPages) {{
+        if (!deckPaginationControls) return;
+        deckPaginationControls.innerHTML = "";
+        if (totalPages <= 1) return;
+        const mkBtn = (label, page, opts) => {{
+          opts = opts || {{}};
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = label;
+          if (opts.disabled) b.disabled = true;
+          if (opts.current) b.classList.add("is-current");
+          if (opts.aria) b.setAttribute("aria-label", opts.aria);
+          b.addEventListener("click", () => {{
+            if (opts.disabled) return;
+            deckCurrentPage = page;
+            applyDeckFilters();
+          }});
+          return b;
+        }};
+        const mkEllipsis = () => {{
+          const span = document.createElement("span");
+          span.className = "deck-pagination-ellipsis";
+          span.textContent = "…";
+          return span;
+        }};
+        deckPaginationControls.appendChild(mkBtn("← Prev", currentPage - 1, {{
+          disabled: currentPage <= 1, aria: "Previous page"
+        }}));
+        // Compact page list: always show 1, last, current, and current±1.
+        const pages = new Set([1, totalPages, currentPage, currentPage - 1, currentPage + 1]);
+        const ordered = Array.from(pages).filter((p) => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+        let prev = 0;
+        for (const p of ordered) {{
+          if (p - prev > 1) deckPaginationControls.appendChild(mkEllipsis());
+          deckPaginationControls.appendChild(mkBtn(String(p), p, {{
+            current: p === currentPage,
+            aria: `Go to page ${{p}}`
+          }}));
+          prev = p;
+        }}
+        deckPaginationControls.appendChild(mkBtn("Next →", currentPage + 1, {{
+          disabled: currentPage >= totalPages, aria: "Next page"
+        }}));
+      }}
+
       function applyDeckFilters() {{
         if (!deckRunTbody) return;
         const brand = (deckFilterBrand?.value || "").trim();
         const timeframe = deckFilterTimeframe?.value || "all";
         const search = (deckFilterSearch?.value || "").toLowerCase().trim();
         const cutoffMs = timeframe === "all" ? null : Date.now() - (parseInt(timeframe, 10) * 24 * 60 * 60 * 1000);
-        deckRunTbody.querySelectorAll("tr.deck-row").forEach((row) => {{
-          let visible = true;
-          if (brand && row.dataset.brand !== brand) visible = false;
-          if (visible && cutoffMs !== null) {{
-            const t = row.dataset.startedAt ? Date.parse(row.dataset.startedAt) : NaN;
-            if (isNaN(t) || t < cutoffMs) visible = false;
+        const pageSize = parseInt(deckPageSizeSelect?.value || "20", 10) || 20;
+        const allRows = Array.from(deckRunTbody.querySelectorAll("tr.deck-row"));
+
+        // Step 1: filter — preserves DOM order (newest first).
+        const matchedRows = allRows.filter((row) => _deckRowMatchesFilters(row, brand, cutoffMs, search));
+        const totalMatched = matchedRows.length;
+        const totalPages = Math.max(1, Math.ceil(totalMatched / pageSize));
+        if (deckCurrentPage > totalPages) deckCurrentPage = totalPages;
+        if (deckCurrentPage < 1) deckCurrentPage = 1;
+
+        // Step 2: paginate — show only the slice for the current page.
+        const startIdx = (deckCurrentPage - 1) * pageSize;
+        const endIdx = startIdx + pageSize;
+        const visibleSet = new Set(matchedRows.slice(startIdx, endIdx));
+        for (const row of allRows) {{
+          row.hidden = !visibleSet.has(row);
+        }}
+
+        if (deckPaginationStatus) {{
+          if (totalMatched === 0) {{
+            deckPaginationStatus.textContent = "No decks match these filters.";
+          }} else {{
+            const shownStart = startIdx + 1;
+            const shownEnd = Math.min(endIdx, totalMatched);
+            deckPaginationStatus.textContent = `Showing ${{shownStart}}–${{shownEnd}} of ${{totalMatched}} · Page ${{deckCurrentPage}} of ${{totalPages}}`;
           }}
-          if (visible && search && !row.textContent.toLowerCase().includes(search)) {{
-            visible = false;
-          }}
-          row.hidden = !visible;
-        }});
+        }}
+        _renderPaginationControls(deckCurrentPage, totalPages);
       }}
-      deckFilterBrand?.addEventListener("change", applyDeckFilters);
-      deckFilterTimeframe?.addEventListener("change", applyDeckFilters);
-      deckFilterSearch?.addEventListener("input", applyDeckFilters);
+
+      function applyDeckFiltersResetPage() {{
+        deckCurrentPage = 1;
+        applyDeckFilters();
+      }}
+
+      deckFilterBrand?.addEventListener("change", applyDeckFiltersResetPage);
+      deckFilterTimeframe?.addEventListener("change", applyDeckFiltersResetPage);
+      deckFilterSearch?.addEventListener("input", applyDeckFiltersResetPage);
+      deckPageSizeSelect?.addEventListener("change", () => {{
+        try {{ window.localStorage?.setItem(DECK_PAGE_SIZE_KEY, deckPageSizeSelect.value); }} catch (_e) {{}}
+        applyDeckFiltersResetPage();
+      }});
+
+      // Keyboard nav: ←/→ change pages when no input/select/textarea is focused.
+      // Skips when modifier keys are held so we don't conflict with browser shortcuts.
+      document.addEventListener("keydown", (event) => {{
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        const tag = (document.activeElement?.tagName || "").toUpperCase();
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (!deckRunTbody) return;
+        const rect = deckRunTbody.getBoundingClientRect();
+        if (rect.bottom < 0 || rect.top > window.innerHeight) return;
+        const button = deckPaginationControls?.querySelector(
+          event.key === "ArrowLeft"
+            ? "button[aria-label='Previous page']:not([disabled])"
+            : "button[aria-label='Next page']:not([disabled])"
+        );
+        if (button) {{ event.preventDefault(); button.click(); }}
+      }});
+
+      // Initial render — pagination on, page 1.
+      applyDeckFilters();
 
       // Audit redesign: global "Copy share link" handler. Lives at document
       // level so it works for the per-row buttons in the past-decks table
