@@ -1729,6 +1729,47 @@ def admin_deck_runs(request: Request) -> ApiMessage:
     return ApiMessage(status="ok", message="Deck generation runs loaded.", details=details)
 
 
+@router.delete("/admin/api/deck-runs/{run_id}", response_model=ApiMessage)
+def admin_delete_deck_run(request: Request, run_id: int) -> ApiMessage:
+    """PR52: hard-delete a single deck-generation AutomationRun.
+    Admin-auth gated. The frontend confirms with a modal before calling
+    this; backend trusts that confirmation and deletes immediately."""
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Admin login required.")
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Deck run {run_id} not found.")
+        if run.run_type != "deck_generation":
+            # Defensive: don't let this endpoint nuke other run types.
+            raise HTTPException(status_code=400, detail=f"Run {run_id} is not a deck generation.")
+        session.delete(run)
+        session.commit()
+    return ApiMessage(status="ok", message=f"Deck run {run_id} deleted.")
+
+
+@router.post("/api/admin/deck-runs/{run_id}/delete", response_model=ApiMessage)
+def internal_admin_delete_deck_run(
+    request: Request,
+    run_id: int,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> ApiMessage:
+    """PR52: internal-API mirror of the admin DELETE so the frontend
+    proxy can forward via POST (proxy uses POST for cross-service calls
+    and avoids sending DELETE through the redirect chain). Same effect."""
+    _enforce_api_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Deck run {run_id} not found.")
+        if run.run_type != "deck_generation":
+            raise HTTPException(status_code=400, detail=f"Run {run_id} is not a deck generation.")
+        session.delete(run)
+        session.commit()
+    return ApiMessage(status="ok", message=f"Deck run {run_id} deleted.")
+
+
 @router.post("/api/discovery/clickup-schema", response_model=ApiMessage)
 def discover_clickup_schema(
     payload: DiscoveryRequest,

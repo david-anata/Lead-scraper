@@ -4307,6 +4307,39 @@ def admin_canva_connect_proxy(request: Request) -> Response:
     return RedirectResponse(url=redirect_url, status_code=302)
 
 
+@app.delete("/admin/api/deck-runs/{run_id}", response_model=None)
+def admin_delete_deck_run_proxy(request: Request, run_id: int) -> JSONResponse:
+    """PR52: proxy DELETE for past-decks-table delete button. Admin-cookie
+    gated on the frontend, then forwarded to the backend internal API
+    (POST /api/admin/deck-runs/{run_id}/delete) which is keyed by the
+    internal API key. Backend deletes the AutomationRun row."""
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    if not admin_settings.sales_support_agent_url or not admin_settings.sales_agent_internal_api_key:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Sales support agent URL or internal API key is not configured."},
+        )
+    try:
+        response = requests.post(
+            f"{admin_settings.sales_support_agent_url}/api/admin/deck-runs/{run_id}/delete",
+            headers={"X-Internal-Api-Key": admin_settings.sales_agent_internal_api_key},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Failed to reach backend: {exc}"},
+        )
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"detail": response.text or "Unexpected backend response."}
+    return JSONResponse(status_code=response.status_code, content=body)
+
+
 @app.post("/admin/api/generate-deck")
 async def admin_generate_deck_proxy(
     request: Request,
