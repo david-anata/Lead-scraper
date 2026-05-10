@@ -33,7 +33,12 @@ from sales_support_agent.jobs.daily_digest import DailyDigestJob
 from sales_support_agent.jobs.mailbox_sync import GmailMailboxSyncJob
 from sales_support_agent.jobs.stale_leads import StaleLeadJob
 from sales_support_agent.models.database import session_scope
-from sales_support_agent.models.entities import AutomationRun, LeadMirror
+from sales_support_agent.models.entities import (
+    AutomationRun,
+    DeckSectionView,
+    DeckVisitSession,
+    LeadMirror,
+)
 from sales_support_agent.models.schemas import (
     ApiMessage,
     CommunicationEventRequest,
@@ -1139,6 +1144,121 @@ def _hash_deck_visitor_key(request: Request) -> str:
     return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
+# ============================================================
+# PR54: deck-engagement analytics helpers (UA / geo / referrer)
+# ============================================================
+
+# Cap a session at 6h. Anything beyond is almost certainly a stuck tab,
+# not real engagement, and we don't want a misbehaving client (or hostile
+# one) to inflate "time spent" beyond physical reality.
+_MAX_SESSION_SECONDS = 6 * 60 * 60
+
+
+def _parse_user_agent(ua_raw: str) -> dict[str, str]:
+    """Lightweight UA parser — no extra dep. Returns {device, os, browser}.
+    Catches the 95% case (mainstream desktop + iOS/Android mobile);
+    everything else falls back to "other"."""
+    ua = (ua_raw or "")[:512]
+    ua_lc = ua.lower()
+    if not ua:
+        return {"device": "", "os": "", "browser": ""}
+    # Device tier: mobile/tablet/desktop. iPad reports as Mac on iOS 13+,
+    # but we don't need that level of precision for the dashboard.
+    if "ipad" in ua_lc or ("tablet" in ua_lc and "android" in ua_lc):
+        device = "tablet"
+    elif "mobile" in ua_lc or "iphone" in ua_lc or "ipod" in ua_lc or "android" in ua_lc:
+        device = "mobile"
+    else:
+        device = "desktop"
+    # OS — pick the most specific match first.
+    if "windows" in ua_lc:
+        os_name = "Windows"
+    elif "iphone" in ua_lc or "ipad" in ua_lc or "ipod" in ua_lc:
+        os_name = "iOS"
+    elif "android" in ua_lc:
+        os_name = "Android"
+    elif "mac os x" in ua_lc or "macos" in ua_lc or "macintosh" in ua_lc:
+        os_name = "macOS"
+    elif "linux" in ua_lc:
+        os_name = "Linux"
+    elif "cros" in ua_lc:
+        os_name = "ChromeOS"
+    else:
+        os_name = "other"
+    # Browser — order matters (Edge contains "Chrome", Chrome contains "Safari").
+    if "edg/" in ua_lc or "edge/" in ua_lc:
+        browser = "Edge"
+    elif "opr/" in ua_lc or "opera" in ua_lc:
+        browser = "Opera"
+    elif "firefox/" in ua_lc:
+        browser = "Firefox"
+    elif "chrome/" in ua_lc or "crios/" in ua_lc:
+        browser = "Chrome"
+    elif "safari/" in ua_lc:
+        browser = "Safari"
+    else:
+        browser = "other"
+    return {"device": device, "os": os_name, "browser": browser}
+
+
+def _categorize_referrer(referrer_url: str) -> tuple[str, str]:
+    """Returns (host, category) for a referer URL.
+    Categories: direct/email/social/search/other. Used for the source
+    breakdown card in the analytics modal."""
+    raw = (referrer_url or "").strip()
+    if not raw:
+        return ("", "direct")
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower().lstrip("www.")
+    except Exception:
+        return ("", "direct")
+    if not host:
+        return ("", "direct")
+    # Mail clients & email services.
+    if any(m in host for m in ("mail.google", "outlook.live", "outlook.office", "mail.yahoo", "mail.proton")):
+        return (host, "email")
+    # Social.
+    social_hosts = ("linkedin.com", "twitter.com", "x.com", "facebook.com", "instagram.com",
+                    "t.co", "lnkd.in", "fb.com", "reddit.com", "youtube.com")
+    if any(s in host for s in social_hosts):
+        return (host, "social")
+    # Messaging that often gets pasted in.
+    if any(m in host for m in ("slack.com", "discord.com", "teams.microsoft", "telegram.org", "wa.me", "whatsapp.com")):
+        return (host, "social")
+    # Search engines.
+    if any(s in host for s in ("google.com", "bing.com", "duckduckgo.com", "yahoo.com")):
+        # google.com hosts gmail too (mail.google), but we matched mail.* above.
+        return (host, "search")
+    return (host, "other")
+
+
+def _extract_visitor_geo(request: Request) -> dict[str, str]:
+    """PR54: free geo capture. Uses Cloudflare's CF-IPCountry header when
+    present (free if Cloudflare proxies the origin). Region/city are
+    deferred to PR55 (would need MaxMind GeoLite2 DB). Returns
+    {country, region, city} — region/city are "" for now."""
+    country = (request.headers.get("cf-ipcountry") or "").strip().upper()[:8]
+    # Cloudflare uses "XX" for unknown; treat as missing.
+    if country in ("", "XX", "T1"):
+        country = ""
+    return {"country": country, "region": "", "city": ""}
+
+
+def _extract_client_ip(request: Request) -> str:
+    """Pull the visitor IP through proxy headers in trust order:
+    CF-Connecting-IP > X-Forwarded-For (first hop) > request.client.host.
+    Used only for diagnostics; we don't store IP."""
+    cf = (request.headers.get("cf-connecting-ip") or "").strip()
+    if cf:
+        return cf
+    fwd = (request.headers.get("x-forwarded-for") or "").strip()
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return (request.client.host if request.client else "") or ""
+
+
 def _summarize_deck_view_events(events: list[dict[str, str]]) -> dict[str, object]:
     now = datetime.now(timezone.utc)
     grouped: dict[str, dict[str, object]] = {}
@@ -1224,6 +1344,143 @@ def deck_export_view(request: Request, run_id: int, token: str) -> Response:
 @router.get("/decks/{deck_slug}/{run_id}/{token}", response_class=HTMLResponse)
 def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
     return _render_deck_export(request, run_id, token)
+
+
+# PR54: deck-engagement heartbeat endpoint.
+# Client posts here every 15s active / 60s idle with current session state.
+# Server upserts the session row + per-section dwell rows. No response body
+# beyond status — keeps the wire small.
+@router.post("/decks/{deck_slug}/{run_id}/{token}/heartbeat")
+async def deck_heartbeat(
+    request: Request,
+    deck_slug: str,
+    run_id: int,
+    token: str,
+) -> JSONResponse:
+    # Validate deck identity (token must match) before doing any DB work.
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.execute(
+            select(AutomationRun).where(
+                AutomationRun.id == run_id,
+                AutomationRun.run_type == "deck_generation",
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            return JSONResponse(status_code=404, content={"detail": "Deck not found."})
+        summary = dict(run.summary_json or {})
+        if summary.get("export_token") != token:
+            return JSONResponse(status_code=404, content={"detail": "Deck not found."})
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        visitor_token = str(payload.get("visitor_token") or "").strip()[:64]
+        if not visitor_token:
+            return JSONResponse(status_code=400, content={"detail": "visitor_token required."})
+
+        is_internal = bool(payload.get("is_internal", False))
+        # Client-tracked cumulative seconds (capped server-side so a hostile
+        # or buggy client can't claim absurd durations).
+        client_total_seconds = int(payload.get("total_seconds", 0) or 0)
+        client_total_seconds = max(0, min(client_total_seconds, _MAX_SESSION_SECONDS))
+        max_scroll = int(payload.get("max_scroll_pct", 0) or 0)
+        max_scroll = max(0, min(max_scroll, 100))
+
+        # Section dwell — dict of {section_id: total_seconds_visible}.
+        # Capped per-section at the same ceiling so one section can't
+        # individually exceed the session ceiling.
+        sections_payload: dict[str, int] = {}
+        raw_sections = payload.get("sections") or {}
+        if isinstance(raw_sections, dict):
+            for sec_id, secs in raw_sections.items():
+                sec_id_clean = str(sec_id)[:64]
+                if not sec_id_clean:
+                    continue
+                try:
+                    secs_int = int(secs)
+                except (TypeError, ValueError):
+                    continue
+                sections_payload[sec_id_clean] = max(0, min(secs_int, _MAX_SESSION_SECONDS))
+
+        now = datetime.now(timezone.utc)
+
+        # Upsert by (run_id, visitor_token). One session row per
+        # visitor-cookie+deck pair; reopening the deck after weeks updates
+        # the same row's last_heartbeat_at and accumulates seconds.
+        # (Future: split into multiple sessions if the gap exceeds a
+        # threshold like 30 min — for PR54 a single rolling session is fine.)
+        existing = session.execute(
+            select(DeckVisitSession).where(
+                DeckVisitSession.run_id == run_id,
+                DeckVisitSession.visitor_token == visitor_token,
+            )
+        ).scalar_one_or_none()
+
+        if existing is None:
+            # First heartbeat — capture identity (geo, UA, referrer).
+            ua_raw = (request.headers.get("user-agent") or "")[:512]
+            ua_parts = _parse_user_agent(ua_raw)
+            geo = _extract_visitor_geo(request)
+            referrer_url = str(payload.get("referrer") or request.headers.get("referer") or "")
+            ref_host, ref_cat = _categorize_referrer(referrer_url)
+            existing = DeckVisitSession(
+                run_id=run_id,
+                visitor_token=visitor_token,
+                is_internal=is_internal,
+                started_at=now,
+                last_heartbeat_at=now,
+                total_seconds=client_total_seconds,
+                max_scroll_pct=max_scroll,
+                ip_country=geo["country"],
+                ip_region=geo["region"],
+                ip_city=geo["city"],
+                device=ua_parts["device"],
+                os=ua_parts["os"],
+                browser=ua_parts["browser"],
+                user_agent_raw=ua_raw,
+                referrer_host=ref_host[:128],
+                referrer_category=ref_cat,
+            )
+            session.add(existing)
+            session.flush()  # populate existing.id for the section rows below
+        else:
+            # Subsequent heartbeat — bump cumulative fields.
+            existing.last_heartbeat_at = now
+            # Trust the client's cumulative count (already capped). Use
+            # max() so a stale heartbeat (out-of-order delivery) can't
+            # decrease the stored value.
+            if client_total_seconds > existing.total_seconds:
+                existing.total_seconds = client_total_seconds
+            if max_scroll > existing.max_scroll_pct:
+                existing.max_scroll_pct = max_scroll
+            session.add(existing)
+
+        # Section dwell — upsert each section's row.
+        for sec_id, secs in sections_payload.items():
+            sec_row = session.execute(
+                select(DeckSectionView).where(
+                    DeckSectionView.session_id == existing.id,
+                    DeckSectionView.section_id == sec_id,
+                )
+            ).scalar_one_or_none()
+            if sec_row is None:
+                sec_row = DeckSectionView(
+                    session_id=existing.id,
+                    section_id=sec_id,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    total_seconds=secs,
+                )
+                session.add(sec_row)
+            else:
+                sec_row.last_seen_at = now
+                if secs > sec_row.total_seconds:
+                    sec_row.total_seconds = secs
+                session.add(sec_row)
+
+        session.commit()
+        return JSONResponse(status_code=200, content={"status": "ok", "session_id": existing.id})
 
 
 def _load_story_markdown(

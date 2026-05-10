@@ -260,6 +260,75 @@ class AutomationRun(Base):
     summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# PR54: deck-engagement analytics — proper relational tables instead of
+# the JSON-blob view_events list inside AutomationRun.summary_json. JSON
+# blobs can't safely handle session state that needs to update in place
+# (every heartbeat would be a read-modify-write race).
+class DeckVisitSession(Base):
+    __tablename__ = "deck_visit_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # FK to automation_runs.id — but we don't enforce a real FK so old
+    # AutomationRun rows can be deleted without orphan cleanup blocking.
+    run_id: Mapped[int] = mapped_column(Integer, index=True)
+    # Anonymous visitor cookie token — UUIDv4 minted client-side. Not a
+    # fingerprint hash; user wants to add real auth later.
+    visitor_token: Mapped[str] = mapped_column(String(64), index=True)
+    # internal=admin previewing (?viewer=internal); external=prospect.
+    is_internal: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    # Cumulative seconds the page was foregrounded for this session.
+    # Computed client-side and reported on each heartbeat (capped server-side
+    # so a misbehaving client can't claim a 24-hour session).
+    total_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    # Max scroll percentage observed during the session (0-100).
+    max_scroll_pct: Mapped[int] = mapped_column(Integer, default=0)
+    # Geo from CF-IPCountry header (free if Cloudflare proxies the host).
+    # 2-letter ISO code; "" when unavailable.
+    ip_country: Mapped[str] = mapped_column(String(8), default="")
+    ip_region: Mapped[str] = mapped_column(String(64), default="")
+    ip_city: Mapped[str] = mapped_column(String(96), default="")
+    # User-agent parsed server-side (lightweight regex; no heavy lib).
+    device: Mapped[str] = mapped_column(String(16), default="")  # desktop/mobile/tablet
+    os: Mapped[str] = mapped_column(String(32), default="")
+    browser: Mapped[str] = mapped_column(String(32), default="")
+    user_agent_raw: Mapped[str] = mapped_column(String(512), default="")
+    # Where they clicked from. Host extracted from `Referer` header,
+    # categorized into direct/email/social/search/other for the dashboard.
+    referrer_host: Mapped[str] = mapped_column(String(128), default="")
+    referrer_category: Mapped[str] = mapped_column(String(16), default="direct")
+
+    __table_args__ = (
+        Index("ix_deck_sessions_run_visitor", "run_id", "visitor_token"),
+    )
+
+
+class DeckSectionView(Base):
+    __tablename__ = "deck_section_views"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(Integer, index=True)
+    # Section ID matches the deck's `id="sec-01"` etc. on each <section>.
+    section_id: Mapped[str] = mapped_column(String(64), index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    # Cumulative seconds this section was visible during the session.
+    total_seconds: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_deck_section_session_sec", "session_id", "section_id", unique=True),
+    )
+
+
 class AutomationAction(Base):
     __tablename__ = "automation_actions"
 

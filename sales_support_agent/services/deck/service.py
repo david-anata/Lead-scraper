@@ -1890,6 +1890,167 @@ class DeckGenerationService:
       }});
     }});
   </script>
+  <script>
+    // PR54: deck-engagement instrumentation.
+    // Tracks per-section dwell time, total session length, max scroll
+    // depth. Heartbeats to /decks/.../heartbeat every 15s active /
+    // 60s idle. Beacon on pagehide flushes the final state.
+    (function() {{
+      var IS_INTERNAL = /[?&]viewer=internal\b/.test(window.location.search);
+      var ACTIVE_INTERVAL = 15 * 1000;          // 15s while user is interacting
+      var IDLE_INTERVAL   = 60 * 1000;          // 60s if no activity for 2min
+      var IDLE_THRESHOLD  = 2  * 60 * 1000;     // 2min of no activity = idle
+      var MAX_SECONDS     = 6  * 60 * 60;       // hard cap = 6h
+
+      // Cookie helpers — minimal, no deps.
+      function getCookie(name) {{
+        var match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+        return match ? decodeURIComponent(match[1]) : '';
+      }}
+      function setCookie(name, value, days) {{
+        var d = new Date(); d.setTime(d.getTime() + days * 24 * 60 * 60 * 1000);
+        document.cookie = name + '=' + encodeURIComponent(value) +
+          '; expires=' + d.toUTCString() + '; path=/; samesite=lax';
+      }}
+      function uuid4() {{
+        // RFC4122-ish, sufficient for an anonymous tracking token.
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {{
+          var r = Math.random() * 16 | 0;
+          var v = c === 'x' ? r : (r & 0x3 | 0x8);
+          return v.toString(16);
+        }});
+      }}
+      var visitorToken = getCookie('anata_visitor_token');
+      if (!visitorToken) {{
+        visitorToken = uuid4();
+        setCookie('anata_visitor_token', visitorToken, 365);
+      }}
+
+      // State.
+      var sessionStart = Date.now();
+      var lastActivity = Date.now();
+      var totalActiveMs = 0;            // page-foregrounded ms
+      var lastTickMs = Date.now();       // for active-time accumulator
+      var maxScrollPct = 0;
+      var sectionDwell = {{}};            // {{section_id: seconds}}
+      var visibleSections = new Map();   // section_id → enteredAt timestamp
+
+      // Activity detection — anything that's not "completely passive".
+      function bumpActivity() {{ lastActivity = Date.now(); }}
+      ['mousemove', 'keydown', 'scroll', 'touchstart', 'click'].forEach(function(evt) {{
+        document.addEventListener(evt, bumpActivity, {{ passive: true }});
+      }});
+
+      // Active-time accumulator: tick every second; only count if the page
+      // is visible AND the user has interacted in the last 2 minutes.
+      setInterval(function() {{
+        var now = Date.now();
+        var delta = now - lastTickMs;
+        lastTickMs = now;
+        if (document.hidden) return;
+        if (now - lastActivity > IDLE_THRESHOLD) return;
+        totalActiveMs = Math.min(totalActiveMs + delta, MAX_SECONDS * 1000);
+        // Update visible sections' dwell counters.
+        visibleSections.forEach(function(_, secId) {{
+          sectionDwell[secId] = (sectionDwell[secId] || 0) + Math.round(delta / 1000);
+          if (sectionDwell[secId] > MAX_SECONDS) sectionDwell[secId] = MAX_SECONDS;
+        }});
+      }}, 1000);
+
+      // Scroll depth (0-100).
+      function updateScrollDepth() {{
+        var doc = document.documentElement;
+        var winH = window.innerHeight || doc.clientHeight || 0;
+        var scrollY = window.scrollY || doc.scrollTop || 0;
+        var docH = Math.max(doc.scrollHeight, doc.offsetHeight) - winH;
+        if (docH <= 0) return;
+        var pct = Math.round((scrollY / docH) * 100);
+        if (pct > maxScrollPct) maxScrollPct = Math.min(100, pct);
+      }}
+      window.addEventListener('scroll', updateScrollDepth, {{ passive: true }});
+      updateScrollDepth();
+
+      // Per-section dwell — IntersectionObserver on every <section> that
+      // has an id (deck sections are sec-01 .. sec-08 plus a few others).
+      // 25% threshold so a section needs to be meaningfully visible to count.
+      function setupSectionObserver() {{
+        if (!('IntersectionObserver' in window)) return;
+        var observer = new IntersectionObserver(function(entries) {{
+          entries.forEach(function(entry) {{
+            var secId = entry.target.id;
+            if (!secId) return;
+            if (entry.isIntersecting && entry.intersectionRatio >= 0.25) {{
+              if (!visibleSections.has(secId)) visibleSections.set(secId, Date.now());
+            }} else {{
+              visibleSections.delete(secId);
+            }}
+          }});
+        }}, {{ threshold: [0, 0.25, 0.5, 0.75, 1] }});
+        document.querySelectorAll('section[id], [data-section-id]').forEach(function(el) {{
+          if (el.id) observer.observe(el);
+        }});
+      }}
+      if (document.readyState === 'loading') {{
+        document.addEventListener('DOMContentLoaded', setupSectionObserver);
+      }} else {{
+        setupSectionObserver();
+      }}
+
+      // Heartbeat — sends current state to the server.
+      var heartbeatUrl = window.location.pathname.replace(/\/$/, '') + '/heartbeat';
+      function buildPayload() {{
+        return {{
+          visitor_token: visitorToken,
+          is_internal: IS_INTERNAL,
+          total_seconds: Math.floor(totalActiveMs / 1000),
+          max_scroll_pct: maxScrollPct,
+          sections: sectionDwell,
+          referrer: document.referrer || ''
+        }};
+      }}
+      function sendHeartbeat() {{
+        try {{
+          fetch(heartbeatUrl, {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/json' }},
+            body: JSON.stringify(buildPayload()),
+            keepalive: true
+          }}).catch(function() {{ /* network error — drop silently */ }});
+        }} catch (_e) {{}}
+      }}
+
+      // Adaptive cadence: 15s when active, 60s when idle.
+      function nextDelay() {{
+        var idleMs = Date.now() - lastActivity;
+        return idleMs > IDLE_THRESHOLD ? IDLE_INTERVAL : ACTIVE_INTERVAL;
+      }}
+      function scheduleNext() {{
+        setTimeout(function tick() {{
+          sendHeartbeat();
+          setTimeout(tick, nextDelay());
+        }}, nextDelay());
+      }}
+      // First heartbeat fires after 5s — gives the page a moment to settle
+      // and IntersectionObserver to register the initial visible section.
+      setTimeout(function() {{ sendHeartbeat(); scheduleNext(); }}, 5000);
+
+      // Final flush on tab close. sendBeacon is fire-and-forget and
+      // survives the page navigation that fetch() wouldn't.
+      function flush() {{
+        try {{
+          var body = JSON.stringify(buildPayload());
+          if (navigator.sendBeacon) {{
+            var blob = new Blob([body], {{ type: 'application/json' }});
+            navigator.sendBeacon(heartbeatUrl, blob);
+          }} else {{
+            sendHeartbeat();
+          }}
+        }} catch (_e) {{}}
+      }}
+      window.addEventListener('pagehide', flush);
+      window.addEventListener('beforeunload', flush);
+    }})();
+  </script>
 </body>
 </html>"""
 

@@ -13,7 +13,14 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings, is_active_pipeline_status, normalize_status_key
-from sales_support_agent.models.entities import AutomationRun, CommunicationEvent, LeadMirror, MailboxSignal
+from sales_support_agent.models.entities import (
+    AutomationRun,
+    CommunicationEvent,
+    DeckSectionView,
+    DeckVisitSession,
+    LeadMirror,
+    MailboxSignal,
+)
 from sales_support_agent.services.admin_nav import render_agent_favicon_links, render_agent_nav, render_agent_nav_styles
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
@@ -207,6 +214,221 @@ def _build_deck_view_analytics(summary: dict[str, object]) -> dict[str, object]:
             "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
         },
     }
+
+
+def _merge_legacy_with_engagement(
+    legacy: dict[str, object],
+    engagement: dict[str, object],
+) -> dict[str, object]:
+    """PR54: stitch the new engagement payload into the legacy view_analytics
+    shape. The modal reads one unified per-cohort dict that has both the
+    old visit-count fields AND the new heartbeat-derived fields. When the
+    new tables are empty (deck generated before PR54 deployed), the legacy
+    counts still surface and the engagement fields default to zero."""
+    out: dict[str, dict[str, object]] = {}
+    for cohort in ("internal", "external"):
+        merged = dict(legacy.get(cohort, {}) or {})
+        merged.update(engagement.get(cohort, {}) or {})
+        out[cohort] = merged
+    return out
+
+
+def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
+    """PR54: query DeckVisitSession + DeckSectionView for the new
+    rich-engagement payload. Returned as a separate dict alongside the
+    legacy view_analytics; the modal merges them.
+
+    Default-excludes internal sessions (admin previews) per the user's
+    Decision 1. The modal can flip a toggle to include them later.
+
+    Returns:
+        {
+          "external": {
+            "unique_visitors": int,
+            "total_visits": int,
+            "avg_seconds": int,            # avg session length
+            "median_seconds": int,
+            "max_scroll_avg_pct": int,
+            "first_seen_at": iso,
+            "last_seen_at": iso,
+            "visitors": [
+              {
+                visitor_token, started_at, last_heartbeat_at, total_seconds,
+                max_scroll_pct, country, region, city, device, os, browser,
+                referrer_host, referrer_category
+              }, ...
+            ],
+            "top_sections": [
+              {section_id, total_seconds, viewer_count}, ...
+            ],
+            "daily_counts": {"7": {date: n}, "30": ..., "90": ..., "all": ...},
+            "source_breakdown": {direct: n, email: n, social: n, search: n, other: n},
+            "device_breakdown": {desktop: n, mobile: n, tablet: n},
+            "country_breakdown": {US: n, ...}
+          },
+          "internal": {... same shape ...}
+        }
+    """
+    out: dict[str, dict[str, object]] = {}
+    rows = (
+        session.execute(
+            select(DeckVisitSession).where(DeckVisitSession.run_id == run_id)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        empty = {
+            "unique_visitors": 0, "total_visits": 0, "avg_seconds": 0,
+            "median_seconds": 0, "max_scroll_avg_pct": 0,
+            "first_seen_at": "", "last_seen_at": "", "visitors": [],
+            "top_sections": [], "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
+            "source_breakdown": {}, "device_breakdown": {}, "country_breakdown": {},
+        }
+        return {"internal": dict(empty), "external": dict(empty)}
+
+    # Pre-fetch all section views for these sessions in one query.
+    session_ids = [r.id for r in rows]
+    section_rows = (
+        session.execute(
+            select(DeckSectionView).where(DeckSectionView.session_id.in_(session_ids))
+        )
+        .scalars()
+        .all()
+    )
+    sections_by_session: dict[int, list[DeckSectionView]] = {}
+    for sv in section_rows:
+        sections_by_session.setdefault(sv.session_id, []).append(sv)
+
+    now = datetime.now(timezone.utc)
+
+    def _aware(dt):
+        # SQLite returns naive datetimes; Postgres returns aware. Normalize
+        # to UTC-aware for safe arithmetic.
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    for viewer_type in ("internal", "external"):
+        is_internal_filter = viewer_type == "internal"
+        cohort = [r for r in rows if bool(r.is_internal) == is_internal_filter]
+        if not cohort:
+            out[viewer_type] = {
+                "unique_visitors": 0, "total_visits": 0, "avg_seconds": 0,
+                "median_seconds": 0, "max_scroll_avg_pct": 0,
+                "first_seen_at": "", "last_seen_at": "", "visitors": [],
+                "top_sections": [], "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
+                "source_breakdown": {}, "device_breakdown": {}, "country_breakdown": {},
+            }
+            continue
+
+        unique_visitors = {r.visitor_token for r in cohort if r.visitor_token}
+        total_seconds_list = [int(r.total_seconds or 0) for r in cohort]
+        avg_seconds = sum(total_seconds_list) // max(len(total_seconds_list), 1)
+        sorted_secs = sorted(total_seconds_list)
+        median_seconds = sorted_secs[len(sorted_secs) // 2] if sorted_secs else 0
+        scroll_list = [int(r.max_scroll_pct or 0) for r in cohort]
+        avg_scroll = sum(scroll_list) // max(len(scroll_list), 1)
+
+        # Daily count windows.
+        daily_counts: dict[str, dict[str, int]] = {}
+        for window_name, days in (("7", 7), ("30", 30), ("90", 90), ("all", None)):
+            counter: dict[str, int] = {}
+            for r in cohort:
+                started = _aware(r.started_at)
+                if started is None:
+                    continue
+                if days is not None and (now - started).days >= days:
+                    continue
+                day_key = started.date().isoformat()
+                counter[day_key] = counter.get(day_key, 0) + 1
+            daily_counts[window_name] = dict(sorted(counter.items()))
+
+        # Source / device / country breakdowns for the donuts.
+        source_breakdown: dict[str, int] = {}
+        device_breakdown: dict[str, int] = {}
+        country_breakdown: dict[str, int] = {}
+        for r in cohort:
+            cat = r.referrer_category or "direct"
+            source_breakdown[cat] = source_breakdown.get(cat, 0) + 1
+            dev = r.device or "unknown"
+            device_breakdown[dev] = device_breakdown.get(dev, 0) + 1
+            country = r.ip_country or "Unknown"
+            country_breakdown[country] = country_breakdown.get(country, 0) + 1
+
+        # Top sections — sum total_seconds across all sessions in cohort.
+        section_totals: dict[str, int] = {}
+        section_viewers: dict[str, set[str]] = {}
+        cohort_ids = {r.id for r in cohort}
+        for sv in section_rows:
+            if sv.session_id not in cohort_ids:
+                continue
+            sec_id = sv.section_id or ""
+            if not sec_id:
+                continue
+            section_totals[sec_id] = section_totals.get(sec_id, 0) + int(sv.total_seconds or 0)
+            session_visitor = next(
+                (r.visitor_token for r in cohort if r.id == sv.session_id), ""
+            )
+            if session_visitor:
+                section_viewers.setdefault(sec_id, set()).add(session_visitor)
+        top_sections = sorted(
+            (
+                {
+                    "section_id": sec_id,
+                    "total_seconds": secs,
+                    "viewer_count": len(section_viewers.get(sec_id, set())),
+                }
+                for sec_id, secs in section_totals.items()
+            ),
+            key=lambda x: -x["total_seconds"],
+        )
+
+        # Per-visitor table rows.
+        visitors_table = sorted(
+            [
+                {
+                    "visitor_token": r.visitor_token,
+                    "started_at": r.started_at.isoformat() if r.started_at else "",
+                    "last_heartbeat_at": r.last_heartbeat_at.isoformat() if r.last_heartbeat_at else "",
+                    "total_seconds": int(r.total_seconds or 0),
+                    "max_scroll_pct": int(r.max_scroll_pct or 0),
+                    "country": r.ip_country or "",
+                    "region": r.ip_region or "",
+                    "city": r.ip_city or "",
+                    "device": r.device or "",
+                    "os": r.os or "",
+                    "browser": r.browser or "",
+                    "referrer_host": r.referrer_host or "",
+                    "referrer_category": r.referrer_category or "direct",
+                }
+                for r in cohort
+            ],
+            key=lambda v: v.get("started_at", ""),
+            reverse=True,
+        )
+
+        first_seen = min((_aware(r.started_at) for r in cohort if r.started_at), default=None)
+        last_seen = max((_aware(r.last_heartbeat_at) for r in cohort if r.last_heartbeat_at), default=None)
+
+        out[viewer_type] = {
+            "unique_visitors": len(unique_visitors),
+            "total_visits": len(cohort),
+            "avg_seconds": avg_seconds,
+            "median_seconds": median_seconds,
+            "max_scroll_avg_pct": avg_scroll,
+            "first_seen_at": first_seen.isoformat() if first_seen else "",
+            "last_seen_at": last_seen.isoformat() if last_seen else "",
+            "visitors": visitors_table,
+            "top_sections": top_sections,
+            "daily_counts": daily_counts,
+            "source_breakdown": source_breakdown,
+            "device_breakdown": device_breakdown,
+            "country_breakdown": country_breakdown,
+        }
+    return out
 
 
 def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
@@ -826,7 +1048,15 @@ def build_dashboard_data(
             "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
             "first_viewed_at": dict(run.summary_json or {}).get("first_viewed_at", ""),
             "last_viewed_at": dict(run.summary_json or {}).get("last_viewed_at", ""),
-            "view_analytics": _build_deck_view_analytics(dict(run.summary_json or {})),
+            # PR54: legacy view_analytics (visit counts, daily) MERGED with
+            # the new engagement payload (per-visitor table, sections,
+            # source/device/country, avg session length). Modal reads one
+            # unified shape: each of internal/external has both legacy
+            # counters and new engagement fields.
+            "view_analytics": _merge_legacy_with_engagement(
+                _build_deck_view_analytics(dict(run.summary_json or {})),
+                _build_deck_engagement(session, run.id),
+            ),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
         }
@@ -2656,14 +2886,128 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       .analytics-card {{
         border: 1px solid rgba(43, 54, 68, 0.10);
         border-radius: 14px;
-        padding: 14px 16px;
+        padding: 16px 18px;
         background: rgba(249, 247, 243, 0.84);
+      }}
+      .analytics-card h4 {{
+        margin: 0 0 8px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: rgba(43, 54, 68, 0.65);
       }}
       .analytics-card ul {{
         margin: 10px 0 0;
-        padding-left: 18px;
+        padding: 0;
+        list-style: none;
         display: grid;
         gap: 6px;
+      }}
+      /* PR54: rich engagement modal layout. */
+      .analytics-card-primary {{
+        background: rgba(43, 54, 68, 0.95);
+        color: white;
+        border-color: rgba(43, 54, 68, 0.95);
+      }}
+      .analytics-card-primary h4 {{ color: rgba(255, 255, 255, 0.65); }}
+      .analytics-card-wide {{ grid-column: 1 / -1; }}
+      .analytics-big {{
+        font-size: 36px;
+        font-weight: 800;
+        line-height: 1;
+        margin: 4px 0 6px;
+      }}
+      .analytics-big-sm {{
+        font-size: 28px;
+        font-weight: 700;
+      }}
+      .analytics-big-sm span {{
+        font-size: 13px;
+        font-weight: 500;
+        color: rgba(43, 54, 68, 0.55);
+        margin-left: 4px;
+      }}
+      .analytics-big-label {{
+        margin: 0 0 12px;
+        font-size: 12px;
+        opacity: 0.75;
+      }}
+      .analytics-meta {{
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 4px;
+        font-size: 12px;
+        opacity: 0.92;
+      }}
+      .analytics-meta strong {{
+        font-variant-numeric: tabular-nums;
+      }}
+      .analytics-meta-row {{
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: rgba(43, 54, 68, 0.55);
+      }}
+      .analytics-empty {{
+        margin: 8px 0 0;
+        font-size: 12px;
+        color: rgba(43, 54, 68, 0.55);
+        font-style: italic;
+      }}
+      .analytics-breakdown-row {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+      }}
+      .analytics-breakdown h5 {{
+        margin: 0 0 6px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: rgba(43, 54, 68, 0.55);
+      }}
+      .analytics-breakdown ul {{
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 4px;
+        font-size: 13px;
+      }}
+      .analytics-breakdown li {{
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }}
+      .analytics-breakdown li strong {{
+        font-variant-numeric: tabular-nums;
+      }}
+      .analytics-sections-table,
+      .analytics-visitors-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin-top: 8px;
+      }}
+      .analytics-sections-table thead th,
+      .analytics-visitors-table thead th {{
+        text-align: left;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: rgba(43, 54, 68, 0.55);
+        padding: 6px 8px;
+        border-bottom: 1px solid rgba(43, 54, 68, 0.10);
+      }}
+      .analytics-sections-table tbody td,
+      .analytics-visitors-table tbody td {{
+        padding: 8px;
+        border-bottom: 1px solid rgba(43, 54, 68, 0.05);
+        font-variant-numeric: tabular-nums;
+      }}
+      .analytics-visitors-table tbody tr:hover td {{
+        background: rgba(133, 187, 218, 0.10);
       }}
       .analytics-tabs {{
         display: flex;
@@ -5807,30 +6151,140 @@ def render_sales_deck_page(data: DashboardData) -> str:
         deckAnalyticsDaily.innerHTML = `<table><thead><tr><th>Date</th><th>Internal</th><th>External</th></tr></thead><tbody>${{allDays.map((day) => `<tr><td>${{escapeHtml(formatDeckDate(day))}}</td><td>${{escapeHtml(String(internalDaily[day] || 0))}}</td><td>${{escapeHtml(String(externalDaily[day] || 0))}}</td></tr>`).join("")}}</tbody></table>`;
       }}
 
+      // PR54: helpers shared by the modal renderer.
+      function fmtDuration(seconds) {{
+        const s = Math.max(0, Math.round(Number(seconds) || 0));
+        if (s < 60) return s + "s";
+        const m = Math.floor(s / 60);
+        const rem = s - m * 60;
+        if (m < 60) return rem ? (m + "m " + rem + "s") : (m + "m");
+        const h = Math.floor(m / 60);
+        const remM = m - h * 60;
+        return remM ? (h + "h " + remM + "m") : (h + "h");
+      }}
+      function fmtDateTime(iso) {{
+        if (!iso) return "—";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        const month = d.toLocaleString("en-US", {{ month: "short" }});
+        const day = d.getDate();
+        const hour12 = (d.getHours() % 12) || 12;
+        const min = String(d.getMinutes()).padStart(2, "0");
+        const ampm = d.getHours() >= 12 ? "PM" : "AM";
+        return `${{month}} ${{day}} · ${{hour12}}:${{min}} ${{ampm}}`;
+      }}
+      function visitorLabel(v) {{
+        const flag = v.country ? v.country : "🌐";
+        const place = [v.city, v.region, v.country].filter(Boolean).join(", ") || "Unknown location";
+        const device = v.device || "device";
+        const browser = v.browser || "browser";
+        return `${{flag}} · ${{place}} · ${{device}} · ${{browser}}`;
+      }}
+
       function openDeckAnalytics(payload) {{
         activeDeckAnalytics = payload || {{}};
         if (deckAnalyticsSummary) {{
-          const internal = activeDeckAnalytics.internal || {{}};
+          // Default: external cohort (prospects). Internal (admin previews)
+          // is excluded from engagement signals per the user's decision.
           const external = activeDeckAnalytics.external || {{}};
-          deckAnalyticsSummary.innerHTML = `
-            <article class="analytics-card">
-              <h4>Internal views</h4>
-              <ul>
-                <li>Unique visitors: ${{escapeHtml(String(internal.unique_visitors || 0))}}</li>
-                <li>Total visits: ${{escapeHtml(String(internal.total_visits || 0))}}</li>
-                <li>First visited: ${{escapeHtml(formatDeckDate(internal.first_viewed_at || ""))}}</li>
-                <li>Last visited: ${{escapeHtml(formatDeckDate(internal.last_viewed_at || ""))}}</li>
+          const internal = activeDeckAnalytics.internal || {{}};
+          const visitors = Array.isArray(external.visitors) ? external.visitors : [];
+          const topSections = Array.isArray(external.top_sections) ? external.top_sections : [];
+          const sourceBreakdown = external.source_breakdown || {{}};
+          const deviceBreakdown = external.device_breakdown || {{}};
+          const countryBreakdown = external.country_breakdown || {{}};
+
+          // Top counter cards.
+          const headerCards = `
+            <article class="analytics-card analytics-card-primary">
+              <h4>External engagement</h4>
+              <div class="analytics-big">${{escapeHtml(String(external.unique_visitors || 0))}}</div>
+              <p class="analytics-big-label">unique visitors · ${{escapeHtml(String(external.total_visits || 0))}} sessions</p>
+              <ul class="analytics-meta">
+                <li>Avg session: <strong>${{escapeHtml(fmtDuration(external.avg_seconds || 0))}}</strong></li>
+                <li>Avg scroll depth: <strong>${{escapeHtml(String(external.max_scroll_avg_pct || 0))}}%</strong></li>
+                <li>First seen: ${{escapeHtml(fmtDateTime(external.first_seen_at || external.first_viewed_at || ""))}}</li>
+                <li>Last seen: ${{escapeHtml(fmtDateTime(external.last_seen_at || external.last_viewed_at || ""))}}</li>
               </ul>
             </article>
             <article class="analytics-card">
-              <h4>External views</h4>
-              <ul>
-                <li>Unique visitors: ${{escapeHtml(String(external.unique_visitors || 0))}}</li>
-                <li>Total visits: ${{escapeHtml(String(external.total_visits || 0))}}</li>
-                <li>First visited: ${{escapeHtml(formatDeckDate(external.first_viewed_at || ""))}}</li>
-                <li>Last visited: ${{escapeHtml(formatDeckDate(external.last_viewed_at || ""))}}</li>
-              </ul>
+              <h4>Internal previews</h4>
+              <div class="analytics-big-sm">${{escapeHtml(String(internal.unique_visitors || 0))}} <span>unique</span></div>
+              <p class="analytics-meta-row">${{escapeHtml(String(internal.total_visits || 0))}} sessions · admin only</p>
             </article>`;
+
+          // Source / device / country breakdowns.
+          function breakdownRows(obj, fmtKey) {{
+            const entries = Object.entries(obj || {{}}).sort((a, b) => b[1] - a[1]);
+            if (!entries.length) return `<li class="analytics-empty">No data yet</li>`;
+            return entries.map(([k, n]) => `<li><span>${{escapeHtml(fmtKey ? fmtKey(k) : k)}}</span><strong>${{escapeHtml(String(n))}}</strong></li>`).join("");
+          }}
+          const breakdownsCard = `
+            <article class="analytics-card analytics-card-wide">
+              <h4>Sources, devices, countries</h4>
+              <div class="analytics-breakdown-row">
+                <div class="analytics-breakdown">
+                  <h5>Source</h5>
+                  <ul>${{breakdownRows(sourceBreakdown, (k) => k.charAt(0).toUpperCase() + k.slice(1))}}</ul>
+                </div>
+                <div class="analytics-breakdown">
+                  <h5>Device</h5>
+                  <ul>${{breakdownRows(deviceBreakdown, (k) => k.charAt(0).toUpperCase() + k.slice(1))}}</ul>
+                </div>
+                <div class="analytics-breakdown">
+                  <h5>Country</h5>
+                  <ul>${{breakdownRows(countryBreakdown)}}</ul>
+                </div>
+              </div>
+            </article>`;
+
+          // Top sections table.
+          const sectionLabels = {{
+            "sec-01": "Market", "sec-02": "Target listing", "sec-03": "Competitors",
+            "sec-04": "Search behavior", "sec-05": "Growth plan", "sec-06": "Conversion & PDP",
+            "sec-07": "Service offerings", "sec-08": "Proposed offers"
+          }};
+          const sectionsCard = topSections.length ? `
+            <article class="analytics-card analytics-card-wide">
+              <h4>Top sections by time</h4>
+              <table class="analytics-sections-table">
+                <thead><tr><th>Section</th><th>Total time</th><th>Visitors</th></tr></thead>
+                <tbody>${{topSections.slice(0, 12).map((s) => `
+                  <tr>
+                    <td>${{escapeHtml(sectionLabels[s.section_id] || s.section_id)}}</td>
+                    <td>${{escapeHtml(fmtDuration(s.total_seconds || 0))}}</td>
+                    <td>${{escapeHtml(String(s.viewer_count || 0))}}</td>
+                  </tr>`).join("")}}</tbody>
+              </table>
+            </article>` : `
+            <article class="analytics-card analytics-card-wide">
+              <h4>Top sections by time</h4>
+              <p class="analytics-empty">No section-dwell data captured yet. Sections start tracking after the first prospect heartbeat.</p>
+            </article>`;
+
+          // Per-visitor table — the most actionable view.
+          const visitorsCard = visitors.length ? `
+            <article class="analytics-card analytics-card-wide">
+              <h4>Visits</h4>
+              <table class="analytics-visitors-table">
+                <thead><tr><th>Visitor</th><th>Started</th><th>Session</th><th>Scroll</th><th>Source</th></tr></thead>
+                <tbody>${{visitors.slice(0, 50).map((v) => `
+                  <tr>
+                    <td>${{escapeHtml(visitorLabel(v))}}</td>
+                    <td>${{escapeHtml(fmtDateTime(v.started_at || ""))}}</td>
+                    <td>${{escapeHtml(fmtDuration(v.total_seconds || 0))}}</td>
+                    <td>${{escapeHtml(String(v.max_scroll_pct || 0))}}%</td>
+                    <td>${{escapeHtml(v.referrer_category || "direct")}}${{v.referrer_host ? " · " + escapeHtml(v.referrer_host) : ""}}</td>
+                  </tr>`).join("")}}</tbody>
+              </table>
+              ${{visitors.length > 50 ? `<p class="analytics-meta-row">Showing latest 50 of ${{visitors.length}} sessions.</p>` : ""}}
+            </article>` : `
+            <article class="analytics-card analytics-card-wide">
+              <h4>Visits</h4>
+              <p class="analytics-empty">No external visits yet. Once a prospect opens the share link, sessions appear here.</p>
+            </article>`;
+
+          deckAnalyticsSummary.innerHTML = headerCards + breakdownsCard + sectionsCard + visitorsCard;
         }}
         deckAnalyticsTabs?.querySelectorAll("button").forEach((button) => button.classList.toggle("is-active", button.dataset.window === "7"));
         renderDeckAnalyticsDaily("7");
