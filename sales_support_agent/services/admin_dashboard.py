@@ -156,18 +156,27 @@ def _format_dashboard_date(value: str) -> str:
 
 
 def _format_dashboard_datetime(value: str) -> str:
-    """PR49: same shape as _format_dashboard_date but includes the UTC time
-    so the past-decks table can disambiguate multiple decks generated for
-    the same brand on the same day. UTC is rendered explicitly so there's
-    no ambiguity about which clock the time refers to."""
+    """PR52: compact `MMM D · h:MM AM/PM` format (e.g. "May 9 · 4:47 PM").
+    Was "MM/DD/YYYY HH:MM UTC" in PR49 — that string broke the Created
+    column at the page width because "UTC" wrapped onto its own line.
+    The "Times in UTC" caption above the table tells the user the
+    timezone now, so the per-cell suffix can go.
+    Year omitted from the per-row cell because all rows in the past-decks
+    table are from the current year for any reasonable use; if we ever
+    show year-old decks this can re-add %Y."""
     raw = str(value or "").strip()
     if not raw:
         return ""
     try:
         if "T" in raw:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            return dt.strftime("%m/%d/%Y %H:%M UTC")
-        return date.fromisoformat(raw).strftime("%m/%d/%Y")
+            # %-d / %-I are POSIX-only (strip leading zeros). On portable
+            # platforms use %d / %I and lstrip the zero manually.
+            day_part = dt.strftime("%b ") + str(dt.day)
+            hour_12 = dt.strftime("%I").lstrip("0") or "12"
+            time_part = f"{hour_12}:{dt.strftime('%M %p')}"
+            return f"{day_part} · {time_part}"
+        return date.fromisoformat(raw).strftime("%b %d, %Y")
     except ValueError:
         return raw
 
@@ -4046,10 +4055,10 @@ def render_sales_deck_page(data: DashboardData) -> str:
 
     recent_deck_rows_html = "".join(
         f"""
-        <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}">
+        <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}" data-run-id="{html.escape(str(run.get("id", "")))}">
           <td><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
           <td class="muted">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
-          <td class="muted">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
+          <td class="muted deck-cell-created">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
           <td class="num">{_ext_views(run)}</td>
           <td class="num">{_int_views(run)}</td>
           <td class="deck-row-actions">
@@ -4057,6 +4066,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
             {f'<a href="{html.escape(str(run.get("view_url") or ""))}/story" target="_blank" rel="noreferrer" title="Open the markdown story companion to read through on a sales call">Story</a>' if run.get("view_url") else ""}
             {f'<button type="button" class="deck-url-copy" data-copy="{html.escape(str(run.get("view_url") or ""), quote=True)}" title="Copy share link to send to a prospect (counts as External view when they open it)">Copy share link</button>' if run.get("view_url") else ""}
             <button type="button" class="analytics-button" data-analytics='{html.escape(json.dumps(run.get("view_analytics") or {}))}'>Analytics</button>
+            <button type="button" class="deck-delete-button" data-run-id="{html.escape(str(run.get("id", "")))}" data-deck-title="{html.escape(str(run.get("design_title") or f"Run {run.get('id', '')}"), quote=True)}" title="Delete this deck (cannot be undone)">Delete</button>
           </td>
         </tr>
         """
@@ -4091,16 +4101,17 @@ def render_sales_deck_page(data: DashboardData) -> str:
             </select>
           </label>
         </div>
+        <p class="deck-run-caption">Times shown in UTC.</p>
         <div class="table-wrap deck-run-table-wrap">
           <table class="deck-run-table">
             <thead>
               <tr>
-                <th>Brand</th>
+                <th class="col-brand">Brand</th>
                 <th>Deck title</th>
-                <th>Created</th>
-                <th class="num">Ext. views</th>
-                <th class="num">Int. views</th>
-                <th></th>
+                <th class="col-created">Created</th>
+                <th class="num col-views">Ext. views</th>
+                <th class="num col-views">Int. views</th>
+                <th class="col-actions"></th>
               </tr>
             </thead>
             <tbody id="deck-run-tbody">
@@ -4724,21 +4735,41 @@ def render_sales_deck_page(data: DashboardData) -> str:
         border-bottom: 1px solid rgba(43, 54, 68, 0.10);
       }}
       .deck-run-table tbody td {{
-        padding: 8px 12px;
+        /* PR52: bumped padding 8 → 12 vertical for breathing room. */
+        padding: 12px 14px;
         border-bottom: 1px solid rgba(43, 54, 68, 0.06);
         vertical-align: middle;
       }}
-      .deck-run-table tbody tr:hover {{
-        background: rgba(133, 187, 218, 0.06);
+      /* PR52: zebra striping for scanability. */
+      .deck-run-table tbody tr:nth-child(even) td {{
+        background: rgba(43, 54, 68, 0.025);
+      }}
+      .deck-run-table tbody tr:hover td {{
+        background: rgba(133, 187, 218, 0.10);
       }}
       .deck-run-table .num {{
         text-align: right;
         font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }}
+      /* PR52: column hints — Created stays one line, Brand keeps a sane min width. */
+      .deck-run-table .col-brand {{ min-width: 120px; }}
+      .deck-run-table .col-created {{ white-space: nowrap; min-width: 130px; }}
+      .deck-run-table .col-views {{ white-space: nowrap; min-width: 80px; }}
+      .deck-run-table .col-actions {{ width: 1%; }}
+      .deck-run-table .deck-cell-created {{ white-space: nowrap; }}
+      .deck-run-caption {{
+        font-size: 11px;
+        color: var(--ink-soft, #5b6b7d);
+        margin: 0 0 6px 4px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
       }}
       .deck-row-actions {{
         display: flex;
-        gap: 8px;
+        gap: 6px;
         justify-content: flex-end;
+        flex-wrap: nowrap;
       }}
       .deck-row-actions a,
       .deck-row-actions button {{
@@ -4750,11 +4781,85 @@ def render_sales_deck_page(data: DashboardData) -> str:
         background: white;
         color: var(--dark-blue);
         cursor: pointer;
+        white-space: nowrap;
       }}
       .deck-row-actions a {{
         background: var(--dark-blue);
         color: white;
         border-color: var(--dark-blue);
+      }}
+      /* PR52: destructive action — red border, red text, hover fills. */
+      .deck-row-actions .deck-delete-button {{
+        color: #b53a2e;
+        border-color: rgba(181, 58, 46, 0.45);
+        background: white;
+      }}
+      .deck-row-actions .deck-delete-button:hover {{
+        background: #b53a2e;
+        color: white;
+        border-color: #b53a2e;
+      }}
+      /* Confirm-delete modal. */
+      .deck-confirm-backdrop {{
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 22, 36, 0.55);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        padding: 20px;
+      }}
+      .deck-confirm-modal {{
+        background: white;
+        border-radius: 14px;
+        padding: 24px 26px;
+        max-width: 440px;
+        width: 100%;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+      }}
+      .deck-confirm-modal h3 {{
+        margin: 0 0 8px;
+        font-size: 18px;
+        color: var(--dark-blue);
+      }}
+      .deck-confirm-modal p {{
+        margin: 0 0 18px;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--ink-soft, #5b6b7d);
+      }}
+      .deck-confirm-modal .deck-confirm-deck-name {{
+        font-weight: 700;
+        color: var(--dark-blue);
+      }}
+      .deck-confirm-actions {{
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }}
+      .deck-confirm-actions button {{
+        font-size: 13px;
+        padding: 8px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        border: 1px solid rgba(43, 54, 68, 0.20);
+        background: white;
+        color: var(--dark-blue);
+        font-weight: 600;
+      }}
+      .deck-confirm-actions .deck-confirm-yes {{
+        background: #b53a2e;
+        border-color: #b53a2e;
+        color: white;
+      }}
+      .deck-confirm-actions .deck-confirm-yes:hover {{
+        background: #962f25;
+        border-color: #962f25;
+      }}
+      .deck-confirm-actions button[disabled] {{
+        opacity: 0.6;
+        cursor: not-allowed;
       }}
       /* Audit redesign: success card after Generate Deck completes,
          shows internal-preview + share-link URLs explicitly with Copy
@@ -5407,6 +5512,102 @@ def render_sales_deck_page(data: DashboardData) -> str:
             : "button[aria-label='Next page']:not([disabled])"
         );
         if (button) {{ event.preventDefault(); button.click(); }}
+      }});
+
+      // PR52: per-row delete with a confirm modal.
+      // The button has data-run-id and data-deck-title attributes so the
+      // modal can name the deck being deleted. On confirm we DELETE
+      // /admin/api/deck-runs/{id} (proxied by main.py to the backend),
+      // then remove the row from the DOM and re-paginate.
+      function _showDeleteConfirm(runId, deckTitle, rowEl) {{
+        const backdrop = document.createElement("div");
+        backdrop.className = "deck-confirm-backdrop";
+        backdrop.setAttribute("role", "dialog");
+        backdrop.setAttribute("aria-modal", "true");
+        backdrop.setAttribute("aria-labelledby", "deck-confirm-title");
+        const safeTitle = (deckTitle || `Run ${{runId}}`).replace(/[<>&"']/g, (c) => ({{
+          "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;", "'":"&#39;"
+        }})[c]);
+        backdrop.innerHTML = `
+          <div class="deck-confirm-modal">
+            <h3 id="deck-confirm-title">Delete this deck?</h3>
+            <p>You're about to delete <span class="deck-confirm-deck-name">${{safeTitle}}</span>. This cannot be undone — the deck HTML, story markdown, and all view analytics will be permanently removed.</p>
+            <div class="deck-confirm-actions">
+              <button type="button" class="deck-confirm-cancel">Cancel</button>
+              <button type="button" class="deck-confirm-yes">Delete deck</button>
+            </div>
+          </div>`;
+        document.body.appendChild(backdrop);
+        const cancelBtn = backdrop.querySelector(".deck-confirm-cancel");
+        const yesBtn = backdrop.querySelector(".deck-confirm-yes");
+
+        function close() {{
+          document.removeEventListener("keydown", onKey);
+          backdrop.remove();
+        }}
+        function onKey(ev) {{
+          if (ev.key === "Escape") {{ ev.preventDefault(); close(); }}
+        }}
+        document.addEventListener("keydown", onKey);
+        backdrop.addEventListener("click", (ev) => {{
+          // Click on the backdrop (not the modal box) closes.
+          if (ev.target === backdrop) close();
+        }});
+        cancelBtn.addEventListener("click", close);
+        // Focus Cancel by default — safer for an accidental Enter/Space.
+        cancelBtn.focus();
+
+        yesBtn.addEventListener("click", async () => {{
+          yesBtn.disabled = true;
+          cancelBtn.disabled = true;
+          yesBtn.textContent = "Deleting…";
+          try {{
+            const resp = await fetch(`/admin/api/deck-runs/${{encodeURIComponent(runId)}}`, {{
+              method: "DELETE",
+              headers: {{ "Accept": "application/json" }},
+            }});
+            if (!resp.ok) {{
+              let detail = `HTTP ${{resp.status}}`;
+              try {{ const j = await resp.json(); detail = j?.detail || j?.message || detail; }} catch (_e) {{}}
+              throw new Error(detail);
+            }}
+            // Success — remove the row and re-paginate.
+            rowEl?.remove();
+            close();
+            applyDeckFilters();
+          }} catch (err) {{
+            yesBtn.disabled = false;
+            cancelBtn.disabled = false;
+            yesBtn.textContent = "Delete deck";
+            // Inline error inside the modal so the user sees what failed.
+            let errEl = backdrop.querySelector(".deck-confirm-error");
+            if (!errEl) {{
+              errEl = document.createElement("p");
+              errEl.className = "deck-confirm-error";
+              errEl.style.color = "#b53a2e";
+              errEl.style.marginTop = "10px";
+              errEl.style.fontSize = "13px";
+              backdrop.querySelector(".deck-confirm-modal").insertBefore(
+                errEl, backdrop.querySelector(".deck-confirm-actions")
+              );
+            }}
+            errEl.textContent = `Couldn't delete: ${{err.message || err}}`;
+          }}
+        }});
+      }}
+
+      // Event delegation on the tbody for delete clicks (rows are static
+      // server-rendered for now, but delegation also handles future
+      // dynamic inserts cleanly).
+      deckRunTbody?.addEventListener("click", (event) => {{
+        const btn = event.target.closest(".deck-delete-button");
+        if (!btn) return;
+        event.preventDefault();
+        const runId = btn.dataset.runId || "";
+        const deckTitle = btn.dataset.deckTitle || "";
+        const rowEl = btn.closest("tr.deck-row");
+        if (!runId) return;
+        _showDeleteConfirm(runId, deckTitle, rowEl);
       }});
 
       // Initial render — pagination on, page 1.

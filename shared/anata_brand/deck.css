@@ -88,16 +88,20 @@ a { color: inherit; }
   font-family: 'Inter', sans-serif;
   letter-spacing: -0.02em;
 }
-/* PR36: when the monogram PNG is available, brand_assets.py emits a
-   full <img> tag inline. Make it fill the rail-logo box and let the
-   gradient peek through underneath if the image has transparency. */
+/* PR36/PR52: when the monogram PNG is available, brand_assets.py emits
+   a full <img> tag inline. Bulletproof image-fit pattern (matches PR48
+   recipe) — position:absolute child with explicit calc dimensions
+   inside a position:relative parent. */
+.rail-logo {
+  position: relative;
+}
 .rail-logo img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  position: absolute !important;
+  inset: 0 !important;       /* monogram already has its own internal padding */
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
   display: block;
-  padding: 4px;
-  background: white;
   border-radius: 8px;
 }
 .rail-brand-name {
@@ -1823,19 +1827,24 @@ h2.slide-title {
   border-color: rgba(191, 168, 137, 0.5);
 }
 .visual-proof-thumb {
+  /* PR52: bulletproof image-fit pattern (matches PR48's .gallery and
+     .exec-product .pic recipes). position:relative + aspect-ratio on the
+     parent, position:absolute img with inset matching the visual padding.
+     The img's CSS box is pinned to explicit calc dimensions so the
+     `object-fit: contain` math has nothing to negotiate at layout time. */
   width: 100%;
   aspect-ratio: 1 / 1;           /* PR35: 1:1 — was fixed 140px height */
   background: #f6f1e8;
   border-radius: 10px;
-  display: grid;
-  place-items: center;
+  position: relative;
   overflow: hidden;
-  padding: 8px;
 }
 .visual-proof-thumb img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  position: absolute !important;
+  inset: 8px !important;
+  width: calc(100% - 16px) !important;
+  height: calc(100% - 16px) !important;
+  object-fit: contain !important;
   display: block;
 }
 .visual-proof-card figcaption {
@@ -1895,44 +1904,31 @@ h2.slide-title {
   aspect-ratio: 1 / 1 !important;
   overflow: hidden;
 }
-.tbl .thumb img,
-.row-product .thumb img,
-.exec-product .pic img,
-.comparison-thumb img,
-.gallery .gallery-item .pic img,
-.visual-proof-thumb img,
-.rail-logo img {
-  /* PR46: revert PR44's max-w/max-h + width/height:auto pattern.
-     The canonical "letterbox an image inside a fixed-size container"
-     recipe is `width:100%; height:100%; object-fit:contain` — the IMG
-     element's BOX fills the parent square, then `object-fit: contain`
-     scales the IMAGE PIXELS inside that box preserving aspect ratio
-     (letterbox transparent space top/bottom or left/right as needed).
-     This does NOT stretch the image — `contain` ≠ `fill`.
-     PR44 went the other way and let the img size to intrinsic, but
-     `max-height: 100%` on a child of an aspect-ratio parent doesn't
-     resolve reliably in the WebKit print pipeline before the parent's
-     height is pinned, so the img grew past the box and overflow:hidden
-     sliced the bottom off (the bug the user kept reporting).
-     The KEY fix is keeping NO padding on the img — padding under
-     box-sizing border-box was what broke `contain`'s math originally.
-     Per-class parent padding stays where it already is. */
-  width: 100% !important;
-  height: 100% !important;
-  object-fit: contain !important;   /* fits inside the box; never crop, never stretch */
-  display: block;
-  /* PR48: dropped `background: white` — it was painting a white square over
-     the parent's brand color (e.g. cream gallery background, navy rail
-     background) which created an unintended frame around every product
-     image. Parents already provide their own background. */
-  border-radius: inherit;
-}
+/* PR52: deleted the global compound img rule that lived here.
+   It was a "safety net" but its same-specificity collision with the
+   per-class bulletproof rules (PR48 + PR52) was BREAKING those fixes
+   for any container whose per-class rule appeared earlier in the
+   stylesheet (visual-proof-thumb, etc). With every container now
+   covered by its own bulletproof rule, the global net is obsolete. */
 /* PR46: padding moved from img → parent containers to avoid the
    WebKit object-fit + padded-img crop bug. Tiny thumbs use small pads.
    PR48: rail-logo padding removed — the Anata monogram PNG should fill
    the full 36×36 box without a navy gradient ring around it. */
 .tbl .thumb,
-.row-product .thumb { padding: 3px; }
+.row-product .thumb {
+  padding: 0;                  /* PR52: padding moved into the inset on the img */
+  position: relative;          /* enable absolute child positioning */
+}
+.tbl .thumb img,
+.row-product .thumb img {
+  /* PR52: bulletproof image-fit (matches PR48 recipe). */
+  position: absolute !important;
+  inset: 3px !important;
+  width: calc(100% - 6px) !important;
+  height: calc(100% - 6px) !important;
+  object-fit: contain !important;
+  display: block;
+}
 
 /* PR37: gallery thumbs (Conversion + PDP creative recs).
    Service.py wraps the cards in `<div class="gallery">` (NOT
@@ -2077,16 +2073,19 @@ h2.slide-title {
 /* PR34: real-image thumbnails inside table rows */
 /* ============================================ */
 .tbl .thumb.thumb-img {
+  /* PR52: bulletproof image-fit pattern. */
   background: white;
   border: 1px solid var(--anata-line);
-  padding: 2px;
+  position: relative;
   overflow: hidden;
-  aspect-ratio: 1 / 1;           /* PR35: 1:1 explicit (was 36×36 fixed); image is contained */
+  aspect-ratio: 1 / 1;
 }
 .tbl .thumb.thumb-img img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  position: absolute !important;
+  inset: 2px !important;
+  width: calc(100% - 4px) !important;
+  height: calc(100% - 4px) !important;
+  object-fit: contain !important;
   display: block;
 }
 
@@ -2166,21 +2165,22 @@ h2.slide-title {
   gap: 12px;
 }
 .comparison-thumb {
+  /* PR52: bulletproof image-fit pattern (matches PR48). */
   flex: 0 0 56px;
   width: 56px;
   aspect-ratio: 1 / 1;           /* PR35: 1:1 explicit (was 56×56 fixed) */
   border-radius: 8px;
   background: white;
   border: 1px solid var(--anata-line);
-  display: grid;
-  place-items: center;
+  position: relative;
   overflow: hidden;
-  padding: 3px;
 }
 .comparison-thumb img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  position: absolute !important;
+  inset: 3px !important;
+  width: calc(100% - 6px) !important;
+  height: calc(100% - 6px) !important;
+  object-fit: contain !important;
   display: block;
 }
 .comparison-listing > div:last-child {
