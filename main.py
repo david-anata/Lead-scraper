@@ -4602,6 +4602,60 @@ def public_deck_story_md_proxy(request: Request, deck_slug: str, run_id: int, to
     return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/story.md")
 
 
+@app.post("/decks/{deck_slug}/{run_id}/{token}/heartbeat")
+async def public_deck_heartbeat_proxy(
+    request: Request,
+    deck_slug: str,
+    run_id: int,
+    token: str,
+) -> Response:
+    """PR54: forward the deck-engagement heartbeat from the prospect's
+    browser to the backend. Body passed through as-is (JSON). We add
+    X-Forwarded-For and CF headers if present so the backend can capture
+    the real visitor IP / country instead of seeing this proxy's IP."""
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_settings.sales_support_agent_url:
+        return JSONResponse(status_code=500, content={"detail": "Backend URL not configured."})
+    body = await request.body()
+    headers = {
+        "Content-Type": request.headers.get("content-type", "application/json"),
+        # Trust order matches the backend's _extract_client_ip helper.
+        "X-Forwarded-For": (
+            request.headers.get("cf-connecting-ip")
+            or request.headers.get("x-forwarded-for")
+            or (request.client.host if request.client else "")
+            or ""
+        ),
+    }
+    cf_country = request.headers.get("cf-ipcountry")
+    if cf_country:
+        headers["CF-IPCountry"] = cf_country
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        headers["CF-Connecting-IP"] = cf_ip
+    referer = request.headers.get("referer")
+    if referer:
+        headers["Referer"] = referer
+    user_agent = request.headers.get("user-agent")
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    upstream_url = (
+        f"{admin_settings.sales_support_agent_url}/decks/{deck_slug}/{run_id}/{token}/heartbeat"
+    )
+    try:
+        upstream = requests.post(upstream_url, data=body, headers=headers, timeout=10)
+    except requests.RequestException as exc:
+        return JSONResponse(status_code=502, content={"detail": f"Backend unreachable: {exc}"})
+    try:
+        return JSONResponse(status_code=upstream.status_code, content=upstream.json())
+    except ValueError:
+        return Response(
+            status_code=upstream.status_code,
+            content=upstream.text,
+            media_type="text/plain",
+        )
+
+
 @app.get("/")
 def home() -> RedirectResponse:
     return RedirectResponse(url="/admin/login", status_code=302)

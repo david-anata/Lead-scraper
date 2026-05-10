@@ -1005,6 +1005,148 @@ class DeckRoutingTests(unittest.TestCase):
             summary = dict(run.summary_json or {})
             self.assertEqual(summary.get("view_count"), 2)
 
+    def test_heartbeat_creates_session_and_section_rows(self) -> None:
+        """PR54: posting a heartbeat to /decks/.../heartbeat should:
+        - create a DeckVisitSession row keyed by (run_id, visitor_token)
+        - capture device/os/browser from the User-Agent header
+        - create DeckSectionView rows for each section in `sections`
+        - upsert on subsequent heartbeats (no duplicate sessions)"""
+        from sales_support_agent.models.entities import DeckVisitSession, DeckSectionView
+
+        client, sf = self._make_client()
+        run_id, token, slug = self._seed_deck(sf)
+
+        # First heartbeat — establishes session + section rows.
+        body1 = {
+            "visitor_token": "test-visitor-1",
+            "is_internal": False,
+            "total_seconds": 30,
+            "max_scroll_pct": 25,
+            "sections": {"sec-01": 12, "sec-02": 18},
+            "referrer": "https://mail.google.com/foo",
+        }
+        r1 = client.post(
+            f"/decks/{slug}/{run_id}/{token}/heartbeat",
+            json=body1,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+                "CF-IPCountry": "US",
+            },
+        )
+        self.assertEqual(r1.status_code, 200, r1.text)
+
+        with session_scope(sf) as session:
+            sessions = session.execute(
+                select(DeckVisitSession).where(DeckVisitSession.run_id == run_id)
+            ).scalars().all()
+            self.assertEqual(len(sessions), 1)
+            s = sessions[0]
+            self.assertEqual(s.visitor_token, "test-visitor-1")
+            self.assertFalse(s.is_internal)
+            self.assertEqual(s.total_seconds, 30)
+            self.assertEqual(s.max_scroll_pct, 25)
+            self.assertEqual(s.device, "desktop")
+            self.assertEqual(s.os, "macOS")
+            self.assertEqual(s.browser, "Chrome")
+            self.assertEqual(s.ip_country, "US")
+            self.assertEqual(s.referrer_category, "email")
+            self.assertEqual(s.referrer_host, "mail.google.com")
+
+            section_views = session.execute(
+                select(DeckSectionView).where(DeckSectionView.session_id == s.id)
+            ).scalars().all()
+            self.assertEqual(len(section_views), 2)
+            secs_by_id = {sv.section_id: sv for sv in section_views}
+            self.assertEqual(secs_by_id["sec-01"].total_seconds, 12)
+            self.assertEqual(secs_by_id["sec-02"].total_seconds, 18)
+
+        # Second heartbeat — same visitor — should UPSERT not insert.
+        body2 = {
+            "visitor_token": "test-visitor-1",
+            "is_internal": False,
+            "total_seconds": 75,        # bumped
+            "max_scroll_pct": 80,       # bumped
+            "sections": {"sec-01": 20, "sec-02": 35, "sec-03": 20},
+        }
+        r2 = client.post(
+            f"/decks/{slug}/{run_id}/{token}/heartbeat",
+            json=body2,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) Chrome/120"},
+        )
+        self.assertEqual(r2.status_code, 200, r2.text)
+
+        with session_scope(sf) as session:
+            sessions = session.execute(
+                select(DeckVisitSession).where(DeckVisitSession.run_id == run_id)
+            ).scalars().all()
+            self.assertEqual(len(sessions), 1, "should upsert, not create a 2nd row")
+            s = sessions[0]
+            self.assertEqual(s.total_seconds, 75)
+            self.assertEqual(s.max_scroll_pct, 80)
+            section_views = session.execute(
+                select(DeckSectionView).where(DeckSectionView.session_id == s.id)
+            ).scalars().all()
+            self.assertEqual(len(section_views), 3)
+
+    def test_heartbeat_caps_session_at_six_hours(self) -> None:
+        """PR54: a hostile/buggy client can't claim more than 6h per session.
+        Server-side cap protects 'Time on design' from being inflated."""
+        client, sf = self._make_client()
+        run_id, token, slug = self._seed_deck(sf)
+
+        crazy_seconds = 999_999  # ~11.5 days
+        r = client.post(
+            f"/decks/{slug}/{run_id}/{token}/heartbeat",
+            json={
+                "visitor_token": "v1",
+                "total_seconds": crazy_seconds,
+                "sections": {"sec-01": crazy_seconds},
+            },
+        )
+        self.assertEqual(r.status_code, 200)
+        from sales_support_agent.models.entities import DeckVisitSession, DeckSectionView
+        with session_scope(sf) as session:
+            s = session.execute(
+                select(DeckVisitSession).where(DeckVisitSession.run_id == run_id)
+            ).scalar_one()
+            self.assertLessEqual(s.total_seconds, 6 * 60 * 60)
+            sv = session.execute(
+                select(DeckSectionView).where(DeckSectionView.session_id == s.id)
+            ).scalar_one()
+            self.assertLessEqual(sv.total_seconds, 6 * 60 * 60)
+
+    def test_heartbeat_excludes_internal_from_external_engagement(self) -> None:
+        """PR54: is_internal=True flagged sessions should not contribute to
+        external engagement aggregates (per the user's decision 1 — admin
+        previews shouldn't pollute prospect engagement signals)."""
+        from sales_support_agent.services.admin_dashboard import _build_deck_engagement
+
+        client, sf = self._make_client()
+        run_id, token, slug = self._seed_deck(sf)
+
+        # Internal preview — admin viewing own deck.
+        client.post(
+            f"/decks/{slug}/{run_id}/{token}/heartbeat",
+            json={"visitor_token": "admin-1", "is_internal": True, "total_seconds": 600, "sections": {"sec-01": 600}},
+        )
+        # External — actual prospect.
+        client.post(
+            f"/decks/{slug}/{run_id}/{token}/heartbeat",
+            json={"visitor_token": "prospect-1", "is_internal": False, "total_seconds": 120, "sections": {"sec-02": 120}},
+        )
+
+        with session_scope(sf) as session:
+            engagement = _build_deck_engagement(session, run_id)
+        self.assertEqual(engagement["internal"]["unique_visitors"], 1)
+        self.assertEqual(engagement["external"]["unique_visitors"], 1)
+        # External avg session length = 120s only (NOT polluted by admin's 600s).
+        self.assertEqual(engagement["external"]["avg_seconds"], 120)
+        self.assertEqual(engagement["internal"]["avg_seconds"], 600)
+        # Top sections also separate by cohort.
+        ext_secs = {s["section_id"] for s in engagement["external"]["top_sections"]}
+        self.assertIn("sec-02", ext_secs)
+        self.assertNotIn("sec-01", ext_secs)
+
     def test_deck_export_token_mismatch_returns_404_not_500(self) -> None:
         client, sf = self._make_client()
         run_id, _real_token, slug = self._seed_deck(sf)

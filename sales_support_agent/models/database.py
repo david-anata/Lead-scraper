@@ -273,6 +273,58 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_is_active_idx ON lead_mirrors (is_active)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS lead_mirrors_task_updated_at_idx ON lead_mirrors (task_updated_at)"))
 
+    # PR54: deck-analytics tables — added after the initial bootstrap, so
+    # existing Postgres deployments need an explicit CREATE TABLE IF NOT
+    # EXISTS to pick them up. Fresh DBs get them via create_all earlier.
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS deck_visit_sessions (
+                    id                  SERIAL       PRIMARY KEY,
+                    run_id              INTEGER      NOT NULL,
+                    visitor_token       VARCHAR(64)  NOT NULL,
+                    is_internal         BOOLEAN      NOT NULL DEFAULT FALSE,
+                    started_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    last_heartbeat_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    total_seconds       INTEGER      NOT NULL DEFAULT 0,
+                    max_scroll_pct      INTEGER      NOT NULL DEFAULT 0,
+                    ip_country          VARCHAR(8)   NOT NULL DEFAULT '',
+                    ip_region           VARCHAR(64)  NOT NULL DEFAULT '',
+                    ip_city             VARCHAR(96)  NOT NULL DEFAULT '',
+                    device              VARCHAR(16)  NOT NULL DEFAULT '',
+                    os                  VARCHAR(32)  NOT NULL DEFAULT '',
+                    browser             VARCHAR(32)  NOT NULL DEFAULT '',
+                    user_agent_raw      VARCHAR(512) NOT NULL DEFAULT '',
+                    referrer_host       VARCHAR(128) NOT NULL DEFAULT '',
+                    referrer_category   VARCHAR(16)  NOT NULL DEFAULT 'direct'
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_sessions_run_id ON deck_visit_sessions (run_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_sessions_visitor_token ON deck_visit_sessions (visitor_token)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_sessions_is_internal ON deck_visit_sessions (is_internal)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_sessions_started_at ON deck_visit_sessions (started_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_sessions_run_visitor ON deck_visit_sessions (run_id, visitor_token)"))
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS deck_section_views (
+                    id              SERIAL       PRIMARY KEY,
+                    session_id      INTEGER      NOT NULL,
+                    section_id      VARCHAR(64)  NOT NULL,
+                    first_seen_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    last_seen_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    total_seconds   INTEGER      NOT NULL DEFAULT 0
+                )
+                """
+            )
+        )
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_section_session_id ON deck_section_views (session_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_deck_section_section_id ON deck_section_views (section_id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_deck_section_session_sec ON deck_section_views (session_id, section_id)"))
+
     # Cashflow tables — created by create_all on fresh DBs; for existing
     # Postgres deployments we create them if absent.
     with engine.begin() as connection:
