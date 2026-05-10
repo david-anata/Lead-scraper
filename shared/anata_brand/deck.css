@@ -486,7 +486,7 @@ h2.slide-title {
      parent + position:absolute img with explicit calc dimensions. This
      definitively eliminates the bottom-crop the user reported in PR44
      and PR46 follow-ups. */
-  background: rgba(255, 255, 255, 0.92);
+  background: #ffffff;          /* PR53: pure white (was rgba 255,255,255,0.92 — looked cream over the page) */
   border-radius: 10px;
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -1010,7 +1010,7 @@ h2.slide-title {
 .compare-card.is-yours .label { color: var(--anata-sky-deep); }
 .compare-card.is-bench .label { color: #8a6f3e; }
 .compare-card .pic {
-  background: #f6f1e8;
+  background: #ffffff;          /* PR53: pure white image-container background (was cream #f6f1e8) */
   border-radius: 10px;
   height: 130px;
   display: grid;
@@ -1702,7 +1702,7 @@ h2.slide-title {
 .gallery-item .pic {
   height: 110px;
   display: grid; place-items: center;
-  background: #f6f1e8;
+  background: #ffffff;          /* PR53: pure white image-container background (was cream #f6f1e8) */
 }
 .gallery-item .pic-ph {
   width: 50px; height: 80px;
@@ -1834,7 +1834,7 @@ h2.slide-title {
      `object-fit: contain` math has nothing to negotiate at layout time. */
   width: 100%;
   aspect-ratio: 1 / 1;           /* PR35: 1:1 — was fixed 140px height */
-  background: #f6f1e8;
+  background: #ffffff;          /* PR53: pure white image-container background (was cream #f6f1e8) */
   border-radius: 10px;
   position: relative;
   overflow: hidden;
@@ -1963,7 +1963,7 @@ h2.slide-title {
   position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
-  background: #f6f1e8;
+  background: #ffffff;          /* PR53: pure white image-container background (was cream #f6f1e8) */
   overflow: hidden;
 }
 .gallery .gallery-item .pic img {

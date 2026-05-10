@@ -1871,9 +1871,15 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{
-        max-width: 1180px;
+        /* PR53: bumped 1180 → 1480 across the admin pages (sales-decks
+           and main dashboard share this shell rule). The intake form
+           on /admin/sales-decks gets meaningful breathing room at the
+           wider container, and side-by-side layouts (Your listing today /
+           Best-seller benchmark) read better. Capped at 1480 (not 100%)
+           so content doesn't sprawl on ultrawide monitors. */
+        max-width: 1480px;
         margin: 0 auto;
-        padding: 28px 18px 64px;
+        padding: 28px 24px 64px;
       }}
       .workspace {{
         background: var(--white);
@@ -4158,9 +4164,15 @@ def render_sales_deck_page(data: DashboardData) -> str:
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{
-        max-width: 1180px;
+        /* PR53: bumped 1180 → 1480 across the admin pages (sales-decks
+           and main dashboard share this shell rule). The intake form
+           on /admin/sales-decks gets meaningful breathing room at the
+           wider container, and side-by-side layouts (Your listing today /
+           Best-seller benchmark) read better. Capped at 1480 (not 100%)
+           so content doesn't sprawl on ultrawide monitors. */
+        max-width: 1480px;
         margin: 0 auto;
-        padding: 28px 18px 64px;
+        padding: 28px 24px 64px;
       }}
       .workspace {{
         background: var(--white);
