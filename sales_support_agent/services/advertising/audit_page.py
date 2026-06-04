@@ -196,16 +196,16 @@ def _goals_form(goals: Optional[Goals]) -> str:
 
 
 _DOWNLOAD_GUIDE_ROWS = [
-    ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (custom date range) → Download",
-     "Required for the round-tripped bulk sheet + bids/keywords. Not on the Reports page — it's its own area."),
-    ("Search Term report", ".csv", "Ads Console → Reports → <strong>Search term</strong> template → Use template → export CSV",
-     "Wasted-spend negatives + keyword harvest."),
+    ("Ads performance reports", ".csv", "Ads Console → <strong>Reports</strong> → run the <strong>Search term</strong>, <strong>Advertised product</strong> &amp; <strong>Targeting</strong> templates → export CSV",
+     "<strong>Core.</strong> Drives the whole burn list + ACoS/TACoS. The Search term report powers negatives &amp; keyword harvest; Advertised product gives the spend totals. Drop all of them in."),
     ("Business Report — Sales &amp; Traffic", ".csv", "<strong>Seller Central</strong> → Reports → Business Reports → <strong>By ASIN → Detail Page Sales and Traffic By Child Item</strong>",
-     "Per child-ASIN sessions, units, conversion, TACoS, gap-to-goal. Use the Child Item one (not By Date / By Parent). Seller Central, not the Ads console."),
+     "<strong>Core.</strong> Per child-ASIN sessions, units, conversion, total sales → TACoS + gap-to-goal. Use the Child Item one (not By Date / By Parent)."),
+    ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (custom date range) → Download",
+     "<em>Optional.</em> Only needed for the downloadable <strong>apply-sheet</strong> (round-tripped bid/negative changes). Its own area — not the Reports page. Skip it and the burn list is still fully usable."),
     ("Brand Analytics — Search Query Performance", ".csv", "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
-     "Market-share context (optional)."),
-    ("DSP performance", ".csv", "Amazon DSP console → Reports",
-     "Campaign-level; lands as manual tasks (optional)."),
+     "Optional — market-share context."),
+    ("DSP performance", ".csv", "Amazon DSP console → Reports (name the file with “DSP”)",
+     "Optional — campaign-level; lands as manual tasks."),
 ]
 
 
