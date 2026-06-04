@@ -15,7 +15,9 @@ from typing import Optional
 
 from sales_support_agent.services.advertising import normalizers as N
 from sales_support_agent.services.advertising import storage
+from sales_support_agent.services.advertising.brand import detect_brand_candidates, filter_by_brand
 from sales_support_agent.services.advertising.bulk_sheets import BulkBuildResult, build_bulk_workbook
+from sales_support_agent.services.advertising.deliverable import build_growth_plan
 from sales_support_agent.services.advertising.engine import build_recommendations, compute_summary
 from sales_support_agent.services.advertising.llm import generate_narrative
 from sales_support_agent.services.advertising.schema import (
@@ -66,6 +68,7 @@ def run_audit(
     *,
     goals: Optional[Goals] = None,
     label: str = "",
+    brand: str = "",
     week_start: Optional[datetime] = None,
     week_end: Optional[datetime] = None,
 ) -> AuditResult:
@@ -95,7 +98,14 @@ def run_audit(
     if inputs.external_costs_csv:
         external_rows += N.normalize_external_costs_csv(inputs.external_costs_csv)
 
-    run_id = storage.create_run(label=label, goals=goals, week_start=week_start, week_end=week_end)
+    # Brand focus: detect candidates from the full account, then scope the audit.
+    brand_candidates = detect_brand_candidates(ad_rows, sales_rows)
+    brand = (brand or "").strip()
+    if brand:
+        ad_rows, sales_rows = filter_by_brand(ad_rows, sales_rows, brand)
+
+    run_label = f"{brand} — {label}".strip(" —") if brand else label
+    run_id = storage.create_run(label=run_label, goals=goals, week_start=week_start, week_end=week_end)
 
     try:
         counts = storage.save_snapshots(run_id, ad_rows, sales_rows, market_rows)
@@ -104,6 +114,8 @@ def run_audit(
         counts["external"] = len(external_rows)
 
         summary = compute_summary(ad_rows, sales_rows, external_rows, goals)
+        summary["brand"] = brand
+        summary["brand_candidates"] = brand_candidates
         recs = build_recommendations(ad_rows, sales_rows, market_rows, external_rows, goals)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
@@ -119,6 +131,16 @@ def run_audit(
         narrative = generate_narrative(
             summary, recs, goals, prior_summary=(prior or {}).get("summary") if prior else None
         ).text
+
+        # Strategic deliverable — the multi-tab growth-plan workbook.
+        try:
+            plan_bytes = build_growth_plan(
+                brand=brand, summary=summary, recommendations=recs,
+                ad_rows=ad_rows, sales_rows=sales_rows, goals=goals, narrative=narrative,
+            )
+            storage.save_bulk_file(run_id, "growth_plan", plan_bytes)
+        except Exception:  # noqa: BLE001
+            logger.exception("[advertising] growth-plan generation failed (non-fatal)")
 
         storage.finalize_run(run_id, status="complete", summary=summary, narrative=narrative)
         return AuditResult(

@@ -91,15 +91,19 @@ def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "")
 
     recommendations: list[dict] = []
     bulk_available = False
+    plan_available = False
     if latest:
         recommendations = storage.get_recommendations(latest["id"])
-        bulk_available = "combined" in storage.list_bulk_files(latest["id"])
+        files = storage.list_bulk_files(latest["id"])
+        bulk_available = "combined" in files
+        plan_available = "growth_plan" in files
 
     html = render_audit_page(
         goals=storage.get_active_goals(),
         latest=latest,
         recommendations=recommendations,
         bulk_available=bulk_available,
+        plan_available=plan_available,
         runs=runs,
         user=user,
         flash=msg,
@@ -150,6 +154,7 @@ async def run(
     ext_label: list[str] = Form(default=[]),
     ext_amount: list[str] = Form(default=[]),
     label: str = Form(default=""),
+    brand: str = Form(default=""),
 ) -> RedirectResponse:
     # Mass-upload path: auto-detect + route every dropped file by its headers.
     batch: list[tuple[str, bytes]] = []
@@ -194,7 +199,7 @@ async def run(
             status_code=303,
         )
 
-    result = run_audit(inputs, label=label)
+    result = run_audit(inputs, label=label, brand=brand)
     if result.status == "error":
         return RedirectResponse(
             f"/admin/advertising/audit?run={result.run_id}&msg=Audit+failed:+{result.error[:80]}",
@@ -220,6 +225,19 @@ def download_bulk(run_id: str, ad_type: str) -> Response:
     if not data:
         raise HTTPException(status_code=404, detail="Bulk sheet not found — re-run the audit to regenerate it.")
     filename = f"amazon-bulk-{ad_type}-{run_id[:8]}.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/audit/{run_id}/plan.xlsx")
+def download_plan(run_id: str) -> Response:
+    data = storage.get_bulk_file(run_id, "growth_plan")
+    if not data:
+        raise HTTPException(status_code=404, detail="Growth plan not found — re-run the audit to regenerate it.")
+    filename = f"growth-plan-{run_id[:8]}.xlsx"
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

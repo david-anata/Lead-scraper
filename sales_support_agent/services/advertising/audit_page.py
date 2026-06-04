@@ -66,6 +66,10 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
       details.guide {{ border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px; background: var(--white); }}
       details.guide > summary {{ cursor: pointer; font-weight: 600; font-size: 14px; padding: 8px 0; }}
       details.guide table.burn {{ font-size: 13px; }}
+      .plan-card {{ border: 2px solid var(--light-blue); background: #f4f8fb; }}
+      .chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
+      .chip {{ padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--white); cursor: pointer; font-size: 12px; font-family: inherit; }}
+      .chip:hover {{ background: var(--light-blue); }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
       .card h2 {{ font-family: "Montserrat",sans-serif; font-size: 18px; margin: 0 0 14px; }}
       .card h2 small {{ font-family: "Inter",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
@@ -225,8 +229,20 @@ def _download_guide() -> str:
     """
 
 
-def _upload_form() -> str:
+def _brand_chips(latest: Optional[dict]) -> str:
+    cands = ((latest or {}).get("summary") or {}).get("brand_candidates") or []
+    if not cands:
+        return ""
+    chips = "".join(
+        f'<button type="button" class="chip" onclick="document.getElementById(\'adv-brand\').value=this.textContent">{_esc(c)}</button>'
+        for c in cands[:8]
+    )
+    return f'<div class="chips"><span class="empty">Detected:</span> {chips}</div>'
+
+
+def _upload_form(latest: Optional[dict] = None) -> str:
     ext_channels = "".join(f'<option value="{c}">{c.title()}</option>' for c in EXTERNAL_CHANNELS)
+    brand_chips = _brand_chips(latest)
     return f"""
     <form class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
       <div class="dropzone">
@@ -257,6 +273,12 @@ def _upload_form() -> str:
           <div class="field"><label>External costs (CSV)</label><input type="file" name="external_costs_csv" accept=".csv"></div>
         </div>
       </details>
+      <div class="field" style="max-width:420px;">
+        <label>Brand focus (optional)</label>
+        <input id="adv-brand" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
+        <span class="hint">Scopes the whole audit + growth plan to one brand's campaigns &amp; ASINs.</span>
+        {brand_chips}
+      </div>
       <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="Week of Jun 2"></div>
       <div><button class="btn" type="submit">Run weekly audit</button></div>
     </form>
@@ -301,6 +323,7 @@ def render_audit_page(
     recommendations: list[dict],
     bulk_available: bool,
     runs: list[dict],
+    plan_available: bool = False,
     user: Optional[dict] = None,
     flash: str = "",
     detail: str = "",
@@ -313,17 +336,27 @@ def render_audit_page(
     narrative_html = ""
     metrics_html = ""
     bulk_html = ""
+    plan_html = ""
     if latest:
+        summary = latest.get("summary", {}) or {}
+        brand = summary.get("brand") or ""
+        scope = f' · {_esc(brand)}' if brand else " · full account"
+        if plan_available:
+            plan_html = (
+                f'<div class="card plan-card"><h2>📊 Growth plan ready{scope}</h2>'
+                f'<a class="btn" href="/admin/advertising/audit/{_esc(latest["id"])}/plan.xlsx">⬇ Download growth plan (XLSX)</a> '
+                '<span class="empty">7 tabs: Exec Brief · Burn List · ASIN Scorecard · Campaign Actions · Negatives · Revenue Bridge · Data Requests.</span></div>'
+            )
         if latest.get("narrative"):
             narrative_html = (
                 f'<div class="card"><h2>Strategic read <small>· {_esc(latest.get("label") or "latest run")}</small></h2>'
                 f'<div class="narrative">{_esc(latest["narrative"])}</div></div>'
             )
-        metrics_html = f'<div class="card"><h2>Account vs goal</h2>{_metrics_block(latest.get("summary", {}))}</div>'
+        metrics_html = f'<div class="card"><h2>Account vs goal{scope}</h2>{_metrics_block(summary)}</div>'
         if bulk_available:
             bulk_html = (
-                f'<a class="btn" href="/admin/advertising/audit/{_esc(latest["id"])}/bulk/combined.xlsx">'
-                "⬇ Download bulk sheet</a> "
+                f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(latest["id"])}/bulk/combined.xlsx">'
+                "⬇ Amazon bulk apply-sheet</a> "
                 '<span class="empty">Round-tripped from your upload — review, then upload to Seller Central.</span>'
             )
 
@@ -342,11 +375,12 @@ def render_audit_page(
         ranked burn list plus a ready-to-upload Amazon bulk sheet to apply the changes at scale.</p>
       </section>
       {flash_html}
+      {plan_html}
       {narrative_html}
       {metrics_html}
       {burn_html}
       <div class="two-col">
-        <div class="card"><h2>Run an audit <small>· upload CSV / XLSX exports</small></h2>{_upload_form()}</div>
+        <div class="card"><h2>Run an audit <small>· upload CSV / XLSX exports</small></h2>{_upload_form(latest)}</div>
         <div>
           <div class="card"><h2>Goals</h2>{_goals_form(goals)}</div>
           <div class="card"><h2>History</h2>{_runs_list(runs, latest.get("id") if latest else None)}</div>
