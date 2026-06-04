@@ -188,7 +188,7 @@ class HttpTest(_Base):
         client = self._client()
         resp = client.post(
             "/admin/advertising/audit/run",
-            data={"label": "HTTP week", "ext_channel_1": "meta", "ext_amount_1": "100"},
+            data={"label": "HTTP week", "ext_channel": "meta", "ext_amount": "100"},
             files={
                 "bulk_xlsx": ("bulk.xlsx", _bulk_xlsx(),
                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -219,6 +219,28 @@ class HttpTest(_Base):
         resp = client.post("/admin/advertising/audit/run", data={}, follow_redirects=False)
         self.assertEqual(resp.status_code, 303)
         self.assertIn("Upload+at+least+one", resp.headers["location"])
+
+    def test_multiple_external_channels_recorded(self):
+        client = self._client()
+        resp = client.post(
+            "/admin/advertising/audit/run",
+            data={
+                "label": "Ext multi",
+                "ext_channel": ["meta", "tiktok", "influencer"],
+                "ext_label": ["prospecting", "spark ads", "Jane Doe"],
+                "ext_amount": ["100", "50", "25"],
+            },
+            files={"business_report_csv": ("biz.csv", _BUSINESS_CSV, "text/csv")},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        run_id = resp.headers["location"].split("run=")[1].split("&")[0]
+        costs = self.storage.get_external_costs(run_id)
+        self.assertEqual(len(costs), 3)
+        by_channel = {c.channel: c for c in costs}
+        self.assertEqual(by_channel["meta"].amount_cents, 10000)
+        self.assertEqual(by_channel["influencer"].cost_type, "commission")
+        self.assertEqual(by_channel["influencer"].label, "Jane Doe")
 
     def test_mass_upload_auto_detects_and_runs(self):
         client = self._client()
