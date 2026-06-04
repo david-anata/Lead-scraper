@@ -33,7 +33,27 @@ class SniffTest(unittest.TestCase):
         self.assertEqual(I.sniff_kind("MyBulk.xlsx", _bulk_xlsx()), I.KIND_BULK)
 
     def test_search_term(self):
-        self.assertEqual(I.sniff_kind("st.csv", _SEARCH_TERM), I.KIND_SEARCH_TERM)
+        self.assertEqual(I.sniff_kind("st.csv", _SEARCH_TERM), I.KIND_ADS_REPORT)
+
+    def test_new_console_ads_report(self):
+        # New Amazon reporting console format (Total cost / Purchases / Sales).
+        csv = (
+            b"Campaign name,Ad group name,Search term,Impressions,Clicks,CTR,Total cost,Purchases,Sales,Units sold\n"
+            b"Camp,AG,protein packets,13,2,15%,1.21,0,0.00,0\n"
+        )
+        self.assertEqual(I.sniff_kind("Search_term_06_04.csv", csv), I.KIND_ADS_REPORT)
+
+    def test_portfolio_xlsx_not_bulk(self):
+        # A non-bulk workbook (no Sponsored ... Campaigns sheet) must not be "bulk".
+        wb = openpyxl.Workbook()
+        wb.active.title = "Portfolio Trends"
+        wb.active.append(["Portfolio", "Spend"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        self.assertEqual(I.sniff_kind("Zantrex Portfolio Trends.xlsx", buf.getvalue()), I.KIND_UNKNOWN)
+
+    def test_dsp_by_filename(self):
+        self.assertEqual(I.sniff_kind("DSP_report.csv", _DSP), I.KIND_DSP)
 
     def test_business_report(self):
         self.assertEqual(I.sniff_kind("BusinessReport.csv", _BUSINESS), I.KIND_BUSINESS)
@@ -63,25 +83,31 @@ class RouteTest(unittest.TestCase):
             ("random.csv", b"a,b\n1,2\n"),
         ])
         self.assertIsNotNone(inputs.bulk_xlsx)
-        self.assertIsNotNone(inputs.search_term_csv)
+        self.assertEqual(len(inputs.ads_report_csvs), 1)
         self.assertIsNotNone(inputs.business_report_csv)
         self.assertIn(I.KIND_BULK, report.detected)
         self.assertEqual(report.ignored, ["random.csv"])
-        self.assertEqual(report.missing_core(), [])  # all 3 core present
+        self.assertEqual(report.missing_core(), [])  # ads report + business present
 
     def test_missing_core_reported(self):
+        # Only an ads report -> Business Report still missing (bulk is NOT core).
         _, report = I.route_files([("st.csv", _SEARCH_TERM)])
         missing = report.missing_core()
-        self.assertIn(I.KIND_BULK, missing)
         self.assertIn(I.KIND_BUSINESS, missing)
+        self.assertNotIn(I.KIND_ADS_REPORT, missing)
+        self.assertNotIn(I.KIND_BULK, missing)
 
-    def test_duplicate_search_terms_merged(self):
-        extra = b"Campaign Name,Customer Search Term,Impressions,Clicks,Spend,7 Day Total Orders (#)\nC,red,50,2,2,0\n"
-        inputs, _ = I.route_files([("a.csv", _SEARCH_TERM), ("b.csv", extra)])
-        from sales_support_agent.services.advertising.normalizers import normalize_search_term_csv
-        rows = normalize_search_term_csv(inputs.search_term_csv)
-        terms = {r.entity_text for r in rows}
-        self.assertEqual(terms, {"blue", "red"})  # both files' rows present
+    def test_multiple_ads_reports_kept_separate(self):
+        extra = b"Campaign name,Ad group name,Advertised product SKU,Impressions,Clicks,Total cost,Purchases,Sales,Units sold\nC,AG,SKU1,80,4,2.00,1,40.00,1\n"
+        inputs, report = I.route_files([("search.csv", _SEARCH_TERM), ("product.csv", extra)])
+        # Each ad report is parsed independently (not merged into one).
+        self.assertEqual(len(inputs.ads_report_csvs), 2)
+        from sales_support_agent.services.advertising.normalizers import normalize_ads_report_csv
+        levels = set()
+        for c in inputs.ads_report_csvs:
+            levels |= {r.entity_level for r in normalize_ads_report_csv(c)}
+        self.assertIn("search_term", levels)
+        self.assertIn("product_ad", levels)
 
     def test_second_bulk_file_ignored(self):
         inputs, report = I.route_files([("a.xlsx", _bulk_xlsx()), ("b.xlsx", _bulk_xlsx())])

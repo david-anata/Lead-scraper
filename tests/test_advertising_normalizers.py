@@ -76,6 +76,66 @@ class SearchTermTest(unittest.TestCase):
         self.assertEqual(green.orders, 4)
 
 
+class NewConsoleReportTest(unittest.TestCase):
+    """The real Amazon reporting-console format: Total cost / Purchases / Sales /
+    Units sold, with the entity column varying by report type."""
+
+    SEARCH_TERM = (
+        b"Budget currency,Date range,Campaign name,Ad group name,Search term,"
+        b"Impressions,Clicks,CTR,Total cost,Purchases,Sales,Units sold\n"
+        b"USD,\"May 07, 2026 - May 28, 2026\",Quartile Zantrex,AG_P,protein packets for water,"
+        b"130,20,15%,12.10,3,90.00,3\n"
+    )
+    ADVERTISED = (
+        b"Budget currency,Campaign name,Ad group name,Advertised product SKU,"
+        b"Impressions,Clicks,Total cost,Purchases,Sales,Units sold\n"
+        b"USD,Quartile Serovital,AG_P,SV_SmileCare_FBA,600,12,30.00,4,200.00,4\n"
+    )
+    LEGACY_ADGROUP = (
+        b"State,Ad group name,Status,Default bid (USD),Keywords,Products,Impressions,"
+        b"Clicks,CTR,Total cost (USD),CPC (USD),Purchases,Sales (USD),ACOS,ROAS\n"
+        b"ENABLED,AG_P_B0CC,ENABLED,2,1,2,166,18,0.10,15.06,0.84,10,294.90,0.05,19.58\n"
+    )
+
+    def test_search_term_new_console(self):
+        rows = N.normalize_ads_report_csv(self.SEARCH_TERM)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r.entity_level, "search_term")
+        self.assertEqual(r.entity_text, "protein packets for water")
+        self.assertEqual(r.spend_cents, 1210)     # "Total cost" 12.10
+        self.assertEqual(r.sales_cents, 9000)     # "Sales" 90.00
+        self.assertEqual(r.orders, 3)             # "Purchases"
+        self.assertEqual(r.units, 3)              # "Units sold"
+
+    def test_advertised_product_level(self):
+        rows = N.normalize_ads_report_csv(self.ADVERTISED)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].entity_level, "product_ad")
+        self.assertEqual(rows[0].entity_text, "SV_SmileCare_FBA")
+        self.assertEqual(rows[0].spend_cents, 3000)
+        self.assertEqual(rows[0].orders, 4)
+
+    def test_legacy_adgroup_with_usd_columns(self):
+        rows = N.normalize_ads_report_csv(self.LEGACY_ADGROUP)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r.entity_level, "ad_group")
+        self.assertEqual(r.spend_cents, 1506)     # "Total cost (USD)"
+        self.assertEqual(r.sales_cents, 29490)    # "Sales (USD)"
+        self.assertEqual(r.bid_cents, 200)        # "Default bid (USD)" 2
+
+    def test_search_term_backcompat_alias(self):
+        # Old "Customer Search Term" + "Spend" + "7 Day Total" still parses.
+        old = (
+            b"Campaign Name,Customer Search Term,Impressions,Clicks,Spend,7 Day Total Sales,7 Day Total Orders (#)\n"
+            b"C,cheap junk,500,25,50.00,0,0\n"
+        )
+        rows = N.normalize_ads_report_csv(old)
+        self.assertEqual(rows[0].entity_level, "search_term")
+        self.assertEqual(rows[0].spend_cents, 5000)
+
+
 class BusinessReportTest(unittest.TestCase):
     CSV = (
         b"(Child) ASIN,Title,SKU,Sessions - Total,Page Views - Total,Units Ordered,"

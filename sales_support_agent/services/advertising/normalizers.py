@@ -196,32 +196,74 @@ def normalize_bulk_xlsx(file_bytes: bytes) -> list[AdRow]:
 # ---------------------------------------------------------------------------
 
 
-def normalize_search_term_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdRow]:
-    rows = _read_csv_rows(file_bytes, header_hint=["Customer Search Term", "Search Term", "Targeting"])
+def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdRow]:
+    """Unified parser for Amazon Ads performance reports — both the NEW reporting
+    console (columns: Campaign name / Ad group name / Search term | Advertised
+    product SKU | Targeting, Impressions, Clicks, Total cost, Purchases, Sales,
+    Units sold) and legacy per-entity exports (Total cost (USD), Sales (USD),
+    Default bid (USD), 7/14 Day totals).
+
+    Each row's entity level is detected from which entity column is populated, so
+    one function ingests search-term, advertised-product, targeting/keyword, ad-
+    group and campaign reports. Rows without any performance signal are skipped.
+    """
+    rows = _read_csv_rows(file_bytes, header_hint=["Total cost", "Impressions", "Campaign", "Ad group", "Search term"])
     out: list[AdRow] = []
     for row in rows:
         view = _lookup(row)
-        term = _get(view, "Customer Search Term", "Search Term")
-        if not term:
+        impressions = parse_int(_get(view, "Impressions"))
+        clicks = parse_int(_get(view, "Clicks"))
+        spend = parse_cents(_get(view, "Total cost (USD)", "Total cost", "Spend", "Cost"))
+        if impressions == 0 and clicks == 0 and spend == 0:
             continue
+
+        campaign = _get(view, "Campaign name", "Campaign Name", "Campaign")
+        ad_group = _get(view, "Ad group name", "Ad Group Name", "Ad Group")
+        search_term = _get(view, "Search term", "Customer Search Term")
+        # "Targeting" / "Keyword Text" only — NOT a bare "Keyword(s)" count column.
+        targeting = _get(view, "Targeting", "Keyword Text", "Keyword text")
+        advertised = _get(view, "Advertised product SKU", "Advertised product ID", "Advertised SKU")
+        match_type = _get(view, "Match type", "Match Type")
+
+        if search_term:
+            level, text = "search_term", search_term
+        elif targeting:
+            level, text = ("keyword" if match_type else "target"), targeting
+        elif advertised:
+            level, text = "product_ad", advertised
+        elif ad_group and not campaign:
+            level, text = "ad_group", ad_group
+        elif ad_group and campaign:
+            # campaign + ad group present but no finer entity -> ad-group-level report
+            level, text = "ad_group", ad_group
+        else:
+            level, text = "campaign", campaign or ad_group
+
+        bid_raw = _get(view, "Default bid (USD)", "Default bid", "Bid", "CPC (USD)", "CPC")
         out.append(
             AdRow(
                 ad_type=ad_type,
-                entity_level="search_term",
-                campaign_name=_get(view, "Campaign Name", "Campaign"),
-                ad_group_name=_get(view, "Ad Group Name", "Ad Group"),
-                entity_text=term,
-                match_type=_get(view, "Match Type"),
-                impressions=parse_int(_get(view, "Impressions")),
-                clicks=parse_int(_get(view, "Clicks")),
-                spend_cents=parse_cents(_get(view, "Spend", "Cost")),
-                sales_cents=parse_cents(_get(view, "7 Day Total Sales", "14 Day Total Sales", "Total Sales", "Sales")),
-                orders=parse_int(_get(view, "7 Day Total Orders (#)", "14 Day Total Orders (#)", "Orders")),
-                units=parse_int(_get(view, "7 Day Total Units (#)", "14 Day Total Units (#)", "Units")),
-                raw={str(k): str(v) for k, v in row.items()},
+                entity_level=level,
+                campaign_name=campaign,
+                ad_group_name=ad_group,
+                entity_text=text,
+                match_type=match_type,
+                impressions=impressions,
+                clicks=clicks,
+                spend_cents=spend,
+                sales_cents=parse_cents(_get(view, "Sales (USD)", "Sales", "14 Day Total Sales", "7 Day Total Sales", "Total Sales")),
+                orders=parse_int(_get(view, "Purchases", "Orders", "7 Day Total Orders (#)", "14 Day Total Orders (#)")),
+                units=parse_int(_get(view, "Units sold", "Units", "7 Day Total Units (#)", "14 Day Total Units (#)")),
+                bid_cents=parse_cents(bid_raw) if bid_raw else None,
+                raw={str(k): ("" if v is None else str(v)) for k, v in row.items()},
             )
         )
     return out
+
+
+def normalize_search_term_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdRow]:
+    """Back-compat alias — the unified report normalizer detects search-term rows."""
+    return normalize_ads_report_csv(file_bytes, ad_type=ad_type)
 
 
 # ---------------------------------------------------------------------------

@@ -38,11 +38,15 @@ class AuditInputs:
     dsp_csv: Optional[bytes] = None
     external_costs_csv: Optional[bytes] = None
     external_costs_manual: list[ExternalCostRow] = field(default_factory=list)
+    # New-console Amazon Ads performance reports (search-term / advertised-product
+    # / targeting / ad-group / campaign), each parsed by normalize_ads_report_csv.
+    ads_report_csvs: list[bytes] = field(default_factory=list)
 
     def any_data(self) -> bool:
         return any([
             self.bulk_xlsx, self.search_term_csv, self.business_report_csv,
-            self.sqp_csv, self.dsp_csv, self.external_costs_csv, self.external_costs_manual,
+            self.sqp_csv, self.dsp_csv, self.external_costs_csv,
+            self.external_costs_manual, self.ads_report_csvs,
         ])
 
 
@@ -75,7 +79,9 @@ def run_audit(
     if inputs.bulk_xlsx:
         ad_rows += N.normalize_bulk_xlsx(inputs.bulk_xlsx)
     if inputs.search_term_csv:
-        ad_rows += N.normalize_search_term_csv(inputs.search_term_csv)
+        ad_rows += N.normalize_ads_report_csv(inputs.search_term_csv)
+    for report_csv in inputs.ads_report_csvs:
+        ad_rows += N.normalize_ads_report_csv(report_csv)
     if inputs.dsp_csv:
         ad_rows += N.normalize_dsp_csv(inputs.dsp_csv)
 

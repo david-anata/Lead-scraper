@@ -113,29 +113,35 @@ def _goal_gap(summary: dict, goals: Goals) -> dict:
     return gap
 
 
-# Coarsest-first level priority for additive totals. Within an ad type the
-# coarsest present level already covers everything beneath it, so summing it
-# avoids double-counting a keyword and its parent campaign. search_term is a
-# redundant *view* of keyword spend (not a structural level), so it only counts
-# when nothing else is available for that ad type.
-_TOTAL_LEVEL_PRIORITY = ("campaign", "ad_group", "keyword", "target", "product_ad", "search_term")
+# search_term rows are a redundant *view* of spend (a diagnostic breakdown), so
+# they never count toward totals unless they're the only thing we have for an ad
+# type. campaign/ad_group/product_ad are each complete, non-overlapping views of
+# the same spend, so for totals we pick exactly one per ad type.
+_DIAGNOSTIC_LEVELS = ("search_term",)
 
 
 def _dominant_rows(ad_rows: list[AdRow]) -> list[AdRow]:
     """Pick one non-overlapping level *per ad type* for additive totals, then
-    union across ad types. A single STV campaign row must not suppress SP
-    keyword spend, and SP keyword + SP search_term must not both be summed."""
+    union across ad types.
+
+    Real uploads contain several *alternate breakdowns* of the same ad spend
+    (advertised-product, ad-group and search-term reports all sum to the same
+    account total) and some are partial (a one-row ad-group export). Choosing by
+    a fixed level rank breaks when the coarse level is the partial one, so we
+    instead pick, per ad type, the level group whose rows sum to the **highest
+    spend** — i.e. the most complete view — excluding diagnostic levels."""
     by_type: dict[str, list[AdRow]] = {}
     for r in ad_rows:
         by_type.setdefault(r.ad_type, []).append(r)
 
     chosen: list[AdRow] = []
     for rows in by_type.values():
-        present = {r.entity_level for r in rows}
-        for level in _TOTAL_LEVEL_PRIORITY:
-            if level in present:
-                chosen.extend(r for r in rows if r.entity_level == level)
-                break
+        by_level: dict[str, list[AdRow]] = {}
+        for r in rows:
+            by_level.setdefault(r.entity_level, []).append(r)
+        candidate_levels = [lvl for lvl in by_level if lvl not in _DIAGNOSTIC_LEVELS] or list(by_level)
+        best = max(candidate_levels, key=lambda lvl: sum(r.spend_cents for r in by_level[lvl]))
+        chosen.extend(by_level[best])
     return chosen
 
 

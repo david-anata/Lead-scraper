@@ -68,6 +68,30 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(s["ad_sales_cents"], 7000)
         self.assertEqual(s["total_sales_cents"], 32000)
 
+    def test_partial_level_does_not_skew_totals(self):
+        # Same SP spend in two breakdowns: a COMPLETE product_ad view ($300) and
+        # a PARTIAL one-row ad_group view ($15). Totals must use the complete one,
+        # not the coarser-but-partial ad_group, and must not sum both.
+        rows = [
+            AdRow(ad_type="SP", entity_level="product_ad", entity_text="SKU1",
+                  impressions=1000, clicks=50, spend_cents=20000, sales_cents=60000, orders=10),
+            AdRow(ad_type="SP", entity_level="product_ad", entity_text="SKU2",
+                  impressions=800, clicks=40, spend_cents=10000, sales_cents=30000, orders=6),
+            AdRow(ad_type="SP", entity_level="ad_group", entity_text="AG1",
+                  impressions=160, clicks=18, spend_cents=1500, sales_cents=29000, orders=10),
+        ]
+        s = E.compute_summary(rows, [], [], Goals())
+        self.assertEqual(s["ad_spend_cents"], 30000)  # product_ad total, not 31500 or 1500
+
+    def test_search_term_excluded_from_totals(self):
+        rows = [
+            AdRow(ad_type="SP", entity_level="product_ad", entity_text="SKU1",
+                  impressions=1000, clicks=50, spend_cents=20000, sales_cents=60000, orders=10),
+            _st("some term", clicks=30, spend=20000, sales=60000, orders=10),  # same spend, diagnostic
+        ]
+        s = E.compute_summary(rows, [], [], Goals())
+        self.assertEqual(s["ad_spend_cents"], 20000)  # search_term view not added
+
     def test_blended_tacos_includes_external(self):
         rows = [_kw("x", clicks=20, spend=1000, sales=10000, orders=5)]
         sales = [SalesRow(asin="B1", ordered_product_sales_cents=40000, units=10)]

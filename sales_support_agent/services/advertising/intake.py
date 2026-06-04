@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Detection kinds (mirror the AuditInputs fields, minus manual external rows).
 KIND_BULK = "bulk"
-KIND_SEARCH_TERM = "search_term"
+KIND_ADS_REPORT = "ads_report"
 KIND_BUSINESS = "business_report"
 KIND_SQP = "sqp"
 KIND_DSP = "dsp"
@@ -29,15 +29,17 @@ KIND_UNKNOWN = "unknown"
 
 KIND_LABELS = {
     KIND_BULK: "Ads bulk-operations file",
-    KIND_SEARCH_TERM: "Search Term report",
+    KIND_ADS_REPORT: "Ads performance report",
     KIND_BUSINESS: "Business Report (Sales & Traffic)",
     KIND_SQP: "Brand Analytics SQP",
     KIND_DSP: "DSP performance",
     KIND_EXTERNAL: "External costs",
 }
 
-# What a complete-enough audit wants; used to nudge for missing reports.
-CORE_KINDS = (KIND_BULK, KIND_SEARCH_TERM, KIND_BUSINESS)
+# What a real audit needs: at least one ads performance report (for the burn
+# list) and the Business Report (for TACoS / gap-to-goal). The bulk file is
+# optional — it only powers the downloadable apply-sheet.
+CORE_KINDS = (KIND_ADS_REPORT, KIND_BUSINESS)
 
 
 @dataclass
@@ -81,8 +83,9 @@ def _header_tokens(data: bytes) -> set[str]:
         return set()
     known = (
         "search term", "search query", "asin", "sessions", "units ordered",
-        "campaign", "impressions", "clicks", "spend", "cost", "channel",
-        "amount", "targeting", "match type", "portfolio", "total sales",
+        "campaign", "ad group", "impressions", "clicks", "spend", "cost",
+        "total cost", "channel", "amount", "targeting", "advertised product",
+        "match type", "portfolio", "total sales", "purchases",
     )
     for line in rows[:15]:
         cells = [c.strip().lower() for c in line if c and c.strip()]
@@ -95,21 +98,33 @@ def _classify_csv(tokens: set[str]) -> str:
     def has(*subs: str) -> bool:
         return any(any(sub in tok for tok in tokens) for sub in subs)
 
-    if has("customer search term"):
-        return KIND_SEARCH_TERM
+    # Brand Analytics Search Query Performance
     if has("search query volume") or (has("search query") and has("impressions: total", "purchases: total")):
         return KIND_SQP
-    if has("(child) asin", "child asin") or (has("sessions") and has("units ordered")):
+    # Business Report: Detail Page Sales & Traffic (no ad metrics)
+    if has("(child) asin", "(parent) asin", "child asin") or (has("sessions") and has("units ordered", "ordered product sales")):
         return KIND_BUSINESS
-    if has("channel") and has("amount", "spend", "commission"):
+    # External marketing costs (channel + amount, not an ad report)
+    if has("channel") and has("amount", "commission") and not has("impressions"):
         return KIND_EXTERNAL
-    if has("total cost") and has("campaign"):
-        return KIND_DSP
-    # Generic SP/SB search-term-style report (Targeting/Search term variants) that
-    # still carry a search term or targeting column with performance metrics.
-    if has("search term") and has("impressions", "clicks"):
-        return KIND_SEARCH_TERM
+    # Amazon Ads performance report — new reporting console (Total cost / Purchases
+    # / Sales / Units sold) OR legacy per-entity export (Total cost (USD) etc.).
+    # Signature: per-row ad metrics + a campaign/ad-group/entity column.
+    if has("impressions") and has("total cost", "spend", "cpc", "cost per click") and \
+            has("campaign", "ad group", "search term", "targeting", "advertised product"):
+        return KIND_ADS_REPORT
     return KIND_UNKNOWN
+
+
+def _xlsx_is_bulk(data: bytes) -> bool:
+    """True only if the workbook actually carries SP/SB/SD bulk sheets — so a
+    Portfolio Trends / generic .xlsx export isn't mistaken for a bulk file."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+        return any("sponsored" in s.lower() and "campaign" in s.lower() for s in wb.sheetnames)
+    except Exception:
+        return False
 
 
 def sniff_kind(filename: str, data: bytes) -> str:
@@ -117,10 +132,10 @@ def sniff_kind(filename: str, data: bytes) -> str:
     if not data:
         return KIND_UNKNOWN
     name = (filename or "").lower()
+    if "dsp" in name:
+        return KIND_DSP
     if name.endswith(".xlsx") or _looks_like_xlsx(data):
-        # Any Amazon Ads workbook export — only bulk sheets carry SP/SB/SD tabs,
-        # and the bulk normalizer safely returns [] for non-bulk workbooks.
-        return KIND_BULK
+        return KIND_BULK if _xlsx_is_bulk(data) else KIND_UNKNOWN
     return _classify_csv(_header_tokens(data))
 
 
@@ -144,9 +159,9 @@ def route_files(files: list[tuple[str, bytes]]) -> tuple[AuditInputs, IntakeRepo
     """
     inputs = AuditInputs()
     report = IntakeReport()
+    # Single-slot kinds (one file each; extra CSVs of a kind are concatenated).
     field_for = {
         KIND_BULK: "bulk_xlsx",
-        KIND_SEARCH_TERM: "search_term_csv",
         KIND_BUSINESS: "business_report_csv",
         KIND_SQP: "sqp_csv",
         KIND_DSP: "dsp_csv",
@@ -158,6 +173,12 @@ def route_files(files: list[tuple[str, bytes]]) -> tuple[AuditInputs, IntakeRepo
         kind = sniff_kind(filename, data)
         if kind == KIND_UNKNOWN:
             report.ignored.append(filename)
+            continue
+        if kind == KIND_ADS_REPORT:
+            # Many ad reports can be uploaded at once (search-term, advertised-
+            # product, targeting, …); each is parsed independently.
+            inputs.ads_report_csvs.append(data)
+            report.add(kind, filename)
             continue
         attr = field_for[kind]
         current = getattr(inputs, attr)
