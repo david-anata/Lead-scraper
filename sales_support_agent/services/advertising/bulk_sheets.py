@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -31,6 +32,15 @@ from sales_support_agent.services.advertising.schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "templates", "amazon_bulk_template.xlsx")
+
+# rec match-type text -> Amazon bulk value (from the template's Config sheet)
+_MATCH_MAP = {
+    "negative exact": "negativeExact", "negativeexact": "negativeExact",
+    "negative phrase": "negativePhrase", "negativephrase": "negativePhrase",
+    "exact": "exact", "phrase": "phrase", "broad": "broad",
+}
 
 
 @dataclass
@@ -45,6 +55,89 @@ class BulkBuildResult:
     @property
     def has_file(self) -> bool:
         return bool(self.xlsx_bytes) and self.applied > 0
+
+
+def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
+    """Populate Amazon's official bulk template with create-negative and
+    create-keyword rows, using the Campaign ID / Ad Group ID carried on each
+    recommendation (extracted from the uploaded report CSVs). Produces an
+    upload-ready Sponsored Products bulk sheet WITHOUT the operator having to
+    download or edit anything.
+
+    Bid changes on existing keywords need a Keyword ID (only in a Targeting
+    report), so they're left to the round-trip path and counted as skipped here.
+    """
+    result = BulkBuildResult()
+    actionable = [
+        r for r in recommendations
+        if r.is_bulk_actionable and r.bulk_row.get("action") in ("create_negative", "create_keyword")
+        and r.bulk_row.get("ad_type") == "SP"
+    ]
+    if not actionable:
+        result.notes.append("No create-keyword / create-negative actions with campaign IDs to apply.")
+        return result
+
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(_TEMPLATE_PATH)
+    except Exception:
+        logger.exception("[advertising] could not open bundled Amazon bulk template")
+        result.notes.append("Amazon bulk template unavailable.")
+        return result
+
+    ws = None
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) == "SP":
+            ws = sheet
+            break
+    if ws is None:
+        result.notes.append("Template is missing the Sponsored Products sheet.")
+        return result
+
+    header = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+    col = {name: _col_index(header, name) for name in
+           ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID",
+            "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State")}
+
+    for rec in actionable:
+        br = rec.bulk_row
+        if not br.get("campaign_id") or not br.get("ad_group_id"):
+            result.skipped += 1
+            result.skipped_titles.append(rec.title)
+            continue
+        is_neg = br["action"] == "create_negative"
+        row = [""] * len(header)
+
+        def put(name, value):
+            i = col.get(name)
+            if i is not None:
+                row[i] = value
+
+        put("Product", "Sponsored Products")
+        put("Entity", "Negative Keyword" if is_neg else "Keyword")
+        put("Operation", "Create")
+        put("Campaign ID", br["campaign_id"])
+        put("Ad Group ID", br["ad_group_id"])
+        put("Campaign Name", br.get("campaign_name", ""))
+        put("Ad Group Name", br.get("ad_group_name", ""))
+        put("Keyword Text", br.get("keyword_text", ""))
+        put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "negativeExact" if is_neg else "exact"))
+        put("State", "enabled")
+        if not is_neg and br.get("new_bid_cents"):
+            put("Bid", _dollars(br["new_bid_cents"]))
+        ws.append(row)
+        result.applied += 1
+        result.applied_titles.append(rec.title)
+
+    if result.applied:
+        buf = io.BytesIO()
+        wb.save(buf)
+        result.xlsx_bytes = buf.getvalue()
+        result.notes.append(
+            f"{result.applied} change(s) written into Amazon's bulk template — upload directly to "
+            "Ads Console → Bulk operations → Upload. No manual editing needed."
+        )
+    return result
 
 
 def _col_index(header: list[str], *aliases: str) -> Optional[int]:

@@ -69,6 +69,14 @@ def _decode(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8-sig", errors="replace")
 
 
+def _unwrap_id(value: str) -> str:
+    """Amazon report exports wrap IDs as Excel formula text: ="123456". Strip it."""
+    v = (value or "").strip()
+    if v.startswith('="') and v.endswith('"'):
+        return v[2:-1]
+    return v.strip('"=')
+
+
 def _read_csv_rows(file_bytes: bytes, header_hint: Iterable[str]) -> list[dict]:
     """Parse CSV bytes into a list of dict rows, tolerating a preamble before
     the real header. The header row is the first row containing any hint token.
@@ -246,6 +254,8 @@ def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdR
                 entity_level=level,
                 campaign_name=campaign,
                 ad_group_name=ad_group,
+                campaign_id=_unwrap_id(_get(view, "Campaign ID")),
+                ad_group_id=_unwrap_id(_get(view, "Ad group ID", "Ad Group ID")),
                 entity_text=text,
                 match_type=match_type,
                 impressions=impressions,
@@ -368,6 +378,33 @@ _CHANNEL_ALIASES = {
     "influencer": "influencer", "creator": "influencer", "affiliate": "influencer",
     "google": "google", "adwords": "google",
 }
+
+
+def normalize_cogs_csv(file_bytes: bytes) -> dict:
+    """Parse a per-unit cost sheet into {"asin": {asin: cents}, "sku": {sku: cents}}.
+
+    Accepts ASIN and/or SKU keyed rows with a cost column (COGS / Unit Cost /
+    Landed Cost / Cost). If FBA and referral fees are provided, they're added to
+    give a true landed cost per unit. Never raises."""
+    rows = _read_csv_rows(file_bytes, header_hint=["ASIN", "SKU", "COGS", "Cost", "Unit Cost"])
+    by_asin: dict[str, int] = {}
+    by_sku: dict[str, int] = {}
+    for row in rows:
+        view = _lookup(row)
+        asin = _get(view, "ASIN", "(Child) ASIN", "Child ASIN")
+        sku = _get(view, "SKU", "Seller SKU", "MSKU")
+        if not asin and not sku:
+            continue
+        cost = parse_cents(_get(view, "COGS", "Cost of Goods", "Unit Cost", "Landed Cost", "Cost", "Unit COGS"))
+        cost += parse_cents(_get(view, "FBA Fee", "Fulfillment Fee", "FBA"))
+        cost += parse_cents(_get(view, "Referral Fee", "Referral"))
+        if cost <= 0:
+            continue
+        if asin:
+            by_asin[asin] = cost
+        if sku:
+            by_sku[sku] = cost
+    return {"asin": by_asin, "sku": by_sku}
 
 
 def normalize_external_costs_csv(file_bytes: bytes) -> list[ExternalCostRow]:

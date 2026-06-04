@@ -50,7 +50,10 @@ def _pct(bps: Optional[int]) -> Optional[float]:
 # --- aggregations -----------------------------------------------------------
 
 
-def _asin_scorecard(ad_rows: list[AdRow], sales_rows: list[SalesRow], target_acos_bps: int) -> list[dict]:
+def _asin_scorecard(ad_rows, sales_rows, target_acos_bps, cogs=None) -> list[dict]:
+    cogs = cogs or {}
+    cogs_asin = cogs.get("asin") or {}
+    cogs_sku = cogs.get("sku") or {}
     ad_by_asin: dict[str, dict] = defaultdict(lambda: {"spend": 0, "sales": 0, "orders": 0})
     for r in ad_rows:
         if r.entity_level != "product_ad":
@@ -71,6 +74,13 @@ def _asin_scorecard(ad_rows: list[AdRow], sales_rows: list[SalesRow], target_aco
         spend = ad.get("spend", 0)
         sales = ad.get("sales", 0)
         ad_acos = acos_bps(spend, sales) if spend else None
+
+        cogs_cents = cogs_asin.get(s.asin) or (cogs_sku.get(s.sku) if s.sku else None)
+        price = round(s.ordered_product_sales_cents / s.units) if s.units else None
+        breakeven_bps = None
+        if cogs_cents and price and price > cogs_cents:
+            breakeven_bps = round((price - cogs_cents) / price * 10000)
+
         out.append({
             "asin": s.asin,
             "product": s.title[:60],
@@ -82,13 +92,22 @@ def _asin_scorecard(ad_rows: list[AdRow], sales_rows: list[SalesRow], target_aco
             "ad_spend": spend,
             "ad_sales": sales,
             "ad_acos_bps": ad_acos,
-            "verdict": _verdict(s.conversion_bps, s.sessions, ad_acos, target_acos_bps),
+            "cogs_cents": cogs_cents,
+            "breakeven_acos_bps": breakeven_bps,
+            "verdict": _verdict(s.conversion_bps, s.sessions, ad_acos, target_acos_bps, breakeven_bps),
         })
     out.sort(key=lambda r: r["org_sales"], reverse=True)
     return out
 
 
-def _verdict(cvr_bps, sessions, ad_acos_bps, target_acos_bps) -> str:
+def _verdict(cvr_bps, sessions, ad_acos_bps, target_acos_bps, breakeven_bps=None) -> str:
+    # Profit-true when COGS is known: compare ACoS to true break-even.
+    if breakeven_bps is not None and ad_acos_bps is not None:
+        if ad_acos_bps > breakeven_bps:
+            return "Unprofitable on ads — cut/fix to break-even"
+        if cvr_bps is not None and cvr_bps < 1000 and sessions >= 3000:
+            return "Profitable — but fix CVR (biggest lever)"
+        return "Profitable — scale"
     if cvr_bps is not None and cvr_bps < 1000 and sessions >= 3000:
         return "Fix CVR — biggest lever"
     if cvr_bps is not None and cvr_bps >= 2000:  # strong converter deserves investment
@@ -160,6 +179,7 @@ def build_growth_plan(
     goals: Goals,
     narrative: str = "",
     data_window: str = "trailing ~30 days",
+    cogs: Optional[dict] = None,
     has_cogs: bool = False,
 ) -> bytes:
     import openpyxl
@@ -211,13 +231,16 @@ def build_growth_plan(
     ws.append(["Organic from Business Report; ad data from Advertised Product report. Joined on ASIN."])
     ws.append([])
     _head(ws, st, ["ASIN", "Product", "Org Sales", "Units", "Sessions", "CVR", "Buy Box",
-                   "Ad Spend", "Ad Sales", "Ad ACoS", "Verdict / Move"])
-    for r in _asin_scorecard(ad_rows, sales_rows, target_acos):
+                   "Ad Spend", "Ad Sales", "Ad ACoS", "COGS/unit", "Break-even ACoS", "Verdict / Move"])
+    for r in _asin_scorecard(ad_rows, sales_rows, target_acos, cogs):
         _row(ws, [r["asin"], r["product"], _dollars(r["org_sales"]), r["units"], r["sessions"],
                   _pct(r["cvr_bps"]), _pct(r["buybox_bps"]), _dollars(r["ad_spend"]),
-                  _dollars(r["ad_sales"]), _pct(r["ad_acos_bps"]), r["verdict"]],
-             money_cols=(2, 7, 8), pct_cols=(5, 6, 9), wrap_cols=(1, 10))
-    _widths(ws, [14, 34, 12, 8, 10, 8, 8, 11, 11, 9, 28])
+                  _dollars(r["ad_sales"]), _pct(r["ad_acos_bps"]),
+                  _dollars(r["cogs_cents"]) if r["cogs_cents"] else "—",
+                  _pct(r["breakeven_acos_bps"]) if r["breakeven_acos_bps"] is not None else "—",
+                  r["verdict"]],
+             money_cols=(2, 7, 8, 10), pct_cols=(5, 6, 9, 11), wrap_cols=(1, 12))
+    _widths(ws, [14, 32, 11, 7, 9, 7, 7, 10, 10, 8, 10, 13, 30])
 
     # ---- Campaign Actions ----
     ws = wb.create_sheet("Campaign Actions")

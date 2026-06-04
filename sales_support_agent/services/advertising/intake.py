@@ -25,6 +25,7 @@ KIND_BUSINESS = "business_report"
 KIND_SQP = "sqp"
 KIND_DSP = "dsp"
 KIND_EXTERNAL = "external"
+KIND_COGS = "cogs"
 KIND_UNKNOWN = "unknown"
 
 KIND_LABELS = {
@@ -34,6 +35,7 @@ KIND_LABELS = {
     KIND_SQP: "Brand Analytics SQP",
     KIND_DSP: "DSP performance",
     KIND_EXTERNAL: "External costs",
+    KIND_COGS: "Per-ASIN COGS",
 }
 
 # What a real audit needs: at least one ads performance report (for the burn
@@ -98,6 +100,10 @@ def _classify_csv(tokens: set[str]) -> str:
     def has(*subs: str) -> bool:
         return any(any(sub in tok for tok in tokens) for sub in subs)
 
+    # Per-ASIN COGS / cost sheet — ASIN/SKU + a cost column, no ad metrics or traffic.
+    if (has("asin") or has("sku")) and has("cogs", "unit cost", "landed cost", "cost of goods", "cost") \
+            and not has("impressions", "sessions", "clicks", "campaign", "total cost", "search"):
+        return KIND_COGS
     # Brand Analytics Search Query Performance
     if has("search query volume") or (has("search query") and has("impressions: total", "purchases: total")):
         return KIND_SQP
@@ -166,6 +172,7 @@ def route_files(files: list[tuple[str, bytes]]) -> tuple[AuditInputs, IntakeRepo
         KIND_SQP: "sqp_csv",
         KIND_DSP: "dsp_csv",
         KIND_EXTERNAL: "external_costs_csv",
+        KIND_COGS: "cogs_csv",
     }
     for filename, data in files:
         if not data:
