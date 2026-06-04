@@ -70,6 +70,8 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
       .chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
       .chip {{ padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--white); cursor: pointer; font-size: 12px; font-family: inherit; }}
       .chip:hover {{ background: var(--light-blue); }}
+      .filelist {{ margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }}
+      .fchip {{ padding: 4px 10px; border-radius: 8px; background: #e2f0e6; color: #2f6b3f; font-size: 12px; }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
       .card h2 {{ font-family: "Montserrat",sans-serif; font-size: 18px; margin: 0 0 14px; }}
       .card h2 small {{ font-family: "Inter",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
@@ -206,6 +208,8 @@ _DOWNLOAD_GUIDE_ROWS = [
      "<strong>Core.</strong> Per child-ASIN sessions, units, conversion, total sales → TACoS + gap-to-goal. Use the Child Item one (not By Date / By Parent)."),
     ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (custom date range) → Download",
      "<em>Optional.</em> Only needed for the downloadable <strong>apply-sheet</strong> (round-tripped bid/negative changes). Its own area — not the Reports page. Skip it and the burn list is still fully usable."),
+    ("Per-ASIN COGS", ".csv", "Your own file — two columns: <strong>ASIN, COGS</strong> (optionally FBA Fee, Referral Fee for true landed cost)",
+     "Makes it <strong>profit-true</strong>: real break-even ACoS per SKU instead of an ACoS proxy. Persists across runs — upload once."),
     ("Brand Analytics — Search Query Performance", ".csv", "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
      "Optional — market-share context."),
     ("DSP performance", ".csv", "Amazon DSP console → Reports (name the file with “DSP”)",
@@ -249,6 +253,7 @@ def _upload_form(latest: Optional[dict] = None) -> str:
         <label for="adv-files"><strong>Drop all your Amazon exports here</strong><br>
         <span class="empty">Bulk file, Search Term, Business Report, SQP, DSP — in any order. The tool detects what each file is.</span></label>
         <input id="adv-files" type="file" name="files" accept=".csv,.xlsx" multiple>
+        <div id="adv-filelist" class="filelist"></div>
       </div>
       {_download_guide()}
       <div class="card" style="margin:0;background:#fafbfc;">
@@ -271,6 +276,7 @@ def _upload_form(latest: Optional[dict] = None) -> str:
           <div class="field"><label>Brand Analytics SQP (CSV)</label><input type="file" name="sqp_csv" accept=".csv"></div>
           <div class="field"><label>DSP (CSV)</label><input type="file" name="dsp_csv" accept=".csv"></div>
           <div class="field"><label>External costs (CSV)</label><input type="file" name="external_costs_csv" accept=".csv"></div>
+          <div class="field"><label>Per-ASIN COGS (CSV)</label><input type="file" name="cogs_csv" accept=".csv"></div>
         </div>
       </details>
       <div class="field" style="max-width:420px;">
@@ -286,13 +292,23 @@ def _upload_form(latest: Optional[dict] = None) -> str:
     (function(){{
       var add = document.getElementById('adv-add-ext');
       var rows = document.getElementById('ext-rows');
-      if (!add || !rows) return;
-      add.addEventListener('click', function(){{
+      if (add && rows) add.addEventListener('click', function(){{
         var first = rows.querySelector('.ext-row');
         var clone = first.cloneNode(true);
         clone.querySelectorAll('input').forEach(function(i){{ i.value = ''; }});
         clone.querySelectorAll('select').forEach(function(s){{ s.selectedIndex = 0; }});
         rows.appendChild(clone);
+      }});
+      var files = document.getElementById('adv-files');
+      var list = document.getElementById('adv-filelist');
+      if (files && list) files.addEventListener('change', function(){{
+        list.innerHTML = '';
+        for (var i = 0; i < files.files.length; i++) {{
+          var chip = document.createElement('span');
+          chip.className = 'fchip';
+          chip.textContent = files.files[i].name;
+          list.appendChild(chip);
+        }}
       }});
     }})();
     </script>

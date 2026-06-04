@@ -213,6 +213,8 @@ def _rule_wasted_spend_negatives(ad_rows: list[AdRow], thr: Thresholds) -> list[
             bulk_row={
                 "action": "create_negative",
                 "ad_type": r.ad_type,
+                "campaign_id": r.campaign_id,
+                "ad_group_id": r.ad_group_id,
                 "campaign_name": r.campaign_name,
                 "ad_group_name": r.ad_group_name,
                 "keyword_text": r.entity_text,
@@ -255,6 +257,8 @@ def _rule_bid_down_over_target(ad_rows: list[AdRow], target_acos: int, thr: Thre
             bulk_row={
                 "action": "set_bid",
                 "ad_type": r.ad_type,
+                "campaign_id": r.campaign_id,
+                "ad_group_id": r.ad_group_id,
                 "campaign_name": r.campaign_name,
                 "ad_group_name": r.ad_group_name,
                 "keyword_text": r.entity_text,
@@ -298,6 +302,8 @@ def _rule_bid_up_under_target(ad_rows: list[AdRow], target_acos: int, thr: Thres
             bulk_row={
                 "action": "set_bid",
                 "ad_type": r.ad_type,
+                "campaign_id": r.campaign_id,
+                "ad_group_id": r.ad_group_id,
                 "campaign_name": r.campaign_name,
                 "ad_group_name": r.ad_group_name,
                 "keyword_text": r.entity_text,
@@ -338,6 +344,8 @@ def _rule_harvest_keywords(ad_rows: list[AdRow], thr: Thresholds) -> list[Recomm
             bulk_row={
                 "action": "create_keyword",
                 "ad_type": r.ad_type,
+                "campaign_id": r.campaign_id,
+                "ad_group_id": r.ad_group_id,
                 "campaign_name": r.campaign_name,
                 "ad_group_name": r.ad_group_name,
                 "keyword_text": r.entity_text,

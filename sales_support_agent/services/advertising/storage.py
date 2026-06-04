@@ -330,3 +330,27 @@ def list_bulk_files(run_id: str) -> list[str]:
         for f in os.listdir(run_dir)
         if f.endswith("_bulk.xlsx")
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-ASIN COGS — standing reference data, persisted in kv_store and merged
+# across uploads (a new file updates the ASINs it covers, keeps the rest).
+# ---------------------------------------------------------------------------
+
+_COGS_KEY = "advertising_asin_cogs"
+
+
+def save_cogs(by_asin: dict, by_sku: Optional[dict] = None) -> dict:
+    from sales_support_agent.models.database import kv_get_json, kv_set_json
+    current = kv_get_json(_COGS_KEY, {}) or {}
+    asin_map = {**(current.get("asin") or {}), **(by_asin or {})}
+    sku_map = {**(current.get("sku") or {}), **(by_sku or {})}
+    merged = {"asin": asin_map, "sku": sku_map}
+    kv_set_json(_COGS_KEY, merged)
+    return merged
+
+
+def get_cogs() -> dict:
+    from sales_support_agent.models.database import kv_get_json
+    data = kv_get_json(_COGS_KEY, {}) or {}
+    return {"asin": data.get("asin") or {}, "sku": data.get("sku") or {}}

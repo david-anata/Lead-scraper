@@ -150,6 +150,7 @@ async def run(
     sqp_csv: Optional[UploadFile] = File(default=None),
     dsp_csv: Optional[UploadFile] = File(default=None),
     external_costs_csv: Optional[UploadFile] = File(default=None),
+    cogs_csv: Optional[UploadFile] = File(default=None),
     ext_channel: list[str] = Form(default=[]),
     ext_label: list[str] = Form(default=[]),
     ext_amount: list[str] = Form(default=[]),
@@ -173,6 +174,7 @@ async def run(
         ("sqp_csv", sqp_csv),
         ("dsp_csv", dsp_csv),
         ("external_costs_csv", external_costs_csv),
+        ("cogs_csv", cogs_csv),
     ):
         data = await _read_upload(upload)
         if data is not None:

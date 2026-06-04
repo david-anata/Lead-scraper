@@ -16,7 +16,11 @@ from typing import Optional
 from sales_support_agent.services.advertising import normalizers as N
 from sales_support_agent.services.advertising import storage
 from sales_support_agent.services.advertising.brand import detect_brand_candidates, filter_by_brand
-from sales_support_agent.services.advertising.bulk_sheets import BulkBuildResult, build_bulk_workbook
+from sales_support_agent.services.advertising.bulk_sheets import (
+    BulkBuildResult,
+    build_apply_sheet,
+    build_bulk_workbook,
+)
 from sales_support_agent.services.advertising.deliverable import build_growth_plan
 from sales_support_agent.services.advertising.engine import build_recommendations, compute_summary
 from sales_support_agent.services.advertising.llm import generate_narrative
@@ -40,6 +44,7 @@ class AuditInputs:
     dsp_csv: Optional[bytes] = None
     external_costs_csv: Optional[bytes] = None
     external_costs_manual: list[ExternalCostRow] = field(default_factory=list)
+    cogs_csv: Optional[bytes] = None
     # New-console Amazon Ads performance reports (search-term / advertised-product
     # / targeting / ad-group / campaign), each parsed by normalize_ads_report_csv.
     ads_report_csvs: list[bytes] = field(default_factory=list)
@@ -48,7 +53,7 @@ class AuditInputs:
         return any([
             self.bulk_xlsx, self.search_term_csv, self.business_report_csv,
             self.sqp_csv, self.dsp_csv, self.external_costs_csv,
-            self.external_costs_manual, self.ads_report_csvs,
+            self.external_costs_manual, self.ads_report_csvs, self.cogs_csv,
         ])
 
 
@@ -98,6 +103,12 @@ def run_audit(
     if inputs.external_costs_csv:
         external_rows += N.normalize_external_costs_csv(inputs.external_costs_csv)
 
+    # COGS is standing reference data — merge any new upload, then load the full map.
+    if inputs.cogs_csv:
+        parsed = N.normalize_cogs_csv(inputs.cogs_csv)
+        storage.save_cogs(parsed.get("asin", {}), parsed.get("sku", {}))
+    cogs = storage.get_cogs()
+
     # Brand focus: detect candidates from the full account, then scope the audit.
     brand_candidates = detect_brand_candidates(ad_rows, sales_rows)
     brand = (brand or "").strip()
@@ -120,9 +131,14 @@ def run_audit(
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
 
-        # Round-trip the uploaded bulk workbook (covers all SP/SB/SD sheets it contains).
-        bulk_result: Optional[BulkBuildResult] = None
-        if inputs.bulk_xlsx:
+        # Apply-sheet: populate Amazon's official template directly from the
+        # Campaign/Ad Group IDs carried on the reports — upload-ready, no manual
+        # editing. Falls back to round-tripping an uploaded bulk workbook (which
+        # also enables bid updates) only if the template path yields nothing.
+        bulk_result: Optional[BulkBuildResult] = build_apply_sheet(recs)
+        if bulk_result.has_file:
+            storage.save_bulk_file(run_id, "combined", bulk_result.xlsx_bytes)
+        elif inputs.bulk_xlsx:
             bulk_result = build_bulk_workbook(inputs.bulk_xlsx, recs)
             if bulk_result.has_file:
                 storage.save_bulk_file(run_id, "combined", bulk_result.xlsx_bytes)
@@ -137,6 +153,7 @@ def run_audit(
             plan_bytes = build_growth_plan(
                 brand=brand, summary=summary, recommendations=recs,
                 ad_rows=ad_rows, sales_rows=sales_rows, goals=goals, narrative=narrative,
+                cogs=cogs, has_cogs=bool(cogs.get("asin") or cogs.get("sku")),
             )
             storage.save_bulk_file(run_id, "growth_plan", plan_bytes)
         except Exception:  # noqa: BLE001

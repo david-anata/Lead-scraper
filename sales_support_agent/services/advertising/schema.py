@@ -139,6 +139,8 @@ class AdRow:
     entity_level: str
     campaign_name: str = ""
     ad_group_name: str = ""
+    campaign_id: str = ""
+    ad_group_id: str = ""
     entity_text: str = ""
     match_type: str = ""
     impressions: int = 0
