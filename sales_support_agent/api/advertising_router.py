@@ -146,10 +146,9 @@ async def run(
     sqp_csv: Optional[UploadFile] = File(default=None),
     dsp_csv: Optional[UploadFile] = File(default=None),
     external_costs_csv: Optional[UploadFile] = File(default=None),
-    ext_channel_1: str = Form(default=""),
-    ext_amount_1: str = Form(default=""),
-    ext_channel_2: str = Form(default=""),
-    ext_amount_2: str = Form(default=""),
+    ext_channel: list[str] = Form(default=[]),
+    ext_label: list[str] = Form(default=[]),
+    ext_amount: list[str] = Form(default=[]),
     label: str = Form(default=""),
 ) -> RedirectResponse:
     # Mass-upload path: auto-detect + route every dropped file by its headers.
@@ -174,14 +173,17 @@ async def run(
         if data is not None:
             setattr(inputs, attr, data)
 
-    for channel, amount in ((ext_channel_1, ext_amount_1), (ext_channel_2, ext_amount_2)):
+    # Unlimited external-channel rows (channel/label/amount arrays, zipped by index).
+    for i, channel in enumerate(ext_channel):
+        amount = ext_amount[i] if i < len(ext_amount) else ""
+        label = ext_label[i] if i < len(ext_label) else ""
         cents = _dollars_to_cents(amount)
         if channel and cents:
             inputs.external_costs_manual.append(
                 ExternalCostRow(
                     channel=channel,
                     cost_type="commission" if channel == "influencer" else "ad_spend",
-                    label=channel,
+                    label=(label or channel),
                     amount_cents=cents,
                 )
             )

@@ -200,8 +200,8 @@ _DOWNLOAD_GUIDE_ROWS = [
      "Required for the round-tripped bulk sheet + bids/keywords. Not on the Reports page — it's its own area."),
     ("Search Term report", ".csv", "Ads Console → Reports → <strong>Search term</strong> template → Use template → export CSV",
      "Wasted-spend negatives + keyword harvest."),
-    ("Business Report — Sales &amp; Traffic", ".csv", "<strong>Seller Central</strong> → Reports → Business Reports → <strong>Detail Page Sales and Traffic by Child Item</strong>",
-     "Sessions, units, TACoS, gap-to-goal. (Seller Central, not the Ads console.)"),
+    ("Business Report — Sales &amp; Traffic", ".csv", "<strong>Seller Central</strong> → Reports → Business Reports → <strong>By ASIN → Detail Page Sales and Traffic By Child Item</strong>",
+     "Per child-ASIN sessions, units, conversion, TACoS, gap-to-goal. Use the Child Item one (not By Date / By Parent). Seller Central, not the Ads console."),
     ("Brand Analytics — Search Query Performance", ".csv", "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
      "Market-share context (optional)."),
     ("DSP performance", ".csv", "Amazon DSP console → Reports",
@@ -236,13 +236,15 @@ def _upload_form() -> str:
       </div>
       {_download_guide()}
       <div class="card" style="margin:0;background:#fafbfc;">
-        <h2 style="font-size:15px;">External marketing spend <small>— for blended TACoS (manual entry)</small></h2>
-        <div class="row">
-          <div class="field"><label>Channel</label><select name="ext_channel_1"><option value=""></option>{ext_channels}</select></div>
-          <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount_1" placeholder="0.00"></div>
-          <div class="field"><label>Channel</label><select name="ext_channel_2"><option value=""></option>{ext_channels}</select></div>
-          <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount_2" placeholder="0.00"></div>
+        <h2 style="font-size:15px;">External marketing spend <small>— off-Amazon channels for blended TACoS</small></h2>
+        <div id="ext-rows">
+          <div class="row ext-row">
+            <div class="field"><label>Channel</label><select name="ext_channel"><option value=""></option>{ext_channels}</select></div>
+            <div class="field"><label>Label (optional)</label><input type="text" name="ext_label" placeholder="e.g. Meta prospecting / influencer Jane"></div>
+            <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount" placeholder="0.00"></div>
+          </div>
         </div>
+        <div style="margin-top:10px;"><button type="button" class="btn secondary" id="adv-add-ext">+ Add channel</button></div>
       </div>
       <details class="guide">
         <summary>Assign files individually instead (advanced)</summary>
@@ -258,6 +260,20 @@ def _upload_form() -> str:
       <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="Week of Jun 2"></div>
       <div><button class="btn" type="submit">Run weekly audit</button></div>
     </form>
+    <script>
+    (function(){{
+      var add = document.getElementById('adv-add-ext');
+      var rows = document.getElementById('ext-rows');
+      if (!add || !rows) return;
+      add.addEventListener('click', function(){{
+        var first = rows.querySelector('.ext-row');
+        var clone = first.cloneNode(true);
+        clone.querySelectorAll('input').forEach(function(i){{ i.value = ''; }});
+        clone.querySelectorAll('select').forEach(function(s){{ s.selectedIndex = 0; }});
+        rows.appendChild(clone);
+      }});
+    }})();
+    </script>
     """
 
 
