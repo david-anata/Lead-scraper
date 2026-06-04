@@ -220,6 +220,27 @@ class HttpTest(_Base):
         self.assertEqual(resp.status_code, 303)
         self.assertIn("Upload+at+least+one", resp.headers["location"])
 
+    def test_mass_upload_auto_detects_and_runs(self):
+        client = self._client()
+        # Two files under ONE `files` field — the tool must route each by content.
+        resp = client.post(
+            "/admin/advertising/audit/run",
+            data={"label": "Mass"},
+            files=[
+                ("files", ("anything.xlsx", _bulk_xlsx(),
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+                ("files", ("export.csv", _SEARCH_TERM_CSV, "text/csv")),
+            ],
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        loc = resp.headers["location"]
+        self.assertIn("/admin/advertising/audit?run=", loc)
+        self.assertIn("detail=", loc)  # detection report present
+        run_id = loc.split("run=")[1].split("&")[0]
+        # Bulk file was auto-detected, so a bulk sheet got generated.
+        self.assertIn("combined", self.storage.list_bulk_files(run_id))
+
 
 if __name__ == "__main__":
     unittest.main()
