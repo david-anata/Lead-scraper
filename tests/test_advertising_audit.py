@@ -201,10 +201,11 @@ class HttpTest(_Base):
         self.assertIn("/admin/advertising/audit?run=", location)
         run_id = location.split("run=")[1].split("&")[0]
 
-        # Page now shows the run + a bulk download link.
+        # Page now shows the run + a bulk download link + the growth plan.
         page = client.get(f"/admin/advertising/audit?run={run_id}")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("Download bulk sheet", page.text)
+        self.assertIn(f"/admin/advertising/audit/{run_id}/bulk/combined.xlsx", page.text)
+        self.assertIn(f"/admin/advertising/audit/{run_id}/plan.xlsx", page.text)
 
         dl = client.get(f"/admin/advertising/audit/{run_id}/bulk/combined.xlsx")
         self.assertEqual(dl.status_code, 200)
