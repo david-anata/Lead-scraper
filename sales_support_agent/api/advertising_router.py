@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import quote_plus
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -16,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sales_support_agent.services.advertising import storage
 from sales_support_agent.services.advertising.audit import AuditInputs, run_audit
 from sales_support_agent.services.advertising.audit_page import render_audit_page
+from sales_support_agent.services.advertising.intake import route_files
 from sales_support_agent.services.advertising.schema import ExternalCostRow, Goals
 from sales_support_agent.services.auth_deps import get_session_user_from_request, is_authenticated
 
@@ -77,7 +79,7 @@ async def _read_upload(f: Optional[UploadFile]) -> Optional[bytes]:
 
 
 @router.get("/audit", response_class=HTMLResponse)
-def audit_page(request: Request, run: str = "", msg: str = "") -> HTMLResponse:
+def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "") -> HTMLResponse:
     user = get_session_user_from_request(request)
     runs = storage.list_runs()
 
@@ -101,6 +103,7 @@ def audit_page(request: Request, run: str = "", msg: str = "") -> HTMLResponse:
         runs=runs,
         user=user,
         flash=msg,
+        detail=detail,
     )
     return HTMLResponse(html)
 
@@ -136,6 +139,7 @@ def save_goals(
 
 @router.post("/audit/run")
 async def run(
+    files: list[UploadFile] = File(default=[]),
     bulk_xlsx: Optional[UploadFile] = File(default=None),
     search_term_csv: Optional[UploadFile] = File(default=None),
     business_report_csv: Optional[UploadFile] = File(default=None),
@@ -148,14 +152,28 @@ async def run(
     ext_amount_2: str = Form(default=""),
     label: str = Form(default=""),
 ) -> RedirectResponse:
-    inputs = AuditInputs(
-        bulk_xlsx=await _read_upload(bulk_xlsx),
-        search_term_csv=await _read_upload(search_term_csv),
-        business_report_csv=await _read_upload(business_report_csv),
-        sqp_csv=await _read_upload(sqp_csv),
-        dsp_csv=await _read_upload(dsp_csv),
-        external_costs_csv=await _read_upload(external_costs_csv),
-    )
+    # Mass-upload path: auto-detect + route every dropped file by its headers.
+    batch: list[tuple[str, bytes]] = []
+    for f in files or []:
+        if f is not None and f.filename:
+            data = await f.read()
+            if data:
+                batch.append((f.filename, data))
+    inputs, report = route_files(batch)
+
+    # Labeled-slot path (still supported) takes precedence over auto-detected.
+    for attr, upload in (
+        ("bulk_xlsx", bulk_xlsx),
+        ("search_term_csv", search_term_csv),
+        ("business_report_csv", business_report_csv),
+        ("sqp_csv", sqp_csv),
+        ("dsp_csv", dsp_csv),
+        ("external_costs_csv", external_costs_csv),
+    ):
+        data = await _read_upload(upload)
+        if data is not None:
+            setattr(inputs, attr, data)
+
     for channel, amount in ((ext_channel_1, ext_amount_1), (ext_channel_2, ext_amount_2)):
         cents = _dollars_to_cents(amount)
         if channel and cents:
@@ -181,8 +199,12 @@ async def run(
             status_code=303,
         )
     applied = result.bulk.applied if result.bulk else 0
-    msg = f"Audit+complete:+{result.counts.get('recommendations', 0)}+recommendations,+{applied}+bulk+changes."
-    return RedirectResponse(f"/admin/advertising/audit?run={result.run_id}&msg={msg}", status_code=303)
+    detect = quote_plus(report.summary()) if batch else ""
+    msg = quote_plus(
+        f"Audit complete: {result.counts.get('recommendations', 0)} recommendations, {applied} bulk changes."
+    )
+    suffix = f"&detail={detect}" if detect else ""
+    return RedirectResponse(f"/admin/advertising/audit?run={result.run_id}&msg={msg}{suffix}", status_code=303)
 
 
 # ---------------------------------------------------------------------------

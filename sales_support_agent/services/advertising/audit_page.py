@@ -60,6 +60,12 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
       .highlight {{ color: var(--light-blue); }}
       .page-copy {{ font-size: 16px; line-height: 1.5; margin-top: 10px; max-width: 760px; color: rgba(43,54,68,0.85); }}
       .flash {{ margin-bottom: 18px; padding: 12px 16px; border-radius: 12px; background: #e8f4ea; border: 1px solid #8fbf9a; font-size: 14px; }}
+      .flash-detail {{ margin-top: 6px; font-size: 13px; color: rgba(43,54,68,0.75); }}
+      .dropzone {{ border: 2px dashed var(--light-blue); border-radius: 16px; padding: 22px; text-align: center; background: #f4f8fb; }}
+      .dropzone input[type=file] {{ margin-top: 12px; }}
+      details.guide {{ border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px; background: var(--white); }}
+      details.guide > summary {{ cursor: pointer; font-weight: 600; font-size: 14px; padding: 8px 0; }}
+      details.guide table.burn {{ font-size: 13px; }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
       .card h2 {{ font-family: "Montserrat",sans-serif; font-size: 18px; margin: 0 0 14px; }}
       .card h2 small {{ font-family: "Inter",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
@@ -189,22 +195,48 @@ def _goals_form(goals: Optional[Goals]) -> str:
     """
 
 
+_DOWNLOAD_GUIDE_ROWS = [
+    ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (custom date range) → Download",
+     "Required for the round-tripped bulk sheet + bids/keywords. Not on the Reports page — it's its own area."),
+    ("Search Term report", ".csv", "Ads Console → Reports → <strong>Search term</strong> template → Use template → export CSV",
+     "Wasted-spend negatives + keyword harvest."),
+    ("Business Report — Sales &amp; Traffic", ".csv", "<strong>Seller Central</strong> → Reports → Business Reports → <strong>Detail Page Sales and Traffic by Child Item</strong>",
+     "Sessions, units, TACoS, gap-to-goal. (Seller Central, not the Ads console.)"),
+    ("Brand Analytics — Search Query Performance", ".csv", "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
+     "Market-share context (optional)."),
+    ("DSP performance", ".csv", "Amazon DSP console → Reports",
+     "Campaign-level; lands as manual tasks (optional)."),
+]
+
+
+def _download_guide() -> str:
+    rows = "".join(
+        f"<tr><td><strong>{name}</strong> <span class='pill'>{ext}</span></td>"
+        f"<td>{where}</td><td class='empty'>{why}</td></tr>"
+        for name, ext, where, why in _DOWNLOAD_GUIDE_ROWS
+    )
+    return f"""
+    <details class="guide">
+      <summary>📥 What to download from Amazon (exact paths)</summary>
+      <p class="empty" style="margin:10px 0;">Use the <strong>same trailing date window</strong> for every report (e.g. last 30 or 60 days)
+      and <strong>end it yesterday, not today</strong> — today's data is incomplete and skews ACoS. Drop them all in the box above; the tool detects each.</p>
+      <table class="burn"><thead><tr><th>Report</th><th>Where to get it</th><th>Why</th></tr></thead><tbody>{rows}</tbody></table>
+    </details>
+    """
+
+
 def _upload_form() -> str:
     ext_channels = "".join(f'<option value="{c}">{c.title()}</option>' for c in EXTERNAL_CHANNELS)
     return f"""
     <form class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
-      <div class="row">
-        <div class="field"><label>Ads bulk-operations file (XLSX)</label><input type="file" name="bulk_xlsx" accept=".xlsx"><span class="hint">SP/SB/SD sheets — used to round-trip your bulk uploads.</span></div>
-        <div class="field"><label>Search Term report (CSV)</label><input type="file" name="search_term_csv" accept=".csv"><span class="hint">Drives negatives + keyword harvest.</span></div>
-        <div class="field"><label>Business Report — Sales & Traffic (CSV)</label><input type="file" name="business_report_csv" accept=".csv"><span class="hint">Sessions, units, TACoS.</span></div>
+      <div class="dropzone">
+        <label for="adv-files"><strong>Drop all your Amazon exports here</strong><br>
+        <span class="empty">Bulk file, Search Term, Business Report, SQP, DSP — in any order. The tool detects what each file is.</span></label>
+        <input id="adv-files" type="file" name="files" accept=".csv,.xlsx" multiple>
       </div>
-      <div class="row">
-        <div class="field"><label>Brand Analytics — Search Query Perf (CSV)</label><input type="file" name="sqp_csv" accept=".csv"><span class="hint">Market-share context.</span></div>
-        <div class="field"><label>DSP performance (CSV)</label><input type="file" name="dsp_csv" accept=".csv"><span class="hint">Campaign-level; manual tasks.</span></div>
-        <div class="field"><label>External costs (CSV, optional)</label><input type="file" name="external_costs_csv" accept=".csv"><span class="hint">Channel, Amount columns.</span></div>
-      </div>
+      {_download_guide()}
       <div class="card" style="margin:0;background:#fafbfc;">
-        <h2 style="font-size:15px;">External marketing spend <small>— or enter manually for blended TACoS</small></h2>
+        <h2 style="font-size:15px;">External marketing spend <small>— for blended TACoS (manual entry)</small></h2>
         <div class="row">
           <div class="field"><label>Channel</label><select name="ext_channel_1"><option value=""></option>{ext_channels}</select></div>
           <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount_1" placeholder="0.00"></div>
@@ -212,6 +244,17 @@ def _upload_form() -> str:
           <div class="field"><label>Amount ($)</label><input type="number" step="0.01" name="ext_amount_2" placeholder="0.00"></div>
         </div>
       </div>
+      <details class="guide">
+        <summary>Assign files individually instead (advanced)</summary>
+        <div class="row" style="margin-top:12px;">
+          <div class="field"><label>Bulk-operations (XLSX)</label><input type="file" name="bulk_xlsx" accept=".xlsx"></div>
+          <div class="field"><label>Search Term (CSV)</label><input type="file" name="search_term_csv" accept=".csv"></div>
+          <div class="field"><label>Business Report (CSV)</label><input type="file" name="business_report_csv" accept=".csv"></div>
+          <div class="field"><label>Brand Analytics SQP (CSV)</label><input type="file" name="sqp_csv" accept=".csv"></div>
+          <div class="field"><label>DSP (CSV)</label><input type="file" name="dsp_csv" accept=".csv"></div>
+          <div class="field"><label>External costs (CSV)</label><input type="file" name="external_costs_csv" accept=".csv"></div>
+        </div>
+      </details>
       <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="Week of Jun 2"></div>
       <div><button class="btn" type="submit">Run weekly audit</button></div>
     </form>
@@ -244,8 +287,12 @@ def render_audit_page(
     runs: list[dict],
     user: Optional[dict] = None,
     flash: str = "",
+    detail: str = "",
 ) -> str:
-    flash_html = f'<div class="flash">{_esc(flash)}</div>' if flash else ""
+    flash_html = ""
+    if flash:
+        detail_html = f'<div class="flash-detail">{_esc(detail)}</div>' if detail else ""
+        flash_html = f'<div class="flash">{_esc(flash)}{detail_html}</div>'
 
     narrative_html = ""
     metrics_html = ""
