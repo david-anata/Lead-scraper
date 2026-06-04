@@ -463,6 +463,145 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         # friendly_name column — additive migration for existing Postgres deployments
         connection.execute(text("ALTER TABLE cash_events ADD COLUMN IF NOT EXISTS friendly_name TEXT NULL"))
 
+    # Advertising > Audit tables — created by create_all on fresh DBs; for
+    # existing Postgres deployments we create them if absent. Money is cents,
+    # percentages are basis points (see entities.py).
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ad_goals (
+                id                   TEXT         PRIMARY KEY,
+                label                VARCHAR(255) NOT NULL DEFAULT '',
+                period               VARCHAR(32)  NOT NULL DEFAULT 'monthly',
+                revenue_target_cents INTEGER      NULL,
+                acos_target_bps      INTEGER      NULL,
+                tacos_target_bps     INTEGER      NULL,
+                units_target         INTEGER      NULL,
+                is_active            BOOLEAN      NOT NULL DEFAULT TRUE,
+                notes                TEXT         NOT NULL DEFAULT '',
+                created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS external_costs (
+                id           TEXT         PRIMARY KEY,
+                run_id       TEXT         NULL,
+                channel      VARCHAR(32)  NOT NULL DEFAULT 'other',
+                cost_type    VARCHAR(32)  NOT NULL DEFAULT 'ad_spend',
+                label        VARCHAR(255) NOT NULL DEFAULT '',
+                amount_cents INTEGER      NOT NULL DEFAULT 0,
+                period_start TIMESTAMPTZ  NULL,
+                period_end   TIMESTAMPTZ  NULL,
+                note         TEXT         NOT NULL DEFAULT '',
+                created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS audit_runs (
+                id                 TEXT         PRIMARY KEY,
+                label              VARCHAR(255) NOT NULL DEFAULT '',
+                week_start         TIMESTAMPTZ  NULL,
+                week_end           TIMESTAMPTZ  NULL,
+                status             VARCHAR(32)  NOT NULL DEFAULT 'draft',
+                goal_snapshot_json JSON         NOT NULL DEFAULT '{}',
+                summary_json       JSON         NOT NULL DEFAULT '{}',
+                narrative          TEXT         NOT NULL DEFAULT '',
+                error              TEXT         NOT NULL DEFAULT '',
+                created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ad_snapshots (
+                id            TEXT          PRIMARY KEY,
+                run_id        TEXT          NOT NULL DEFAULT '',
+                ad_type       VARCHAR(16)   NOT NULL DEFAULT 'SP',
+                entity_level  VARCHAR(32)   NOT NULL DEFAULT 'campaign',
+                campaign_name VARCHAR(512)  NOT NULL DEFAULT '',
+                ad_group_name VARCHAR(512)  NOT NULL DEFAULT '',
+                entity_text   VARCHAR(1024) NOT NULL DEFAULT '',
+                match_type    VARCHAR(32)   NOT NULL DEFAULT '',
+                impressions   INTEGER       NOT NULL DEFAULT 0,
+                clicks        INTEGER       NOT NULL DEFAULT 0,
+                spend_cents   INTEGER       NOT NULL DEFAULT 0,
+                sales_cents   INTEGER       NOT NULL DEFAULT 0,
+                orders        INTEGER       NOT NULL DEFAULT 0,
+                units         INTEGER       NOT NULL DEFAULT 0,
+                bid_cents     INTEGER       NULL,
+                raw_json      JSON          NOT NULL DEFAULT '{}',
+                created_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS sales_snapshots (
+                id                          TEXT         PRIMARY KEY,
+                run_id                      TEXT         NOT NULL DEFAULT '',
+                asin                        VARCHAR(32)  NOT NULL DEFAULT '',
+                sku                         VARCHAR(64)  NOT NULL DEFAULT '',
+                title                       VARCHAR(512) NOT NULL DEFAULT '',
+                sessions                    INTEGER      NOT NULL DEFAULT 0,
+                page_views                  INTEGER      NOT NULL DEFAULT 0,
+                units                       INTEGER      NOT NULL DEFAULT 0,
+                ordered_product_sales_cents INTEGER      NOT NULL DEFAULT 0,
+                buy_box_pct_bps             INTEGER      NULL,
+                conversion_bps              INTEGER      NULL,
+                raw_json                    JSON         NOT NULL DEFAULT '{}',
+                created_at                  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS market_snapshots (
+                id                   TEXT         PRIMARY KEY,
+                run_id               TEXT         NOT NULL DEFAULT '',
+                search_query         VARCHAR(512) NOT NULL DEFAULT '',
+                asin                 VARCHAR(32)  NOT NULL DEFAULT '',
+                search_query_volume  INTEGER      NOT NULL DEFAULT 0,
+                impressions_total    INTEGER      NOT NULL DEFAULT 0,
+                impression_share_bps INTEGER      NULL,
+                clicks_total         INTEGER      NOT NULL DEFAULT 0,
+                click_share_bps      INTEGER      NULL,
+                purchases_total      INTEGER      NOT NULL DEFAULT 0,
+                purchase_share_bps   INTEGER      NULL,
+                raw_json             JSON         NOT NULL DEFAULT '{}',
+                created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS recommendations (
+                id                    TEXT          PRIMARY KEY,
+                run_id                TEXT          NOT NULL DEFAULT '',
+                rank                  INTEGER       NOT NULL DEFAULT 0,
+                category              VARCHAR(48)   NOT NULL DEFAULT '',
+                ad_type               VARCHAR(16)   NOT NULL DEFAULT '',
+                severity              VARCHAR(16)   NOT NULL DEFAULT 'medium',
+                title                 VARCHAR(512)  NOT NULL DEFAULT '',
+                detail                TEXT          NOT NULL DEFAULT '',
+                rationale             TEXT          NOT NULL DEFAULT '',
+                entity_ref            VARCHAR(1024) NOT NULL DEFAULT '',
+                current_value         VARCHAR(128)  NOT NULL DEFAULT '',
+                proposed_value        VARCHAR(128)  NOT NULL DEFAULT '',
+                projected_impact_json JSON          NOT NULL DEFAULT '{}',
+                bulk_row_json         JSON          NOT NULL DEFAULT '{}',
+                is_bulk_actionable    BOOLEAN       NOT NULL DEFAULT FALSE,
+                status                VARCHAR(16)   NOT NULL DEFAULT 'open',
+                created_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_goals_is_active ON ad_goals (is_active)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_external_costs_run_id ON external_costs (run_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_external_costs_channel ON external_costs (channel)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_runs_status ON audit_runs (status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_runs_created_at ON audit_runs (created_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_runs_week_start ON audit_runs (week_start)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_snapshots_run_id ON ad_snapshots (run_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_snapshots_run_type_level ON ad_snapshots (run_id, ad_type, entity_level)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_sales_snapshots_run_id ON sales_snapshots (run_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_sales_snapshots_asin ON sales_snapshots (asin)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_market_snapshots_run_id ON market_snapshots (run_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recommendations_run_id ON recommendations (run_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recommendations_run_rank ON recommendations (run_id, rank)"))
+
     # QuickBooks OAuth token + state tables
     with engine.begin() as connection:
         connection.execute(text("""

@@ -10,6 +10,7 @@ from threading import Lock
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from sales_support_agent.api.advertising_router import router as advertising_router
 from sales_support_agent.api.auth_router import router as auth_router
 from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.api.router import router
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(router)
     app.include_router(auth_router)
     app.include_router(cashflow_router)
+    app.include_router(advertising_router)
     return app
 
 
