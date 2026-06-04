@@ -8,3 +8,4 @@ google-auth
 python-multipart
 anthropic>=0.25.0
 markdown
+openpyxl>=3.1,<4.0

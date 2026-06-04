@@ -240,16 +240,19 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </div>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", user: Optional[dict] = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", user: Optional[dict] = None) -> str:
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"
     if active in {"finance", "finances"}:
         primary_active = "finance"
+    if active in {"advertising", "advertising_audit"}:
+        primary_active = "advertising"
     primary_links = [
         _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
         _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
         _nav_item("Finance", "/admin/finances", active=primary_active == "finance"),
+        _nav_item("Advertising", "/admin/advertising/audit", active=primary_active == "advertising"),
         _nav_item("Executive", "/admin/executive", active=primary_active == "executive"),
         _nav_item("Fulfillment CS", "/admin/fulfillment-cs", active=primary_active == "fulfillment"),
     ]
@@ -277,6 +280,17 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         <div class="topbar-divider"></div>
         <nav class="top-actions top-actions--secondary">
           {"".join(secondary_links)}
+        </nav>
+        """
+    current_advertising_section = advertising_section or ("advertising_audit" if active == "advertising" else active)
+    if primary_active == "advertising":
+        advertising_links = [
+            _nav_item("Audit", "/admin/advertising/audit", active=current_advertising_section == "advertising_audit", extra_class="top-link--secondary"),
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(advertising_links)}
         </nav>
         """
     if primary_active == "fulfillment":

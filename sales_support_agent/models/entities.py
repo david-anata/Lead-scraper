@@ -501,3 +501,201 @@ class RecurringTemplate(Base):
     # Audit
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+# ===========================================================================
+# Advertising > Audit  (agent.anatainc.com — weekly Amazon ad/sales audit)
+#
+# Conventions mirror CashEvent: money is stored as integer cents, percentages
+# as integer basis points (25.0% -> 2500 bps) so all arithmetic stays exact.
+# Relationships to audit_runs are soft (indexed string columns, no FK
+# constraints) so a run can be deleted without orphan-cleanup blocking — same
+# rationale as the cashflow tables.
+# ===========================================================================
+
+
+class AdGoal(Base):
+    """A standing set of advertising/sales targets the audit scales toward.
+
+    Snapshotted into each AuditRun.goal_snapshot_json at run time so historical
+    runs reflect the goal that was active then, even after the goal is edited.
+    Percentages are basis points; money is integer cents.
+    """
+
+    __tablename__ = "ad_goals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    period: Mapped[str] = mapped_column(String(32), default="monthly")  # weekly|monthly|quarterly
+
+    revenue_target_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    acos_target_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)   # ad ACoS %
+    tacos_target_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # total ACoS %
+    units_target: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class ExternalCost(Base):
+    """Off-Amazon marketing spend that belongs in the blended-TACoS denominator:
+    Meta / TikTok ad spend, influencer commissions, agency fees, etc. Entered
+    manually or via CSV. Tied to a run (run_id) or left standing (run_id NULL).
+    """
+
+    __tablename__ = "external_costs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="other", index=True)  # meta|tiktok|influencer|google|other
+    cost_type: Mapped[str] = mapped_column(String(32), default="ad_spend")          # ad_spend|commission|fee
+    label: Mapped[str] = mapped_column(String(255), default="")
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    period_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class AuditRun(Base):
+    """One weekly advertising audit. Holds the goal snapshot, the computed
+    summary metrics, and the LLM narrative. ad/sales/market snapshots and
+    recommendations reference it by run_id.
+    """
+
+    __tablename__ = "audit_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    week_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    week_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)  # draft|ingested|analyzed|complete|error
+
+    goal_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    narrative: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class AdSnapshot(Base):
+    """A normalized row from an Amazon Ads report, at whatever entity level the
+    report carries (campaign / ad group / keyword / target / search term /
+    placement / product ad). One table spans all ad types via ad_type.
+    """
+
+    __tablename__ = "ad_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    ad_type: Mapped[str] = mapped_column(String(16), index=True)       # SP|SB|SD|STV|DSP
+    entity_level: Mapped[str] = mapped_column(String(32), index=True)  # campaign|ad_group|keyword|target|search_term|placement|product_ad
+
+    campaign_name: Mapped[str] = mapped_column(String(512), default="")
+    ad_group_name: Mapped[str] = mapped_column(String(512), default="")
+    entity_text: Mapped[str] = mapped_column(String(1024), default="")  # keyword / search term / target expr / asin
+    match_type: Mapped[str] = mapped_column(String(32), default="")
+
+    impressions: Mapped[int] = mapped_column(Integer, default=0)
+    clicks: Mapped[int] = mapped_column(Integer, default=0)
+    spend_cents: Mapped[int] = mapped_column(Integer, default=0)
+    sales_cents: Mapped[int] = mapped_column(Integer, default=0)
+    orders: Mapped[int] = mapped_column(Integer, default=0)
+    units: Mapped[int] = mapped_column(Integer, default=0)
+    bid_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_ad_snapshots_run_type_level", "run_id", "ad_type", "entity_level"),
+    )
+
+
+class SalesSnapshot(Base):
+    """A normalized row from the Amazon Business Report (Detail Page Sales &
+    Traffic) — one row per child ASIN/SKU. Powers TACoS, sessions and CVR.
+    """
+
+    __tablename__ = "sales_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    asin: Mapped[str] = mapped_column(String(32), default="", index=True)
+    sku: Mapped[str] = mapped_column(String(64), default="")
+    title: Mapped[str] = mapped_column(String(512), default="")
+
+    sessions: Mapped[int] = mapped_column(Integer, default=0)
+    page_views: Mapped[int] = mapped_column(Integer, default=0)
+    units: Mapped[int] = mapped_column(Integer, default=0)
+    ordered_product_sales_cents: Mapped[int] = mapped_column(Integer, default=0)
+    buy_box_pct_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    conversion_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class MarketSnapshot(Base):
+    """A normalized row from Brand Analytics Search Query Performance — share of
+    impressions/clicks/purchases for a search query. Gives market-share context.
+    """
+
+    __tablename__ = "market_snapshots"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    search_query: Mapped[str] = mapped_column(String(512), default="", index=True)
+    asin: Mapped[str] = mapped_column(String(32), default="")
+
+    search_query_volume: Mapped[int] = mapped_column(Integer, default=0)
+    impressions_total: Mapped[int] = mapped_column(Integer, default=0)
+    impression_share_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    clicks_total: Mapped[int] = mapped_column(Integer, default=0)
+    click_share_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    purchases_total: Mapped[int] = mapped_column(Integer, default=0)
+    purchase_share_bps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class Recommendation(Base):
+    """One prioritized item in the audit's burn list. When is_bulk_actionable is
+    true, bulk_row_json carries the change(s) to write into the round-tripped
+    Amazon bulk sheet; otherwise it is a manual task in the burn list.
+    """
+
+    __tablename__ = "recommendations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    rank: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    category: Mapped[str] = mapped_column(String(48), default="", index=True)  # bid_down|bid_up|negative_keyword|new_keyword|budget|structure|placement|dayparting|external|manual
+    ad_type: Mapped[str] = mapped_column(String(16), default="")
+    severity: Mapped[str] = mapped_column(String(16), default="medium")  # high|medium|low
+
+    title: Mapped[str] = mapped_column(String(512), default="")
+    detail: Mapped[str] = mapped_column(Text, default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    entity_ref: Mapped[str] = mapped_column(String(1024), default="")
+    current_value: Mapped[str] = mapped_column(String(128), default="")
+    proposed_value: Mapped[str] = mapped_column(String(128), default="")
+
+    projected_impact_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    bulk_row_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_bulk_actionable: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)  # open|applied|dismissed
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_recommendations_run_rank", "run_id", "rank"),
+    )

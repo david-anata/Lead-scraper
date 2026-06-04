@@ -117,6 +117,11 @@ app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 from sales_support_agent.api.cashflow_router import router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
 
+# Advertising > Audit — self-contained router serving /admin/advertising/* in
+# process (same pattern as the cashflow router above).
+from sales_support_agent.api.advertising_router import router as _advertising_router  # noqa: E402
+app.include_router(_advertising_router)
+
 # QuickBooks OAuth routes — NO auth guard on /connect, /callback, /disconnect
 # so Intuit's reviewer can complete the flow without an Anata session.
 # Prefix: /admin/finances/qbo — redirect URI must be registered in Intuit portal as
