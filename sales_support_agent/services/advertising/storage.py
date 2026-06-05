@@ -340,12 +340,13 @@ def list_bulk_files(run_id: str) -> list[str]:
 _COGS_KEY = "advertising_asin_cogs"
 
 
-def save_cogs(by_asin: dict, by_sku: Optional[dict] = None) -> dict:
+def save_cogs(by_asin: dict, by_sku: Optional[dict] = None, source: Optional[dict] = None) -> dict:
     from sales_support_agent.models.database import kv_get_json, kv_set_json
     current = kv_get_json(_COGS_KEY, {}) or {}
     asin_map = {**(current.get("asin") or {}), **(by_asin or {})}
     sku_map = {**(current.get("sku") or {}), **(by_sku or {})}
-    merged = {"asin": asin_map, "sku": sku_map}
+    source_map = {**(current.get("source") or {}), **(source or {})}
+    merged = {"asin": asin_map, "sku": sku_map, "source": source_map}
     kv_set_json(_COGS_KEY, merged)
     return merged
 
@@ -353,4 +354,4 @@ def save_cogs(by_asin: dict, by_sku: Optional[dict] = None) -> dict:
 def get_cogs() -> dict:
     from sales_support_agent.models.database import kv_get_json
     data = kv_get_json(_COGS_KEY, {}) or {}
-    return {"asin": data.get("asin") or {}, "sku": data.get("sku") or {}}
+    return {"asin": data.get("asin") or {}, "sku": data.get("sku") or {}, "source": data.get("source") or {}}

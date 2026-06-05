@@ -73,6 +73,9 @@ class RobustnessTest(unittest.TestCase):
                           ordered_product_sales_cents=350000)]
         out = N.normalize_cogs_csv(margins, sales_rows=sales)
         self.assertEqual(out["asin"]["B07NXN4F7X"], 1566)  # 9.30 + 4.16 + 2.20
+        # The match is recorded so the operator can review it in the COGS Mapping tab.
+        self.assertIn("name-matched", out["source"]["B07NXN4F7X"])
+        self.assertIn("Skinnystix", out["source"]["B07NXN4F7X"])
 
 
 class BreakEvenTest(unittest.TestCase):
