@@ -202,7 +202,17 @@ def build_growth_plan(
     rev_target = goals.revenue_target_cents
     _row(ws, ["Revenue", _dollars(rev), _dollars(rev_target) if rev_target else "—",
               _dollars(rev_target - rev) if rev_target else "—"], money_cols=(1, 2, 3))
-    _row(ws, ["Ad spend", _dollars(summary.get("ad_spend_cents")), "", ""], money_cols=(1,))
+    # Ad spend with a TARGET = what you can spend at the goal revenue and target
+    # TACoS, and a GAP = headroom still available to invest (positive) or overspend.
+    cur_ad = summary.get("ad_spend_cents", 0)
+    tacos_t = goals.tacos_target_bps
+    target_ad = round(rev_target * tacos_t / 10000) if (rev_target and tacos_t) else None
+    _row(ws, ["Ad spend", _dollars(cur_ad),
+              _dollars(target_ad) if target_ad is not None else "—",
+              _dollars(target_ad - cur_ad) if target_ad is not None else "—"], money_cols=(1, 2, 3))
+    if target_ad is not None:
+        head_now = round(rev * tacos_t / 10000) - cur_ad  # headroom at CURRENT revenue
+        _row(ws, ["  ↳ spend headroom at current revenue", "", _dollars(head_now), ""], money_cols=(2,))
     _row(ws, ["External spend", _dollars(summary.get("external_spend_cents")), "", ""], money_cols=(1,))
     _row(ws, ["ACoS", _pct(summary.get("acos_bps")), _pct(target_acos), ""], pct_cols=(1, 2))
     _row(ws, ["TACoS", _pct(summary.get("tacos_bps")), _pct(goals.tacos_target_bps), ""], pct_cols=(1, 2))
