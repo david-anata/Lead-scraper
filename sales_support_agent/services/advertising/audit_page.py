@@ -168,20 +168,8 @@ def _download_guide() -> str:
     """
 
 
-def _brand_chips(latest: Optional[dict]) -> str:
-    cands = ((latest or {}).get("summary") or {}).get("brand_candidates") or []
-    if not cands:
-        return ""
-    chips = "".join(
-        f'<button type="button" class="chip" onclick="document.getElementById(\'adv-brand\').value=this.textContent">{_esc(c)}</button>'
-        for c in cands[:8]
-    )
-    return f'<div class="chips"><span class="empty">Detected:</span> {chips}</div>'
-
-
 def _upload_form(latest: Optional[dict] = None) -> str:
     ext_channels = "".join(f'<option value="{c}">{c.title()}</option>' for c in EXTERNAL_CHANNELS)
-    brand_chips = _brand_chips(latest)
     return f"""
     <form class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
       <div class="dropzone">
@@ -217,8 +205,7 @@ def _upload_form(latest: Optional[dict] = None) -> str:
       <div class="field" style="max-width:420px;">
         <label>Brand focus (optional)</label>
         <input id="adv-brand" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
-        <span class="hint">Scopes the whole audit + growth plan to one brand's campaigns &amp; ASINs.</span>
-        {brand_chips}
+        <span class="hint">Type the client brand to scope the whole audit + plan to its campaigns &amp; ASINs.</span>
       </div>
       <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="Week of Jun 2"></div>
       <div><button class="btn" type="submit">Run weekly audit</button></div>

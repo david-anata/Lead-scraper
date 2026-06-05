@@ -174,6 +174,8 @@ class HttpTest(_Base):
         self.assertIn("History", resp.text)
         # The burn-list table is NOT rendered inline anymore — only in the workbook.
         self.assertNotIn("prioritized optimizations", resp.text)
+        # No confusing pre-upload 'Detected:' brand chips.
+        self.assertNotIn("Detected:", resp.text)
 
     def test_save_goals_redirects(self):
         client = self._client()

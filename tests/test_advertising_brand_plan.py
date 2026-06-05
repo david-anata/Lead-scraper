@@ -102,6 +102,27 @@ class GrowthPlanTest(unittest.TestCase):
         self.assertAlmostEqual(data_row[2], 111447.18, places=2)
         self.assertAlmostEqual(data_row[7], 20000.0, places=2)  # ad spend $20,000
 
+    def test_strategic_read_filled_without_api_key(self):
+        from sales_support_agent.services.advertising.llm import build_deterministic_read
+        text = build_deterministic_read(
+            {"total_sales_cents": 29682674, "blended_tacos_bps": 1520, "acos_bps": 5370,
+             "gap": {"revenue_gap_cents": 15317326, "revenue_target_cents": 45000000, "revenue_attainment_bps": 6600}},
+            self.recs, self.goals)
+        self.assertIn("Revenue", text)
+        self.assertNotIn("API_KEY", text)  # never a 'set the key' placeholder
+        self.assertNotIn("unavailable", text)
+
+    def test_data_requests_has_where_column(self):
+        data = build_growth_plan(brand="Z", summary={"total_sales_cents": 1}, recommendations=self.recs,
+                                 ad_rows=self.ads, sales_rows=self.sales, goals=self.goals)
+        wb = openpyxl.load_workbook(io.BytesIO(data))
+        rows = list(wb["Data Requests"].iter_rows(values_only=True))
+        header = next(r for r in rows if r and r[0] == "#")
+        self.assertIn("Where / how to get it", header)
+        # the row after the header carries real directions (Amazon / Seller Central path)
+        first = rows[rows.index(header) + 1]
+        self.assertTrue(any(tok in str(first[2]) for tok in ("Amazon Ads Console", "Seller Central", "ASIN")))
+
     def test_data_requests_flags_cogs_when_absent(self):
         data = build_growth_plan(brand="Zantrex", summary={"total_sales_cents": 1}, recommendations=self.recs,
                                  ad_rows=self.ads, sales_rows=self.sales, goals=self.goals, has_cogs=False)
