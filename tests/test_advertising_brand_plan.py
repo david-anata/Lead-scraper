@@ -150,6 +150,23 @@ class GrowthPlanTest(unittest.TestCase):
         rules = sum(len(r.rules) for r in wb["ASIN Scorecard"].conditional_formatting)
         self.assertGreater(rules, 0)  # scorecard has color scales + verdict highlights
 
+    def test_strategic_read_surfaces_scope_and_window_warning(self):
+        from sales_support_agent.services.advertising.llm import build_deterministic_read
+        text = build_deterministic_read(
+            {"brand": "Zantrex", "brand_asin_count": 15, "excluded_mixed_campaigns": 3,
+             "data_windows": ["May 07 - May 28", "May 16 - Jun 03"], "total_sales_cents": 1},
+            self.recs, self.goals)
+        self.assertIn("Scoped to 15 Zantrex", text)
+        self.assertIn("3 cross-brand campaign", text)
+        self.assertIn("different date windows", text)  # the data-sanity warning fires
+
+    def test_no_window_warning_when_consistent(self):
+        from sales_support_agent.services.advertising.llm import build_deterministic_read
+        text = build_deterministic_read(
+            {"brand": "Z", "brand_asin_count": 5, "data_windows": ["May 07 - May 28"], "total_sales_cents": 1},
+            self.recs, self.goals)
+        self.assertNotIn("different date windows", text)
+
     def test_data_requests_has_where_column(self):
         data = build_growth_plan(brand="Z", summary={"total_sales_cents": 1}, recommendations=self.recs,
                                  ad_rows=self.ads, sales_rows=self.sales, goals=self.goals)

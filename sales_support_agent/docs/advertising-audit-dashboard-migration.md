@@ -56,3 +56,24 @@ Priority order. Each item makes the mockup more correct AND closer to a 1:1 port
 7. **Observability.** Log per run: rows ingested, brand ASINs, campaigns scoped/excluded, recs by type, rows applied. Needed for auditability when this drives real spend.
 
 The migration is a **swap of #1's adapter**; #2–#7 are the hardening that makes it safe and complete.
+
+## Advertising Engine spec — decisions from the brand review (2026-06-05)
+David's answers to the "poke holes" review, organized. (D) = dashboard; (M) = makes sense in manual `agent` too.
+
+**A. Data sync** (Q1,2,3,14) — (D) The dashboard auto-syncs the **attribution window** and **date ranges** across all data via the API, killing the apples-to-oranges problem. **DSP**: the seat isn't always available → optional **manual upload**, loosely treated like an external channel (caveat: not truly external — TBD). (M) The manual flow CAN mix windows on upload → **warn when uploaded reports span different date windows**.
+
+**B. Strategy layer — objectives & phases** (Q6,7,8,18,20) — (D) The engine must be **objective- and phase-aware**. Brands set a **phase** (launch / grow / defend / harvest) in advertising settings; campaigns carry an **objective**; bid targets, placement moves, and harvest behavior flow from these. Flat 30% ACoS is the default, but **loss-leader / new-to-brand** products get their own (lower-ROAS-acceptable) targets — measure **new-to-brand** (the new-console reports already carry `Purchases/Sales (new to brand)` columns). **Harvest → also negate the source term** as a brand-set preference (avoid paying twice).
+
+**C. Significance & settling** (Q5,10) — (D) Only act on **statistically meaningful** data; add a **cooldown** so a just-changed entity must accrue data before the next change (anti-flip-flop) — pushback if not enough movement, proceed if there is. (M) Already has a min-clicks gate; surface "skipped N low-data keywords."
+
+**D. Human-in-control + overrides** (Q9,17,21) — (D) The user always **directs** the AI. Settings: **per-period overrides** (keep bidding up through Prime Day / a user-set sale window to hold seasonal traffic); **budget** suggestions the user can change; **bid-up only when there's impression-share headroom** (needs *lost impression share* — a separate API call, NOT in the bulk file / standard reports).
+
+**E. Closed loop, memory & rollback** (Q22,23) — (D) **Log every advertising change**; learn from outcomes (did it work?); an in-platform AI agent can query the history ("what strategy worked last year?"); changes are emailed/outlined; **90-day "time-machine" rollback** (Google-Docs-style undo).
+
+**F. Campaign BUILDER** (Q15) — (D, net-new) Beyond optimizing existing campaigns, the dashboard **creates campaigns by ASIN × objective**. Still to build.
+
+**G. Profit** (Q11,12,13) — (D) Break-even at **list price** for simplicity (the P&L process reviews true net; list price ≈ margins sheet `Avg Sale Price`). COGS is **user-uploaded** (user-error if wrong) → **export the active COGS + ASIN mapping** for frequent review (the workbook's COGS Mapping tab seeds this). Referral/FBA fees handled **separately** in the dashboard's analysis, not folded into COGS.
+
+**H. Safety / coverage** (Q14,15,16) — (D) Full **API coverage** removes partial-upload gaps; add **our own tag layer** for brand-attribution safety; always review **per-campaign AND per-listing**. (M) Surface the **scope summary** (brand ASIN count, campaigns excluded) so partial-data risk is visible.
+
+**Net-new dashboard capabilities this implies:** advertising **settings** (phase, objectives, targets, override windows, budgets), a **campaign builder** (ASIN × objective), a **change log + outcome learning + 90-day rollback**, and **lost-impression-share / NTB** data pulls.

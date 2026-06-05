@@ -89,6 +89,17 @@ def build_deterministic_read(summary: dict, recs: list[Recommendation], goals: O
     gap = summary.get("gap", {}) or {}
     parts: list[str] = []
 
+    # Scope + data-sanity first, so the reader trusts the numbers.
+    if summary.get("brand"):
+        scope = f"Scoped to {summary.get('brand_asin_count', 0)} {summary['brand']} ASIN(s)"
+        if summary.get("excluded_mixed_campaigns"):
+            scope += f"; {summary['excluded_mixed_campaigns']} cross-brand campaign(s) excluded from edits (their spend still counts)"
+        parts.append(scope + ".")
+    windows = summary.get("data_windows") or []
+    if len(windows) > 1:
+        parts.append("⚠ Data note: your reports cover different date windows (" + "; ".join(windows) +
+                     ") — use one trailing window, ending yesterday, for comparable metrics.")
+
     rev = summary.get("total_sales_cents")
     if gap.get("revenue_gap_cents", 0) and gap["revenue_gap_cents"] > 0:
         parts.append(
