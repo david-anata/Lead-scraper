@@ -358,6 +358,8 @@ def build_growth_plan(
             cell.style = "Hyperlink"
     _widths(ws, [4, 30, 50, 46, 8])
 
+    _apply_conditional_formatting(wb)
+
     # Final pass: stretch the dark title banner (row 1) across each sheet's width.
     title_font, title_fill = st["title"]
     for sheet in wb.worksheets:
@@ -439,3 +441,96 @@ def _widths(ws, widths: list[int]) -> None:
     from openpyxl.utils import get_column_letter
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+
+# --- conditional formatting (color scales, data bars, highlight rules) ------
+
+_GREEN = ("C6EFCE", "006100")
+_RED = ("FFC7CE", "9C0006")
+_AMBER = ("FFEB9C", "9C6500")
+
+
+def _apply_conditional_formatting(wb) -> None:
+    """Make every table scannable: color scales on rate columns, data bars on $
+    impact, and text/threshold highlights on verdicts and statuses."""
+    from openpyxl.formatting.rule import ColorScaleRule, DataBarRule, FormulaRule, Rule
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.styles.differential import DifferentialStyle
+
+    def _scale(ws, rng, lo, hi):  # lo=color at min value, hi=color at max value
+        ws.conditional_formatting.add(rng, ColorScaleRule(
+            start_type="min", start_color=lo, mid_type="percentile", mid_value=50,
+            mid_color="FFEB84", end_type="max", end_color=hi))
+
+    def _bar(ws, rng, color):
+        ws.conditional_formatting.add(rng, DataBarRule(start_type="min", end_type="max", color=color))
+
+    def _contains(ws, rng, text, pair):
+        fill, font = pair
+        dxf = DifferentialStyle(fill=PatternFill(bgColor=fill), font=Font(color=font))
+        rule = Rule(type="containsText", operator="containsText", text=text, dxf=dxf)
+        rule.formula = [f'NOT(ISERROR(SEARCH("{text}",{rng.split(":")[0]})))']
+        ws.conditional_formatting.add(rng, rule)
+
+    def _formula(ws, rng, formula, pair):
+        fill, font = pair
+        ws.conditional_formatting.add(rng, FormulaRule(
+            formula=[formula], fill=PatternFill(bgColor=fill), font=Font(color=font)))
+
+    def _range(ws, first_col_value):
+        for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+            if row and row[0] == first_col_value:
+                return i + 1, ws.max_row
+        return None, None
+
+    if "ASIN Scorecard" in wb.sheetnames:
+        ws = wb["ASIN Scorecard"]; f, l = _range(ws, "ASIN")
+        if f and l >= f:
+            _scale(ws, f"J{f}:J{l}", "63BE7B", "F8696B")   # Ad ACoS: low=green, high=red
+            _scale(ws, f"F{f}:F{l}", "F8696B", "63BE7B")   # CVR: low=red, high=green
+            _contains(ws, f"M{f}:M{l}", "Scale", _GREEN)
+            _contains(ws, f"M{f}:M{l}", "Unprofitable", _RED)
+            _contains(ws, f"M{f}:M{l}", "Tighten", _AMBER)
+            _contains(ws, f"M{f}:M{l}", "Fix CVR", _AMBER)
+
+    if "Burn List" in wb.sheetnames:
+        ws = wb["Burn List"]; f, l = _range(ws, "#")
+        if f and l >= f:
+            _bar(ws, f"G{f}:G{l}", "63BE7B")               # $ impact bars
+            _contains(ws, f"E{f}:E{l}", "P0", _RED)
+            _contains(ws, f"E{f}:E{l}", "P1", _AMBER)
+
+    if "Campaign Actions" in wb.sheetnames:
+        ws = wb["Campaign Actions"]; f, l = _range(ws, "Campaign")
+        if f and l >= f:
+            _scale(ws, f"D{f}:D{l}", "63BE7B", "F8696B")   # ACoS
+            _contains(ws, f"E{f}:E{l}", "PAUSE", _RED)
+            _contains(ws, f"E{f}:E{l}", "CUT", _AMBER)
+            _contains(ws, f"E{f}:E{l}", "SCALE", _GREEN)
+
+    if "Negatives to Add" in wb.sheetnames:
+        ws = wb["Negatives to Add"]; f, l = _range(ws, "Search term / target")
+        if f and l >= f:
+            _bar(ws, f"B{f}:B{l}", "F8696B")               # wasted spend (red bars)
+
+    if "COGS Mapping" in wb.sheetnames:
+        ws = wb["COGS Mapping"]; f, l = _range(ws, "ASIN")
+        if f and l >= f:
+            _contains(ws, f"F{f}:F{l}", "exact", _GREEN)
+            _contains(ws, f"F{f}:F{l}", "verify", _AMBER)
+            _contains(ws, f"F{f}:F{l}", "no COGS", _RED)
+
+    if "Exec Brief" in wb.sheetnames:
+        ws = wb["Exec Brief"]
+        rows = {}
+        for i, row in enumerate(ws.iter_rows(values_only=True), 1):
+            if row and isinstance(row[0], str):
+                rows.setdefault(row[0].strip(), i)
+        if "Revenue" in rows:  # positive revenue gap = behind goal = red
+            _formula(ws, f"D{rows['Revenue']}", f"=$D${rows['Revenue']}>0", _RED)
+        if "Ad spend" in rows:  # positive ad-spend gap = headroom to invest = green
+            _formula(ws, f"D{rows['Ad spend']}", f"=$D${rows['Ad spend']}>0", _GREEN)
+        for metric in ("ACoS", "TACoS"):
+            if metric in rows:  # current worse (higher) than target = red
+                r = rows[metric]
+                _formula(ws, f"B{r}", f"=AND(ISNUMBER($C${r}),$B${r}>$C${r})", _RED)
