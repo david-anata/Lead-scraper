@@ -91,12 +91,27 @@ Everything above is the **backend** (the ported engine, the API adapters, the se
 | **Backend** | Ingest (API adapters → `schema.py`), engine (ACoS/TACoS/blended, break-even, rules, ranking), brand scoping/safety, settings store (goals/phase/objectives/thresholds), change log + outcomes + rollback, campaign create via API. | Ported `services/advertising/*` + new dashboard services. |
 | **Frontend** | The 8 sub-sections below; renders `summary`, `recommendations`, scorecards, charts; collects approvals/overrides; never computes — it only displays backend output and posts user intent back. | New dashboard UI. |
 
-## Cross-cutting UI conventions (recommended defaults — flag to override)
-- **One source of actionable truth:** Products / Keywords / Campaigns tables *show* a suggested-action column, but the only place an action is **approved** is the **Burn List**, and the only place changes are **applied** is **Pending Changes**. Nothing is approvable in two places.
-- **Approve inline, apply deliberately:** approve/dismiss inline in the Burn List; *applying* (the API write) happens only in Pending Changes, behind a confirm modal showing count + total $ moved.
+## Cross-cutting UI conventions
+- **One action object, approvable from many surfaces:** a recommendation is a single stateful object. The AM can approve/edit/dismiss it from the **Burn List** *or* from the relevant table (Keywords, Products, Campaigns) — changing it anywhere updates it everywhere (shared state, no duplicate/conflicting copies). The Burn List is the fast review-everything view; the tables are the in-context view. Same object, many windows onto it.
+- **Suggested-action columns everywhere, applied in one place:** Products / Keywords / Campaigns each show the engine's suggested action inline *and* let you approve it there. The single place a batch is **applied** (the API write) is **Pending Changes** — for manual + supervised flows — so the write is always one deliberate, reviewable act.
 - **Trust is always visible:** every brand view carries the scope strip (N ASINs scoped · M cross-brand campaigns excluded · data fresh to {date}) and an amber banner on data-window mismatch.
-- **Charting lib:** TBD — match the dashboard's existing standard (decision #2 below).
+- **Charting lib:** **match the dashboard's existing standard** (see open decision #2 — recorded as a question for the dashboard team, not assumed here).
 - **Tables that grow** (Burn List, Campaigns, Keywords, Search Terms) paginate + server-filter; **bounded tables** (Products/ASIN, COGS) render in full.
+
+## Manual vs automated — how a change reaches Amazon
+Same engine, same recommendations; the **autonomy level** (per brand, settable per action-type in Settings → Automation & Control) decides what crosses the apply-gate without a human.
+
+| | **Manual** | **Supervised auto** | **Full auto** |
+|---|---|---|---|
+| Triggered by | AM clicks Run | Scheduled job (e.g. weekly) | Scheduled job |
+| Who approves | Human — in Burn List or any relevant table | Engine pre-approves within guardrails; human gives one click (or "apply unless I object by {date}") | Engine, within guardrails |
+| Where it applies | Pending Changes | Pending Changes (pre-filled, pre-approved batch) | Applied directly via Ads API |
+| Human sees it | **before** apply | **before** apply (staged) | **after** apply, in History (rollback available) |
+
+**Surfaces:** Manual → Burn List/table → **Pending Changes**. Supervised → cron fills **Pending Changes** with a pre-approved batch → one click. Full auto → cron applies → writes **History**; Burn List shows the changes as already-applied (read-only).
+
+**Automation guardrails (the safety contract — automation fires only if ALL pass):** significance gate + cooldown (Theme C) · cross-brand-safe, never touches mixed campaigns (Theme H) · within per-action $/% caps · on the brand's **action-type allowlist** (e.g. auto-apply negatives + small bid-downs; *always ask* on bid-ups, budgets, new campaigns) · phase/objective-aware (won't auto-cut a loss-leader / new-to-brand) · not inside a seasonal override window (Theme D). Any failure routes the change to the **manual** queue instead of applying. Every auto-applied change is logged to the change log + outcomes (Theme E) and is rollback-eligible for 90 days.
+*Backend:* a scheduled run reuses the identical engine, then routes results by autonomy level + guardrails; the frontend only renders the resulting queue/log.
 
 ## Sub-sections & widgets
 
@@ -142,7 +157,7 @@ Everything above is the **backend** (the ported engine, the API adapters, the se
 - Targets & Strategy (goals, phase, objectives, per-product overrides, attribution window) · Decision Rules (bid factors, significance gate, cooldown, harvest behavior) · Seasonality & Overrides · Profit/COGS (editable ASIN→cost table, exportable) · Channels & Data (external spend, integrations, ASIN tag layer) · Automation & Control (autonomy level, approval gates, notifications, rollback retention).
 - *Backend:* per-brand settings store; these values feed the engine's `Goals` + `Thresholds` + phase/objective logic.
 
-## Open frontend decisions (carry into the dashboard build)
-1. **Approvals placement** — inline-approve in Burn List, apply-only in Pending Changes (recommended above). Confirm.
-2. **Charting library** — match the dashboard's existing standard vs. introduce one (e.g. Recharts). Affects every section.
-3. **Suggested-action columns** — show on Products/Keywords/Campaigns as read-only hints; Burn List remains the only approve surface (recommended above). Confirm.
+## Frontend decisions
+1. **Approvals placement — RESOLVED.** Approve from *any* surface (Burn List or the relevant Keywords/Products/Campaigns table); it's one synced action object. The single **apply** surface is Pending Changes (manual + supervised). Plus an automation tier (manual / supervised / full-auto) — see "Manual vs automated" above.
+2. **Charting library — OPEN (question for the dashboard team).** Match the dashboard's existing chart standard; if none is set, pick one (e.g. Recharts) and standardize. Affects every section. *Carry this question into the dashboard project.*
+3. **Suggested-action columns — RESOLVED.** Show the engine's suggested action on Products / Keywords / Campaigns *and* allow approve-in-context there (synced to the same action object). Burn List stays the fast review-all view; Pending Changes stays the single apply gate.
