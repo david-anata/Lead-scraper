@@ -73,6 +73,12 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
       details.faq-item {{ border-bottom: 1px solid var(--line); padding: 4px 0; }}
       details.faq-item > summary {{ cursor: pointer; font-weight: 600; font-size: 15px; padding: 10px 2px; }}
       details.faq-item p {{ margin: 0 2px 12px; font-size: 14px; line-height: 1.55; color: rgba(43,54,68,0.85); }}
+      .loading-overlay {{ display: none; position: fixed; inset: 0; background: rgba(43,54,68,0.55); z-index: 999; align-items: center; justify-content: center; }}
+      .loading-overlay.show {{ display: flex; }}
+      .loading-box {{ background: var(--white); border-radius: 18px; padding: 30px 36px; display: grid; gap: 10px; justify-items: center; text-align: center; max-width: 380px; box-shadow: 0 18px 50px rgba(0,0,0,0.3); }}
+      .loading-box strong {{ font-family: "Montserrat",sans-serif; font-size: 18px; }}
+      .spinner {{ width: 38px; height: 38px; border: 4px solid var(--line); border-top-color: var(--light-blue); border-radius: 50%; animation: adv-spin 0.8s linear infinite; }}
+      @keyframes adv-spin {{ to {{ transform: rotate(360deg); }} }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
       .card h2 {{ font-family: "Montserrat",sans-serif; font-size: 18px; margin: 0 0 14px; }}
       .card h2 small {{ font-family: "Inter",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
@@ -186,7 +192,7 @@ def _download_guide() -> str:
 def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None) -> str:
     ext_channels = "".join(f'<option value="{c}">{c.title()}</option>' for c in EXTERNAL_CHANNELS)
     return f"""
-    <form class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
+    <form id="adv-run-form" class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
       <div class="dropzone">
         <label for="adv-files"><strong>Drop all your Amazon exports here</strong><br>
         <span class="empty">Bulk file, Search Term, Business Report, SQP, DSP — in any order. The tool detects what each file is.</span></label>
@@ -250,6 +256,16 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None) -
           chip.textContent = files.files[i].name;
           list.appendChild(chip);
         }}
+      }});
+      // Loading overlay while the audit runs (parsing + scoping + building can
+      // take up to a minute on a large Bulk Operations file).
+      var form = document.getElementById('adv-run-form');
+      var overlay = document.getElementById('adv-loading');
+      if (form && overlay) form.addEventListener('submit', function(){{
+        overlay.classList.add('show');
+        var steps = ['Parsing your reports…','Scoping to the brand…','Computing the burn list…','Building the workbook + apply sheet…'];
+        var el = document.getElementById('adv-loading-step'), i = 0;
+        if (el) {{ el.textContent = steps[0]; setInterval(function(){{ i=(i+1)%steps.length; el.textContent=steps[i]; }}, 4000); }}
       }});
     }})();
     </script>
@@ -338,6 +354,14 @@ def render_audit_page(
       <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest, goals)}</div>
       <div class="card"><h2>History <small>· past runs &amp; downloads</small></h2>{_history_table(runs)}</div>
       {_how_to()}
+      <div id="adv-loading" class="loading-overlay">
+        <div class="loading-box">
+          <div class="spinner"></div>
+          <strong>Running your audit…</strong>
+          <span id="adv-loading-step" class="empty">Parsing your reports…</span>
+          <span class="empty" style="font-size:12px;">Large Bulk Operations files can take up to a minute — this page will refresh with your downloads when it's done.</span>
+        </div>
+      </div>
     """
     return _page("agent | Advertising Burn List", body, user=user)
 

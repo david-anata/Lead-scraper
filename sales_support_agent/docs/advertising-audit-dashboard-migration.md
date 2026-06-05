@@ -43,3 +43,16 @@ All under `sales_support_agent/services/advertising/`:
 
 ## Cadence
 Mockup: manual run (upload → run). Dashboard: on-demand per brand, and a weekly scheduled run is a thin add — the schema already carries `week_start`/`week_end` and `storage.get_prior_run()` supports week-over-week deltas.
+
+## Transfer-readiness — what to harden in `agent` so the dashboard is a swap, not a rewrite
+Priority order. Each item makes the mockup more correct AND closer to a 1:1 port.
+
+1. **Keep the core pure; isolate the I/O boundary.** The value lives in `normalizers → engine → brand → deliverable → bulk_sheets`, all of which speak the `schema.py` dataclasses (`AdRow`, `SalesRow`, `Goals`, COGS dict). The dashboard replaces *only* the intake: Amazon Ads/SP-API → map responses into those exact dataclasses → call the identical engine. **Action:** treat `schema.py` as the frozen contract; write one `adapter` module per source (CSV today, API tomorrow) so nothing else changes.
+2. **Per-brand goals + per-brand config.** Mockup uses one global `Goals` and hardcoded engine `Thresholds` (bid factors, wasted-spend floor, target ACoS). **Action:** make goals + thresholds account/brand-scoped settings the dashboard owns.
+3. **Authoritative per-ASIN COGS.** Replace the margin-sheet name-match (approximate) with a stored cost table keyed by ASIN. #1 lever for profit-true break-even. The COGS Mapping tab already shows what to trust/override.
+4. **Apply-via-API (write path).** Mockup emits a bulk sheet for manual upload. With Ads API write access the dashboard can apply changes directly — behind a **dry-run + approval gate** and with the same **cross-brand safety exclusion** (`mixed_campaigns`). Never auto-apply without review.
+5. **Safety/scoping as a first-class, visible output.** The hard-won multi-brand logic (ASIN-aware scope; exclude mixed/cross-brand campaigns from edits; count their spend in totals) must surface as a "what was scoped / excluded / why" panel. Critical for trust at scale; `summary["excluded_mixed_campaigns"]` is the seed.
+6. **Entity IDs from the API.** The bulk-file parse exists only to recover Keyword IDs (for bid changes). The API returns all entity IDs natively → drop the 17.5MB parse, and extend bid changes to **SB/SD/DSP** (mockup is SP-only).
+7. **Observability.** Log per run: rows ingested, brand ASINs, campaigns scoped/excluded, recs by type, rows applied. Needed for auditability when this drives real spend.
+
+The migration is a **swap of #1's adapter**; #2–#7 are the hardening that makes it safe and complete.
