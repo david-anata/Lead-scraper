@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from typing import Iterable, Optional
 
 from sales_support_agent.services.advertising.schema import (
@@ -69,6 +70,10 @@ def _decode(file_bytes: bytes) -> str:
     return file_bytes.decode("utf-8-sig", errors="replace")
 
 
+def _looks_like_xlsx(file_bytes: bytes) -> bool:
+    return file_bytes[:2] == b"PK"  # XLSX is a ZIP container (PK\x03\x04)
+
+
 def _unwrap_id(value: str) -> str:
     """Amazon report exports wrap IDs as Excel formula text: ="123456". Strip it."""
     v = (value or "").strip()
@@ -84,7 +89,11 @@ def _read_csv_rows(file_bytes: bytes, header_hint: Iterable[str]) -> list[dict]:
     text = _decode(file_bytes)
     if not text.strip():
         return []
-    raw_lines = list(csv.reader(io.StringIO(text)))
+    try:
+        raw_lines = list(csv.reader(io.StringIO(text)))
+    except (csv.Error, ValueError):
+        # Not real CSV (e.g. a binary .xlsx misrouted here) — never raise.
+        return []
     if not raw_lines:
         return []
     hints = {_norm_key(h) for h in header_hint}
@@ -380,31 +389,122 @@ _CHANNEL_ALIASES = {
 }
 
 
-def normalize_cogs_csv(file_bytes: bytes) -> dict:
-    """Parse a per-unit cost sheet into {"asin": {asin: cents}, "sku": {sku: cents}}.
+# Header tokens that represent a per-unit cost component (summed for landed cost).
+_COST_TERMS = (
+    "cogs", "cost of goods", "unit cost", "landed cost", "fba fee", "fulfillment fee",
+    "referral fee", "amz fee", "amazon fee", "freight",
+)
 
-    Accepts ASIN and/or SKU keyed rows with a cost column (COGS / Unit Cost /
-    Landed Cost / Cost). If FBA and referral fees are provided, they're added to
-    give a true landed cost per unit. Never raises."""
-    rows = _read_csv_rows(file_bytes, header_hint=["ASIN", "SKU", "COGS", "Cost", "Unit Cost"])
+
+def _read_xlsx_rows(file_bytes: bytes) -> list[dict]:
+    """First sheet of a workbook as a list of header->value dicts. Never raises."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        header: Optional[list[str]] = None
+        out: list[dict] = []
+        for row in ws.iter_rows(values_only=True):
+            cells = ["" if c is None else str(c) for c in row]
+            if header is None:
+                if any(c.strip() for c in cells):
+                    header = [c.strip() for c in cells]
+                continue
+            if not any(c.strip() for c in cells):
+                continue
+            out.append(dict(zip(header, cells)))
+        return out
+    except Exception:
+        logger.exception("[advertising] failed reading COGS xlsx")
+        return []
+
+
+def _unit_cost_cents(view: dict) -> int:
+    """Landed cost = one value per distinct cost component. Margin sheets repeat
+    fee columns per price-point (AMZ Fee / AMZ Fee2 / AMZ Fee3); we take the first
+    match for each term so they aren't summed multiple times. Fees are stored
+    negative, so absolute values are used."""
+    found: dict[str, int] = {}
+    for key, value in view.items():
+        for term in _COST_TERMS:
+            if term in key and term not in found:
+                found[term] = abs(parse_cents(value))
+                break
+    total = sum(found.values())
+    if total == 0:
+        total = abs(parse_cents(_get(view, "Cost", "Price Paid")))
+    return total
+
+
+def normalize_cogs_csv(file_bytes: bytes, sales_rows: "list[SalesRow] | None" = None) -> dict:
+    """Parse a per-unit cost sheet (CSV or XLSX) into
+    {"asin": {asin: cents}, "sku": {sku: cents}}.
+
+    Keyed by ASIN or SKU when present. For margin sheets keyed by product name
+    (no ASIN), we best-effort map product names to ASINs using the Business
+    Report titles in `sales_rows`. Cost is the sum of all cost components (COGS +
+    FBA/referral/AMZ fees + freight). Never raises."""
+    if _looks_like_xlsx(file_bytes):
+        rows = _read_xlsx_rows(file_bytes)
+    else:
+        rows = _read_csv_rows(file_bytes, header_hint=["ASIN", "SKU", "COGS", "Cost", "Unit Cost", "Margin"])
+
     by_asin: dict[str, int] = {}
     by_sku: dict[str, int] = {}
+    named: list[tuple[str, int, str]] = []  # (product label, cost, status)
     for row in rows:
         view = _lookup(row)
         asin = _get(view, "ASIN", "(Child) ASIN", "Child ASIN")
         sku = _get(view, "SKU", "Seller SKU", "MSKU")
-        if not asin and not sku:
-            continue
-        cost = parse_cents(_get(view, "COGS", "Cost of Goods", "Unit Cost", "Landed Cost", "Cost", "Unit COGS"))
-        cost += parse_cents(_get(view, "FBA Fee", "Fulfillment Fee", "FBA"))
-        cost += parse_cents(_get(view, "Referral Fee", "Referral"))
+        cost = _unit_cost_cents(view)
         if cost <= 0:
             continue
         if asin:
             by_asin[asin] = cost
-        if sku:
+        elif sku:
             by_sku[sku] = cost
+        else:
+            label = (_get(view, "Product Family") + " " + _get(view, "Product", "Product Name", "Title")).strip()
+            if label:
+                named.append((label, cost, _norm_key(_get(view, "Status"))))
+
+    # Name -> ASIN mapping for margin sheets without an ASIN column.
+    if named and sales_rows:
+        for s in sales_rows:
+            if not s.asin or s.asin in by_asin:
+                continue
+            cost = _match_named_cost(s.title, named)
+            if cost is not None:
+                by_asin[s.asin] = cost
     return {"asin": by_asin, "sku": by_sku}
+
+
+_SIZE_RE = re.compile(r"(\d+)\s*(?:ct|count|stix|sticks|pack| servings?)", re.IGNORECASE)
+
+
+def _match_named_cost(title: str, named: list[tuple[str, int, str]]) -> Optional[int]:
+    """Conservatively match a Business Report title to a named cost row: require
+    overlap of distinctive word tokens AND, when both carry a size/count, that
+    the sizes match. Prefer the 'base price' row. Returns cents or None."""
+    title_l = title.lower()
+    title_tokens = {t for t in re.split(r"[^a-z0-9]+", title_l) if len(t) > 2}
+    title_size = _SIZE_RE.search(title_l)
+    title_size_n = title_size.group(1) if title_size else None
+
+    best: Optional[tuple[int, int, str]] = None  # (overlap, cost, status)
+    for label, cost, status in named:
+        label_l = label.lower()
+        label_tokens = {t for t in re.split(r"[^a-z0-9]+", label_l) if len(t) > 2}
+        overlap = len(title_tokens & label_tokens)
+        if overlap < 2:
+            continue
+        label_size = _SIZE_RE.search(label_l)
+        if title_size_n and label_size and label_size.group(1) != title_size_n:
+            continue  # sizes conflict -> not the same SKU
+        score = overlap + (3 if "base" in status else 0)
+        if best is None or score > best[0]:
+            best = (score, cost, status)
+    return best[1] if best else None
 
 
 def normalize_external_costs_csv(file_bytes: bytes) -> list[ExternalCostRow]:
