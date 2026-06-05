@@ -150,6 +150,8 @@ def _campaign_move(acos, target) -> dict:
 
 # --- burn-list phase mapping ------------------------------------------------
 
+_ACTION_CATEGORIES = ("negative_keyword", "bid_down", "new_keyword", "bid_up", "budget", "placement", "dayparting")
+
 _PHASE = {
     "negative_keyword": ("1 Stop bleed", "P0", "S"),
     "bid_down": ("1 Stop bleed", "P0", "S"),
@@ -219,7 +221,11 @@ def build_growth_plan(
     ws.append(["Sequenced for impact. P0 = do this week. Est. $ = monthly revenue gained or spend recovered."])
     ws.append([])
     _head(ws, st, ["#", "Phase", "Action", "Detail / How", "Prio", "Effort", "Est. $/mo Impact", "Status"])
-    for i, rec in enumerate(recommendations, start=1):
+    # Lead with concrete actions (negatives / bids / harvests); strategic + manual
+    # notes sort to the bottom, so #1 is always a real move.
+    burn_ordered = [r for r in recommendations if r.category in _ACTION_CATEGORIES] + \
+                   [r for r in recommendations if r.category not in _ACTION_CATEGORIES]
+    for i, rec in enumerate(burn_ordered, start=1):
         phase, prio, effort = _PHASE.get(rec.category, ("3 Strategic", "P2", "M"))
         _row(ws, [i, phase, rec.title, rec.detail or rec.rationale, prio, effort,
                   _impact_dollars(rec), "Not started"], money_cols=(6,), wrap_cols=(2, 3))

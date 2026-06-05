@@ -169,8 +169,11 @@ class HttpTest(_Base):
         client = self._client()
         resp = client.get("/admin/advertising/audit")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Weekly", resp.text)
-        self.assertIn("Advertising", resp.text)
+        self.assertIn("Burn", resp.text)
+        self.assertIn("Run an audit", resp.text)
+        self.assertIn("History", resp.text)
+        # The burn-list table is NOT rendered inline anymore — only in the workbook.
+        self.assertNotIn("prioritized optimizations", resp.text)
 
     def test_save_goals_redirects(self):
         client = self._client()

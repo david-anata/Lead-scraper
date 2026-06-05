@@ -129,6 +129,7 @@ def run_audit(
         recs = build_recommendations(ad_rows, sales_rows, market_rows, external_rows, goals)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
+        summary["recommendation_count"] = len(recs)
 
         # Apply-sheet: populate Amazon's official template directly from the
         # Campaign/Ad Group IDs carried on the reports — upload-ready, no manual
