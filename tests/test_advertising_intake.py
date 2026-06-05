@@ -73,6 +73,47 @@ class SniffTest(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(I.sniff_kind("x.csv", b""), I.KIND_UNKNOWN)
 
+    def test_legacy_xlsx_ads_report_is_classified_and_parsed(self):
+        # Amazon "data export" Ads reports (Spend / 7-Day Total Sales / Advertised
+        # ASIN) are commonly .xlsx — they must NOT be dropped as unknown workbooks
+        # (that bug zeroed ad sales + suppressed the apply sheet).
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sponsored_Products_Advertised_p"
+        ws.append(["Start Date", "Campaign Name", "Ad Group Name", "Advertised SKU",
+                   "Advertised ASIN", "Impressions", "Clicks", "Spend",
+                   "7 Day Total Sales ", "7 Day Total Orders (#)", "7 Day Total Units (#)"])
+        ws.append(["2026-05-01", "Camp A", "AG 1", "SKU-1", "B005GEZGSQ",
+                   1000, 40, 25.50, 120.00, 6, 6])
+        buf = io.BytesIO(); wb.save(buf); data = buf.getvalue()
+
+        self.assertEqual(I.sniff_kind("Sponsored_Products_Advertised_product_report.xlsx", data),
+                         I.KIND_ADS_REPORT)
+        from sales_support_agent.services.advertising.normalizers import normalize_ads_report_csv
+        rows = normalize_ads_report_csv(data)
+        pa = [r for r in rows if r.entity_level == "product_ad"]
+        self.assertTrue(pa)
+        self.assertEqual(pa[0].sales_cents, 12000)   # "7 Day Total Sales " (trailing space)
+        self.assertEqual(pa[0].spend_cents, 2550)    # "Spend" alias
+        self.assertEqual(pa[0].raw.get("Advertised product ID"), "B005GEZGSQ")  # ASIN canonicalized
+
+    def test_sb_campaign_report_not_mistaken_for_bulk(self):
+        # A single-sheet SB *Campaign report* has a sheet name with
+        # "sponsored"+"campaign" but is a performance export, not a bulk file.
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sponsored_Brands_Campaign_repor"
+        ws.append(["Start Date", "Campaign Name", "Impressions", "Clicks", "Spend",
+                   "14 Day Total Sales ", "14 Day Total Orders (#)"])
+        ws.append(["2026-05-01", "SB Camp", 5000, 90, 80.00, 400.00, 12])
+        buf = io.BytesIO(); wb.save(buf); data = buf.getvalue()
+        self.assertFalse(I._xlsx_is_bulk(data))
+        self.assertEqual(I.sniff_kind("Sponsored_Brands_Campaign_report.xlsx", data),
+                         I.KIND_ADS_REPORT)
+
+    def test_real_bulk_still_detected_by_entity_operation_header(self):
+        self.assertTrue(I._xlsx_is_bulk(_bulk_xlsx()))
+
 
 class RouteTest(unittest.TestCase):
     def test_routes_mixed_batch(self):

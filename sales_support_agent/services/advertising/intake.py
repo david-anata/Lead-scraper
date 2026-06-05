@@ -124,14 +124,47 @@ def _classify_csv(tokens: set[str]) -> str:
 
 
 def _xlsx_is_bulk(data: bytes) -> bool:
-    """True only if the workbook actually carries SP/SB/SD bulk sheets — so a
-    Portfolio Trends / generic .xlsx export isn't mistaken for a bulk file."""
+    """True only for a real bulk-operations workbook — identified by its
+    signature `Product | Entity | Operation` header, NOT by sheet name. (A
+    single-sheet *Sponsored Brands Campaign report* has a sheet named
+    'Sponsored_Brands_Campaign...' but is a performance export, not a bulk file —
+    the old sheet-name check misrouted it to the bulk path.)"""
     try:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
-        return any("sponsored" in s.lower() and "campaign" in s.lower() for s in wb.sheetnames)
+        for ws in wb.worksheets:
+            try:
+                ws.reset_dimensions()
+            except Exception:
+                pass
+            for row in ws.iter_rows(min_row=1, max_row=3, values_only=True):
+                toks = {str(c).strip().lower() for c in row if c is not None and str(c).strip()}
+                if "entity" in toks and "operation" in toks:
+                    return True
+        return False
     except Exception:
         return False
+
+
+def _xlsx_header_tokens(data: bytes) -> set[str]:
+    """Normalized header tokens from the first sheet of a workbook — the XLSX
+    analogue of `_header_tokens`, so ad reports exported as .xlsx are classified
+    by their columns instead of being dropped as unknown workbooks."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        try:
+            ws.reset_dimensions()  # Amazon's bogus <dimension> zeroes read_only iteration
+        except Exception:
+            pass
+        for row in ws.iter_rows(min_row=1, max_row=10, values_only=True):
+            cells = [str(c).strip().lower() for c in row if c is not None and str(c).strip()]
+            if len(cells) >= 2:
+                return set(cells)
+    except Exception:
+        return set()
+    return set()
 
 
 def _xlsx_looks_like_cogs(data: bytes) -> bool:
@@ -165,7 +198,11 @@ def sniff_kind(filename: str, data: bytes) -> str:
             return KIND_BULK
         if _xlsx_looks_like_cogs(data):
             return KIND_COGS
-        return KIND_UNKNOWN  # e.g. a DSP/portfolio workbook we don't parse yet
+        # Ads performance reports (Search term / Advertised product / Targeting /
+        # Campaign for SP & SB) are routinely exported as .xlsx. Classify by header
+        # content using the same signatures as the CSV path, so they aren't
+        # silently ignored (which zeroed out ad sales + the apply sheet).
+        return _classify_csv(_xlsx_header_tokens(data))  # KIND_UNKNOWN if no signature matches
     if "dsp" in name:
         return KIND_DSP
     return _classify_csv(_header_tokens(data))
