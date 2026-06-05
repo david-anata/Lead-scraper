@@ -15,7 +15,11 @@ from typing import Optional
 
 from sales_support_agent.services.advertising import normalizers as N
 from sales_support_agent.services.advertising import storage
-from sales_support_agent.services.advertising.brand import detect_brand_candidates, filter_by_brand
+from sales_support_agent.services.advertising.brand import (
+    detect_brand_candidates,
+    filter_by_brand,
+    mixed_campaigns,
+)
 from sales_support_agent.services.advertising.bulk_sheets import (
     BulkBuildResult,
     build_apply_sheet,
@@ -115,6 +119,7 @@ def run_audit(
 
         # Brand focus: detect candidates from the full account, then scope the audit.
         brand_candidates = detect_brand_candidates(ad_rows, sales_rows)
+        excluded_mixed = mixed_campaigns(ad_rows, sales_rows, brand) if brand else set()
         if brand:
             ad_rows, sales_rows = filter_by_brand(ad_rows, sales_rows, brand)
 
@@ -126,6 +131,7 @@ def run_audit(
         summary = compute_summary(ad_rows, sales_rows, external_rows, goals)
         summary["brand"] = brand
         summary["brand_candidates"] = brand_candidates
+        summary["excluded_mixed_campaigns"] = len(excluded_mixed)
         recs = build_recommendations(ad_rows, sales_rows, market_rows, external_rows, goals)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)

@@ -36,6 +36,35 @@ def _ad_asin(row: AdRow) -> str:
     return (row.raw.get("Advertised product ID") or row.raw.get("Advertised product Id") or "").strip()
 
 
+def _campaign_asins(ad_rows: list[AdRow]) -> dict:
+    """campaign_name -> set of advertised ASINs (from product_ad rows)."""
+    out: dict[str, set] = {}
+    for r in ad_rows:
+        if r.entity_level == "product_ad":
+            a = _ad_asin(r)
+            if a and r.campaign_name:
+                out.setdefault(r.campaign_name, set()).add(a)
+    return out
+
+
+def mixed_campaigns(ad_rows: list[AdRow], sales_rows: list[SalesRow], brand: str) -> set:
+    """Campaigns that advertise a brand ASIN AND a non-brand ASIN together
+    (cross-brand). A change scoped to the brand would bleed into the other brand
+    in such a campaign, so they're excluded from all edits. Returns an empty set
+    for single-brand accounts (the report has no non-brand ASINs) — so this is a
+    no-op in the common case."""
+    if not (brand or "").strip():
+        return set()
+    brand_asins = {s.asin for s in sales_rows if s.asin and matches_brand(brand, s.title, s.sku, s.asin)}
+    other_asins = {s.asin for s in sales_rows if s.asin} - brand_asins
+    if not other_asins:
+        return set()
+    return {
+        camp for camp, aset in _campaign_asins(ad_rows).items()
+        if (aset & brand_asins) and (aset & other_asins)
+    }
+
+
 def filter_by_brand(
     ad_rows: list[AdRow], sales_rows: list[SalesRow], brand: str
 ) -> tuple[list[AdRow], list[SalesRow]]:
@@ -53,6 +82,10 @@ def filter_by_brand(
     brand_asins = {s.asin for s in brand_sales if s.asin}
     asin_lowers = {a.lower() for a in brand_asins}
 
+    # SAFETY: campaigns that also advertise another brand's ASIN are excluded
+    # entirely, so an edit can never bleed into a brand we don't intend to touch.
+    contaminated = mixed_campaigns(ad_rows, sales_rows, brand)
+
     # Campaigns proven to advertise a brand ASIN, plus campaigns named for the brand.
     brand_campaigns = {
         r.campaign_name for r in ad_rows
@@ -62,8 +95,11 @@ def filter_by_brand(
         r.campaign_name for r in ad_rows
         if r.campaign_name and matches_brand(brand, r.campaign_name)
     }
+    brand_campaigns -= contaminated
 
     def _keep(r: AdRow) -> bool:
+        if r.campaign_name in contaminated:
+            return False  # never touch a cross-brand campaign
         if r.entity_level == "product_ad":
             return _ad_asin(r) in brand_asins or matches_brand(brand, r.campaign_name, r.ad_group_name)
         if r.campaign_name in brand_campaigns:

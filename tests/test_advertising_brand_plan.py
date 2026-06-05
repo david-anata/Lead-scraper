@@ -44,6 +44,33 @@ class BrandFilterTest(unittest.TestCase):
         # Serovital is excluded.
         self.assertTrue(all("Serovital" not in r.campaign_name for r in ads))
 
+    def test_mixed_cross_brand_campaign_excluded(self):
+        from sales_support_agent.services.advertising.brand import mixed_campaigns
+        ads = [
+            _ad("product_ad", campaign="Zantrex_clean", asin="B07NXN4F7X", spend=1000, sales=2000, orders=2),
+            # a catch-all campaign advertising Zantrex AND another brand together
+            _ad("product_ad", campaign="Portfolio_mixed", asin="B07NXN4F7X", spend=500, sales=900, orders=1),
+            _ad("product_ad", campaign="Portfolio_mixed", asin="B0SEROVITAL", spend=400, sales=800, orders=1),
+            _ad("search_term", campaign="Portfolio_mixed", text="junk", spend=900, sales=0, orders=0, clicks=20),
+        ]
+        sales = [
+            SalesRow(asin="B07NXN4F7X", title="Zantrex SkinnyStix", units=10, ordered_product_sales_cents=20000),
+            SalesRow(asin="B0SEROVITAL", title="Serovital HGH", units=5, ordered_product_sales_cents=10000),
+        ]
+        mixed = mixed_campaigns(ads, sales, "Zantrex")
+        self.assertIn("Portfolio_mixed", mixed)
+        self.assertNotIn("Zantrex_clean", mixed)
+        kept, _ = filter_by_brand(ads, sales, "Zantrex")
+        # nothing from the mixed campaign survives -> no edit can touch the other brand
+        self.assertTrue(all(r.campaign_name != "Portfolio_mixed" for r in kept))
+        self.assertTrue(any(r.campaign_name == "Zantrex_clean" for r in kept))
+
+    def test_single_brand_account_excludes_nothing(self):
+        from sales_support_agent.services.advertising.brand import mixed_campaigns
+        ads = [_ad("product_ad", campaign="C", asin="B07NXN4F7X", spend=1000, sales=2000, orders=2)]
+        sales = [SalesRow(asin="B07NXN4F7X", title="Zantrex SkinnyStix", units=10, ordered_product_sales_cents=20000)]
+        self.assertEqual(mixed_campaigns(ads, sales, "Zantrex"), set())  # no other-brand ASINs -> no-op
+
     def test_blank_brand_returns_all(self):
         ads, sales = filter_by_brand(self.ads, self.sales, "")
         self.assertEqual(len(ads), 3)
