@@ -451,6 +451,7 @@ def normalize_cogs_csv(file_bytes: bytes, sales_rows: "list[SalesRow] | None" = 
 
     by_asin: dict[str, int] = {}
     by_sku: dict[str, int] = {}
+    source: dict[str, str] = {}  # asin -> where its cost came from (for review)
     named: list[tuple[str, int, str]] = []  # (product label, cost, status)
     for row in rows:
         view = _lookup(row)
@@ -461,6 +462,7 @@ def normalize_cogs_csv(file_bytes: bytes, sales_rows: "list[SalesRow] | None" = 
             continue
         if asin:
             by_asin[asin] = cost
+            source[asin] = "ASIN column (exact)"
         elif sku:
             by_sku[sku] = cost
         else:
@@ -473,25 +475,26 @@ def normalize_cogs_csv(file_bytes: bytes, sales_rows: "list[SalesRow] | None" = 
         for s in sales_rows:
             if not s.asin or s.asin in by_asin:
                 continue
-            cost = _match_named_cost(s.title, named)
-            if cost is not None:
-                by_asin[s.asin] = cost
-    return {"asin": by_asin, "sku": by_sku}
+            match = _match_named_cost(s.title, named)
+            if match is not None:
+                by_asin[s.asin] = match[0]
+                source[s.asin] = f"name-matched: {match[1]}"
+    return {"asin": by_asin, "sku": by_sku, "source": source}
 
 
 _SIZE_RE = re.compile(r"(\d+)\s*(?:ct|count|stix|sticks|pack| servings?)", re.IGNORECASE)
 
 
-def _match_named_cost(title: str, named: list[tuple[str, int, str]]) -> Optional[int]:
+def _match_named_cost(title: str, named: list[tuple[str, int, str]]) -> Optional[tuple[int, str]]:
     """Conservatively match a Business Report title to a named cost row: require
     overlap of distinctive word tokens AND, when both carry a size/count, that
-    the sizes match. Prefer the 'base price' row. Returns cents or None."""
+    the sizes match. Prefer the 'base price' row. Returns (cents, label) or None."""
     title_l = title.lower()
     title_tokens = {t for t in re.split(r"[^a-z0-9]+", title_l) if len(t) > 2}
     title_size = _SIZE_RE.search(title_l)
     title_size_n = title_size.group(1) if title_size else None
 
-    best: Optional[tuple[int, int, str]] = None  # (overlap, cost, status)
+    best: Optional[tuple[int, int, str]] = None  # (score, cost, label)
     for label, cost, status in named:
         label_l = label.lower()
         label_tokens = {t for t in re.split(r"[^a-z0-9]+", label_l) if len(t) > 2}
@@ -499,12 +502,15 @@ def _match_named_cost(title: str, named: list[tuple[str, int, str]]) -> Optional
         if overlap < 2:
             continue
         label_size = _SIZE_RE.search(label_l)
-        if title_size_n and label_size and label_size.group(1) != title_size_n:
-            continue  # sizes conflict -> not the same SKU
-        score = overlap + (3 if "base" in status else 0)
+        # If both name a size, they must agree; if only one does, allow but rank lower.
+        if title_size_n and label_size:
+            if label_size.group(1) != title_size_n:
+                continue  # sizes conflict -> not the same SKU
+            overlap += 2     # size agreement is a strong signal
+        score = overlap + (1 if "base" in status else 0)
         if best is None or score > best[0]:
-            best = (score, cost, status)
-    return best[1] if best else None
+            best = (score, cost, label)
+    return (best[1], best[2]) if best else None
 
 
 def normalize_external_costs_csv(file_bytes: bytes) -> list[ExternalCostRow]:

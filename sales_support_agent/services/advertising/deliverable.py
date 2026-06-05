@@ -248,6 +248,29 @@ def build_growth_plan(
              money_cols=(2, 7, 8, 10), pct_cols=(5, 6, 9, 11), wrap_cols=(1, 12))
     _widths(ws, [14, 32, 11, 7, 9, 7, 7, 10, 10, 8, 10, 13, 30])
 
+    # ---- COGS Mapping (review the auto-detect) ----
+    cogs_asin = (cogs or {}).get("asin") or {}
+    cogs_src = (cogs or {}).get("source") or {}
+    if cogs_asin:
+        ws = wb.create_sheet("COGS Mapping")
+        _title(ws, st, f"{label.upper()} COGS — AUTO-MATCH REVIEW")
+        ws.append(["COGS was auto-matched from your margin sheet's product descriptions to ASINs. "
+                   "Review the matches; anything wrong, override with a 2-column ASIN,COGS upload."])
+        ws.append([])
+        _head(ws, st, ["ASIN", "Product", "COGS/unit", "Break-even ACoS", "Matched from", "Status"])
+        for s in sales_rows:
+            if not s.asin:
+                continue
+            cost = cogs_asin.get(s.asin)
+            price = round(s.ordered_product_sales_cents / s.units) if s.units else None
+            be = round((price - cost) / price * 10000) if (cost and price and price > cost) else None
+            src = cogs_src.get(s.asin, "")
+            status = "✓ exact (ASIN)" if "exact" in src else ("auto-matched — verify" if cost else "no COGS — add manually")
+            _row(ws, [s.asin, s.title[:50], _dollars(cost) if cost else "—",
+                      _pct(be) if be is not None else "—", src or "—", status],
+                 money_cols=(2,), pct_cols=(3,), wrap_cols=(1, 4, 5))
+        _widths(ws, [14, 34, 11, 14, 40, 22])
+
     # ---- Campaign Actions ----
     ws = wb.create_sheet("Campaign Actions")
     _title(ws, st, f"{label.upper()} CAMPAIGN ACTIONS")

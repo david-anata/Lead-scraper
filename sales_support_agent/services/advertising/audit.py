@@ -110,7 +110,7 @@ def run_audit(
         # COGS is standing reference data — merge any new upload, then load the full map.
         if inputs.cogs_csv:
             parsed = N.normalize_cogs_csv(inputs.cogs_csv, sales_rows=sales_rows)
-            storage.save_cogs(parsed.get("asin", {}), parsed.get("sku", {}))
+            storage.save_cogs(parsed.get("asin", {}), parsed.get("sku", {}), parsed.get("source", {}))
         cogs = storage.get_cogs()
 
         # Brand focus: detect candidates from the full account, then scope the audit.
