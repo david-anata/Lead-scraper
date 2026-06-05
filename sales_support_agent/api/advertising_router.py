@@ -81,30 +81,28 @@ async def _read_upload(f: Optional[UploadFile]) -> Optional[bytes]:
 @router.get("/audit", response_class=HTMLResponse)
 def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "") -> HTMLResponse:
     user = get_session_user_from_request(request)
-    runs = storage.list_runs()
 
+    def _with_files(run_dict: Optional[dict]) -> Optional[dict]:
+        if not run_dict:
+            return run_dict
+        files = storage.list_bulk_files(run_dict["id"])
+        run_dict["has_plan"] = "growth_plan" in files
+        run_dict["has_apply"] = "combined" in files
+        return run_dict
+
+    runs = [_with_files(r) for r in storage.list_runs()]
+
+    # Slim last-run strip: the ?run= run if given, else the most recent.
     latest = None
     if run:
-        latest = storage.get_run(run)
+        latest = _with_files(storage.get_run(run))
     elif runs:
-        latest = storage.get_run(runs[0]["id"])
-
-    recommendations: list[dict] = []
-    bulk_available = False
-    plan_available = False
-    if latest:
-        recommendations = storage.get_recommendations(latest["id"])
-        files = storage.list_bulk_files(latest["id"])
-        bulk_available = "combined" in files
-        plan_available = "growth_plan" in files
+        latest = runs[0]
 
     html = render_audit_page(
         goals=storage.get_active_goals(),
-        latest=latest,
-        recommendations=recommendations,
-        bulk_available=bulk_available,
-        plan_available=plan_available,
         runs=runs,
+        latest=latest,
         user=user,
         flash=msg,
         detail=detail,

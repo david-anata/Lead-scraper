@@ -20,13 +20,6 @@ from sales_support_agent.services.advertising.schema import (
     fmt_pct,
 )
 
-_SEV_COLORS = {
-    "high": ("#fdecec", "#c0392b"),
-    "medium": ("#fff4d9", "#b9821f"),
-    "low": ("#eef4f8", "#3d6b86"),
-}
-
-
 def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value))
 
@@ -70,6 +63,9 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
       .chips {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
       .chip {{ padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--white); cursor: pointer; font-size: 12px; font-family: inherit; }}
       .chip:hover {{ background: var(--light-blue); }}
+      .strip {{ display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; border: 2px solid var(--light-blue); background: #f4f8fb; }}
+      .strip-info {{ font-size: 15px; }}
+      .strip-actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
       .filelist {{ margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }}
       .fchip {{ padding: 4px 10px; border-radius: 8px; background: #e2f0e6; color: #2f6b3f; font-size: 12px; }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
@@ -114,67 +110,6 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
     </div>
   </body>
 </html>"""
-
-
-def _metric(label: str, value: str, note: str = "") -> str:
-    note_html = f"<small>{_esc(note)}</small>" if note else ""
-    return f'<div class="metric"><span>{_esc(label)}</span><strong>{_esc(value)}</strong>{note_html}</div>'
-
-
-def _severity_badge(severity: str) -> str:
-    bg, fg = _SEV_COLORS.get(severity, _SEV_COLORS["low"])
-    return f'<span class="badge" style="background:{bg};color:{fg}">{_esc(severity)}</span>'
-
-
-def _metrics_block(summary: dict) -> str:
-    if not summary:
-        return ""
-    gap = summary.get("gap", {})
-    attain = gap.get("revenue_attainment_bps")
-    cards = [
-        _metric("Total Sales", fmt_money(summary.get("total_sales_cents")),
-                f"{fmt_pct(attain)} of goal" if attain is not None else ""),
-        _metric("Ad Spend", fmt_money(summary.get("ad_spend_cents"))),
-        _metric("External Spend", fmt_money(summary.get("external_spend_cents")), "Meta / TikTok / influencer"),
-        _metric("ACoS", fmt_pct(summary.get("acos_bps"))),
-        _metric("TACoS", fmt_pct(summary.get("tacos_bps"))),
-        _metric("Blended TACoS", fmt_pct(summary.get("blended_tacos_bps")), "incl. off-Amazon"),
-        _metric("Units", str(summary.get("total_units", 0))),
-    ]
-    return f'<div class="metrics">{"".join(cards)}</div>'
-
-
-def _burn_table(recs: list[dict]) -> str:
-    if not recs:
-        return '<p class="empty">No recommendations yet — upload your reports and run an audit.</p>'
-    rows = []
-    for r in recs:
-        impact = r.get("projected_impact", {}) or {}
-        impact_cents = impact.get("spend_saved_cents") or impact.get("sales_upside_cents") or impact.get("sales_cents")
-        impact_str = fmt_money(impact_cents) if impact_cents else "—"
-        actionable = (
-            '<span class="pill bulk">bulk sheet</span>' if r.get("is_bulk_actionable")
-            else '<span class="pill manual">manual</span>'
-        )
-        change = ""
-        if r.get("current_value") or r.get("proposed_value"):
-            change = f'{_esc(r.get("current_value"))} → <strong>{_esc(r.get("proposed_value"))}</strong>'
-        rows.append(
-            f"<tr>"
-            f"<td>{_esc(r.get('rank'))}</td>"
-            f"<td>{_severity_badge(r.get('severity', 'low'))}</td>"
-            f"<td><span class='pill'>{_esc(r.get('category'))}</span>{(' ' + _esc(r.get('ad_type'))) if r.get('ad_type') else ''}</td>"
-            f"<td><strong>{_esc(r.get('title'))}</strong><br><span class='empty'>{_esc(r.get('entity_ref'))}</span></td>"
-            f"<td>{change}</td>"
-            f"<td>{_esc(impact_str)}</td>"
-            f"<td>{actionable}</td>"
-            f"</tr>"
-        )
-    return (
-        '<table class="burn"><thead><tr>'
-        "<th>#</th><th>Severity</th><th>Type</th><th>Action</th><th>Change</th><th>Est. impact</th><th>Apply via</th>"
-        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
-    )
 
 
 def _goals_form(goals: Optional[Goals]) -> str:
@@ -315,31 +250,64 @@ def _upload_form(latest: Optional[dict] = None) -> str:
     """
 
 
-def _runs_list(runs: list[dict], current_id: Optional[str]) -> str:
+def _last_run_strip(latest: dict) -> str:
+    """Compact one-line summary of the most recent run + its downloads."""
+    s = latest.get("summary", {}) or {}
+    brand = s.get("brand") or "Full account"
+    when = (latest.get("created_at") or "")[:16].replace("T", " ")
+    rid = latest.get("id")
+    recs = s.get("recommendation_count")
+    meta = f"blended TACoS {fmt_pct(s.get('blended_tacos_bps'))} · ACoS {fmt_pct(s.get('acos_bps'))}"
+    if recs:
+        meta += f" · {recs} actions"
+    dls = []
+    if latest.get("has_plan"):
+        dls.append(f'<a class="btn" href="/admin/advertising/audit/{_esc(rid)}/plan.xlsx">⬇ Growth plan</a>')
+    if latest.get("has_apply"):
+        dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/combined.xlsx">⬇ Apply sheet</a>')
+    dl_html = " ".join(dls) or '<span class="empty">No downloads for this run.</span>'
+    return (
+        '<div class="card strip">'
+        f'<div class="strip-info"><strong>{_esc(brand)}</strong> '
+        f'<span class="empty">· {_esc(when)} · {meta}</span></div>'
+        f'<div class="strip-actions">{dl_html}</div>'
+        "</div>"
+    )
+
+
+def _history_table(runs: list[dict]) -> str:
     if not runs:
-        return '<p class="empty">No prior audits yet.</p>'
-    items = []
+        return '<p class="empty">No audits yet — run one above.</p>'
+    rows = []
     for r in runs:
         s = r.get("summary", {}) or {}
+        brand = s.get("brand") or "Full account"
         when = (r.get("created_at") or "")[:16].replace("T", " ")
-        label = r.get("label") or "(unlabeled)"
-        marker = " · current" if r.get("id") == current_id else ""
-        items.append(
-            f'<li><a href="/admin/advertising/audit?run={_esc(r.get("id"))}">{_esc(label)}</a>'
-            f'<span class="empty">{_esc(when)} · {fmt_money(s.get("total_sales_cents"))} sales · '
-            f'blended TACoS {fmt_pct(s.get("blended_tacos_bps"))}{marker}</span></li>'
+        rid = r.get("id")
+        recs = s.get("recommendation_count")
+        plan = (f'<a class="pill bulk" href="/admin/advertising/audit/{_esc(rid)}/plan.xlsx">⬇ Plan</a>'
+                if r.get("has_plan") else "")
+        apply = (f'<a class="pill" href="/admin/advertising/audit/{_esc(rid)}/bulk/combined.xlsx">⬇ Apply sheet</a>'
+                 if r.get("has_apply") else "")
+        downloads = (plan + " " + apply).strip() or '<span class="empty">—</span>'
+        rows.append(
+            f"<tr><td><strong>{_esc(brand)}</strong></td><td>{_esc(when)}</td>"
+            f"<td>{fmt_money(s.get('total_sales_cents'))}</td>"
+            f"<td>{fmt_pct(s.get('blended_tacos_bps'))}</td>"
+            f"<td>{_esc(recs) if recs else '—'}</td><td>{downloads}</td></tr>"
         )
-    return f'<ul class="runs" style="list-style:none;padding:0;margin:0;">{"".join(items)}</ul>'
+    return (
+        '<table class="burn"><thead><tr>'
+        "<th>Brand</th><th>Run</th><th>Sales</th><th>Blended TACoS</th><th>Actions</th><th>Downloads</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
 
 
 def render_audit_page(
     *,
     goals: Optional[Goals],
-    latest: Optional[dict],
-    recommendations: list[dict],
-    bulk_available: bool,
     runs: list[dict],
-    plan_available: bool = False,
+    latest: Optional[dict] = None,
     user: Optional[dict] = None,
     flash: str = "",
     detail: str = "",
@@ -349,58 +317,20 @@ def render_audit_page(
         detail_html = f'<div class="flash-detail">{_esc(detail)}</div>' if detail else ""
         flash_html = f'<div class="flash">{_esc(flash)}{detail_html}</div>'
 
-    narrative_html = ""
-    metrics_html = ""
-    bulk_html = ""
-    plan_html = ""
-    if latest:
-        summary = latest.get("summary", {}) or {}
-        brand = summary.get("brand") or ""
-        scope = f' · {_esc(brand)}' if brand else " · full account"
-        if plan_available:
-            plan_html = (
-                f'<div class="card plan-card"><h2>📊 Growth plan ready{scope}</h2>'
-                f'<a class="btn" href="/admin/advertising/audit/{_esc(latest["id"])}/plan.xlsx">⬇ Download growth plan (XLSX)</a> '
-                '<span class="empty">7 tabs: Exec Brief · Burn List · ASIN Scorecard · Campaign Actions · Negatives · Revenue Bridge · Data Requests.</span></div>'
-            )
-        if latest.get("narrative"):
-            narrative_html = (
-                f'<div class="card"><h2>Strategic read <small>· {_esc(latest.get("label") or "latest run")}</small></h2>'
-                f'<div class="narrative">{_esc(latest["narrative"])}</div></div>'
-            )
-        metrics_html = f'<div class="card"><h2>Account vs goal{scope}</h2>{_metrics_block(summary)}</div>'
-        if bulk_available:
-            bulk_html = (
-                f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(latest["id"])}/bulk/combined.xlsx">'
-                "⬇ Amazon bulk apply-sheet</a> "
-                '<span class="empty">Round-tripped from your upload — review, then upload to Seller Central.</span>'
-            )
-
-    bulk_block = (bulk_html + '<div style="height:14px"></div>') if bulk_html else ""
-    burn_html = (
-        '<div class="card"><h2>Burn list <small>· prioritized optimizations</small></h2>'
-        f'{bulk_block}{_burn_table(recommendations)}</div>'
-    )
+    strip_html = _last_run_strip(latest) if latest else ""
 
     body = f"""
       <section class="page-header">
         <span class="eyebrow">Advertising</span>
-        <h1 class="page-title">Weekly <span class="highlight">Audit</span>.</h1>
-        <p class="page-copy">Upload your Amazon advertising + sales exports and your goals. The audit compares
-        where you are against target — using blended TACoS that includes off-Amazon spend — and produces a
-        ranked burn list plus a ready-to-upload Amazon bulk sheet to apply the changes at scale.</p>
+        <h1 class="page-title">Burn <span class="highlight">List</span>.</h1>
+        <p class="page-copy">Generate a brand burn-list workbook from your Amazon exports. Drop in your ad +
+        sales reports, pick a brand, and download a ready-to-act plan plus an upload-ready Amazon bulk sheet.
+        The full analysis lives in the workbook — this page runs it and keeps your history.</p>
       </section>
       {flash_html}
-      {plan_html}
-      {narrative_html}
-      {metrics_html}
-      {burn_html}
-      <div class="two-col">
-        <div class="card"><h2>Run an audit <small>· upload CSV / XLSX exports</small></h2>{_upload_form(latest)}</div>
-        <div>
-          <div class="card"><h2>Goals</h2>{_goals_form(goals)}</div>
-          <div class="card"><h2>History</h2>{_runs_list(runs, latest.get("id") if latest else None)}</div>
-        </div>
-      </div>
+      {strip_html}
+      <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest)}</div>
+      <div class="card"><h2>Goals <small>· targets the workbook measures against</small></h2>{_goals_form(goals)}</div>
+      <div class="card"><h2>History <small>· past runs &amp; downloads</small></h2>{_history_table(runs)}</div>
     """
-    return _page("agent | Advertising Audit", body, user=user)
+    return _page("agent | Advertising Burn List", body, user=user)
