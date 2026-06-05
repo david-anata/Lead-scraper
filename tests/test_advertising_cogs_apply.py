@@ -35,6 +35,46 @@ class CogsNormalizeTest(unittest.TestCase):
         self.assertEqual(out["asin"]["B0CC6QGY12"], 900)
 
 
+class RobustnessTest(unittest.TestCase):
+    """Regressions for the 500: a binary/XLSX file must never crash a CSV path."""
+
+    def _xlsx_bytes(self, header, row):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(header)
+        ws.append(row)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def test_binary_to_csv_reader_returns_empty(self):
+        # A DSP report uploaded as XLSX previously raised _csv.Error here.
+        dsp_xlsx = self._xlsx_bytes(["Order Name", "Total Cost", "Impressions"], ["X", 100, 5000])
+        self.assertEqual(N.normalize_dsp_csv(dsp_xlsx), [])  # no raise
+        self.assertEqual(N.normalize_business_report_csv(dsp_xlsx), [])
+
+    def test_dsp_xlsx_sniffs_to_unknown_not_dsp(self):
+        dsp_xlsx = self._xlsx_bytes(["Order Name", "Line Item Name", "Total Cost"], ["o", "l", 10])
+        # filename says DSP, but it's a workbook -> resolved by content, not name.
+        self.assertEqual(I.sniff_kind("May DSP_Zantrex.xlsx", dsp_xlsx), I.KIND_UNKNOWN)
+
+    def test_cogs_xlsx_detected_and_parsed(self):
+        cogs_xlsx = self._xlsx_bytes(["ASIN", "CoGS", "FBA Fee"], ["B0TEST", 5.36, 3.90])
+        self.assertEqual(I.sniff_kind("margins.xlsx", cogs_xlsx), I.KIND_COGS)
+        out = N.normalize_cogs_csv(cogs_xlsx)
+        self.assertEqual(out["asin"]["B0TEST"], 926)  # 5.36 + 3.90
+
+    def test_cogs_name_match_maps_product_to_asin(self):
+        # Margin sheet keyed by product name (no ASIN) maps via Business Report title.
+        margins = self._xlsx_bytes(
+            ["Product Family", "Product", "Status", "CoGS", "FBA Fee", "Freight"],
+            ["Zantrex - Skinnystix", "Berry, 30ct", "Base Price", -9.30, -4.16, -2.20])
+        sales = [SalesRow(asin="B07NXN4F7X", title="Zantrex SkinnyStix Berry, 30 Stix", units=10,
+                          ordered_product_sales_cents=350000)]
+        out = N.normalize_cogs_csv(margins, sales_rows=sales)
+        self.assertEqual(out["asin"]["B07NXN4F7X"], 1566)  # 9.30 + 4.16 + 2.20
+
+
 class BreakEvenTest(unittest.TestCase):
     def test_break_even_and_profit_verdict(self):
         ads = [AdRow("SP", "product_ad", campaign_name="C", entity_text="B1",

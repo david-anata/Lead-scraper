@@ -81,44 +81,43 @@ def run_audit(
     malformed file yields fewer rows, not a crash. Hard failures are recorded on
     the run and returned with status='error'."""
     goals = goals or storage.get_active_goals() or Goals()
-
-    # --- Parse ---
-    ad_rows: list[AdRow] = []
-    if inputs.bulk_xlsx:
-        ad_rows += N.normalize_bulk_xlsx(inputs.bulk_xlsx)
-    if inputs.search_term_csv:
-        ad_rows += N.normalize_ads_report_csv(inputs.search_term_csv)
-    for report_csv in inputs.ads_report_csvs:
-        ad_rows += N.normalize_ads_report_csv(report_csv)
-    if inputs.dsp_csv:
-        ad_rows += N.normalize_dsp_csv(inputs.dsp_csv)
-
-    sales_rows: list[SalesRow] = (
-        N.normalize_business_report_csv(inputs.business_report_csv) if inputs.business_report_csv else []
-    )
-    market_rows: list[MarketRow] = (
-        N.normalize_sqp_csv(inputs.sqp_csv) if inputs.sqp_csv else []
-    )
-    external_rows: list[ExternalCostRow] = list(inputs.external_costs_manual)
-    if inputs.external_costs_csv:
-        external_rows += N.normalize_external_costs_csv(inputs.external_costs_csv)
-
-    # COGS is standing reference data — merge any new upload, then load the full map.
-    if inputs.cogs_csv:
-        parsed = N.normalize_cogs_csv(inputs.cogs_csv)
-        storage.save_cogs(parsed.get("asin", {}), parsed.get("sku", {}))
-    cogs = storage.get_cogs()
-
-    # Brand focus: detect candidates from the full account, then scope the audit.
-    brand_candidates = detect_brand_candidates(ad_rows, sales_rows)
     brand = (brand or "").strip()
-    if brand:
-        ad_rows, sales_rows = filter_by_brand(ad_rows, sales_rows, brand)
-
     run_label = f"{brand} — {label}".strip(" —") if brand else label
     run_id = storage.create_run(label=run_label, goals=goals, week_start=week_start, week_end=week_end)
 
     try:
+        # --- Parse (inside the try so any malformed file fails gracefully) ---
+        ad_rows: list[AdRow] = []
+        if inputs.bulk_xlsx:
+            ad_rows += N.normalize_bulk_xlsx(inputs.bulk_xlsx)
+        if inputs.search_term_csv:
+            ad_rows += N.normalize_ads_report_csv(inputs.search_term_csv)
+        for report_csv in inputs.ads_report_csvs:
+            ad_rows += N.normalize_ads_report_csv(report_csv)
+        if inputs.dsp_csv:
+            ad_rows += N.normalize_dsp_csv(inputs.dsp_csv)
+
+        sales_rows: list[SalesRow] = (
+            N.normalize_business_report_csv(inputs.business_report_csv) if inputs.business_report_csv else []
+        )
+        market_rows: list[MarketRow] = (
+            N.normalize_sqp_csv(inputs.sqp_csv) if inputs.sqp_csv else []
+        )
+        external_rows: list[ExternalCostRow] = list(inputs.external_costs_manual)
+        if inputs.external_costs_csv:
+            external_rows += N.normalize_external_costs_csv(inputs.external_costs_csv)
+
+        # COGS is standing reference data — merge any new upload, then load the full map.
+        if inputs.cogs_csv:
+            parsed = N.normalize_cogs_csv(inputs.cogs_csv, sales_rows=sales_rows)
+            storage.save_cogs(parsed.get("asin", {}), parsed.get("sku", {}))
+        cogs = storage.get_cogs()
+
+        # Brand focus: detect candidates from the full account, then scope the audit.
+        brand_candidates = detect_brand_candidates(ad_rows, sales_rows)
+        if brand:
+            ad_rows, sales_rows = filter_by_brand(ad_rows, sales_rows, brand)
+
         counts = storage.save_snapshots(run_id, ad_rows, sales_rows, market_rows)
         if external_rows:
             storage.save_external_costs(external_rows, run_id=run_id)

@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass, field
 
 from sales_support_agent.services.advertising.audit import AuditInputs
+from sales_support_agent.services.advertising.normalizers import _norm_key
 
 logger = logging.getLogger(__name__)
 
@@ -133,15 +134,40 @@ def _xlsx_is_bulk(data: bytes) -> bool:
         return False
 
 
+def _xlsx_looks_like_cogs(data: bytes) -> bool:
+    """A non-bulk workbook whose first sheet carries cost/margin columns."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=8, values_only=True)):
+            cells = {_norm_key(c) for c in row if c}
+            if not cells:
+                continue
+            has_cost = any(any(t in c for c in cells) for t in ("cogs", "cost of goods", "fba fee", "margin", "unit cost"))
+            has_key = any(any(t in c for c in cells) for t in ("asin", "sku", "product"))
+            if has_cost and has_key:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def sniff_kind(filename: str, data: bytes) -> str:
-    """Best-effort classification of a single uploaded file."""
+    """Best-effort classification of a single uploaded file. XLSX is resolved by
+    *content* before any filename heuristic, so a binary workbook is never sent
+    to the CSV path (which would raise)."""
     if not data:
         return KIND_UNKNOWN
     name = (filename or "").lower()
+    if name.endswith(".xlsx") or _looks_like_xlsx(data):
+        if _xlsx_is_bulk(data):
+            return KIND_BULK
+        if _xlsx_looks_like_cogs(data):
+            return KIND_COGS
+        return KIND_UNKNOWN  # e.g. a DSP/portfolio workbook we don't parse yet
     if "dsp" in name:
         return KIND_DSP
-    if name.endswith(".xlsx") or _looks_like_xlsx(data):
-        return KIND_BULK if _xlsx_is_bulk(data) else KIND_UNKNOWN
     return _classify_csv(_header_tokens(data))
 
 
