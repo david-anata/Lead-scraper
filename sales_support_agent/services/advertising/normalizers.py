@@ -235,7 +235,11 @@ def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdR
     one function ingests search-term, advertised-product, targeting/keyword, ad-
     group and campaign reports. Rows without any performance signal are skipped.
     """
-    rows = _read_csv_rows(file_bytes, header_hint=["Total cost", "Impressions", "Campaign", "Ad group", "Search term"])
+    rows = (
+        _read_xlsx_rows(file_bytes)
+        if _looks_like_xlsx(file_bytes)
+        else _read_csv_rows(file_bytes, header_hint=["Total cost", "Impressions", "Campaign", "Ad group", "Search term"])
+    )
     out: list[AdRow] = []
     for row in rows:
         view = _lookup(row)
@@ -250,7 +254,8 @@ def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdR
         search_term = _get(view, "Search term", "Customer Search Term")
         # "Targeting" / "Keyword Text" only — NOT a bare "Keyword(s)" count column.
         targeting = _get(view, "Targeting", "Keyword Text", "Keyword text")
-        advertised = _get(view, "Advertised product SKU", "Advertised product ID", "Advertised SKU")
+        advertised = _get(view, "Advertised product SKU", "Advertised product ID", "Advertised SKU", "Advertised ASIN")
+        adv_asin = _get(view, "Advertised product ID", "Advertised ASIN")
         match_type = _get(view, "Match type", "Match Type")
 
         if search_term:
@@ -268,6 +273,12 @@ def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdR
             level, text = "campaign", campaign or ad_group
 
         bid_raw = _get(view, "Default bid (USD)", "Default bid", "Bid", "CPC (USD)", "CPC")
+        raw = {str(k): ("" if v is None else str(v)) for k, v in row.items()}
+        # Canonicalize the advertised ASIN so brand-scoping (brand._ad_asin) and
+        # the ASIN scorecard find it regardless of the report's column spelling
+        # ("Advertised ASIN" in legacy exports vs "Advertised product ID").
+        if adv_asin and not raw.get("Advertised product ID"):
+            raw["Advertised product ID"] = adv_asin
         out.append(
             AdRow(
                 ad_type=ad_type,
@@ -285,7 +296,7 @@ def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdR
                 orders=parse_int(_get(view, "Purchases", "Orders", "7 Day Total Orders (#)", "14 Day Total Orders (#)")),
                 units=parse_int(_get(view, "Units sold", "Units", "7 Day Total Units (#)", "14 Day Total Units (#)")),
                 bid_cents=parse_cents(bid_raw) if bid_raw else None,
-                raw={str(k): ("" if v is None else str(v)) for k, v in row.items()},
+                raw=raw,
             )
         )
     return out
@@ -503,6 +514,12 @@ def _read_xlsx_rows(file_bytes: bytes) -> list[dict]:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
         ws = wb[wb.sheetnames[0]]
+        try:
+            # Amazon exports ship a bogus <dimension> (e.g. A1:A1) that makes
+            # read_only iteration yield zero rows; reset it to the real extent.
+            ws.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
         header: Optional[list[str]] = None
         out: list[dict] = []
         for row in ws.iter_rows(values_only=True):
