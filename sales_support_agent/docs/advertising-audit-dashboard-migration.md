@@ -77,3 +77,72 @@ David's answers to the "poke holes" review, organized. (D) = dashboard; (M) = ma
 **H. Safety / coverage** (Q14,15,16) — (D) Full **API coverage** removes partial-upload gaps; add **our own tag layer** for brand-attribution safety; always review **per-campaign AND per-listing**. (M) Surface the **scope summary** (brand ASIN count, campaigns excluded) so partial-data risk is visible.
 
 **Net-new dashboard capabilities this implies:** advertising **settings** (phase, objectives, targets, override windows, budgets), a **campaign builder** (ASIN × objective), a **change log + outcome learning + 90-day rollback**, and **lost-impression-share / NTB** data pulls.
+
+---
+
+# Dashboard UI/UX spec — the frontend layer (2026-06-05)
+
+Everything above is the **backend** (the ported engine, the API adapters, the settings/history stores). This section is the **frontend**: the Advertising section's sub-sections and the widgets in each. The two sides meet at `schema.py`'s dataclasses + the run `summary`/`recommendations` objects — the frontend renders those; the backend produces them.
+
+## Frontend ⇄ backend split (at a glance)
+
+| Layer | Owns | Source |
+|---|---|---|
+| **Backend** | Ingest (API adapters → `schema.py`), engine (ACoS/TACoS/blended, break-even, rules, ranking), brand scoping/safety, settings store (goals/phase/objectives/thresholds), change log + outcomes + rollback, campaign create via API. | Ported `services/advertising/*` + new dashboard services. |
+| **Frontend** | The 8 sub-sections below; renders `summary`, `recommendations`, scorecards, charts; collects approvals/overrides; never computes — it only displays backend output and posts user intent back. | New dashboard UI. |
+
+## Cross-cutting UI conventions (recommended defaults — flag to override)
+- **One source of actionable truth:** Products / Keywords / Campaigns tables *show* a suggested-action column, but the only place an action is **approved** is the **Burn List**, and the only place changes are **applied** is **Pending Changes**. Nothing is approvable in two places.
+- **Approve inline, apply deliberately:** approve/dismiss inline in the Burn List; *applying* (the API write) happens only in Pending Changes, behind a confirm modal showing count + total $ moved.
+- **Trust is always visible:** every brand view carries the scope strip (N ASINs scoped · M cross-brand campaigns excluded · data fresh to {date}) and an amber banner on data-window mismatch.
+- **Charting lib:** TBD — match the dashboard's existing standard (decision #2 below).
+- **Tables that grow** (Burn List, Campaigns, Keywords, Search Terms) paginate + server-filter; **bounded tables** (Products/ASIN, COGS) render in full.
+
+## Sub-sections & widgets
+
+**1. Overview** — glanceable Exec Brief.
+- KPI row (6): Revenue (vs goal), Ad Spend, Blended TACoS (vs target), ACoS, Units, Target-Ad-Spend headroom. Each: value · ▲▼ delta vs prior · sparkline.
+- Chart A: Sales vs Ad Spend (dual-axis, weekly; toggle organic vs ad-attributed). Chart B: TACoS trend with target reference band.
+- Scope strip (trust panel) + top-3-actions teaser (→ Burn List). No full table.
+- *Backend:* run `summary` + prior-run deltas + time-series.
+
+**2. Burn List** — weekly action workspace. Table **grows**.
+- Filters: severity, category, campaign, ASIN, status, $-impact min, search. Summary chips recompute on filter.
+- Cols: ☑ · severity · action · entity(+ASIN) · why · current→new · $ impact (default sort desc) · objective/phase tag · status · row actions (approve/edit/dismiss).
+- Row expand → 8-week entity trend; inline-editable "new bid" (override). Sticky bulk bar: approve/dismiss/send-to-pending.
+- *Backend:* `recommendations` (category, severity, $ impact, current/new, entity ids).
+
+**3. Pending Changes / Approvals** — the dry-run gate.
+- Accordion by change type (bids/negatives/new keywords/budget); diff table: entity · field · from→to · $ impact · source · cross-brand check.
+- Safety banner (0 cross-brand affected, else blocks). Actions: apply-all-approved (confirm modal) · schedule · export bulk sheet · discard.
+- *Backend:* applies via Ads API write path + `mixed_campaigns` safety; writes the change log.
+
+**4. Campaigns** — structure + builder.
+- Tab A table (**grows**): campaign · type · objective · phase · spend · sales · ACoS · TACoS contrib · budget · util% · status. Row drawer: placement breakdown, ad groups, budget gauge.
+- Tab B Campaign Builder (net-new): wizard ASIN(s) → objective → engine-proposed structure → review → create (API, behind approval).
+- Chart: budget utilization bars (flag capped campaigns).
+- *Backend:* campaign rollups; builder = settings (objective/phase) + engine seed bids + API create.
+
+**5. Products (ASIN Scorecard)** — bounded table.
+- Cols: ASIN(+title) · org sales · ad sales · total · sessions · CVR · Buy Box% · ad spend · ACoS · break-even ACoS · verdict · NTB%. Conditional formatting (CVR/ACoS color scales, verdict pills).
+- Filters: verdict, ACoS vs break-even, has-COGS. Row expand → ASIN trend. Chart: CVR×ACoS scatter, bubble=spend, quadrant lines.
+- *Backend:* `deliverable.py` ASIN Scorecard join + break-even (COGS).
+
+**6. Keywords & Negatives** — three tabs, all **grow**.
+- Search Terms: term · campaign · clicks · spend · sales · orders · ACoS · suggested action (harvest/negate/leave).
+- Keywords: keyword · match · bid · impressions · clicks · ACoS · impression share · suggested bid (inline edit).
+- Negatives: existing + proposed, "also-negate-source" reflected. Each: send selected → Pending Changes.
+- *Backend:* search-term + keyword rows; harvest/negative/bid rules; impression-share pull.
+
+**7. History & Outcomes** — closed loop + undo.
+- Runs timeline; outcome table (change · applied date · metric before→after · verdict worked/no-change/backfired); AI query box over history; rollback (revert within 90 days, version list); cumulative-impact-vs-baseline chart.
+- *Backend:* change log + outcome attribution + 90-day rollback store + history-query agent.
+
+**8. Settings** — forms (+ COGS & objectives-mapping tables).
+- Targets & Strategy (goals, phase, objectives, per-product overrides, attribution window) · Decision Rules (bid factors, significance gate, cooldown, harvest behavior) · Seasonality & Overrides · Profit/COGS (editable ASIN→cost table, exportable) · Channels & Data (external spend, integrations, ASIN tag layer) · Automation & Control (autonomy level, approval gates, notifications, rollback retention).
+- *Backend:* per-brand settings store; these values feed the engine's `Goals` + `Thresholds` + phase/objective logic.
+
+## Open frontend decisions (carry into the dashboard build)
+1. **Approvals placement** — inline-approve in Burn List, apply-only in Pending Changes (recommended above). Confirm.
+2. **Charting library** — match the dashboard's existing standard vs. introduce one (e.g. Recharts). Affects every section.
+3. **Suggested-action columns** — show on Products/Keywords/Campaigns as read-only hints; Burn List remains the only approve surface (recommended above). Confirm.
