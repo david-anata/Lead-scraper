@@ -112,6 +112,14 @@ class GrowthPlanTest(unittest.TestCase):
         self.assertNotIn("API_KEY", text)  # never a 'set the key' placeholder
         self.assertNotIn("unavailable", text)
 
+    def test_conditional_formatting_applied(self):
+        data = build_growth_plan(brand="Z", summary={"total_sales_cents": 11144718, "ad_spend_cents": 2006500,
+                                 "tacos_bps": 1800, "acos_bps": 6400, "gap": {}}, recommendations=self.recs,
+                                 ad_rows=self.ads, sales_rows=self.sales, goals=self.goals)
+        wb = openpyxl.load_workbook(io.BytesIO(data))
+        rules = sum(len(r.rules) for r in wb["ASIN Scorecard"].conditional_formatting)
+        self.assertGreater(rules, 0)  # scorecard has color scales + verdict highlights
+
     def test_data_requests_has_where_column(self):
         data = build_growth_plan(brand="Z", summary={"total_sales_cents": 1}, recommendations=self.recs,
                                  ad_rows=self.ads, sales_rows=self.sales, goals=self.goals)

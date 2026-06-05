@@ -347,6 +347,15 @@ _FAQ = [
      "A one-step burn-list generator. Upload a brand's Amazon ad + sales reports and it produces a downloadable "
      "<strong>growth-plan workbook</strong> (Exec Brief, Burn List, ASIN Scorecard, Campaign Actions, Negatives, "
      "Revenue Bridge, Data Requests) plus an <strong>upload-ready Amazon bulk apply-sheet</strong>."),
+    ("Where do I get each report? (direct links)",
+     'All Amazon, opens in a new tab: '
+     '<a class="golink" href="https://advertising.amazon.com/reports" target="_blank" rel="noopener">Ads reports ↗</a> '
+     '(Search term · Advertised product · <strong>Targeting</strong> · Placement) '
+     '<a class="golink" href="https://advertising.amazon.com/bulk-operations" target="_blank" rel="noopener">Bulk operations ↗</a> '
+     '(all campaign types — SP/SB/SD — with IDs &amp; current bids, for a complete apply sheet) '
+     '<a class="golink" href="https://sellercentral.amazon.com/business-reports" target="_blank" rel="noopener">Business Reports ↗</a> '
+     '<a class="golink" href="https://sellercentral.amazon.com/brand-analytics" target="_blank" rel="noopener">Brand Analytics ↗</a> '
+     '<a class="golink" href="https://advertising.amazon.com/dsp" target="_blank" rel="noopener">DSP ↗</a>'),
     ("What do I upload? (the 3 core files)",
      "1) <strong>Ads performance reports</strong> (Search term + Advertised product, from Ads Console → Reports). "
      "2) <strong>Business Report</strong> — By ASIN → Detail Page Sales &amp; Traffic By Child Item (Seller Central). "
