@@ -99,7 +99,12 @@ def filter_by_brand(
 
     def _keep(r: AdRow) -> bool:
         if r.campaign_name in contaminated:
-            return False  # never touch a cross-brand campaign
+            # Mixed cross-brand campaign: keep the brand's product-ad rows so its
+            # spend still counts in the totals, but drop the targeting rows
+            # (search-term / keyword / target) so NO negative / bid / harvest edit
+            # is ever generated for it. (Bulk keyword rows already exclude mixed
+            # campaigns at parse time.)
+            return r.entity_level == "product_ad" and _ad_asin(r) in brand_asins
         if r.entity_level == "product_ad":
             return _ad_asin(r) in brand_asins or matches_brand(brand, r.campaign_name, r.ad_group_name)
         if r.campaign_name in brand_campaigns:
