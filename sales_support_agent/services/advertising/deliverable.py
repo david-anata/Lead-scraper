@@ -325,20 +325,27 @@ def build_growth_plan(
             "Per-ASIN COGS + FBA & referral fees",
             "Your own cost data: one row per ASIN with landed unit cost (COGS + FBA fee + referral fee + freight). Upload as a 2-column ASIN,COGS CSV (extra fee columns optional).",
             "The #1 gap. Enables TRUE break-even ACoS per product — guarantee (not estimate) each SKU stays profitable. Today ACoS/TACoS are proxies.",
-            "P0"))
+            "P0", ""))
     reqs += [
         ("Targeting / Keyword report",
          "Amazon Ads Console → Reports → run the 'Targeting' template (Sponsored Products) → Use template → export CSV.",
-         "Unlocks keyword-level bid moves (retune existing bids, not just harvest/negate).", "P0"),
+         "Unlocks keyword-level bid moves (retune existing bids, not just harvest/negate) — adds bid-change rows to the apply sheet.", "P0",
+         "https://advertising.amazon.com/reports"),
         ("FBA Inventory & Days-of-Supply",
          "Seller Central → Reports → Fulfillment → 'FBA Inventory' / 'Restock Inventory' → download.",
-         "Can't scale if best-sellers stock out — sets reorder triggers + caps spend on low-stock SKUs.", "P1"),
+         "Can't scale if best-sellers stock out — sets reorder triggers + caps spend on low-stock SKUs.", "P1",
+         "https://sellercentral.amazon.com/reportcentral"),
         ("Placement report (TOS / Product / Rest)",
          "Amazon Ads Console → Reports → 'Placement' template → export CSV.",
-         "Unlocks placement bid modifiers — a fast 5–15% ACoS win by over-weighting Top-of-Search on high-CVR ASINs.", "P1"),
+         "Unlocks placement bid modifiers — a fast 5–15% ACoS win by over-weighting Top-of-Search on high-CVR ASINs.", "P1",
+         "https://advertising.amazon.com/reports"),
     ]
-    for i, (name, where, why, prio) in enumerate(reqs, start=1):
+    for i, (name, where, why, prio, url) in enumerate(reqs, start=1):
         _row(ws, [i, name, where, why, prio], wrap_cols=(1, 2, 3))
+        if url:
+            cell = ws.cell(ws.max_row, 3)  # the 'Where' cell -> clickable
+            cell.hyperlink = url
+            cell.style = "Hyperlink"
     _widths(ws, [4, 30, 50, 46, 8])
 
     # Final pass: stretch the dark title banner (row 1) across each sheet's width.

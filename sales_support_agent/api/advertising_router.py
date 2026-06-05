@@ -154,6 +154,11 @@ async def run(
     ext_amount: list[str] = Form(default=[]),
     label: str = Form(default=""),
     brand: str = Form(default=""),
+    revenue_target: str = Form(default=""),
+    acos_target: str = Form(default=""),
+    tacos_target: str = Form(default=""),
+    units_target: str = Form(default=""),
+    period: str = Form(default="monthly"),
 ) -> RedirectResponse:
     # Mass-upload path: auto-detect + route every dropped file by its headers.
     batch: list[tuple[str, bytes]] = []
@@ -181,14 +186,14 @@ async def run(
     # Unlimited external-channel rows (channel/label/amount arrays, zipped by index).
     for i, channel in enumerate(ext_channel):
         amount = ext_amount[i] if i < len(ext_amount) else ""
-        label = ext_label[i] if i < len(ext_label) else ""
+        ext_lbl = ext_label[i] if i < len(ext_label) else ""
         cents = _dollars_to_cents(amount)
         if channel and cents:
             inputs.external_costs_manual.append(
                 ExternalCostRow(
                     channel=channel,
                     cost_type="commission" if channel == "influencer" else "ad_spend",
-                    label=(label or channel),
+                    label=(ext_lbl or channel),
                     amount_cents=cents,
                 )
             )
@@ -199,7 +204,20 @@ async def run(
             status_code=303,
         )
 
-    result = run_audit(inputs, label=label, brand=brand)
+    # Goals are part of the run form now: save them, and run against them.
+    goals = Goals(
+        revenue_target_cents=_dollars_to_cents(revenue_target),
+        acos_target_bps=_pct_to_bps(acos_target),
+        tacos_target_bps=_pct_to_bps(tacos_target),
+        units_target=_int_or_none(units_target),
+        period=period or "monthly",
+    )
+    if any([goals.revenue_target_cents, goals.acos_target_bps, goals.tacos_target_bps, goals.units_target]):
+        storage.save_goals(goals)
+    else:
+        goals = storage.get_active_goals()  # fall back to previously-saved targets
+
+    result = run_audit(inputs, goals=goals, label=label, brand=brand)
     if result.status == "error":
         return RedirectResponse(
             f"/admin/advertising/audit?run={result.run_id}&msg=Audit+failed:+{result.error[:80]}",

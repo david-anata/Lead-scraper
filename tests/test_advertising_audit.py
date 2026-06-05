@@ -220,6 +220,24 @@ class HttpTest(_Base):
         )
         self.assertTrue(dl.content)
 
+    def test_run_form_saves_and_applies_goals(self):
+        client = self._client()
+        resp = client.post(
+            "/admin/advertising/audit/run",
+            data={"label": "Goals-in-run", "revenue_target": "450000", "acos_target": "30", "tacos_target": "18"},
+            files={"business_report_csv": ("biz.csv", _BUSINESS_CSV, "text/csv")},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        # Goals submitted with the run are saved (no separate Save-goals step).
+        g = self.storage.get_active_goals()
+        self.assertEqual(g.revenue_target_cents, 45000000)
+        self.assertEqual(g.acos_target_bps, 3000)
+        # And applied to the run's goal snapshot.
+        run_id = resp.headers["location"].split("run=")[1].split("&")[0]
+        run = self.storage.get_run(run_id)
+        self.assertEqual(run["goal_snapshot"].get("revenue_target_cents"), 45000000)
+
     def test_run_with_no_files_redirects_with_message(self):
         client = self._client()
         resp = client.post("/admin/advertising/audit/run", data={}, follow_redirects=False)

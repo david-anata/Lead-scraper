@@ -68,6 +68,11 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
       .strip-actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
       .filelist {{ margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }}
       .fchip {{ padding: 4px 10px; border-radius: 8px; background: #e2f0e6; color: #2f6b3f; font-size: 12px; }}
+      a.golink {{ display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 6px; background: var(--dark-blue); color: var(--white); font-size: 12px; text-decoration: none; white-space: nowrap; }}
+      a.golink:hover {{ background: var(--light-blue); color: var(--dark-blue); }}
+      details.faq-item {{ border-bottom: 1px solid var(--line); padding: 4px 0; }}
+      details.faq-item > summary {{ cursor: pointer; font-weight: 600; font-size: 15px; padding: 10px 2px; }}
+      details.faq-item p {{ margin: 0 2px 12px; font-size: 14px; line-height: 1.55; color: rgba(43,54,68,0.85); }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
       .card h2 {{ font-family: "Montserrat",sans-serif; font-size: 18px; margin: 0 0 14px; }}
       .card h2 small {{ font-family: "Inter",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
@@ -112,7 +117,9 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
 </html>"""
 
 
-def _goals_form(goals: Optional[Goals]) -> str:
+def _goals_fields(goals: Optional[Goals]) -> str:
+    """Just the goal inputs (no <form>) — embedded inside the Run form so the
+    targets are set + saved as part of running, in one submit."""
     g = goals or Goals()
     rev = "" if g.revenue_target_cents is None else f"{g.revenue_target_cents / 100:.2f}"
     acos = "" if g.acos_target_bps is None else f"{g.acos_target_bps / 100:.1f}"
@@ -123,52 +130,60 @@ def _goals_form(goals: Optional[Goals]) -> str:
         for p in ("weekly", "monthly", "quarterly")
     )
     return f"""
-    <form class="grid" method="post" action="/admin/advertising/audit/goals">
       <div class="row">
         <div class="field"><label>Revenue target ($)</label><input type="number" step="0.01" name="revenue_target" value="{_esc(rev)}" placeholder="100000"></div>
         <div class="field"><label>ACoS target (%)</label><input type="number" step="0.1" name="acos_target" value="{_esc(acos)}" placeholder="30"></div>
         <div class="field"><label>TACoS target (%)</label><input type="number" step="0.1" name="tacos_target" value="{_esc(tacos)}" placeholder="25"></div>
         <div class="field"><label>Units target</label><input type="number" name="units_target" value="{_esc(units)}" placeholder="500"></div>
         <div class="field"><label>Period</label><select name="period">{periods}</select></div>
-      </div>
-      <div><button class="btn" type="submit">Save goals</button></div>
-    </form>
-    """
+      </div>"""
 
 
+# (name, ext, where-text, why, deep-link URL)
 _DOWNLOAD_GUIDE_ROWS = [
     ("Ads performance reports", ".csv", "Ads Console → <strong>Reports</strong> → run the <strong>Search term</strong>, <strong>Advertised product</strong> &amp; <strong>Targeting</strong> templates → export CSV",
-     "<strong>Core.</strong> Drives the whole burn list + ACoS/TACoS. The Search term report powers negatives &amp; keyword harvest; Advertised product gives the spend totals. Drop all of them in."),
+     "<strong>Core.</strong> Drives the whole burn list + ACoS/TACoS. The Search term report powers negatives &amp; keyword harvest; Advertised product gives the spend totals. Drop all of them in.",
+     "https://advertising.amazon.com/reports"),
     ("Business Report — Sales &amp; Traffic", ".csv", "<strong>Seller Central</strong> → Reports → Business Reports → <strong>By ASIN → Detail Page Sales and Traffic By Child Item</strong>",
-     "<strong>Core.</strong> Per child-ASIN sessions, units, conversion, total sales → TACoS + gap-to-goal. Use the Child Item one (not By Date / By Parent)."),
+     "<strong>Core.</strong> Per child-ASIN sessions, units, conversion, total sales → TACoS + gap-to-goal. Use the Child Item one (not By Date / By Parent).",
+     "https://sellercentral.amazon.com/business-reports"),
+    ("Targeting report (for bid changes)", ".csv", "Ads Console → Reports → <strong>Targeting</strong> template (Sponsored Products) → export CSV",
+     "Unlocks <strong>bid-change rows</strong> in the apply sheet (retune existing keyword bids) — carries the Keyword IDs the negatives/harvests don't.",
+     "https://advertising.amazon.com/reports"),
     ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (custom date range) → Download",
-     "<em>Optional.</em> Only needed for the downloadable <strong>apply-sheet</strong> (round-tripped bid/negative changes). Its own area — not the Reports page. Skip it and the burn list is still fully usable."),
-    ("Per-ASIN COGS", ".csv", "Your own file — two columns: <strong>ASIN, COGS</strong> (optionally FBA Fee, Referral Fee for true landed cost)",
-     "Makes it <strong>profit-true</strong>: real break-even ACoS per SKU instead of an ACoS proxy. Persists across runs — upload once."),
+     "<em>Optional.</em> Alternative source for the apply-sheet (round-tripped bid/negative changes). Its own area — not the Reports page.",
+     "https://advertising.amazon.com/bulk-operations"),
+    ("Per-ASIN COGS", ".csv / .xlsx", "Your own file — <strong>ASIN, COGS</strong> (optionally FBA Fee, Referral Fee) — or a margins sheet keyed by product name (auto-matched to ASINs).",
+     "Makes it <strong>profit-true</strong>: real break-even ACoS per SKU instead of an ACoS proxy. Persists across runs — upload once.",
+     ""),
     ("Brand Analytics — Search Query Performance", ".csv", "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
-     "Optional — market-share context."),
+     "Optional — market-share context.",
+     "https://sellercentral.amazon.com/brand-analytics"),
     ("DSP performance", ".csv", "Amazon DSP console → Reports (name the file with “DSP”)",
-     "Optional — campaign-level; lands as manual tasks."),
+     "Optional — campaign-level; lands as manual tasks.",
+     "https://advertising.amazon.com/dsp"),
 ]
 
 
 def _download_guide() -> str:
+    def _link(url):
+        return (f' <a class="golink" href="{url}" target="_blank" rel="noopener">Open ↗</a>') if url else ""
     rows = "".join(
         f"<tr><td><strong>{name}</strong> <span class='pill'>{ext}</span></td>"
-        f"<td>{where}</td><td class='empty'>{why}</td></tr>"
-        for name, ext, where, why in _DOWNLOAD_GUIDE_ROWS
+        f"<td>{where}{_link(url)}</td><td class='empty'>{why}</td></tr>"
+        for name, ext, where, why, url in _DOWNLOAD_GUIDE_ROWS
     )
     return f"""
     <details class="guide">
-      <summary>📥 What to download from Amazon (exact paths)</summary>
+      <summary>📥 What to download from Amazon (exact paths + links)</summary>
       <p class="empty" style="margin:10px 0;">Use the <strong>same trailing date window</strong> for every report (e.g. last 30 or 60 days)
-      and <strong>end it yesterday, not today</strong> — today's data is incomplete and skews ACoS. Drop them all in the box above; the tool detects each.</p>
+      and <strong>end it yesterday, not today</strong> — today's data is incomplete and skews ACoS. Click <strong>Open ↗</strong> to jump straight to each report, then drop the files in the box above; the tool detects each.</p>
       <table class="burn"><thead><tr><th>Report</th><th>Where to get it</th><th>Why</th></tr></thead><tbody>{rows}</tbody></table>
     </details>
     """
 
 
-def _upload_form(latest: Optional[dict] = None) -> str:
+def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None) -> str:
     ext_channels = "".join(f'<option value="{c}">{c.title()}</option>' for c in EXTERNAL_CHANNELS)
     return f"""
     <form class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
@@ -208,7 +223,11 @@ def _upload_form(latest: Optional[dict] = None) -> str:
         <span class="hint">Type the client brand to scope the whole audit + plan to its campaigns &amp; ASINs.</span>
       </div>
       <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="Week of Jun 2"></div>
-      <div><button class="btn" type="submit">Run weekly audit</button></div>
+      <div class="card" style="margin:6px 0 0;background:#fafbfc;">
+        <h2 style="font-size:15px;">Goals <small>— targets the plan measures against (saved &amp; applied on run)</small></h2>
+        {_goals_fields(goals)}
+      </div>
+      <div><button class="btn" type="submit">Run audit &amp; build burn list</button></div>
     </form>
     <script>
     (function(){{
@@ -316,8 +335,44 @@ def render_audit_page(
       </section>
       {flash_html}
       {strip_html}
-      <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest)}</div>
-      <div class="card"><h2>Goals <small>· targets the workbook measures against</small></h2>{_goals_form(goals)}</div>
+      <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest, goals)}</div>
       <div class="card"><h2>History <small>· past runs &amp; downloads</small></h2>{_history_table(runs)}</div>
+      {_how_to()}
     """
     return _page("agent | Advertising Burn List", body, user=user)
+
+
+_FAQ = [
+    ("What is this?",
+     "A one-step burn-list generator. Upload a brand's Amazon ad + sales reports and it produces a downloadable "
+     "<strong>growth-plan workbook</strong> (Exec Brief, Burn List, ASIN Scorecard, Campaign Actions, Negatives, "
+     "Revenue Bridge, Data Requests) plus an <strong>upload-ready Amazon bulk apply-sheet</strong>."),
+    ("What do I upload? (the 3 core files)",
+     "1) <strong>Ads performance reports</strong> (Search term + Advertised product, from Ads Console → Reports). "
+     "2) <strong>Business Report</strong> — By ASIN → Detail Page Sales &amp; Traffic By Child Item (Seller Central). "
+     "3) <em>(optional but recommended)</em> a <strong>COGS</strong> file for true break-even ACoS. "
+     "Use the “📥 What to download” links above to jump straight to each."),
+    ("How do I run it?",
+     "Drop all the files in the box (any order — it auto-detects each), type the <strong>brand</strong> to focus on, "
+     "set your <strong>Goals</strong>, and hit <strong>Run audit &amp; build burn list</strong>. The run appears in "
+     "History with ⬇ Plan and ⬇ Apply-sheet downloads."),
+    ("What's the Apply sheet?",
+     "An Amazon bulk file pre-filled with the negatives + new keywords to create — upload it directly at "
+     "Ads Console → Bulk operations → Upload, no editing. Add the <strong>Targeting report</strong> to also get "
+     "bid-change rows."),
+    ("Same date window for every report",
+     "Pick one trailing window (e.g. last 30 days) and <strong>end it yesterday, not today</strong> — today's data is "
+     "incomplete and skews ACoS."),
+    ("Do I need COGS with ASINs?",
+     "No — upload a margins sheet keyed by product name and the tool auto-matches it to ASINs. Check the "
+     "<strong>COGS Mapping</strong> tab in the workbook to verify, and override any miss with a 2-column "
+     "<strong>ASIN, COGS</strong> file."),
+]
+
+
+def _how_to() -> str:
+    items = "".join(
+        f'<details class="faq-item"><summary>{q}</summary><p>{a}</p></details>'
+        for q, a in _FAQ
+    )
+    return f'<div class="card"><h2>How to use <small>· quick FAQ for account managers</small></h2>{items}</div>'
