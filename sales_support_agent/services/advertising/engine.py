@@ -116,7 +116,9 @@ def _goal_gap(summary: dict, goals: Goals) -> dict:
 # search_term rows are a redundant *view* of spend (a diagnostic breakdown), so
 # they never count toward totals unless they're the only thing we have for an ad
 # type. campaign/ad_group/product_ad are each complete, non-overlapping views of
-# the same spend, so for totals we pick exactly one per ad type.
+# the same spend, so for totals we pick exactly one per ad type. (keyword/target
+# rows from the bulk file are a sub-view but don't out-spend product_ad, so the
+# max-spend selection already prefers product_ad — no need to mark them here.)
 _DIAGNOSTIC_LEVELS = ("search_term",)
 
 

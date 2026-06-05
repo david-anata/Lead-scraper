@@ -61,8 +61,11 @@ class BrandFilterTest(unittest.TestCase):
         self.assertIn("Portfolio_mixed", mixed)
         self.assertNotIn("Zantrex_clean", mixed)
         kept, _ = filter_by_brand(ads, sales, "Zantrex")
-        # nothing from the mixed campaign survives -> no edit can touch the other brand
-        self.assertTrue(all(r.campaign_name != "Portfolio_mixed" for r in kept))
+        mixed_kept = [r for r in kept if r.campaign_name == "Portfolio_mixed"]
+        # from the mixed campaign, only the brand's product-ad row survives (so its
+        # spend still counts) — the targeting row that could spawn an edit is gone.
+        self.assertTrue(mixed_kept and all(r.entity_level == "product_ad" for r in mixed_kept))
+        self.assertFalse(any(r.entity_text == "junk" for r in kept))  # edit-risk search term dropped
         self.assertTrue(any(r.campaign_name == "Zantrex_clean" for r in kept))
 
     def test_single_brand_account_excludes_nothing(self):
