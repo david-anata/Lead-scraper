@@ -150,8 +150,8 @@ _DOWNLOAD_GUIDE_ROWS = [
     ("Targeting report (for bid changes)", ".csv", "Ads Console → Reports → <strong>Targeting</strong> template (Sponsored Products) → export CSV",
      "Unlocks <strong>bid-change rows</strong> in the apply sheet (retune existing keyword bids) — carries the Keyword IDs the negatives/harvests don't.",
      "https://advertising.amazon.com/reports"),
-    ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (custom date range) → Download",
-     "<em>Optional.</em> Alternative source for the apply-sheet (round-tripped bid/negative changes). Its own area — not the Reports page.",
+    ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (<strong>custom date range</strong>) → Download",
+     "Adds <strong>bid-change rows</strong> to the apply sheet (raise/lower existing keyword bids) — it carries the Keyword IDs the reports don't. Brand-scoped &amp; cross-brand-safe. Its own area — not the Reports page.",
      "https://advertising.amazon.com/bulk-operations"),
     ("Per-ASIN COGS", ".csv / .xlsx", "Your own file — <strong>ASIN, COGS</strong> (optionally FBA Fee, Referral Fee) — or a margins sheet keyed by product name (auto-matched to ASINs).",
      "Makes it <strong>profit-true</strong>: real break-even ACoS per SKU instead of an ACoS proxy. Persists across runs — upload once.",
@@ -367,8 +367,9 @@ _FAQ = [
      "History with ⬇ Plan and ⬇ Apply-sheet downloads."),
     ("What's the Apply sheet?",
      "An Amazon bulk file pre-filled with the negatives + new keywords to create — upload it directly at "
-     "Ads Console → Bulk operations → Upload, no editing. Add the <strong>Targeting report</strong> to also get "
-     "bid-change rows."),
+     "Ads Console → Bulk operations → Upload, no editing. Also add the <strong>Bulk operations</strong> file and it "
+     "gains <strong>bid-change rows</strong> (raise/lower existing keyword bids), scoped to the brand and safe across "
+     "other brands."),
     ("Same date window for every report",
      "Pick one trailing window (e.g. last 30 days) and <strong>end it yesterday, not today</strong> — today's data is "
      "incomplete and skews ACoS."),

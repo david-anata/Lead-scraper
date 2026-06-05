@@ -64,17 +64,17 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
     upload-ready Sponsored Products bulk sheet WITHOUT the operator having to
     download or edit anything.
 
-    Bid changes on existing keywords need a Keyword ID (only in a Targeting
-    report), so they're left to the round-trip path and counted as skipped here.
+    Bid changes on existing keywords (set_bid) become Operation=update rows keyed
+    by Keyword ID — available when an Amazon Bulk Operations file was uploaded.
     """
     result = BulkBuildResult()
     actionable = [
         r for r in recommendations
-        if r.is_bulk_actionable and r.bulk_row.get("action") in ("create_negative", "create_keyword")
+        if r.is_bulk_actionable and r.bulk_row.get("action") in ("create_negative", "create_keyword", "set_bid")
         and r.bulk_row.get("ad_type") == "SP"
     ]
     if not actionable:
-        result.notes.append("No create-keyword / create-negative actions with campaign IDs to apply.")
+        result.notes.append("No create-keyword / create-negative / bid-change actions to apply.")
         return result
 
     try:
@@ -96,16 +96,12 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
 
     header = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
     col = {name: _col_index(header, name) for name in
-           ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID",
+           ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
             "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State")}
 
     for rec in actionable:
         br = rec.bulk_row
-        if not br.get("campaign_id") or not br.get("ad_group_id"):
-            result.skipped += 1
-            result.skipped_titles.append(rec.title)
-            continue
-        is_neg = br["action"] == "create_negative"
+        action = br["action"]
         row = [""] * len(header)
 
         def put(name, value):
@@ -113,6 +109,33 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             if i is not None:
                 row[i] = value
 
+        if action == "set_bid":
+            # Update an existing keyword's bid — keyed by Keyword ID.
+            if not br.get("keyword_id") or not br.get("new_bid_cents"):
+                result.skipped += 1
+                result.skipped_titles.append(rec.title)
+                continue
+            put("Product", "Sponsored Products")
+            put("Entity", "Keyword")
+            put("Operation", "Update")
+            put("Campaign ID", br.get("campaign_id", ""))
+            put("Ad Group ID", br.get("ad_group_id", ""))
+            put("Keyword ID", br["keyword_id"])
+            put("Keyword Text", br.get("keyword_text", ""))
+            put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "exact"))
+            put("Bid", _dollars(br["new_bid_cents"]))
+            put("State", "enabled")
+            ws.append(row)
+            result.applied += 1
+            result.applied_titles.append(rec.title)
+            continue
+
+        # create_negative / create_keyword
+        if not br.get("campaign_id") or not br.get("ad_group_id"):
+            result.skipped += 1
+            result.skipped_titles.append(rec.title)
+            continue
+        is_neg = action == "create_negative"
         put("Product", "Sponsored Products")
         put("Entity", "Negative Keyword" if is_neg else "Keyword")
         put("Operation", "Create")

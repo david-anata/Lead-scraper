@@ -18,6 +18,7 @@ from sales_support_agent.services.advertising import storage
 from sales_support_agent.services.advertising.brand import (
     detect_brand_candidates,
     filter_by_brand,
+    matches_brand,
     mixed_campaigns,
 )
 from sales_support_agent.services.advertising.bulk_sheets import (
@@ -91,9 +92,12 @@ def run_audit(
 
     try:
         # --- Parse (inside the try so any malformed file fails gracefully) ---
+        # Business Report first — its ASINs define brand scope for the bulk file.
+        sales_rows: list[SalesRow] = (
+            N.normalize_business_report_csv(inputs.business_report_csv) if inputs.business_report_csv else []
+        )
+
         ad_rows: list[AdRow] = []
-        if inputs.bulk_xlsx:
-            ad_rows += N.normalize_bulk_xlsx(inputs.bulk_xlsx)
         if inputs.search_term_csv:
             ad_rows += N.normalize_ads_report_csv(inputs.search_term_csv)
         for report_csv in inputs.ads_report_csvs:
@@ -101,9 +105,16 @@ def run_audit(
         if inputs.dsp_csv:
             ad_rows += N.normalize_dsp_csv(inputs.dsp_csv)
 
-        sales_rows: list[SalesRow] = (
-            N.normalize_business_report_csv(inputs.business_report_csv) if inputs.business_report_csv else []
-        )
+        # Bulk Operations file → existing keyword rows (Keyword ID + bid + perf),
+        # scoped to brand-only campaigns. Enables bid-change apply rows.
+        if inputs.bulk_xlsx:
+            all_asins = {s.asin.upper() for s in sales_rows if s.asin}
+            b_asins = (
+                {s.asin.upper() for s in sales_rows if s.asin and matches_brand(brand, s.title, s.sku, s.asin)}
+                if brand else all_asins
+            )
+            ad_rows += N.normalize_bulk_keywords(inputs.bulk_xlsx, b_asins, all_asins - b_asins)
+
         market_rows: list[MarketRow] = (
             N.normalize_sqp_csv(inputs.sqp_csv) if inputs.sqp_csv else []
         )

@@ -285,6 +285,96 @@ def normalize_search_term_csv(file_bytes: bytes, ad_type: str = "SP") -> list[Ad
     return normalize_ads_report_csv(file_bytes, ad_type=ad_type)
 
 
+def normalize_bulk_keywords(
+    file_bytes: bytes, brand_asins: set, other_asins: Optional[set] = None
+) -> list[AdRow]:
+    """Stream the SP Campaigns sheet of an Amazon Bulk Operations workbook and
+    return keyword rows (with Keyword ID, current Bid, and performance) for the
+    brand — scoped via each campaign's advertised ASINs (from its Product Ad
+    rows). Keeps ONLY campaigns that advertise a brand ASIN and NO other-brand
+    ASIN, so a bid change can never touch another brand.
+
+    Memory-safe: read-only streaming with reset_dimensions() (these big Amazon
+    exports ship a bogus <dimension>, which otherwise makes read-only yield 0
+    rows). Never raises."""
+    other_asins = {a.upper() for a in (other_asins or set())}
+    brand_asins = {a.upper() for a in (brand_asins or set())}
+    if not brand_asins:
+        return []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:
+        logger.exception("[advertising] failed to open bulk workbook for keyword scan")
+        return []
+
+    ws = None
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) == "SP":
+            ws = sheet
+            break
+    if ws is None:
+        wb.close()
+        return []
+    ws.reset_dimensions()
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header = [str(h).strip() if h is not None else "" for h in next(rows_iter)]
+    except StopIteration:
+        wb.close()
+        return []
+    idx = {name: (header.index(name) if name in header else None) for name in (
+        "Entity", "Campaign ID", "Ad Group ID", "Keyword ID", "Bid", "Keyword Text",
+        "Match Type", "ASIN (Informational only)", "Campaign Name (Informational only)",
+        "Ad Group Name (Informational only)", "Impressions", "Clicks", "Spend", "Sales",
+        "Orders", "Units")}
+
+    def g(row, name):
+        i = idx.get(name)
+        return row[i] if i is not None and i < len(row) else None
+
+    campaign_asins: dict[str, set] = {}
+    keyword_buf: list[tuple] = []
+    for row in rows_iter:
+        entity = g(row, "Entity")
+        cid = str(g(row, "Campaign ID") or "").strip()
+        if entity == "Product Ad":
+            asin = str(g(row, "ASIN (Informational only)") or "").strip().upper()
+            if cid and asin:
+                campaign_asins.setdefault(cid, set()).add(asin)
+        elif entity == "Keyword":
+            keyword_buf.append(row)
+    wb.close()
+
+    out: list[AdRow] = []
+    for row in keyword_buf:
+        cid = str(g(row, "Campaign ID") or "").strip()
+        asins = campaign_asins.get(cid, set())
+        # brand-only campaigns only: advertises a brand ASIN, no other-brand ASIN.
+        if not (asins & brand_asins) or (asins & other_asins):
+            continue
+        bid = _get(_lookup({"Bid": g(row, "Bid")}), "Bid")
+        out.append(AdRow(
+            ad_type="SP", entity_level="keyword",
+            campaign_name=str(g(row, "Campaign Name (Informational only)") or ""),
+            ad_group_name=str(g(row, "Ad Group Name (Informational only)") or ""),
+            campaign_id=cid,
+            ad_group_id=str(g(row, "Ad Group ID") or "").strip(),
+            keyword_id=str(g(row, "Keyword ID") or "").strip(),
+            entity_text=str(g(row, "Keyword Text") or ""),
+            match_type=str(g(row, "Match Type") or ""),
+            impressions=parse_int(g(row, "Impressions")),
+            clicks=parse_int(g(row, "Clicks")),
+            spend_cents=parse_cents(g(row, "Spend")),
+            sales_cents=parse_cents(g(row, "Sales")),
+            orders=parse_int(g(row, "Orders")),
+            units=parse_int(g(row, "Units")),
+            bid_cents=parse_cents(bid) if bid else None,
+        ))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Business Report: Detail Page Sales & Traffic (CSV)
 # ---------------------------------------------------------------------------

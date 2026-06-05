@@ -137,6 +137,71 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(res.applied, 0)
         self.assertEqual(res.skipped, 1)
 
+    def test_set_bid_emits_update_row(self):
+        recs = [_rec("set_bid", campaign_id="111", ad_group_id="222", keyword_id="999",
+                     keyword_text="weight loss drinks", match_type="broad", new_bid_cents=57)]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 1)
+        wb = openpyxl.load_workbook(io.BytesIO(res.xlsx_bytes))
+        ws = wb["Sponsored Products Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        gi = lambda r, n: r[hdr.index(n)]
+        row = next(r for r in ws.iter_rows(min_row=2) if gi(r, "Keyword ID").value == "999")
+        self.assertEqual(gi(row, "Entity").value, "Keyword")
+        self.assertEqual(gi(row, "Operation").value, "Update")
+        self.assertEqual(gi(row, "Bid").value, 0.57)
+
+    def test_set_bid_skips_without_keyword_id(self):
+        recs = [_rec("set_bid", campaign_id="1", ad_group_id="2", new_bid_cents=57)]  # no keyword_id
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 0)
+        self.assertEqual(res.skipped, 1)
+
+
+class BulkKeywordScopeTest(unittest.TestCase):
+    HEADER = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+              "Campaign Name (Informational only)", "Ad Group Name (Informational only)",
+              "ASIN (Informational only)", "Bid", "Keyword Text", "Match Type",
+              "Impressions", "Clicks", "Spend", "Sales", "Orders", "Units"]
+
+    def _bulk(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sponsored Products Campaigns"
+        ws.append(self.HEADER)
+
+        def row(**k):
+            ws.append([k.get(h, "") for h in self.HEADER])
+
+        # C1 = Zantrex-only
+        row(Entity="Product Ad", **{"Campaign ID": "C1", "ASIN (Informational only)": "B0ZAN"})
+        row(Entity="Keyword", **{"Campaign ID": "C1", "Ad Group ID": "A1", "Keyword ID": "K1",
+                                 "Bid": 2.0, "Keyword Text": "kw zantrex", "Match Type": "Broad",
+                                 "Impressions": 1000, "Clicks": 40, "Spend": 80, "Sales": 40, "Orders": 2, "Units": 2})
+        # C2 = other brand only
+        row(Entity="Product Ad", **{"Campaign ID": "C2", "ASIN (Informational only)": "B0SERO"})
+        row(Entity="Keyword", **{"Campaign ID": "C2", "Ad Group ID": "A2", "Keyword ID": "K2",
+                                 "Bid": 1.0, "Keyword Text": "kw sero", "Match Type": "Exact"})
+        # C3 = MIXED (Zantrex + other) -> must be excluded
+        row(Entity="Product Ad", **{"Campaign ID": "C3", "ASIN (Informational only)": "B0ZAN"})
+        row(Entity="Product Ad", **{"Campaign ID": "C3", "ASIN (Informational only)": "B0SERO"})
+        row(Entity="Keyword", **{"Campaign ID": "C3", "Ad Group ID": "A3", "Keyword ID": "K3",
+                                 "Bid": 1.5, "Keyword Text": "kw mixed", "Match Type": "Broad"})
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def test_keeps_only_brand_only_campaign_keywords(self):
+        from sales_support_agent.services.advertising.normalizers import normalize_bulk_keywords
+        rows = normalize_bulk_keywords(self._bulk(), brand_asins={"B0ZAN"}, other_asins={"B0SERO"})
+        texts = {r.entity_text for r in rows}
+        self.assertEqual(texts, {"kw zantrex"})  # sero excluded (other brand), mixed excluded (cross-brand)
+        r = rows[0]
+        self.assertEqual(r.keyword_id, "K1")
+        self.assertEqual(r.bid_cents, 200)
+        self.assertEqual(r.spend_cents, 8000)
+        self.assertEqual(r.orders, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
