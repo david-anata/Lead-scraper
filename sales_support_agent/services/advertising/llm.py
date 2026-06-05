@@ -78,6 +78,55 @@ def _build_prompt(summary: dict, recs: list[Recommendation], goals: Goals, prior
     return "\n".join(lines)
 
 
+def build_deterministic_read(summary: dict, recs: list[Recommendation], goals: Optional[Goals]) -> str:
+    """A real strategic read computed straight from the numbers — no API needed.
+    Used as the always-available baseline; the LLM only enriches it when a key
+    is configured. The Exec Brief is therefore never left blank."""
+    from collections import Counter
+
+    g = goals or Goals()
+    summary = summary or {}
+    gap = summary.get("gap", {}) or {}
+    parts: list[str] = []
+
+    rev = summary.get("total_sales_cents")
+    if gap.get("revenue_gap_cents", 0) and gap["revenue_gap_cents"] > 0:
+        parts.append(
+            f"Revenue is {fmt_money(rev)}, {fmt_money(gap['revenue_gap_cents'])} short of the "
+            f"{fmt_money(gap.get('revenue_target_cents'))} goal ({fmt_pct(gap.get('revenue_attainment_bps'))} attained)."
+        )
+    elif rev is not None:
+        parts.append(f"Revenue is {fmt_money(rev)}.")
+
+    bt, tt = summary.get("blended_tacos_bps"), g.tacos_target_bps
+    if bt is not None and tt:
+        if bt < tt:
+            parts.append(f"Blended TACoS is {fmt_pct(bt)} versus a {fmt_pct(tt)} target — there's headroom to invest in growth.")
+        else:
+            parts.append(f"Blended TACoS is {fmt_pct(bt)}, above the {fmt_pct(tt)} target — tighten efficiency before scaling.")
+    elif bt is not None:
+        parts.append(f"Blended TACoS is {fmt_pct(bt)}.")
+
+    acos, at = summary.get("acos_bps"), g.acos_target_bps
+    if acos is not None and at and acos > at:
+        parts.append(f"Ad ACoS is {fmt_pct(acos)} against the {fmt_pct(at)} target.")
+
+    cats = Counter(r.category for r in recs)
+    moves = []
+    if cats.get("negative_keyword"):
+        moves.append(f"negate {cats['negative_keyword']} wasted-spend terms")
+    if cats.get("new_keyword"):
+        moves.append(f"harvest {cats['new_keyword']} converting search terms into exact keywords")
+    if cats.get("bid_down"):
+        moves.append(f"trim bids on {cats['bid_down']} over-target keywords")
+    if cats.get("bid_up"):
+        moves.append(f"scale bids on {cats['bid_up']} efficient winners")
+    if moves:
+        parts.append("Highest-leverage moves this week: " + ", ".join(moves) +
+                     " — all in the Burn List and pre-loaded in the bulk apply-sheet.")
+    return " ".join(parts) or "Upload your ad + sales reports to generate a fuller read."
+
+
 def generate_narrative(
     summary: dict,
     recs: list[Recommendation],
@@ -87,14 +136,10 @@ def generate_narrative(
     api_key: Optional[str] = None,
     model: str = "claude-haiku-4-5-20251001",
 ) -> NarrativeResult:
+    baseline = build_deterministic_read(summary, recs, goals)
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
-        return NarrativeResult(
-            text=(
-                "AI strategic read unavailable — set ANTHROPIC_API_KEY to enable. "
-                "The ranked burn list below is fully computed and ready to act on."
-            )
-        )
+        return NarrativeResult(text=baseline, model="deterministic")
 
     prompt = _build_prompt(summary, recs, goals or Goals(), prior_summary)
     try:
@@ -107,15 +152,12 @@ def generate_narrative(
             system=_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = message.content[0].text if message.content else ""
+        text = (message.content[0].text if message.content else "").strip()
         return NarrativeResult(
-            text=text.strip(),
+            text=text or baseline,
             model=message.model,
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,
         )
-    except Exception as exc:  # noqa: BLE001
-        return NarrativeResult(
-            text=f"AI strategic read temporarily unavailable ({exc}). The ranked burn list below is computed and ready.",
-            model="error",
-        )
+    except Exception:  # noqa: BLE001 - fall back to the computed read, never a placeholder
+        return NarrativeResult(text=baseline, model="deterministic-fallback")

@@ -295,19 +295,38 @@ def build_growth_plan(
     _title(ws, st, "REPORTS NEEDED TO MAKE THIS PROFIT-TRUE")
     ws.append(["What's missing, why it matters, and priority. COGS is the #1 gap for guaranteeing profitability."])
     ws.append([])
-    _head(ws, st, ["#", "Report / data", "Why it matters", "Priority"])
+    _head(ws, st, ["#", "Report / data", "Where / how to get it", "Why it matters", "Priority"])
     reqs = []
     if not has_cogs:
-        reqs.append(("Per-ASIN COGS + FBA & referral fees",
-                     "The #1 gap. Enables TRUE break-even ACoS per product — guarantee (not estimate) each SKU stays profitable. Today ACoS/TACoS are proxies.", "P0"))
+        reqs.append((
+            "Per-ASIN COGS + FBA & referral fees",
+            "Your own cost data: one row per ASIN with landed unit cost (COGS + FBA fee + referral fee + freight). Upload as a 2-column ASIN,COGS CSV (extra fee columns optional).",
+            "The #1 gap. Enables TRUE break-even ACoS per product — guarantee (not estimate) each SKU stays profitable. Today ACoS/TACoS are proxies.",
+            "P0"))
     reqs += [
-        ("Targeting / Keyword report", "Unlocks keyword-level bid moves (retune, not just harvest/negate).", "P0"),
-        ("FBA Inventory & Days-of-Supply", "Can't scale if best-sellers stock out — sets reorder triggers + caps spend on low-stock SKUs.", "P1"),
-        ("Placement report (TOS / Product / Rest)", "Unlocks placement bid modifiers — a fast 5–15% ACoS win by over-weighting Top-of-Search on high-CVR ASINs.", "P1"),
+        ("Targeting / Keyword report",
+         "Amazon Ads Console → Reports → run the 'Targeting' template (Sponsored Products) → Use template → export CSV.",
+         "Unlocks keyword-level bid moves (retune existing bids, not just harvest/negate).", "P0"),
+        ("FBA Inventory & Days-of-Supply",
+         "Seller Central → Reports → Fulfillment → 'FBA Inventory' / 'Restock Inventory' → download.",
+         "Can't scale if best-sellers stock out — sets reorder triggers + caps spend on low-stock SKUs.", "P1"),
+        ("Placement report (TOS / Product / Rest)",
+         "Amazon Ads Console → Reports → 'Placement' template → export CSV.",
+         "Unlocks placement bid modifiers — a fast 5–15% ACoS win by over-weighting Top-of-Search on high-CVR ASINs.", "P1"),
     ]
-    for i, (name, why, prio) in enumerate(reqs, start=1):
-        _row(ws, [i, name, why, prio], wrap_cols=(1, 2))
-    _widths(ws, [4, 34, 64, 8])
+    for i, (name, where, why, prio) in enumerate(reqs, start=1):
+        _row(ws, [i, name, where, why, prio], wrap_cols=(1, 2, 3))
+    _widths(ws, [4, 30, 50, 46, 8])
+
+    # Final pass: stretch the dark title banner (row 1) across each sheet's width.
+    title_font, title_fill = st["title"]
+    for sheet in wb.worksheets:
+        for col in range(1, (sheet.max_column or 1) + 1):
+            c = sheet.cell(1, col)
+            c.fill = title_fill
+            if col == 1:
+                c.font = title_font
+        sheet.row_dimensions[1].height = 26
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -333,14 +352,23 @@ def _title(ws, st, text: str) -> None:
 
 
 def _head(ws, st, headers: list[str]) -> None:
+    from openpyxl.styles import Alignment, Border, Side
+    thin = Side(style="thin", color="C8D3DD")
     ws.append(headers)
+    r = ws.max_row
     for col in range(1, len(headers) + 1):
-        cell = ws.cell(ws.max_row, col)
+        cell = ws.cell(r, col)
         cell.font, cell.fill = st["head"]
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+        cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ws.row_dimensions[r].height = 26
+    ws.freeze_panes = f"A{r + 1}"  # keep the header visible; string form avoids creating an empty row
+    ws._adv_cols = len(headers)          # table width, for banding + borders
+    ws._adv_band = 0
 
 
 def _row(ws, values, *, money_cols=(), pct_cols=(), wrap_cols=()) -> None:
-    from openpyxl.styles import Alignment
+    from openpyxl.styles import Alignment, Border, PatternFill, Side
     ws.append(values)
     r = ws.max_row
     # money_cols / pct_cols / wrap_cols are 0-based indices into `values`.
@@ -352,8 +380,19 @@ def _row(ws, values, *, money_cols=(), pct_cols=(), wrap_cols=()) -> None:
         cell = ws.cell(r, c + 1)
         if isinstance(cell.value, (int, float)):
             cell.number_format = "0.0%"
-    for c in wrap_cols:
-        ws.cell(r, c + 1).alignment = Alignment(wrap_text=True, vertical="top")
+
+    wrap_set = {c + 1 for c in wrap_cols}
+    cols = getattr(ws, "_adv_cols", len(values))
+    ws._adv_band = getattr(ws, "_adv_band", 0) + 1
+    fill = PatternFill("solid", fgColor=_BAND_FILL) if ws._adv_band % 2 == 0 else None
+    thin = Side(style="thin", color="EAEEF2")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for col in range(1, cols + 1):
+        cell = ws.cell(r, col)
+        cell.border = border
+        if fill is not None:
+            cell.fill = fill
+        cell.alignment = Alignment(wrap_text=col in wrap_set, vertical="top")
 
 
 def _widths(ws, widths: list[int]) -> None:
