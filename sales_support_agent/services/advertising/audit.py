@@ -139,10 +139,20 @@ def run_audit(
             storage.save_external_costs(external_rows, run_id=run_id)
         counts["external"] = len(external_rows)
 
+        # Data-sanity: warn when uploaded ads reports cover different date windows
+        # (the dashboard will auto-sync these via the API; the manual flow can't).
+        windows = set()
+        for csv_bytes in ([inputs.search_term_csv] if inputs.search_term_csv else []) + list(inputs.ads_report_csvs):
+            rng = N.report_date_range(csv_bytes)
+            if rng:
+                windows.add(rng)
+
         summary = compute_summary(ad_rows, sales_rows, external_rows, goals)
         summary["brand"] = brand
         summary["brand_candidates"] = brand_candidates
         summary["excluded_mixed_campaigns"] = len(excluded_mixed)
+        summary["brand_asin_count"] = len([s for s in sales_rows if s.asin]) if brand else 0
+        summary["data_windows"] = sorted(windows)
         recs = build_recommendations(ad_rows, sales_rows, market_rows, external_rows, goals)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)

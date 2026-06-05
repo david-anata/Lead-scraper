@@ -213,6 +213,17 @@ def normalize_bulk_xlsx(file_bytes: bytes) -> list[AdRow]:
 # ---------------------------------------------------------------------------
 
 
+def report_date_range(file_bytes: bytes) -> str:
+    """The 'Date range' value from a new-console ads report (e.g.
+    'May 07, 2026 - May 28, 2026'), used to warn when uploaded reports cover
+    different windows. Returns '' if absent. Never raises."""
+    for row in _read_csv_rows(file_bytes, header_hint=["Date range", "Campaign", "Total cost"]):
+        v = _get(_lookup(row), "Date range")
+        if v:
+            return v
+    return ""
+
+
 def normalize_ads_report_csv(file_bytes: bytes, ad_type: str = "SP") -> list[AdRow]:
     """Unified parser for Amazon Ads performance reports — both the NEW reporting
     console (columns: Campaign name / Ad group name / Search term | Advertised
