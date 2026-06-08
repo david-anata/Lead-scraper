@@ -397,11 +397,16 @@ _FAQ = [
      "Drop all the files in the box (any order — it auto-detects each), type the <strong>brand</strong> to focus on, "
      "set your <strong>Goals</strong>, and hit <strong>Run audit &amp; build burn list</strong>. The run appears in "
      "History with ⬇ Plan and ⬇ Apply-sheet downloads."),
-    ("What's the Apply sheet?",
-     "An Amazon bulk file pre-filled with the negatives + new keywords to create — upload it directly at "
-     "Ads Console → Bulk operations → Upload, no editing. Also add the <strong>Bulk operations</strong> file and it "
-     "gains <strong>bid-change rows</strong> (raise/lower existing keyword bids), scoped to the brand and safe across "
-     "other brands."),
+    ("What are the two apply files — Bid changes vs Additions?",
+     "The run produces <strong>two</strong> Amazon bulk files so a problem in one never blocks the other. "
+     "<strong>⬇ Bid changes</strong> = raise/lower bids on existing keywords &amp; targets; it references existing IDs "
+     "so it <strong>uploads cleanly every time — upload this one first</strong>. <strong>⬇ Additions</strong> = new "
+     "keywords + negatives to create; upload it separately. Both go to Ads Console → Bulk operations → Upload, no editing."),
+    ("My Additions file says “already exists!” — why?",
+     "Amazon rejects creating a keyword/target that already exists, and it fails the whole Additions file on the first one. "
+     "We drop everything we can see in your uploaded <strong>Bulk operations</strong> file — but that file is a snapshot, "
+     "so anything added to the account since you exported it is invisible to us. <strong>Fix: re-download a FRESH Bulk "
+     "operations export right before you run</strong>, then re-run. (Your <strong>Bid changes</strong> file is unaffected.)"),
     ("Same date window for every report",
      "Pick one trailing window (e.g. last 30 days) and <strong>end it yesterday, not today</strong> — today's data is "
      "incomplete and skews ACoS."),
