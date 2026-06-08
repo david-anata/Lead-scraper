@@ -87,6 +87,9 @@ def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "")
             return run_dict
         files = storage.list_bulk_files(run_dict["id"])
         run_dict["has_plan"] = "growth_plan" in files
+        run_dict["has_bids"] = "bids" in files
+        run_dict["has_additions"] = "additions" in files
+        # back-compat with older runs that stored a single combined file
         run_dict["has_apply"] = "combined" in files
         return run_dict
 

@@ -193,14 +193,23 @@ def run_audit(
         counts["recommendations"] = len(recs)
         summary["recommendation_count"] = len(recs)
 
-        # Apply-sheet: populate Amazon's official template directly from the
-        # Campaign/Ad Group IDs carried on the reports — upload-ready, no manual
-        # editing. Falls back to round-tripping an uploaded bulk workbook (which
-        # also enables bid updates) only if the template path yields nothing.
-        bulk_result: Optional[BulkBuildResult] = build_apply_sheet(recs)
-        if bulk_result.has_file:
-            storage.save_bulk_file(run_id, "combined", bulk_result.xlsx_bytes)
-        elif inputs.bulk_xlsx:
+        # Apply-sheets: TWO files, uploaded independently so a collision in the
+        # creates can never block the bid changes.
+        #  • "bids"      → bid changes only (Updates keyed by existing IDs) —
+        #                  guaranteed to upload clean. Upload this first.
+        #  • "additions" → harvests + negatives (Creates) — best-effort; a Create
+        #                  can still hit "already exists!" if the bulk snapshot is
+        #                  stale. Upload separately; a failure here won't touch bids.
+        bids = build_apply_sheet(recs, kinds={"set_bid"})
+        additions = build_apply_sheet(recs, kinds={"create_keyword", "create_negative"})
+        if bids.has_file:
+            storage.save_bulk_file(run_id, "bids", bids.xlsx_bytes)
+        if additions.has_file:
+            storage.save_bulk_file(run_id, "additions", additions.xlsx_bytes)
+        # Back-compat: a single "combined" file for the round-trip fallback when the
+        # template path produced neither (older uploads with only a bulk workbook).
+        bulk_result: Optional[BulkBuildResult] = bids if bids.has_file else additions
+        if not bids.has_file and not additions.has_file and inputs.bulk_xlsx:
             bulk_result = build_bulk_workbook(inputs.bulk_xlsx, recs)
             if bulk_result.has_file:
                 storage.save_bulk_file(run_id, "combined", bulk_result.xlsx_bytes)
