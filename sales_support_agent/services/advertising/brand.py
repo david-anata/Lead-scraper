@@ -153,6 +153,48 @@ def detect_brand_candidates(
     return ranked[:limit]
 
 
+def detect_primary_brand(
+    sales_rows: "list[SalesRow] | None", ad_rows: "list[AdRow] | None" = None
+) -> str:
+    """The single common brand name for an un-scoped ('full account') run, e.g.
+    'Number 4'. Product titles lead with the brand, so this grows the longest
+    leading token-phrase (up to 3 words) shared by a majority of titles —
+    capturing multi-word brands that detect_brand_candidates (first token only)
+    misses. Returns '' for a genuinely multi-brand account (no dominant prefix),
+    so the caller can fall back to 'Full account'."""
+    def toks(title: str) -> list[str]:
+        out: list[str] = []
+        for raw in re.split(r"\s+", (title or "").strip()):
+            w = raw.strip(" ,.&-/|")
+            if w:
+                out.append(w)
+        return out
+
+    token_lists = [toks(s.title) for s in (sales_rows or []) if s.title]
+    token_lists = [tl for tl in token_lists if tl]
+    n = len(token_lists)
+    if n < 2:
+        cands = detect_brand_candidates(ad_rows or [], sales_rows)
+        return cands[0] if cands else ""
+
+    threshold = max(2, n // 2 + 1)  # a strict majority (>50%) of titles
+    prefix: list[str] = []
+    for depth in range(3):
+        matching = [tl for tl in token_lists if tl[:depth] == prefix and len(tl) > depth]
+        if not matching:
+            break
+        tok, cnt = Counter(tl[depth] for tl in matching).most_common(1)[0]
+        low = tok.lower()
+        # First token must look like a brand word (not a stopword/code); later
+        # tokens may be short/numeric (the "4" in "Number 4").
+        if depth == 0 and (len(tok) < 3 or not tok.isalpha() or low in _STOPWORDS or _ASIN_RE.match(low)):
+            break
+        if cnt < threshold:
+            break
+        prefix.append(_titlecase(tok) if tok.isalpha() else tok)
+    return " ".join(prefix).strip()
+
+
 def _titlecase(token: str) -> str:
     # Preserve existing capitalization if it looks intentional (e.g. SkinnyStix).
     if any(c.isupper() for c in token[1:]):

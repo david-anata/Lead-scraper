@@ -275,7 +275,7 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None) -
 def _last_run_strip(latest: dict) -> str:
     """Compact one-line summary of the most recent run + its downloads."""
     s = latest.get("summary", {}) or {}
-    brand = s.get("brand") or "Full account"
+    brand = s.get("brand") or s.get("detected_brand") or "Full account"
     when = (latest.get("created_at") or "")[:16].replace("T", " ")
     rid = latest.get("id")
     recs = s.get("recommendation_count")
@@ -303,7 +303,7 @@ def _history_table(runs: list[dict]) -> str:
     rows = []
     for r in runs:
         s = r.get("summary", {}) or {}
-        brand = s.get("brand") or "Full account"
+        brand = s.get("brand") or s.get("detected_brand") or "Full account"
         when = (r.get("created_at") or "")[:16].replace("T", " ")
         rid = r.get("id")
         recs = s.get("recommendation_count")
