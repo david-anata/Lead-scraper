@@ -177,6 +177,12 @@ def run_audit(
             redirected = N.redirect_harvests_to_sp(recs, N.bulk_sp_home_by_asin(inputs.bulk_xlsx))
             if redirected:
                 logger.info("[advertising] routed %d cross-channel harvest(s) into their SP home", redirected)
+            # Keep keyword harvests in keyword ad groups and ASIN harvests in
+            # product-targeting ad groups (never an auto ad group) — Amazon rejects
+            # a mixed-targeting or auto ad group.
+            retyped = N.enforce_targeting_type(recs, inputs.bulk_xlsx)
+            if retyped:
+                logger.info("[advertising] re-homed/dropped %d harvest(s) to match ad-group targeting type", retyped)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
         summary["recommendation_count"] = len(recs)

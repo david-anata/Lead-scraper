@@ -701,6 +701,107 @@ def redirect_harvests_to_sp(recs: list, sp_home: dict) -> int:
     return n
 
 
+_AUTO_EXPRS = {"close-match", "loose-match", "substitutes", "complements"}
+
+
+def enforce_targeting_type(recs: list, file_bytes: bytes) -> int:
+    """A Sponsored Products ad group is EITHER keyword-targeted OR product-
+    targeted — never both — and an **auto** ad group takes no manual entities at
+    all. Auto/discovery ad groups surface both keyword-like and ASIN search
+    terms, so harvesting them back into that ad group mixes types (and targets an
+    auto ad group), which Amazon rejects.
+
+    For every positive harvest (`create_keyword`), this re-homes it into a MANUAL
+    ad group of the matching targeting type for the same ASIN (a keyword ad group
+    for keyword harvests, a manual product-targeting ad group for ASIN harvests),
+    using the bulk file. If the current ad group is already the right manual type
+    it's left alone; if no suitable home exists the harvest is dropped from the
+    apply sheet (stays in the burn list). Returns rows re-homed or dropped."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to open bulk workbook for targeting-type check")
+        return 0
+    from collections import Counter, defaultdict
+
+    kw_ag: Counter = Counter()          # (cid,aid) -> # manual keywords
+    pt_ag: Counter = Counter()          # (cid,aid) -> # manual product targets
+    auto_ag: set = set()                # (cid,aid) with auto targeting
+    camp_asins: dict = defaultdict(set)
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) != "SP":
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {h: (header.index(h) if h in header else None) for h in (
+            "Entity", "Campaign ID", "Ad Group ID", "ASIN (Informational only)", "Product Targeting Expression")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        for row in it:
+            e = str(g(row, "Entity") or "")
+            cid = str(g(row, "Campaign ID") or "").strip()
+            aid = str(g(row, "Ad Group ID") or "").strip()
+            if e == "Product Ad":
+                a = str(g(row, "ASIN (Informational only)") or "").strip().upper()
+                if a and cid:
+                    camp_asins[cid].add(a)
+            elif e == "Keyword" and cid and aid:
+                kw_ag[(cid, aid)] += 1
+            elif e == "Product Targeting" and cid and aid:
+                expr = str(g(row, "Product Targeting Expression") or "").strip().lower()
+                if expr in _AUTO_EXPRS:
+                    auto_ag.add((cid, aid))
+                else:
+                    pt_ag[(cid, aid)] += 1
+    wb.close()
+
+    def homes(counter: Counter) -> dict:
+        by_asin: dict = defaultdict(list)
+        for (cid, aid), n in counter.items():
+            for a in camp_asins.get(cid, ()):
+                by_asin[a].append((n, cid, aid))
+        return {a: max(v)[1:] for a, v in by_asin.items()}
+
+    kw_home, pt_home = homes(kw_ag), homes(pt_ag)
+    kw_set, pt_set = set(kw_ag), set(pt_ag)
+
+    def _is_target(text: str) -> bool:
+        t = (text or "").strip().lower()
+        return bool(re.fullmatch(r"b0[a-z0-9]{8}", t)) or t.startswith(("asin=", "asin-expanded=", "category=", "brand="))
+
+    changed = 0
+    for r in recs:
+        br = getattr(r, "bulk_row", None) or {}
+        if br.get("action") != "create_keyword":
+            continue  # only positive harvests define an ad group's targeting type
+        is_target = _is_target(br.get("keyword_text", ""))
+        cur = (str(br.get("campaign_id") or ""), str(br.get("ad_group_id") or ""))
+        # already in a manual ad group of the right type (and not auto)?
+        if cur not in auto_ag and ((is_target and cur in pt_set) or (not is_target and cur in kw_set)):
+            continue
+        asin_m = _ASIN_RE.search((br.get("campaign_name") or "").upper())
+        asin = asin_m.group(0) if asin_m else next(iter(camp_asins.get(cur[0], set())), None)
+        home = (pt_home if is_target else kw_home).get(asin) if asin else None
+        if home:
+            br["campaign_id"], br["ad_group_id"] = home
+            changed += 1
+        else:
+            r.is_bulk_actionable = False  # no valid manual home → keep in burn list, not the sheet
+            changed += 1
+    return changed
+
+
 # ---------------------------------------------------------------------------
 # Business Report: Detail Page Sales & Traffic (CSV)
 # ---------------------------------------------------------------------------

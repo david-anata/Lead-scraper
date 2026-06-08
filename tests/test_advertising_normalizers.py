@@ -279,6 +279,48 @@ class SponsoredBrandsBulkTest(unittest.TestCase):
         self.assertFalse(any(r.keyword_id == "SBK2" for r in rows))
 
 
+class TargetingTypeEnforcementTest(unittest.TestCase):
+    def _bulk(self):
+        # Auto ad group (C1/A1, advertises B005GEZGSQ) + a manual KEYWORD ad group
+        # (C2/A2, same ASIN) + a manual PRODUCT-TARGETING ad group (C3/A3).
+        header = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+                  "Product Targeting ID", "Product Targeting Expression", "Keyword Text", "Match Type",
+                  "ASIN (Informational only)",
+                  "Campaign Name (Informational only)", "Ad Group Name (Informational only)"]
+        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sponsored Products Campaigns"
+        ws.append(header)
+        def row(**k): ws.append([k.get(h, "") for h in header])
+        row(Entity="Product Ad", **{"Campaign ID": "C1", "ASIN (Informational only)": "B005GEZGSQ"})
+        row(Entity="Product Targeting", **{"Campaign ID": "C1", "Ad Group ID": "A1", "Product Targeting Expression": "loose-match"})  # auto
+        row(Entity="Product Ad", **{"Campaign ID": "C2", "ASIN (Informational only)": "B005GEZGSQ"})
+        row(Entity="Keyword", **{"Campaign ID": "C2", "Ad Group ID": "A2", "Keyword ID": "K", "Keyword Text": "hair", "Match Type": "exact"})
+        row(Entity="Product Ad", **{"Campaign ID": "C3", "ASIN (Informational only)": "B005GEZGSQ"})
+        row(Entity="Product Targeting", **{"Campaign ID": "C3", "Ad Group ID": "A3", "Product Targeting ID": "P", "Product Targeting Expression": 'asin="B0XYZ"'})
+        buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+    def test_harvests_rehomed_by_type(self):
+        from sales_support_agent.services.advertising.schema import Recommendation
+        def rec(text):
+            return Recommendation(category="new_keyword", title=text, is_bulk_actionable=True,
+                bulk_row={"action": "create_keyword", "ad_type": "SP", "campaign_id": "C1",
+                          "ad_group_id": "A1", "campaign_name": "Auto B005GEZGSQ", "keyword_text": text})
+        kw = rec("number 4 shampoo")       # keyword harvest in an AUTO ad group
+        pt = rec("b0cx67qvjk")             # ASIN harvest in an AUTO ad group
+        N.enforce_targeting_type([kw, pt], self._bulk())
+        # keyword harvest -> the keyword ad group; ASIN harvest -> the PT ad group.
+        self.assertEqual((kw.bulk_row["campaign_id"], kw.bulk_row["ad_group_id"]), ("C2", "A2"))
+        self.assertEqual((pt.bulk_row["campaign_id"], pt.bulk_row["ad_group_id"]), ("C3", "A3"))
+        self.assertTrue(kw.is_bulk_actionable and pt.is_bulk_actionable)
+
+    def test_harvest_dropped_when_no_matching_home(self):
+        from sales_support_agent.services.advertising.schema import Recommendation
+        pt = Recommendation(category="new_keyword", title="x", is_bulk_actionable=True,
+            bulk_row={"action": "create_keyword", "ad_type": "SP", "campaign_id": "C1", "ad_group_id": "A1",
+                      "campaign_name": "Auto B0NOHOME99", "keyword_text": "b0nohome99"})  # ASIN w/ no PT home
+        N.enforce_targeting_type([pt], self._bulk())
+        self.assertFalse(pt.is_bulk_actionable)  # no manual PT ad group → dropped, stays in burn list
+
+
 class ProductTargetingAndRedirectTest(unittest.TestCase):
     def test_target_id_backfilled_for_auto_expression(self):
         from sales_support_agent.services.advertising.schema import AdRow
