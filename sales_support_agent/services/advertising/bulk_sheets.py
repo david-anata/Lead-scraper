@@ -22,6 +22,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -41,6 +42,33 @@ _MATCH_MAP = {
     "negative phrase": "negativePhrase", "negativephrase": "negativePhrase",
     "exact": "exact", "phrase": "phrase", "broad": "broad",
 }
+
+_BARE_ASIN_RE = re.compile(r"^b0[a-z0-9]{8}$", re.I)
+_TARGET_EXPR_RE = re.compile(r"^\s*(asin|asin-expanded|category|brand)\s*=", re.I)
+# Amazon keyword text allows letters, digits, spaces, and . - & ' (and accents).
+_VALID_KEYWORD_RE = re.compile(r"^[\w .\-&']+$", re.UNICODE)
+
+
+def _classify_target_text(text: str):
+    """Decide how a 'search term / keyword' string must be applied:
+      ('keyword', text)         -> a real keyword
+      ('target', 'asin="B0…"')  -> an ASIN/category PRODUCT TARGET, not a keyword
+      ('invalid', None)         -> can't be applied (bad characters)
+    ASIN search terms come from auto / product-targeting placements; Amazon
+    rejects them as keywords, so they must become product-targeting rows."""
+    t = (text or "").strip()
+    if not t:
+        return ("invalid", None)
+    if _TARGET_EXPR_RE.match(t):
+        # normalize asin-expanded="B0…" -> asin="B0…"; uppercase the ASIN.
+        expr = re.sub(r"asin-expanded\s*=", "asin=", t, flags=re.I)
+        expr = re.sub(r'(asin\s*=\s*")([^"]+)(")', lambda m: m.group(1) + m.group(2).upper() + m.group(3), expr, flags=re.I)
+        return ("target", expr)
+    if _BARE_ASIN_RE.match(t):
+        return ("target", f'asin="{t.upper()}"')
+    if not _VALID_KEYWORD_RE.match(t) or len(t.split()) > 10:
+        return ("invalid", None)
+    return ("keyword", t)
 
 
 @dataclass
@@ -167,18 +195,32 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             result.skipped_titles.append(rec.title)
             continue
         is_neg = action == "create_negative"
-        # Create (Negative) Keyword → required: Campaign Id, Ad Group Id, State,
-        # Keyword Text, Match Type; optional: Bid (keyword only). No name columns.
+        kind, value = _classify_target_text(br.get("keyword_text", ""))
+        if kind == "invalid":
+            # e.g. "#4 hair care" — not a valid keyword and not a product target.
+            result.skipped += 1
+            result.skipped_titles.append(rec.title)
+            continue
         put("Product", product)
-        put("Entity", "Negative Keyword" if is_neg else "Keyword")
         put("Operation", "Create")
         put("Campaign ID", br["campaign_id"])
         put("Ad Group ID", br["ad_group_id"])
-        put("Keyword Text", br.get("keyword_text", ""))
-        put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "negativeExact" if is_neg else "exact"))
         put("State", "enabled")
-        if not is_neg and br.get("new_bid_cents"):
-            put("Bid", _dollars(br["new_bid_cents"]))
+        if kind == "target":
+            # An ASIN/category search term is a PRODUCT TARGET, not a keyword —
+            # Amazon rejects it as a keyword. Required: Campaign Id, Ad Group Id,
+            # State, Product Targeting Expression; optional Bid (positive only).
+            put("Entity", "Negative Product Targeting" if is_neg else "Product Targeting")
+            put("Product Targeting Expression", value)
+            if not is_neg and br.get("new_bid_cents"):
+                put("Bid", _dollars(br["new_bid_cents"]))
+        else:
+            # Create (Negative) Keyword → + Keyword Text, Match Type; optional Bid.
+            put("Entity", "Negative Keyword" if is_neg else "Keyword")
+            put("Keyword Text", value)
+            put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "negativeExact" if is_neg else "exact"))
+            if not is_neg and br.get("new_bid_cents"):
+                put("Bid", _dollars(br["new_bid_cents"]))
         ws.append(row)
         result.applied += 1
         result.applied_titles.append(rec.title)
