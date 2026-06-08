@@ -200,6 +200,47 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(gi(row, "Operation").value, "Update")
         self.assertEqual(gi(row, "Bid").value, 1.20)
 
+    def test_preflight_validation_clean_on_normal_output(self):
+        recs = [
+            _rec("set_bid", campaign_id="1", ad_group_id="2", keyword_id="9", new_bid_cents=57),
+            _rec("create_keyword", campaign_id="1", ad_group_id="2", keyword_text="hair oil",
+                 match_type="exact", new_bid_cents=120),
+            _rec("create_negative", campaign_id="1", ad_group_id="2", keyword_text="cheap junk",
+                 match_type="negative exact"),
+        ]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.invalid, 0, res.issues)
+        self.assertEqual(res.issues, [])
+
+    def test_preflight_catches_bad_rows(self):
+        import openpyxl
+        from sales_support_agent.services.advertising.bulk_sheets import validate_bulk_rows, _TEMPLATE_PATH
+        wb = openpyxl.load_workbook(_TEMPLATE_PATH)
+        ws = wb["Sponsored Products Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        def add(**kv):
+            row = [""] * len(hdr)
+            for k, v in kv.items():
+                row[hdr.index(k)] = v
+            ws.append(row)
+        add(Product="Sponsored Products", Entity="Keyword", Operation="Update",
+            **{"Keyword ID": "1", "State": "enabled", "Bid": 5000})          # bid over $1000
+        add(Product="Sponsored Products", Entity="Keyword", Operation="Update",
+            **{"Keyword ID": "2", "State": "live", "Bid": 1.0})              # invalid State
+        add(Product="Sponsored Products", Entity="Keyword", Operation="Update",
+            **{"Keyword ID": "3", "State": "enabled", "Bid": 1.0,
+               "Keyword Text": "x", "Match Type": "exact"})                  # forbidden cols on Update
+        add(Product="Sponsored Products", Entity="Keyword", Operation="Create",
+            **{"Campaign ID": "C", "Ad Group ID": "A", "State": "enabled",
+               "Keyword Text": "b003h85w46", "Match Type": "exact"})         # ASIN as keyword
+        issues = validate_bulk_rows(wb)
+        blob = " ".join(issues)
+        self.assertIn("Bid", blob)
+        self.assertIn("State", blob)
+        self.assertIn("forbidden", blob)
+        self.assertIn("keyword text", blob)
+        self.assertGreaterEqual(len(issues), 4)
+
     def test_asin_search_term_becomes_product_targeting_not_keyword(self):
         # A bare-ASIN or asin="..." search term must be a Product Targeting row,
         # never a keyword (Amazon rejects an ASIN as keyword text).
