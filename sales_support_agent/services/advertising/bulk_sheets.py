@@ -117,6 +117,21 @@ def validate_bulk_rows(wb) -> list[str]:
         if len(rows) < 2:
             continue
         hdr = [str(c).strip() if c is not None else "" for c in rows[0]]
+        # Duplicate-ID check: Amazon rejects the whole file if an ID repeats
+        # within a sheet (e.g. two Update rows for the same Keyword ID).
+        for id_col in ("Keyword ID", "Product Targeting ID", "Ad ID"):
+            if id_col not in hdr:
+                continue
+            ci = hdr.index(id_col)
+            seen_ids: dict = {}
+            for ri, r in enumerate(rows[1:], start=2):
+                if ci >= len(r) or r[ci] in (None, ""):
+                    continue
+                key = str(r[ci])
+                if key in seen_ids:
+                    issues.append(f"{ws.title} r{ri}: duplicate {id_col} {key!r} (also row {seen_ids[key]})")
+                else:
+                    seen_ids[key] = ri
         for ri, r in enumerate(rows[1:], start=2):
             cell = {hdr[i]: r[i] for i in range(len(hdr)) if i < len(r)}
             entity, op, product = cell.get("Entity"), cell.get("Operation"), cell.get("Product")
@@ -215,6 +230,11 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             _ctx_cache[ws.title] = (header, col)
         return _ctx_cache[ws.title]
 
+    # Amazon rejects the WHOLE file if any ID appears twice (e.g. two Update rows
+    # for the same Keyword ID). Track each row's unique key and skip repeats —
+    # recs are ranked, so the first (highest-priority) one wins.
+    _seen: set = set()
+
     for rec in actionable:
         br = rec.bulk_row
         action = br["action"]
@@ -240,6 +260,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             new_bid = br.get("new_bid_cents")
             if br.get("keyword_id") and new_bid:
                 # Update Keyword → required: Keyword Id, State; optional: Bid.
+                dup_key = ("kw_update", str(br["keyword_id"]))
                 put("Product", product)
                 put("Entity", "Keyword")
                 put("Operation", "Update")
@@ -248,6 +269,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
                 put("Bid", _dollars(new_bid))
             elif br.get("target_id") and new_bid:
                 # Update Product Targeting → required: Product Targeting Id, State; optional: Bid.
+                dup_key = ("pt_update", str(br["target_id"]))
                 put("Product", product)
                 put("Entity", "Product Targeting")
                 put("Operation", "Update")
@@ -258,6 +280,11 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
                 result.skipped += 1
                 result.skipped_titles.append(rec.title)
                 continue
+            if dup_key in _seen:  # same entity already has an update row
+                result.skipped += 1
+                result.skipped_titles.append(rec.title)
+                continue
+            _seen.add(dup_key)
             ws.append(row)
             result.applied += 1
             result.applied_titles.append(rec.title)
@@ -275,15 +302,25 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             result.skipped += 1
             result.skipped_titles.append(rec.title)
             continue
+        if kind == "target":
+            # An ASIN/category search term is a PRODUCT TARGET, not a keyword —
+            # Amazon rejects it as a keyword. Required: Campaign Id, Ad Group Id,
+            # State, Product Targeting Expression; optional Bid (positive only).
+            dup_key = ("npt" if is_neg else "pt", str(br["campaign_id"]), str(br["ad_group_id"]), value.lower())
+        else:
+            match_type = _MATCH_MAP.get(_norm_key(br.get("match_type")), "negativeExact" if is_neg else "exact")
+            dup_key = ("neg" if is_neg else "kw", str(br["campaign_id"]), str(br["ad_group_id"]), value.lower(), match_type)
+        if dup_key in _seen:  # same create already emitted (dup keyword/target in the ad group)
+            result.skipped += 1
+            result.skipped_titles.append(rec.title)
+            continue
+        _seen.add(dup_key)
         put("Product", product)
         put("Operation", "Create")
         put("Campaign ID", br["campaign_id"])
         put("Ad Group ID", br["ad_group_id"])
         put("State", "enabled")
         if kind == "target":
-            # An ASIN/category search term is a PRODUCT TARGET, not a keyword —
-            # Amazon rejects it as a keyword. Required: Campaign Id, Ad Group Id,
-            # State, Product Targeting Expression; optional Bid (positive only).
             put("Entity", "Negative Product Targeting" if is_neg else "Product Targeting")
             put("Product Targeting Expression", value)
             if not is_neg and br.get("new_bid_cents"):
@@ -292,7 +329,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             # Create (Negative) Keyword → + Keyword Text, Match Type; optional Bid.
             put("Entity", "Negative Keyword" if is_neg else "Keyword")
             put("Keyword Text", value)
-            put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "negativeExact" if is_neg else "exact"))
+            put("Match Type", match_type)
             if not is_neg and br.get("new_bid_cents"):
                 put("Bid", _dollars(br["new_bid_cents"]))
         ws.append(row)
