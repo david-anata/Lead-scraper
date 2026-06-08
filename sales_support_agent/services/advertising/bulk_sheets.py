@@ -79,10 +79,84 @@ class BulkBuildResult:
     applied_titles: list[str] = field(default_factory=list)
     skipped_titles: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    invalid: int = 0
+    issues: list[str] = field(default_factory=list)
 
     @property
     def has_file(self) -> bool:
         return bool(self.xlsx_bytes) and self.applied > 0
+
+
+_VALID_STATES = {"enabled", "paused", "archived"}
+_VALID_MATCH_TYPES = {"exact", "phrase", "broad", "negativeExact", "negativePhrase"}
+_BID_MIN, _BID_MAX = 0.02, 1000.0  # USD (Amazon SP/SB/SD)
+
+
+def validate_bulk_rows(wb) -> list[str]:
+    """Pre-flight: check every populated row in a built workbook against Amazon's
+    rules BEFORE the file is offered for download, so review errors are caught
+    in-app. Validates value constraints (State, Match Type, Bid range, keyword
+    text) for all rows, and per-(entity, operation) required/optional headers for
+    Sponsored Products using the template's own `Config` sheet (the 2.0 spec).
+    Returns a list of human-readable issues (empty = clean)."""
+    rules: dict = {}
+    if "Config" in wb.sheetnames:
+        for row in wb["Config"].iter_rows(values_only=True):
+            cells = [c for c in row if c not in (None, "")]
+            if cells:
+                rules[str(cells[0])] = [str(x) for x in cells[1:]]
+
+    def norm(h: str) -> str:
+        return str(h).strip().lower()
+
+    issues: list[str] = []
+    for ws in wb.worksheets:
+        if ws.title == "Config":
+            continue
+        rows = list(ws.iter_rows(values_only=True))
+        if len(rows) < 2:
+            continue
+        hdr = [str(c).strip() if c is not None else "" for c in rows[0]]
+        for ri, r in enumerate(rows[1:], start=2):
+            cell = {hdr[i]: r[i] for i in range(len(hdr)) if i < len(r)}
+            entity, op, product = cell.get("Entity"), cell.get("Operation"), cell.get("Product")
+            if not entity:
+                continue
+            tag = f"{ws.title} r{ri}"
+            # --- value constraints (every product) ---
+            st = cell.get("State")
+            if st and str(st) not in _VALID_STATES:
+                issues.append(f"{tag}: invalid State {st!r}")
+            mt = cell.get("Match Type")
+            if mt not in (None, "") and str(mt) not in _VALID_MATCH_TYPES:
+                issues.append(f"{tag}: invalid Match Type {mt!r}")
+            bid = cell.get("Bid")
+            if bid not in (None, ""):
+                try:
+                    b = float(bid)
+                    if b < _BID_MIN or b > _BID_MAX:
+                        issues.append(f"{tag}: Bid {b} outside ${_BID_MIN}–${_BID_MAX}")
+                except (TypeError, ValueError):
+                    issues.append(f"{tag}: non-numeric Bid {bid!r}")
+            kt = cell.get("Keyword Text")
+            if entity in ("Keyword", "Negative Keyword") and kt:
+                if _classify_target_text(str(kt))[0] != "keyword":
+                    issues.append(f"{tag}: {kt!r} is not valid keyword text (ASIN/illegal char)")
+            # --- per-operation headers (Sponsored Products; Config has SP rules) ---
+            if product == "Sponsored Products" and op:
+                key = "SponsoredProducts" + str(op) + str(entity).replace(" ", "")
+                req = rules.get(key + "RequiredHeaders")
+                if req is not None:
+                    req_n = {norm(h) for h in req}
+                    allowed = req_n | {norm(h) for h in rules.get(key + "OptionalHeaders", [])} | {"product", "entity", "operation"}
+                    present = {norm(h) for h, v in cell.items() if v not in (None, "")}
+                    missing = req_n - present
+                    extra = present - allowed
+                    if missing:
+                        issues.append(f"{tag}: {op} {entity} missing required {sorted(missing)}")
+                    if extra:
+                        issues.append(f"{tag}: {op} {entity} has forbidden columns {sorted(extra)}")
+    return issues
 
 
 def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
@@ -226,6 +300,18 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
         result.applied_titles.append(rec.title)
 
     if result.applied:
+        # Pre-flight: validate every row against Amazon's rules (Config sheet +
+        # value limits) before the file can be downloaded. Should be 0 — a
+        # regression guard so a future change can't ship a review-failing sheet.
+        result.issues = validate_bulk_rows(wb)
+        result.invalid = len(result.issues)
+        if result.issues:
+            logger.warning("[advertising] apply-sheet pre-flight found %d issue(s): %s",
+                           result.invalid, result.issues[:8])
+            result.notes.append(
+                f"⚠ Pre-flight validation flagged {result.invalid} row issue(s) before upload — "
+                "see the run log; these would likely fail Amazon's review."
+            )
         buf = io.BytesIO()
         wb.save(buf)
         result.xlsx_bytes = buf.getvalue()
