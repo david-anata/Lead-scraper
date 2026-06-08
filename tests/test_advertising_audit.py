@@ -21,9 +21,17 @@ def _make_engine():
 
 
 def _bootstrap_db(engine):
+    from sqlalchemy import text
     from sales_support_agent.models.database import Base, _register_models
     _register_models()
     Base.metadata.create_all(bind=engine)
+    # kv_store is created by raw-SQL migrations in prod (not an ORM model); the
+    # advertising service persists generated workbooks there for durability.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS kv_store ("
+            "key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')"
+        ))
 
 
 def _patch_global_engine(engine):
@@ -118,6 +126,18 @@ class StorageTest(_Base):
         self.assertEqual(self.storage.get_bulk_file(rid, "combined"), b"xlsxdata")
         self.assertIn("combined", self.storage.list_bulk_files(rid))
         self.assertIsNone(self.storage.get_bulk_file(rid, "missing"))
+
+    def test_bulk_file_survives_disk_wipe(self):
+        # Render wipes the filesystem on every deploy/restart; the durable DB copy
+        # must keep History's downloads alive. Simulate the wipe.
+        import os, shutil
+        rid = self.storage.create_run(label="r")
+        self.storage.save_bulk_file(rid, "combined", b"APPLY")
+        self.storage.save_bulk_file(rid, "growth_plan", b"PLAN")
+        shutil.rmtree(os.path.join(self.storage.BULK_RUNS_DIR, rid))  # disk gone
+        self.assertEqual(self.storage.list_bulk_files(rid), ["combined", "growth_plan"])
+        self.assertEqual(self.storage.get_bulk_file(rid, "combined"), b"APPLY")
+        self.assertEqual(self.storage.get_bulk_file(rid, "growth_plan"), b"PLAN")
 
 
 class RunAuditTest(_Base):
