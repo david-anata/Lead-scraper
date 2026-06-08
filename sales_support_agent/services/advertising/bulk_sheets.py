@@ -130,32 +130,28 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             if i is not None:
                 _row[i] = value
 
+        # Amazon validates each row against the operation's required/optional
+        # headers (see the template's Config sheet). Writing ANY extra field
+        # (informational names, or Keyword Text/Match Type on an update — which
+        # can't change) fails review, so emit ONLY the allowed columns per op.
         if action == "set_bid":
             new_bid = br.get("new_bid_cents")
             if br.get("keyword_id") and new_bid:
-                # Update an existing keyword's bid — keyed by Keyword ID.
+                # Update Keyword → required: Keyword Id, State; optional: Bid.
                 put("Product", product)
                 put("Entity", "Keyword")
                 put("Operation", "Update")
-                put("Campaign ID", br.get("campaign_id", ""))
-                put("Ad Group ID", br.get("ad_group_id", ""))
                 put("Keyword ID", br["keyword_id"])
-                put("Keyword Text", br.get("keyword_text", ""))
-                put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "exact"))
-                put("Bid", _dollars(new_bid))
                 put("State", "enabled")
+                put("Bid", _dollars(new_bid))
             elif br.get("target_id") and new_bid:
-                # Update an auto-target / product-targeting bid — keyed by
-                # Product Targeting ID (close/loose-match, substitutes, ASIN targets).
+                # Update Product Targeting → required: Product Targeting Id, State; optional: Bid.
                 put("Product", product)
                 put("Entity", "Product Targeting")
                 put("Operation", "Update")
-                put("Campaign ID", br.get("campaign_id", ""))
-                put("Ad Group ID", br.get("ad_group_id", ""))
                 put("Product Targeting ID", br["target_id"])
-                put("Product Targeting Expression", br.get("targeting_expression", ""))
-                put("Bid", _dollars(new_bid))
                 put("State", "enabled")
+                put("Bid", _dollars(new_bid))
             else:
                 result.skipped += 1
                 result.skipped_titles.append(rec.title)
@@ -171,13 +167,13 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             result.skipped_titles.append(rec.title)
             continue
         is_neg = action == "create_negative"
+        # Create (Negative) Keyword → required: Campaign Id, Ad Group Id, State,
+        # Keyword Text, Match Type; optional: Bid (keyword only). No name columns.
         put("Product", product)
         put("Entity", "Negative Keyword" if is_neg else "Keyword")
         put("Operation", "Create")
         put("Campaign ID", br["campaign_id"])
         put("Ad Group ID", br["ad_group_id"])
-        put("Campaign Name", br.get("campaign_name", ""))
-        put("Ad Group Name", br.get("ad_group_name", ""))
         put("Keyword Text", br.get("keyword_text", ""))
         put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "negativeExact" if is_neg else "exact"))
         put("State", "enabled")
@@ -341,7 +337,7 @@ def _set_bid(sheet, idx, want_campaign, want_ad_group, want_kw, new_bid_cents) -
         if want_ad_group and idx["ad_group_name"] is not None and _cell_norm(cells, idx["ad_group_name"]) != want_ad_group:
             continue
         row[idx["bid"]].value = _dollars(new_bid_cents)
-        row[idx["operation"]].value = "update"
+        row[idx["operation"]].value = "Update"  # Amazon operation names are capitalized
         return True
     return False
 

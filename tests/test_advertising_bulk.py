@@ -63,7 +63,7 @@ class BulkRoundTripTest(unittest.TestCase):
         self.assertEqual(res.applied, 1)
         rows = _read(res.xlsx_bytes)
         kw = next(r for r in rows if r["Keyword Text"] == "widget blue")
-        self.assertEqual(kw["Operation"], "update")
+        self.assertEqual(kw["Operation"], "Update")  # Amazon operation names are capitalized
         self.assertEqual(kw["Bid"], 0.20)
 
     def test_create_negative_appends_row(self):
