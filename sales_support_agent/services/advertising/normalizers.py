@@ -397,19 +397,30 @@ def normalize_bulk_keywords(
     return out
 
 
+def _norm_target_expr(s: object) -> str:
+    """Canonicalize a product-targeting expression for matching across sources.
+    Amazon's performance reports write ASIN targets as asin-expanded="B0..."
+    while the bulk file writes asin="B0..."; fold them together. Auto expressions
+    (close-match / loose-match / substitutes / complements) need only lowercasing."""
+    v = str(s or "").strip().lower()
+    return v.replace('asin-expanded=', 'asin=')
+
+
 def bulk_name_id_map(file_bytes: bytes) -> dict:
     """Stream an Amazon Bulk Operations workbook and return name→ID maps:
 
         {"campaign":  {campaign_name: campaign_id},
          "ad_group":  {(campaign_name, ad_group_name): ad_group_id},
-         "keyword":   {(campaign_name, ad_group_name, keyword_text, match_type): keyword_id}}
+         "keyword":   {(campaign_name, ad_group_name, keyword_text, match_type): keyword_id},
+         "target":    {(campaign_name, ad_group_name, expression): product_targeting_id}}
 
-    Built from every SP/SB/SD entity row (Campaign, Ad Group, Keyword), so it
-    covers auto/broad ad groups that hold no keyword rows too. Names are
-    lowercased/stripped for matching. Used to backfill IDs onto ID-less
-    performance reports so their actions become apply-ready. Memory-safe (the
-    reset_dimensions() gotcha); never raises."""
-    out: dict = {"campaign": {}, "ad_group": {}, "keyword": {}}
+    Built from every SP/SB/SD entity row (Campaign, Ad Group, Keyword, Product
+    Targeting), so it covers auto/broad ad groups that hold no keyword rows and
+    auto-target expressions (close-match/loose-match/substitutes/complements) +
+    ASIN targets. Names/expressions are lowercased/stripped for matching. Used to
+    backfill IDs onto ID-less performance reports so their actions become
+    apply-ready. Memory-safe (the reset_dimensions() gotcha); never raises."""
+    out: dict = {"campaign": {}, "ad_group": {}, "keyword": {}, "target": {}}
     try:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
@@ -437,6 +448,7 @@ def bulk_name_id_map(file_bytes: bytes) -> dict:
             continue
         idx = {n: (header.index(n) if n in header else None) for n in (
             "Campaign ID", "Ad Group ID", "Keyword ID", "Keyword Text", "Match Type",
+            "Product Targeting ID", "Product Targeting Expression",
             "Campaign Name (Informational only)", "Ad Group Name (Informational only)")}
 
         def g(row, name, _idx=idx):
@@ -447,12 +459,15 @@ def bulk_name_id_map(file_bytes: bytes) -> dict:
             cn, an = nk(g(row, "Campaign Name (Informational only)")), nk(g(row, "Ad Group Name (Informational only)"))
             c_id, a_id, k_id = cid(g(row, "Campaign ID")), cid(g(row, "Ad Group ID")), cid(g(row, "Keyword ID"))
             kt, mt = nk(g(row, "Keyword Text")), nk(g(row, "Match Type"))
+            t_id, expr = cid(g(row, "Product Targeting ID")), _norm_target_expr(g(row, "Product Targeting Expression"))
             if cn and c_id:
                 out["campaign"].setdefault(cn, c_id)
             if cn and an and a_id:
                 out["ad_group"].setdefault((cn, an), a_id)
             if cn and an and kt and k_id:
                 out["keyword"].setdefault((cn, an, kt, mt), k_id)
+            if cn and an and expr and t_id:
+                out["target"].setdefault((cn, an, expr), t_id)
     wb.close()
     return out
 
@@ -465,7 +480,8 @@ def backfill_entity_ids(rows: "list[AdRow]", idmap: dict) -> int:
     match type for keyword IDs). Mutates rows in place; returns rows enriched."""
     if not idmap:
         return 0
-    camp, adg, kw = idmap.get("campaign", {}), idmap.get("ad_group", {}), idmap.get("keyword", {})
+    camp, adg, kw, tgt = (idmap.get("campaign", {}), idmap.get("ad_group", {}),
+                          idmap.get("keyword", {}), idmap.get("target", {}))
 
     def nk(s: str) -> str:
         return (s or "").strip().lower()
@@ -478,12 +494,116 @@ def backfill_entity_ids(rows: "list[AdRow]", idmap: dict) -> int:
             r.campaign_id = camp[cn]; changed = True
         if not r.ad_group_id and (cn, an) in adg:
             r.ad_group_id = adg[(cn, an)]; changed = True
+        # Keyword ID (managed keywords) — for keyword/target rows that are real keywords.
         if not r.keyword_id and r.entity_level in ("keyword", "target"):
             k = (cn, an, nk(r.entity_text), nk(r.match_type))
             if k in kw:
                 r.keyword_id = kw[k]; changed = True
+        # Product Targeting ID — auto-target expressions (close/loose-match,
+        # substitutes, complements) + ASIN targets. The report writes ASIN targets
+        # as asin-expanded="…"; the bulk file as asin="…" — canonicalize both.
+        if not r.keyword_id and not r.target_id and tgt:
+            t = (cn, an, _norm_target_expr(r.entity_text))
+            if t in tgt:
+                r.target_id = tgt[t]; changed = True
         enriched += 1 if changed else 0
     return enriched
+
+
+_ASIN_RE = re.compile(r"B0[A-Z0-9]{8}")
+
+
+def bulk_sp_home_by_asin(file_bytes: bytes) -> dict:
+    """For each advertised ASIN, the best Sponsored Products 'home' to add a
+    harvested exact keyword to: the SP campaign that advertises the ASIN, and
+    within it the ad group holding the most existing keywords (i.e. the managed/
+    exact ad group, not an auto one). Returns
+        {asin: (campaign_id, ad_group_id, campaign_name, ad_group_name)}.
+    Memory-safe; never raises."""
+    from collections import Counter, defaultdict
+    out: dict = {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to open bulk workbook for SP-home map")
+        return out
+
+    asin_camps: dict = defaultdict(set)
+    kwcount: Counter = Counter()
+    names: dict = {}
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) != "SP":
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {h: (header.index(h) if h in header else None) for h in (
+            "Entity", "Campaign ID", "Ad Group ID", "ASIN (Informational only)",
+            "Campaign Name (Informational only)", "Ad Group Name (Informational only)")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        for row in it:
+            entity = str(g(row, "Entity") or "")
+            cid = str(g(row, "Campaign ID") or "").strip()
+            aid = str(g(row, "Ad Group ID") or "").strip()
+            if entity == "Product Ad":
+                asin = str(g(row, "ASIN (Informational only)") or "").strip().upper()
+                if asin and cid:
+                    asin_camps[asin].add(cid)
+            elif entity == "Keyword" and cid and aid:
+                kwcount[(cid, aid)] += 1
+                names[(cid, aid)] = (str(g(row, "Campaign Name (Informational only)") or ""),
+                                     str(g(row, "Ad Group Name (Informational only)") or ""))
+    wb.close()
+
+    for asin, camps in asin_camps.items():
+        cands = [(cid, aid) for (cid, aid) in kwcount if cid in camps]
+        if not cands:
+            continue
+        cid, aid = max(cands, key=lambda k: kwcount[k])
+        cn, an = names.get((cid, aid), ("", ""))
+        out[asin] = (cid, aid, cn, an)
+    return out
+
+
+def redirect_harvests_to_sp(recs: list, sp_home: dict) -> int:
+    """Account-manager preference: a winning search term discovered in a
+    Sponsored Brands (or otherwise unresolved) campaign should be harvested into
+    the **Sponsored Products** campaign that advertises the same ASIN. For each
+    create_keyword rec still missing campaign/ad-group IDs, pull the ASIN from the
+    source campaign name and repoint it at that ASIN's SP home (bulk_sp_home_by_asin).
+    Left untouched (stays in the burn list, not the apply sheet) when no SP home
+    exists. Mutates rec.bulk_row in place; returns the count redirected."""
+    if not sp_home:
+        return 0
+    n = 0
+    for r in recs:
+        br = getattr(r, "bulk_row", None) or {}
+        if br.get("action") != "create_keyword" or (br.get("campaign_id") and br.get("ad_group_id")):
+            continue
+        m = _ASIN_RE.search((br.get("campaign_name") or "").upper())
+        if not m:
+            continue
+        home = sp_home.get(m.group(0))
+        if not home:
+            continue
+        cid, aid, cn, an = home
+        br["campaign_id"], br["ad_group_id"] = cid, aid
+        br["campaign_name"], br["ad_group_name"] = cn, an
+        br["ad_type"] = "SP"
+        r.is_bulk_actionable = True
+        n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------

@@ -162,6 +162,13 @@ def run_audit(
         summary["brand_asin_count"] = len([s for s in sales_rows if s.asin]) if brand else 0
         summary["data_windows"] = sorted(windows)
         recs = build_recommendations(ad_rows, sales_rows, market_rows, external_rows, goals)
+        # Harvests discovered in Sponsored Brands (or otherwise unresolved)
+        # campaigns are routed into the Sponsored Products campaign that
+        # advertises the same ASIN, so they become apply-ready instead of dropped.
+        if inputs.bulk_xlsx:
+            redirected = N.redirect_harvests_to_sp(recs, N.bulk_sp_home_by_asin(inputs.bulk_xlsx))
+            if redirected:
+                logger.info("[advertising] routed %d cross-channel harvest(s) into their SP home", redirected)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
         summary["recommendation_count"] = len(recs)

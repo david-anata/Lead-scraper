@@ -97,6 +97,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
     header = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
     col = {name: _col_index(header, name) for name in
            ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+            "Product Targeting ID", "Product Targeting Expression",
             "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State")}
 
     for rec in actionable:
@@ -110,21 +111,35 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
                 row[i] = value
 
         if action == "set_bid":
-            # Update an existing keyword's bid — keyed by Keyword ID.
-            if not br.get("keyword_id") or not br.get("new_bid_cents"):
+            new_bid = br.get("new_bid_cents")
+            if br.get("keyword_id") and new_bid:
+                # Update an existing keyword's bid — keyed by Keyword ID.
+                put("Product", "Sponsored Products")
+                put("Entity", "Keyword")
+                put("Operation", "Update")
+                put("Campaign ID", br.get("campaign_id", ""))
+                put("Ad Group ID", br.get("ad_group_id", ""))
+                put("Keyword ID", br["keyword_id"])
+                put("Keyword Text", br.get("keyword_text", ""))
+                put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "exact"))
+                put("Bid", _dollars(new_bid))
+                put("State", "enabled")
+            elif br.get("target_id") and new_bid:
+                # Update an auto-target / product-targeting bid — keyed by
+                # Product Targeting ID (close/loose-match, substitutes, ASIN targets).
+                put("Product", "Sponsored Products")
+                put("Entity", "Product Targeting")
+                put("Operation", "Update")
+                put("Campaign ID", br.get("campaign_id", ""))
+                put("Ad Group ID", br.get("ad_group_id", ""))
+                put("Product Targeting ID", br["target_id"])
+                put("Product Targeting Expression", br.get("targeting_expression", ""))
+                put("Bid", _dollars(new_bid))
+                put("State", "enabled")
+            else:
                 result.skipped += 1
                 result.skipped_titles.append(rec.title)
                 continue
-            put("Product", "Sponsored Products")
-            put("Entity", "Keyword")
-            put("Operation", "Update")
-            put("Campaign ID", br.get("campaign_id", ""))
-            put("Ad Group ID", br.get("ad_group_id", ""))
-            put("Keyword ID", br["keyword_id"])
-            put("Keyword Text", br.get("keyword_text", ""))
-            put("Match Type", _MATCH_MAP.get(_norm_key(br.get("match_type")), "exact"))
-            put("Bid", _dollars(br["new_bid_cents"]))
-            put("State", "enabled")
             ws.append(row)
             result.applied += 1
             result.applied_titles.append(rec.title)
