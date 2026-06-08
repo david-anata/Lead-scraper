@@ -200,6 +200,33 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(gi(row, "Operation").value, "Update")
         self.assertEqual(gi(row, "Bid").value, 1.20)
 
+    def test_asin_search_term_becomes_product_targeting_not_keyword(self):
+        # A bare-ASIN or asin="..." search term must be a Product Targeting row,
+        # never a keyword (Amazon rejects an ASIN as keyword text).
+        recs = [
+            _rec("create_keyword", campaign_id="1", ad_group_id="2", keyword_text="b003h85w46",
+                 match_type="exact", new_bid_cents=40),
+            _rec("create_negative", campaign_id="1", ad_group_id="2",
+                 keyword_text='asin-expanded="b0ctkt88vz"', match_type="negative exact"),
+            _rec("create_keyword", campaign_id="1", ad_group_id="2", keyword_text="#4 hair care",
+                 match_type="exact", new_bid_cents=50),  # invalid char -> skipped
+        ]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 2)
+        self.assertEqual(res.skipped, 1)
+        wb = openpyxl.load_workbook(io.BytesIO(res.xlsx_bytes))
+        ws = wb["Sponsored Products Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        gi = lambda r, n: r[hdr.index(n)]
+        data = [r for r in ws.iter_rows(min_row=2) if gi(r, "Entity").value]
+        pt = next(r for r in data if gi(r, "Entity").value == "Product Targeting")
+        self.assertEqual(gi(pt, "Product Targeting Expression").value, 'asin="B003H85W46"')  # uppercased
+        self.assertIn(gi(pt, "Keyword Text").value, (None, ""))  # NOT a keyword
+        npt = next(r for r in data if gi(r, "Entity").value == "Negative Product Targeting")
+        self.assertEqual(gi(npt, "Product Targeting Expression").value, 'asin="B0CTKT88VZ"')  # expanded normalized
+        # no keyword rows at all
+        self.assertFalse(any(gi(r, "Entity").value in ("Keyword", "Negative Keyword") for r in data))
+
     def test_sb_multi_ad_group_routes_to_its_own_sheet(self):
         recs = [_rec("set_bid", ad_type="SB", bulk_sheet="SB Multi Ad Group Campaigns",
                      campaign_id="C2", keyword_id="MK1", keyword_text="x", match_type="exact", new_bid_cents=90)]
