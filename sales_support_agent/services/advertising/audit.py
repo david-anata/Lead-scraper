@@ -183,6 +183,12 @@ def run_audit(
             retyped = N.enforce_targeting_type(recs, inputs.bulk_xlsx)
             if retyped:
                 logger.info("[advertising] re-homed/dropped %d harvest(s) to match ad-group targeting type", retyped)
+            # Drop any Create for a keyword/negative/target that ALREADY exists in
+            # the ad group — Amazon rejects "...already exists!" as an Input Error
+            # that fails the whole file. Runs after re-homing (uses final ad group).
+            existing = N.drop_existing_creates(recs, inputs.bulk_xlsx)
+            if existing:
+                logger.info("[advertising] dropped %d create(s) that already exist in-account", existing)
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
         summary["recommendation_count"] = len(recs)
