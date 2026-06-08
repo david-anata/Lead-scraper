@@ -17,6 +17,7 @@ from sales_support_agent.services.advertising import normalizers as N
 from sales_support_agent.services.advertising import storage
 from sales_support_agent.services.advertising.brand import (
     detect_brand_candidates,
+    detect_primary_brand,
     filter_by_brand,
     matches_brand,
     mixed_campaigns,
@@ -162,6 +163,9 @@ def run_audit(
         summary = compute_summary(ad_rows, sales_rows, external_rows, goals)
         summary["brand"] = brand
         summary["brand_candidates"] = brand_candidates
+        # For an un-scoped run, surface the account's common brand name (e.g.
+        # "Number 4") so the page/history shows it instead of "Full account".
+        summary["detected_brand"] = "" if brand else detect_primary_brand(sales_rows, ad_rows)
         summary["excluded_mixed_campaigns"] = len(excluded_mixed)
         summary["brand_asin_count"] = len([s for s in sales_rows if s.asin]) if brand else 0
         summary["data_windows"] = sorted(windows)

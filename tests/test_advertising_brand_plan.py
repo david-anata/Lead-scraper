@@ -79,6 +79,24 @@ class BrandFilterTest(unittest.TestCase):
         self.assertEqual(len(ads), 3)
         self.assertEqual(len(sales), 2)
 
+    def test_detect_primary_brand_multiword(self):
+        from sales_support_agent.services.advertising.brand import detect_primary_brand
+        sales = [SalesRow(asin=f"B{i}", title=t) for i, t in enumerate([
+            "Number 4 Hydrating Shampoo, Color Safe",
+            "Number 4 Super Comb Leave-In Conditioner",
+            "Number 4 Hair Oil, Anti Frizz Serum",
+            "Number 4 Smoothing Hair Balm",
+        ])]
+        self.assertEqual(detect_primary_brand(sales), "Number 4")
+
+    def test_detect_primary_brand_blank_for_multibrand(self):
+        from sales_support_agent.services.advertising.brand import detect_primary_brand
+        sales = [SalesRow(asin="A", title="Zantrex SkinnyStix"),
+                 SalesRow(asin="B", title="Serovital HGH"),
+                 SalesRow(asin="C", title="Nugenix Total T"),
+                 SalesRow(asin="D", title="Zantrex Black")]
+        self.assertEqual(detect_primary_brand(sales), "")  # no dominant brand → 'Full account'
+
     def test_detect_candidates_skips_codes_and_asins(self):
         ads = [
             _ad("campaign", campaign="Quartile Zantrex - Non Branded - Skinnystix"),
