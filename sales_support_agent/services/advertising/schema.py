@@ -142,6 +142,7 @@ class AdRow:
     campaign_id: str = ""
     ad_group_id: str = ""
     keyword_id: str = ""
+    target_id: str = ""  # Product Targeting ID (auto-target expressions + ASIN targets)
     entity_text: str = ""
     match_type: str = ""
     impressions: int = 0

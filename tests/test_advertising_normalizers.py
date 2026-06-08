@@ -207,6 +207,71 @@ class PreambleTest(unittest.TestCase):
         self.assertEqual(rows[0].asin, "B009")
 
 
+def _rich_bulk_xlsx() -> bytes:
+    """A bulk file with Product Targeting (auto), Product Ad (ASIN), and an SP
+    home campaign for that ASIN — exercises target-ID + SB-harvest redirect."""
+    header = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+              "Product Targeting ID", "Product Targeting Expression", "ASIN (Informational only)",
+              "Campaign Name (Informational only)", "Ad Group Name (Informational only)",
+              "Keyword Text", "Match Type"]
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sponsored Products Campaigns"
+    ws.append(header)
+
+    def row(**k):
+        ws.append([k.get(h, "") for h in header])
+
+    cn, an = "Fluoro5 B005GEZGSQ | SP | Auto", "Auto AG"
+    row(Entity="Product Targeting", **{"Campaign ID": "C9", "Ad Group ID": "A9",
+        "Product Targeting ID": "PT123", "Product Targeting Expression": "loose-match",
+        "Campaign Name (Informational only)": cn, "Ad Group Name (Informational only)": an})
+    # SP home for ASIN B005GEZGSQ: a campaign advertising it, with a keyword ad group.
+    row(Entity="Product Ad", **{"Campaign ID": "C5", "ASIN (Informational only)": "B005GEZGSQ",
+        "Campaign Name (Informational only)": "Fluoro5 | SP | Brand"})
+    row(Entity="Keyword", **{"Campaign ID": "C5", "Ad Group ID": "A5", "Keyword ID": "K5",
+        "Campaign Name (Informational only)": "Fluoro5 | SP | Brand",
+        "Ad Group Name (Informational only)": "Brand AG", "Keyword Text": "existing", "Match Type": "exact"})
+    buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+
+class ProductTargetingAndRedirectTest(unittest.TestCase):
+    def test_target_id_backfilled_for_auto_expression(self):
+        from sales_support_agent.services.advertising.schema import AdRow
+        idmap = N.bulk_name_id_map(_rich_bulk_xlsx())
+        self.assertEqual(idmap["target"].get(("fluoro5 b005gezgsq | sp | auto", "auto ag", "loose-match")), "PT123")
+        r = AdRow(ad_type="SP", entity_level="keyword", campaign_name="Fluoro5 B005GEZGSQ | SP | Auto",
+                  ad_group_name="Auto AG", entity_text="loose-match")
+        N.backfill_entity_ids([r], idmap)
+        self.assertEqual(r.target_id, "PT123")
+        self.assertEqual((r.campaign_id, r.ad_group_id), ("C9", "A9"))
+
+    def test_asin_expanded_expression_normalized(self):
+        self.assertEqual(N._norm_target_expr('asin-expanded="B0CTKT88VZ"'), 'asin="b0ctkt88vz"')
+
+    def test_sb_harvest_redirects_to_sp_home(self):
+        home = N.bulk_sp_home_by_asin(_rich_bulk_xlsx())
+        self.assertIn("B005GEZGSQ", home)
+        self.assertEqual(home["B005GEZGSQ"][0], "C5")
+
+        class _Rec:  # minimal stand-in carrying a bulk_row + flag
+            def __init__(self, br): self.bulk_row = br; self.is_bulk_actionable = False
+        rec = _Rec({"action": "create_keyword", "campaign_name": "Fluoro5 B005GEZGSQ | SBV | EXP",
+                    "keyword_text": "number four oil"})
+        n = N.redirect_harvests_to_sp([rec], home)
+        self.assertEqual(n, 1)
+        self.assertEqual(rec.bulk_row["campaign_id"], "C5")
+        self.assertEqual(rec.bulk_row["ad_group_id"], "A5")
+        self.assertEqual(rec.bulk_row["ad_type"], "SP")
+        self.assertTrue(rec.is_bulk_actionable)
+
+    def test_redirect_skips_when_no_sp_home(self):
+        class _Rec:
+            def __init__(self, br): self.bulk_row = br; self.is_bulk_actionable = False
+        rec = _Rec({"action": "create_keyword", "campaign_name": "SB | Banner B0NOHOMEXX",
+                    "keyword_text": "x"})
+        self.assertEqual(N.redirect_harvests_to_sp([rec], N.bulk_sp_home_by_asin(_rich_bulk_xlsx())), 0)
+        self.assertNotIn("campaign_id", rec.bulk_row)  # untouched → stays in burn list only
+
+
 class BackfillEntityIdsTest(unittest.TestCase):
     def test_name_id_map_and_backfill(self):
         from sales_support_agent.services.advertising.schema import AdRow

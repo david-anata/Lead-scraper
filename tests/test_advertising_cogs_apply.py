@@ -151,11 +151,27 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(gi(row, "Operation").value, "Update")
         self.assertEqual(gi(row, "Bid").value, 0.57)
 
-    def test_set_bid_skips_without_keyword_id(self):
-        recs = [_rec("set_bid", campaign_id="1", ad_group_id="2", new_bid_cents=57)]  # no keyword_id
+    def test_set_bid_skips_without_keyword_or_target_id(self):
+        recs = [_rec("set_bid", campaign_id="1", ad_group_id="2", new_bid_cents=57)]  # neither id
         res = build_apply_sheet(recs)
         self.assertEqual(res.applied, 0)
         self.assertEqual(res.skipped, 1)
+
+    def test_set_bid_emits_product_targeting_update_via_target_id(self):
+        # Auto-target / product-targeting bid change — keyed by Product Targeting ID.
+        recs = [_rec("set_bid", campaign_id="111", ad_group_id="222", target_id="PT777",
+                     targeting_expression="loose-match", new_bid_cents=57)]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 1)
+        wb = openpyxl.load_workbook(io.BytesIO(res.xlsx_bytes))
+        ws = wb["Sponsored Products Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        gi = lambda r, n: r[hdr.index(n)]
+        row = next(r for r in ws.iter_rows(min_row=2) if gi(r, "Product Targeting ID").value == "PT777")
+        self.assertEqual(gi(row, "Entity").value, "Product Targeting")
+        self.assertEqual(gi(row, "Operation").value, "Update")
+        self.assertEqual(gi(row, "Product Targeting Expression").value, "loose-match")
+        self.assertEqual(gi(row, "Bid").value, 0.57)
 
 
 class BulkKeywordScopeTest(unittest.TestCase):
