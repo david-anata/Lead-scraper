@@ -200,6 +200,44 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(gi(row, "Operation").value, "Update")
         self.assertEqual(gi(row, "Bid").value, 1.20)
 
+    def test_dedupes_repeated_keyword_id_updates(self):
+        # Two bid updates for the SAME Keyword ID must collapse to one row —
+        # Amazon rejects the whole file on a duplicate ID.
+        recs = [
+            _rec("set_bid", keyword_id="446712107640477", new_bid_cents=515),
+            _rec("set_bid", keyword_id="446712107640477", new_bid_cents=829),  # dup
+            _rec("set_bid", keyword_id="999", new_bid_cents=100),
+        ]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 2)
+        self.assertEqual(res.skipped, 1)
+        self.assertEqual(res.invalid, 0, res.issues)  # validator sees no duplicate ID
+        wb = openpyxl.load_workbook(io.BytesIO(res.xlsx_bytes))
+        ws = wb["Sponsored Products Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        ci = hdr.index("Keyword ID")
+        ids = [r[ci] for r in ws.iter_rows(min_row=2, values_only=True) if r[ci]]
+        self.assertEqual(sorted(ids), ["446712107640477", "999"])  # the dup is gone
+
+    def test_preflight_catches_duplicate_ids(self):
+        import openpyxl as _opx
+        from sales_support_agent.services.advertising.bulk_sheets import validate_bulk_rows, _TEMPLATE_PATH
+        wb = _opx.load_workbook(_TEMPLATE_PATH)
+        ws = wb["Sponsored Products Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        def add(kid):
+            row = [""] * len(hdr)
+            row[hdr.index("Product")] = "Sponsored Products"
+            row[hdr.index("Entity")] = "Keyword"
+            row[hdr.index("Operation")] = "Update"
+            row[hdr.index("Keyword ID")] = kid
+            row[hdr.index("State")] = "enabled"
+            row[hdr.index("Bid")] = 1.0
+            ws.append(row)
+        add("777"); add("777")
+        issues = validate_bulk_rows(wb)
+        self.assertTrue(any("duplicate" in i.lower() and "777" in i for i in issues))
+
     def test_preflight_validation_clean_on_normal_output(self):
         recs = [
             _rec("set_bid", campaign_id="1", ad_group_id="2", keyword_id="9", new_bid_cents=57),
