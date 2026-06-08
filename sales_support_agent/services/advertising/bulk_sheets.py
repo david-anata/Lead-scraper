@@ -132,6 +132,21 @@ def validate_bulk_rows(wb) -> list[str]:
                     issues.append(f"{ws.title} r{ri}: duplicate {id_col} {key!r} (also row {seen_ids[key]})")
                 else:
                     seen_ids[key] = ri
+        # Mixed-targeting check: an SP ad group can't get both positive keyword and
+        # positive product-targeting Create rows (it's one targeting type or the other).
+        if {"Entity", "Operation", "Ad Group ID"} <= set(hdr):
+            ei, oi, ai = hdr.index("Entity"), hdr.index("Operation"), hdr.index("Ad Group ID")
+            ag_kinds: dict = {}
+            for r in rows[1:]:
+                if max(ei, oi, ai) >= len(r) or r[oi] != "Create" or not r[ai]:
+                    continue
+                if r[ei] == "Keyword":
+                    ag_kinds.setdefault(str(r[ai]), set()).add("keyword")
+                elif r[ei] == "Product Targeting":
+                    ag_kinds.setdefault(str(r[ai]), set()).add("target")
+            for aid, kinds in ag_kinds.items():
+                if len(kinds) > 1:
+                    issues.append(f"{ws.title}: ad group {aid} mixes keyword + product-targeting creates")
         for ri, r in enumerate(rows[1:], start=2):
             cell = {hdr[i]: r[i] for i in range(len(hdr)) if i < len(r)}
             entity, op, product = cell.get("Entity"), cell.get("Operation"), cell.get("Product")
