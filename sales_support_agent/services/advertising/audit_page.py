@@ -285,7 +285,11 @@ def _last_run_strip(latest: dict) -> str:
     dls = []
     if latest.get("has_plan"):
         dls.append(f'<a class="btn" href="/admin/advertising/audit/{_esc(rid)}/plan.xlsx">⬇ Growth plan</a>')
-    if latest.get("has_apply"):
+    if latest.get("has_bids"):
+        dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/bids.xlsx" title="Bid changes — uploads clean every time. Upload this first.">⬇ Bid changes</a>')
+    if latest.get("has_additions"):
+        dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/additions.xlsx" title="New keywords + negatives. Upload after the bid file; some rows may already exist.">⬇ Additions</a>')
+    if latest.get("has_apply"):  # legacy combined file
         dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/combined.xlsx">⬇ Apply sheet</a>')
     dl_html = " ".join(dls) or '<span class="empty">No downloads for this run.</span>'
     return (
@@ -309,9 +313,13 @@ def _history_table(runs: list[dict]) -> str:
         recs = s.get("recommendation_count")
         plan = (f'<a class="pill bulk" href="/admin/advertising/audit/{_esc(rid)}/plan.xlsx">⬇ Plan</a>'
                 if r.get("has_plan") else "")
+        bids = (f'<a class="pill" href="/admin/advertising/audit/{_esc(rid)}/bulk/bids.xlsx">⬇ Bids</a>'
+                if r.get("has_bids") else "")
+        adds = (f'<a class="pill" href="/admin/advertising/audit/{_esc(rid)}/bulk/additions.xlsx">⬇ Additions</a>'
+                if r.get("has_additions") else "")
         apply = (f'<a class="pill" href="/admin/advertising/audit/{_esc(rid)}/bulk/combined.xlsx">⬇ Apply sheet</a>'
                  if r.get("has_apply") else "")
-        downloads = (plan + " " + apply).strip() or '<span class="empty">—</span>'
+        downloads = " ".join(p for p in (plan, bids, adds, apply) if p).strip() or '<span class="empty">—</span>'
         rows.append(
             f"<tr><td><strong>{_esc(brand)}</strong></td><td>{_esc(when)}</td>"
             f"<td>{fmt_money(s.get('total_sales_cents'))}</td>"

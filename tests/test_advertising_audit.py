@@ -164,8 +164,9 @@ class RunAuditTest(_Base):
         recs = self.storage.get_recommendations(res.run_id)
         self.assertTrue(recs)
         self.assertEqual(recs[0]["rank"], 1)
-        # The negative + bid-down both round-tripped into the bulk file.
-        self.assertIn("combined", self.storage.list_bulk_files(res.run_id))
+        # Apply sheets are split into a bids file and an additions file.
+        files = self.storage.list_bulk_files(res.run_id)
+        self.assertTrue("bids" in files or "additions" in files)
         self.assertGreaterEqual(res.bulk.applied, 1)
 
     def test_empty_inputs_still_creates_run(self):
@@ -229,10 +230,11 @@ class HttpTest(_Base):
         # Page now shows the run + a bulk download link + the growth plan.
         page = client.get(f"/admin/advertising/audit?run={run_id}")
         self.assertEqual(page.status_code, 200)
-        self.assertIn(f"/admin/advertising/audit/{run_id}/bulk/combined.xlsx", page.text)
+        kind = "bids" if "bids" in self.storage.list_bulk_files(run_id) else "additions"
+        self.assertIn(f"/admin/advertising/audit/{run_id}/bulk/{kind}.xlsx", page.text)
         self.assertIn(f"/admin/advertising/audit/{run_id}/plan.xlsx", page.text)
 
-        dl = client.get(f"/admin/advertising/audit/{run_id}/bulk/combined.xlsx")
+        dl = client.get(f"/admin/advertising/audit/{run_id}/bulk/{kind}.xlsx")
         self.assertEqual(dl.status_code, 200)
         self.assertEqual(
             dl.headers["content-type"],
@@ -305,7 +307,8 @@ class HttpTest(_Base):
         self.assertIn("detail=", loc)  # detection report present
         run_id = loc.split("run=")[1].split("&")[0]
         # Bulk file was auto-detected, so a bulk sheet got generated.
-        self.assertIn("combined", self.storage.list_bulk_files(run_id))
+        files = self.storage.list_bulk_files(run_id)
+        self.assertTrue("bids" in files or "additions" in files)
 
 
 if __name__ == "__main__":

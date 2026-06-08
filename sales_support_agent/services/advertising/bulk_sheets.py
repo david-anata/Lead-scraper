@@ -189,24 +189,26 @@ def validate_bulk_rows(wb) -> list[str]:
     return issues
 
 
-def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
-    """Populate Amazon's official bulk template with create-negative and
-    create-keyword rows, using the Campaign ID / Ad Group ID carried on each
-    recommendation (extracted from the uploaded report CSVs). Produces an
-    upload-ready Sponsored Products bulk sheet WITHOUT the operator having to
-    download or edit anything.
+def build_apply_sheet(recommendations: list[Recommendation], kinds: Optional[set] = None) -> BulkBuildResult:
+    """Populate Amazon's official bulk template from each recommendation's entity
+    IDs. Produces an upload-ready Sponsored Products/Brands bulk sheet.
 
-    Bid changes on existing keywords (set_bid) become Operation=update rows keyed
-    by Keyword ID — available when an Amazon Bulk Operations file was uploaded.
+    `kinds` filters which operations to include:
+      - {"set_bid"}                              -> bid changes only (Updates keyed
+        by existing IDs — can NEVER hit 'already exists', uploads clean every time).
+      - {"create_keyword", "create_negative"}    -> additions only (best-effort;
+        a Create can still collide if the bulk snapshot is stale).
+      - None (default)                           -> all of the above (combined).
     """
+    allowed_actions = kinds or {"create_negative", "create_keyword", "set_bid"}
     result = BulkBuildResult()
     actionable = [
         r for r in recommendations
-        if r.is_bulk_actionable and r.bulk_row.get("action") in ("create_negative", "create_keyword", "set_bid")
+        if r.is_bulk_actionable and r.bulk_row.get("action") in allowed_actions
         and r.bulk_row.get("ad_type") in ("SP", "SB")
     ]
     if not actionable:
-        result.notes.append("No create-keyword / create-negative / bid-change actions to apply.")
+        result.notes.append("No matching actions to apply.")
         return result
 
     try:
