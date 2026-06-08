@@ -114,6 +114,14 @@ def run_audit(
                 if brand else all_asins
             )
             ad_rows += N.normalize_bulk_keywords(inputs.bulk_xlsx, b_asins, all_asins - b_asins)
+            # Performance reports (esp. legacy .xlsx exports) carry no entity IDs,
+            # so most harvests/negatives/bid changes couldn't be written to the
+            # apply sheet. The bulk file holds every name→ID — backfill them so the
+            # apply sheet reflects the full burn list, not just the handful of rows
+            # that came straight off the bulk file.
+            backfilled = N.backfill_entity_ids(ad_rows, N.bulk_name_id_map(inputs.bulk_xlsx))
+            if backfilled:
+                logger.info("[advertising] backfilled entity IDs on %d report rows from the bulk file", backfilled)
 
         market_rows: list[MarketRow] = (
             N.normalize_sqp_csv(inputs.sqp_csv) if inputs.sqp_csv else []

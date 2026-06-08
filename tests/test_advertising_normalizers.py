@@ -207,5 +207,32 @@ class PreambleTest(unittest.TestCase):
         self.assertEqual(rows[0].asin, "B009")
 
 
+class BackfillEntityIdsTest(unittest.TestCase):
+    def test_name_id_map_and_backfill(self):
+        from sales_support_agent.services.advertising.schema import AdRow
+        idmap = N.bulk_name_id_map(_bulk_xlsx())
+        self.assertEqual(idmap["campaign"].get("brand"), "C1")
+        self.assertEqual(idmap["ad_group"].get(("brand", "ag")), "A1")
+        self.assertEqual(idmap["keyword"].get(("brand", "ag", "widget blue", "exact")), "K1")
+
+        # Report-style rows from a legacy .xlsx: names present, IDs blank.
+        st = AdRow(ad_type="SP", entity_level="search_term", campaign_name="Brand",
+                   ad_group_name="AG", entity_text="cheap widget")
+        kw = AdRow(ad_type="SP", entity_level="keyword", campaign_name="Brand",
+                   ad_group_name="AG", entity_text="widget blue", match_type="exact")
+        enriched = N.backfill_entity_ids([st, kw], idmap)
+        self.assertEqual(enriched, 2)
+        # Harvest/negative target gets campaign + ad-group IDs (no keyword needed).
+        self.assertEqual((st.campaign_id, st.ad_group_id), ("C1", "A1"))
+        # An existing keyword also resolves its Keyword ID for bid changes.
+        self.assertEqual(kw.keyword_id, "K1")
+
+    def test_backfill_noop_without_map(self):
+        from sales_support_agent.services.advertising.schema import AdRow
+        r = AdRow(ad_type="SP", entity_level="search_term", campaign_name="X", ad_group_name="Y")
+        self.assertEqual(N.backfill_entity_ids([r], {}), 0)
+        self.assertEqual(r.campaign_id, "")
+
+
 if __name__ == "__main__":
     unittest.main()

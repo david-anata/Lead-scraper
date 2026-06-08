@@ -397,6 +397,95 @@ def normalize_bulk_keywords(
     return out
 
 
+def bulk_name_id_map(file_bytes: bytes) -> dict:
+    """Stream an Amazon Bulk Operations workbook and return name→ID maps:
+
+        {"campaign":  {campaign_name: campaign_id},
+         "ad_group":  {(campaign_name, ad_group_name): ad_group_id},
+         "keyword":   {(campaign_name, ad_group_name, keyword_text, match_type): keyword_id}}
+
+    Built from every SP/SB/SD entity row (Campaign, Ad Group, Keyword), so it
+    covers auto/broad ad groups that hold no keyword rows too. Names are
+    lowercased/stripped for matching. Used to backfill IDs onto ID-less
+    performance reports so their actions become apply-ready. Memory-safe (the
+    reset_dimensions() gotcha); never raises."""
+    out: dict = {"campaign": {}, "ad_group": {}, "keyword": {}}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to open bulk workbook for name→ID map")
+        return out
+
+    def nk(v: object) -> str:
+        return str(v or "").strip().lower()
+
+    def cid(v: object) -> str:
+        return str(v or "").strip()
+
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) is None:
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {n: (header.index(n) if n in header else None) for n in (
+            "Campaign ID", "Ad Group ID", "Keyword ID", "Keyword Text", "Match Type",
+            "Campaign Name (Informational only)", "Ad Group Name (Informational only)")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        for row in it:
+            cn, an = nk(g(row, "Campaign Name (Informational only)")), nk(g(row, "Ad Group Name (Informational only)"))
+            c_id, a_id, k_id = cid(g(row, "Campaign ID")), cid(g(row, "Ad Group ID")), cid(g(row, "Keyword ID"))
+            kt, mt = nk(g(row, "Keyword Text")), nk(g(row, "Match Type"))
+            if cn and c_id:
+                out["campaign"].setdefault(cn, c_id)
+            if cn and an and a_id:
+                out["ad_group"].setdefault((cn, an), a_id)
+            if cn and an and kt and k_id:
+                out["keyword"].setdefault((cn, an, kt, mt), k_id)
+    wb.close()
+    return out
+
+
+def backfill_entity_ids(rows: "list[AdRow]", idmap: dict) -> int:
+    """Legacy Amazon "data export" Ads reports carry NO Campaign/Ad Group/Keyword
+    IDs, so their harvested keywords, negatives and bid changes can't be written
+    to Amazon's apply sheet. Using a bulk_name_id_map(), backfill those IDs onto
+    the report rows by matching campaign + ad-group name (and keyword text +
+    match type for keyword IDs). Mutates rows in place; returns rows enriched."""
+    if not idmap:
+        return 0
+    camp, adg, kw = idmap.get("campaign", {}), idmap.get("ad_group", {}), idmap.get("keyword", {})
+
+    def nk(s: str) -> str:
+        return (s or "").strip().lower()
+
+    enriched = 0
+    for r in rows:
+        cn, an = nk(r.campaign_name), nk(r.ad_group_name)
+        changed = False
+        if not r.campaign_id and cn in camp:
+            r.campaign_id = camp[cn]; changed = True
+        if not r.ad_group_id and (cn, an) in adg:
+            r.ad_group_id = adg[(cn, an)]; changed = True
+        if not r.keyword_id and r.entity_level in ("keyword", "target"):
+            k = (cn, an, nk(r.entity_text), nk(r.match_type))
+            if k in kw:
+                r.keyword_id = kw[k]; changed = True
+        enriched += 1 if changed else 0
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # Business Report: Detail Page Sales & Traffic (CSV)
 # ---------------------------------------------------------------------------
