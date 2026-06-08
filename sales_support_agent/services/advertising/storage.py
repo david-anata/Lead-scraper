@@ -2,8 +2,9 @@
 
 Uses the shared global engine (database.get_engine()) via short-lived ORM
 Sessions, mirroring how the cashflow service reaches the DB. Generated bulk
-workbooks are written to a per-run directory on disk (downloaded right after a
-run in the manual v1 flow); the DB holds the durable run/snapshot/rec records.
+workbooks are persisted durably in the DB (kv_store, base64) so History +
+downloads survive Render's ephemeral filesystem across deploys; a per-run disk
+directory is kept only as a best-effort fast cache.
 """
 
 from __future__ import annotations
@@ -304,32 +305,64 @@ def _rec_to_dict(r: RecommendationRow) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _bulkfiles_key(run_id: str) -> str:
+    return f"adv:bulkfiles:{run_id}"
+
+
 def save_bulk_file(run_id: str, ad_type: str, xlsx_bytes: bytes) -> str:
-    run_dir = os.path.join(BULK_RUNS_DIR, run_id)
-    os.makedirs(run_dir, exist_ok=True)
-    path = os.path.join(run_dir, f"{ad_type}_bulk.xlsx")
-    with open(path, "wb") as fh:
-        fh.write(xlsx_bytes)
+    """Persist a generated workbook for a run. Durable copy lives in the DB
+    (kv_store, base64) so History survives Render's ephemeral filesystem across
+    deploys/restarts; disk is kept as a best-effort fast cache."""
+    import base64
+    from sales_support_agent.models.database import kv_get_json, kv_set_json
+
+    # Durable: DB (survives redeploys — disk on Render does not).
+    try:
+        current = kv_get_json(_bulkfiles_key(run_id), {}) or {}
+        current[ad_type] = base64.b64encode(xlsx_bytes).decode("ascii")
+        kv_set_json(_bulkfiles_key(run_id), current)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to persist bulk file to kv_store")
+
+    # Best-effort disk cache.
+    path = os.path.join(BULK_RUNS_DIR, run_id, f"{ad_type}_bulk.xlsx")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(xlsx_bytes)
+    except Exception:  # noqa: BLE001
+        logger.warning("[advertising] could not write bulk file to disk cache", exc_info=True)
     return path
 
 
 def get_bulk_file(run_id: str, ad_type: str) -> Optional[bytes]:
+    # Disk cache first (fast); fall back to the durable DB copy.
     path = os.path.join(BULK_RUNS_DIR, run_id, f"{ad_type}_bulk.xlsx")
-    if not os.path.exists(path):
+    if os.path.exists(path):
+        with open(path, "rb") as fh:
+            return fh.read()
+    import base64
+    from sales_support_agent.models.database import kv_get_json
+
+    data = (kv_get_json(_bulkfiles_key(run_id), {}) or {}).get(ad_type)
+    if not data:
         return None
-    with open(path, "rb") as fh:
-        return fh.read()
+    try:
+        return base64.b64decode(data)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def list_bulk_files(run_id: str) -> list[str]:
+    """Union of the disk cache and the durable DB copy, so download buttons show
+    even after the ephemeral disk has been wiped by a redeploy."""
+    from sales_support_agent.models.database import kv_get_json
+
+    kinds = set((kv_get_json(_bulkfiles_key(run_id), {}) or {}).keys())
     run_dir = os.path.join(BULK_RUNS_DIR, run_id)
-    if not os.path.isdir(run_dir):
-        return []
-    return sorted(
-        f.split("_bulk.xlsx")[0]
-        for f in os.listdir(run_dir)
-        if f.endswith("_bulk.xlsx")
-    )
+    if os.path.isdir(run_dir):
+        kinds |= {f.split("_bulk.xlsx")[0] for f in os.listdir(run_dir) if f.endswith("_bulk.xlsx")}
+    return sorted(kinds)
 
 
 # ---------------------------------------------------------------------------
