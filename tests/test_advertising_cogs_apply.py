@@ -173,6 +173,36 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(gi(row, "Product Targeting Expression").value, "loose-match")
         self.assertEqual(gi(row, "Bid").value, 0.57)
 
+    def test_sb_bid_change_routes_to_brands_sheet(self):
+        # An SB keyword bid change must land in the Sponsored Brands sheet, not SP.
+        recs = [_rec("set_bid", ad_type="SB", bulk_sheet="Sponsored Brands Campaigns",
+                     campaign_id="C1", keyword_id="SBKW1", keyword_text="frizz oil",
+                     match_type="exact", new_bid_cents=120)]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 1)
+        wb = openpyxl.load_workbook(io.BytesIO(res.xlsx_bytes))
+        # SP sheet has no data rows; SB sheet carries the update.
+        sp = wb["Sponsored Products Campaigns"]
+        self.assertFalse([r for r in sp.iter_rows(min_row=2) if any(c.value for c in r)])
+        sb = wb["Sponsored Brands Campaigns"]
+        hdr = [c.value for c in sb[1]]
+        gi = lambda r, n: r[hdr.index(n)]
+        row = next(r for r in sb.iter_rows(min_row=2) if gi(r, "Keyword ID").value == "SBKW1")
+        self.assertEqual(gi(row, "Product").value, "Sponsored Brands")
+        self.assertEqual(gi(row, "Entity").value, "Keyword")
+        self.assertEqual(gi(row, "Operation").value, "Update")
+        self.assertEqual(gi(row, "Bid").value, 1.20)
+
+    def test_sb_multi_ad_group_routes_to_its_own_sheet(self):
+        recs = [_rec("set_bid", ad_type="SB", bulk_sheet="SB Multi Ad Group Campaigns",
+                     campaign_id="C2", keyword_id="MK1", keyword_text="x", match_type="exact", new_bid_cents=90)]
+        res = build_apply_sheet(recs)
+        self.assertEqual(res.applied, 1)
+        wb = openpyxl.load_workbook(io.BytesIO(res.xlsx_bytes))
+        ws = wb["SB Multi Ad Group Campaigns"]
+        hdr = [c.value for c in ws[1]]
+        self.assertTrue(any((r[hdr.index("Keyword ID")].value == "MK1") for r in ws.iter_rows(min_row=2)))
+
 
 class BulkKeywordScopeTest(unittest.TestCase):
     HEADER = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",

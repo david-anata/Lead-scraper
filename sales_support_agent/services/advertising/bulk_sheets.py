@@ -71,7 +71,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
     actionable = [
         r for r in recommendations
         if r.is_bulk_actionable and r.bulk_row.get("action") in ("create_negative", "create_keyword", "set_bid")
-        and r.bulk_row.get("ad_type") == "SP"
+        and r.bulk_row.get("ad_type") in ("SP", "SB")
     ]
     if not actionable:
         result.notes.append("No create-keyword / create-negative / bid-change actions to apply.")
@@ -85,36 +85,56 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
         result.notes.append("Amazon bulk template unavailable.")
         return result
 
-    ws = None
-    for sheet in wb.worksheets:
-        if _ad_type_from_sheet(sheet.title) == "SP":
-            ws = sheet
-            break
-    if ws is None:
-        result.notes.append("Template is missing the Sponsored Products sheet.")
-        return result
+    _PRODUCT = {"SP": "Sponsored Products", "SB": "Sponsored Brands"}
+    _ctx_cache: dict = {}
 
-    header = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
-    col = {name: _col_index(header, name) for name in
-           ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
-            "Product Targeting ID", "Product Targeting Expression",
-            "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State")}
+    def _resolve_sheet(br):
+        """The template sheet to write this rec into. SB entities may belong to
+        'Sponsored Brands Campaigns' or 'SB Multi Ad Group Campaigns' — Amazon
+        validates per sheet, so honour the source sheet when known."""
+        adt = br.get("ad_type")
+        want = br.get("bulk_sheet") or ""
+        if adt == "SB" and want:
+            for sheet in wb.worksheets:
+                if sheet.title == want:
+                    return sheet
+        for sheet in wb.worksheets:
+            if _ad_type_from_sheet(sheet.title) == adt:
+                return sheet
+        return None
+
+    def _ctx(ws):
+        if ws.title not in _ctx_cache:
+            header = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+            col = {name: _col_index(header, name) for name in
+                   ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+                    "Product Targeting ID", "Product Targeting Expression",
+                    "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State")}
+            _ctx_cache[ws.title] = (header, col)
+        return _ctx_cache[ws.title]
 
     for rec in actionable:
         br = rec.bulk_row
         action = br["action"]
+        ws = _resolve_sheet(br)
+        if ws is None:
+            result.skipped += 1
+            result.skipped_titles.append(rec.title)
+            continue
+        header, col = _ctx(ws)
+        product = _PRODUCT.get(br.get("ad_type"), "Sponsored Products")
         row = [""] * len(header)
 
-        def put(name, value):
-            i = col.get(name)
+        def put(name, value, _row=row, _col=col):
+            i = _col.get(name)
             if i is not None:
-                row[i] = value
+                _row[i] = value
 
         if action == "set_bid":
             new_bid = br.get("new_bid_cents")
             if br.get("keyword_id") and new_bid:
                 # Update an existing keyword's bid — keyed by Keyword ID.
-                put("Product", "Sponsored Products")
+                put("Product", product)
                 put("Entity", "Keyword")
                 put("Operation", "Update")
                 put("Campaign ID", br.get("campaign_id", ""))
@@ -127,7 +147,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             elif br.get("target_id") and new_bid:
                 # Update an auto-target / product-targeting bid — keyed by
                 # Product Targeting ID (close/loose-match, substitutes, ASIN targets).
-                put("Product", "Sponsored Products")
+                put("Product", product)
                 put("Entity", "Product Targeting")
                 put("Operation", "Update")
                 put("Campaign ID", br.get("campaign_id", ""))
@@ -151,7 +171,7 @@ def build_apply_sheet(recommendations: list[Recommendation]) -> BulkBuildResult:
             result.skipped_titles.append(rec.title)
             continue
         is_neg = action == "create_negative"
-        put("Product", "Sponsored Products")
+        put("Product", product)
         put("Entity", "Negative Keyword" if is_neg else "Keyword")
         put("Operation", "Create")
         put("Campaign ID", br["campaign_id"])
