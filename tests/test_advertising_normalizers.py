@@ -279,6 +279,40 @@ class SponsoredBrandsBulkTest(unittest.TestCase):
         self.assertFalse(any(r.keyword_id == "SBK2" for r in rows))
 
 
+class DropExistingCreatesTest(unittest.TestCase):
+    def _bulk(self):
+        header = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID",
+                  "Keyword Text", "Match Type", "Product Targeting Expression"]
+        wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sponsored Products Campaigns"
+        ws.append(header)
+        def row(**k): ws.append([k.get(h, "") for h in header])
+        row(Entity="Keyword", **{"Campaign ID": "C", "Ad Group ID": "A", "Keyword Text": "no 4 shampoo", "Match Type": "Exact"})
+        row(Entity="Product Targeting", **{"Campaign ID": "C", "Ad Group ID": "A", "Product Targeting Expression": 'asin="B003H85W46"'})
+        buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+    def _kwrec(self, text, action="create_keyword"):
+        from sales_support_agent.services.advertising.schema import Recommendation
+        return Recommendation(category="x", title=text, is_bulk_actionable=True,
+            bulk_row={"action": action, "ad_type": "SP", "campaign_id": "C", "ad_group_id": "A", "keyword_text": text})
+
+    def test_drops_punctuation_variant_of_existing_keyword(self):
+        # "no. 4 shampoo" (with period) collides with existing "no 4 shampoo".
+        r = self._kwrec("no. 4 shampoo")
+        n = N.drop_existing_creates([r], self._bulk())
+        self.assertEqual(n, 1)
+        self.assertFalse(r.is_bulk_actionable)
+
+    def test_drops_existing_asin_target(self):
+        r = self._kwrec("b003h85w46")  # bare ASIN -> asin="B003H85W46", already targeted
+        N.drop_existing_creates([r], self._bulk())
+        self.assertFalse(r.is_bulk_actionable)
+
+    def test_keeps_genuinely_new_keyword(self):
+        r = self._kwrec("brand new phrase here")
+        N.drop_existing_creates([r], self._bulk())
+        self.assertTrue(r.is_bulk_actionable)
+
+
 class TargetingTypeEnforcementTest(unittest.TestCase):
     def _bulk(self):
         # Auto ad group (C1/A1, advertises B005GEZGSQ) + a manual KEYWORD ad group

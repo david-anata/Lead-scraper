@@ -802,6 +802,122 @@ def enforce_targeting_type(recs: list, file_bytes: bytes) -> int:
     return changed
 
 
+def _norm_kw_text(s: object) -> str:
+    """Normalize keyword text the way Amazon does for duplicate detection: drop
+    punctuation (so 'no. 4 shampoo' == 'no 4 shampoo'), lowercase, collapse
+    whitespace. Prevents 'already exists!' rejections on punctuation variants."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", str(s or "").lower())).strip()
+
+
+def _final_target_expr(text: str) -> str:
+    """The product-targeting expression a harvest will be written as: a bare ASIN
+    becomes asin="B0…"; asin-expanded= becomes asin=. (Matches build_apply_sheet.)"""
+    t = (text or "").strip()
+    if re.fullmatch(r"(?i)b0[a-z0-9]{8}", t):
+        return f'asin="{t}"'
+    return re.sub(r"(?i)asin-expanded\s*=", "asin=", t)
+
+
+def drop_existing_creates(recs: list, file_bytes: bytes) -> int:
+    """Amazon rejects — with an Input Error that fails the WHOLE file — any Create
+    for a keyword / negative keyword / product target that ALREADY EXISTS in the
+    ad group ("…already exists!"). The uploaded bulk file lists every existing
+    entity, so drop those creates here. Uses each rec's FINAL ad group, so call
+    AFTER enforce_targeting_type. Marks duplicates not-actionable (they remain in
+    the burn list). Returns the count dropped."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to open bulk workbook for existing-entity scan")
+        return 0
+
+    def mt(s: object) -> str:
+        return re.sub(r"[^a-z]", "", str(s or "").lower())  # exact / negativeexact / …
+
+    existing_kw: set = set()
+    existing_neg: set = set()
+    existing_camp_neg: set = set()
+    existing_pt: set = set()
+    existing_pt_camp: set = set()   # (campaign, expr) — an ASIN target can't repeat in a campaign
+    existing_npt: set = set()
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) is None:
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {h: (header.index(h) if h in header else None) for h in (
+            "Entity", "Campaign ID", "Ad Group ID", "Keyword Text", "Match Type", "Product Targeting Expression")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        for row in it:
+            e = str(g(row, "Entity") or "")
+            cid = str(g(row, "Campaign ID") or "").strip()
+            aid = str(g(row, "Ad Group ID") or "").strip()
+            kt = _norm_kw_text(g(row, "Keyword Text"))
+            m = mt(g(row, "Match Type"))
+            ex = _norm_target_expr(g(row, "Product Targeting Expression"))
+            if e == "Keyword" and kt:
+                existing_kw.add((cid, aid, kt, m))
+            elif e == "Negative Keyword" and kt:
+                existing_neg.add((cid, aid, kt, m))
+            elif e == "Campaign Negative Keyword" and kt:
+                existing_camp_neg.add((cid, kt, m))
+            elif e in ("Product Targeting", "Negative Product Targeting") and ex:
+                # campaign-negative PT also bars adding the ASIN as a positive target.
+                if e == "Negative Product Targeting":
+                    existing_npt.add((cid, aid, ex))
+                else:
+                    existing_pt.add((cid, aid, ex))
+                existing_pt_camp.add((cid, ex))
+            elif e == "Campaign Negative Product Targeting" and ex:
+                existing_pt_camp.add((cid, ex))
+    wb.close()
+
+    def _is_target(text: str) -> bool:
+        t = (text or "").strip().lower()
+        return bool(re.fullmatch(r"b0[a-z0-9]{8}", t)) or t.startswith(("asin=", "asin-expanded=", "category=", "brand="))
+
+    dropped = 0
+    for r in recs:
+        br = getattr(r, "bulk_row", None) or {}
+        action = br.get("action")
+        if action not in ("create_keyword", "create_negative") or not getattr(r, "is_bulk_actionable", False):
+            continue
+        cid = str(br.get("campaign_id") or "")
+        aid = str(br.get("ad_group_id") or "")
+        text = br.get("keyword_text", "")
+        is_neg = action == "create_negative"
+        if _is_target(text):
+            ex = _norm_target_expr(_final_target_expr(text))
+            if is_neg:
+                exists = (cid, aid, ex) in existing_npt
+            else:
+                # already targeted in this ad group, or anywhere in the campaign
+                # (incl. as a campaign-negative) — any of these rejects the add.
+                exists = (cid, aid, ex) in existing_pt or (cid, ex) in existing_pt_camp
+        else:
+            t = _norm_kw_text(text)
+            if is_neg:
+                exists = (cid, aid, t, "negativeexact") in existing_neg or (cid, t, "negativeexact") in existing_camp_neg
+            else:
+                exists = (cid, aid, t, "exact") in existing_kw
+        if exists:
+            r.is_bulk_actionable = False
+            dropped += 1
+    return dropped
+
+
 # ---------------------------------------------------------------------------
 # Business Report: Detail Page Sales & Traffic (CSV)
 # ---------------------------------------------------------------------------
