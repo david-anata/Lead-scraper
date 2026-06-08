@@ -114,6 +114,10 @@ def run_audit(
                 if brand else all_asins
             )
             ad_rows += N.normalize_bulk_keywords(inputs.bulk_xlsx, b_asins, all_asins - b_asins)
+            # Sponsored Brands: the bulk file is the only source of SB keyword /
+            # product-targeting performance (its reports are campaign-level), so
+            # SB bid changes come from here. Same cross-brand ASIN scoping.
+            ad_rows += N.normalize_bulk_sb(inputs.bulk_xlsx, b_asins, all_asins - b_asins)
             # Performance reports (esp. legacy .xlsx exports) carry no entity IDs,
             # so most harvests/negatives/bid changes couldn't be written to the
             # apply sheet. The bulk file holds every name→ID — backfill them so the

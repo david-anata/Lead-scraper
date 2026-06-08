@@ -134,11 +134,13 @@ _ENTITY_MAP = {
 
 def _ad_type_from_sheet(sheet_name: str) -> Optional[str]:
     name = sheet_name.lower()
-    if "sponsored product" in name:
+    if "sponsored product" in name or name.startswith("sp "):
         return "SP"
-    if "sponsored brand" in name:
+    # "Sponsored Brands Campaigns" AND "SB Multi Ad Group Campaigns" (the latter
+    # holds 400+ SB keywords and was being skipped by the old check).
+    if "sponsored brand" in name or name.startswith("sb "):
         return "SB"
-    if "sponsored display" in name:
+    if "sponsored display" in name or name.startswith("sd "):
         return "SD"
     return None
 
@@ -394,6 +396,99 @@ def normalize_bulk_keywords(
             units=parse_int(g(row, "Units")),
             bid_cents=parse_cents(bid) if bid else None,
         ))
+    return out
+
+
+def normalize_bulk_sb(
+    file_bytes: bytes, brand_asins: set, other_asins: Optional[set] = None
+) -> list[AdRow]:
+    """Stream the Sponsored Brands sheets of a Bulk Operations workbook and return
+    SB **keyword** and **product-targeting** rows (Keyword/Targeting ID, current
+    Bid, performance) for the brand — the only source of SB entity-level data
+    (the SB reports are campaign/search-term level). SB campaigns carry no per-row
+    ASIN, so scope is taken from each campaign's creative ASINs (Creative ASINs /
+    Landing Page ASINs); a campaign with brand creative ASINs and no other-brand
+    ASIN is kept. Campaigns with no resolvable ASINs are kept only when there are
+    no other-brand ASINs to protect (a single-brand / full-account run).
+    Memory-safe; never raises."""
+    other_asins = {a.upper() for a in (other_asins or set())}
+    brand_asins = {a.upper() for a in (brand_asins or set())}
+    if not brand_asins:
+        return []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to open bulk workbook for SB scan")
+        return []
+
+    out: list[AdRow] = []
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) != "SB":
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {n: (header.index(n) if n in header else None) for n in (
+            "Entity", "Campaign ID", "Ad Group ID", "Keyword ID", "Product Targeting ID",
+            "Product Targeting Expression", "Bid", "Keyword Text", "Match Type",
+            "Creative ASINs", "Landing Page ASINs",
+            "Campaign Name (Informational only)", "Ad Group Name (Informational only)",
+            "Impressions", "Clicks", "Spend", "Sales", "Orders", "Units")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        campaign_asins: dict[str, set] = {}
+        entity_buf: list[tuple] = []
+        for row in it:
+            entity = str(g(row, "Entity") or "")
+            cid = str(g(row, "Campaign ID") or "").strip()
+            asin_text = f"{g(row, 'Creative ASINs') or ''} {g(row, 'Landing Page ASINs') or ''}".upper()
+            found = set(_ASIN_RE.findall(asin_text))
+            if cid and found:
+                campaign_asins.setdefault(cid, set()).update(found)
+            if entity in ("Keyword", "Product Targeting"):
+                entity_buf.append(row)
+
+        for row in entity_buf:
+            cid = str(g(row, "Campaign ID") or "").strip()
+            asins = campaign_asins.get(cid, set())
+            if asins & other_asins:
+                continue  # touches another brand — never edit
+            if not (asins & brand_asins) and (asins or other_asins):
+                continue  # only other/unknown ASINs in a multi-brand run
+            entity = str(g(row, "Entity") or "")
+            bid = _get(_lookup({"Bid": g(row, "Bid")}), "Bid")
+            is_kw = entity == "Keyword"
+            out.append(AdRow(
+                ad_type="SB",
+                entity_level="keyword" if is_kw else "target",
+                bulk_sheet=sheet.title,
+                campaign_name=str(g(row, "Campaign Name (Informational only)") or ""),
+                ad_group_name=str(g(row, "Ad Group Name (Informational only)") or ""),
+                campaign_id=cid,
+                ad_group_id=str(g(row, "Ad Group ID") or "").strip(),
+                keyword_id=str(g(row, "Keyword ID") or "").strip() if is_kw else "",
+                target_id=str(g(row, "Product Targeting ID") or "").strip() if not is_kw else "",
+                entity_text=str((g(row, "Keyword Text") if is_kw else g(row, "Product Targeting Expression")) or ""),
+                match_type=str(g(row, "Match Type") or ""),
+                impressions=parse_int(g(row, "Impressions")),
+                clicks=parse_int(g(row, "Clicks")),
+                spend_cents=parse_cents(g(row, "Spend")),
+                sales_cents=parse_cents(g(row, "Sales")),
+                orders=parse_int(g(row, "Orders")),
+                units=parse_int(g(row, "Units")),
+                bid_cents=parse_cents(bid) if bid else None,
+            ))
+    wb.close()
     return out
 
 

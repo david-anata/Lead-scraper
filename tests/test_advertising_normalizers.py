@@ -233,6 +233,52 @@ def _rich_bulk_xlsx() -> bytes:
     buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
 
 
+def _sb_bulk_xlsx() -> bytes:
+    header = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
+              "Product Targeting ID", "Product Targeting Expression", "Bid", "Keyword Text",
+              "Match Type", "Creative ASINs", "Landing Page ASINs",
+              "Campaign Name (Informational only)", "Ad Group Name (Informational only)",
+              "Impressions", "Clicks", "Spend", "Sales", "Orders", "Units"]
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sponsored Brands Campaigns"
+    ws.append(header)
+
+    def row(**k):
+        ws.append([k.get(h, "") for h in header])
+
+    # brand campaign (creative ASIN B005GEZGSQ) with a keyword carrying performance.
+    row(Entity="Product Collection Ad", **{"Campaign ID": "SB1", "Creative ASINs": "B005GEZGSQ, B0CTKT88VZ",
+        "Campaign Name (Informational only)": "SB | Fluoro5"})
+    row(Entity="Keyword", **{"Campaign ID": "SB1", "Keyword ID": "SBK1", "Bid": 1.50, "Keyword Text": "hair oil",
+        "Match Type": "Exact", "Campaign Name (Informational only)": "SB | Fluoro5",
+        "Impressions": 800, "Clicks": 30, "Spend": 60.0, "Sales": 200.0, "Orders": 4, "Units": 4})
+    # other-brand campaign (creative ASIN B0OTHERXXX) — must be excluded in a multi-brand run.
+    row(Entity="Product Collection Ad", **{"Campaign ID": "SB2", "Creative ASINs": "B0OTHERXXX",
+        "Campaign Name (Informational only)": "SB | Other"})
+    row(Entity="Keyword", **{"Campaign ID": "SB2", "Keyword ID": "SBK2", "Bid": 1.0, "Keyword Text": "other",
+        "Match Type": "Exact", "Campaign Name (Informational only)": "SB | Other",
+        "Impressions": 100, "Clicks": 5, "Spend": 5.0, "Sales": 0.0, "Orders": 0, "Units": 0})
+    buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+
+class SponsoredBrandsBulkTest(unittest.TestCase):
+    def test_parses_sb_keyword_rows_with_perf_and_ids(self):
+        rows = N.normalize_bulk_sb(_sb_bulk_xlsx(), {"B005GEZGSQ"}, set())
+        kw = [r for r in rows if r.entity_text == "hair oil"]
+        self.assertTrue(kw)
+        r = kw[0]
+        self.assertEqual(r.ad_type, "SB")
+        self.assertEqual(r.keyword_id, "SBK1")
+        self.assertEqual(r.spend_cents, 6000)
+        self.assertEqual(r.sales_cents, 20000)
+        self.assertEqual(r.bulk_sheet, "Sponsored Brands Campaigns")
+
+    def test_sb_cross_brand_campaign_excluded(self):
+        # In a multi-brand run, the other-brand SB campaign must never appear.
+        rows = N.normalize_bulk_sb(_sb_bulk_xlsx(), {"B005GEZGSQ"}, {"B0OTHERXXX"})
+        self.assertTrue(any(r.keyword_id == "SBK1" for r in rows))
+        self.assertFalse(any(r.keyword_id == "SBK2" for r in rows))
+
+
 class ProductTargetingAndRedirectTest(unittest.TestCase):
     def test_target_id_backfilled_for_auto_expression(self):
         from sales_support_agent.services.advertising.schema import AdRow
