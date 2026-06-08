@@ -150,6 +150,10 @@ class ApplySheetTest(unittest.TestCase):
         self.assertEqual(gi(row, "Entity").value, "Keyword")
         self.assertEqual(gi(row, "Operation").value, "Update")
         self.assertEqual(gi(row, "Bid").value, 0.57)
+        self.assertEqual(gi(row, "State").value, "enabled")
+        # Match Type can't change on an update → must be blank (else Amazon rejects).
+        self.assertIn(gi(row, "Match Type").value, (None, ""))
+        self.assertIn(gi(row, "Keyword Text").value, (None, ""))
 
     def test_set_bid_skips_without_keyword_or_target_id(self):
         recs = [_rec("set_bid", campaign_id="1", ad_group_id="2", new_bid_cents=57)]  # neither id
@@ -170,8 +174,11 @@ class ApplySheetTest(unittest.TestCase):
         row = next(r for r in ws.iter_rows(min_row=2) if gi(r, "Product Targeting ID").value == "PT777")
         self.assertEqual(gi(row, "Entity").value, "Product Targeting")
         self.assertEqual(gi(row, "Operation").value, "Update")
-        self.assertEqual(gi(row, "Product Targeting Expression").value, "loose-match")
         self.assertEqual(gi(row, "Bid").value, 0.57)
+        self.assertEqual(gi(row, "State").value, "enabled")
+        # Update rows must NOT carry Match Type / Keyword Text / Expression (Amazon
+        # rejects unchangeable fields on an update).
+        self.assertIn(gi(row, "Product Targeting Expression").value, (None, ""))
 
     def test_sb_bid_change_routes_to_brands_sheet(self):
         # An SB keyword bid change must land in the Sponsored Brands sheet, not SP.
