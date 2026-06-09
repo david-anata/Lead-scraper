@@ -65,8 +65,10 @@ class Thresholds:
     per-run later without touching rule code.
     """
 
-    # A click bucket is "significant" once it clears this many clicks.
-    min_clicks_significant: int = 10
+    # A click bucket is "significant" once it clears this many clicks. Lower =
+    # more keywords optimized; safe because bid-to-target SIZES each move to the
+    # data (a thin-data keyword gets a small move, not a wild one).
+    min_clicks_significant: int = 5
     # Spend (cents) with zero orders that flags a wasted-spend negative.
     wasted_spend_cents: int = 1500  # $15 with no sales
     # ACoS this many bps over target -> bid-down. (default +50% of target)
