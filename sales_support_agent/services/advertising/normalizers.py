@@ -802,6 +802,30 @@ def enforce_targeting_type(recs: list, file_bytes: bytes) -> int:
     return changed
 
 
+def drop_brand_term_harvests(recs: list, brand_name: str) -> int:
+    """Don't harvest a search term that contains the brand name — you already bid
+    on your own brand, so creating it as a 'new' keyword is redundant AND almost
+    always rejected as 'already exists'. Leaves NEGATIVES alone (a competitor
+    using your brand is a valid negative). Only drops positive create_keyword
+    harvests. Returns the count dropped."""
+    brand = _norm_kw_text(brand_name)
+    if not brand:
+        return 0
+    keys = {brand, brand.replace(" ", "")}  # "number 4" and "number4"
+    keys = {k for k in keys if len(k) >= 2}
+    n = 0
+    for r in recs:
+        br = getattr(r, "bulk_row", None) or {}
+        if br.get("action") != "create_keyword" or not getattr(r, "is_bulk_actionable", False):
+            continue
+        t = _norm_kw_text(br.get("keyword_text", ""))
+        tc = t.replace(" ", "")
+        if any(k in t or k in tc for k in keys):
+            r.is_bulk_actionable = False
+            n += 1
+    return n
+
+
 def _norm_kw_text(s: object) -> str:
     """Normalize keyword text the way Amazon does for duplicate detection: drop
     punctuation (so 'no. 4 shampoo' == 'no 4 shampoo'), lowercase, collapse

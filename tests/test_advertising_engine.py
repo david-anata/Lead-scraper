@@ -148,6 +148,27 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(len(bu), 1)
         self.assertGreater(bu[0].bulk_row["new_bid_cents"], 50)
 
+    def test_bid_down_sized_to_target_not_flat_nudge(self):
+        # ACoS 60% (target 30%): bid-to-target should ~halve the bid, far past a 15% nudge.
+        rows = [_kw("k", clicks=50, spend=6000, sales=10000, orders=5, bid=200)]
+        recs = E.build_recommendations(rows, [], [], [], self.goals)
+        bd = [r for r in recs if r.category == "bid_down"][0]
+        # target_cpc = (10000/50)*0.30 = 60c → far below a flat 15% (170c).
+        self.assertLessEqual(bd.bulk_row["new_bid_cents"], 90)
+
+    def test_near_target_no_churn(self):
+        # ACoS ~31% vs 30% target → within deadband → no bid change.
+        rows = [_kw("k", clicks=50, spend=3100, sales=10000, orders=5, bid=62)]
+        recs = E.build_recommendations(rows, [], [], [], self.goals)
+        self.assertEqual([r for r in recs if r.category in ("bid_down", "bid_up")], [])
+
+    def test_bid_up_capped_per_cycle(self):
+        # Very low ACoS would target a huge CPC; a single up-step is capped at +50%.
+        rows = [_kw("k", clicks=60, spend=600, sales=30000, orders=20, bid=50)]
+        recs = E.build_recommendations(rows, [], [], [], self.goals)
+        bu = [r for r in recs if r.category == "bid_up"][0]
+        self.assertEqual(bu.bulk_row["new_bid_cents"], 75)  # 50 * 1.5
+
     def test_harvest_converting_search_term(self):
         rows = [_st("widget green", clicks=15, spend=1500, sales=6000, orders=4)]
         recs = E.build_recommendations(rows, [], [], [], self.goals)

@@ -170,6 +170,12 @@ def run_audit(
         summary["brand_asin_count"] = len([s for s in sales_rows if s.asin]) if brand else 0
         summary["data_windows"] = sorted(windows)
         recs = build_recommendations(ad_rows, sales_rows, market_rows, external_rows, goals)
+        # Don't harvest your own brand terms — you already bid on them, so they're
+        # redundant and almost always rejected as "already exists".
+        brand_label = brand or detect_primary_brand(sales_rows, ad_rows)
+        brand_harvests = N.drop_brand_term_harvests(recs, brand_label)
+        if brand_harvests:
+            logger.info("[advertising] dropped %d brand-term harvest(s) (%s)", brand_harvests, brand_label)
         # Harvests discovered in Sponsored Brands (or otherwise unresolved)
         # campaigns are routed into the Sponsored Products campaign that
         # advertises the same ASIN, so they become apply-ready instead of dropped.

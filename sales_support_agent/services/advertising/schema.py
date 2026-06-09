@@ -73,9 +73,15 @@ class Thresholds:
     bid_down_over_target_ratio: float = 1.5
     # ACoS this far under target with volume -> bid-up opportunity.
     bid_up_under_target_ratio: float = 0.6
-    # Bid adjustment step, applied to current bid.
+    # Bid adjustment step, applied to current bid (legacy; bid-to-target now sizes moves).
     bid_down_factor: float = 0.85
     bid_up_factor: float = 1.15
+    # Bid-to-target: only act when the move is at least this fraction of the
+    # current bid (deadband — avoids churning keywords already near target).
+    bid_change_deadband: float = 0.10
+    # Cap a single bid-UP at this multiple of the current bid (controlled scaling;
+    # re-run next period to step further — anti-overshoot / lets results settle).
+    bid_up_max_multiple: float = 1.5
     # Floor/ceiling for any proposed bid (cents).
     min_bid_cents: int = 20
     max_bid_cents: int = 1000
