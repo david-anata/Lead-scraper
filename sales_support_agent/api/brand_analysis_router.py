@@ -25,7 +25,6 @@ from sales_support_agent.services.brand_analysis.docx_export import build_docx
 from sales_support_agent.services.brand_analysis.report import build_report
 from sales_support_agent.services.brand_analysis.report_page import (
     render_brand_analysis_page,
-    render_history_page,
     render_report,
 )
 from sales_support_agent.services.brand_analysis.schema import CATEGORY_DTC
@@ -58,12 +57,6 @@ def landing(request: Request, msg: str = "", detail: str = "") -> HTMLResponse:
     return HTMLResponse(render_brand_analysis_page(
         runs=runs, user=get_session_user_from_request(request), flash=msg, detail=detail,
     ))
-
-
-@router.get("/history", response_class=HTMLResponse)
-def history(request: Request) -> HTMLResponse:
-    runs = storage.list_reports()
-    return HTMLResponse(render_history_page(runs=runs, user=get_session_user_from_request(request)))
 
 
 # ---------------------------------------------------------------------------
