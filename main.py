@@ -122,6 +122,11 @@ app.include_router(_cashflow_router)
 from sales_support_agent.api.advertising_router import router as _advertising_router  # noqa: E402
 app.include_router(_advertising_router)
 
+# Executive > Brand Analysis — self-contained router serving
+# /admin/executive/brand-analysis/* in process (same pattern as above).
+from sales_support_agent.api.brand_analysis_router import router as _brand_analysis_router  # noqa: E402
+app.include_router(_brand_analysis_router)
+
 # QuickBooks OAuth routes — NO auth guard on /connect, /callback, /disconnect
 # so Intuit's reviewer can complete the flow without an Anata session.
 # Prefix: /admin/finances/qbo — redirect URI must be registered in Intuit portal as

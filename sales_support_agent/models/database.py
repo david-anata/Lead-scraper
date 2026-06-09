@@ -602,6 +602,29 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recommendations_run_id ON recommendations (run_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recommendations_run_rank ON recommendations (run_id, rank)"))
 
+    # Executive > Brand Analysis — saved acquisition reports (History).
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS brand_analysis_reports (
+                id             TEXT         PRIMARY KEY,
+                label          VARCHAR(255) NOT NULL DEFAULT '',
+                brand          VARCHAR(255) NOT NULL DEFAULT '',
+                category       VARCHAR(32)  NOT NULL DEFAULT 'dtc',
+                status         VARCHAR(32)  NOT NULL DEFAULT 'complete',
+                grade          VARCHAR(2)   NOT NULL DEFAULT '',
+                score_100      INTEGER      NOT NULL DEFAULT 0,
+                confidence     VARCHAR(16)  NOT NULL DEFAULT '',
+                period_current VARCHAR(64)  NOT NULL DEFAULT '',
+                period_prior   VARCHAR(64)  NOT NULL DEFAULT '',
+                report_json    JSON         NOT NULL DEFAULT '{}',
+                error          TEXT         NOT NULL DEFAULT '',
+                created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_created_at ON brand_analysis_reports (created_at)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_brand ON brand_analysis_reports (brand)"))
+
     # QuickBooks OAuth token + state tables
     with engine.begin() as connection:
         connection.execute(text("""
