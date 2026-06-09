@@ -248,7 +248,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "finance"
     if active in {"advertising", "advertising_audit"}:
         primary_active = "advertising"
-    if active in {"executive", "brand_analysis", "brand_analysis_history"}:
+    if active in {"executive", "brand_analysis"}:
         primary_active = "executive"
     primary_links = [
         _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
@@ -300,7 +300,6 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         executive_links = [
             _nav_item("Executive Summary", "/admin/executive", active=current_executive_section == "executive", extra_class="top-link--secondary"),
             _nav_item("Brand Analysis", "/admin/executive/brand-analysis", active=current_executive_section == "brand_analysis", extra_class="top-link--secondary"),
-            _nav_item("History", "/admin/executive/brand-analysis/history", active=current_executive_section == "brand_analysis_history", extra_class="top-link--secondary"),
         ]
         secondary_nav = f"""
         <div class="topbar-divider"></div>

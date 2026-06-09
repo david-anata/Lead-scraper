@@ -164,19 +164,9 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
         </div>
         <div class="btn-row"><button class="btn" type="submit">Run analysis</button></div>
       </form>
-      {_history_table(runs, heading="Recent analyses")}
+      {_history_table(runs, heading="Analysis history", empty="No analyses yet — run one above.")}
     """
     return _doc("Brand Analysis", body, user=user)
-
-
-def render_history_page(*, runs: list, user: Optional[dict] = None) -> str:
-    body = f"""
-      <span class="eyebrow">Executive · Brand Analysis</span>
-      <h1>Analysis history</h1>
-      <p class="muted">Every analysis is saved here. Open any report to re-render it or re-download the .docx.</p>
-      {_history_table(runs, heading="", empty="No analyses yet — run one from the Brand Analysis tab.")}
-    """
-    return _doc("Brand Analysis — History", body, user=user, section="brand_analysis_history")
 
 
 def _history_table(runs: list, *, heading: str = "", empty: str = "No analyses yet.") -> str:
@@ -235,7 +225,7 @@ def _report_body(r: BrandReport, *, report_id: str = "") -> str:
       <span class="eyebrow">Executive Acquisition Report</span>
       <h1>{_esc(r.brand)}</h1>
       <p class="muted">Category: {_esc(CATEGORY_LABELS.get(r.category, r.category))} · Detected: {_esc(detected)} · Periods: {periods}{(' · Prepared ' + _esc(r.prepared_date)) if r.prepared_date else ''}</p>
-      <div class="btn-row">{dl}<a class="btn btn--ghost" href="/admin/executive/brand-analysis/history">History</a><a class="btn btn--ghost" href="/admin/executive/brand-analysis">New analysis</a></div>
+      <div class="btn-row">{dl}<a class="btn btn--ghost" href="/admin/executive/brand-analysis">← Brand Analysis</a></div>
 
       <!-- 0. Grade banner -->
       <div class="grade-banner" style="background:{color}">
