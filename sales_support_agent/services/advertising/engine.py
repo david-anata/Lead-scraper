@@ -176,8 +176,7 @@ def build_recommendations(
 
     recs: list[Recommendation] = []
     recs += _rule_wasted_spend_negatives(ad_rows, thr)
-    recs += _rule_bid_down_over_target(ad_rows, target_acos, thr)
-    recs += _rule_bid_up_under_target(ad_rows, target_acos, thr)
+    recs += _rule_bid_to_target(ad_rows, target_acos, thr)
     recs += _rule_harvest_keywords(ad_rows, thr)
     recs += _rule_external_efficiency(external_rows, sales_rows, goals)
     recs += _rule_strategic_gap(ad_rows, sales_rows, external_rows, goals, thr)
@@ -229,100 +228,73 @@ def _rule_wasted_spend_negatives(ad_rows: list[AdRow], thr: Thresholds) -> list[
     return out
 
 
-def _rule_bid_down_over_target(ad_rows: list[AdRow], target_acos: int, thr: Thresholds) -> list[Recommendation]:
-    """Converting keywords/targets running well over target ACoS -> trim bid."""
-    out: list[Recommendation] = []
-    ceiling = target_acos * thr.bid_down_over_target_ratio
-    for r in ad_rows:
-        if r.entity_level not in ("keyword", "target"):
-            continue
-        if r.clicks < thr.min_clicks_significant or r.orders == 0:
-            continue
-        ra = r.acos_bps
-        if ra is None or ra <= ceiling:
-            continue
-        new_bid = _proposed_bid_down(r, target_acos, thr)
-        if new_bid is None:
-            continue
-        saved = _estimated_spend_delta(r, new_bid)
-        rec = Recommendation(
-            category=CAT_BID_DOWN,
-            ad_type=r.ad_type,
-            severity=SEV_HIGH if ra > target_acos * 2 else SEV_MEDIUM,
-            title=f"Lower bid on '{r.entity_text}' — ACoS {fmt_pct(ra)} vs target {fmt_pct(target_acos)}",
-            detail=f"{r.orders} orders / {r.clicks} clicks in '{r.campaign_name}'.",
-            rationale="Bid above the breakeven CPC for target ACoS; trimming protects margin while keeping the keyword live.",
-            entity_ref=f"{r.campaign_name} › {r.ad_group_name} › {r.entity_text}",
-            current_value=fmt_money(r.bid_cents) if r.bid_cents else f"CPC {fmt_money(r.cpc_cents)}",
-            proposed_value=fmt_money(new_bid),
-            projected_impact={"spend_saved_cents": saved, "current_acos_bps": ra, "target_acos_bps": target_acos},
-            bulk_row={
-                "action": "set_bid",
-                "ad_type": r.ad_type,
-                "campaign_id": r.campaign_id,
-                "ad_group_id": r.ad_group_id,
-                "keyword_id": r.keyword_id,
-                "target_id": r.target_id,
-                "targeting_expression": r.entity_text,
-                "bulk_sheet": r.bulk_sheet,
-                "campaign_name": r.campaign_name,
-                "ad_group_name": r.ad_group_name,
-                "keyword_text": r.entity_text,
-                "match_type": r.match_type,
-                "new_bid_cents": new_bid,
-            },
-            is_bulk_actionable=_bulk_ok(r.ad_type),
-        )
-        rec.score = float(max(saved, 0))
-        out.append(rec)
-    return out
+def _bid_row(r, new_bid):
+    return {
+        "action": "set_bid", "ad_type": r.ad_type,
+        "campaign_id": r.campaign_id, "ad_group_id": r.ad_group_id,
+        "keyword_id": r.keyword_id, "target_id": r.target_id,
+        "targeting_expression": r.entity_text, "bulk_sheet": r.bulk_sheet,
+        "campaign_name": r.campaign_name, "ad_group_name": r.ad_group_name,
+        "keyword_text": r.entity_text, "match_type": r.match_type,
+        "new_bid_cents": new_bid,
+    }
 
 
-def _rule_bid_up_under_target(ad_rows: list[AdRow], target_acos: int, thr: Thresholds) -> list[Recommendation]:
-    """Winners running well under target ACoS with headroom -> scale bid up."""
+def _rule_bid_to_target(ad_rows: list[AdRow], target_acos: int, thr: Thresholds) -> list[Recommendation]:
+    """Move every converting keyword/target with enough data TOWARD the target
+    ACoS, sized to the gap (not a flat nudge). Over target -> trim the bid to the
+    break-even-for-target CPC; under target -> raise it toward that CPC, capped at
+    a controlled step up so winners scale without overshooting. Skips anything
+    already within the deadband of target (no churn). Direction sets the category."""
     out: list[Recommendation] = []
-    floor = target_acos * thr.bid_up_under_target_ratio
     for r in ad_rows:
         if r.entity_level not in ("keyword", "target"):
             continue
         if r.orders < 1 or r.clicks < thr.min_clicks_significant:
             continue
         ra = r.acos_bps
-        if ra is None or ra >= floor:
+        base = r.bid_cents or r.cpc_cents
+        target_cpc = _target_cpc_cents(r, target_acos)
+        if ra is None or not base or target_cpc is None:
             continue
-        new_bid = _proposed_bid_up(r, thr)
-        if new_bid is None:
-            continue
-        extra_sales = round(r.sales_cents * (thr.bid_up_factor - 1))
-        rec = Recommendation(
-            category=CAT_BID_UP,
-            ad_type=r.ad_type,
-            severity=SEV_MEDIUM,
-            title=f"Raise bid on '{r.entity_text}' — ACoS {fmt_pct(ra)} well under target",
-            detail=f"Efficient winner: {r.orders} orders at {fmt_money(r.sales_cents)} sales in '{r.campaign_name}'.",
-            rationale="Profitable keyword with room under the ACoS target; a higher bid wins more impressions to scale revenue.",
-            entity_ref=f"{r.campaign_name} › {r.ad_group_name} › {r.entity_text}",
-            current_value=fmt_money(r.bid_cents) if r.bid_cents else f"CPC {fmt_money(r.cpc_cents)}",
-            proposed_value=fmt_money(new_bid),
-            projected_impact={"sales_upside_cents": extra_sales, "current_acos_bps": ra, "target_acos_bps": target_acos},
-            bulk_row={
-                "action": "set_bid",
-                "ad_type": r.ad_type,
-                "campaign_id": r.campaign_id,
-                "ad_group_id": r.ad_group_id,
-                "keyword_id": r.keyword_id,
-                "target_id": r.target_id,
-                "targeting_expression": r.entity_text,
-                "bulk_sheet": r.bulk_sheet,
-                "campaign_name": r.campaign_name,
-                "ad_group_name": r.ad_group_name,
-                "keyword_text": r.entity_text,
-                "match_type": r.match_type,
-                "new_bid_cents": new_bid,
-            },
-            is_bulk_actionable=_bulk_ok(r.ad_type),
-        )
-        rec.score = float(max(extra_sales, 0)) * 0.5  # upside is softer than realized waste
+        if target_cpc >= base:
+            # scaling a winner up — controlled step, never overshoot target_cpc.
+            new_bid = _clamp_bid(min(target_cpc, round(base * thr.bid_up_max_multiple)), thr)
+        else:
+            # trimming an over-target keyword down to its target CPC.
+            new_bid = _clamp_bid(target_cpc, thr)
+        if base <= 0 or abs(new_bid - base) / base < thr.bid_change_deadband:
+            continue  # already near target — leave it alone
+
+        if new_bid < base:
+            saved = _estimated_spend_delta(r, new_bid)
+            rec = Recommendation(
+                category=CAT_BID_DOWN, ad_type=r.ad_type,
+                severity=SEV_HIGH if ra > target_acos * 2 else SEV_MEDIUM,
+                title=f"Lower bid on '{r.entity_text}' — ACoS {fmt_pct(ra)} vs target {fmt_pct(target_acos)}",
+                detail=f"{r.orders} orders / {r.clicks} clicks in '{r.campaign_name}'.",
+                rationale="Bid above the break-even CPC for target ACoS; trim to target protects margin while keeping the keyword live.",
+                entity_ref=f"{r.campaign_name} › {r.ad_group_name} › {r.entity_text}",
+                current_value=fmt_money(r.bid_cents) if r.bid_cents else f"CPC {fmt_money(r.cpc_cents)}",
+                proposed_value=fmt_money(new_bid),
+                projected_impact={"spend_saved_cents": saved, "current_acos_bps": ra, "target_acos_bps": target_acos},
+                bulk_row=_bid_row(r, new_bid), is_bulk_actionable=_bulk_ok(r.ad_type),
+            )
+            rec.score = float(max(saved, 0))
+        else:
+            extra_sales = round(r.sales_cents * (new_bid / base - 1))
+            rec = Recommendation(
+                category=CAT_BID_UP, ad_type=r.ad_type, severity=SEV_MEDIUM,
+                title=f"Raise bid on '{r.entity_text}' — ACoS {fmt_pct(ra)} under target {fmt_pct(target_acos)}",
+                detail=f"Efficient winner: {r.orders} orders at {fmt_money(r.sales_cents)} sales in '{r.campaign_name}'.",
+                rationale="Profitable keyword under the ACoS target; raising the bid toward target CPC wins more impressions to scale revenue.",
+                entity_ref=f"{r.campaign_name} › {r.ad_group_name} › {r.entity_text}",
+                current_value=fmt_money(r.bid_cents) if r.bid_cents else f"CPC {fmt_money(r.cpc_cents)}",
+                proposed_value=fmt_money(new_bid),
+                projected_impact={"sales_upside_cents": extra_sales, "current_acos_bps": ra, "target_acos_bps": target_acos},
+                bulk_row=_bid_row(r, new_bid), is_bulk_actionable=_bulk_ok(r.ad_type),
+            )
+            rec.score = float(max(extra_sales, 0)) * 0.5
         out.append(rec)
     return out
 
