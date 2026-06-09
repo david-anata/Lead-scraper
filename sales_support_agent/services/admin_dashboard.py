@@ -6955,7 +6955,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
     </style>
   </head>
   <body>
-    {render_agent_nav("executive", user=user)}
+    {render_agent_nav("executive", executive_section="executive", user=user)}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">

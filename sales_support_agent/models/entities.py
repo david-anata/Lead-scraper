@@ -699,3 +699,31 @@ class Recommendation(Base):
     __table_args__ = (
         Index("ix_recommendations_run_rank", "run_id", "rank"),
     )
+
+
+class BrandAnalysisReport(Base):
+    """One Executive > Brand Analysis run. Holds the slim list fields (brand,
+    grade, score, confidence) for History plus the full computed report as a
+    JSON blob. Uploaded source files and the generated .docx live in kv_store
+    (base64) so re-open + re-download survive Render's ephemeral disk.
+    """
+
+    __tablename__ = "brand_analysis_reports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    brand: Mapped[str] = mapped_column(String(255), default="", index=True)
+    category: Mapped[str] = mapped_column(String(32), default="dtc")
+    status: Mapped[str] = mapped_column(String(32), default="complete", index=True)  # complete|error
+
+    grade: Mapped[str] = mapped_column(String(2), default="")          # A–F
+    score_100: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[str] = mapped_column(String(16), default="")    # High|Medium|Low
+    period_current: Mapped[str] = mapped_column(String(64), default="")
+    period_prior: Mapped[str] = mapped_column(String(64), default="")
+
+    report_json: Mapped[dict] = mapped_column(JSON, default=dict)      # full BrandReport.to_dict()
+    error: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

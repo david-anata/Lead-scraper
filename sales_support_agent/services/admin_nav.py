@@ -240,7 +240,7 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </div>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", user: Optional[dict] = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", user: Optional[dict] = None) -> str:
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"
@@ -248,6 +248,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "finance"
     if active in {"advertising", "advertising_audit"}:
         primary_active = "advertising"
+    if active in {"executive", "brand_analysis", "brand_analysis_history"}:
+        primary_active = "executive"
     primary_links = [
         _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
         _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
@@ -291,6 +293,19 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         <div class="topbar-divider"></div>
         <nav class="top-actions top-actions--secondary">
           {"".join(advertising_links)}
+        </nav>
+        """
+    current_executive_section = executive_section or ("executive" if active == "executive" else active)
+    if primary_active == "executive":
+        executive_links = [
+            _nav_item("Executive Summary", "/admin/executive", active=current_executive_section == "executive", extra_class="top-link--secondary"),
+            _nav_item("Brand Analysis", "/admin/executive/brand-analysis", active=current_executive_section == "brand_analysis", extra_class="top-link--secondary"),
+            _nav_item("History", "/admin/executive/brand-analysis/history", active=current_executive_section == "brand_analysis_history", extra_class="top-link--secondary"),
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(executive_links)}
         </nav>
         """
     if primary_active == "fulfillment":
