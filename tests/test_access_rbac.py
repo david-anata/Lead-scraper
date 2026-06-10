@@ -44,6 +44,14 @@ class CatalogTests(unittest.TestCase):
                          ["finance", "advertising.audit"])
 
 
+def _role_id(name: str, perms: list) -> str:
+    """Get-or-create a role by name (the temp DB persists across tests/runs)."""
+    existing = store.get_role_by_name(name)
+    if existing:
+        return existing["id"]
+    return store.create_role(name, perms, description="")
+
+
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class StoreTests(unittest.TestCase):
     def test_superadmin_seeded(self) -> None:
@@ -53,14 +61,14 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(u["permissions"], set(ALL_TOOL_KEYS))
 
     def test_role_assignment_resolves_permissions(self) -> None:
-        rid = store.create_role("Finance Only", ["finance"], description="x")
+        rid = _role_id("Finance Only", ["finance"])
         store.upsert_user("fin1@anatainc.com", "Fin", role_id=rid)
         u = store.get_user_by_email("fin1@anatainc.com")
         self.assertEqual(u["permissions"], {"finance"})
         self.assertFalse(u["is_superadmin"])
 
     def test_suspended_user_has_no_permissions(self) -> None:
-        rid = store.create_role("Ops", ["website_ops.seo"], description="")
+        rid = _role_id("Ops", ["website_ops.seo"])
         uid = store.upsert_user("ops1@anatainc.com", "Ops", role_id=rid)
         store.set_user_status(uid, "suspended")
         access = store.resolve_access("ops1@anatainc.com")
@@ -68,7 +76,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(access["permissions"], set())
 
     def test_role_delete_blocked_while_assigned(self) -> None:
-        rid = store.create_role("Temp", ["finance"], description="")
+        rid = _role_id("Temp", ["finance"])
         store.upsert_user("temp_user@anatainc.com", role_id=rid)
         self.assertFalse(store.delete_role(rid))  # assigned -> blocked
 
