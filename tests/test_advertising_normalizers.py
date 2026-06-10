@@ -279,6 +279,41 @@ class SponsoredBrandsBulkTest(unittest.TestCase):
         self.assertFalse(any(r.keyword_id == "SBK2" for r in rows))
 
 
+class MergeDuplicateEntitiesTest(unittest.TestCase):
+    def _kw(self, kid, clicks, orders, sales, bid):
+        from sales_support_agent.services.advertising.schema import AdRow
+        return AdRow(ad_type="SP", entity_level="keyword", keyword_id=kid, entity_text="number 4",
+                     clicks=clicks, orders=orders, sales_cents=sales, spend_cents=clicks * 100, bid_cents=bid)
+
+    def test_collapses_same_keyword_id_to_richest_row(self):
+        # Same keyword arriving from report + bulk with conflicting data.
+        rich = self._kw("K1", clicks=213, orders=71, sales_cents=243241, bid=436)
+        thin = self._kw("K1", clicks=27, orders=2, sales_cents=11399, bid=1134)
+        from sales_support_agent.services.advertising.schema import AdRow
+        st = AdRow(ad_type="SP", entity_level="search_term", entity_text="x", clicks=5)  # no id → passthrough
+        merged, n = N.merge_duplicate_entities([rich, thin, st])
+        self.assertEqual(n, 1)
+        kws = [r for r in merged if r.entity_level == "keyword"]
+        self.assertEqual(len(kws), 1)               # collapsed to one
+        self.assertEqual(kws[0].clicks, 213)        # richest-data row wins
+        self.assertIn(st, merged)                    # search term untouched
+
+    def test_carries_bid_forward_if_winner_lacks_one(self):
+        winner = self._kw("K2", clicks=50, orders=3, sales_cents=10000, bid=0)   # more clicks, no bid
+        loser = self._kw("K2", clicks=10, orders=1, sales_cents=2000, bid=275)   # has the real bid
+        merged, _ = N.merge_duplicate_entities([winner, loser])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].clicks, 50)
+        self.assertEqual(merged[0].bid_cents, 275)  # real bid carried onto the winner
+
+    def test_distinct_keyword_ids_not_merged(self):
+        a = self._kw("A", 20, 2, 5000, 100)
+        b = self._kw("B", 20, 2, 5000, 100)
+        merged, n = N.merge_duplicate_entities([a, b])
+        self.assertEqual(n, 0)
+        self.assertEqual(len(merged), 2)
+
+
 class DropExistingCreatesTest(unittest.TestCase):
     def _bulk(self):
         header = ["Product", "Entity", "Operation", "Campaign ID", "Ad Group ID",
