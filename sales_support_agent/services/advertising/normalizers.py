@@ -802,6 +802,40 @@ def enforce_targeting_type(recs: list, file_bytes: bytes) -> int:
     return changed
 
 
+def merge_duplicate_entities(ad_rows: "list[AdRow]") -> "tuple[list[AdRow], int]":
+    """The SAME keyword/target arrives as multiple rows — once from the
+    performance reports and once from the bulk file — often with different click
+    counts (different/overlapping windows). Optimizing each row independently
+    produces conflicting bid recs for one keyword, and the apply-sheet dedup can
+    then keep the WRONG one (a bid computed from a partial slice).
+
+    Collapse to ONE row per resolved entity ID, keeping the **richest-data view**
+    (most clicks; ties → most spend) so each keyword is judged exactly once on its
+    fullest performance. Rows without an ID (search terms, un-resolved targets)
+    pass through untouched. Returns (merged_rows, count_collapsed)."""
+    best: dict = {}
+    passthrough: list = []
+    collapsed = 0
+    for r in ad_rows:
+        eid = r.keyword_id or r.target_id
+        if r.entity_level not in ("keyword", "target") or not eid:
+            passthrough.append(r)
+            continue
+        key = (r.ad_type, r.entity_level, eid)
+        cur = best.get(key)
+        if cur is None:
+            best[key] = r
+        else:
+            collapsed += 1
+            # richest data wins; carry a real bid forward if the winner lacks one.
+            winner = max((cur, r), key=lambda x: (x.clicks, x.spend_cents))
+            loser = r if winner is cur else cur
+            if not winner.bid_cents and loser.bid_cents:
+                winner.bid_cents = loser.bid_cents
+            best[key] = winner
+    return passthrough + list(best.values()), collapsed
+
+
 def drop_brand_term_harvests(recs: list, brand_name: str) -> int:
     """Don't harvest a search term that contains the brand name — you already bid
     on your own brand, so creating it as a 'new' keyword is redundant AND almost

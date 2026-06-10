@@ -127,6 +127,12 @@ def run_audit(
             backfilled = N.backfill_entity_ids(ad_rows, N.bulk_name_id_map(inputs.bulk_xlsx))
             if backfilled:
                 logger.info("[advertising] backfilled entity IDs on %d report rows from the bulk file", backfilled)
+            # Collapse the report + bulk views of each keyword/target into ONE row
+            # (richest data wins), so a keyword is optimized once on its full
+            # performance — never off a partial slice that yields a wrong bid.
+            ad_rows, collapsed = N.merge_duplicate_entities(ad_rows)
+            if collapsed:
+                logger.info("[advertising] merged %d duplicate keyword/target rows to one-per-entity", collapsed)
 
         market_rows: list[MarketRow] = (
             N.normalize_sqp_csv(inputs.sqp_csv) if inputs.sqp_csv else []
