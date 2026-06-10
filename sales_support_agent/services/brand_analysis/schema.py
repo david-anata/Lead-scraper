@@ -357,6 +357,10 @@ class BrandReport:
     data_sufficient: bool = False
     data_gaps: list = field(default_factory=list)         # list[str]
 
+    # Raw acquisition fields (PeriodFinancials passthrough — not in Metrics)
+    acquisition_current: dict = field(default_factory=dict)
+    acquisition_prior: dict = field(default_factory=dict)
+
     # Narrative (LLM-augmented, deterministic fallback)
     executive_summary: str = ""
     stands_out: list = field(default_factory=list)        # list[str]
@@ -390,6 +394,8 @@ class BrandReport:
             "confidence": self.confidence,
             "data_sufficient": self.data_sufficient,
             "data_gaps": self.data_gaps,
+            "acquisition_current": self.acquisition_current,
+            "acquisition_prior": self.acquisition_prior,
             "executive_summary": self.executive_summary,
             "stands_out": self.stands_out,
             "verdict_text": self.verdict_text,
@@ -424,6 +430,8 @@ class BrandReport:
             confidence=data.get("confidence", "Low"),
             data_sufficient=data.get("data_sufficient", False),
             data_gaps=data.get("data_gaps", []),
+            acquisition_current=data.get("acquisition_current", {}),
+            acquisition_prior=data.get("acquisition_prior", {}),
             executive_summary=data.get("executive_summary", ""),
             stands_out=data.get("stands_out", []),
             verdict_text=data.get("verdict_text", ""),

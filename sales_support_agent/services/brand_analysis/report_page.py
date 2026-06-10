@@ -21,9 +21,11 @@ from sales_support_agent.services.admin_nav import (
 from sales_support_agent.services.brand_analysis.schema import (
     CATEGORY_LABELS,
     BrandReport,
+    benchmarks_for,
     fmt_money,
     fmt_mult,
     fmt_pct,
+    safe_div,
 )
 
 _GRADE_COLORS = {
@@ -246,8 +248,8 @@ def _report_body(r: BrandReport, *, report_id: str = "") -> str:
       {_yoy_table(r)}
       {_monthly_bars(r)}
 
-      <h2>3. Acquisition Mix</h2>
-      {_acquisition_table(r)}
+      <h2>3. Acquisition Evaluation</h2>
+      {_acquisition_evaluation(r)}
 
       <h2>4. Media Mix</h2>
       {_media_table(r)}
@@ -336,17 +338,132 @@ def _monthly_bars(r: BrandReport) -> str:
     return f'<p class="muted" style="margin-bottom:2px;">Monthly revenue trajectory</p><div class="bars">{bars}</div><div class="bar-labels">{labels}</div>'
 
 
-def _acquisition_table(r: BrandReport) -> str:
+def _acquisition_evaluation(r: BrandReport) -> str:
     c = r.current
-    rows = [
-        ("New vs returning revenue split", "Data gap — request cohort/repeat-purchase data"),
-        ("Owned-channel (email/SMS) share", fmt_pct(c.owned_pct_bps) if c.owned_pct_bps is not None else "Data gap"),
-        ("Discount rate", fmt_pct(c.discount_rate_bps) if c.discount_rate_bps is not None else "Data gap"),
-        ("Return rate", fmt_pct(c.return_rate_bps) if c.return_rate_bps is not None else "Data gap"),
-        ("Blended MER", fmt_mult(c.blended_mer) if c.blended_mer is not None else "Data gap"),
-    ]
-    body = "".join(f"<tr><td>{l}</td><td>{_esc(v)}</td></tr>" for l, v in rows)
-    return f'<table><thead><tr><th>Signal</th><th>Value</th></tr></thead><tbody>{body}</tbody></table>'
+    p = r.prior
+    bm = benchmarks_for(r.category)
+    acq_cur = r.acquisition_current
+    acq_pri = r.acquisition_prior
+
+    def _vd(passed):
+        if passed is True:
+            return '<span class="pass">PASS</span>'
+        if passed is False:
+            return '<span class="fail">FAIL</span>'
+        return '<span class="gap">—</span>'
+
+    def _val(v):
+        return _esc(str(v)) if v is not None else '<span class="gap">Data gap</span>'
+
+    # Grade badge
+    acq_dim = next((d for d in r.scorecard.dimensions if d.key == "acquisition"), None)
+    color = _GRADE_COLORS.get(acq_dim.letter, "#666") if acq_dim else "#666"
+    badge_html = ""
+    if acq_dim:
+        badge_html = (
+            f'<div style="display:flex;align-items:flex-start;gap:14px;margin-bottom:18px;">'
+            f'<div style="font-size:36px;font-weight:900;color:{color};font-family:Montserrat,sans-serif;'
+            f'line-height:1;min-width:48px;text-align:center;">{_esc(acq_dim.letter)}</div>'
+            f'<div><strong style="font-size:14px;">Acquisition mix &amp; dependency &nbsp;·&nbsp; 12% weight</strong>'
+            f'<p class="muted" style="margin:4px 0 0;">{_esc(acq_dim.reason)}</p></div>'
+            f'</div>'
+        )
+
+    # ── 3a. Customer Revenue Split ──────────────────────────────────────────
+    new_r = acq_cur.get("new_customer_revenue_cents")
+    ret_r = acq_cur.get("returning_customer_revenue_cents")
+    new_r_p = acq_pri.get("new_customer_revenue_cents")
+    ret_r_p = acq_pri.get("returning_customer_revenue_cents")
+    coh_total = (new_r or 0) + (ret_r or 0) if (new_r is not None or ret_r is not None) else None
+    coh_total_p = (new_r_p or 0) + (ret_r_p or 0) if (new_r_p is not None or ret_r_p is not None) else None
+    ret_pct_bps = round(ret_r / coh_total * 10000) if (ret_r is not None and coh_total) else None
+    ret_pct_bps_p = round(ret_r_p / coh_total_p * 10000) if (ret_r_p is not None and coh_total_p) else None
+    new_pct_bps = round(new_r / coh_total * 10000) if (new_r is not None and coh_total) else None
+    new_pct_bps_p = round(new_r_p / coh_total_p * 10000) if (new_r_p is not None and coh_total_p) else None
+
+    yoy_col = r.has_yoy
+    yoy_th = f'<th class="num">{_esc(r.period_prior_label)}</th>' if yoy_col else ""
+
+    def _split_row(label, cur_v, pri_v, healthy, passed):
+        yoy_td = f'<td class="num">{cur_v if pri_v is None else _esc(str(pri_v) if pri_v else "—")}</td>' if yoy_col else ""
+        # re-order: cur_v is always current
+        yoy_cell = f'<td class="num">{_esc(str(pri_v)) if pri_v is not None else "—"}</td>' if yoy_col else ""
+        return (
+            f"<tr><td>{label}</td>"
+            f'<td class="num">{_esc(str(cur_v)) if cur_v is not None else "—"}</td>'
+            + yoy_cell +
+            f'<td>{_esc(str(healthy))}</td><td>{_vd(passed)}</td></tr>'
+        )
+
+    split_rows = (
+        _split_row("New-customer revenue", fmt_money(new_r), fmt_money(new_r_p) if yoy_col else None, "—", None) +
+        _split_row("Returning-customer revenue", fmt_money(ret_r), fmt_money(ret_r_p) if yoy_col else None, "—", None) +
+        _split_row("Returning-customer share", fmt_pct(ret_pct_bps), fmt_pct(ret_pct_bps_p) if yoy_col else None,
+                   "≥ 30%", None if ret_pct_bps is None else ret_pct_bps >= 3000) +
+        _split_row("New-customer share", fmt_pct(new_pct_bps), fmt_pct(new_pct_bps_p) if yoy_col else None, "—", None) +
+        _split_row("Owned-channel (email/SMS) %",
+                   fmt_pct(c.owned_pct_bps), fmt_pct(p.owned_pct_bps) if yoy_col else None,
+                   f"{bm.owned_pct_bps[0]//100}–{bm.owned_pct_bps[1]//100}%",
+                   None if c.owned_pct_bps is None else c.owned_pct_bps >= bm.owned_pct_bps[0])
+    )
+    split_table = (
+        f'<p style="font-weight:700;margin:16px 0 8px;">Customer Revenue Split</p>'
+        f'<table><thead><tr><th>Metric</th><th class="num">{_esc(r.period_current_label)}</th>'
+        f'{yoy_th}<th>Healthy</th><th>Verdict</th></tr></thead>'
+        f'<tbody>{split_rows}</tbody></table>'
+    )
+
+    # ── 3b. Retention & Pricing Signals ────────────────────────────────────
+    sig_rows = (
+        _split_row("Discount rate", fmt_pct(c.discount_rate_bps), fmt_pct(p.discount_rate_bps) if yoy_col else None,
+                   f"{bm.discount_rate_bps[0]//100}–{bm.discount_rate_bps[1]//100}%",
+                   None if c.discount_rate_bps is None else c.discount_rate_bps <= bm.discount_rate_bps[1]) +
+        _split_row("Return rate", fmt_pct(c.return_rate_bps), fmt_pct(p.return_rate_bps) if yoy_col else None,
+                   f"< {bm.return_rate_max_bps//100}%",
+                   None if c.return_rate_bps is None else c.return_rate_bps < bm.return_rate_max_bps) +
+        _split_row("Blended MER", fmt_mult(c.blended_mer), fmt_mult(p.blended_mer) if yoy_col else None,
+                   f"≥ {bm.blended_mer_min:.1f}x",
+                   None if c.blended_mer is None else c.blended_mer >= bm.blended_mer_min) +
+        _split_row("Marketing % of revenue", fmt_pct(c.marketing_pct_bps), fmt_pct(p.marketing_pct_bps) if yoy_col else None,
+                   f"{bm.marketing_pct_bps[0]//100}–{bm.marketing_pct_bps[1]//100}%",
+                   None if c.marketing_pct_bps is None else
+                   bm.marketing_pct_bps[0] <= c.marketing_pct_bps <= bm.marketing_pct_bps[1])
+    )
+    sig_table = (
+        f'<p style="font-weight:700;margin:16px 0 8px;">Retention &amp; Pricing Signals</p>'
+        f'<table><thead><tr><th>Signal</th><th class="num">{_esc(r.period_current_label)}</th>'
+        f'{yoy_th}<th>Healthy</th><th>Verdict</th></tr></thead>'
+        f'<tbody>{sig_rows}</tbody></table>'
+    )
+
+    # ── 3c. Unit Economics ──────────────────────────────────────────────────
+    aov = acq_cur.get("aov_cents")
+    cac = acq_cur.get("cac_cents")
+    ltv = acq_cur.get("ltv_cents")
+    ltv_cac = safe_div(ltv, cac) if (ltv is not None and cac) else None
+    _gap = '<span class="gap">Data gap — not supplied</span>'
+    _gap_ltv = '<span class="gap">Data gap — need LTV and CAC</span>'
+    _aov_v = fmt_money(aov) if aov is not None else _gap
+    _cac_v = fmt_money(cac) if cac is not None else _gap
+    _ltv_v = fmt_money(ltv) if ltv is not None else _gap
+    if ltv_cac is not None:
+        _ltv_badge = f'<span class="pass">≥ 3x ✓</span>' if ltv_cac >= 3 else '<span class="fail">(healthy ≥ 3x)</span>'
+        _ltv_cac_v = f"{ltv_cac:.1f}x {_ltv_badge}"
+    else:
+        _ltv_cac_v = _gap_ltv
+    ue_rows_html = (
+        f"<tr><td>AOV (average order value)</td><td>{_aov_v}</td></tr>"
+        f"<tr><td>CAC (customer acquisition cost)</td><td>{_cac_v}</td></tr>"
+        f"<tr><td>LTV (customer lifetime value)</td><td>{_ltv_v}</td></tr>"
+        f"<tr><td>LTV : CAC ratio</td><td>{_ltv_cac_v}</td></tr>"
+    )
+    ue_table = (
+        f'<p style="font-weight:700;margin:16px 0 8px;">Unit Economics</p>'
+        f'<table><thead><tr><th>Metric</th><th>Value</th></tr></thead>'
+        f'<tbody>{ue_rows_html}</tbody></table>'
+    )
+
+    return badge_html + split_table + sig_table + ue_table
 
 
 def _media_table(r: BrandReport) -> str:

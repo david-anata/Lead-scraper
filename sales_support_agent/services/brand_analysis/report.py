@@ -72,6 +72,8 @@ def build_report(
         media_mix=dict(intake.current.marketing_by_channel),
         media_mix_prior=dict(intake.prior.marketing_by_channel) if intake.prior else {},
         balance_sheet=_balance_lines(intake.current),
+        acquisition_current=_acquisition_data(intake.current),
+        acquisition_prior=_acquisition_data(intake.prior) if intake.prior else {},
         related_party_flag=intake.current.related_party_flag,
         scorecard=scorecard,
         red_flags=red_flags,
@@ -88,6 +90,13 @@ def build_report(
         intake_summary=intake.summary(),
     )
     return report
+
+
+def _acquisition_data(period) -> dict:
+    """Raw PeriodFinancials acquisition fields not in Metrics — passed through to the report."""
+    keys = ("new_customer_revenue_cents", "returning_customer_revenue_cents",
+            "aov_cents", "cac_cents", "ltv_cents")
+    return {k: getattr(period, k) for k in keys if getattr(period, k) is not None}
 
 
 def _balance_lines(period) -> list:
