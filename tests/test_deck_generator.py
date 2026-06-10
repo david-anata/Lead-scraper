@@ -668,12 +668,31 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn("Today", html)
         self.assertIn("Phase 1", html)
         self.assertIn("Phase 4", html)
-        # Steady-state funnel panel is marked default for print.
-        self.assertIn('data-default="1"', html)
+        # PR55: tabbed funnel removed in favor of just the ramp tiles +
+        # channel cards. The funnel was interactive-only so it didn't
+        # help the print path; cutting it gave the section a cleaner
+        # reading rhythm.
+        self.assertNotIn('data-default="1"', html)
         # PR29: ramp tiles use new "this phase" parenthetical, not the
         # misleading "from delta" that just restated the cumulative number.
         self.assertIn("this phase", html)
         self.assertNotIn("from delta", html)
+        # PR55: per-channel "Activates: <window>" badge — cross-references
+        # the ramp tiles above so each card shows WHEN it turns on.
+        self.assertIn("Activates:", html)
+        # PR55: spend-summary tiles show ABSOLUTE steady-state, not just the
+        # incremental delta. The label change + the math change go together:
+        # "Steady-state monthly sessions" should be a number ≥ current_sessions,
+        # since it's (current + delivered), not just delivered.
+        self.assertIn("Steady-state monthly sessions", html)
+        self.assertIn("Steady-state monthly revenue", html)
+        self.assertNotIn("Total monthly sessions", html)
+        # PR55: KPI strip rename and subtitle clarity.
+        self.assertIn("Sessions to add", html)
+        self.assertIn("over 12 months", html)
+        self.assertIn("end-state · month 12", html)
+        self.assertNotIn("Sessions delta", html)
+        self.assertNotIn("phase-4 steady state", html)
         # PR32: ramp now puts the steady-state framing in the section
         # subtitle (`.gp-section-h .desc`) rather than a paragraph caption.
         self.assertIn("End-of-phase steady state", html)
@@ -708,6 +727,40 @@ class GrowthPlanTests(unittest.TestCase):
         self.assertIn('rel="icon"', html)
         self.assertIn("data:image/png;base64,", html)
         self.assertIn('rel="apple-touch-icon"', html)
+
+    def test_growth_plan_spend_summary_is_absolute_not_incremental(self) -> None:
+        """PR55: 'Steady-state monthly sessions' tile shows current + delivered,
+        not just delivered. The pre-PR55 tile labeled incremental sessions as
+        'Total monthly sessions' which read as the absolute end-state and
+        understated the steady-state number by current_sessions worth.
+
+        For the Zantrex shape (current=39k, delta=69k, fully delivered): tile
+        should read 108k, not 69k. Same direction on revenue."""
+        from sales_support_agent.services.deck.growth_plan import (
+            GrowthPlanInputs, build_growth_plan, render_growth_plan_section,
+        )
+
+        inputs = GrowthPlanInputs(
+            conversion_rate_pct=15.0,
+            goal_monthly_sessions=108_000,
+            mix_organic=40.0,
+            mix_on_channel_paid=25.0,
+            mix_off_channel_paid=15.0,
+            mix_affiliate=15.0,
+            mix_retargeting=5.0,
+            cogs_per_unit=4.0,
+        )
+        plan = build_growth_plan(inputs=inputs, target_units=5_886)
+        # Sanity: current ~ 5886/.15 = 39_240; delta to 108k goal ~ 68_760.
+        self.assertGreater(plan.current_sessions, 35_000)
+        self.assertGreater(plan.delta_sessions, 60_000)
+
+        html = render_growth_plan_section(plan, target_brand="Zantrex", target_aov=24.99)
+        # Steady-state tile = current + delivered, comma-formatted.
+        expected_steady = plan.current_sessions + plan.total_sessions_delivered
+        self.assertIn(f"{expected_steady:,}", html)
+        # And it's NOT just the delta (the old buggy value).
+        self.assertGreater(expected_steady, plan.total_sessions_delivered)
 
     def test_generate_deck_omits_growth_section_when_no_inputs(self) -> None:
         """Without growth_plan_inputs the section must not appear — preserves

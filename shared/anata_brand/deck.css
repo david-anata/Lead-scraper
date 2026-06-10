@@ -1432,6 +1432,22 @@ h2.slide-title {
   color: var(--anata-muted);
   letter-spacing: 0.02em;
 }
+/* PR55: phase-activation badge under the title row — pill style so it
+   reads as a visible "when does this turn on" hint. Sits between the
+   .head row and the .cost line. */
+.channel-card .activation {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--anata-ink);
+  background: rgba(43, 54, 68, 0.06);
+  border: 1px solid rgba(43, 54, 68, 0.10);
+  border-radius: 999px;
+  padding: 3px 9px;
+  margin: 4px 0 2px;
+}
 .channel-card .outcome {
   font-size: 11.5px;
   color: var(--anata-ink-soft);
