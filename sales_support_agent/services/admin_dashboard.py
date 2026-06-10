@@ -233,95 +233,101 @@ def _merge_legacy_with_engagement(
     return out
 
 
-def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
-    """PR54: query DeckVisitSession + DeckSectionView for the new
-    rich-engagement payload. Returned as a separate dict alongside the
-    legacy view_analytics; the modal merges them.
+def _empty_engagement_cohort() -> dict[str, object]:
+    """PR56: shared empty-state helper so the batch and per-id paths
+    return identical shapes when there's no data for a deck."""
+    return {
+        "unique_visitors": 0, "total_visits": 0, "avg_seconds": 0,
+        "median_seconds": 0, "max_scroll_avg_pct": 0,
+        "first_seen_at": "", "last_seen_at": "", "visitors": [],
+        "top_sections": [], "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
+        "source_breakdown": {}, "device_breakdown": {}, "country_breakdown": {},
+    }
 
-    Default-excludes internal sessions (admin previews) per the user's
-    Decision 1. The modal can flip a toggle to include them later.
 
-    Returns:
-        {
-          "external": {
-            "unique_visitors": int,
-            "total_visits": int,
-            "avg_seconds": int,            # avg session length
-            "median_seconds": int,
-            "max_scroll_avg_pct": int,
-            "first_seen_at": iso,
-            "last_seen_at": iso,
-            "visitors": [
-              {
-                visitor_token, started_at, last_heartbeat_at, total_seconds,
-                max_scroll_pct, country, region, city, device, os, browser,
-                referrer_host, referrer_category
-              }, ...
-            ],
-            "top_sections": [
-              {section_id, total_seconds, viewer_count}, ...
-            ],
-            "daily_counts": {"7": {date: n}, "30": ..., "90": ..., "all": ...},
-            "source_breakdown": {direct: n, email: n, social: n, search: n, other: n},
-            "device_breakdown": {desktop: n, mobile: n, tablet: n},
-            "country_breakdown": {US: n, ...}
-          },
-          "internal": {... same shape ...}
-        }
+def _empty_engagement_payload() -> dict[str, object]:
+    return {"internal": _empty_engagement_cohort(), "external": _empty_engagement_cohort()}
+
+
+def _build_deck_engagement_batch(session, run_ids: list[int]) -> dict[int, dict[str, object]]:
+    """PR56: batched version of `_build_deck_engagement`. Eliminates the N+1
+    on the past-decks table — was 2 queries × 200 decks = 400 round-trips
+    per page load. Now: 2 total queries (sessions + section views), group
+    in Python, return a dict keyed by run_id. Per-run shape is identical
+    to `_build_deck_engagement`'s return so the call site is a drop-in.
+
+    Run-ids missing from the result (no sessions yet) return the empty
+    payload so callers don't need to None-check.
     """
-    out: dict[str, dict[str, object]] = {}
-    rows = (
-        session.execute(
-            select(DeckVisitSession).where(DeckVisitSession.run_id == run_id)
-        )
-        .scalars()
-        .all()
-    )
-    if not rows:
-        empty = {
-            "unique_visitors": 0, "total_visits": 0, "avg_seconds": 0,
-            "median_seconds": 0, "max_scroll_avg_pct": 0,
-            "first_seen_at": "", "last_seen_at": "", "visitors": [],
-            "top_sections": [], "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
-            "source_breakdown": {}, "device_breakdown": {}, "country_breakdown": {},
-        }
-        return {"internal": dict(empty), "external": dict(empty)}
+    if not run_ids:
+        return {}
 
-    # Pre-fetch all section views for these sessions in one query.
-    session_ids = [r.id for r in rows]
-    section_rows = (
+    # Two bulk queries instead of 2 × len(run_ids).
+    all_sessions = (
         session.execute(
-            select(DeckSectionView).where(DeckSectionView.session_id.in_(session_ids))
+            select(DeckVisitSession).where(DeckVisitSession.run_id.in_(run_ids))
         )
         .scalars()
         .all()
     )
+    if not all_sessions:
+        return {rid: _empty_engagement_payload() for rid in run_ids}
+
+    all_session_ids = [s.id for s in all_sessions]
+    all_section_rows = (
+        session.execute(
+            select(DeckSectionView).where(DeckSectionView.session_id.in_(all_session_ids))
+        )
+        .scalars()
+        .all()
+    )
+
+    # Group sessions and section views by run_id for the per-run aggregator.
+    sessions_by_run: dict[int, list[DeckVisitSession]] = {}
+    for s in all_sessions:
+        sessions_by_run.setdefault(s.run_id, []).append(s)
     sections_by_session: dict[int, list[DeckSectionView]] = {}
-    for sv in section_rows:
+    for sv in all_section_rows:
         sections_by_session.setdefault(sv.session_id, []).append(sv)
+
+    out: dict[int, dict[str, object]] = {}
+    for rid in run_ids:
+        rows = sessions_by_run.get(rid, [])
+        # Re-use the per-id aggregator's logic by handing it the prefetched
+        # rows. _aggregate_engagement_for_run is the pure function below.
+        out[rid] = _aggregate_engagement_for_run(rows, all_section_rows)
+    return out
+
+
+def _aggregate_engagement_for_run(
+    sessions: list, section_rows: list,
+) -> dict[str, object]:
+    """PR56: pure aggregator — takes pre-fetched session + section rows
+    for ONE deck run and computes the engagement payload. Extracted from
+    `_build_deck_engagement` so both the batch path and the per-id path
+    share the same shape and aggregation logic."""
+    if not sessions:
+        return _empty_engagement_payload()
 
     now = datetime.now(timezone.utc)
 
     def _aware(dt):
-        # SQLite returns naive datetimes; Postgres returns aware. Normalize
-        # to UTC-aware for safe arithmetic.
         if dt is None:
             return None
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt
 
+    # Index section rows by session_id once.
+    section_ids_in_play = {s.id for s in sessions}
+    relevant_sections = [sv for sv in section_rows if sv.session_id in section_ids_in_play]
+
+    out: dict[str, dict[str, object]] = {}
     for viewer_type in ("internal", "external"):
         is_internal_filter = viewer_type == "internal"
-        cohort = [r for r in rows if bool(r.is_internal) == is_internal_filter]
+        cohort = [r for r in sessions if bool(r.is_internal) == is_internal_filter]
         if not cohort:
-            out[viewer_type] = {
-                "unique_visitors": 0, "total_visits": 0, "avg_seconds": 0,
-                "median_seconds": 0, "max_scroll_avg_pct": 0,
-                "first_seen_at": "", "last_seen_at": "", "visitors": [],
-                "top_sections": [], "daily_counts": {"7": {}, "30": {}, "90": {}, "all": {}},
-                "source_breakdown": {}, "device_breakdown": {}, "country_breakdown": {},
-            }
+            out[viewer_type] = _empty_engagement_cohort()
             continue
 
         unique_visitors = {r.visitor_token for r in cohort if r.visitor_token}
@@ -332,7 +338,6 @@ def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
         scroll_list = [int(r.max_scroll_pct or 0) for r in cohort]
         avg_scroll = sum(scroll_list) // max(len(scroll_list), 1)
 
-        # Daily count windows.
         daily_counts: dict[str, dict[str, int]] = {}
         for window_name, days in (("7", 7), ("30", 30), ("90", 90), ("all", None)):
             counter: dict[str, int] = {}
@@ -346,7 +351,6 @@ def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
                 counter[day_key] = counter.get(day_key, 0) + 1
             daily_counts[window_name] = dict(sorted(counter.items()))
 
-        # Source / device / country breakdowns for the donuts.
         source_breakdown: dict[str, int] = {}
         device_breakdown: dict[str, int] = {}
         country_breakdown: dict[str, int] = {}
@@ -358,11 +362,10 @@ def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
             country = r.ip_country or "Unknown"
             country_breakdown[country] = country_breakdown.get(country, 0) + 1
 
-        # Top sections — sum total_seconds across all sessions in cohort.
         section_totals: dict[str, int] = {}
         section_viewers: dict[str, set[str]] = {}
         cohort_ids = {r.id for r in cohort}
-        for sv in section_rows:
+        for sv in relevant_sections:
             if sv.session_id not in cohort_ids:
                 continue
             sec_id = sv.section_id or ""
@@ -386,7 +389,6 @@ def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
             key=lambda x: -x["total_seconds"],
         )
 
-        # Per-visitor table rows.
         visitors_table = sorted(
             [
                 {
@@ -429,6 +431,57 @@ def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
             "country_breakdown": country_breakdown,
         }
     return out
+
+
+def _build_deck_engagement(session, run_id: int) -> dict[str, object]:
+    """PR54: query DeckVisitSession + DeckSectionView for the new
+    rich-engagement payload. Returned as a separate dict alongside the
+    legacy view_analytics; the modal merges them.
+
+    Default-excludes internal sessions (admin previews) per the user's
+    Decision 1. The modal can flip a toggle to include them later.
+
+    PR56: now a thin wrapper around `_build_deck_engagement_batch` so the
+    aggregation logic only lives in one place. Used by single-id callers
+    (tests, future per-deck analytics endpoints). For list pages
+    (/admin/sales-decks past-decks table) use the batch helper directly
+    to avoid the N+1.
+
+    Returns:
+        {
+          "external": {
+            "unique_visitors": int,
+            "total_visits": int,
+            "avg_seconds": int,            # avg session length
+            "median_seconds": int,
+            "max_scroll_avg_pct": int,
+            "first_seen_at": iso,
+            "last_seen_at": iso,
+            "visitors": [
+              {
+                visitor_token, started_at, last_heartbeat_at, total_seconds,
+                max_scroll_pct, country, region, city, device, os, browser,
+                referrer_host, referrer_category
+              }, ...
+            ],
+            "top_sections": [
+              {section_id, total_seconds, viewer_count}, ...
+            ],
+            "daily_counts": {"7": {date: n}, "30": ..., "90": ..., "all": ...},
+            "source_breakdown": {direct: n, email: n, social: n, search: n, other: n},
+            "device_breakdown": {desktop: n, mobile: n, tablet: n},
+            "country_breakdown": {US: n, ...}
+          },
+          "internal": {... same shape ...}
+        }
+    """
+    # PR56: delegate to the batch helper so all aggregation logic lives
+    # in one place (`_aggregate_engagement_for_run`). Two queries here is
+    # still 2 fewer than the old per-id path, and the batch helper handles
+    # the empty-state case cleanly.
+    return _build_deck_engagement_batch(session, [run_id]).get(
+        run_id, _empty_engagement_payload()
+    )
 
 
 def dashboard_data_to_dict(data: DashboardData) -> dict[str, object]:
@@ -1032,6 +1085,14 @@ def build_dashboard_data(
             .limit(200)
         ).scalars()
     )
+    # PR56: batch the engagement query — was 2 queries per deck (sessions
+    # + section_views) running inside the list comprehension below,
+    # which made the past-decks page do 400 DB round-trips at 200 decks.
+    # One batched call now returns a dict keyed by run_id, dropped to 2
+    # total queries.
+    engagement_by_run = _build_deck_engagement_batch(
+        session, [r.id for r in deck_runs]
+    )
     recent_deck_runs = [
         {
             "id": run.id,
@@ -1055,7 +1116,7 @@ def build_dashboard_data(
             # counters and new engagement fields.
             "view_analytics": _merge_legacy_with_engagement(
                 _build_deck_view_analytics(dict(run.summary_json or {})),
-                _build_deck_engagement(session, run.id),
+                engagement_by_run.get(run.id, _empty_engagement_payload()),
             ),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",

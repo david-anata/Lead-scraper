@@ -1200,6 +1200,119 @@ class DeckRoutingTests(unittest.TestCase):
         self.assertIn("sec-02", ext_secs)
         self.assertNotIn("sec-01", ext_secs)
 
+    def _add_fixture_deck_run(self, session_factory) -> int:
+        """PR56: helper to add a second deck-generation AutomationRun row
+        WITHOUT going through the service (which `_seed_deck` does via
+        `scalar_one()` and can only run once). Used by the batch tests."""
+        import secrets
+        with session_scope(session_factory) as session:
+            run = AutomationRun(
+                run_type="deck_generation",
+                status="success",
+                trigger="test",
+                summary_json={
+                    "status": "success",
+                    "export_token": secrets.token_urlsafe(18),
+                    "deck_slug": "test-deck-2",
+                    "deck_html": "<html><body>test</body></html>",
+                },
+            )
+            session.add(run)
+            session.flush()
+            return run.id
+
+    def test_batched_engagement_matches_per_id_results(self) -> None:
+        """PR56: `_build_deck_engagement_batch` must produce the same
+        per-run payload as the per-id `_build_deck_engagement`. This
+        guards against drift between the two paths (the per-id one is
+        now a thin wrapper, but tests still call it directly).
+
+        Posts heartbeats directly via the table writes to bypass the
+        deck-token validation that the HTTP route applies (the second
+        deck added via `_add_fixture_deck_run` doesn't have HTTP-route
+        coverage, so we seed its sessions directly)."""
+        from sales_support_agent.services.admin_dashboard import (
+            _build_deck_engagement, _build_deck_engagement_batch,
+        )
+        from sales_support_agent.models.entities import DeckVisitSession, DeckSectionView
+        from datetime import datetime, timezone
+
+        _, sf = self._make_client()
+        run_id_a, _, _ = self._seed_deck(sf)
+        run_id_b = self._add_fixture_deck_run(sf)
+
+        # Seed traffic directly into the tables (avoids needing two
+        # separate HTTP routes through TestClient).
+        now = datetime.now(timezone.utc)
+        with session_scope(sf) as session:
+            s_a = DeckVisitSession(
+                run_id=run_id_a, visitor_token="va", is_internal=False,
+                started_at=now, last_heartbeat_at=now,
+                total_seconds=200, max_scroll_pct=80,
+                device="desktop", os="macOS", browser="Chrome",
+                referrer_category="direct",
+            )
+            session.add(s_a); session.flush()
+            session.add(DeckSectionView(session_id=s_a.id, section_id="sec-01", total_seconds=200))
+
+            s_b1 = DeckVisitSession(
+                run_id=run_id_b, visitor_token="vb1", is_internal=False,
+                started_at=now, last_heartbeat_at=now,
+                total_seconds=90, max_scroll_pct=50,
+                device="mobile", os="iOS", browser="Safari",
+                referrer_category="email",
+            )
+            session.add(s_b1); session.flush()
+            session.add(DeckSectionView(session_id=s_b1.id, section_id="sec-02", total_seconds=90))
+
+            s_b2 = DeckVisitSession(
+                run_id=run_id_b, visitor_token="vb2", is_internal=False,
+                started_at=now, last_heartbeat_at=now,
+                total_seconds=45, max_scroll_pct=20,
+                device="desktop", os="Windows", browser="Chrome",
+                referrer_category="social",
+            )
+            session.add(s_b2); session.flush()
+            session.add(DeckSectionView(session_id=s_b2.id, section_id="sec-03", total_seconds=45))
+
+        with session_scope(sf) as session:
+            per_id_a = _build_deck_engagement(session, run_id_a)
+            per_id_b = _build_deck_engagement(session, run_id_b)
+            batched = _build_deck_engagement_batch(session, [run_id_a, run_id_b])
+
+        # Each batched entry equals the per-id entry exactly.
+        self.assertEqual(batched[run_id_a], per_id_a)
+        self.assertEqual(batched[run_id_b], per_id_b)
+        # And the batch includes both runs.
+        self.assertEqual(set(batched.keys()), {run_id_a, run_id_b})
+        # Sanity: per-deck data is genuinely different (no cross-contamination).
+        self.assertEqual(batched[run_id_a]["external"]["total_visits"], 1)
+        self.assertEqual(batched[run_id_b]["external"]["total_visits"], 2)
+
+    def test_batched_engagement_returns_empty_for_decks_with_no_sessions(self) -> None:
+        """PR56: a deck with no heartbeats must appear in the batch result
+        with an empty payload (not be missing). Drop-in replacement
+        guarantee for the call site that uses .get(id, default)."""
+        from sales_support_agent.services.admin_dashboard import (
+            _build_deck_engagement_batch, _empty_engagement_payload,
+        )
+
+        client, sf = self._make_client()
+        run_id_active, token, slug = self._seed_deck(sf)
+        run_id_empty = self._add_fixture_deck_run(sf)
+        client.post(
+            f"/decks/{slug}/{run_id_active}/{token}/heartbeat",
+            json={"visitor_token": "v1", "total_seconds": 60, "sections": {"sec-01": 60}},
+        )
+
+        with session_scope(sf) as session:
+            batched = _build_deck_engagement_batch(session, [run_id_empty, run_id_active])
+
+        # Empty deck gets the empty payload, not a missing key.
+        self.assertEqual(batched[run_id_empty], _empty_engagement_payload())
+        # Active deck has its session.
+        self.assertEqual(batched[run_id_active]["external"]["total_visits"], 1)
+
     def test_deck_export_token_mismatch_returns_404_not_500(self) -> None:
         client, sf = self._make_client()
         run_id, _real_token, slug = self._seed_deck(sf)

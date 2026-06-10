@@ -625,6 +625,63 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_created_at ON brand_analysis_reports (created_at)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_brand ON brand_analysis_reports (brand)"))
 
+    # Access control (RBAC) — users, custom roles, invites, access requests.
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_roles (
+                id               TEXT         PRIMARY KEY,
+                name             VARCHAR(128) NOT NULL DEFAULT '',
+                description      TEXT         NOT NULL DEFAULT '',
+                permissions_json JSON         NOT NULL DEFAULT '[]',
+                created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_app_roles_name ON app_roles (name)"))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_users (
+                id            TEXT         PRIMARY KEY,
+                email         VARCHAR(255) NOT NULL DEFAULT '',
+                name          VARCHAR(255) NOT NULL DEFAULT '',
+                role_id       TEXT         NULL,
+                status        VARCHAR(16)  NOT NULL DEFAULT 'active',
+                is_superadmin BOOLEAN      NOT NULL DEFAULT FALSE,
+                created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                last_login_at TIMESTAMPTZ  NULL
+            )
+        """))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_app_users_email ON app_users (email)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_users_role_id ON app_users (role_id)"))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_invites (
+                id          TEXT         PRIMARY KEY,
+                email       VARCHAR(255) NOT NULL DEFAULT '',
+                role_id     TEXT         NULL,
+                token_hash  VARCHAR(128) NOT NULL DEFAULT '',
+                invited_by  VARCHAR(255) NOT NULL DEFAULT '',
+                status      VARCHAR(16)  NOT NULL DEFAULT 'pending',
+                created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                expires_at  TIMESTAMPTZ  NULL,
+                accepted_at TIMESTAMPTZ  NULL
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_invites_email ON app_invites (email)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_invites_token_hash ON app_invites (token_hash)"))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_access_requests (
+                id               TEXT         PRIMARY KEY,
+                email            VARCHAR(255) NOT NULL DEFAULT '',
+                name             VARCHAR(255) NOT NULL DEFAULT '',
+                status           VARCHAR(16)  NOT NULL DEFAULT 'pending',
+                assigned_role_id TEXT         NULL,
+                decided_by       VARCHAR(255) NOT NULL DEFAULT '',
+                requested_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                decided_at       TIMESTAMPTZ  NULL
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_access_requests_email ON app_access_requests (email)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_access_requests_status ON app_access_requests (status)"))
+
     # QuickBooks OAuth token + state tables
     with engine.begin() as connection:
         connection.execute(text("""

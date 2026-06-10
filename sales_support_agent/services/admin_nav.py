@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Optional
 
 
+from sales_support_agent.services.access.catalog import SECTIONS as _CATALOG_SECTIONS
+
+# Section name -> the tool keys it contains (for nav visibility filtering).
+_SECTION_TOOLS = {sec: [t.key for t in tools] for sec, tools in _CATALOG_SECTIONS.items()}
+
+
 def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str = "") -> str:
     classes = ["top-link"]
     if active:
@@ -240,7 +246,31 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </div>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", user: Optional[dict] = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
+    # Per-tool nav filtering. When neither permissions nor is_superadmin is
+    # supplied, we keep the legacy "show everything" behaviour (the routes
+    # themselves are still guarded server-side). The Access admin link is the
+    # one exception: it only ever appears when explicitly granted.
+    _granted: Optional[set] = None
+    if is_superadmin:
+        _granted = None  # superadmin sees all
+        _show_all = True
+    elif permissions is not None:
+        _granted = set(permissions)
+        _show_all = False
+    else:
+        _show_all = True  # legacy callers that didn't pass permissions
+
+    def _can(key: str) -> bool:
+        return _show_all or (_granted is not None and key in _granted)
+
+    def _can_section(section: str) -> bool:
+        if _show_all:
+            return True
+        return any(_can(k) for k in _SECTION_TOOLS.get(section, ()))
+
+    show_access = is_superadmin or bool(permissions is not None and "access.manage" in permissions)
+
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"
@@ -250,20 +280,29 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "advertising"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"
+    if active in {"access", "access_users", "access_roles", "access_invites", "access_requests"}:
+        primary_active = "access"
+    _primary_specs = [
+        ("Sales Priorities", "/admin", primary_active == "sales", _can_section("Sales Priorities")),
+        ("Website Ops", "/admin/website-ops", primary_active == "website_ops", _can_section("Website Ops")),
+        ("Finance", "/admin/finances", primary_active == "finance", _can_section("Finance")),
+        ("Advertising", "/admin/advertising/audit", primary_active == "advertising", _can_section("Advertising")),
+        ("Executive", "/admin/executive", primary_active == "executive", _can_section("Executive")),
+        ("Fulfillment CS", "/admin/fulfillment-cs", primary_active == "fulfillment", _can_section("Fulfillment CS")),
+        ("Access", "/admin/access", primary_active == "access", show_access),
+    ]
     primary_links = [
-        _nav_item("Sales Priorities", "/admin", active=primary_active == "sales"),
-        _nav_item("Website Ops", "/admin/website-ops", active=primary_active == "website_ops"),
-        _nav_item("Finance", "/admin/finances", active=primary_active == "finance"),
-        _nav_item("Advertising", "/admin/advertising/audit", active=primary_active == "advertising"),
-        _nav_item("Executive", "/admin/executive", active=primary_active == "executive"),
-        _nav_item("Fulfillment CS", "/admin/fulfillment-cs", active=primary_active == "fulfillment"),
+        _nav_item(label, href, active=is_active)
+        for (label, href, is_active, visible) in _primary_specs if visible
     ]
     secondary_nav = ""
     current_sales_section = sales_section or active
     if primary_active == "sales":
         sales_links = [
-            _nav_item("Sales Priorities", "/admin", active=current_sales_section == "sales", extra_class="top-link--secondary"),
-            _nav_item("Generate sales deck", "/admin/sales-decks", active=current_sales_section == "sales_decks", extra_class="top-link--secondary"),
+            link for key, link in (
+                ("sales.priorities", _nav_item("Sales Priorities", "/admin", active=current_sales_section == "sales", extra_class="top-link--secondary")),
+                ("sales.decks", _nav_item("Generate sales deck", "/admin/sales-decks", active=current_sales_section == "sales_decks", extra_class="top-link--secondary")),
+            ) if _can(key)
         ]
         secondary_nav = f"""
         <div class="topbar-divider"></div>
@@ -274,9 +313,11 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     current_section = website_ops_section or ("seo_dashboard" if active == "website_ops" else active)
     if primary_active == "website_ops":
         secondary_links = [
-            _nav_item("SEO Dashboard", "/admin/website-ops", active=current_section == "seo_dashboard", extra_class="top-link--secondary"),
-            _nav_item("Queue", "/admin/website-ops/queue", active=current_section == "queue", extra_class="top-link--secondary"),
-            _nav_item("Reports", "/admin/website-ops/reports", active=current_section == "reports", extra_class="top-link--secondary"),
+            link for key, link in (
+                ("website_ops.seo", _nav_item("SEO Dashboard", "/admin/website-ops", active=current_section == "seo_dashboard", extra_class="top-link--secondary")),
+                ("website_ops.queue", _nav_item("Queue", "/admin/website-ops/queue", active=current_section == "queue", extra_class="top-link--secondary")),
+                ("website_ops.reports", _nav_item("Reports", "/admin/website-ops/reports", active=current_section == "reports", extra_class="top-link--secondary")),
+            ) if _can(key)
         ]
         secondary_nav = f"""
         <div class="topbar-divider"></div>
@@ -287,7 +328,9 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     current_advertising_section = advertising_section or ("advertising_audit" if active == "advertising" else active)
     if primary_active == "advertising":
         advertising_links = [
-            _nav_item("Audit", "/admin/advertising/audit", active=current_advertising_section == "advertising_audit", extra_class="top-link--secondary"),
+            link for key, link in (
+                ("advertising.audit", _nav_item("Audit", "/admin/advertising/audit", active=current_advertising_section == "advertising_audit", extra_class="top-link--secondary")),
+            ) if _can(key)
         ]
         secondary_nav = f"""
         <div class="topbar-divider"></div>
@@ -298,8 +341,10 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     current_executive_section = executive_section or ("executive" if active == "executive" else active)
     if primary_active == "executive":
         executive_links = [
-            _nav_item("Executive Summary", "/admin/executive", active=current_executive_section == "executive", extra_class="top-link--secondary"),
-            _nav_item("Brand Analysis", "/admin/executive/brand-analysis", active=current_executive_section == "brand_analysis", extra_class="top-link--secondary"),
+            link for key, link in (
+                ("executive.summary", _nav_item("Executive Summary", "/admin/executive", active=current_executive_section == "executive", extra_class="top-link--secondary")),
+                ("executive.brand_analysis", _nav_item("Brand Analysis", "/admin/executive/brand-analysis", active=current_executive_section == "brand_analysis", extra_class="top-link--secondary")),
+            ) if _can(key)
         ]
         secondary_nav = f"""
         <div class="topbar-divider"></div>
@@ -309,9 +354,11 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         """
     if primary_active == "fulfillment":
         fulfillment_links = [
-            _nav_item("Dashboard", "/admin/fulfillment-cs/", active=current_section == "fulfillment_dashboard", extra_class="top-link--secondary"),
-            _nav_item("Reports", "/admin/fulfillment-cs/reports/", active=current_section == "fulfillment_reports", extra_class="top-link--secondary"),
-            _nav_item("Latest", "/admin/fulfillment-cs/reports/latest", active=current_section == "fulfillment_latest", extra_class="top-link--secondary"),
+            link for key, link in (
+                ("fulfillment.dashboard", _nav_item("Dashboard", "/admin/fulfillment-cs/", active=current_section == "fulfillment_dashboard", extra_class="top-link--secondary")),
+                ("fulfillment.reports", _nav_item("Reports", "/admin/fulfillment-cs/reports/", active=current_section == "fulfillment_reports", extra_class="top-link--secondary")),
+                ("fulfillment.reports", _nav_item("Latest", "/admin/fulfillment-cs/reports/latest", active=current_section == "fulfillment_latest", extra_class="top-link--secondary")),
+            ) if _can(key)
         ]
         secondary_nav = f"""
         <div class="topbar-divider"></div>

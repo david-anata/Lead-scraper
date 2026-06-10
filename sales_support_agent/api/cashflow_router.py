@@ -43,26 +43,16 @@ from sales_support_agent.services.cashflow.upload_page import (
     render_upload_page,
     render_upload_result,
 )
-from sales_support_agent.services.auth_deps import has_finance_access
+from sales_support_agent.services.auth_deps import require_tool
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_transactions
-
-def _check_finance_access(request: Request) -> None:
-    """FastAPI dependency that enforces finance access.
-    Raises HTTPException(303) redirecting to login if not authorized.
-    """
-    if not has_finance_access(request):
-        raise HTTPException(
-            status_code=303,
-            headers={"Location": "/admin/login"},
-        )
 
 
 router = APIRouter(
     prefix="/admin/finances",
     tags=["finance"],
-    dependencies=[Depends(_check_finance_access)],
+    dependencies=[Depends(require_tool("finance"))],
 )
 
 
