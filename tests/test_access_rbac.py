@@ -130,5 +130,101 @@ class EnforcementTests(unittest.TestCase):
         self.assertNotEqual(r.headers.get("location"), "/admin/login")
 
 
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class AccessUITests(unittest.TestCase):
+    """Phase 2 — /admin/access users + roles pages."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+        # Superadmin cookie
+        self.sa_name, self.sa_token = _cookie_for("david@anatainc.com", "David", "admin")
+        # Finance-only user (no access.manage)
+        self.fin_role = _role_id("FinanceOnlyUI", ["finance"])
+        store.upsert_user("ui_fin@anatainc.com", "FinUI", role_id=self.fin_role)
+        self.fin_name, self.fin_token = _cookie_for("ui_fin@anatainc.com", "FinUI")
+
+    def _get(self, path, token_pair=None):
+        if token_pair:
+            name, token = token_pair
+            self.client.cookies.set(name, token)
+        try:
+            return self.client.get(path, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def _post(self, path, data, token_pair=None):
+        if token_pair:
+            name, token = token_pair
+            self.client.cookies.set(name, token)
+        try:
+            return self.client.post(path, data=data, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def test_access_page_requires_access_manage(self) -> None:
+        # Finance user cannot reach /admin/access
+        r = self._get("/admin/access", (self.fin_name, self.fin_token))
+        self.assertEqual(r.status_code, 403)
+
+    def test_superadmin_can_view_users_page(self) -> None:
+        r = self._get("/admin/access", (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Users", r.text)
+
+    def test_superadmin_can_view_roles_page(self) -> None:
+        r = self._get("/admin/access/roles", (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Roles", r.text)
+
+    def test_create_and_delete_role(self) -> None:
+        # Create a fresh role through the API
+        r = self._post("/admin/access/roles/new",
+                       {"name": "UITestRole", "description": "test", "permissions": ["finance"]},
+                       (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 303)
+        self.assertIn("/admin/access/roles", r.headers.get("location", ""))
+        # Role exists in store
+        role = store.get_role_by_name("UITestRole")
+        self.assertIsNotNone(role)
+        self.assertIn("finance", role["permissions"])
+        # Delete it
+        r2 = self._post(f"/admin/access/roles/{role['id']}/delete", {},
+                        (self.sa_name, self.sa_token))
+        self.assertEqual(r2.status_code, 303)
+        self.assertIsNone(store.get_role_by_name("UITestRole"))
+
+    def test_duplicate_role_name_returns_422(self) -> None:
+        _role_id("DupRole", ["finance"])
+        r = self._post("/admin/access/roles/new",
+                       {"name": "DupRole", "description": "", "permissions": []},
+                       (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 422)
+
+    def test_assign_role_via_post(self) -> None:
+        # Create a test user and assign a role via POST
+        test_uid = store.upsert_user("assign_test@anatainc.com", "AssignTest")
+        rid = _role_id("AssignTestRole", ["finance"])
+        r = self._post(f"/admin/access/users/{test_uid}/role",
+                       {"role_id": rid}, (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 303)
+        u = store.get_user_by_email("assign_test@anatainc.com")
+        self.assertEqual(u["role_id"], rid)
+
+    def test_suspend_and_activate_user(self) -> None:
+        uid = store.upsert_user("suspend_test@anatainc.com", "SuspendTest")
+        # Suspend
+        r = self._post(f"/admin/access/users/{uid}/status",
+                       {"action": "suspend"}, (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 303)
+        u = store.get_user_by_email("suspend_test@anatainc.com")
+        self.assertEqual(u["status"], "suspended")
+        # Activate
+        r2 = self._post(f"/admin/access/users/{uid}/status",
+                        {"action": "activate"}, (self.sa_name, self.sa_token))
+        self.assertEqual(r2.status_code, 303)
+        u2 = store.get_user_by_email("suspend_test@anatainc.com")
+        self.assertEqual(u2["status"], "active")
+
+
 if __name__ == "__main__":
     unittest.main()

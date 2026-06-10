@@ -366,6 +366,19 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           {"".join(fulfillment_links)}
         </nav>
         """
+    if primary_active == "access":
+        access_links = [
+            link for key, link in (
+                ("access.manage", _nav_item("Users", "/admin/access", active=active in {"access", "access_users"}, extra_class="top-link--secondary")),
+                ("access.manage", _nav_item("Roles", "/admin/access/roles", active=active == "access_roles", extra_class="top-link--secondary")),
+            ) if _can(key)
+        ]
+        secondary_nav = f"""
+        <div class="topbar-divider"></div>
+        <nav class="top-actions top-actions--secondary">
+          {"".join(access_links)}
+        </nav>
+        """
     return f"""
     <header class="topbar">
       <div class="topbar-shell">
