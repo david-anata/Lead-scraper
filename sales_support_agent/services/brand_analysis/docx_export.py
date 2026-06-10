@@ -15,9 +15,11 @@ from typing import Optional
 from sales_support_agent.services.brand_analysis.schema import (
     CATEGORY_LABELS,
     BrandReport,
+    benchmarks_for,
     fmt_money,
     fmt_mult,
     fmt_pct,
+    safe_div,
 )
 
 # Brand palette (hex, no #) — mirrors the app design tokens.
@@ -176,15 +178,146 @@ def build_docx(report: BrandReport) -> bytes:
             cells[2].text = "█" * blocks
         doc.add_paragraph()
 
-    # 3. Acquisition Mix
-    _heading(doc, "3. Acquisition Mix", 1)
-    _kv_table(doc, ["Signal", "Value"], [
-        ["New vs returning split", "Data gap — request cohort data"],
-        ["Owned-channel (email/SMS) share", fmt_pct(c.owned_pct_bps) if c.owned_pct_bps is not None else "Data gap"],
-        ["Discount rate", fmt_pct(c.discount_rate_bps) if c.discount_rate_bps is not None else "Data gap"],
-        ["Return rate", fmt_pct(c.return_rate_bps) if c.return_rate_bps is not None else "Data gap"],
-        ["Blended MER", fmt_mult(c.blended_mer) if c.blended_mer is not None else "Data gap"],
-    ], align_right_from=99)
+    # 3. Acquisition Evaluation
+    _heading(doc, "3. Acquisition Evaluation", 1)
+    bm = benchmarks_for(r.category)
+    acq_cur = r.acquisition_current
+    acq_pri = r.acquisition_prior
+
+    # Grade badge + rationale
+    acq_dim = next((d for d in r.scorecard.dimensions if d.key == "acquisition"), None)
+    if acq_dim:
+        badge = doc.add_table(rows=1, cols=2)
+        badge.style = "Light Grid Accent 1"
+        gcell, rcell = badge.rows[0].cells
+        gcell.text = ""
+        gr = gcell.paragraphs[0].add_run(acq_dim.letter)
+        gr.bold = True
+        gr.font.size = Pt(28)
+        gr.font.color.rgb = RGBColor.from_string(_GRADE_FILL.get(acq_dim.letter, _NAVY))
+        gcell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _shade(gcell, _MISSING_FILL)
+        rcell.text = ""
+        rcell.paragraphs[0].add_run("Acquisition mix & dependency  ·  12% weight").bold = True
+        rcell.add_paragraph(acq_dim.reason)
+        doc.add_paragraph()
+
+    # Helper: write a PASS/FAIL/gap cell
+    def _vd(cell, passed):
+        cell.text = ""
+        if passed is True:
+            run = cell.paragraphs[0].add_run("PASS"); run.bold = True; _color_run(run, _PASS_HEX)
+        elif passed is False:
+            run = cell.paragraphs[0].add_run("FAIL"); run.bold = True; _color_run(run, _FAIL_HEX)
+        else:
+            cell.text = "—"
+
+    # ── 3a. Customer Revenue Split ──────────────────────────────────────────
+    doc.add_paragraph().add_run("Customer Revenue Split").bold = True
+    new_r = acq_cur.get("new_customer_revenue_cents")
+    ret_r = acq_cur.get("returning_customer_revenue_cents")
+    new_r_p = acq_pri.get("new_customer_revenue_cents")
+    ret_r_p = acq_pri.get("returning_customer_revenue_cents")
+    coh_total = (new_r or 0) + (ret_r or 0) if (new_r is not None or ret_r is not None) else None
+    coh_total_p = (new_r_p or 0) + (ret_r_p or 0) if (new_r_p is not None or ret_r_p is not None) else None
+    ret_pct_bps = round(ret_r / coh_total * 10000) if (ret_r is not None and coh_total) else None
+    ret_pct_bps_p = round(ret_r_p / coh_total_p * 10000) if (ret_r_p is not None and coh_total_p) else None
+    new_pct_bps = round(new_r / coh_total * 10000) if (new_r is not None and coh_total) else None
+    new_pct_bps_p = round(new_r_p / coh_total_p * 10000) if (new_r_p is not None and coh_total_p) else None
+
+    def _pr(v):
+        return "—" if v is None else v
+
+    cols = ["Metric", r.period_current_label] + ([r.period_prior_label] if r.has_yoy else []) + ["Healthy", "Verdict"]
+    split_table = doc.add_table(rows=1, cols=len(cols))
+    split_table.style = "Light Grid Accent 1"
+    hdr = split_table.rows[0].cells
+    for i, h in enumerate(cols):
+        hdr[i].text = ""
+        hdr[i].paragraphs[0].add_run(h).bold = True
+        _shade(hdr[i], _HEADER_FILL)
+
+    def _split_row(label, cur_val, pri_val, healthy, passed):
+        cells = split_table.add_row().cells
+        cells[0].text = label
+        cells[1].text = _pr(cur_val)
+        idx = 2
+        if r.has_yoy:
+            cells[idx].text = _pr(pri_val); idx += 1
+        cells[idx].text = healthy; idx += 1
+        _vd(cells[idx], passed)
+
+    _split_row("New-customer revenue", fmt_money(new_r), fmt_money(new_r_p), "—", None)
+    _split_row("Returning-customer revenue", fmt_money(ret_r), fmt_money(ret_r_p), "—", None)
+    _split_row("Returning-customer share",
+               fmt_pct(ret_pct_bps), fmt_pct(ret_pct_bps_p),
+               "≥ 30%",
+               None if ret_pct_bps is None else ret_pct_bps >= 3000)
+    _split_row("New-customer share",
+               fmt_pct(new_pct_bps), fmt_pct(new_pct_bps_p),
+               "—", None)
+    _split_row("Owned-channel (email/SMS) %",
+               fmt_pct(c.owned_pct_bps), fmt_pct(p.owned_pct_bps),
+               f"{bm.owned_pct_bps[0]//100}–{bm.owned_pct_bps[1]//100}%",
+               None if c.owned_pct_bps is None else c.owned_pct_bps >= bm.owned_pct_bps[0])
+    doc.add_paragraph()
+
+    # ── 3b. Retention & Pricing Signals ────────────────────────────────────
+    doc.add_paragraph().add_run("Retention & Pricing Signals").bold = True
+    sig_table = doc.add_table(rows=1, cols=len(cols))
+    sig_table.style = "Light Grid Accent 1"
+    hdr2 = sig_table.rows[0].cells
+    for i, h in enumerate(cols):
+        hdr2[i].text = ""
+        hdr2[i].paragraphs[0].add_run(h).bold = True
+        _shade(hdr2[i], _HEADER_FILL)
+
+    def _sig_row(label, cur_val, pri_val, healthy, passed):
+        cells = sig_table.add_row().cells
+        cells[0].text = label
+        cells[1].text = _pr(cur_val)
+        idx = 2
+        if r.has_yoy:
+            cells[idx].text = _pr(pri_val); idx += 1
+        cells[idx].text = healthy; idx += 1
+        _vd(cells[idx], passed)
+
+    _sig_row("Discount rate",
+             fmt_pct(c.discount_rate_bps), fmt_pct(p.discount_rate_bps),
+             f"{bm.discount_rate_bps[0]//100}–{bm.discount_rate_bps[1]//100}%",
+             None if c.discount_rate_bps is None else c.discount_rate_bps <= bm.discount_rate_bps[1])
+    _sig_row("Return rate",
+             fmt_pct(c.return_rate_bps), fmt_pct(p.return_rate_bps),
+             f"< {bm.return_rate_max_bps//100}%",
+             None if c.return_rate_bps is None else c.return_rate_bps < bm.return_rate_max_bps)
+    _sig_row("Blended MER",
+             fmt_mult(c.blended_mer), fmt_mult(p.blended_mer),
+             f"≥ {bm.blended_mer_min:.1f}x",
+             None if c.blended_mer is None else c.blended_mer >= bm.blended_mer_min)
+    _sig_row("Marketing % of revenue",
+             fmt_pct(c.marketing_pct_bps), fmt_pct(p.marketing_pct_bps),
+             f"{bm.marketing_pct_bps[0]//100}–{bm.marketing_pct_bps[1]//100}%",
+             None if c.marketing_pct_bps is None else
+             bm.marketing_pct_bps[0] <= c.marketing_pct_bps <= bm.marketing_pct_bps[1])
+    doc.add_paragraph()
+
+    # ── 3c. Unit Economics ──────────────────────────────────────────────────
+    aov = acq_cur.get("aov_cents")
+    cac = acq_cur.get("cac_cents")
+    ltv = acq_cur.get("ltv_cents")
+    ltv_cac = safe_div(ltv, cac) if (ltv is not None and cac) else None
+    has_unit = any(v is not None for v in (aov, cac, ltv))
+    doc.add_paragraph().add_run("Unit Economics").bold = True
+    if has_unit or not coh_total:
+        ue_rows = [
+            ["AOV (average order value)", fmt_money(aov) if aov is not None else "Data gap — not supplied"],
+            ["CAC (customer acquisition cost)", fmt_money(cac) if cac is not None else "Data gap — not supplied"],
+            ["LTV (customer lifetime value)", fmt_money(ltv) if ltv is not None else "Data gap — not supplied"],
+            ["LTV : CAC ratio", (f"{ltv_cac:.1f}x" + (" ✓" if ltv_cac and ltv_cac >= 3 else " (healthy ≥ 3x)")) if ltv_cac is not None else "Data gap — need LTV and CAC"],
+        ]
+        _kv_table(doc, ["Metric", "Value"], ue_rows, align_right_from=99)
+    else:
+        doc.add_paragraph("AOV, CAC, and LTV not supplied — request cohort export or platform-level CAC report.")
 
     # 4. Media Mix
     _heading(doc, "4. Media Mix", 1)
