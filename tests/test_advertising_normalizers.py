@@ -280,10 +280,10 @@ class SponsoredBrandsBulkTest(unittest.TestCase):
 
 
 class MergeDuplicateEntitiesTest(unittest.TestCase):
-    def _kw(self, kid, clicks, orders, sales, bid):
+    def _kw(self, kid, clicks, orders, sales_cents, bid):
         from sales_support_agent.services.advertising.schema import AdRow
         return AdRow(ad_type="SP", entity_level="keyword", keyword_id=kid, entity_text="number 4",
-                     clicks=clicks, orders=orders, sales_cents=sales, spend_cents=clicks * 100, bid_cents=bid)
+                     clicks=clicks, orders=orders, sales_cents=sales_cents, spend_cents=clicks * 100, bid_cents=bid)
 
     def test_collapses_same_keyword_id_to_richest_row(self):
         # Same keyword arriving from report + bulk with conflicting data.
