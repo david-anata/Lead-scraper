@@ -180,6 +180,8 @@ class Settings:
     google_oauth_allowed_domain: str = "anatainc.com"
     admin_role_map: dict[str, str] = field(default_factory=dict)
     admin_default_role: str = "ops"
+    rbac_enabled: bool = True
+    rbac_superadmin_emails: tuple[str, ...] = ("david@anatainc.com",)
     active_statuses: tuple[str, ...] = field(default_factory=lambda: ACTIVE_FOLLOW_UP_STATUSES)
     inactive_statuses: tuple[str, ...] = field(default_factory=lambda: INACTIVE_STATUSES)
     managed_fields: ManagedFieldSettings = field(default_factory=ManagedFieldSettings)
@@ -579,6 +581,12 @@ def load_settings() -> Settings:
         google_oauth_allowed_domain=(os.getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN", "anatainc.com").strip() or "anatainc.com"),
         admin_role_map=_parse_json_object_lenient(os.getenv("ADMIN_ROLE_MAP", "{}"), env_var="ADMIN_ROLE_MAP"),
         admin_default_role=(os.getenv("ADMIN_DEFAULT_ROLE", "ops").strip() or "ops"),
+        rbac_enabled=_parse_bool(os.getenv("RBAC_ENABLED", "true"), default=True),
+        rbac_superadmin_emails=tuple(
+            e.strip().lower()
+            for e in (os.getenv("RBAC_SUPERADMIN_EMAILS", "david@anatainc.com") or "").split(",")
+            if e.strip()
+        ) or ("david@anatainc.com",),
         active_statuses=tuple(
             normalize_status_key(status)
             for status in ACTIVE_FOLLOW_UP_STATUSES

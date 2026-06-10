@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from sales_support_agent.services.auth_deps import (
     get_session_user_from_request,
-    is_authenticated,
+    require_tool,
 )
 from sales_support_agent.services.brand_analysis import storage
 from sales_support_agent.services.brand_analysis.docx_export import build_docx
@@ -34,15 +34,10 @@ logger = logging.getLogger(__name__)
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-def _check_admin_access(request: Request) -> None:
-    if not is_authenticated(request):
-        raise HTTPException(status_code=303, headers={"Location": "/admin/login"})
-
-
 router = APIRouter(
     prefix="/admin/executive/brand-analysis",
     tags=["brand-analysis"],
-    dependencies=[Depends(_check_admin_access)],
+    dependencies=[Depends(require_tool("executive.brand_analysis"))],
 )
 
 

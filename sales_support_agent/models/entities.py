@@ -727,3 +727,76 @@ class BrandAnalysisReport(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Access control (RBAC) — multi-user, custom roles, per-tool permissions.
+# ---------------------------------------------------------------------------
+
+
+class AppRole(Base):
+    """A custom role: a named set of per-tool permissions (catalog keys)."""
+
+    __tablename__ = "app_roles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    permissions_json: Mapped[list] = mapped_column(JSON, default=list)  # list[str] of tool keys
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class AppUser(Base):
+    """A person who can sign in. Authorization is resolved from role_id ->
+    AppRole.permissions_json on every request (the cookie is identity only).
+    Super-admins bypass all per-tool checks and can never be locked out.
+    """
+
+    __tablename__ = "app_users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    role_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|suspended
+    is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppInvite(Base):
+    """A direct invite to a specific email, granting a role on acceptance.
+    The bearer token is stored hashed; the raw token lives only in the link."""
+
+    __tablename__ = "app_invites"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    role_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    token_hash: Mapped[str] = mapped_column(String(128), index=True)
+    invited_by: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending|accepted|revoked|expired
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppAccessRequest(Base):
+    """A self-service access request raised when an un-provisioned (but
+    domain-allowed) user signs in. An admin approves with a role, or denies."""
+
+    __tablename__ = "app_access_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)  # pending|approved|denied
+    assigned_role_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

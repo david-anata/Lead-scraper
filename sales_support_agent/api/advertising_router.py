@@ -19,20 +19,15 @@ from sales_support_agent.services.advertising.audit import AuditInputs, run_audi
 from sales_support_agent.services.advertising.audit_page import render_audit_page
 from sales_support_agent.services.advertising.intake import route_files
 from sales_support_agent.services.advertising.schema import ExternalCostRow, Goals
-from sales_support_agent.services.auth_deps import get_session_user_from_request, is_authenticated
+from sales_support_agent.services.auth_deps import get_session_user_from_request, require_tool
 
 logger = logging.getLogger(__name__)
-
-
-def _check_admin_access(request: Request) -> None:
-    if not is_authenticated(request):
-        raise HTTPException(status_code=303, headers={"Location": "/admin/login"})
 
 
 router = APIRouter(
     prefix="/admin/advertising",
     tags=["advertising"],
-    dependencies=[Depends(_check_admin_access)],
+    dependencies=[Depends(require_tool("advertising.audit"))],
 )
 
 

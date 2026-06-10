@@ -758,6 +758,20 @@ def startup() -> None:
     except Exception as _e:
         logger.warning("Could not load agent_settings: %s", _e)
         app.state.agent_settings = None
+    # RBAC: seed the never-lockable super-admin(s) and install the per-tool gate.
+    try:
+        if _cf_db_url and app.state.agent_settings is not None:
+            from sales_support_agent.services.access import store as _access_store
+            _access_store.seed_superadmins(getattr(app.state.agent_settings, "rbac_superadmin_emails", ()))
+    except Exception as _e:
+        logger.warning("Could not seed RBAC super-admins: %s", _e)
+    try:
+        from sales_support_agent.services.access.middleware import install_access_middleware
+        from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response
+        install_access_middleware(app)
+        app.add_exception_handler(ToolForbidden, render_forbidden_response)
+    except Exception as _e:
+        logger.warning("Could not install RBAC middleware: %s", _e)
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
         APP_VERSION,

@@ -26,6 +26,13 @@ def create_app() -> FastAPI:
     init_database(session_factory)
     init_cashflow_db(settings.sales_agent_db_url)
 
+    # RBAC: seed the never-lockable super-admin(s).
+    try:
+        from sales_support_agent.services.access import store as access_store
+        access_store.seed_superadmins(getattr(settings, "rbac_superadmin_emails", ()))
+    except Exception:  # noqa: BLE001 — seeding must never block startup
+        logging.getLogger(__name__).exception("Failed to seed RBAC super-admins")
+
     app = FastAPI(title="Sales Support Agent")
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     os.makedirs(static_dir, exist_ok=True)
@@ -46,6 +53,12 @@ def create_app() -> FastAPI:
     app.include_router(cashflow_router)
     app.include_router(advertising_router)
     app.include_router(brand_analysis_router)
+
+    # RBAC: per-tool authorization gate + friendly 403 handler.
+    from sales_support_agent.services.access.middleware import install_access_middleware
+    from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response
+    install_access_middleware(app)
+    app.add_exception_handler(ToolForbidden, render_forbidden_response)
     return app
 
 
