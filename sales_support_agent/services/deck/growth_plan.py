@@ -1198,6 +1198,10 @@ def render_growth_plan_section(
     target_aov: float = 0.0,
 ) -> str:
     """Emit the HTML for the single 'Growth plan synopsis' slide."""
+    # PR55: shorter caption — the original packed three concepts (units→CVR
+    # derivation, market benchmark source, channel routing) into one
+    # sentence and prospects had to parse it twice. The KPI strip below
+    # already shows the math chain, so the caption just states the goal.
     if plan.delta_sessions <= 0:
         gap_caption = (
             f"{html.escape(target_brand)} is already at or above the goal "
@@ -1205,13 +1209,16 @@ def render_growth_plan_section(
         )
     else:
         gap_caption = (
-            f"Reverse-engineered from {html.escape(target_brand)}'s units, "
-            f"benchmarked against the visible market, and routed across paid + organic "
-            f"to land at {plan.goal_sessions:,} monthly sessions."
+            f"{html.escape(target_brand)} needs +{plan.delta_sessions:,} monthly sessions "
+            f"across 12 months and 5 channels to reach niche-leader scale."
         )
 
     # PR32: KPI strip uses the redesign's `.gp-kpis` / `.gp-kpi` classes
     # (sand-tinted tiles; the delta tile gets a sky-tinted variant).
+    # PR55: clarity pass — "Sessions delta" → "Sessions to add" (no
+    # engineering jargon for prospects), the goal subtitle drops
+    # "phase-4 steady state" for "end-state · month 12" (timeline is
+    # now in the headline, not buried in the ramp section below).
     kpi_strip = (
         "<div class='gp-kpis'>"
         "<div class='gp-kpi'>"
@@ -1222,17 +1229,29 @@ def render_growth_plan_section(
         "<div class='gp-kpi'>"
         "<p class='lab'>Goal sessions</p>"
         f"<p class='val'>{plan.goal_sessions:,}</p>"
-        "<p class='sub'>phase-4 steady state</p>"
+        "<p class='sub'>end-state · month 12</p>"
         "</div>"
         "<div class='gp-kpi delta'>"
-        "<p class='lab'>Sessions delta</p>"
+        "<p class='lab'>Sessions to add</p>"
         f"<p class='val'>+{plan.delta_sessions:,}</p>"
-        "<p class='sub'>to be earned across 4 phases</p>"
+        "<p class='sub'>over 12 months · 5 channels</p>"
         "</div>"
         "</div>"
     )
 
-    cards_html = "".join(_render_channel_card(ch) for ch in plan.channels)
+    # PR55: build channel_key → "Activates: <phase window>" badge so each
+    # channel card shows WHEN the channel comes online. Without this, the
+    # cards read as if everything turns on simultaneously, contradicting
+    # the ramp tiles above.
+    activation_by_channel: dict[str, str] = {}
+    for phase in PHASES:
+        for ch_key in phase.channels_added:
+            activation_by_channel[ch_key] = phase.window_label
+
+    cards_html = "".join(
+        _render_channel_card(ch, activation_window=activation_by_channel.get(ch.key, ""))
+        for ch in plan.channels
+    )
 
     daily_spend = plan.total_monthly_spend / 30.0
     if plan.shortfall_sessions > 0:
@@ -1248,9 +1267,14 @@ def render_growth_plan_section(
         f"<li>{html.escape(line)}</li>" for line in plan.methodology_lines
     )
 
-    # PR26: tabbed funnel by implementation phase. Default tab is steady-state
-    # (all channels active) so the static deck PDF still shows the full picture.
-    funnel_svg = _render_funnel_with_tabs(plan, target_aov=target_aov) if plan.delta_sessions > 0 else ""
+    # PR55: tabbed funnel removed — the same idea (sessions → PDP → units →
+    # revenue, ramping by phase) is covered more cleanly by the ramp tiles
+    # above + channel cards below, and the funnel was interactive-only so
+    # it didn't help the print path. Cutting it gives the section a clearer
+    # reading rhythm: KPI strip → ramp by phase → channels by phase →
+    # spend summary. Keep _render_funnel_with_tabs around in case we want
+    # to re-introduce it; just don't call it.
+    funnel_svg = ""
 
     # PR28: print-friendly per-phase ramp — shows cumulative session delivery
     # climbing from current → goal as channels come online. Always rendered on
@@ -1259,13 +1283,19 @@ def render_growth_plan_section(
 
     # PR32: spend-summary strip at the bottom — replaces the simpler
     # `growth-summary` row with a 4-tile gradient strip per the design.
-    expected_units_steady = int(round(plan.total_sessions_delivered * (plan.cvr_pct / 100.0)))
+    # PR55: tiles now show ABSOLUTE end-state values (current + delivered),
+    # not just the incremental delta. Previous version labeled the delta as
+    # "Total monthly sessions" which read as the end-state to prospects —
+    # for Zantrex the tile showed 69k when steady-state was actually 108k
+    # (current 39k + delivered 69k). The honest read is the absolute number.
+    steady_state_sessions = plan.current_sessions + plan.total_sessions_delivered
+    expected_units_steady = int(round(steady_state_sessions * (plan.cvr_pct / 100.0)))
     expected_revenue_steady = expected_units_steady * max(target_aov, 0.0)
     spend_summary = (
         "<div class='spend-summary'>"
         f"<div class='item'><div class='lab'>Monthly paid spend</div><div class='val'>{_money(plan.total_monthly_spend)}</div></div>"
-        f"<div class='item'><div class='lab'>Total monthly sessions</div><div class='val'>{plan.total_sessions_delivered:,}</div></div>"
-        f"<div class='item'><div class='lab'>Steady-state revenue</div><div class='val'>{_money(expected_revenue_steady)}</div></div>"
+        f"<div class='item'><div class='lab'>Steady-state monthly sessions</div><div class='val'>{steady_state_sessions:,}</div></div>"
+        f"<div class='item'><div class='lab'>Steady-state monthly revenue</div><div class='val'>{_money(expected_revenue_steady)}</div></div>"
         f"<div class='item'><div class='lab'>Daily spend</div><div class='val'>{_money(daily_spend)}</div></div>"
         "</div>"
     )
@@ -1281,12 +1311,8 @@ def render_growth_plan_section(
       </header>
       {kpi_strip}
       {ramp_html}
-      <h3 class="gp-section-h">Funnel — by phase
-        <span class="desc">Sessions → PDP visits → units → revenue</span>
-      </h3>
-      {funnel_svg}
       <h3 class="gp-section-h">Channel mix — what gets activated, when
-        <span class="desc">5 channels · color-coded ramp</span>
+        <span class="desc">5 channels · color-coded by phase</span>
       </h3>
       <div class="channel-grid">{cards_html}</div>
       {spend_summary}
@@ -1299,11 +1325,15 @@ def render_growth_plan_section(
     """
 
 
-def _render_channel_card(channel: GrowthChannel) -> str:
+def _render_channel_card(channel: GrowthChannel, *, activation_window: str = "") -> str:
     """PR32: emit class names that match `deck.css` (.channel-card.organic /
     .on_paid / .off_paid / .affiliate / .retargeting). Inner sub-elements use
     the design's flat class names (`.head`, `.mix`, `.cost`, `.outcome`,
     `.block-h`).
+
+    PR55: `activation_window` is the human-readable phase window when this
+    channel comes online (e.g. "Months 3–6") — shown as a badge under the
+    title so the reader can cross-reference the ramp tiles above.
 
     Channel `key` comes from the data model as e.g. "on_channel_paid", but
     the design's CSS uses shorthand "on_paid" for the left-border accent
@@ -1353,12 +1383,22 @@ def _render_channel_card(channel: GrowthChannel) -> str:
         else ""
     )
 
+    # PR55: phase-activation badge — sits under the title row so it reads as
+    # part of the channel identity, not a stray label. Hidden when no
+    # window is available (e.g. caller passed empty string).
+    activation_badge = (
+        f"<div class='activation'>Activates: {html.escape(activation_window)}</div>"
+        if activation_window
+        else ""
+    )
+
     return (
         f"<article class='channel-card {html.escape(css_key)}'>"
         f"<div class='head'>"
         f"<h4>{html.escape(channel.label)}</h4>"
         f"<span class='mix'>{channel.mix_pct:.0f}% mix</span>"
         f"</div>"
+        f"{activation_badge}"
         f"<div class='cost'>{html.escape(cost_text)}</div>"
         f"{outcome_line}"
         f"{campaign_block}"
