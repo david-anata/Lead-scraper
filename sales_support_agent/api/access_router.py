@@ -1,7 +1,10 @@
 """Access admin UI — /admin/access.
 
-Requires `access.manage` for every route (super-admin only by default).
-Provides:
+Requires `access.manage` for all admin routes.
+Public route (no auth guard, in middleware bypass list):
+  GET  /admin/access/invite/{token}   → validate token, set cookie, bounce to Google login
+
+Admin routes:
   GET  /admin/access                  → users list
   POST /admin/access/users/{id}/role  → assign/change role
   POST /admin/access/users/{id}/status → suspend / activate
@@ -12,10 +15,20 @@ Provides:
   GET  /admin/access/roles/{id}/edit  → edit-role form
   POST /admin/access/roles/{id}/edit  → save role edits
   POST /admin/access/roles/{id}/delete → delete role (blocked if assigned)
+
+  GET  /admin/access/invites          → pending invites list + send form
+  POST /admin/access/invites/new      → create invite → show link page
+  POST /admin/access/invites/{id}/revoke → revoke invite
+
+  GET  /admin/access/requests         → pending access requests
+  POST /admin/access/requests/{id}/approve → approve + assign role
+  POST /admin/access/requests/{id}/deny   → deny
 """
 from __future__ import annotations
 
 import logging
+import secrets
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -23,6 +36,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sales_support_agent.services.access import store
 from sales_support_agent.services.access.pages import (
+    render_invite_created_page,
+    render_invite_invalid_page,
+    render_invites_page,
+    render_requests_page,
     render_role_form_page,
     render_roles_page,
     render_users_page,
@@ -206,6 +223,97 @@ async def delete_role(role_id: str, current_user: dict = Depends(_guard)):
     if ok:
         return _redirect("/admin/access/roles", "deleted")
     return _err_redirect("/admin/access/roles", "blocked")
+
+
+# ---------------------------------------------------------------------------
+# Invite landing (PUBLIC — no auth, middleware bypass covers /admin/access/invite)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/invite/{token}", response_class=HTMLResponse)
+async def invite_landing(token: str, request: Request):
+    invite = store.get_pending_invite_by_token(token)
+    if not invite:
+        return HTMLResponse(render_invite_invalid_page(), status_code=410)
+    # Store the raw token in a short-lived cookie, then bounce to Google login.
+    secure = "localhost" not in str(request.base_url)
+    response = RedirectResponse("/admin/auth/google", status_code=302)
+    response.set_cookie("pending_invite", token, httponly=True, samesite="lax",
+                        path="/", secure=secure, max_age=600)
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Invites admin
+# ---------------------------------------------------------------------------
+
+
+@router.get("/invites", response_class=HTMLResponse)
+async def invites_page(request: Request, current_user: dict = Depends(_guard)):
+    invites = store.list_pending_invites()
+    roles = store.list_roles()
+    return HTMLResponse(render_invites_page(invites, roles, current_user=current_user,
+                                            flash=_flash(request)))
+
+
+@router.post("/invites/new", response_class=HTMLResponse)
+async def create_invite(
+    request: Request,
+    email: str = Form(""),
+    role_id: str = Form(""),
+    current_user: dict = Depends(_guard),
+):
+    email = email.strip().lower()
+    if not email:
+        return RedirectResponse("/admin/access/invites?err=noname", status_code=303)
+    token = secrets.token_urlsafe(32)
+    expires = datetime.utcnow() + timedelta(days=7)
+    store.create_invite(email, role_id or None, token=token,
+                        invited_by=current_user.get("email", ""),
+                        expires_at=expires)
+    base = str(request.base_url).rstrip("/")
+    if "localhost" not in base and "127.0.0.1" not in base:
+        base = base.replace("http://", "https://")
+    invite_link = f"{base}/admin/access/invite/{token}"
+    return HTMLResponse(render_invite_created_page(invite_link, email, current_user=current_user))
+
+
+@router.post("/invites/{invite_id}/revoke")
+async def revoke_invite(invite_id: str, current_user: dict = Depends(_guard)):
+    store.revoke_invite(invite_id)
+    return _redirect("/admin/access/invites", "deleted")
+
+
+# ---------------------------------------------------------------------------
+# Access requests admin
+# ---------------------------------------------------------------------------
+
+
+@router.get("/requests", response_class=HTMLResponse)
+async def requests_page(request: Request, current_user: dict = Depends(_guard)):
+    reqs = store.list_access_requests(status="pending")
+    roles = store.list_roles()
+    return HTMLResponse(render_requests_page(reqs, roles, current_user=current_user,
+                                             flash=_flash(request)))
+
+
+@router.post("/requests/{request_id}/approve")
+async def approve_request(
+    request_id: str,
+    role_id: str = Form(""),
+    current_user: dict = Depends(_guard),
+):
+    store.decide_access_request(request_id, approve=True,
+                                role_id=role_id or None,
+                                decided_by=current_user.get("email", ""))
+    return _redirect("/admin/access/requests", "role")
+
+
+@router.post("/requests/{request_id}/deny")
+async def deny_request(request_id: str, current_user: dict = Depends(_guard)):
+    store.decide_access_request(request_id, approve=False,
+                                decided_by=current_user.get("email", ""))
+    return _redirect("/admin/access/requests", "status")
 
 
 # ---------------------------------------------------------------------------

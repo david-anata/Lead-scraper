@@ -269,7 +269,13 @@ def list_pending_invites() -> list:
     with _session() as s:
         rows = (s.query(AppInvite).filter(AppInvite.status == "pending")
                 .order_by(AppInvite.created_at.desc()).all())
+        role_ids = {i.role_id for i in rows if i.role_id}
+        role_names: dict = {}
+        if role_ids:
+            for r in s.query(AppRole).filter(AppRole.id.in_(role_ids)).all():
+                role_names[r.id] = r.name
         return [{"id": i.id, "email": i.email, "role_id": i.role_id,
+                 "role_name": role_names.get(i.role_id, ""),
                  "created_at": i.created_at.isoformat() if i.created_at else None} for i in rows]
 
 
