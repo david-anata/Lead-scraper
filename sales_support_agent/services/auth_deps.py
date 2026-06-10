@@ -15,39 +15,59 @@ from sales_support_agent.services.admin_auth import get_session_user
 from sales_support_agent.services.access.catalog import ALL_TOOL_KEYS, label_for
 
 
-def _get_auth_settings(request: Request):
-    """Return the settings object that has admin_cookie_name / admin_session_secret.
+def _all_auth_settings(request: Request) -> list:
+    """Return every settings object on app.state that can validate a session token.
 
-    Priority:
-      1. app.state.agent_settings  — full sales_support_agent Settings (preferred)
-      2. app.state.admin_dashboard_settings — AdminDashboardSettings stored at startup
-      3. app.state.settings — lean root Settings (last resort, may lack admin fields)
+    main.py and sales_support_agent/main.py each store a DIFFERENT settings object
+    with potentially different admin_session_secret defaults.  Collecting all of
+    them lets get_session_user_from_request try every secret so a password-login
+    cookie (minted by main.py's AdminDashboardSettings) is always found even when
+    ADMIN_DASHBOARD_SESSION_SECRET is not set in the environment.
     """
-    agent = getattr(request.app.state, "agent_settings", None)
-    if agent is not None and hasattr(agent, "admin_cookie_name"):
-        return agent
-    admin_ds = getattr(request.app.state, "admin_dashboard_settings", None)
-    if admin_ds is not None and hasattr(admin_ds, "admin_cookie_name"):
-        return admin_ds
-    return request.app.state.settings
+    seen_secrets: set = set()
+    result = []
+    for attr in ("agent_settings", "admin_dashboard_settings", "settings"):
+        s = getattr(request.app.state, attr, None)
+        if s is None:
+            continue
+        if not (hasattr(s, "admin_cookie_name") and hasattr(s, "admin_session_secret")):
+            continue
+        sec = getattr(s, "admin_session_secret", "")
+        if sec in seen_secrets:
+            continue  # same secret — no point trying twice
+        seen_secrets.add(sec)
+        result.append(s)
+    return result
+
+
+def _get_auth_settings(request: Request):
+    """Return the primary settings object for the current request (first in list)."""
+    candidates = _all_auth_settings(request)
+    if candidates:
+        return candidates[0]
+    return getattr(request.app.state, "settings", None)
 
 
 def get_session_user_from_request(request: Request) -> Optional[dict]:
     """Return the *identity* dict ({email,name,role}) from the cookie, or None.
-    This validates the signed token only — it does NOT decide authorization."""
+
+    Tries every settings object on app.state so a password-login cookie
+    (minted by main.py, which may use a different default secret) is found
+    even when ADMIN_DASHBOARD_SESSION_SECRET is not explicitly set.
+    """
     try:
-        settings = _get_auth_settings(request)
-        named = request.cookies.get(settings.admin_cookie_name, "")
-        if named:
-            user = get_session_user(settings, named)
-            if user:
-                return user
-        for token in request.cookies.values():
-            if token == named:
-                continue
-            user = get_session_user(settings, token)
-            if user:
-                return user
+        for settings in _all_auth_settings(request):
+            named = request.cookies.get(settings.admin_cookie_name, "")
+            if named:
+                user = get_session_user(settings, named)
+                if user:
+                    return user
+            for token in request.cookies.values():
+                if token == named:
+                    continue
+                user = get_session_user(settings, token)
+                if user:
+                    return user
     except AttributeError:
         pass
     return None
