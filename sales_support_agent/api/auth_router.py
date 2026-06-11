@@ -99,7 +99,8 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
     hd: str = (userinfo.get("hd") or "").strip().lower()
 
     allowed_domain = settings.google_oauth_allowed_domain.lower()
-    if not email.endswith(f"@{allowed_domain}") and hd != allowed_domain:
+    domain_ok = email.endswith(f"@{allowed_domain}") or hd == allowed_domain
+    if not domain_ok and not _external_login_allowed(request, email):
         logger.warning("OAuth login rejected — domain not allowed: %s", email)
         return RedirectResponse("/admin/login?error=domain_not_allowed", status_code=302)
 
@@ -120,6 +121,27 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
     response.delete_cookie(_OAUTH_STATE_COOKIE, path="/")
     response.set_cookie(value=token, **_cookie_opts(request))
     return response
+
+
+def _external_login_allowed(request: Request, email: str) -> bool:
+    """Whether a non-allowed-domain Google account may sign in.
+
+    Externals get in only when explicitly provisioned by an admin: either a
+    pending invite for exactly this email (carried by the invite-link cookie)
+    or an existing user row from an earlier invite. Uninvited externals are
+    rejected outright and never file access requests.
+    """
+    try:
+        from sales_support_agent.services.access import store
+        token = request.cookies.get("pending_invite", "").strip()
+        if token:
+            invite = store.get_pending_invite_by_token(token)
+            if invite and (invite.get("email") or "").lower() == email:
+                return True
+        return store.get_user_by_email(email) is not None
+    except Exception:  # noqa: BLE001 — fail closed
+        logger.exception("External-login check failed for %s", email)
+        return False
 
 
 def _mint_session(request: Request, settings, email: str, name: str) -> RedirectResponse:

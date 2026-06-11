@@ -385,3 +385,31 @@ class AccessFinalizeTests(unittest.TestCase):
         both = render_login_page(show_google_button=True, show_password_form=True)
         self.assertIn('name="password"', both)
         self.assertIn('<div class="login-divider">', both)
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class ExternalInviteTests(unittest.TestCase):
+    """Invited external (non-domain) accounts may sign in; uninvited may not."""
+
+    def _req(self, cookies=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(cookies=cookies or {})
+
+    def test_uninvited_external_is_rejected(self) -> None:
+        from sales_support_agent.api.auth_router import _external_login_allowed
+        self.assertFalse(_external_login_allowed(self._req(), "stranger@gmail.com"))
+
+    def test_external_with_matching_invite_cookie_is_allowed(self) -> None:
+        from datetime import datetime, timedelta
+        from sales_support_agent.api.auth_router import _external_login_allowed
+        store.create_invite("contractor@gmail.com", None, token="ext-tok-1",
+                            expires_at=datetime.utcnow() + timedelta(days=7))
+        req = self._req({"pending_invite": "ext-tok-1"})
+        self.assertTrue(_external_login_allowed(req, "contractor@gmail.com"))
+        # Same cookie, different google account → still rejected.
+        self.assertFalse(_external_login_allowed(req, "other@gmail.com"))
+
+    def test_previously_invited_external_can_sign_in_again(self) -> None:
+        from sales_support_agent.api.auth_router import _external_login_allowed
+        store.upsert_user("returning-ext@gmail.com", "Returning Ext")
+        self.assertTrue(_external_login_allowed(self._req(), "returning-ext@gmail.com"))

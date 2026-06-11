@@ -36,7 +36,7 @@ def send_invite_email(settings, *, to_email: str, invite_link: str,
                 f"Hi,\n\n"
                 f"You've been invited{by_part} to the Anata agent dashboard{role_part}.\n\n"
                 f"Accept your invite (valid 7 days):\n{invite_link}\n\n"
-                f"You'll be asked to sign in with your @anatainc.com Google account.\n"
+                f"Open the link and sign in with the Google account this invite was sent to.\n"
             ),
         )
         return True

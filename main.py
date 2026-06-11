@@ -3744,7 +3744,17 @@ def admin_login_page(request: Request) -> Response:
     except Exception:
         _show_google = False
     _show_password = password_login_enabled(admin_settings)
-    _err = "" if (_show_google or _show_password) else "No sign-in method is configured. Set GOOGLE_OAUTH_CLIENT_ID/SECRET or ADMIN_DASHBOARD_PASSWORD."
+    _oauth_errors = {
+        "domain_not_allowed": ("This dashboard is for Anata Google accounts. "
+                               "If you received an invite, open the invite link to sign in "
+                               "with the email it was sent to."),
+        "invalid_state": "Google sign-in expired — please try again.",
+        "no_code": "Google sign-in was cancelled — please try again.",
+        "token_exchange": "Google sign-in failed — please try again.",
+    }
+    _err = _oauth_errors.get(request.query_params.get("error", ""), "")
+    if not (_show_google or _show_password):
+        _err = "No sign-in method is configured. Set GOOGLE_OAUTH_CLIENT_ID/SECRET or ADMIN_DASHBOARD_PASSWORD."
     return HTMLResponse(render_login_page(show_google_button=_show_google,
                                           show_password_form=_show_password,
                                           error_message=_err))
