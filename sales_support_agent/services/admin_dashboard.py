@@ -1859,10 +1859,12 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
           <p>This dashboard keeps lead pulls, owner priorities, and sync controls in one place so the team can move quickly without digging through multiple tools.</p>
           <div class="login-card">
             <h2>Enter the dashboard.</h2>
-            <p>Use the admin password to review priorities, sync fresh data, and run a lead pull.</p>
+            <p>Sign in with Google or use your email and the admin password.</p>
             {error_html}
             {google_button_html}
             <form method="post" action="/admin/login">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" autocomplete="email" placeholder="you@anatainc.com" required />
               <label for="password">Password</label>
               <input id="password" name="password" type="password" autocomplete="current-password" required />
               <button type="submit">GET STARTED</button>

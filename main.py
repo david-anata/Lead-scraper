@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from sales_support_agent.services.admin_auth import (
     admin_login_enabled,
     create_admin_session_token,
+    create_user_session_token,
     validate_admin_session_token,
     verify_admin_password,
 )
@@ -3731,19 +3732,34 @@ async def admin_login_submit(request: Request) -> Response:
     if not admin_login_enabled(admin_settings):
         raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
     body = (await request.body()).decode("utf-8")
-    password = parse_qs(body).get("password", [""])[0]
+    parsed = parse_qs(body)
+    password = parsed.get("password", [""])[0]
+    email = (parsed.get("email", [""])[0] or "").strip().lower()
+    _agent_settings_post = getattr(request.app.state, "agent_settings", None)
+    try:
+        from sales_support_agent.services.admin_auth_google import google_oauth_enabled as _goe2
+        _show_google_post = bool(_agent_settings_post and _goe2(_agent_settings_post))
+    except Exception:
+        _show_google_post = False
     if not verify_admin_password(admin_settings, password):
-        _agent_settings_post = getattr(request.app.state, "agent_settings", None)
-        try:
-            from sales_support_agent.services.admin_auth_google import google_oauth_enabled as _goe2
-            _show_google_post = bool(_agent_settings_post and _goe2(_agent_settings_post))
-        except Exception:
-            _show_google_post = False
         return HTMLResponse(render_login_page(error_message="Incorrect password.", show_google_button=_show_google_post), status_code=401)
 
+    # Mint a 5-part identity token (same format as Google SSO) so the session
+    # carries the submitter's email rather than the generic admin username.
+    _name = email
+    _role = "admin"
+    try:
+        from sales_support_agent.services.access import store as _access_store
+        _u = _access_store.get_user_by_email(email)
+        if _u:
+            _name = _u.get("name") or email
+            _role = _u.get("role") or "admin"
+    except Exception:
+        pass
+    _settings_for_token = _agent_settings_post or admin_settings
     response = RedirectResponse(url="/admin", status_code=302)
     response.set_cookie(
-        value=create_admin_session_token(admin_settings),
+        value=create_user_session_token(_settings_for_token, email=email or admin_settings.admin_username, name=_name, role=_role),
         **_admin_cookie_options(request, admin_settings),
     )
     try:
