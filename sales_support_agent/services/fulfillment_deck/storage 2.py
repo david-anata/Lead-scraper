@@ -57,61 +57,15 @@ def create_run(*, trigger: str, metadata: Optional[dict] = None) -> int:
         return int(run.id)
 
 
-def save_draft(run_id: int, summary: dict) -> None:
-    """Persist a finished generation as a reviewable DRAFT (not yet public)."""
+def complete_run(run_id: int, summary: dict) -> None:
     with _session() as s:
         run = s.get(AutomationRun, run_id)
         if run is None:
             return
-        run.status = "draft"
+        run.status = "completed"
         run.completed_at = datetime.now(timezone.utc)
         run.summary_json = summary
         s.add(run)
-
-
-# Backward-compatible alias: "completing" a generation now lands in draft.
-complete_run = save_draft
-
-
-def publish_run(run_id: int) -> bool:
-    """Flip a draft to published ("completed") — public link goes live.
-
-    Idempotent for already-published runs. Returns False for missing/failed
-    runs.
-    """
-    with _session() as s:
-        run = s.execute(
-            select(AutomationRun).where(
-                AutomationRun.id == run_id,
-                AutomationRun.run_type == RUN_TYPE,
-            )
-        ).scalar_one_or_none()
-        if run is None or run.status not in ("draft", "completed"):
-            return False
-        summary = dict(run.summary_json or {})
-        summary["published_at"] = datetime.now(timezone.utc).isoformat()
-        run.status = "completed"
-        run.summary_json = summary
-        s.add(run)
-        return True
-
-
-def update_summary(run_id: int, patch: dict) -> bool:
-    """Shallow-merge ``patch`` into the run's summary_json."""
-    with _session() as s:
-        run = s.execute(
-            select(AutomationRun).where(
-                AutomationRun.id == run_id,
-                AutomationRun.run_type == RUN_TYPE,
-            )
-        ).scalar_one_or_none()
-        if run is None:
-            return False
-        summary = dict(run.summary_json or {})
-        summary.update(patch or {})
-        run.summary_json = summary
-        s.add(run)
-        return True
 
 
 def fail_run(run_id: int, error: str) -> None:
@@ -158,9 +112,6 @@ def list_runs(limit: int = 100) -> list[dict]:
                 {
                     "id": int(r.id),
                     "status": r.status,
-                    # Existing rows predating the draft flow were published on
-                    # completion, so status=="completed" IS the published bit.
-                    "published": r.status == "completed",
                     "started_at": r.started_at.isoformat() if r.started_at else None,
                     "design_title": str(summary.get("design_title") or ""),
                     "prospect": str(summary.get("prospect") or ""),

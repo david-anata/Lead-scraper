@@ -1,6 +1,6 @@
-"""Route tests for Fulfillment > Sales Deck: tool gating, generate flow,
-public token-gated view, heartbeat persistence. Real backend app + temp SQLite
-(same harness as test_access_rbac)."""
+"""Route tests for Fulfillment > Sales Deck: tool gating, generate -> review
+-> publish flow, draft gating of the public view, edit round-trip, heartbeat
+persistence. Real backend app + temp SQLite (same harness as test_access_rbac)."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ from sales_support_agent.services.admin_auth import create_user_session_token
 from sales_support_agent.services.fulfillment_deck import storage
 
 _NOTES = "Brand: TabCo\nWidget — 6 x 5 x 3 in, 1.5 lb, ~500 units/mo"
+_BASE = "/admin/fulfillment/sales"
 
 
 def _cookie_for(email: str, name: str = "User", role: str = "member"):
@@ -51,8 +52,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _generate(self) -> dict:
+        """Generate a rate sheet; returns the (draft) history row."""
         response = self.client.post(
-            "/admin/fulfillment/sales/generate",
+            f"{_BASE}/generate",
             data={"notes": _NOTES, "origin_zip": "84043"},
             follow_redirects=False,
         )
@@ -61,8 +63,16 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertTrue(runs)
         return runs[0]
 
+    def _generate_published(self) -> dict:
+        run = self._generate()
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False
+        )
+        self.assertEqual(response.status_code, 303)
+        return next(r for r in storage.list_runs() if r["id"] == run["id"])
+
     def test_landing_renders_for_superadmin(self) -> None:
-        response = self.client.get("/admin/fulfillment/sales")
+        response = self.client.get(_BASE)
         self.assertEqual(response.status_code, 200)
         self.assertIn("Rate", response.text)
         self.assertIn("Generate rate sheet", response.text)
@@ -75,18 +85,68 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         blocked = TestClient(app)
         cookie_name, token = _cookie_for("fin_rs@anatainc.com", "Fin")
         blocked.cookies.set(cookie_name, token)
-        response = blocked.get("/admin/fulfillment/sales", follow_redirects=False)
+        response = blocked.get(_BASE, follow_redirects=False)
         self.assertEqual(response.status_code, 403)
 
     def test_generate_requires_some_input(self) -> None:
         response = self.client.post(
-            "/admin/fulfillment/sales/generate", data={"notes": ""}, follow_redirects=False
+            f"{_BASE}/generate", data={"notes": ""}, follow_redirects=False
         )
         self.assertEqual(response.status_code, 303)
         self.assertIn("kind=warn", response.headers["location"])
 
-    def test_generate_then_public_view_and_token_gate(self) -> None:
+    # ------------------------------------------------------------------
+    # Draft -> review -> publish flow
+    # ------------------------------------------------------------------
+
+    def test_generate_redirects_to_review_page(self) -> None:
+        response = self.client.post(
+            f"{_BASE}/generate",
+            data={"notes": _NOTES, "origin_zip": "84043"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        run = storage.list_runs()[0]
+        self.assertEqual(
+            response.headers["location"], f"{_BASE}/runs/{run['id']}/review"
+        )
+        self.assertEqual(run["status"], "draft")
+
+    def test_review_page_renders_for_draft(self) -> None:
         run = self._generate()
+        response = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("TabCo", response.text)
+        self.assertIn(f"{_BASE}/runs/{run['id']}/preview", response.text)
+        self.assertIn("Publish — get shareable link", response.text)
+        self.assertIn("Save &amp; re-render", response.text)
+        self.assertIn("Widget", response.text)
+
+    def test_draft_public_view_is_404_but_admin_preview_works(self) -> None:
+        run = self._generate()
+        public = TestClient(app)
+        self.assertEqual(public.get(run["view_path"]).status_code, 404)
+        # Heartbeat is gated too.
+        hb = public.post(
+            run["view_path"] + "/heartbeat",
+            json={"visitor_token": "draft-gate-token", "total_seconds": 1},
+        )
+        self.assertEqual(hb.status_code, 404)
+        # Admin preview serves the draft HTML.
+        preview = self.client.get(f"{_BASE}/runs/{run['id']}/preview")
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn("TabCo", preview.text)
+        self.assertIn("window.print()", preview.text)
+        # Preview is admin-gated.
+        self.assertNotEqual(
+            TestClient(app).get(f"{_BASE}/runs/{run['id']}/preview", follow_redirects=False).status_code,
+            200,
+        )
+
+    def test_publish_activates_public_view_and_token_gate(self) -> None:
+        run = self._generate_published()
+        self.assertEqual(run["status"], "completed")
+        self.assertTrue(run["published"])
         view_path = run["view_path"]
         self.assertTrue(view_path.startswith("/rate-sheets/"))
 
@@ -99,8 +159,95 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         bad = view_path.rsplit("/", 1)[0] + "/" + "0" * 32
         self.assertEqual(public.get(bad).status_code, 404)
 
-    def test_heartbeat_creates_visit_session(self) -> None:
+    def test_publish_redirect_flash_contains_public_link(self) -> None:
         run = self._generate()
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("rate-sheets", response.headers["location"])
+
+    def test_history_shows_draft_pill_then_open_after_publish(self) -> None:
+        run = self._generate()
+        page = self.client.get(_BASE).text
+        self.assertIn("Draft", page)
+        self.assertIn(f"{_BASE}/runs/{run['id']}/review", page)
+        self.assertNotIn(f'href="{run["view_path"]}?viewer=internal"', page)
+
+        self.client.post(f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False)
+        page = self.client.get(_BASE).text
+        self.assertIn(f'href="{run["view_path"]}?viewer=internal"', page)
+        self.assertIn("Review / edit", page)
+
+    def test_update_route_round_trip(self) -> None:
+        run = self._generate()
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo Prime",
+                "origin_zip": "84043",
+                "monthly_order_volume": "750",
+                "current_cost_per_parcel_usd": "12.40",
+                "destinations_note": "East Coast heavy",
+                "current_costs_note": "About $12.40 with FedEx",
+                "product_name": ["Widget XL"],
+                "product_length": ["9"],
+                "product_width": ["7"],
+                "product_height": ["4"],
+                "product_weight": ["2.25"],
+                "product_units": ["750"],
+                "product_estimated": ["0"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertIn(f"/runs/{run['id']}/review", response.headers["location"])
+
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(review.status_code, 200)
+        self.assertIn("TabCo Prime", review.text)
+        self.assertIn("Widget XL", review.text)
+        self.assertIn('value="9"', review.text)
+        self.assertIn("East Coast heavy", review.text)
+
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        profile = summary["prospect_profile"]
+        self.assertEqual(profile["brand"], "TabCo Prime")
+        self.assertEqual(profile["monthly_order_volume"], 750)
+        self.assertEqual(profile["current_cost_per_parcel_usd"], 12.40)
+        self.assertEqual(len(profile["products"]), 1)
+        self.assertEqual(profile["products"][0]["length_in"], 9.0)
+        # Re-rendered HTML reflects the edit.
+        self.assertIn("9 × 7 × 4 in", summary["deck_html"])
+
+    def test_update_remove_checkbox_drops_product(self) -> None:
+        run = self._generate()
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo",
+                "origin_zip": "84043",
+                "product_name": ["Widget", "Gadget"],
+                "product_length": ["6", "8"],
+                "product_width": ["5", "6"],
+                "product_height": ["3", "4"],
+                "product_weight": ["1.5", "2"],
+                "product_units": ["500", "100"],
+                "product_estimated": ["0", "0"],
+                "product_remove": ["1"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        profile = dict(storage.get_run(run["id"]).summary_json)["prospect_profile"]
+        self.assertEqual([p["name"] for p in profile["products"]], ["Widget"])
+
+    # ------------------------------------------------------------------
+    # Engagement + delete (published sheets)
+    # ------------------------------------------------------------------
+
+    def test_heartbeat_creates_visit_session(self) -> None:
+        run = self._generate_published()
         public = TestClient(app)
         response = public.post(
             run["view_path"] + "/heartbeat",
@@ -131,14 +278,14 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_delete_removes_run_and_engagement(self) -> None:
-        run = self._generate()
+        run = self._generate_published()
         public = TestClient(app)
         public.post(
             run["view_path"] + "/heartbeat",
             json={"visitor_token": "delete-test-token", "total_seconds": 5},
         )
         response = self.client.post(
-            f"/admin/fulfillment/sales/runs/{run['id']}/delete", follow_redirects=False
+            f"{_BASE}/runs/{run['id']}/delete", follow_redirects=False
         )
         self.assertEqual(response.status_code, 303)
         self.assertIsNone(storage.get_run(run["id"]))

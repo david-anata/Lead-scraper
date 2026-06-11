@@ -1,19 +1,14 @@
 """Free-form prospect intake for the Fulfillment Rate Sheet generator.
 
-Sales reps paste notes, drop spreadsheets/CSVs/PDF brand decks/product
-images, and point at a prospect's website; this layer flattens the text-like
-inputs into one bounded text context for the LLM extraction step (llm.py)
-and packages PDFs/images as base64 attachment dicts ready to become
-Claude-native content blocks (document/image). Attachment budget: at most 4
-PDF/image attachments and 18MB of raw bytes total; a single PDF over 8MB is
-skipped outright. Mirrors brand_analysis/intake.py conventions:
+Sales reps paste notes, drop spreadsheets/CSVs, and point at a prospect's
+website; this layer flattens all of it into one bounded text context for the
+LLM extraction step (llm.py). Mirrors brand_analysis/intake.py conventions:
 intentionally forgiving — every file is wrapped in try/except, anything
 unreadable degrades to a warning, and nothing here ever raises.
 """
 
 from __future__ import annotations
 
-import base64
 import csv
 import io
 import logging
@@ -27,19 +22,6 @@ _TEXT_FILE_CAP = 20_000
 _WEBSITE_CAP = 15_000
 _TOTAL_CAP = 60_000
 _MAX_ROWS = 200
-
-# Attachment budget for Claude-native PDF/image content blocks.
-_MAX_ATTACHMENTS = 4
-_MAX_ATTACHMENT_TOTAL_BYTES = 18 * 1024 * 1024  # 18MB raw across all attachments
-_MAX_SINGLE_PDF_BYTES = 8 * 1024 * 1024         # a lone PDF over 8MB is skipped
-
-_IMAGE_MEDIA_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-}
 
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -81,17 +63,6 @@ def _read_xlsx(data: bytes) -> str:
             wb.close()
         except Exception:  # noqa: BLE001
             pass
-
-
-def _attachment_kind(filename: str) -> tuple:
-    """(kind, media_type) for attachable files, or (None, None)."""
-    name = (filename or "").lower()
-    if name.endswith(".pdf"):
-        return "pdf", "application/pdf"
-    for ext, media_type in _IMAGE_MEDIA_TYPES.items():
-        if name.endswith(ext):
-            return "image", media_type
-    return None, None
 
 
 def _read_file(filename: str, data: bytes, warnings: list) -> str:
@@ -137,45 +108,20 @@ def build_extraction_context(
     notes: str,
     files: list[tuple[str, bytes]],
     website_url: str,
-) -> tuple[str, list[dict], list[str]]:
-    """Flatten notes + uploaded files + website into one bounded context string
-    plus a list of Claude-ready PDF/image attachments.
+) -> tuple[str, list[str]]:
+    """Flatten notes + uploaded files + website into one bounded context string.
 
-    Returns (context_text, attachments, warnings). Each attachment is
-    ``{"name": str, "kind": "pdf"|"image", "media_type": str, "data_b64": str}``.
-    Never raises.
+    Returns (context_text, warnings). Never raises.
     """
     warnings: list[str] = []
     sections: list[str] = []
-    attachments: list[dict] = []
-    attachment_bytes = 0
 
     notes = (notes or "").strip()
     if notes:
         sections.append(_section("SALES NOTES", notes[:_NOTES_CAP]))
 
     for filename, data in files or []:
-        data = data or b""
-        kind, media_type = _attachment_kind(filename)
-        if kind is not None:
-            if kind == "pdf" and len(data) > _MAX_SINGLE_PDF_BYTES:
-                warnings.append(f"{filename} skipped (PDF over 8MB)")
-                continue
-            if (
-                len(attachments) >= _MAX_ATTACHMENTS
-                or attachment_bytes + len(data) > _MAX_ATTACHMENT_TOTAL_BYTES
-            ):
-                warnings.append(f"{filename} skipped (attachment budget)")
-                continue
-            attachments.append({
-                "name": filename,
-                "kind": kind,
-                "media_type": media_type,
-                "data_b64": base64.b64encode(data).decode("ascii"),
-            })
-            attachment_bytes += len(data)
-            continue
-        body = _read_file(filename, data, warnings)
+        body = _read_file(filename, data or b"", warnings)
         if body.strip():
             sections.append(_section(f"FILE: {filename}", body))
 
@@ -189,4 +135,4 @@ def build_extraction_context(
     if len(context) > _TOTAL_CAP:
         context = context[:_TOTAL_CAP]
         warnings.append("Source material truncated to ~60KB for extraction.")
-    return context, attachments, warnings
+    return context, warnings

@@ -1,13 +1,23 @@
-"""LLM extraction of a ProspectProfile from the flattened intake context.
+"""LLM layer of the Fulfillment Rate Sheet generator.
 
-Mirrors brand_analysis/llm.py: same key/model convention (lazy ``import
-anthropic``, ANTHROPIC_API_KEY env, JSON-only system prompt, tolerant
-outermost-braces parse) and a deterministic fallback parser so the pipeline
-never crashes — without an API key you still get a best-effort profile from
-simple "key: value" and dims-pattern lines.
+Two jobs:
+  * ``extract_prospect_profile`` — extract a ProspectProfile from the
+    flattened intake context plus optional Claude-native PDF/image
+    attachments (document/image content blocks). The model ESTIMATES typical
+    shipped-package dims for products the source doesn't spec (flagged
+    ``dims_estimated``) and parses the prospect's current $/parcel cost.
+  * ``generate_narrative`` — write the prospect-specific rate-sheet prose
+    (executive summary, savings sentence, fit bullets) from already-computed
+    facts; a deterministic template fallback means it never returns blanks
+    and never raises.
 
-Schema (ProspectProfile.from_dict) does all clamping/validation; this layer
-never trusts the model's numbers directly.
+Mirrors brand_analysis/llm.py conventions: lazy ``import anthropic``,
+ANTHROPIC_API_KEY env, JSON-only system prompts, tolerant outermost-braces
+parse, deterministic fallbacks so the pipeline never crashes. Default model
+is ``claude-sonnet-4-6`` (override via the FULFILLMENT_DECK_MODEL env var).
+
+Schema (ProspectProfile.from_dict / NarrativeBlock.from_dict) does all
+clamping/validation; this layer never trusts the model's numbers directly.
 """
 
 from __future__ import annotations
@@ -20,10 +30,17 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from sales_support_agent.services.fulfillment_deck.schema import (
+    NarrativeBlock,
     ProspectProfile,
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_MODEL = "claude-sonnet-4-6"
+
+
+def _resolve_model(model: Optional[str]) -> str:
+    return model or os.environ.get("FULFILLMENT_DECK_MODEL") or _DEFAULT_MODEL
 
 
 @dataclass
@@ -36,17 +53,26 @@ class ExtractionMeta:
 
 _SYSTEM = (
     "You are extracting a structured fulfillment-prospect profile for a 3PL "
-    "sales team from raw sales notes, uploaded files, and website text. "
+    "sales team from raw sales notes, uploaded files (including PDF brand "
+    "decks / line sheets and product images), and website text. "
     "Return ONLY a JSON object with keys: company, brand, website, "
     "contact_name, contact_email, products (array of {name, length_in, "
-    "width_in, height_in, weight_lb, monthly_units, notes} — numbers in "
-    "inches and pounds, convert from cm/kg/oz if the source uses those, null "
-    "when unknown — never guess dimensions), monthly_order_volume, "
-    "destinations_note, current_carrier, current_costs_note, "
+    "width_in, height_in, weight_lb, monthly_units, notes, dims_estimated} — "
+    "numbers in inches and pounds, convert from cm/kg/oz if the source uses "
+    "those), monthly_order_volume, destinations_note, current_carrier, "
+    "current_costs_note, current_cost_per_parcel_usd (numeric average the "
+    "prospect pays per parcel today, parsed from any mention such as "
+    "\"$9.80/parcel\" or \"about 10 bucks a label\"; null if unknown), "
     "source_confidence (\"low\"/\"medium\"/\"high\" — how complete and "
     "reliable the source material is), raw_notes_excerpt (a quote of at most "
-    "2 sentences of the most load-bearing source line). No markdown, no "
-    "prose outside the JSON."
+    "2 sentences of the most load-bearing source line). "
+    "Product dims rules: when the source provides dims/weight for a product, "
+    "use them and set dims_estimated false. When the source gives NO "
+    "dims/weight for a product, ESTIMATE typical shipped-package dimensions "
+    "and weight from the product type and set dims_estimated true — "
+    "estimates must reflect the SHIPPING BOX the item ships in, not the bare "
+    "product. Only return a product with null dims if you genuinely cannot "
+    "tell what the product is. No markdown, no prose outside the JSON."
 )
 
 
@@ -88,7 +114,7 @@ _KV_FIELDS = {
 }
 
 _KV_RE = re.compile(r"^\s*([A-Za-z][A-Za-z ]{0,30})\s*:\s*(.+?)\s*$")
-_VOLUME_KEY_RE = re.compile(r"volume|orders?\s*(/|per)?\s*(mo|month)", re.IGNORECASE)
+_VOLUME_KEY_RE = re.compile(r"volume|monthly\s+orders?|orders?\s*(/|per)?\s*(mo|month)", re.IGNORECASE)
 _INT_RE = re.compile(r"(\d[\d,]*)")
 
 # e.g. "Super Serum — 4 x 4 x 6 in, 1.2 lb, ~3000 units/mo" or "Widget 12x8x4 in 2.5 lbs"
@@ -99,6 +125,11 @@ _DIMS_RE = re.compile(
 )
 _WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(lbs?|oz)\b", re.IGNORECASE)
 _UNITS_RE = re.compile(r"~?\s*(\d[\d,]*)\s*units?\s*(?:/|per)?\s*(?:mo(?:nth)?)?", re.IGNORECASE)
+# e.g. "$9.80/parcel", "$9.80 per parcel", "$10 per label/order/package"
+_COST_PER_PARCEL_RE = re.compile(
+    r"\$\s*(\d+(?:\.\d+)?)\s*(?:/|per)\s*(?:parcel|label|order|package|shipment)",
+    re.IGNORECASE,
+)
 
 
 def _fallback_profile(context: str) -> ProspectProfile:
@@ -148,6 +179,10 @@ def _fallback_profile(context: str) -> ProspectProfile:
                 "monthly_units": units,
             })
 
+    cost = _COST_PER_PARCEL_RE.search(context or "")
+    if cost:
+        payload["current_cost_per_parcel_usd"] = float(cost.group(1))
+
     payload["products"] = products
     payload["source_confidence"] = "low"
     return ProspectProfile.from_dict(payload)
@@ -158,27 +193,69 @@ def _fallback_profile(context: str) -> ProspectProfile:
 # ---------------------------------------------------------------------------
 
 
+def _attachment_blocks(attachments: Optional[list]) -> list:
+    """Intake attachment dicts -> Claude content blocks (document/image)."""
+    blocks: list = []
+    for att in attachments or []:
+        if not isinstance(att, dict):
+            continue
+        kind = att.get("kind")
+        data = att.get("data_b64") or ""
+        if kind == "pdf":
+            blocks.append({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": att.get("media_type") or "application/pdf",
+                    "data": data,
+                },
+            })
+        elif kind == "image":
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": att.get("media_type") or "image/png",
+                    "data": data,
+                },
+            })
+    return blocks
+
+
 def extract_prospect_profile(
     context: str,
+    attachments: Optional[list] = None,
     *,
     api_key: Optional[str] = None,
-    model: str = "claude-haiku-4-5-20251001",
+    model: Optional[str] = None,
 ) -> tuple[ProspectProfile, ExtractionMeta]:
-    """Extract a ProspectProfile from intake context. Never raises."""
+    """Extract a ProspectProfile from intake context (+ PDF/image attachments).
+
+    ``attachments`` is the list of dicts returned by
+    ``intake.build_extraction_context``. Never raises.
+    """
     meta = ExtractionMeta()
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    model = _resolve_model(model)
 
     profile: Optional[ProspectProfile] = None
     if key:
         try:
             import anthropic
 
+            blocks = _attachment_blocks(attachments)
+            if blocks:
+                content: object = blocks + [{"type": "text", "text": context}]
+            else:
+                # Back-compat: plain string content when there's nothing to attach.
+                content = context
+
             client = anthropic.Anthropic(api_key=key)
             message = client.messages.create(
                 model=model,
-                max_tokens=2000,
+                max_tokens=4000,
                 system=_SYSTEM,
-                messages=[{"role": "user", "content": context}],
+                messages=[{"role": "user", "content": content}],
             )
             text = (message.content[0].text if message.content else "").strip()
             data = _parse_json(text)
@@ -200,9 +277,167 @@ def extract_prospect_profile(
                 "ANTHROPIC_API_KEY not set — used basic text parsing; set the key for full extraction."
             )
 
+    estimated = [
+        p.name or "(unnamed product)"
+        for p in profile.products
+        if p.dims_estimated and p.has_full_package_spec
+    ]
+    if estimated:
+        meta.warnings.append(
+            "Estimated package specs for: " + ", ".join(estimated) + " — confirm with prospect"
+        )
     missing_dims = [p.name or "(unnamed product)" for p in profile.products if not p.has_full_package_spec]
     if missing_dims:
         meta.warnings.append(
             "No usable dims/weight for: " + ", ".join(missing_dims) + " — rate matrix will need them"
         )
     return profile, meta
+
+
+# ---------------------------------------------------------------------------
+# Narrative generation
+# ---------------------------------------------------------------------------
+
+_NARRATIVE_SYSTEM = (
+    "You are a senior 3PL sales copywriter for Anata, a fulfillment provider "
+    "shipping from Lehi, Utah. You are given ALREADY-COMPUTED facts about a "
+    "prospect: their profile, a summary of the custom rate matrix built for "
+    "them (zones covered, cheapest carrier per zone), and deterministic "
+    "savings math. Return ONLY a JSON object with keys: executive_summary "
+    "(2-3 sentences addressed to the brand by name about THEIR products, "
+    "volume, and situation), savings_text (1-2 sentences citing ONLY the "
+    "provided savings numbers; an empty string if no savings math is "
+    "provided), bullets (array of 2-4 short prospect-specific reasons Anata "
+    "is a fit). NEVER invent numbers — cite only figures present in the "
+    "input. No markdown, no prose outside the JSON."
+)
+
+
+def _matrix_summary(matrix) -> dict:
+    """Compact rate-matrix facts for the narrative prompt."""
+    zones: set = set()
+    cheapest: dict = {}
+    for product in getattr(matrix, "products", ()) or ():
+        for zone_rates in getattr(product, "zones", ()) or ():
+            zones.add(zone_rates.zone)
+            for quote in zone_rates.quotes:
+                current = cheapest.get(zone_rates.zone)
+                if current is None or quote.rate_usd < current["rate_usd"]:
+                    cheapest[zone_rates.zone] = {
+                        "carrier": quote.carrier,
+                        "service": quote.service,
+                        "rate_usd": quote.rate_usd,
+                    }
+    return {
+        "zones_covered": sorted(zones),
+        "cheapest_by_zone": {str(zone): cheapest[zone] for zone in sorted(cheapest)},
+    }
+
+
+def _fallback_narrative(profile: ProspectProfile, matrix, savings: Optional[dict]) -> NarrativeBlock:
+    """Deterministic template narrative — never blank, never raises."""
+    name = profile.display_name
+    n_products = len(profile.products)
+
+    clauses = []
+    if profile.monthly_order_volume:
+        clauses.append(f"ships ~{profile.monthly_order_volume:,} orders a month")
+    if n_products:
+        plural = "s" if n_products != 1 else ""
+        clauses.append(f"across {n_products} product{plural}" if clauses else f"sells {n_products} product{plural}")
+    summary = f"{name} {' '.join(clauses)}." if clauses else f"{name} is evaluating fulfillment options."
+    summary += (
+        " This rate sheet shows Anata's carrier rates from our Lehi, UT warehouse "
+        "for the exact packages you ship, so you can compare line by line."
+    )
+
+    savings_text = ""
+    if savings:
+        try:
+            savings_text = (
+                f"At {int(savings['monthly_orders']):,} orders/month, moving from "
+                f"${float(savings['current_per_parcel']):.2f} to Anata's blended "
+                f"${float(savings['anata_blended_per_parcel']):.2f} per parcel saves about "
+                f"${float(savings['monthly_savings']):,.0f}/month "
+                f"(${float(savings['annual_savings']):,.0f}/year)."
+            )
+        except (KeyError, TypeError, ValueError):
+            savings_text = ""
+
+    bullets: list = []
+    if profile.monthly_order_volume:
+        bullets.append(f"Capacity for {profile.monthly_order_volume:,}+ orders/month from day one")
+    if profile.current_carrier:
+        bullets.append(f"Multi-carrier rate shopping vs. {profile.current_carrier}-only pricing")
+    zones = {
+        zone_rates.zone
+        for product in getattr(matrix, "products", ()) or ()
+        for zone_rates in getattr(product, "zones", ()) or ()
+    }
+    if zones:
+        bullets.append(f"Single Lehi, UT origin covering zones {min(zones)}-{max(zones)} nationwide")
+    bullets.append("Transparent per-parcel pricing with no hidden surcharges")
+    if len(bullets) < 2:
+        bullets.append("Same-day pick/pack with 2-4 day ground delivery to most of the US")
+
+    return NarrativeBlock(
+        executive_summary=summary,
+        savings_text=savings_text,
+        bullets=tuple(bullets[:4]),
+        model="none",
+    )
+
+
+def generate_narrative(
+    profile: ProspectProfile,
+    matrix,
+    savings: Optional[dict],
+    *,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> NarrativeBlock:
+    """Write the prospect-specific rate-sheet prose. Never blank, never raises.
+
+    ``savings`` is the deterministic math computed by the service:
+    {current_per_parcel, anata_blended_per_parcel, monthly_orders,
+    monthly_savings, annual_savings} — or None when unknown.
+    """
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    model = _resolve_model(model)
+
+    if key:
+        try:
+            import anthropic
+
+            facts = json.dumps(
+                {
+                    "profile": profile.to_dict(),
+                    "rate_matrix_summary": _matrix_summary(matrix),
+                    "savings": savings,
+                },
+                sort_keys=True,
+            )
+            client = anthropic.Anthropic(api_key=key)
+            message = client.messages.create(
+                model=model,
+                max_tokens=1500,
+                system=_NARRATIVE_SYSTEM,
+                messages=[{"role": "user", "content": facts}],
+            )
+            text = (message.content[0].text if message.content else "").strip()
+            data = _parse_json(text)
+            if data and str(data.get("executive_summary") or "").strip():
+                parsed = NarrativeBlock.from_dict(data)
+                return NarrativeBlock(
+                    executive_summary=parsed.executive_summary,
+                    savings_text="" if savings is None else parsed.savings_text,
+                    bullets=parsed.bullets,
+                    model=getattr(message, "model", model),
+                    input_tokens=message.usage.input_tokens,
+                    output_tokens=message.usage.output_tokens,
+                )
+            logger.warning("[fulfillment_deck] narrative LLM returned unparseable output; using template")
+        except Exception:  # noqa: BLE001 — narrative must never crash the pipeline
+            logger.warning("[fulfillment_deck] narrative LLM call failed; using template", exc_info=True)
+
+    return _fallback_narrative(profile, matrix, savings)
