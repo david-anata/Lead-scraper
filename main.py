@@ -3716,7 +3716,13 @@ def admin_login_page(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin", status_code=302)
-    return HTMLResponse(render_login_page())
+    _agent_settings = getattr(request.app.state, "agent_settings", None)
+    try:
+        from sales_support_agent.services.admin_auth_google import google_oauth_enabled as _goe
+        _show_google = bool(_agent_settings and _goe(_agent_settings))
+    except Exception:
+        _show_google = False
+    return HTMLResponse(render_login_page(show_google_button=_show_google))
 
 
 @app.post("/admin/login", response_class=HTMLResponse)
@@ -3727,7 +3733,13 @@ async def admin_login_submit(request: Request) -> Response:
     body = (await request.body()).decode("utf-8")
     password = parse_qs(body).get("password", [""])[0]
     if not verify_admin_password(admin_settings, password):
-        return HTMLResponse(render_login_page(error_message="Incorrect password."), status_code=401)
+        _agent_settings_post = getattr(request.app.state, "agent_settings", None)
+        try:
+            from sales_support_agent.services.admin_auth_google import google_oauth_enabled as _goe2
+            _show_google_post = bool(_agent_settings_post and _goe2(_agent_settings_post))
+        except Exception:
+            _show_google_post = False
+        return HTMLResponse(render_login_page(error_message="Incorrect password.", show_google_button=_show_google_post), status_code=401)
 
     response = RedirectResponse(url="/admin", status_code=302)
     response.set_cookie(
