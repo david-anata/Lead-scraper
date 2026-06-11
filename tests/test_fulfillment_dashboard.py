@@ -78,7 +78,7 @@ class FulfillmentDashboardTests(unittest.TestCase):
 
     def test_render_dashboard_includes_submenu_and_candidate(self) -> None:
         html = render_fulfillment_dashboard_page(self._sample_report(), [])
-        self.assertIn("/admin/fulfillment-cs/reports/", html)
+        self.assertIn("/admin/fulfillment/cs/reports/", html)
         self.assertIn("Fulfillment CS", html)
         self.assertIn("Need PO verification for received boots.", html)
         self.assertIn("Ready to answer", html)
@@ -109,7 +109,7 @@ class FulfillmentDashboardTests(unittest.TestCase):
                                 "action_counts": report["summary"]["action_counts"],
                                 "lifecycle_counts": report["summary"]["lifecycle_counts"],
                                 "artifact_formats": ["json"],
-                                "links": {"detail": f"/admin/fulfillment-cs/reports/{slug}"},
+                                "links": {"detail": f"/admin/fulfillment/cs/reports/{slug}"},
                             }
                         ],
                     }
@@ -129,35 +129,35 @@ class FulfillmentDashboardTests(unittest.TestCase):
                 session_token = create_admin_session_token(app.state.settings)
                 client.cookies.set(app.state.settings.admin_cookie_name, session_token)
 
-                response = client.get("/admin/fulfillment-cs/")
+                response = client.get("/admin/fulfillment/cs/")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Fulfillment CS", response.text)
                 self.assertIn("Candidate preview", response.text)
                 self.assertIn("Unresolved", response.text)
 
-                response = client.get("/admin/fulfillment-cs/reports/")
+                response = client.get("/admin/fulfillment/cs/reports/")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Fulfillment CS Review", response.text)
                 self.assertIn("JSON", response.text)
 
-                response = client.get("/admin/fulfillment-cs/reports/latest", follow_redirects=False)
+                response = client.get("/admin/fulfillment/cs/reports/latest", follow_redirects=False)
                 self.assertEqual(response.status_code, 302)
-                self.assertEqual(response.headers["location"], f"/admin/fulfillment-cs/reports/{slug}")
+                self.assertEqual(response.headers["location"], f"/admin/fulfillment/cs/reports/{slug}")
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Mule Deer Foundation", response.text)
                 self.assertIn("Escalations", response.text)
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}.json")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.json")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}.md")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.md")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Fulfillment CS Review", response.text)
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}.html")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.html")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("artifact html", response.text)
 

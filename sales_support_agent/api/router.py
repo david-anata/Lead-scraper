@@ -610,15 +610,29 @@ def admin_executive_dashboard(request: Request) -> Response:
     return HTMLResponse(render_executive_page(executive, user=_get_request_user(request)))
 
 
-@router.get("/admin/fulfillment-cs", response_class=HTMLResponse)
+@router.get("/admin/fulfillment", response_class=HTMLResponse)
+def admin_fulfillment_root(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment/sales", status_code=302)
+
+
+@router.get("/admin/fulfillment-cs{rest:path}")
+def admin_fulfillment_cs_legacy_redirect(rest: str) -> Response:
+    # The CS pages moved under the renamed Fulfillment section; keep old links working.
+    return RedirectResponse(url=f"/admin/fulfillment/cs{rest}", status_code=301)
+
+
+@router.get("/admin/fulfillment/cs", response_class=HTMLResponse)
 def admin_fulfillment_cs_root(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return RedirectResponse(url="/admin/fulfillment-cs/", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment/cs/", status_code=302)
 
 
-@router.get("/admin/fulfillment-cs/", response_class=HTMLResponse)
+@router.get("/admin/fulfillment/cs/", response_class=HTMLResponse)
 def admin_fulfillment_cs_dashboard(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -629,15 +643,15 @@ def admin_fulfillment_cs_dashboard(request: Request) -> Response:
     return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries))
 
 
-@router.get("/admin/fulfillment-cs/reports", response_class=HTMLResponse)
+@router.get("/admin/fulfillment/cs/reports", response_class=HTMLResponse)
 def admin_fulfillment_cs_reports_root(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment/cs/reports/", status_code=302)
 
 
-@router.get("/admin/fulfillment-cs/reports/", response_class=HTMLResponse)
+@router.get("/admin/fulfillment/cs/reports/", response_class=HTMLResponse)
 def admin_fulfillment_cs_reports(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -646,18 +660,18 @@ def admin_fulfillment_cs_reports(request: Request) -> Response:
     return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(reports_dir)))
 
 
-@router.get("/admin/fulfillment-cs/reports/latest", response_class=HTMLResponse)
+@router.get("/admin/fulfillment/cs/reports/latest", response_class=HTMLResponse)
 def admin_fulfillment_cs_latest_report(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
     latest_entry = latest_fulfillment_report_entry(request.app.state.settings.fulfillment_cs_reports_dir)
     if latest_entry is None:
-        return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
-    return RedirectResponse(url=f"/admin/fulfillment-cs/reports/{latest_entry.slug}", status_code=302)
+        return RedirectResponse(url="/admin/fulfillment/cs/reports/", status_code=302)
+    return RedirectResponse(url=f"/admin/fulfillment/cs/reports/{latest_entry.slug}", status_code=302)
 
 
-@router.get("/admin/fulfillment-cs/reports/{report_slug}.json")
+@router.get("/admin/fulfillment/cs/reports/{report_slug}.json")
 def admin_fulfillment_cs_report_json(request: Request, report_slug: str) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -670,7 +684,7 @@ def admin_fulfillment_cs_report_json(request: Request, report_slug: str) -> Resp
     return Response(content=body, media_type=content_type)
 
 
-@router.get("/admin/fulfillment-cs/reports/{report_slug}.md", response_class=PlainTextResponse)
+@router.get("/admin/fulfillment/cs/reports/{report_slug}.md", response_class=PlainTextResponse)
 def admin_fulfillment_cs_report_markdown(request: Request, report_slug: str) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -683,7 +697,7 @@ def admin_fulfillment_cs_report_markdown(request: Request, report_slug: str) -> 
     return Response(content=body, media_type=content_type)
 
 
-@router.get("/admin/fulfillment-cs/reports/{report_slug}.html", response_class=HTMLResponse)
+@router.get("/admin/fulfillment/cs/reports/{report_slug}.html", response_class=HTMLResponse)
 def admin_fulfillment_cs_report_html(request: Request, report_slug: str) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
@@ -696,7 +710,7 @@ def admin_fulfillment_cs_report_html(request: Request, report_slug: str) -> Resp
     return Response(content=body, media_type=content_type)
 
 
-@router.get("/admin/fulfillment-cs/reports/{report_slug}", response_class=HTMLResponse)
+@router.get("/admin/fulfillment/cs/reports/{report_slug}", response_class=HTMLResponse)
 def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):

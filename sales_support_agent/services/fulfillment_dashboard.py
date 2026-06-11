@@ -564,14 +564,14 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
             f"<p>{html.escape(str(report.get('title', DEFAULT_TITLE)))}</p>"
             f"<p class=\"report-meta\">Generated: {html.escape(str(report.get('generated_at', '')))}</p>"
             f"<p class=\"report-meta\">Status: {html.escape(status)}</p>"
-            f"<p><a href=\"/admin/fulfillment-cs/reports/latest\">Open latest report</a></p>"
+            f"<p><a href=\"/admin/fulfillment/cs/reports/latest\">Open latest report</a></p>"
             if isinstance(report, dict)
             else '<p>No fulfillment review report has been generated yet.</p>'
         )
         + "</section>"
         + '<aside class="panel"><h3>Report library</h3>'
         + (f"<p>{len(entries)} timestamped report(s) available.</p>" if entries else "<p>No report files found yet.</p>")
-        + '<p><a href="/admin/fulfillment-cs/reports/">Browse all reports</a></p>'
+        + '<p><a href="/admin/fulfillment/cs/reports/">Browse all reports</a></p>'
         + "</aside></section>"
         + '<section class="layout-two">'
         + f'<section class="panel"><h2>Action recommendations</h2><div class="summary-list">{_count_rows(action_counts, ACTION_STATE_ORDER, empty_text="No action recommendations recorded yet.")}</div></section>'
@@ -587,7 +587,7 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
     )
     return _page_shell(
         title="agent | Fulfillment CS",
-        eyebrow="Fulfillment CS",
+        eyebrow="Fulfillment — Customer Service",
         heading='Fulfillment <span class="highlight">CS</span>.',
         intro="Artifact-driven visibility into fulfillment support candidates, state, and escalation needs.",
         body=body,
@@ -600,9 +600,9 @@ def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry]) -> st
         f"""
         <article class="report-card">
           <p class="report-meta">{html.escape(entry.generated_at)}</p>
-          <h3><a href="/admin/fulfillment-cs/reports/{html.escape(entry.slug)}">{html.escape(entry.title)}</a></h3>
+          <h3><a href="/admin/fulfillment/cs/reports/{html.escape(entry.slug)}">{html.escape(entry.title)}</a></h3>
           <p>{html.escape(entry.excerpt)}</p>
-          <div class="report-format-list">{''.join(f'<span class="format-badge">{html.escape(fmt)}</span>' for fmt in entry.artifact_formats)}</div>
+          <div class="report-format-list">{''.join(f'<span class="format-badge">{html.escape(fmt.upper())}</span>' for fmt in entry.artifact_formats)}</div>
         </article>
         """
         for entry in entries
@@ -610,7 +610,7 @@ def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry]) -> st
     body = f'<section class="panel"><h2>Report library</h2><div class="report-list">{cards}</div></section>'
     return _page_shell(
         title="agent | Fulfillment CS Reports",
-        eyebrow="Fulfillment CS",
+        eyebrow="Fulfillment — Customer Service",
         heading='Support <span class="highlight">Reports</span>.',
         intro="Timestamped, read-only fulfillment support artifacts rendered from prepared report files.",
         body=body,
@@ -657,7 +657,7 @@ def render_fulfillment_report_detail_page(report: dict[str, Any]) -> str:
     )
     return _page_shell(
         title=f"agent | {str(report.get('title', DEFAULT_TITLE))}",
-        eyebrow="Fulfillment CS",
+        eyebrow="Fulfillment — Customer Service",
         heading='Report <span class="highlight">Detail</span>.',
         intro=f"Generated at {str(report.get('generated_at', 'unknown'))}.",
         body=body,
@@ -666,10 +666,10 @@ def render_fulfillment_report_detail_page(report: dict[str, Any]) -> str:
 
 
 def render_fulfillment_not_found_page(message: str) -> str:
-    body = f'<section class="panel"><h2>Not found</h2><p>{html.escape(message)}</p><p><a href="/admin/fulfillment-cs/reports/">Browse reports</a></p></section>'
+    body = f'<section class="panel"><h2>Not found</h2><p>{html.escape(message)}</p><p><a href="/admin/fulfillment/cs/reports/">Browse reports</a></p></section>'
     return _page_shell(
         title="agent | Fulfillment CS",
-        eyebrow="Fulfillment CS",
+        eyebrow="Fulfillment — Customer Service",
         heading='Fulfillment <span class="highlight">CS</span>.',
         intro="The requested fulfillment support view could not be found.",
         body=body,
