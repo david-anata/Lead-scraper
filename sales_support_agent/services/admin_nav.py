@@ -349,7 +349,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         ("Finance", "/admin/finances", primary_active == "finance", _can_section("Finance")),
         ("Advertising", "/admin/advertising/audit", primary_active == "advertising", _can_section("Advertising")),
         ("Executive", "/admin/executive", primary_active == "executive", _can_section("Executive")),
-        ("Fulfillment CS", "/admin/fulfillment-cs", primary_active == "fulfillment", _can_section("Fulfillment CS")),
+        ("Fulfillment", "/admin/fulfillment", primary_active == "fulfillment", _can_section("Fulfillment")),
         ("Access", "/admin/access", primary_active == "access", show_access),
     ]
     primary_links = [
@@ -416,9 +416,10 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     if primary_active == "fulfillment":
         fulfillment_links = [
             link for key, link in (
-                ("fulfillment.dashboard", _nav_item("Dashboard", "/admin/fulfillment-cs/", active=current_section == "fulfillment_dashboard", extra_class="top-link--secondary")),
-                ("fulfillment.reports", _nav_item("Reports", "/admin/fulfillment-cs/reports/", active=current_section == "fulfillment_reports", extra_class="top-link--secondary")),
-                ("fulfillment.reports", _nav_item("Latest", "/admin/fulfillment-cs/reports/latest", active=current_section == "fulfillment_latest", extra_class="top-link--secondary")),
+                ("fulfillment.rate_sheets", _nav_item("Sales Deck", "/admin/fulfillment/sales", active=current_section == "fulfillment_sales", extra_class="top-link--secondary")),
+                ("fulfillment.dashboard", _nav_item("CS Dashboard", "/admin/fulfillment/cs/", active=current_section == "fulfillment_dashboard", extra_class="top-link--secondary")),
+                ("fulfillment.reports", _nav_item("CS Reports", "/admin/fulfillment/cs/reports/", active=current_section == "fulfillment_reports", extra_class="top-link--secondary")),
+                ("fulfillment.reports", _nav_item("Latest", "/admin/fulfillment/cs/reports/latest", active=current_section == "fulfillment_latest", extra_class="top-link--secondary")),
             ) if _can(key)
         ]
         secondary_nav = f"""

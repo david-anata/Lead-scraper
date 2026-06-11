@@ -36,6 +36,7 @@ class MainFulfillmentCSTests(unittest.TestCase):
         admin_dashboard.render_dashboard_page = lambda payload: "<html>dashboard</html>"
         admin_dashboard.render_executive_page = lambda payload: "<html>executive</html>"
         admin_dashboard.render_login_page = lambda error_message="": f"<html>login {error_message}</html>"
+        admin_dashboard.render_sales_deck_page = lambda payload, **kwargs: "<html>sales decks</html>"
 
         website_ops = ModuleType("sales_support_agent.services.website_ops")
         website_ops.get_website_ops_run_state = lambda settings, mode="daily": {"status": "idle", "mode": mode}
@@ -157,10 +158,10 @@ class MainFulfillmentCSTests(unittest.TestCase):
             ],
             "escalations": [],
             "links": {
-                "self_json": f"/admin/fulfillment-cs/reports/{slug}.json",
-                "self_html": f"/admin/fulfillment-cs/reports/{slug}.html",
-                "reports_index": "/admin/fulfillment-cs/reports/",
-                "latest": "/admin/fulfillment-cs/reports/latest",
+                "self_json": f"/admin/fulfillment/cs/reports/{slug}.json",
+                "self_html": f"/admin/fulfillment/cs/reports/{slug}.html",
+                "reports_index": "/admin/fulfillment/cs/reports/",
+                "latest": "/admin/fulfillment/cs/reports/latest",
             },
             "warnings": [],
         }
@@ -188,7 +189,7 @@ class MainFulfillmentCSTests(unittest.TestCase):
                             "action_counts": {"clarifying": 1},
                             "lifecycle_counts": {"investigating": 1},
                             "artifact_formats": ["json", "html", "md"],
-                            "links": {"detail": f"/admin/fulfillment-cs/reports/{slug}"},
+                            "links": {"detail": f"/admin/fulfillment/cs/reports/{slug}"},
                         }
                     ],
                 }
@@ -214,32 +215,32 @@ class MainFulfillmentCSTests(unittest.TestCase):
                 session_token = create_admin_session_token(lead_main.load_admin_dashboard_settings())
                 client.cookies.set(lead_main.load_admin_dashboard_settings().admin_cookie_name, session_token)
 
-                response = client.get("/admin/fulfillment-cs/")
+                response = client.get("/admin/fulfillment/cs/")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Fulfillment CS", response.text)
                 self.assertIn("Candidate preview", response.text)
 
-                response = client.get("/admin/fulfillment-cs/reports/")
+                response = client.get("/admin/fulfillment/cs/reports/")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Fulfillment CS Review", response.text)
 
-                response = client.get("/admin/fulfillment-cs/reports/latest", follow_redirects=False)
+                response = client.get("/admin/fulfillment/cs/reports/latest", follow_redirects=False)
                 self.assertEqual(response.status_code, 302)
-                self.assertEqual(response.headers["location"], f"/admin/fulfillment-cs/reports/{slug}")
+                self.assertEqual(response.headers["location"], f"/admin/fulfillment/cs/reports/{slug}")
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Mule Deer Foundation", response.text)
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}.json")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.json")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers["content-type"].split(";")[0], "application/json")
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}.md")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.md")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers["content-type"].split(";")[0], "text/markdown")
 
-                response = client.get(f"/admin/fulfillment-cs/reports/{slug}.html")
+                response = client.get(f"/admin/fulfillment/cs/reports/{slug}.html")
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers["content-type"].split(";")[0], "text/html")
 
@@ -261,13 +262,65 @@ class MainFulfillmentCSTests(unittest.TestCase):
                 session_token = create_admin_session_token(lead_main.load_admin_dashboard_settings())
                 client.cookies.set(lead_main.load_admin_dashboard_settings().admin_cookie_name, session_token)
 
-                response = client.get("/admin/fulfillment-cs/")
+                response = client.get("/admin/fulfillment/cs/")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("No fulfillment review report has been generated yet.", response.text)
 
-                response = client.get("/admin/fulfillment-cs/reports/latest", follow_redirects=False)
+                response = client.get("/admin/fulfillment/cs/reports/latest", follow_redirects=False)
                 self.assertEqual(response.status_code, 302)
-                self.assertEqual(response.headers["location"], "/admin/fulfillment-cs/reports/")
+                self.assertEqual(response.headers["location"], "/admin/fulfillment/cs/reports/")
+
+    def test_legacy_fulfillment_cs_urls_redirect_permanently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reports_dir = Path(tmpdir) / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            env = {
+                "APOLLO_API_KEY": "apollo-test",
+                "SLACK_BOT_TOKEN": "slack-test",
+                "SLACK_CHANNEL_ID": "C123",
+                "ADMIN_DASHBOARD_PASSWORD": "secret-pass",
+                "ADMIN_DASHBOARD_SESSION_SECRET": "session-secret",
+                "FULFILLMENT_CS_REPORTS_DIR": str(reports_dir),
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                lead_main = self._import_main_with_stubs()
+                client = TestClient(lead_main.app)
+                session_token = create_admin_session_token(lead_main.load_admin_dashboard_settings())
+                client.cookies.set(lead_main.load_admin_dashboard_settings().admin_cookie_name, session_token)
+
+                for old, new in (
+                    ("/admin/fulfillment-cs", "/admin/fulfillment/cs"),
+                    ("/admin/fulfillment-cs/", "/admin/fulfillment/cs/"),
+                    ("/admin/fulfillment-cs/reports/", "/admin/fulfillment/cs/reports/"),
+                    ("/admin/fulfillment-cs/reports/latest", "/admin/fulfillment/cs/reports/latest"),
+                ):
+                    response = client.get(old, follow_redirects=False)
+                    self.assertEqual(response.status_code, 301, old)
+                    self.assertEqual(response.headers["location"], new, old)
+
+                response = client.get("/admin/fulfillment", follow_redirects=False)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.headers["location"], "/admin/fulfillment/sales")
+
+    def test_permission_keys_are_stable_after_section_rename(self) -> None:
+        # Keys live in roles' permissions_json — renaming the section label must
+        # never rename the keys themselves.
+        from sales_support_agent.services.access.catalog import ALL_TOOL_KEYS, SECTIONS
+
+        self.assertIn("fulfillment.dashboard", ALL_TOOL_KEYS)
+        self.assertIn("fulfillment.reports", ALL_TOOL_KEYS)
+        self.assertIn("fulfillment.rate_sheets", ALL_TOOL_KEYS)
+        self.assertNotIn("Fulfillment CS", SECTIONS)
+        self.assertIn("Fulfillment", SECTIONS)
+
+    def test_nav_shows_renamed_fulfillment_section(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav_html = render_agent_nav("fulfillment")
+        self.assertIn(">Fulfillment</a>", nav_html)
+        self.assertNotIn("Fulfillment CS</a>", nav_html)
+        self.assertIn('href="/admin/fulfillment/sales"', nav_html)
+        self.assertIn('href="/admin/fulfillment/cs/"', nav_html)
 
 
 if __name__ == "__main__":

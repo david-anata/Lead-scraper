@@ -128,6 +128,15 @@ app.include_router(_advertising_router)
 from sales_support_agent.api.brand_analysis_router import router as _brand_analysis_router  # noqa: E402
 app.include_router(_brand_analysis_router)
 
+# Fulfillment > Sales Deck (rate sheets) — admin generator/history plus the
+# public token-gated /rate-sheets/* hosted views (same in-process pattern).
+from sales_support_agent.api.fulfillment_deck_router import (  # noqa: E402
+    admin_router as _fulfillment_deck_admin_router,
+    public_router as _fulfillment_deck_public_router,
+)
+app.include_router(_fulfillment_deck_admin_router)
+app.include_router(_fulfillment_deck_public_router)
+
 # Access admin UI — /admin/access (users list, role CRUD, guards all behind access.manage).
 from sales_support_agent.api.access_router import router as _access_router, _settings_router as _settings_router_  # noqa: E402
 app.include_router(_access_router)
@@ -3836,7 +3845,24 @@ def admin_executive_dashboard(request: Request) -> Response:
     return HTMLResponse(render_executive_page(executive))
 
 
-@app.get("/admin/fulfillment-cs", response_class=HTMLResponse)
+@app.get("/admin/fulfillment", response_class=HTMLResponse)
+def admin_fulfillment_root(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment/sales", status_code=302)
+
+
+@app.get("/admin/fulfillment-cs{rest:path}")
+def admin_fulfillment_cs_legacy_redirect(rest: str) -> Response:
+    # The CS pages moved under the renamed Fulfillment section; keep old links working.
+    return RedirectResponse(url=f"/admin/fulfillment/cs{rest}", status_code=301)
+
+
+@app.get("/admin/fulfillment/cs", response_class=HTMLResponse)
 def admin_fulfillment_cs_root(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
@@ -3844,10 +3870,10 @@ def admin_fulfillment_cs_root(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return RedirectResponse(url="/admin/fulfillment-cs/", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment/cs/", status_code=302)
 
 
-@app.get("/admin/fulfillment-cs/", response_class=HTMLResponse)
+@app.get("/admin/fulfillment/cs/", response_class=HTMLResponse)
 def admin_fulfillment_cs_dashboard(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
@@ -3861,7 +3887,7 @@ def admin_fulfillment_cs_dashboard(request: Request) -> Response:
     return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries))
 
 
-@app.get("/admin/fulfillment-cs/reports", response_class=HTMLResponse)
+@app.get("/admin/fulfillment/cs/reports", response_class=HTMLResponse)
 def admin_fulfillment_cs_reports_root(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
@@ -3869,10 +3895,10 @@ def admin_fulfillment_cs_reports_root(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
+    return RedirectResponse(url="/admin/fulfillment/cs/reports/", status_code=302)
 
 
-@app.get("/admin/fulfillment-cs/reports/", response_class=HTMLResponse)
+@app.get("/admin/fulfillment/cs/reports/", response_class=HTMLResponse)
 def admin_fulfillment_cs_reports(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
@@ -3884,7 +3910,7 @@ def admin_fulfillment_cs_reports(request: Request) -> Response:
     return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(settings.fulfillment_cs_reports_dir)))
 
 
-@app.get("/admin/fulfillment-cs/reports/latest")
+@app.get("/admin/fulfillment/cs/reports/latest")
 def admin_fulfillment_cs_reports_latest(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
@@ -3894,8 +3920,8 @@ def admin_fulfillment_cs_reports_latest(request: Request) -> Response:
         return RedirectResponse(url="/admin/login", status_code=302)
     latest_entry = latest_fulfillment_report_entry(load_fulfillment_cs_settings().fulfillment_cs_reports_dir)
     if latest_entry is None:
-        return RedirectResponse(url="/admin/fulfillment-cs/reports/", status_code=302)
-    return RedirectResponse(url=f"/admin/fulfillment-cs/reports/{latest_entry.slug}", status_code=302)
+        return RedirectResponse(url="/admin/fulfillment/cs/reports/", status_code=302)
+    return RedirectResponse(url=f"/admin/fulfillment/cs/reports/{latest_entry.slug}", status_code=302)
 
 
 def _fulfillment_report_artifact_response(
@@ -3917,22 +3943,22 @@ def _fulfillment_report_artifact_response(
     return Response(content=body, media_type=media_type)
 
 
-@app.get("/admin/fulfillment-cs/reports/{report_slug}.json")
+@app.get("/admin/fulfillment/cs/reports/{report_slug}.json")
 def admin_fulfillment_cs_report_json(request: Request, report_slug: str) -> Response:
     return _fulfillment_report_artifact_response(request, report_slug=report_slug, extension="json")
 
 
-@app.get("/admin/fulfillment-cs/reports/{report_slug}.md")
+@app.get("/admin/fulfillment/cs/reports/{report_slug}.md")
 def admin_fulfillment_cs_report_markdown(request: Request, report_slug: str) -> Response:
     return _fulfillment_report_artifact_response(request, report_slug=report_slug, extension="md")
 
 
-@app.get("/admin/fulfillment-cs/reports/{report_slug}.html")
+@app.get("/admin/fulfillment/cs/reports/{report_slug}.html")
 def admin_fulfillment_cs_report_html(request: Request, report_slug: str) -> Response:
     return _fulfillment_report_artifact_response(request, report_slug=report_slug, extension="html")
 
 
-@app.get("/admin/fulfillment-cs/reports/{report_slug}", response_class=HTMLResponse)
+@app.get("/admin/fulfillment/cs/reports/{report_slug}", response_class=HTMLResponse)
 def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):

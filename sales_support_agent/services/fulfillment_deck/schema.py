@@ -1,0 +1,288 @@
+"""Canonical data contract for the Fulfillment Rate Sheet generator.
+
+Conventions (mirroring services/brand_analysis/schema.py):
+  * money is float USD here (carrier rates are quoted in dollars+cents and we
+    never aggregate them into ledgers — display only)
+  * dimensions are inches, weights are pounds
+  * a *missing* input is ``None`` (distinct from a real 0) so section logic can
+    tell "absent" from "zero"
+  * parsers never raise — bad/blank values degrade to None
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+ANATA_HQ_ZIP = "84043"
+ANATA_HQ_ADDRESS = "1657 N. State Street, Lehi, UT 84043"
+
+RATE_SOURCE_WMS = "wms"
+RATE_SOURCE_MOCK = "mock"
+
+# Sanity clamps for LLM-extracted product specs. Anything outside is dropped
+# to None (parcel network limits, roughly).
+MAX_DIM_IN = 108.0
+MAX_WEIGHT_LB = 150.0
+
+
+def clean_zip(value: object) -> Optional[str]:
+    """Normalize a US ZIP to 5 digits, or None."""
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) >= 5:
+        return digits[:5]
+    return None
+
+
+def _pos_float(value: object, maximum: float) -> Optional[float]:
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if f <= 0 or f > maximum:
+        return None
+    return round(f, 2)
+
+
+@dataclass(frozen=True)
+class ProductSpec:
+    """One sellable product / package configuration from the prospect."""
+
+    name: str = ""
+    length_in: Optional[float] = None
+    width_in: Optional[float] = None
+    height_in: Optional[float] = None
+    weight_lb: Optional[float] = None
+    monthly_units: Optional[int] = None
+    notes: str = ""
+
+    @property
+    def has_full_package_spec(self) -> bool:
+        return None not in (self.length_in, self.width_in, self.height_in, self.weight_lb)
+
+    @property
+    def dims_key(self) -> tuple:
+        """Identity for deduping identical package specs across products."""
+        return (self.length_in, self.width_in, self.height_in, self.weight_lb)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ProductSpec":
+        units = payload.get("monthly_units")
+        try:
+            units = int(units) if units is not None else None
+        except (TypeError, ValueError):
+            units = None
+        if units is not None and units <= 0:
+            units = None
+        return ProductSpec(
+            name=str(payload.get("name") or "").strip()[:120],
+            length_in=_pos_float(payload.get("length_in"), MAX_DIM_IN),
+            width_in=_pos_float(payload.get("width_in"), MAX_DIM_IN),
+            height_in=_pos_float(payload.get("height_in"), MAX_DIM_IN),
+            weight_lb=_pos_float(payload.get("weight_lb"), MAX_WEIGHT_LB),
+            monthly_units=units,
+            notes=str(payload.get("notes") or "").strip()[:300],
+        )
+
+
+@dataclass(frozen=True)
+class ProspectProfile:
+    """Everything the LLM (or fallback parser) could extract about a prospect."""
+
+    company: str = ""
+    brand: str = ""
+    website: str = ""
+    contact_name: str = ""
+    contact_email: str = ""
+    products: tuple = ()  # tuple[ProductSpec, ...]
+    monthly_order_volume: Optional[int] = None
+    destinations_note: str = ""        # e.g. "mostly West Coast, some Canada"
+    current_carrier: str = ""
+    current_costs_note: str = ""       # e.g. "paying ~$9.80 avg per parcel"
+    source_confidence: str = "low"     # low | medium | high
+    raw_notes_excerpt: str = ""
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["products"] = [p.to_dict() for p in self.products]
+        return d
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ProspectProfile":
+        products = tuple(
+            ProductSpec.from_dict(p) for p in (payload.get("products") or []) if isinstance(p, dict)
+        )
+        volume = payload.get("monthly_order_volume")
+        try:
+            volume = int(volume) if volume is not None else None
+        except (TypeError, ValueError):
+            volume = None
+        if volume is not None and volume <= 0:
+            volume = None
+        confidence = str(payload.get("source_confidence") or "low").lower()
+        if confidence not in ("low", "medium", "high"):
+            confidence = "low"
+        return ProspectProfile(
+            company=str(payload.get("company") or "").strip()[:160],
+            brand=str(payload.get("brand") or "").strip()[:120],
+            website=str(payload.get("website") or "").strip()[:300],
+            contact_name=str(payload.get("contact_name") or "").strip()[:120],
+            contact_email=str(payload.get("contact_email") or "").strip()[:200],
+            products=products,
+            monthly_order_volume=volume,
+            destinations_note=str(payload.get("destinations_note") or "").strip()[:400],
+            current_carrier=str(payload.get("current_carrier") or "").strip()[:120],
+            current_costs_note=str(payload.get("current_costs_note") or "").strip()[:400],
+            source_confidence=confidence,
+            raw_notes_excerpt=str(payload.get("raw_notes_excerpt") or "").strip()[:600],
+        )
+
+    @property
+    def display_name(self) -> str:
+        return self.brand or self.company or "Prospect"
+
+
+@dataclass(frozen=True)
+class RateQuote:
+    carrier: str = ""
+    service: str = ""
+    rate_usd: float = 0.0
+    transit_days: Optional[int] = None
+    zone: Optional[int] = None
+    source: str = RATE_SOURCE_MOCK  # "wms" | "mock"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(payload: dict) -> "RateQuote":
+        try:
+            rate = round(float(payload.get("rate_usd") or 0.0), 2)
+        except (TypeError, ValueError):
+            rate = 0.0
+        transit = payload.get("transit_days")
+        try:
+            transit = int(transit) if transit is not None else None
+        except (TypeError, ValueError):
+            transit = None
+        zone = payload.get("zone")
+        try:
+            zone = int(zone) if zone is not None else None
+        except (TypeError, ValueError):
+            zone = None
+        source = str(payload.get("source") or RATE_SOURCE_MOCK)
+        if source not in (RATE_SOURCE_WMS, RATE_SOURCE_MOCK):
+            source = RATE_SOURCE_MOCK
+        return RateQuote(
+            carrier=str(payload.get("carrier") or "").strip()[:60],
+            service=str(payload.get("service") or "").strip()[:80],
+            rate_usd=rate,
+            transit_days=transit,
+            zone=zone,
+            source=source,
+        )
+
+
+@dataclass(frozen=True)
+class ZoneRates:
+    """All quotes for one product spec to one representative destination."""
+
+    zone: int = 0
+    dest_zip: str = ""
+    dest_label: str = ""  # e.g. "Atlanta, GA"
+    quotes: tuple = ()    # tuple[RateQuote, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "zone": self.zone,
+            "dest_zip": self.dest_zip,
+            "dest_label": self.dest_label,
+            "quotes": [q.to_dict() for q in self.quotes],
+        }
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ZoneRates":
+        try:
+            zone = int(payload.get("zone") or 0)
+        except (TypeError, ValueError):
+            zone = 0
+        return ZoneRates(
+            zone=zone,
+            dest_zip=str(payload.get("dest_zip") or ""),
+            dest_label=str(payload.get("dest_label") or ""),
+            quotes=tuple(RateQuote.from_dict(q) for q in (payload.get("quotes") or []) if isinstance(q, dict)),
+        )
+
+
+@dataclass(frozen=True)
+class ProductRates:
+    """The full zone matrix for one product spec."""
+
+    product: ProductSpec = field(default_factory=ProductSpec)
+    zones: tuple = ()  # tuple[ZoneRates, ...] ordered by zone
+
+    def to_dict(self) -> dict:
+        return {"product": self.product.to_dict(), "zones": [z.to_dict() for z in self.zones]}
+
+    @staticmethod
+    def from_dict(payload: dict) -> "ProductRates":
+        return ProductRates(
+            product=ProductSpec.from_dict(payload.get("product") or {}),
+            zones=tuple(ZoneRates.from_dict(z) for z in (payload.get("zones") or []) if isinstance(z, dict)),
+        )
+
+
+@dataclass(frozen=True)
+class RateMatrix:
+    origin_zip: str = ANATA_HQ_ZIP
+    products: tuple = ()  # tuple[ProductRates, ...]
+
+    @property
+    def source(self) -> str:
+        """"wms" only when at least one quote exists and every quote came from
+        the real WMS; else "mock"."""
+        saw_quote = False
+        for product in self.products:
+            for zone in product.zones:
+                for quote in zone.quotes:
+                    saw_quote = True
+                    if quote.source != RATE_SOURCE_WMS:
+                        return RATE_SOURCE_MOCK
+        return RATE_SOURCE_WMS if saw_quote else RATE_SOURCE_MOCK
+
+    def to_dict(self) -> dict:
+        return {"origin_zip": self.origin_zip, "products": [p.to_dict() for p in self.products]}
+
+    @staticmethod
+    def from_dict(payload: dict) -> "RateMatrix":
+        return RateMatrix(
+            origin_zip=str(payload.get("origin_zip") or ANATA_HQ_ZIP),
+            products=tuple(ProductRates.from_dict(p) for p in (payload.get("products") or []) if isinstance(p, dict)),
+        )
+
+
+@dataclass(frozen=True)
+class SectionFlags:
+    """Which rate-sheet sections render, decided from available data."""
+
+    cover: bool = True
+    rate_matrix: bool = False
+    zone_map: bool = False
+    volume_economics: bool = False
+    cost_comparison: bool = False
+    destinations: bool = False
+    about_anata: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(payload: dict) -> "SectionFlags":
+        defaults = SectionFlags()
+        return SectionFlags(**{
+            key: bool(payload.get(key, getattr(defaults, key)))
+            for key in defaults.to_dict()
+        })

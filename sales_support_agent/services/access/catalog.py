@@ -34,8 +34,9 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("advertising.audit", "Advertising Audit", "Advertising", ("/admin/advertising",)),
     Tool("executive.summary", "Executive Summary", "Executive", ("/admin/executive",), exact=True),
     Tool("executive.brand_analysis", "Brand Analysis", "Executive", ("/admin/executive/brand-analysis",)),
-    Tool("fulfillment.dashboard", "Fulfillment Dashboard", "Fulfillment CS", ("/admin/fulfillment-cs",), exact=True),
-    Tool("fulfillment.reports", "Fulfillment Reports", "Fulfillment CS", ("/admin/fulfillment-cs/reports",)),
+    Tool("fulfillment.rate_sheets", "Fulfillment Sales Deck", "Fulfillment", ("/admin/fulfillment/sales",)),
+    Tool("fulfillment.dashboard", "CS Dashboard", "Fulfillment", ("/admin/fulfillment/cs",), exact=True),
+    Tool("fulfillment.reports", "CS Reports", "Fulfillment", ("/admin/fulfillment/cs/reports",)),
     Tool("access.manage", "Access admin (users & roles)", "Access", ("/admin/access",)),
 )
 
