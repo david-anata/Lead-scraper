@@ -40,32 +40,9 @@ def validate_admin_session_token(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    if not token:
-        return False
-    try:
-        decoded = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
-        username, issued_ts_text, provided_signature = decoded.split("|", 2)
-        issued_ts = int(issued_ts_text)
-    except Exception:
-        return False
-
-    if username != settings.admin_username:
-        return False
-
-    payload = f"{username}|{issued_ts}"
-    expected_signature = hmac.new(
-        settings.admin_session_secret.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(provided_signature, expected_signature):
-        return False
-
-    issued_at = datetime.fromtimestamp(issued_ts, tz=timezone.utc)
-    current_time = now or datetime.now(timezone.utc)
-    if current_time > issued_at + timedelta(hours=settings.admin_session_ttl_hours):
-        return False
-    return True
+    """True if the token is a valid session of either format (legacy 3-part
+    password token or 5-part identity token)."""
+    return get_session_user(settings, token, now=now) is not None
 
 
 # ---------------------------------------------------------------------------
