@@ -145,7 +145,7 @@ def review_run(request: Request, run_id: int, msg: str = ""):
         render_rate_sheet_review_page(
             {"id": run_id, "status": run.status},
             summary,
-            user=get_session_user_from_request(request),
+            user=get_current_user(request),
             flash=msg,
         )
     )
