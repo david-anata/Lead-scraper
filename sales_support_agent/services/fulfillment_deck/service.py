@@ -26,6 +26,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ADDRESS,
     ANATA_HQ_ZIP,
     NarrativeBlock,
+    ProductSpec,
     ProspectProfile,
     RateMatrix,
     clean_zip,
@@ -319,6 +320,90 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
     storage.update_summary(run_id, patch)
     summary.update(patch)
     return {"run_id": run_id, **summary}
+
+
+def apply_viewer_requote(
+    run_id: int, products: list, origin_zip: str, *, settings: Settings
+) -> dict:
+    """Persist a viewer's "Request rates" edit from the hosted sheet's map.
+
+    Merges the posted dims onto the stored profile's products by name match
+    (posted dims override; products not posted keep their stored values;
+    ``dims_estimated`` clears for any posted product with a full spec — the
+    viewer just confirmed real numbers), rebuilds rates/savings, regenerates
+    the narrative via the DETERMINISTIC fallback only (no LLM call on viewer
+    edits), re-renders the deck at the SAME view/requote URL, and persists
+    every changed field. Concurrent requotes: last write wins, by design.
+
+    ``products`` are already-clamped ProductSpec objects. Posted names that
+    don't match a stored product are ignored — a public token can't grow the
+    stored catalog. Returns the patch dict (plus run_id).
+    """
+    run = storage.get_run(run_id)
+    if run is None:
+        raise ValueError(f"Rate sheet run {run_id} not found")
+    summary = dict(run.summary_json or {})
+    stored_profile = ProspectProfile.from_dict(summary.get("prospect_profile") or {})
+
+    posted_by_name = {p.name: p for p in products if p.name}
+    merged: list[dict] = []
+    for product in stored_profile.products:
+        posted = posted_by_name.get(product.name)
+        if posted is None:
+            merged.append(product.to_dict())
+            continue
+        data = product.to_dict()
+        data.update(
+            {
+                "length_in": posted.length_in,
+                "width_in": posted.width_in,
+                "height_in": posted.height_in,
+                "weight_lb": posted.weight_lb,
+            }
+        )
+        if posted.has_full_package_spec:
+            data["dims_estimated"] = False
+        merged.append(data)
+    profile = ProspectProfile.from_dict({**stored_profile.to_dict(), "products": merged})
+
+    origin = (
+        clean_zip(origin_zip)
+        or clean_zip(summary.get("origin_zip"))
+        or ANATA_HQ_ZIP
+    )
+
+    matrix, _rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
+    savings, _savings_warnings = _compute_savings(profile, matrix)
+    # Deterministic narrative only — viewer edits must never trigger an LLM call.
+    narrative_fn = getattr(llm_module, "_fallback_narrative", None) or _fallback_narrative
+    narrative = narrative_fn(profile, matrix, savings)
+    flags = decide_sections(profile, matrix)
+
+    view_path = str(summary.get("view_path") or "")
+    origin_label = ANATA_HQ_ADDRESS if origin == ANATA_HQ_ZIP else f"ZIP {origin}"
+    deck_html = render_rate_sheet_html(
+        profile=profile,
+        matrix=matrix,
+        flags=flags,
+        origin_label=origin_label,
+        generated_on=datetime.now(timezone.utc).strftime("%B %d, %Y"),
+        settings=settings,
+        narrative=narrative,
+        savings=savings,
+        requote_path=f"{view_path}/requote" if view_path else "",
+    )
+    patch = {
+        "prospect_profile": profile.to_dict(),
+        "origin_zip": origin,
+        "rate_matrix": matrix.to_dict(),
+        "savings": savings,
+        "narrative": narrative.to_dict(),
+        "deck_html": deck_html,
+        "rates_source": matrix.source,
+        "sections_included": [key for key, on in flags.to_dict().items() if on],
+    }
+    storage.update_summary(run_id, patch)
+    return {"run_id": run_id, **patch}
 
 
 def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict:

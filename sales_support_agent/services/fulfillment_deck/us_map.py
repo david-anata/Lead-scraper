@@ -3,8 +3,10 @@
 Real state outlines (see us_states_svg.py, CC0), colored by what it costs to
 ship the selected product to each state. Hover shows the estimated rate,
 carrier, and transit; the viewer can edit each product's dims/weight right on
-the proposal and the map re-quotes live via the token-gated /requote endpoint.
-Viewer edits are ephemeral — they never change the published sheet.
+the proposal and press "Request rates" to re-quote via the token-gated
+/requote endpoint. Edits PERSIST: the endpoint saves the updated report and
+returns refreshed section fragments (rate tables, volume economics, savings)
+that are swapped into the page, so the viewer can leave and come back.
 """
 
 from __future__ import annotations
@@ -113,6 +115,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             <g stroke="#fffdf9" stroke-width="1" stroke-linejoin="round">{state_paths_svg}</g>
           </svg>
           <div class="rm-tooltip" id="rm-tooltip" hidden></div>
+          <div class="rm-overlay" id="rm-overlay" hidden><div class="rm-spinner"></div></div>
           <div class="rm-legend" id="rm-legend"></div>
         </div>
       </div>
@@ -145,7 +148,21 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
         .rm-dims .rm-reset {{ font-size: 11.5px; align-self: center; cursor: pointer;
           color: var(--anata-sky-deep, #4f84c4); text-decoration: underline; background: none;
           border: none; padding: 0; font-family: inherit; }}
+        .rm-dims .rm-request {{ background: var(--anata-ink, #1d2d44); color: #fffdf9;
+          border: 1px solid var(--anata-ink, #1d2d44); border-radius: 999px; padding: 8px 18px;
+          font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; align-self: center; }}
+        .rm-dims .rm-request[disabled], .rm-dims input[disabled],
+        .rm-dims .rm-reset[disabled], .rm-products button[disabled] {{
+          opacity: 0.55; cursor: default; }}
         .rm-status {{ font-size: 12px; color: var(--anata-muted, #6b7688); min-height: 16px; }}
+        .rm-overlay {{ position: absolute; inset: 0; z-index: 6; display: flex;
+          align-items: center; justify-content: center;
+          background: rgba(255,253,249,0.6); }}
+        .rm-overlay[hidden] {{ display: none; }}
+        .rm-spinner {{ width: 38px; height: 38px; border-radius: 50%;
+          border: 4px solid rgba(29,45,68,0.18); border-top-color: var(--anata-ink, #1d2d44);
+          animation: rm-spin 0.9s linear infinite; }}
+        @keyframes rm-spin {{ to {{ transform: rotate(360deg); }} }}
         .rm-legend {{ display: flex; align-items: center; gap: 4px; margin-top: 8px;
           font-size: 11px; color: var(--anata-muted, #6b7688); flex-wrap: wrap; }}
         .rm-legend .rm-chip {{ width: 34px; height: 12px; border-radius: 3px; display: inline-block; }}
@@ -165,7 +182,8 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           var svg = document.getElementById('rm-svg');
           var tooltip = document.getElementById('rm-tooltip');
           var statusEl = document.getElementById('rm-status');
-          var debounceTimer = null;
+          var overlay = document.getElementById('rm-overlay');
+          var busy = false;
           var edited = false;
 
           function fmt(rate) {{ return '$' + Number(rate).toFixed(2); }}
@@ -226,16 +244,22 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             dims.innerHTML = field('L (in)', 'length_in', '0.5') + field('W (in)', 'width_in', '0.5')
               + field('H (in)', 'height_in', '0.5') + field('Weight (lb)', 'weight_lb', '0.1')
               + (p.estimated ? '<span class="rm-est">estimated</span>' : '')
+              + '<button type="button" class="rm-request" id="rm-request">Request rates</button>'
               + '<button type="button" class="rm-reset" id="rm-reset">reset to quoted specs</button>';
             dims.querySelectorAll('input').forEach(function(input) {{
               input.addEventListener('input', onDimEdit);
             }});
+            var request = document.getElementById('rm-request');
+            if (request) request.addEventListener('click', function() {{
+              if (!busy) requote();
+            }});
             var reset = document.getElementById('rm-reset');
             if (reset) reset.addEventListener('click', function() {{
+              if (busy) return;
               DATA.products = JSON.parse(JSON.stringify(ORIGINALS));
               edited = false;
-              statusEl.textContent = '';
               renderControls(); paint();
+              requote();  // persist the original specs back onto the report
             }});
           }}
 
@@ -244,9 +268,28 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             var key = evt.target.getAttribute('data-key');
             var v = parseFloat(evt.target.value);
             p[key] = isNaN(v) || v <= 0 ? null : v;
-            clearTimeout(debounceTimer);
-            statusEl.textContent = 'Re-quoting…';
-            debounceTimer = setTimeout(requote, 600);
+            statusEl.textContent = 'Specs changed — press “Request rates” to refresh and save.';
+          }}
+
+          function setBusy(value) {{
+            busy = value;
+            overlay.hidden = !value;
+            document.querySelectorAll('#rm-dims input, #rm-dims button, #rm-products button')
+              .forEach(function(el) {{ el.disabled = value; }});
+          }}
+
+          function swapFragments(fragments) {{
+            Object.keys(fragments || {{}}).forEach(function(key) {{
+              if (key === 'rate-map') return;  // never swap the live map section
+              var el = document.querySelector('[data-key="' + key + '"]');
+              if (!el) return;
+              var fragment = fragments[key];
+              if (fragment) {{
+                el.outerHTML = fragment;
+              }} else if (el.parentNode) {{
+                el.parentNode.removeChild(el);
+              }}
+            }});
           }}
 
           function requote() {{
@@ -257,6 +300,8 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                          height_in: p.height_in, weight_lb: p.weight_lb }};
               }})
             }};
+            setBusy(true);
+            statusEl.textContent = 'Requesting live rates — this takes ~30 seconds…';
             fetch(requoteUrl, {{
               method: 'POST',
               headers: {{ 'Content-Type': 'application/json' }},
@@ -267,16 +312,21 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                   var local = DATA.products.find(function(p) {{ return p.name === rp.name; }});
                   if (local) local.zoneRates = rp.zoneRates || {{}};
                 }});
+                if (data.source) DATA.source = data.source;
                 edited = true;
-                statusEl.textContent = 'Live estimate updated for your edited specs — the quoted tables above are unchanged.';
+                swapFragments(data.fragments);
                 paint();
+                setBusy(false);
+                statusEl.textContent = 'Rates updated and saved to this report.';
               }})
               .catch(function() {{
-                statusEl.textContent = 'Could not re-quote right now — showing the original rates.';
+                setBusy(false);
+                statusEl.textContent = 'Could not refresh rates right now — showing the last saved rates.';
               }});
           }}
 
           document.getElementById('rm-products').addEventListener('click', function(evt) {{
+            if (busy) return;
             var btn = evt.target.closest('button[data-i]');
             if (!btn) return;
             selected = parseInt(btn.getAttribute('data-i'), 10) || 0;
