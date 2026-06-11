@@ -334,3 +334,54 @@ class InviteRequestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class AccessFinalizeTests(unittest.TestCase):
+    """Phase-3 finalizers: decision history, optional password login, notify fallbacks."""
+
+    def test_decision_history_includes_decider_fields(self) -> None:
+        rid = store.create_access_request("history-case@anatainc.com", "History Case")
+        store.decide_access_request(rid, approve=True, decided_by="david@anatainc.com")
+        approved = store.list_access_requests(status="approved")
+        match = [r for r in approved if r["email"] == "history-case@anatainc.com"]
+        self.assertTrue(match)
+        self.assertEqual(match[0]["decided_by"], "david@anatainc.com")
+        self.assertTrue(match[0]["decided_at"])
+        self.assertEqual(match[0]["status"], "approved")
+
+    def test_password_login_split_from_session_validity(self) -> None:
+        from dataclasses import dataclass
+        from sales_support_agent.services.admin_auth import admin_login_enabled, password_login_enabled
+
+        @dataclass
+        class S:
+            admin_password: str
+            admin_session_secret: str
+
+        google_only = S(admin_password="", admin_session_secret="secret")
+        self.assertTrue(admin_login_enabled(google_only))      # sessions still validate
+        self.assertFalse(password_login_enabled(google_only))  # but no password form
+        both = S(admin_password="pw", admin_session_secret="secret")
+        self.assertTrue(password_login_enabled(both))
+
+    def test_notify_returns_false_without_gmail_config(self) -> None:
+        from sales_support_agent.services.access.notify import send_approval_email, send_invite_email
+        self.assertFalse(send_invite_email(None, to_email="x@anatainc.com", invite_link="https://x"))
+        self.assertFalse(send_approval_email(None, to_email="x@anatainc.com"))
+
+        class Empty:  # no GMAIL_* attributes at all
+            pass
+
+        self.assertFalse(send_invite_email(Empty(), to_email="x@anatainc.com", invite_link="https://x"))
+        self.assertFalse(send_approval_email(Empty(), to_email="x@anatainc.com"))
+
+    def test_login_page_hides_password_form_when_disabled(self) -> None:
+        from sales_support_agent.services.admin_dashboard import render_login_page
+        google_only = render_login_page(show_google_button=True, show_password_form=False)
+        self.assertNotIn('name="password"', google_only)
+        self.assertIn("Sign in with Google", google_only)
+        self.assertNotIn('<div class="login-divider">', google_only)
+        both = render_login_page(show_google_button=True, show_password_form=True)
+        self.assertIn('name="password"', both)
+        self.assertIn('<div class="login-divider">', both)

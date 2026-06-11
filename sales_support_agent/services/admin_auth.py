@@ -13,6 +13,12 @@ from sales_support_agent.config import Settings
 
 
 def admin_login_enabled(settings: Settings) -> bool:
+    """Sessions only need the signing secret. The shared password is optional
+    (Google SSO can be the only sign-in method) — see password_login_enabled."""
+    return bool(settings.admin_session_secret)
+
+
+def password_login_enabled(settings: Settings) -> bool:
     return bool(settings.admin_password and settings.admin_session_secret)
 
 

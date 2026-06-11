@@ -1595,7 +1595,8 @@ def _sync_banner_primary_copy(
     return f"Synced {age_minutes}m ago"
 
 
-def render_login_page(*, error_message: str = "", show_google_button: bool = False) -> str:
+def render_login_page(*, error_message: str = "", show_google_button: bool = False,
+                      show_password_form: bool = True) -> str:
     error_html = (
         f'<div class="notice error">{html.escape(error_message)}</div>'
         if error_message
@@ -1610,9 +1611,24 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
             <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
           </svg>
           Sign in with Google
-        </a>
-        <div class="login-divider"><span>or</span></div>"""
+        </a>"""
         if show_google_button
+        else ""
+    )
+    divider_html = (
+        '<div class="login-divider"><span>or</span></div>'
+        if (show_google_button and show_password_form)
+        else ""
+    )
+    password_form_html = (
+        """<form method="post" action="/admin/login">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" autocomplete="email" placeholder="you@anatainc.com" required />
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" required />
+              <button type="submit">GET STARTED</button>
+            </form>"""
+        if show_password_form
         else ""
     )
     return f"""<!doctype html>
@@ -1862,13 +1878,8 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
             <p>Sign in with your Anata Google account. New teammate? Signing in automatically files an access request for an admin to approve.</p>
             {error_html}
             {google_button_html}
-            <form method="post" action="/admin/login">
-              <label for="email">Email</label>
-              <input id="email" name="email" type="email" autocomplete="email" placeholder="you@anatainc.com" required />
-              <label for="password">Password</label>
-              <input id="password" name="password" type="password" autocomplete="current-password" required />
-              <button type="submit">GET STARTED</button>
-            </form>
+            {divider_html}
+            {password_form_html}
           </div>
         </section>
       </div>

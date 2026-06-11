@@ -28,6 +28,7 @@ from sales_support_agent.services.admin_auth import (
     admin_login_enabled,
     create_admin_session_token,
     create_user_session_token,
+    password_login_enabled,
     validate_admin_session_token,
     verify_admin_password,
 )
@@ -3742,14 +3743,18 @@ def admin_login_page(request: Request) -> Response:
         _show_google = bool(_agent_settings and _goe(_agent_settings))
     except Exception:
         _show_google = False
-    return HTMLResponse(render_login_page(show_google_button=_show_google))
+    _show_password = password_login_enabled(admin_settings)
+    _err = "" if (_show_google or _show_password) else "No sign-in method is configured. Set GOOGLE_OAUTH_CLIENT_ID/SECRET or ADMIN_DASHBOARD_PASSWORD."
+    return HTMLResponse(render_login_page(show_google_button=_show_google,
+                                          show_password_form=_show_password,
+                                          error_message=_err))
 
 
 @app.post("/admin/login", response_class=HTMLResponse)
 async def admin_login_submit(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
-    if not admin_login_enabled(admin_settings):
-        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    if not password_login_enabled(admin_settings):
+        raise HTTPException(status_code=404, detail="Password login is disabled. Use Google sign-in.")
     body = (await request.body()).decode("utf-8")
     parsed = parse_qs(body)
     password = parsed.get("password", [""])[0]

@@ -132,10 +132,16 @@ class TestGetSessionUserGoogleSSO(unittest.TestCase):
 
 
 class TestAdminAuthHelpers(unittest.TestCase):
-    def test_admin_login_enabled_requires_password_and_secret(self) -> None:
+    def test_admin_login_enabled_requires_only_signing_secret(self) -> None:
+        # Sessions stay valid without the shared password (Google-only mode);
+        # the password form is gated separately by password_login_enabled.
+        from sales_support_agent.services.admin_auth import password_login_enabled
         settings = SimpleNamespace(admin_password="secret", admin_session_secret="signing-secret")
         self.assertTrue(admin_login_enabled(settings))
-        self.assertFalse(admin_login_enabled(SimpleNamespace(admin_password="", admin_session_secret="signing-secret")))
+        google_only = SimpleNamespace(admin_password="", admin_session_secret="signing-secret")
+        self.assertTrue(admin_login_enabled(google_only))
+        self.assertFalse(password_login_enabled(google_only))
+        self.assertFalse(admin_login_enabled(SimpleNamespace(admin_password="x", admin_session_secret="")))
 
     def test_verify_admin_password_uses_exact_match(self) -> None:
         settings = SimpleNamespace(admin_password="super-secret")

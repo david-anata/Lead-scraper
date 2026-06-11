@@ -420,7 +420,14 @@ def render_invite_invalid_page() -> str:
 
 
 def render_invite_created_page(invite_link: str, email: str, *,
-                                current_user: dict) -> str:
+                                current_user: dict, email_sent: bool = False) -> str:
+    if email_sent:
+        sent_note = (
+            '<p style="color:#2e7d5b;font-weight:600;font-size:13px;margin-bottom:14px">'
+            '&#10003; Invite emailed to the recipient. You can also share the link below.</p>'
+        )
+    else:
+        sent_note = ""
     body = f"""
     <div class="page-header">
       <h2>Invite created</h2>
@@ -429,6 +436,7 @@ def render_invite_created_page(invite_link: str, email: str, *,
       <p style="font-size:15px;color:#2B3644;font-weight:600;margin-bottom:6px">
         Invite for <span style="color:#1a5f84">{_esc(email)}</span>
       </p>
+      {sent_note}
       <p class="cell-muted" style="margin-bottom:18px">
         Copy the link below and send it to the recipient. It expires in 7 days
         and can only be used once.
@@ -525,7 +533,7 @@ def render_invites_page(invites: list, roles: list, *, current_user: dict,
 
 
 def render_requests_page(requests_list: list, roles: list, *, current_user: dict,
-                         flash: Optional[str] = None) -> str:
+                         flash: Optional[str] = None, history: Optional[list] = None) -> str:
     roles_opts = "".join(
         f'<option value="{_esc(r["id"])}">{_esc(r["name"])}</option>'
         for r in roles
@@ -566,8 +574,37 @@ def render_requests_page(requests_list: list, roles: list, *, current_user: dict
         <tbody>{rows}</tbody>
       </table>
     </div>
+    {_history_html(history)}
     """
     return _shell("Access — Requests", body, user=current_user, active="access_requests", wide=True)
+
+
+def _history_html(history: Optional[list]) -> str:
+    if not history:
+        return ""
+
+    def _h_row(req: dict) -> str:
+        status = req.get("status") or ""
+        badge = ('<span style="color:#2e7d5b;font-weight:700">Approved</span>' if status == "approved"
+                 else '<span style="color:#8b4c42;font-weight:700">Denied</span>')
+        decided = (req.get("decided_at") or "")[:10]
+        return f"""<tr>
+          <td class="cell-email">{_esc(req.get("email") or "")}</td>
+          <td class="cell-sm">{badge}</td>
+          <td class="cell-muted">{_esc(req.get("decided_by") or "")}</td>
+          <td class="cell-sm">{_esc(decided)}</td>
+        </tr>"""
+
+    rows = "".join(_h_row(r) for r in history)
+    return f"""
+    <div class="page-header" style="margin-top:34px"><h2 style="font-size:17px">Decision history</h2></div>
+    <div class="tbl-card">
+      <table>
+        <thead><tr><th>Email</th><th>Decision</th><th>Decided by</th><th>Date</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+    """
 
 
 # ---------------------------------------------------------------------------

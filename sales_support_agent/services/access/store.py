@@ -313,8 +313,10 @@ def list_access_requests(status: str = "pending") -> list:
     with _session() as s:
         rows = (s.query(AppAccessRequest).filter(AppAccessRequest.status == status)
                 .order_by(AppAccessRequest.requested_at.desc()).all())
-        return [{"id": r.id, "email": r.email, "name": r.name,
-                 "requested_at": r.requested_at.isoformat() if r.requested_at else None} for r in rows]
+        return [{"id": r.id, "email": r.email, "name": r.name, "status": r.status,
+                 "requested_at": r.requested_at.isoformat() if r.requested_at else None,
+                 "decided_by": r.decided_by or "",
+                 "decided_at": r.decided_at.isoformat() if r.decided_at else None} for r in rows]
 
 
 def decide_access_request(request_id: str, *, approve: bool, role_id: Optional[str] = None,

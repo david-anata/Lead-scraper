@@ -44,6 +44,7 @@ from sales_support_agent.services.access.pages import (
     render_roles_page,
     render_users_page,
 )
+from sales_support_agent.services.access.notify import send_approval_email, send_invite_email
 from sales_support_agent.services.auth_deps import require_tool
 from sales_support_agent.services.settings_page import render_settings_page
 
@@ -77,6 +78,11 @@ def _redirect(path: str, flash: Optional[str] = None) -> RedirectResponse:
 
 def _err_redirect(path: str, code: str) -> RedirectResponse:
     return RedirectResponse(f"{path}?err={code}", status_code=303)
+
+
+def _email_settings(request: Request):
+    return (getattr(request.app.state, "agent_settings", None)
+            or getattr(request.app.state, "settings", None))
 
 
 def _flash(request: Request) -> Optional[str]:
@@ -275,7 +281,17 @@ async def create_invite(
     if "localhost" not in base and "127.0.0.1" not in base:
         base = base.replace("http://", "https://")
     invite_link = f"{base}/admin/access/invite/{token}"
-    return HTMLResponse(render_invite_created_page(invite_link, email, current_user=current_user))
+    role_name = ""
+    if role_id:
+        role = store.get_role(role_id)
+        role_name = (role or {}).get("name") or ""
+    email_sent = send_invite_email(_email_settings(request), to_email=email,
+                                   invite_link=invite_link,
+                                   invited_by=current_user.get("email", ""),
+                                   role_name=role_name)
+    return HTMLResponse(render_invite_created_page(invite_link, email,
+                                                   current_user=current_user,
+                                                   email_sent=email_sent))
 
 
 @router.post("/invites/{invite_id}/revoke")
@@ -293,19 +309,29 @@ async def revoke_invite(invite_id: str, current_user: dict = Depends(_guard)):
 async def requests_page(request: Request, current_user: dict = Depends(_guard)):
     reqs = store.list_access_requests(status="pending")
     roles = store.list_roles()
+    history = sorted(
+        store.list_access_requests(status="approved") + store.list_access_requests(status="denied"),
+        key=lambda r: r.get("decided_at") or "", reverse=True)[:50]
     return HTMLResponse(render_requests_page(reqs, roles, current_user=current_user,
-                                             flash=_flash(request)))
+                                             flash=_flash(request), history=history))
 
 
 @router.post("/requests/{request_id}/approve")
 async def approve_request(
+    request: Request,
     request_id: str,
     role_id: str = Form(""),
     current_user: dict = Depends(_guard),
 ):
-    store.decide_access_request(request_id, approve=True,
-                                role_id=role_id or None,
-                                decided_by=current_user.get("email", ""))
+    approved_email = store.decide_access_request(request_id, approve=True,
+                                                 role_id=role_id or None,
+                                                 decided_by=current_user.get("email", ""))
+    if approved_email:
+        base = str(request.base_url).rstrip("/")
+        if "localhost" not in base and "127.0.0.1" not in base:
+            base = base.replace("http://", "https://")
+        send_approval_email(_email_settings(request), to_email=approved_email,
+                            base_url=base, decided_by=current_user.get("email", ""))
     return _redirect("/admin/access/requests", "role")
 
 
