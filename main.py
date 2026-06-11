@@ -3718,6 +3718,16 @@ def fetch_lead_run_status(run_id: str) -> Optional[dict[str, Any]]:
 
 
 # ========= ROUTES =========
+def _current_nav_user(request: Request) -> Optional[dict]:
+    """Resolve the enriched RBAC user (permissions, is_superadmin) for the
+    top-nav account chip. Never raises — nav rendering must not break pages."""
+    try:
+        from sales_support_agent.services.auth_deps import get_current_user
+        return get_current_user(request)
+    except Exception:
+        return None
+
+
 @app.get("/admin/login", response_class=HTMLResponse)
 def admin_login_page(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
@@ -3801,7 +3811,7 @@ def admin_dashboard(request: Request) -> Response:
             _start_remote_dashboard_sync(request, force=False)
         except Exception:
             logger.exception("[AdminDashboard] auto sync on page load failed")
-    return HTMLResponse(render_dashboard_page(dashboard))
+    return HTMLResponse(render_dashboard_page(dashboard, user=_current_nav_user(request)))
 
 
 @app.get("/admin/sales-decks", response_class=HTMLResponse)
@@ -3842,7 +3852,7 @@ def admin_executive_dashboard(request: Request) -> Response:
             executive = fetch_remote_executive_data()
         except Exception:
             logger.exception("[ExecutiveDashboard] auto sync on page load failed")
-    return HTMLResponse(render_executive_page(executive))
+    return HTMLResponse(render_executive_page(executive, user=_current_nav_user(request)))
 
 
 @app.get("/admin/fulfillment", response_class=HTMLResponse)
