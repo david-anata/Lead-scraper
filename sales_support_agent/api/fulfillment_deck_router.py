@@ -27,6 +27,14 @@ from sales_support_agent.services.auth_deps import (
     require_tool,
 )
 from sales_support_agent.services.fulfillment_deck import storage
+from sales_support_agent.services.fulfillment_deck.rates import build_rate_matrix
+from sales_support_agent.services.fulfillment_deck.schema import (
+    ANATA_HQ_ZIP,
+    ProductSpec,
+    clean_zip,
+)
+from sales_support_agent.services.fulfillment_deck.us_map import map_payload
+from sales_support_agent.services.fulfillment_deck.wms_client import get_wms_client
 from sales_support_agent.services.fulfillment_deck.admin_page import (
     render_fulfillment_sales_page,
     render_rate_sheet_review_page,
@@ -308,6 +316,41 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
     if not deck_html:
         return HTMLResponse("Rate sheet not found.", status_code=404)
     return HTMLResponse(deck_html)
+
+
+@public_router.post("/rate-sheets/{slug}/{run_id}/{token}/requote")
+async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: str) -> JSONResponse:
+    """Live re-quote for the interactive map: the viewer edits dims/weight on
+    the rendered sheet and gets fresh zone rates back. Token-gated; allowed
+    for drafts too (the admin review preview embeds the same map). Ephemeral —
+    never persists anything."""
+    run = storage.get_run(run_id)
+    if run is None or (dict(run.summary_json or {}).get("export_token") != token) or not token:
+        return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    raw_products = payload.get("products")
+    if not isinstance(raw_products, list) or not raw_products:
+        return JSONResponse(status_code=400, content={"detail": "products required."})
+
+    # Schema clamps dims/weight; cap the count so a public token can't make
+    # the server quote an arbitrary catalog.
+    products = [
+        ProductSpec.from_dict(p) for p in raw_products[:6] if isinstance(p, dict)
+    ]
+    origin = clean_zip(payload.get("origin_zip")) or str(
+        dict(run.summary_json or {}).get("origin_zip") or ANATA_HQ_ZIP
+    )
+
+    matrix, _warnings = build_rate_matrix(products, origin, get_wms_client())
+    result = map_payload(matrix)
+    return JSONResponse(status_code=200, content={
+        "products": result["products"],
+        "source": result["source"],
+    })
 
 
 @public_router.post("/rate-sheets/{slug}/{run_id}/{token}/heartbeat")

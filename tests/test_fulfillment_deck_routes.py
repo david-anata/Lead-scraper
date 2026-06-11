@@ -243,6 +243,53 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual([p["name"] for p in profile["products"]], ["Widget"])
 
     # ------------------------------------------------------------------
+    # Live requote (interactive map)
+    # ------------------------------------------------------------------
+
+    def test_requote_returns_zone_rates_and_clamps(self) -> None:
+        run = self._generate_published()
+        public = TestClient(app)
+        response = public.post(
+            run["view_path"] + "/requote",
+            json={
+                "origin_zip": "84043",
+                "products": [
+                    {"name": "Widget", "length_in": 10, "width_in": 8,
+                     "height_in": 6, "weight_lb": 4.0},
+                    {"name": "Bad dims", "length_in": 9999, "width_in": 8,
+                     "height_in": 6, "weight_lb": 4.0},
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        widget = next(p for p in data["products"] if p["name"] == "Widget")
+        self.assertTrue(widget["zoneRates"])
+        first_zone = next(iter(widget["zoneRates"].values()))
+        self.assertGreater(first_zone["rate"], 0)
+        self.assertIn("carrier", first_zone)
+        # 9999in length is clamped to None by the schema -> product excluded.
+        self.assertFalse(any(p["name"] == "Bad dims" and p["zoneRates"] for p in data["products"]))
+
+        # Empty body / missing products -> 400; bad token -> 404.
+        self.assertEqual(public.post(run["view_path"] + "/requote", json={}).status_code, 400)
+        bad = run["view_path"].rsplit("/", 1)[0] + "/" + "0" * 32 + "/requote"
+        self.assertEqual(public.post(bad, json={"products": [{}]}).status_code, 404)
+
+    def test_requote_works_for_drafts(self) -> None:
+        # The admin review preview embeds the same map, so drafts must be
+        # requotable with the token even though the public view 404s.
+        run = self._generate()
+        public = TestClient(app)
+        self.assertEqual(public.get(run["view_path"]).status_code, 404)
+        response = public.post(
+            run["view_path"] + "/requote",
+            json={"products": [{"name": "Widget", "length_in": 6, "width_in": 5,
+                                "height_in": 3, "weight_lb": 1.5}]},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    # ------------------------------------------------------------------
     # Engagement + delete (published sheets)
     # ------------------------------------------------------------------
 
