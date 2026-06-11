@@ -11,6 +11,7 @@ brand_analysis_router):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
@@ -27,20 +28,19 @@ from sales_support_agent.services.auth_deps import (
     require_tool,
 )
 from sales_support_agent.services.fulfillment_deck import storage
-from sales_support_agent.services.fulfillment_deck.rates import build_rate_matrix
 from sales_support_agent.services.fulfillment_deck.schema import (
-    ANATA_HQ_ZIP,
     ProductSpec,
+    RateMatrix,
     clean_zip,
 )
 from sales_support_agent.services.fulfillment_deck.us_map import map_payload
-from sales_support_agent.services.fulfillment_deck.wms_client import get_wms_client
 from sales_support_agent.services.fulfillment_deck.admin_page import (
     render_fulfillment_sales_page,
     render_rate_sheet_review_page,
 )
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
+    apply_viewer_requote,
     generate_rate_sheet,
 )
 from sales_support_agent.services.visitor_meta import (
@@ -318,12 +318,21 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
     return HTMLResponse(deck_html)
 
 
+# Sections the requote response re-ships as swappable HTML fragments. The
+# rate-map section is intentionally absent — its JS state lives in the page.
+_FRAGMENT_KEYS = ("carrier-rates", "volume-economics", "savings")
+
+
 @public_router.post("/rate-sheets/{slug}/{run_id}/{token}/requote")
 async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: str) -> JSONResponse:
-    """Live re-quote for the interactive map: the viewer edits dims/weight on
-    the rendered sheet and gets fresh zone rates back. Token-gated; allowed
-    for drafts too (the admin review preview embeds the same map). Ephemeral —
-    never persists anything."""
+    """Live re-quote for the interactive map's "Request rates" button.
+
+    The viewer edits dims/weight on the rendered sheet; this rebuilds the
+    rate matrix AND PERSISTS the updated report (profile, rates, savings,
+    narrative, HTML), so the edit survives leaving and coming back. Returns
+    the fresh map payload plus re-rendered section fragments the page swaps
+    in. Token-gated; allowed for drafts too (the admin review preview embeds
+    the same map). Concurrent requotes: last write wins."""
     run = storage.get_run(run_id)
     if run is None or (dict(run.summary_json or {}).get("export_token") != token) or not token:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
@@ -341,15 +350,28 @@ async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: st
     products = [
         ProductSpec.from_dict(p) for p in raw_products[:6] if isinstance(p, dict)
     ]
-    origin = clean_zip(payload.get("origin_zip")) or str(
-        dict(run.summary_json or {}).get("origin_zip") or ANATA_HQ_ZIP
-    )
+    origin = clean_zip(payload.get("origin_zip")) or ""
 
-    matrix, _warnings = build_rate_matrix(products, origin, get_wms_client())
-    result = map_payload(matrix)
+    try:
+        result = apply_viewer_requote(
+            run_id, products, origin, settings=load_settings()
+        )
+    except ValueError:
+        return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
+
+    matrix = RateMatrix.from_dict(result.get("rate_matrix") or {})
+    map_data = map_payload(matrix)
+    deck_html = str(result.get("deck_html") or "")
+    fragments = {}
+    for key in _FRAGMENT_KEYS:
+        match = re.search(
+            r'<section[^>]*data-key="' + key + r'".*?</section>', deck_html, re.S
+        )
+        fragments[key] = match.group(0) if match else ""
     return JSONResponse(status_code=200, content={
-        "products": result["products"],
-        "source": result["source"],
+        "products": map_data["products"],
+        "source": map_data["source"],
+        "fragments": fragments,
     })
 
 

@@ -22,8 +22,10 @@ from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import create_session_factory, init_database
 from sales_support_agent.services.fulfillment_deck import service as service_module
 from sales_support_agent.services.fulfillment_deck import storage
+from sales_support_agent.services.fulfillment_deck.schema import ProductSpec
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
+    apply_viewer_requote,
     generate_rate_sheet,
     rate_sheet_slug,
     rerender_rate_sheet,
@@ -240,6 +242,85 @@ class RateSheetServiceTests(unittest.TestCase):
         updated = apply_profile_edits(run_id, {"products": kept}, settings=load_settings())
         self.assertEqual(len(updated["prospect_profile"]["products"]), 1)
         self.assertNotIn("Glow Kit", updated["deck_html"])
+
+    def test_apply_viewer_requote_persists_without_llm_call(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        # Mark the first stored product estimated, as if the LLM had guessed.
+        summary = dict(storage.get_run(run_id).summary_json)
+        profile = dict(summary["prospect_profile"])
+        products = [dict(p) for p in profile["products"]]
+        products[0]["dims_estimated"] = True
+        profile["products"] = products
+        storage.update_summary(run_id, {"prospect_profile": profile})
+
+        posted = [
+            ProductSpec.from_dict(
+                {"name": "Super Serum", "length_in": 10, "width_in": 8,
+                 "height_in": 6, "weight_lb": 4.0}
+            )
+        ]
+        # Viewer edits must never trigger an LLM narrative call.
+        with mock.patch.object(
+            service_module.llm_module, "generate_narrative",
+            side_effect=AssertionError("LLM called on viewer requote"),
+        ):
+            patch = apply_viewer_requote(
+                run_id, posted, "84043", settings=load_settings()
+            )
+
+        self.assertEqual(patch["run_id"], run_id)
+        stored = dict(storage.get_run(run_id).summary_json)
+        serum = next(
+            p for p in stored["prospect_profile"]["products"] if p["name"] == "Super Serum"
+        )
+        self.assertEqual(serum["length_in"], 10.0)
+        self.assertEqual(serum["weight_lb"], 4.0)
+        self.assertFalse(serum["dims_estimated"])
+        # Product not posted keeps its stored spec.
+        kit = next(
+            p for p in stored["prospect_profile"]["products"] if p["name"] == "Glow Kit"
+        )
+        self.assertEqual(kit["length_in"], 10.0)
+        self.assertEqual(kit["weight_lb"], 2.5)
+        # Re-rendered + persisted HTML reflects the edit at the same link.
+        self.assertIn("10 × 8 × 6 in", stored["deck_html"])
+        self.assertEqual(stored["view_path"], result["view_path"])
+        self.assertIn(f"{result['view_path']}/requote", stored["deck_html"])
+        self.assertTrue(stored["narrative"]["executive_summary"].strip())
+        self.assertIn(stored["narrative"]["model"], ("none", "fallback"))
+
+    def test_apply_viewer_requote_ignores_unknown_products(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        posted = [
+            ProductSpec.from_dict(
+                {"name": "Injected Product", "length_in": 5, "width_in": 5,
+                 "height_in": 5, "weight_lb": 1.0}
+            )
+        ]
+        apply_viewer_requote(run_id, posted, "84043", settings=load_settings())
+        stored = dict(storage.get_run(run_id).summary_json)
+        names = [p["name"] for p in stored["prospect_profile"]["products"]]
+        self.assertNotIn("Injected Product", names)
+        self.assertEqual(names, ["Super Serum", "Glow Kit"])
+
+    def test_data_keys_and_carrier_grouped_table(self) -> None:
+        result = self._generate_with_current_cost()
+        html = result["deck_html"]
+        for key in ("carrier-rates", "rate-map", "volume-economics", "savings"):
+            self.assertIn(f'data-key="{key}"', html)
+        # Carrier-grouped columns: header is the carrier name only; the
+        # cheaper service per carrier wins, so mock USPS Priority Mail is out.
+        self.assertIn("<th>USPS</th>", html)
+        self.assertIn("<th>UPS</th>", html)
+        self.assertIn("<th>FedEx</th>", html)
+        self.assertNotIn("Priority Mail", html)
+        self.assertIn("Ground Advantage", html)
+        # Explicit request button replaces the auto-debounce flow.
+        self.assertIn("Request rates", html)
+        self.assertIn("rm-overlay", html)
+        self.assertNotIn("debounceTimer", html)
 
     def test_rerender_preserves_link_identity(self) -> None:
         result = self._generate()

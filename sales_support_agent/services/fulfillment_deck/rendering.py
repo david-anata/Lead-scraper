@@ -56,45 +56,58 @@ def _fmt_dims(product) -> str:
     )
 
 
-def _carrier_order(product_rates: ProductRates) -> list[tuple[str, str]]:
-    """Stable (carrier, service) column order across all zones of a product."""
-    seen: list[tuple[str, str]] = []
+def _carrier_order(product_rates: ProductRates) -> list[str]:
+    """Carrier column order: cheapest average best-rate across zones first.
+
+    Columns are CARRIERS (stable across zones) rather than (carrier, service)
+    pairs — real WMS data has different cheapest services per zone, which
+    would otherwise explode the column count.
+    """
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
     for zone in product_rates.zones:
+        best: dict[str, float] = {}
         for quote in zone.quotes:
-            key = (quote.carrier, quote.service)
-            if key not in seen:
-                seen.append(key)
-    return seen
+            current = best.get(quote.carrier)
+            if current is None or quote.rate_usd < current:
+                best[quote.carrier] = quote.rate_usd
+        for carrier, rate in best.items():
+            totals[carrier] = totals.get(carrier, 0.0) + rate
+            counts[carrier] = counts.get(carrier, 0) + 1
+    return sorted(totals, key=lambda c: (totals[c] / counts[c], c))
 
 
 def _render_rate_table(product_rates: ProductRates) -> str:
     carriers = _carrier_order(product_rates)
     if not carriers or not product_rates.zones:
         return '<p class="muted small">No rates available for this product.</p>'
-    head_cells = "".join(
-        f"<th>{html.escape(carrier)}<br><span style='font-weight:500;color:var(--anata-muted);"
-        f"font-size:11px'>{html.escape(service)}</span></th>"
-        for carrier, service in carriers
-    )
+    head_cells = "".join(f"<th>{html.escape(carrier)}</th>" for carrier in carriers)
     body_rows = []
     for zone in product_rates.zones:
-        by_key = {(q.carrier, q.service): q for q in zone.quotes}
+        by_carrier: dict[str, object] = {}
+        for q in zone.quotes:
+            current = by_carrier.get(q.carrier)
+            if current is None or q.rate_usd < current.rate_usd:
+                by_carrier[q.carrier] = q
         cheapest: Optional[float] = min((q.rate_usd for q in zone.quotes), default=None)
         cells = []
-        for key in carriers:
-            quote = by_key.get(key)
+        for carrier in carriers:
+            quote = by_carrier.get(carrier)
             if quote is None:
                 cells.append("<td>—</td>")
                 continue
             is_best = cheapest is not None and abs(quote.rate_usd - cheapest) < 0.005
             style = "font-weight:700;color:var(--anata-sky-deep);" if is_best else ""
             transit = (
-                f"<br><span style='font-size:11px;color:var(--anata-muted);font-weight:500'>"
-                f"{quote.transit_days} day{'s' if quote.transit_days != 1 else ''}</span>"
+                f" · {quote.transit_days} day{'s' if quote.transit_days != 1 else ''}"
                 if quote.transit_days
                 else ""
             )
-            cells.append(f"<td style='{style}'>{_fmt_rate(quote.rate_usd)}{transit}</td>")
+            sub = (
+                f"<br><span style='font-size:11px;color:var(--anata-muted);font-weight:500'>"
+                f"{html.escape(quote.service)}{transit}</span>"
+            )
+            cells.append(f"<td style='{style}'>{_fmt_rate(quote.rate_usd)}{sub}</td>")
         body_rows.append(
             f"<tr><td><strong>Zone {zone.zone}</strong><br>"
             f"<span style='font-size:11px;color:var(--anata-muted)'>{html.escape(zone.dest_label)}"
@@ -213,7 +226,7 @@ def _render_savings_section(savings: dict, narrative: NarrativeBlock, sec: str =
         else ""
     )
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Savings">
+    <section class="slide" id="sec-{sec}" data-key="savings" data-screen-label="{sec} Savings">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Projected savings</p>
@@ -229,13 +242,13 @@ def _render_savings_section(savings: dict, narrative: NarrativeBlock, sec: str =
 def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "02",
                              requote_path: str = "") -> str:
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Rate map">
+    <section class="slide" id="sec-{sec}" data-key="rate-map" data-screen-label="{sec} Rate map">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Explore your rates</p>
           <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
         </div>
-        <p class="caption">Hover any state to see the estimated per-parcel rate from our Lehi, UT dock. Pick a product, and adjust its dims or weight below — the map re-quotes live so you can sanity-check against your real catalog.</p>
+        <p class="caption">Hover any state to see the estimated per-parcel rate from our Lehi, UT dock. Pick a product, adjust its dims or weight below, and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report.</p>
       </header>
       {render_interactive_rate_map(matrix, origin_label, requote_path)}
     </section>"""
@@ -244,7 +257,7 @@ def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "
 def _render_rates_section(matrix: RateMatrix, sec: str = "03") -> str:
     badge = _SAMPLE_BADGE if matrix.source == RATE_SOURCE_MOCK else ""
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Carrier rates">
+    <section class="slide" id="sec-{sec}" data-key="carrier-rates" data-screen-label="{sec} Carrier rates">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Carrier costs</p>
@@ -282,7 +295,7 @@ def _render_volume_section(profile: ProspectProfile, matrix: RateMatrix, sec: st
         )
     )
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Volume economics">
+    <section class="slide" id="sec-{sec}" data-key="volume-economics" data-screen-label="{sec} Volume economics">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Volume economics</p>
@@ -358,9 +371,11 @@ def _render_about_section(sec: str = "06") -> str:
 _TABS_JS = """
   <script>
     (function() {
-      var tabs = document.getElementById('off-tabs');
-      if (!tabs) return;
-      tabs.addEventListener('click', function(evt) {
+      // Delegated on document so sections swapped in by the live-requote
+      // flow (data-key fragments) keep working without re-binding.
+      document.addEventListener('click', function(evt) {
+        var tabs = evt.target.closest('#off-tabs');
+        if (!tabs) return;
         var btn = evt.target.closest('button[data-off]');
         if (!btn) return;
         var key = btn.getAttribute('data-off');

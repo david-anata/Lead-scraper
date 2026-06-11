@@ -27,6 +27,9 @@ from sales_support_agent.models.entities import DeckVisitSession
 from sales_support_agent.services.access import store
 from sales_support_agent.services.admin_auth import create_user_session_token
 from sales_support_agent.services.fulfillment_deck import storage
+from sales_support_agent.services.fulfillment_deck.rates import build_rate_matrix
+from sales_support_agent.services.fulfillment_deck.schema import ProductSpec
+from sales_support_agent.services.fulfillment_deck.wms_client import MockWMSClient
 
 _NOTES = "Brand: TabCo\nWidget — 6 x 5 x 3 in, 1.5 lb, ~500 units/mo"
 _BASE = "/admin/fulfillment/sales"
@@ -275,6 +278,66 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(public.post(run["view_path"] + "/requote", json={}).status_code, 400)
         bad = run["view_path"].rsplit("/", 1)[0] + "/" + "0" * 32 + "/requote"
         self.assertEqual(public.post(bad, json={"products": [{}]}).status_code, 404)
+
+    def test_requote_persists_edits_and_returns_fragments(self) -> None:
+        run = self._generate_published()
+        before = dict(storage.get_run(run["id"]).summary_json)
+        # Mark the stored product estimated so we can verify the requote
+        # clears the flag (the viewer confirmed real numbers).
+        profile = dict(before["prospect_profile"])
+        products = [dict(p) for p in profile["products"]]
+        products[0]["dims_estimated"] = True
+        profile["products"] = products
+        storage.update_summary(run["id"], {"prospect_profile": profile})
+
+        public = TestClient(app)
+        response = public.post(
+            run["view_path"] + "/requote",
+            json={
+                "origin_zip": "84043",
+                "products": [
+                    {"name": "Widget", "length_in": 10, "width_in": 8,
+                     "height_in": 6, "weight_lb": 4.0},
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        # Fragments: re-rendered swappable sections keyed by data-key.
+        self.assertEqual(
+            set(data["fragments"]), {"carrier-rates", "volume-economics", "savings"}
+        )
+        frag = data["fragments"]["carrier-rates"]
+        self.assertIn('data-key="carrier-rates"', frag)
+        self.assertTrue(frag.startswith("<section"))
+        self.assertTrue(frag.endswith("</section>"))
+        self.assertIn("10 × 8 × 6 in", frag)
+        # The new dims' rates show up in the fragment (deterministic mock math).
+        expected, _ = build_rate_matrix(
+            [ProductSpec(name="Widget", length_in=10.0, width_in=8.0,
+                         height_in=6.0, weight_lb=4.0)],
+            "84043",
+            MockWMSClient(),
+        )
+        cheapest = expected.products[0].zones[0].quotes[0].rate_usd
+        self.assertIn(f"${cheapest:,.2f}", frag)
+        # TabCo has units -> volume section re-ships; no current cost -> no savings.
+        self.assertIn('data-key="volume-economics"', data["fragments"]["volume-economics"])
+        self.assertEqual(data["fragments"]["savings"], "")
+
+        # Persistence: dims landed on the stored profile, estimated cleared,
+        # deck re-rendered at the same link.
+        stored = dict(storage.get_run(run["id"]).summary_json)
+        widget = stored["prospect_profile"]["products"][0]
+        self.assertEqual(widget["length_in"], 10.0)
+        self.assertEqual(widget["weight_lb"], 4.0)
+        self.assertFalse(widget["dims_estimated"])
+        self.assertNotEqual(stored["deck_html"], before["deck_html"])
+        self.assertIn("10 × 8 × 6 in", stored["deck_html"])
+        self.assertEqual(stored["view_path"], before["view_path"])
+        # The viewer can leave and come back: the public view serves the edit.
+        self.assertIn("10 × 8 × 6 in", public.get(run["view_path"]).text)
 
     def test_requote_works_for_drafts(self) -> None:
         # The admin review preview embeds the same map, so drafts must be
