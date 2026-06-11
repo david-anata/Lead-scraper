@@ -23,7 +23,7 @@ from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.entities import DeckSectionView, DeckVisitSession
 from sales_support_agent.services.auth_deps import (
-    get_session_user_from_request,
+    get_current_user,
     require_tool,
 )
 from sales_support_agent.services.fulfillment_deck import storage
@@ -64,7 +64,7 @@ def landing(request: Request, msg: str = "", kind: str = "") -> HTMLResponse:
         render_fulfillment_sales_page(
             runs,
             engagement,
-            user=get_session_user_from_request(request),
+            user=get_current_user(request),
             flash=msg,
             flash_kind=kind,
         )

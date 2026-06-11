@@ -97,7 +97,7 @@ from sales_support_agent.services.website_ops import (
     save_feedback_record,
 )
 from sales_support_agent.config import is_active_pipeline_status, normalize_status_key
-from sales_support_agent.services.auth_deps import get_session_user_from_request, is_authenticated
+from sales_support_agent.services.auth_deps import get_current_user, get_session_user_from_request, is_authenticated
 
 
 router = APIRouter()
@@ -169,7 +169,12 @@ def _is_admin_authenticated(request: Request) -> bool:
 
 
 def _get_request_user(request: Request) -> Optional[dict]:
-    return get_session_user_from_request(request)
+    # Enriched RBAC dict (permissions, is_superadmin) so the account chip can
+    # show the Team/Settings links; falls back to the raw token identity.
+    try:
+        return get_current_user(request)
+    except Exception:
+        return get_session_user_from_request(request)
 
 
 def _admin_cookie_options(request: Request) -> dict[str, object]:
