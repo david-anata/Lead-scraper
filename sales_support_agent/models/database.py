@@ -117,6 +117,9 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         "communication_events": {
             "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
         },
+        "app_users": {
+            "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
+        },
         "cash_events": {
             "subcategory":           "ALTER TABLE cash_events ADD COLUMN subcategory VARCHAR(64) NOT NULL DEFAULT ''",
             "description":           "ALTER TABLE cash_events ADD COLUMN description TEXT NOT NULL DEFAULT ''",
@@ -643,6 +646,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 id            TEXT         PRIMARY KEY,
                 email         VARCHAR(255) NOT NULL DEFAULT '',
                 name          VARCHAR(255) NOT NULL DEFAULT '',
+                picture_url   VARCHAR(512) NOT NULL DEFAULT '',
                 role_id       TEXT         NULL,
                 status        VARCHAR(16)  NOT NULL DEFAULT 'active',
                 is_superadmin BOOLEAN      NOT NULL DEFAULT FALSE,
@@ -652,6 +656,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         """))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_app_users_email ON app_users (email)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_users_role_id ON app_users (role_id)"))
+        connection.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS picture_url VARCHAR(512) NOT NULL DEFAULT ''"))
         connection.execute(text("""
             CREATE TABLE IF NOT EXISTS app_invites (
                 id          TEXT         PRIMARY KEY,

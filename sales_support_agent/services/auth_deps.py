@@ -118,7 +118,16 @@ def get_current_user(request: Request) -> Optional[dict]:
     superadmins = {e.lower() for e in getattr(settings, "rbac_superadmin_emails", ()) or ()}
     admin_username = (getattr(settings, "admin_username", "") or "").strip().lower()
     if email in superadmins or (admin_username and email == admin_username):
-        return _superadmin_dict(email, name)
+        out = _superadmin_dict(email, name)
+        try:
+            from sales_support_agent.services.access import store
+            row = store.get_user_by_email(email)
+            if row:
+                out["name"] = row.get("name") or out["name"]
+                out["picture"] = row.get("picture") or ""
+        except Exception:  # noqa: BLE001 — enrichment only; never block a super-admin
+            pass
+        return out
 
     try:
         from sales_support_agent.services.access import store

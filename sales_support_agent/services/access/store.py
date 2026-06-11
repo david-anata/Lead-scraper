@@ -137,7 +137,8 @@ def get_user_by_email(email: str) -> Optional[dict]:
 
 
 def upsert_user(email: str, name: str = "", *, role_id: Optional[str] = None,
-                is_superadmin: bool = False, status: str = "active") -> str:
+                is_superadmin: bool = False, status: str = "active",
+                picture_url: str = "") -> str:
     """Create a user if absent; return the user id. Does not downgrade an
     existing super-admin or overwrite an existing role unless explicitly given."""
     email = _norm_email(email)
@@ -146,6 +147,8 @@ def upsert_user(email: str, name: str = "", *, role_id: Optional[str] = None,
         if user:
             if name and not user.name:
                 user.name = name
+            if picture_url and picture_url != user.picture_url:
+                user.picture_url = picture_url
             if role_id is not None:
                 user.role_id = role_id
             if is_superadmin:
@@ -153,7 +156,8 @@ def upsert_user(email: str, name: str = "", *, role_id: Optional[str] = None,
             return user.id
         uid = _new_id()
         s.add(AppUser(id=uid, email=email, name=name, role_id=role_id,
-                      is_superadmin=is_superadmin, status=status))
+                      is_superadmin=is_superadmin, status=status,
+                      picture_url=picture_url))
         return uid
 
 
@@ -203,6 +207,7 @@ def _user_dict(s: Session, user: AppUser, *, roles: Optional[dict] = None) -> di
         "id": user.id,
         "email": user.email,
         "name": user.name or user.email,
+        "picture": user.picture_url or "",
         "role_id": user.role_id,
         "role_name": (role.name if role else ("Super-admin" if user.is_superadmin else "")),
         "status": user.status,

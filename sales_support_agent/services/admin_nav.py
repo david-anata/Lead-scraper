@@ -139,8 +139,8 @@ def render_agent_nav_styles() -> str:
         position: relative;
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        padding: 0 14px 0 10px;
+        gap: 5px;
+        padding: 0 10px 0 5px;
         min-height: 42px;
         border-radius: 999px;
         background: #fff;
@@ -158,25 +158,24 @@ def render_agent_nav_styles() -> str:
         box-shadow: 0 4px 12px rgba(43, 54, 68, 0.08);
       }
       .user-chip-avatar {
-        width: 26px;
-        height: 26px;
+        width: 32px;
+        height: 32px;
         border-radius: 50%;
         background: #85BBDA;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 11px;
+        font-size: 12px;
         color: #fff;
         font-weight: 900;
         flex-shrink: 0;
+        overflow: hidden;
       }
-      .user-chip-role {
-        font-size: 10px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #85BBDA;
-        margin-left: -2px;
+      .user-chip-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
       }
       .user-chip-caret {
         font-size: 9px;
@@ -205,15 +204,26 @@ def render_agent_nav_styles() -> str:
         border-bottom: 1px solid rgba(43,54,68,0.07);
         margin-bottom: 4px;
       }
-      .user-dropdown-profile-email {
-        font-family: "Inter", sans-serif;
-        font-size: 12px;
-        font-weight: 600;
+      .user-dropdown-profile-name {
+        font-family: "Montserrat", sans-serif;
+        font-size: 13px;
+        font-weight: 800;
         color: #2B3644;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         max-width: 190px;
+      }
+      .user-dropdown-profile-email {
+        font-family: "Inter", sans-serif;
+        font-size: 12px;
+        font-weight: 500;
+        color: rgba(43,54,68,0.6);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 190px;
+        margin-top: 1px;
       }
       .user-dropdown-profile-role {
         font-family: "Montserrat", sans-serif;
@@ -275,14 +285,28 @@ def render_agent_nav_styles() -> str:
 def _user_chip_html(user: Optional[dict]) -> str:
     if not user:
         return f'<a class="top-link" href="/admin/logout">Log out</a>'
-    name = html.escape(user.get("name") or user.get("email") or "User")
+    name_raw = (user.get("name") or user.get("email") or "User").strip()
+    name = html.escape(name_raw)
     email = html.escape(user.get("email") or "")
-    role_raw = user.get("role") or ""
+    role_raw = user.get("role") or user.get("role_name") or ""
     is_superadmin = bool(user.get("is_superadmin"))
     permissions = user.get("permissions") or set()
     can_manage = is_superadmin or "access.manage" in permissions
     role = html.escape(role_raw or ("Super-admin" if is_superadmin else ""))
-    initials = "".join(part[0].upper() for part in name.split()[:2]) or "?"
+
+    # Initials from first + last name; a single token (e.g. an email) gets
+    # just its first letter.
+    parts = [p for p in name_raw.split() if p]
+    if len(parts) >= 2:
+        initials = (parts[0][0] + parts[-1][0]).upper()
+    else:
+        initials = (parts[0][0].upper() if parts else "?")
+
+    picture = (user.get("picture") or "").strip()
+    if picture.startswith("https://"):
+        avatar = f'<span class="user-chip-avatar"><img src="{html.escape(picture)}" alt="{initials}" referrerpolicy="no-referrer"></span>'
+    else:
+        avatar = f'<span class="user-chip-avatar">{initials}</span>'
 
     team_link = ""
     settings_link = ""
@@ -290,13 +314,13 @@ def _user_chip_html(user: Optional[dict]) -> str:
         team_link = '<a href="/admin/access"><span class="ud-icon">&#128101;</span> Team</a>'
         settings_link = '<a href="/admin/settings"><span class="ud-icon">&#9881;&#65039;</span> Settings</a>'
 
-    return f"""<div class="user-chip" tabindex="0" onclick="this.toggleAttribute('data-open')">
-      <span class="user-chip-avatar">{initials}</span>
-      <span>{name}</span>
-      {f'<span class="user-chip-role">{role}</span>' if role else ""}
+    show_name_line = bool(name_raw and name_raw != (user.get("email") or ""))
+    return f"""<div class="user-chip" tabindex="0" onclick="this.toggleAttribute('data-open')" title="{email or name}">
+      {avatar}
       <span class="user-chip-caret">&#9660;</span>
       <div class="user-dropdown">
         <div class="user-dropdown-profile">
+          {f'<div class="user-dropdown-profile-name">{name}</div>' if show_name_line else ""}
           <div class="user-dropdown-profile-email">{email or name}</div>
           {f'<div class="user-dropdown-profile-role">{role}</div>' if role else ""}
         </div>

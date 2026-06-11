@@ -759,6 +759,7 @@ class AppUser(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
+    picture_url: Mapped[str] = mapped_column(String(512), default="")
     role_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|suspended
     is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)

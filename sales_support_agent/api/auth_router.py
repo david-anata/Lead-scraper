@@ -95,6 +95,7 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
 
     email: str = (userinfo.get("email") or "").strip().lower()
     name: str = (userinfo.get("name") or userinfo.get("given_name") or email).strip()
+    picture: str = (userinfo.get("picture") or "").strip()
     hd: str = (userinfo.get("hd") or "").strip().lower()
 
     allowed_domain = settings.google_oauth_allowed_domain.lower()
@@ -106,7 +107,7 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
     rbac_enabled = getattr(settings, "rbac_enabled", True)
     if rbac_enabled:
         try:
-            result = _rbac_login(request, settings, email, name)
+            result = _rbac_login(request, settings, email, name, picture=picture)
             if result is not None:
                 return result
         except Exception:  # noqa: BLE001 — never lock users out on an RBAC bug
@@ -131,7 +132,7 @@ def _mint_session(request: Request, settings, email: str, name: str) -> Redirect
     return response
 
 
-def _rbac_login(request: Request, settings, email: str, name: str):
+def _rbac_login(request: Request, settings, email: str, name: str, picture: str = ""):
     """RBAC decision tree after Google confirms the email.
 
     Returns a Response to send immediately, or None to fall through to legacy.
@@ -147,7 +148,7 @@ def _rbac_login(request: Request, settings, email: str, name: str):
 
     # 1. Super-admin — always allow; ensure seeded.
     if email in superadmins:
-        _store.upsert_user(email, name, is_superadmin=True, status="active")
+        _store.upsert_user(email, name, is_superadmin=True, status="active", picture_url=picture)
         _store.record_login(email)
         return _mint_session(request, settings, email, name)
 
@@ -156,7 +157,7 @@ def _rbac_login(request: Request, settings, email: str, name: str):
     if invite_token:
         invite = _store.get_pending_invite_by_token(invite_token)
         if invite and invite.get("email") == email:
-            _store.upsert_user(email, name, role_id=invite["role_id"], status="active")
+            _store.upsert_user(email, name, role_id=invite["role_id"], status="active", picture_url=picture)
             _store.accept_invite(invite["id"])
             _store.record_login(email)
             resp = _mint_session(request, settings, email, name)
@@ -168,6 +169,8 @@ def _rbac_login(request: Request, settings, email: str, name: str):
     if existing:
         if existing.get("status") == "suspended":
             return _HTML(render_suspended_page(email), status_code=403)
+        if picture:
+            _store.upsert_user(email, name, picture_url=picture)
         _store.record_login(email)
         return _mint_session(request, settings, email, name)
 
