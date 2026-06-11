@@ -1859,7 +1859,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
           <p>This dashboard keeps lead pulls, owner priorities, and sync controls in one place so the team can move quickly without digging through multiple tools.</p>
           <div class="login-card">
             <h2>Enter the dashboard.</h2>
-            <p>Sign in with Google or use your email and the admin password.</p>
+            <p>Sign in with your Anata Google account. New teammate? Signing in automatically files an access request for an admin to approve.</p>
             {error_html}
             {google_button_html}
             <form method="post" action="/admin/login">
