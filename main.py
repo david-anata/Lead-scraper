@@ -127,6 +127,15 @@ app.include_router(_advertising_router)
 from sales_support_agent.api.brand_analysis_router import router as _brand_analysis_router  # noqa: E402
 app.include_router(_brand_analysis_router)
 
+# Fulfillment > Sales Deck (rate sheets) — admin generator/history plus the
+# public token-gated /rate-sheets/* hosted views (same in-process pattern).
+from sales_support_agent.api.fulfillment_deck_router import (  # noqa: E402
+    admin_router as _fulfillment_deck_admin_router,
+    public_router as _fulfillment_deck_public_router,
+)
+app.include_router(_fulfillment_deck_admin_router)
+app.include_router(_fulfillment_deck_public_router)
+
 # Access admin UI — /admin/access (users list, role CRUD, guards all behind access.manage).
 from sales_support_agent.api.access_router import router as _access_router, _settings_router as _settings_router_  # noqa: E402
 app.include_router(_access_router)
