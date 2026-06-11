@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from sales_support_agent.api.advertising_router import router as advertising_router
 from sales_support_agent.api.auth_router import router as auth_router
-from sales_support_agent.api.access_router import router as access_router
+from sales_support_agent.api.access_router import router as access_router, _settings_router
 from sales_support_agent.api.brand_analysis_router import router as brand_analysis_router
 from sales_support_agent.api.cashflow_router import router as cashflow_router
 from sales_support_agent.api.router import router
@@ -55,6 +55,7 @@ def create_app() -> FastAPI:
     app.include_router(advertising_router)
     app.include_router(brand_analysis_router)
     app.include_router(access_router)
+    app.include_router(_settings_router)
 
     # RBAC: per-tool authorization gate + friendly 403 handler.
     from sales_support_agent.services.access.middleware import install_access_middleware

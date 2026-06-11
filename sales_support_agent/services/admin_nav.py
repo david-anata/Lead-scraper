@@ -188,11 +188,11 @@ def render_agent_nav_styles() -> str:
         position: absolute;
         top: calc(100% + 6px);
         right: 0;
-        min-width: 160px;
+        min-width: 220px;
         background: #fff;
         border: 1px solid rgba(43, 54, 68, 0.12);
-        border-radius: 12px;
-        box-shadow: 0 12px 32px rgba(43, 54, 68, 0.12);
+        border-radius: 14px;
+        box-shadow: 0 16px 40px rgba(43, 54, 68, 0.14);
         padding: 6px;
         z-index: 100;
       }
@@ -200,8 +200,39 @@ def render_agent_nav_styles() -> str:
       .user-chip[data-open] .user-dropdown {
         display: block;
       }
+      .user-dropdown-profile {
+        padding: 10px 14px 10px;
+        border-bottom: 1px solid rgba(43,54,68,0.07);
+        margin-bottom: 4px;
+      }
+      .user-dropdown-profile-email {
+        font-family: "Inter", sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        color: #2B3644;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 190px;
+      }
+      .user-dropdown-profile-role {
+        font-family: "Montserrat", sans-serif;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: rgba(43,54,68,0.45);
+        margin-top: 2px;
+      }
+      .user-dropdown-divider {
+        height: 1px;
+        background: rgba(43,54,68,0.07);
+        margin: 4px 0;
+      }
       .user-dropdown a {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: 9px;
         padding: 9px 14px;
         border-radius: 8px;
         font-family: "Montserrat", sans-serif;
@@ -212,10 +243,22 @@ def render_agent_nav_styles() -> str:
         transition: background 100ms ease;
       }
       .user-dropdown a:hover {
-        background: rgba(43, 54, 68, 0.06);
+        background: rgba(43, 54, 68, 0.05);
+      }
+      .user-dropdown a .ud-icon {
+        font-size: 15px;
+        width: 18px;
+        text-align: center;
+        flex-shrink: 0;
       }
       .user-dropdown a.logout-link {
         color: #8b4c42;
+        border-top: 1px solid rgba(43,54,68,0.07);
+        margin-top: 4px;
+        border-radius: 0 0 8px 8px;
+      }
+      .user-dropdown a.logout-link:hover {
+        background: rgba(139,76,66,0.06);
       }
       @media (max-width: 960px) {
         .topbar-inner,
@@ -233,15 +276,33 @@ def _user_chip_html(user: Optional[dict]) -> str:
     if not user:
         return f'<a class="top-link" href="/admin/logout">Log out</a>'
     name = html.escape(user.get("name") or user.get("email") or "User")
-    role = html.escape(user.get("role") or "")
+    email = html.escape(user.get("email") or "")
+    role_raw = user.get("role") or ""
+    is_superadmin = bool(user.get("is_superadmin"))
+    permissions = user.get("permissions") or set()
+    can_manage = is_superadmin or "access.manage" in permissions
+    role = html.escape(role_raw or ("Super-admin" if is_superadmin else ""))
     initials = "".join(part[0].upper() for part in name.split()[:2]) or "?"
+
+    team_link = ""
+    settings_link = ""
+    if can_manage:
+        team_link = '<a href="/admin/access"><span class="ud-icon">&#128101;</span> Team</a>'
+        settings_link = '<a href="/admin/settings"><span class="ud-icon">&#9881;&#65039;</span> Settings</a>'
+
     return f"""<div class="user-chip" tabindex="0" onclick="this.toggleAttribute('data-open')">
       <span class="user-chip-avatar">{initials}</span>
       <span>{name}</span>
       {f'<span class="user-chip-role">{role}</span>' if role else ""}
       <span class="user-chip-caret">&#9660;</span>
       <div class="user-dropdown">
-        <a href="/admin/logout" class="logout-link">Log out</a>
+        <div class="user-dropdown-profile">
+          <div class="user-dropdown-profile-email">{email or name}</div>
+          {f'<div class="user-dropdown-profile-role">{role}</div>' if role else ""}
+        </div>
+        {team_link}
+        {settings_link}
+        <a href="/admin/logout" class="logout-link"><span class="ud-icon">&#8594;</span> Log out</a>
       </div>
     </div>"""
 

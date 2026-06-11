@@ -128,8 +128,9 @@ from sales_support_agent.api.brand_analysis_router import router as _brand_analy
 app.include_router(_brand_analysis_router)
 
 # Access admin UI — /admin/access (users list, role CRUD, guards all behind access.manage).
-from sales_support_agent.api.access_router import router as _access_router  # noqa: E402
+from sales_support_agent.api.access_router import router as _access_router, _settings_router as _settings_router_  # noqa: E402
 app.include_router(_access_router)
+app.include_router(_settings_router_)
 
 # QuickBooks OAuth routes — NO auth guard on /connect, /callback, /disconnect
 # so Intuit's reviewer can complete the flow without an Anata session.
