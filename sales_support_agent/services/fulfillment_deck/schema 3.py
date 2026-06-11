@@ -55,9 +55,6 @@ class ProductSpec:
     weight_lb: Optional[float] = None
     monthly_units: Optional[int] = None
     notes: str = ""
-    # True when the dims/weight were ESTIMATED from the product type rather
-    # than provided by the prospect — rendered with a visible "estimated" tag.
-    dims_estimated: bool = False
 
     @property
     def has_full_package_spec(self) -> bool:
@@ -88,7 +85,6 @@ class ProductSpec:
             weight_lb=_pos_float(payload.get("weight_lb"), MAX_WEIGHT_LB),
             monthly_units=units,
             notes=str(payload.get("notes") or "").strip()[:300],
-            dims_estimated=bool(payload.get("dims_estimated", False)),
         )
 
 
@@ -106,9 +102,6 @@ class ProspectProfile:
     destinations_note: str = ""        # e.g. "mostly West Coast, some Canada"
     current_carrier: str = ""
     current_costs_note: str = ""       # e.g. "paying ~$9.80 avg per parcel"
-    # Parsed numeric form of the prospect's average cost per parcel, when
-    # known — drives the deterministic savings math.
-    current_cost_per_parcel_usd: Optional[float] = None
     source_confidence: str = "low"     # low | medium | high
     raw_notes_excerpt: str = ""
 
@@ -135,7 +128,6 @@ class ProspectProfile:
         return ProspectProfile(
             company=str(payload.get("company") or "").strip()[:160],
             brand=str(payload.get("brand") or "").strip()[:120],
-            current_cost_per_parcel_usd=_pos_float(payload.get("current_cost_per_parcel_usd"), 1000.0),
             website=str(payload.get("website") or "").strip()[:300],
             contact_name=str(payload.get("contact_name") or "").strip()[:120],
             contact_email=str(payload.get("contact_email") or "").strip()[:200],
@@ -269,40 +261,6 @@ class RateMatrix:
         return RateMatrix(
             origin_zip=str(payload.get("origin_zip") or ANATA_HQ_ZIP),
             products=tuple(ProductRates.from_dict(p) for p in (payload.get("products") or []) if isinstance(p, dict)),
-        )
-
-
-@dataclass(frozen=True)
-class NarrativeBlock:
-    """LLM-written prospect-specific prose for the rate sheet. Deterministic
-    fallback text is used when no API key is available — never blank."""
-
-    executive_summary: str = ""
-    savings_text: str = ""
-    bullets: tuple = ()  # tuple[str, ...] — 2-4 short "why this works for you" bullets
-    model: str = "none"
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["bullets"] = list(self.bullets)
-        return d
-
-    @staticmethod
-    def from_dict(payload: dict) -> "NarrativeBlock":
-        def _i(key: str) -> int:
-            try:
-                return int(payload.get(key) or 0)
-            except (TypeError, ValueError):
-                return 0
-        return NarrativeBlock(
-            executive_summary=str(payload.get("executive_summary") or "").strip()[:2000],
-            savings_text=str(payload.get("savings_text") or "").strip()[:2000],
-            bullets=tuple(str(b).strip()[:300] for b in (payload.get("bullets") or []) if str(b).strip()),
-            model=str(payload.get("model") or "none"),
-            input_tokens=_i("input_tokens"),
-            output_tokens=_i("output_tokens"),
         )
 
 

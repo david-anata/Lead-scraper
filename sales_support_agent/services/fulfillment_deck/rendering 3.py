@@ -21,7 +21,6 @@ from sales_support_agent.services.deck.brand_assets import (
 from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ADDRESS,
     RATE_SOURCE_MOCK,
-    NarrativeBlock,
     ProductRates,
     ProspectProfile,
     RateMatrix,
@@ -33,13 +32,6 @@ _SAMPLE_BADGE = (
     '<span style="display:inline-block;background:#fff4d9;border:1px solid #d2a94b;'
     'color:#7a5b14;border-radius:999px;padding:3px 12px;font-size:11px;font-weight:700;'
     'letter-spacing:0.04em;text-transform:uppercase;">Sample rates — illustrative</span>'
-)
-
-_ESTIMATED_PILL = (
-    '<span style="display:inline-block;background:#fff4d9;border:1px solid #d2a94b;'
-    'color:#7a5b14;border-radius:999px;padding:2px 10px;font-size:10px;font-weight:700;'
-    'letter-spacing:0.04em;text-transform:uppercase;vertical-align:middle;">'
-    "estimated — to be confirmed</span>"
 )
 
 
@@ -123,12 +115,11 @@ def _render_product_tabs(matrix: RateMatrix) -> str:
         units = (
             f" · ~{product.monthly_units:,} units/mo" if product.monthly_units else ""
         )
-        estimated = f" · {_ESTIMATED_PILL}" if product.dims_estimated else ""
         panes.append(
             f'<div class="off-pane rate-pane" data-pane="{key}"{hidden_attr}>'
             f'<h3 style="font-size:18px;font-weight:700;margin:0 0 4px;letter-spacing:-0.015em">'
             f"{label}</h3>"
-            f'<p class="muted small" style="margin:0 0 16px">{html.escape(_fmt_dims(product))}{units}{estimated}</p>'
+            f'<p class="muted small" style="margin:0 0 16px">{html.escape(_fmt_dims(product))}{units}</p>'
             f"{_render_rate_table(product_rates)}"
             f"</div>"
         )
@@ -138,7 +129,7 @@ def _render_product_tabs(matrix: RateMatrix) -> str:
 
 
 def _render_cover(profile: ProspectProfile, matrix: RateMatrix, origin_label: str,
-                  generated_on: str, sec: str = "01") -> str:
+                  generated_on: str) -> str:
     facts = []
     if profile.monthly_order_volume:
         facts.append(("Monthly orders", f"{profile.monthly_order_volume:,}"))
@@ -152,7 +143,7 @@ def _render_cover(profile: ProspectProfile, matrix: RateMatrix, origin_label: st
         for label, value in facts[:4]
     )
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Overview">
+    <section class="slide" id="sec-01" data-screen-label="01 Overview">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Fulfillment rate sheet · {html.escape(generated_on)}</p>
@@ -164,71 +155,9 @@ def _render_cover(profile: ProspectProfile, matrix: RateMatrix, origin_label: st
     </section>"""
 
 
-def _render_narrative_section(narrative: NarrativeBlock, sec: str = "02") -> str:
-    """Personalized executive summary — lead paragraph + bullet tiles."""
-    if not narrative.executive_summary.strip():
-        return ""
-    bullet_tiles = "".join(
-        f"<div class='off-block'><h4>Why this works</h4><p>{html.escape(bullet)}</p></div>"
-        for bullet in narrative.bullets[:4]
-    )
-    bullets_html = f'<div class="off-grid">{bullet_tiles}</div>' if bullet_tiles else ""
+def _render_zone_map_section(matrix: RateMatrix, origin_label: str) -> str:
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Executive summary">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Executive summary</p>
-          <h2 class="slide-title">What this sheet says</h2>
-        </div>
-        <p class="caption" style="font-size:16px;line-height:1.6">{html.escape(narrative.executive_summary)}</p>
-      </header>
-      {bullets_html}
-    </section>"""
-
-
-def _render_savings_section(savings: dict, narrative: NarrativeBlock, sec: str = "07") -> str:
-    """Projected savings vs the prospect's current cost per parcel."""
-    try:
-        current = float(savings["current_per_parcel"])
-        blended = float(savings["anata_blended_per_parcel"])
-        monthly_orders = int(savings["monthly_orders"])
-        monthly_savings = float(savings["monthly_savings"])
-        annual_savings = float(savings["annual_savings"])
-    except (KeyError, TypeError, ValueError):
-        return ""
-    tiles = "".join(
-        f"<div class='off-block' style='border-left:3px solid var(--anata-sage)'>"
-        f"<h4>{html.escape(label)}</h4>"
-        f"<p style='color:var(--anata-sage);font-weight:700'>{html.escape(value)}</p></div>"
-        for label, value in (
-            ("Your current cost", f"{_fmt_rate(current)} / parcel"),
-            ("Anata blended sample rate", f"{_fmt_rate(blended)} / parcel"),
-            (f"Monthly savings at {monthly_orders:,} orders", _fmt_rate(monthly_savings)),
-            ("Annualized savings", _fmt_rate(annual_savings)),
-        )
-    )
-    caption = (
-        f'<p class="caption">{html.escape(narrative.savings_text)}</p>'
-        if narrative.savings_text.strip()
-        else ""
-    )
-    return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Savings">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Projected savings</p>
-          <h2 class="slide-title">What switching is worth</h2>
-        </div>
-        {caption}
-      </header>
-      <div class="off-grid">{tiles}</div>
-      <p class="muted small" style="margin-top:14px">Directional math: blended average of the best sample rate per zone across your products, against your reported current cost per parcel. Actual savings depend on your destination mix.</p>
-    </section>"""
-
-
-def _render_zone_map_section(matrix: RateMatrix, origin_label: str, sec: str = "02") -> str:
-    return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Zone map">
+    <section class="slide" id="sec-02" data-screen-label="02 Zone map">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Coverage</p>
@@ -240,10 +169,10 @@ def _render_zone_map_section(matrix: RateMatrix, origin_label: str, sec: str = "
     </section>"""
 
 
-def _render_rates_section(matrix: RateMatrix, sec: str = "03") -> str:
+def _render_rates_section(matrix: RateMatrix) -> str:
     badge = _SAMPLE_BADGE if matrix.source == RATE_SOURCE_MOCK else ""
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Carrier rates">
+    <section class="slide" id="sec-03" data-screen-label="03 Carrier rates">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Carrier costs</p>
@@ -255,7 +184,7 @@ def _render_rates_section(matrix: RateMatrix, sec: str = "03") -> str:
     </section>"""
 
 
-def _render_volume_section(profile: ProspectProfile, matrix: RateMatrix, sec: str = "04") -> str:
+def _render_volume_section(profile: ProspectProfile, matrix: RateMatrix) -> str:
     volume = profile.monthly_order_volume or sum(
         p.product.monthly_units or 0 for p in matrix.products
     )
@@ -281,7 +210,7 @@ def _render_volume_section(profile: ProspectProfile, matrix: RateMatrix, sec: st
         )
     )
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Volume economics">
+    <section class="slide" id="sec-04" data-screen-label="04 Volume economics">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Volume economics</p>
@@ -292,7 +221,7 @@ def _render_volume_section(profile: ProspectProfile, matrix: RateMatrix, sec: st
     </section>"""
 
 
-def _render_context_section(profile: ProspectProfile, sec: str = "05") -> str:
+def _render_context_section(profile: ProspectProfile) -> str:
     """Cost comparison + destinations notes, when we know them."""
     blocks = []
     if profile.current_costs_note:
@@ -313,7 +242,7 @@ def _render_context_section(profile: ProspectProfile, sec: str = "05") -> str:
     if not blocks:
         return ""
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Your context">
+    <section class="slide" id="sec-05" data-screen-label="05 Your context">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Your context</p>
@@ -324,7 +253,7 @@ def _render_context_section(profile: ProspectProfile, sec: str = "05") -> str:
     </section>"""
 
 
-def _render_about_section(sec: str = "06") -> str:
+def _render_about_section() -> str:
     tiles = "".join(
         f"<div class='off-block'><h4>{html.escape(title)}</h4><p>{html.escape(body)}</p></div>"
         for title, body in (
@@ -335,7 +264,7 @@ def _render_about_section(sec: str = "06") -> str:
         )
     )
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Why Anata">
+    <section class="slide" id="sec-06" data-screen-label="06 Why Anata">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Why Anata</p>
@@ -518,41 +447,29 @@ def render_rate_sheet_html(
     origin_label: str,
     generated_on: str,
     settings: Settings,
-    narrative: Optional[NarrativeBlock] = None,
-    savings: Optional[dict] = None,
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
     stylesheet = load_brand_stylesheet(settings)
     favicon_link = load_brand_favicon_link(settings)
     title = f"{profile.display_name} × Anata — Fulfillment Rate Sheet"
-    narrative = narrative or NarrativeBlock()
 
     sections: list[tuple[str, str, str]] = []  # (id, rail label, html)
-
-    def _add(label: str, render) -> None:
-        """Append a section, keeping sec-NN ids sequential in document order."""
-        sec = f"{len(sections) + 1:02d}"
-        block = render(sec)
-        if block:
-            sections.append((f"sec-{sec}", label, block))
-
-    _add("Overview", lambda sec: _render_cover(profile, matrix, origin_label, generated_on, sec))
-    if narrative.executive_summary.strip():
-        _add("Executive summary", lambda sec: _render_narrative_section(narrative, sec))
+    sections.append(("sec-01", "Overview", _render_cover(profile, matrix, origin_label, generated_on)))
     if flags.zone_map:
-        _add("Zone map", lambda sec: _render_zone_map_section(matrix, origin_label, sec))
+        sections.append(("sec-02", "Zone map", _render_zone_map_section(matrix, origin_label)))
     if flags.rate_matrix:
-        _add("Carrier rates", lambda sec: _render_rates_section(matrix, sec))
+        sections.append(("sec-03", "Carrier rates", _render_rates_section(matrix)))
     if flags.volume_economics:
-        _add("Volume economics", lambda sec: _render_volume_section(profile, matrix, sec))
+        volume_html = _render_volume_section(profile, matrix)
+        if volume_html:
+            sections.append(("sec-04", "Volume economics", volume_html))
     if flags.cost_comparison or flags.destinations:
-        _add("Your context", lambda sec: _render_context_section(profile, sec))
-    if savings:
-        _add("Savings", lambda sec: _render_savings_section(savings, narrative, sec))
+        context_html = _render_context_section(profile)
+        if context_html:
+            sections.append(("sec-05", "Your context", context_html))
     if flags.about_anata:
-        _add("Why Anata", lambda sec: _render_about_section(sec))
+        sections.append(("sec-06", "Why Anata", _render_about_section()))
 
-    last_sec_id = sections[-1][0] if sections else "sec-01"
     rail_items = "".join(
         f'<li><a class="rail-item{" active" if index == 0 else ""}" href="#{sec_id}">'
         f'<span class="num">{index + 1:02d}</span>{html.escape(label)}</a></li>'
@@ -605,7 +522,7 @@ def render_rate_sheet_html(
     <ul class="rail-list">{rail_items}</ul>
     <div class="rail-foot">
       <a class="rail-util" id="rail-print" href="#" onclick="event.preventDefault();window.print();return false;">Print PDF <span class="arrow">↗</span></a>
-      <a class="rail-util primary" href="#{last_sec_id}">Get started <span class="arrow">→</span></a>
+      <a class="rail-util primary" href="#sec-06">Get started <span class="arrow">→</span></a>
     </div>
   </aside>
 

@@ -29,12 +29,8 @@ from sales_support_agent.services.auth_deps import (
 from sales_support_agent.services.fulfillment_deck import storage
 from sales_support_agent.services.fulfillment_deck.admin_page import (
     render_fulfillment_sales_page,
-    render_rate_sheet_review_page,
 )
-from sales_support_agent.services.fulfillment_deck.service import (
-    apply_profile_edits,
-    generate_rate_sheet,
-)
+from sales_support_agent.services.fulfillment_deck.service import generate_rate_sheet
 from sales_support_agent.services.visitor_meta import (
     MAX_SESSION_SECONDS,
     categorize_referrer,
@@ -112,163 +108,10 @@ async def generate(
             status_code=303,
         )
 
-    # Land on the review page — the sheet stays a draft until published there.
-    review_path = result.get("review_path") or f"{_BASE}/runs/{result['run_id']}/review"
-    return RedirectResponse(review_path, status_code=303)
-
-
-# ---------------------------------------------------------------------------
-# Review / edit / publish (draft lifecycle)
-# ---------------------------------------------------------------------------
-
-
-def _load_reviewable_run(run_id: int):
-    """Run + summary for the review page — drafts and published runs only."""
-    run = storage.get_run(run_id)
-    if run is None or run.status not in ("draft", "completed"):
-        return None, None
-    summary = dict(run.summary_json or {})
-    if not summary.get("deck_html"):
-        return None, None
-    return run, summary
-
-
-@admin_router.get("/runs/{run_id}/review", response_class=HTMLResponse)
-def review_run(request: Request, run_id: int, msg: str = ""):
-    run, summary = _load_reviewable_run(run_id)
-    if run is None:
-        return RedirectResponse(
-            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not reviewable."),
-            status_code=303,
-        )
-    return HTMLResponse(
-        render_rate_sheet_review_page(
-            {"id": run_id, "status": run.status},
-            summary,
-            user=get_session_user_from_request(request),
-            flash=msg,
-        )
-    )
-
-
-@admin_router.get("/runs/{run_id}/preview", response_class=HTMLResponse)
-def preview_run(run_id: int) -> HTMLResponse:
-    """Admin-gated preview of the rendered sheet, any status — feeds the
-    review page's iframe so drafts never need a live public link."""
-    run, summary = _load_reviewable_run(run_id)
-    if run is None:
-        return HTMLResponse("Rate sheet not found.", status_code=404)
-    return HTMLResponse(str(summary.get("deck_html") or ""))
-
-
-def _opt_int(value: str):
-    value = (value or "").replace(",", "").strip()
-    if not value:
-        return None
-    try:
-        return int(float(value))
-    except ValueError:
-        return None
-
-
-def _opt_float(value: str):
-    value = (value or "").replace("$", "").replace(",", "").strip()
-    if not value:
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
-@admin_router.post("/runs/{run_id}/update")
-def update_run(
-    run_id: int,
-    brand: str = Form(default=""),
-    origin_zip: str = Form(default=""),
-    monthly_order_volume: str = Form(default=""),
-    current_cost_per_parcel_usd: str = Form(default=""),
-    destinations_note: str = Form(default=""),
-    current_costs_note: str = Form(default=""),
-    product_name: list[str] = Form(default=[]),
-    product_length: list[str] = Form(default=[]),
-    product_width: list[str] = Form(default=[]),
-    product_height: list[str] = Form(default=[]),
-    product_weight: list[str] = Form(default=[]),
-    product_units: list[str] = Form(default=[]),
-    product_estimated: list[str] = Form(default=[]),
-    product_remove: list[str] = Form(default=[]),
-) -> RedirectResponse:
-    removed = {str(idx).strip() for idx in product_remove or []}
-
-    def _cell(values: list[str], index: int) -> str:
-        return values[index] if index < len(values) else ""
-
-    products: list[dict] = []
-    for i in range(len(product_name or [])):
-        if str(i) in removed:
-            continue
-        name = (_cell(product_name, i) or "").strip()
-        dims = [
-            _opt_float(_cell(product_length, i)),
-            _opt_float(_cell(product_width, i)),
-            _opt_float(_cell(product_height, i)),
-            _opt_float(_cell(product_weight, i)),
-        ]
-        if not name and all(d is None for d in dims):
-            continue  # untouched template row
-        products.append(
-            {
-                "name": name,
-                "length_in": dims[0],
-                "width_in": dims[1],
-                "height_in": dims[2],
-                "weight_lb": dims[3],
-                "monthly_units": _opt_int(_cell(product_units, i)),
-                "dims_estimated": (_cell(product_estimated, i) or "").strip() == "1",
-            }
-        )
-
-    edits = {
-        "brand": (brand or "").strip(),
-        "origin_zip": (origin_zip or "").strip(),
-        "monthly_order_volume": _opt_int(monthly_order_volume),
-        "current_cost_per_parcel_usd": _opt_float(current_cost_per_parcel_usd),
-        "destinations_note": (destinations_note or "").strip(),
-        "current_costs_note": (current_costs_note or "").strip(),
-        "products": products,
-    }
-    try:
-        apply_profile_edits(run_id, edits, settings=load_settings())
-    except ValueError:
-        return RedirectResponse(
-            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found."), status_code=303
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[fulfillment_deck] update failed")
-        return RedirectResponse(
-            f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(f"Update failed: {str(exc)[:140]}"),
-            status_code=303,
-        )
+    warning_count = len(result.get("warnings") or [])
+    note = f" ({warning_count} warning{'s' if warning_count != 1 else ''} — see run details)" if warning_count else ""
     return RedirectResponse(
-        f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus("Updated"), status_code=303
-    )
-
-
-@admin_router.post("/runs/{run_id}/publish")
-def publish_run(run_id: int) -> RedirectResponse:
-    if not storage.publish_run(run_id):
-        return RedirectResponse(
-            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not publishable."),
-            status_code=303,
-        )
-    run = storage.get_run(run_id)
-    summary = dict(run.summary_json or {}) if run is not None else {}
-    view_path = str(summary.get("view_path") or "")
-    prospect = str(summary.get("prospect") or "prospect")
-    return RedirectResponse(
-        f"{_BASE}?msg="
-        + quote_plus(f"Published — rate sheet for {prospect} is live at {view_path}. Use Open or Copy link in History."),
+        f"{_BASE}?msg=" + quote_plus(f"Rate sheet ready for {result.get('prospect') or 'prospect'}{note}. Use Open or Copy link in History."),
         status_code=303,
     )
 
@@ -288,10 +131,6 @@ def delete_run(run_id: int) -> RedirectResponse:
 def _load_valid_run(run_id: int, token: str):
     run = storage.get_run(run_id)
     if run is None:
-        return None
-    # Drafts are never publicly visible — admins preview via the gated
-    # /runs/{id}/preview route on the review page instead.
-    if run.status != "completed":
         return None
     summary = dict(run.summary_json or {})
     if not token or summary.get("export_token") != token:
