@@ -28,6 +28,7 @@ from sales_support_agent.services.access.pages import (
     render_users_page,
 )
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.settings_page import render_settings_page
 
 logger = logging.getLogger(__name__)
 
@@ -205,3 +206,31 @@ async def delete_role(role_id: str, current_user: dict = Depends(_guard)):
     if ok:
         return _redirect("/admin/access/roles", "deleted")
     return _err_redirect("/admin/access/roles", "blocked")
+
+
+# ---------------------------------------------------------------------------
+# Settings page  (/admin/settings — mounted outside the /admin/access prefix
+# via the sibling router below)
+# ---------------------------------------------------------------------------
+
+_settings_router = APIRouter()
+
+
+@_settings_router.get("/admin/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, current_user: dict = Depends(_guard)):
+    all_users = store.list_users()
+    active_users = sum(1 for u in all_users if u.get("status") == "active")
+    pending_invites = len(store.list_pending_invites())
+    pending_requests = len(store.list_access_requests("pending"))
+    team_counts = {
+        "total_users": len(all_users),
+        "active_users": active_users,
+        "pending_invites": pending_invites,
+        "pending_requests": pending_requests,
+    }
+    agent_settings = getattr(request.app.state, "agent_settings", None)
+    return HTMLResponse(render_settings_page(
+        current_user,
+        team_counts=team_counts,
+        agent_settings=agent_settings,
+    ))
