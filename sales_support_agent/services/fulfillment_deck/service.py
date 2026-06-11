@@ -190,6 +190,7 @@ def _assemble(
     profile: ProspectProfile,
     origin: str,
     warnings: list[str],
+    view_path: str = "",
 ) -> dict:
     """Shared back half: rates -> savings -> narrative -> flags -> HTML.
 
@@ -215,6 +216,7 @@ def _assemble(
         settings=settings,
         narrative=narrative,
         savings=savings,
+        requote_path=f"{view_path}/requote" if view_path else "",
     )
     return {
         "design_title": f"{profile.display_name} × Anata Rate Sheet",
@@ -271,12 +273,15 @@ def generate_rate_sheet(
         if origin_zip and clean_zip(origin_zip) is None:
             warnings.append(f"Origin ZIP '{origin_zip}' not recognized — using Anata HQ ({ANATA_HQ_ZIP}).")
 
-        assembled = _assemble(settings=settings, profile=profile, origin=origin, warnings=warnings)
-
         now = datetime.now(timezone.utc)
         slug = rate_sheet_slug(profile.display_name, now)
         token = secrets.token_hex(16)
         view_path = f"/rate-sheets/{slug}/{run_id}/{token}"
+
+        assembled = _assemble(
+            settings=settings, profile=profile, origin=origin,
+            warnings=warnings, view_path=view_path,
+        )
 
         summary = {
             **assembled,
@@ -307,7 +312,10 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
     profile = ProspectProfile.from_dict(summary.get("prospect_profile") or {})
     origin = clean_zip(summary.get("origin_zip")) or ANATA_HQ_ZIP
 
-    patch = _assemble(settings=settings, profile=profile, origin=origin, warnings=[])
+    patch = _assemble(
+        settings=settings, profile=profile, origin=origin, warnings=[],
+        view_path=str(summary.get("view_path") or ""),
+    )
     storage.update_summary(run_id, patch)
     summary.update(patch)
     return {"run_id": run_id, **summary}

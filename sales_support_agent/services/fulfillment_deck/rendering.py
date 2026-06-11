@@ -27,7 +27,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     RateMatrix,
     SectionFlags,
 )
-from sales_support_agent.services.fulfillment_deck.us_map import render_zone_tile_map
+from sales_support_agent.services.fulfillment_deck.us_map import render_interactive_rate_map
 
 _SAMPLE_BADGE = (
     '<span style="display:inline-block;background:#fff4d9;border:1px solid #d2a94b;'
@@ -226,17 +226,18 @@ def _render_savings_section(savings: dict, narrative: NarrativeBlock, sec: str =
     </section>"""
 
 
-def _render_zone_map_section(matrix: RateMatrix, origin_label: str, sec: str = "02") -> str:
+def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "02",
+                             requote_path: str = "") -> str:
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Zone map">
+    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Rate map">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">Coverage</p>
-          <h2 class="slide-title">Shipping zones from {html.escape(origin_label)}</h2>
+          <p class="eyebrow">Explore your rates</p>
+          <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
         </div>
-        <p class="caption">Every state's USPS-style zone from our dock. Lower zones mean cheaper, faster ground service — and our Utah origin puts the entire West in zones 1–5 with 2–4 day national ground coverage.</p>
+        <p class="caption">Hover any state to see the estimated per-parcel rate from our Lehi, UT dock. Pick a product, and adjust its dims or weight below — the map re-quotes live so you can sanity-check against your real catalog.</p>
       </header>
-      <div style="display:flex;justify-content:center">{render_zone_tile_map(matrix.origin_zip)}</div>
+      {render_interactive_rate_map(matrix, origin_label, requote_path)}
     </section>"""
 
 
@@ -520,6 +521,7 @@ def render_rate_sheet_html(
     settings: Settings,
     narrative: Optional[NarrativeBlock] = None,
     savings: Optional[dict] = None,
+    requote_path: str = "",
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
     stylesheet = load_brand_stylesheet(settings)
@@ -539,10 +541,10 @@ def render_rate_sheet_html(
     _add("Overview", lambda sec: _render_cover(profile, matrix, origin_label, generated_on, sec))
     if narrative.executive_summary.strip():
         _add("Executive summary", lambda sec: _render_narrative_section(narrative, sec))
-    if flags.zone_map:
-        _add("Zone map", lambda sec: _render_zone_map_section(matrix, origin_label, sec))
     if flags.rate_matrix:
         _add("Carrier rates", lambda sec: _render_rates_section(matrix, sec))
+    if flags.zone_map:
+        _add("Rate map", lambda sec: _render_rate_map_section(matrix, origin_label, sec, requote_path))
     if flags.volume_economics:
         _add("Volume economics", lambda sec: _render_volume_section(profile, matrix, sec))
     if flags.cost_comparison or flags.destinations:

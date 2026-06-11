@@ -261,13 +261,22 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertIn("Glow Kit", html)
         self.assertIn('data-off="prod-0"', html)
         self.assertIn('data-off="prod-1"', html)
-        # Zone map SVG + legend, print rail, sample badge, heartbeat JS.
-        self.assertIn("US shipping zones from ZIP 84043", html)
+        # Interactive rate map: real state paths, hover tooltip, live requote
+        # wired to this sheet's public token URL.
+        self.assertIn('data-state="UT"', html)
+        self.assertIn('data-state="NY"', html)
+        self.assertIn("rm-tooltip", html)
+        self.assertIn(f"{result['view_path']}/requote", html)
+        self.assertIn('"stateZones"', html)
+        # Map comes AFTER the carrier-rate tables in document order.
+        self.assertLess(html.index("Your rates, by product and zone"),
+                        html.index("What shipping costs, anywhere in the US"))
         self.assertIn("window.print()", html)
         self.assertIn("Sample rates", html)
         self.assertIn("/heartbeat", html)
-        # Print rule expands tab panes.
+        # Print rules: tab panes expand, map edit controls hide.
         self.assertIn(".off-pane.rate-pane[hidden]", html)
+        self.assertIn(".rm-controls { display: none !important; }", html)
 
     def test_brand_override_and_bad_origin_fall_back(self) -> None:
         result = self._generate(brand_override="Acme Co", origin_zip="abc")
