@@ -102,10 +102,75 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
         logger.warning("OAuth login rejected — domain not allowed: %s", email)
         return RedirectResponse("/admin/login?error=domain_not_allowed", status_code=302)
 
+    # --- RBAC-aware login resolution ---
+    rbac_enabled = getattr(settings, "rbac_enabled", True)
+    if rbac_enabled:
+        try:
+            result = _rbac_login(request, settings, email, name)
+            if result is not None:
+                return result
+        except Exception:  # noqa: BLE001 — never lock users out on an RBAC bug
+            logger.exception("RBAC login resolution failed for %s — falling back to legacy", email)
+
+    # Legacy / RBAC disabled: mint cookie and redirect
     role = get_user_role(settings, email)
     token = create_user_session_token(settings, email=email, name=name, role=role)
-
     response = RedirectResponse("/admin", status_code=302)
     response.delete_cookie(_OAUTH_STATE_COOKIE, path="/")
     response.set_cookie(value=token, **_cookie_opts(request))
     return response
+
+
+def _mint_session(request: Request, settings, email: str, name: str) -> RedirectResponse:
+    """Mint a session cookie and redirect to /admin."""
+    role = get_user_role(settings, email)
+    token = create_user_session_token(settings, email=email, name=name, role=role)
+    response = RedirectResponse("/admin", status_code=302)
+    response.delete_cookie(_OAUTH_STATE_COOKIE, path="/")
+    response.set_cookie(value=token, **_cookie_opts(request))
+    return response
+
+
+def _rbac_login(request: Request, settings, email: str, name: str):
+    """RBAC decision tree after Google confirms the email.
+
+    Returns a Response to send immediately, or None to fall through to legacy.
+    """
+    from fastapi.responses import HTMLResponse as _HTML
+    from sales_support_agent.services.access import store as _store
+    from sales_support_agent.services.access.pages import (
+        render_access_pending_page,
+        render_suspended_page,
+    )
+
+    superadmins = {e.lower() for e in (getattr(settings, "rbac_superadmin_emails", ()) or ())}
+
+    # 1. Super-admin — always allow; ensure seeded.
+    if email in superadmins:
+        _store.upsert_user(email, name, is_superadmin=True, status="active")
+        _store.record_login(email)
+        return _mint_session(request, settings, email, name)
+
+    # 2. Pending invite cookie (set when user visited /admin/access/invite/{token}).
+    invite_token = request.cookies.get("pending_invite", "").strip()
+    if invite_token:
+        invite = _store.get_pending_invite_by_token(invite_token)
+        if invite and invite.get("email") == email:
+            _store.upsert_user(email, name, role_id=invite["role_id"], status="active")
+            _store.accept_invite(invite["id"])
+            _store.record_login(email)
+            resp = _mint_session(request, settings, email, name)
+            resp.delete_cookie("pending_invite", path="/")
+            return resp
+
+    # 3. Existing provisioned user.
+    existing = _store.get_user_by_email(email)
+    if existing:
+        if existing.get("status") == "suspended":
+            return _HTML(render_suspended_page(email), status_code=403)
+        _store.record_login(email)
+        return _mint_session(request, settings, email, name)
+
+    # 4. Unprovisioned — create an access request and show the pending page.
+    _store.create_access_request(email, name)
+    return _HTML(render_access_pending_page(email), status_code=200)

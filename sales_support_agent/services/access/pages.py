@@ -355,6 +355,226 @@ def render_roles_page(roles: list, user_counts: dict, *, current_user: dict,
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: standalone info pages (no cookie / no nav — shown to non-authed users)
+# ---------------------------------------------------------------------------
+
+
+def _standalone_page(title: str, icon: str, heading: str, body_html: str) -> str:
+    styles = (_BASE_STYLES + _ADMIN_STYLES).replace("__NAV__", "")
+    return f"""<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>agent | {_esc(title)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+  <style>{styles}</style>
+</head><body>
+  <div class="shell">
+    <div class="card" style="margin-top:60px">
+      <div class="lock">{icon}</div>
+      <h1>{_esc(heading)}</h1>
+      {body_html}
+    </div>
+  </div>
+</body></html>"""
+
+
+def render_access_pending_page(email: str) -> str:
+    body = f"""
+      <p class="muted">
+        Your sign-in was received for <strong>{_esc(email)}</strong>, but your account
+        hasn't been set up yet.<br><br>
+        An administrator has been notified and will approve your access shortly.
+        Try signing in again once you've been approved.
+      </p>
+      <a class="btn" href="/admin/login" style="margin-top:22px">Back to sign-in</a>
+    """
+    return _standalone_page("Access pending", "⏳", "Access requested", body)
+
+
+def render_suspended_page(email: str) -> str:
+    body = f"""
+      <p class="muted">
+        The account for <strong>{_esc(email)}</strong> has been suspended.<br><br>
+        Contact your administrator if you believe this is a mistake.
+      </p>
+    """
+    return _standalone_page("Account suspended", "🚫", "Account suspended", body)
+
+
+def render_invite_invalid_page() -> str:
+    body = """
+      <p class="muted">
+        This invite link is invalid, expired, or has already been used.<br><br>
+        Ask your administrator to send a new one.
+      </p>
+      <a class="btn" href="/admin/login" style="margin-top:22px">Sign in</a>
+    """
+    return _standalone_page("Invalid invite", "🔗", "Invalid invite link", body)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Invite created confirmation (shown inline after POST)
+# ---------------------------------------------------------------------------
+
+
+def render_invite_created_page(invite_link: str, email: str, *,
+                                current_user: dict) -> str:
+    body = f"""
+    <div class="page-header">
+      <h2>Invite created</h2>
+    </div>
+    <div class="form-card" style="text-align:center">
+      <p style="font-size:15px;color:#2B3644;font-weight:600;margin-bottom:6px">
+        Invite for <span style="color:#1a5f84">{_esc(email)}</span>
+      </p>
+      <p class="cell-muted" style="margin-bottom:18px">
+        Copy the link below and send it to the recipient. It expires in 7 days
+        and can only be used once.
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap">
+        <input id="inv-link" type="text" readonly
+          value="{_esc(invite_link)}"
+          style="flex:1;min-width:240px;max-width:540px;padding:10px 14px;
+            border:1px solid rgba(133,187,218,0.5);border-radius:10px;
+            font-size:13px;font-family:monospace;background:rgba(133,187,218,0.06);
+            color:#2B3644;cursor:text">
+        <button onclick="navigator.clipboard.writeText(document.getElementById('inv-link').value);
+          this.textContent='Copied ✓';setTimeout(()=>this.textContent='Copy',2000)"
+          class="btn-primary">Copy</button>
+      </div>
+      <div style="margin-top:24px">
+        <a class="btn-cancel" href="/admin/access/invites">← Back to invites</a>
+      </div>
+    </div>
+    """
+    return _shell("Invite created", body, user=current_user, active="access_invites", wide=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Invites admin page
+# ---------------------------------------------------------------------------
+
+
+def render_invites_page(invites: list, roles: list, *, current_user: dict,
+                        flash: Optional[str] = None) -> str:
+    roles_opts = "".join(
+        f'<option value="{_esc(r["id"])}">{_esc(r["name"])}</option>'
+        for r in roles
+    )
+
+    def _inv_row(inv: dict) -> str:
+        iid = _esc(inv["id"])
+        created = (inv.get("created_at") or "")[:10]
+        role_name = inv.get("role_name") or "—"
+        return f"""<tr>
+          <td class="cell-email">{_esc(inv.get("email") or "")}</td>
+          <td class="cell-muted">{_esc(role_name)}</td>
+          <td class="cell-sm">{_esc(created)}</td>
+          <td><div class="acts">
+            <form method="post" action="/admin/access/invites/{iid}/revoke">
+              <button type="submit" class="btn-xs btn-red">Revoke</button>
+            </form>
+          </div></td>
+        </tr>"""
+
+    rows = "".join(_inv_row(i) for i in invites)
+    if not rows:
+        rows = '<tr><td colspan="4" class="empty-state">No pending invites.</td></tr>'
+
+    body = f"""
+    {_flash_html(flash)}
+    <div class="page-header"><h2>Invites</h2></div>
+    <div class="tbl-card" style="margin-bottom:28px">
+      <div class="tbl-card-header">
+        <span class="tbl-card-title">Pending invites</span>
+      </div>
+      <table>
+        <thead><tr><th>Email</th><th>Role</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+    <div class="form-card">
+      <div class="tbl-card-title" style="margin-bottom:18px">Send new invite</div>
+      <form method="post" action="/admin/access/invites/new">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Email address *</label>
+            <input class="form-input" type="email" name="email" required
+              placeholder="colleague@anatainc.com">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Role</label>
+            <select class="form-input" name="role_id">
+              <option value="">— No role (assign later) —</option>
+              {roles_opts}
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="btn-primary">Generate invite link</button>
+      </form>
+    </div>
+    """
+    return _shell("Access — Invites", body, user=current_user, active="access_invites", wide=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Access requests admin page
+# ---------------------------------------------------------------------------
+
+
+def render_requests_page(requests_list: list, roles: list, *, current_user: dict,
+                         flash: Optional[str] = None) -> str:
+    roles_opts = "".join(
+        f'<option value="{_esc(r["id"])}">{_esc(r["name"])}</option>'
+        for r in roles
+    )
+
+    def _req_row(req: dict) -> str:
+        rid = _esc(req["id"])
+        requested = (req.get("requested_at") or "")[:10]
+        return f"""<tr>
+          <td class="cell-email">{_esc(req.get("email") or "")}</td>
+          <td class="cell-muted">{_esc(req.get("name") or "")}</td>
+          <td class="cell-sm">{_esc(requested)}</td>
+          <td><div class="acts">
+            <form method="post" action="/admin/access/requests/{rid}/approve"
+              style="display:flex;align-items:center;gap:6px">
+              <select name="role_id" class="role-sel" style="min-width:130px">
+                <option value="">— No role —</option>
+                {roles_opts}
+              </select>
+              <button type="submit" class="btn-xs btn-dark">Approve</button>
+            </form>
+            <form method="post" action="/admin/access/requests/{rid}/deny">
+              <button type="submit" class="btn-xs btn-red">Deny</button>
+            </form>
+          </div></td>
+        </tr>"""
+
+    rows = "".join(_req_row(r) for r in requests_list)
+    if not rows:
+        rows = '<tr><td colspan="4" class="empty-state">No pending access requests.</td></tr>'
+
+    body = f"""
+    {_flash_html(flash)}
+    <div class="page-header"><h2>Access Requests</h2></div>
+    <div class="tbl-card">
+      <table>
+        <thead><tr><th>Email</th><th>Name</th><th>Requested</th><th>Actions</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+    """
+    return _shell("Access — Requests", body, user=current_user, active="access_requests", wide=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Role create / edit form
+# ---------------------------------------------------------------------------
+
+
 def render_role_form_page(role: Optional[dict], *, current_user: dict,
                           new: bool = False, error: Optional[str] = None) -> str:
     title = "New role" if new else f'Edit role: {_esc((role or {}).get("name", ""))}'

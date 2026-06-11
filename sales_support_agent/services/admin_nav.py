@@ -433,6 +433,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
             link for key, link in (
                 ("access.manage", _nav_item("Users", "/admin/access", active=active in {"access", "access_users"}, extra_class="top-link--secondary")),
                 ("access.manage", _nav_item("Roles", "/admin/access/roles", active=active == "access_roles", extra_class="top-link--secondary")),
+                ("access.manage", _nav_item("Invites", "/admin/access/invites", active=active == "access_invites", extra_class="top-link--secondary")),
+                ("access.manage", _nav_item("Requests", "/admin/access/requests", active=active == "access_requests", extra_class="top-link--secondary")),
             ) if _can(key)
         ]
         secondary_nav = f"""

@@ -226,5 +226,111 @@ class AccessUITests(unittest.TestCase):
         self.assertEqual(u2["status"], "active")
 
 
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class InviteRequestTests(unittest.TestCase):
+    """Phase 3 — invite flow + access request flow."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+        self.sa_name, self.sa_token = _cookie_for("david@anatainc.com", "David", "admin")
+
+    def _get(self, path, token_pair=None):
+        if token_pair:
+            name, token = token_pair
+            self.client.cookies.set(name, token)
+        try:
+            return self.client.get(path, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def _post(self, path, data, token_pair=None):
+        if token_pair:
+            name, token = token_pair
+            self.client.cookies.set(name, token)
+        try:
+            return self.client.post(path, data=data, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def test_invites_page_renders(self) -> None:
+        r = self._get("/admin/access/invites", (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Invites", r.text)
+
+    def test_requests_page_renders(self) -> None:
+        r = self._get("/admin/access/requests", (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Access Requests", r.text)
+
+    def test_create_invite_returns_link_page(self) -> None:
+        rid = _role_id("InvTestRole", ["finance"])
+        r = self._post("/admin/access/invites/new",
+                       {"email": "invitee@anatainc.com", "role_id": rid},
+                       (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Invite created", r.text)
+        self.assertIn("invitee@anatainc.com", r.text)
+        # Token link should appear on the page
+        self.assertIn("/admin/access/invite/", r.text)
+
+    def test_invite_stored_in_db(self) -> None:
+        rid = _role_id("InvTestRole2", ["advertising.audit"])
+        self._post("/admin/access/invites/new",
+                   {"email": "invitee2@anatainc.com", "role_id": rid},
+                   (self.sa_name, self.sa_token))
+        invites = store.list_pending_invites()
+        emails = [i["email"] for i in invites]
+        self.assertIn("invitee2@anatainc.com", emails)
+
+    def test_invite_landing_invalid_token(self) -> None:
+        r = self._get("/admin/access/invite/totally-bogus-token-xyz")
+        self.assertEqual(r.status_code, 410)
+        self.assertIn("Invalid invite", r.text)
+
+    def test_invite_landing_valid_token_redirects(self) -> None:
+        import secrets as _sec
+        token = _sec.token_urlsafe(32)
+        store.create_invite("bounce_test@anatainc.com", None, token=token, invited_by="david@anatainc.com")
+        r = self._get(f"/admin/access/invite/{token}")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/admin/auth/google", r.headers.get("location", ""))
+        # Cookie should be set
+        self.assertIn("pending_invite", r.headers.get("set-cookie", ""))
+
+    def test_access_request_flow(self) -> None:
+        # Directly test the store round-trip: create request → approve → user provisioned
+        rid = _role_id("ReqApprovalRole", ["finance"])
+        req_id = store.create_access_request("req_test@anatainc.com", "ReqTest")
+        self.assertIsNotNone(req_id)
+        # Pending
+        pending = store.list_access_requests(status="pending")
+        self.assertTrue(any(r["email"] == "req_test@anatainc.com" for r in pending))
+        # Approve
+        email_out = store.decide_access_request(req_id, approve=True, role_id=rid, decided_by="david@anatainc.com")
+        self.assertEqual(email_out, "req_test@anatainc.com")
+        # User now provisioned
+        u = store.get_user_by_email("req_test@anatainc.com")
+        self.assertIsNotNone(u)
+        self.assertEqual(u["role_id"], rid)
+
+    def test_deny_access_request(self) -> None:
+        req_id = store.create_access_request("deny_test@anatainc.com", "DenyTest")
+        result = store.decide_access_request(req_id, approve=False, decided_by="david@anatainc.com")
+        self.assertIsNone(result)
+        # Denied requests not in pending
+        pending = store.list_access_requests(status="pending")
+        self.assertFalse(any(r["email"] == "deny_test@anatainc.com" for r in pending))
+
+    def test_approve_request_via_post(self) -> None:
+        rid = _role_id("PostApproveRole", ["finance"])
+        req_id = store.create_access_request("post_approve@anatainc.com", "PostApprove")
+        r = self._post(f"/admin/access/requests/{req_id}/approve",
+                       {"role_id": rid}, (self.sa_name, self.sa_token))
+        self.assertEqual(r.status_code, 303)
+        u = store.get_user_by_email("post_approve@anatainc.com")
+        self.assertIsNotNone(u)
+        self.assertEqual(u["role_id"], rid)
+
+
 if __name__ == "__main__":
     unittest.main()
