@@ -89,22 +89,19 @@ def _fallback_narrative(
 ) -> NarrativeBlock:
     """Deterministic narrative used until llm.generate_narrative exists (and
     as a safety net if it raises). Never blank."""
+    # Kept punchy on purpose (v5): 2-3 sentences, under ~55 words — the
+    # bullets carry the detail.
     name = profile.display_name
     pieces = [
-        f"This rate sheet was prepared for {name} from the details shared with Anata: "
+        f"This rate sheet was prepared for {name}: "
         f"{len(matrix.products)} product configuration{'s' if len(matrix.products) != 1 else ''} "
         f"quoted across every US shipping zone from our Lehi, Utah dock."
     ]
     volume = profile.monthly_order_volume or sum(p.monthly_units or 0 for p in profile.products)
     if volume:
         pieces.append(
-            f"At roughly {volume:,} orders a month, carrier rates are the single biggest "
-            "lever in your fulfillment cost — every line below is rate-shopped at label time."
-        )
-    if savings:
-        pieces.append(
-            f"Against your current ~${savings['current_per_parcel']:,.2f} per parcel, the blended "
-            f"sample rates here project about ${savings['monthly_savings']:,.0f} in monthly savings."
+            f"At ~{volume:,} orders a month, carrier rates are your biggest "
+            "fulfillment lever — every line below is rate-shopped at label time."
         )
     bullets = [
         "Utah origin puts the entire West in zones 1–5 with 2–4 day national ground coverage.",
@@ -164,20 +161,8 @@ def _blended_rate(profile: ProspectProfile, matrix: RateMatrix) -> tuple[float, 
     weights: ``monthly_units`` share when any product has units, else equal.
     Returns (0.0, method) when the matrix holds no rates.
     """
-    method = BLEND_METHOD_FLAT
-    zone_weights: dict[int, int] = {}
-    states: list[str] = []
-    for code in _STATE_CODE_RE.findall(profile.destinations_note or ""):
-        if code in STATE_REP_ZIPS and code not in states:
-            states.append(code)
-    if len(states) >= 2:
-        zones_by_state = state_zone_map(matrix.origin_zip)
-        for code in states:
-            zone = zones_by_state.get(code)
-            if zone is not None:
-                zone_weights[zone] = zone_weights.get(zone, 0) + 1
-        if zone_weights:
-            method = BLEND_METHOD_WEIGHTED
+    zone_weights = _zone_weights_for(profile, matrix)
+    method = BLEND_METHOD_WEIGHTED if zone_weights else BLEND_METHOD_FLAT
 
     any_units = any(pr.product.monthly_units for pr in matrix.products)
     blends: list[tuple[float, float]] = []  # (per-product blend, product weight)
@@ -209,6 +194,64 @@ def _blended_rate(profile: ProspectProfile, matrix: RateMatrix) -> tuple[float, 
     if not weight_total:  # only unit-less products carry rates -> equal weights
         return sum(blend for blend, _w in blends) / len(blends), method
     return sum(blend * weight for blend, weight in blends) / weight_total, method
+
+
+def _zone_weights_for(profile: ProspectProfile, matrix: RateMatrix) -> dict[int, int]:
+    """Zone weights from state codes in destinations_note (>=2 distinct known
+    states required) — the SAME weighting _blended_rate uses."""
+    zone_weights: dict[int, int] = {}
+    states: list[str] = []
+    for code in _STATE_CODE_RE.findall(profile.destinations_note or ""):
+        if code in STATE_REP_ZIPS and code not in states:
+            states.append(code)
+    if len(states) >= 2:
+        zones_by_state = state_zone_map(matrix.origin_zip)
+        for code in states:
+            zone = zones_by_state.get(code)
+            if zone is not None:
+                zone_weights[zone] = zone_weights.get(zone, 0) + 1
+    return zone_weights
+
+
+def _avg_transit_days(profile: ProspectProfile, matrix: RateMatrix) -> Optional[float]:
+    """Weighted average of BEST-RATE transit days across zones, using the
+    SAME zone weights as the blended rate (destination-mix states; flat when
+    no usable mix) and the same units-share product weighting.
+
+    Per product per zone the transit days of the cheapest quote count; zones
+    whose cheapest quote has no transit estimate are skipped. Returns None
+    when no quote anywhere carries transit days.
+    """
+    zone_weights = _zone_weights_for(profile, matrix)
+    any_units = any(pr.product.monthly_units for pr in matrix.products)
+    blends: list[tuple[float, float]] = []  # (per-product avg days, weight)
+    for product_rates in matrix.products:
+        days_by_zone: dict[int, int] = {}
+        for zone in product_rates.zones:
+            best = min(zone.quotes, key=lambda q: q.rate_usd, default=None)
+            if best is not None and best.transit_days:
+                days_by_zone[zone.zone] = best.transit_days
+        if not days_by_zone:
+            continue
+        if zone_weights:
+            weight_total = sum(zone_weights.get(z, 0) for z in days_by_zone)
+            if weight_total:
+                product_avg = (
+                    sum(d * zone_weights.get(z, 0) for z, d in days_by_zone.items())
+                    / weight_total
+                )
+            else:
+                product_avg = sum(days_by_zone.values()) / len(days_by_zone)
+        else:
+            product_avg = sum(days_by_zone.values()) / len(days_by_zone)
+        weight = float(product_rates.product.monthly_units or 0) if any_units else 1.0
+        blends.append((product_avg, weight))
+    if not blends:
+        return None
+    weight_total = sum(weight for _avg, weight in blends)
+    if not weight_total:
+        return sum(avg for avg, _w in blends) / len(blends)
+    return sum(avg * weight for avg, weight in blends) / weight_total
 
 
 def _compute_savings(
@@ -282,6 +325,7 @@ def _assemble(
     warnings.extend(savings_warnings)
 
     blended_rate, blend_method = _blended_rate(profile, matrix)
+    avg_transit = _avg_transit_days(profile, matrix)
     fulfillment_quote = build_fulfillment_quote(
         profile, matrix, blended_rate, margin_override=quote_margin_override
     )
@@ -302,6 +346,7 @@ def _assemble(
         requote_path=f"{view_path}/requote" if view_path else "",
         blended_rate=blended_rate,
         blend_method=blend_method,
+        avg_transit_days=avg_transit,
         quote=fulfillment_quote,
     )
     return {
@@ -317,6 +362,7 @@ def _assemble(
         "savings": savings,
         "fulfillment_quote": fulfillment_quote,
         "blend_method": blend_method,
+        "avg_transit_days": round(avg_transit, 2) if avg_transit else None,
         "warnings": warnings,
     }
 
@@ -463,6 +509,7 @@ def apply_viewer_requote(
     matrix, _rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
     savings, _savings_warnings = _compute_savings(profile, matrix)
     blended_rate, blend_method = _blended_rate(profile, matrix)
+    avg_transit = _avg_transit_days(profile, matrix)
     fulfillment_quote = build_fulfillment_quote(
         profile, matrix, blended_rate,
         margin_override=_opt_margin(summary.get("quote_margin_override")),
@@ -486,6 +533,7 @@ def apply_viewer_requote(
         requote_path=f"{view_path}/requote" if view_path else "",
         blended_rate=blended_rate,
         blend_method=blend_method,
+        avg_transit_days=avg_transit,
         quote=fulfillment_quote,
     )
     patch = {
@@ -495,6 +543,7 @@ def apply_viewer_requote(
         "savings": savings,
         "fulfillment_quote": fulfillment_quote,
         "blend_method": blend_method,
+        "avg_transit_days": round(avg_transit, 2) if avg_transit else None,
         "narrative": narrative.to_dict(),
         "deck_html": deck_html,
         "rates_source": matrix.source,

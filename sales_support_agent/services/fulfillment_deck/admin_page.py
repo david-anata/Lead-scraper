@@ -299,8 +299,16 @@ def render_rate_sheet_review_page(
     monthly_volume = profile.get("monthly_order_volume")
     current_cost = profile.get("current_cost_per_parcel_usd")
     volume_basis = str(profile.get("volume_basis") or "").strip()
+    volume_provenance = str(profile.get("volume_provenance") or "").strip()
+    # Vetting hint: the arithmetic (basis) AND where the number came from
+    # (provenance) — the public sheet only ever shows the basis.
+    hint_parts = []
+    if volume_basis:
+        hint_parts.append(f"Basis: {_esc(volume_basis)}")
+    if volume_provenance:
+        hint_parts.append(f"Source: {_esc(volume_provenance)}")
     volume_basis_hint = (
-        f'<span class="hint">Basis: {_esc(volume_basis)}</span>' if volume_basis else ""
+        f'<span class="hint">{" · ".join(hint_parts)}</span>' if hint_parts else ""
     )
     margin_override = summary.get("quote_margin_override")
     margin_value = "" if margin_override is None else f"{margin_override:g}"

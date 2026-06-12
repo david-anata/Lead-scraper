@@ -33,6 +33,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
 from sales_support_agent.services.fulfillment_deck.service import (
     BLEND_METHOD_FLAT,
     BLEND_METHOD_WEIGHTED,
+    _avg_transit_days,
     _blended_rate,
     apply_profile_edits,
     apply_viewer_requote,
@@ -626,7 +627,9 @@ class RateSheetServiceTests(unittest.TestCase):
         result = self._generate()
         html = result["deck_html"]
         self.assertIn('data-key="partner"', html)
-        self.assertEqual(html.count("Anata Shipping OS"), 1)
+        # (Count the headings — the inline Shipping OS SVG's comment also
+        # contains the product name.)
+        self.assertEqual(html.count("<h4>Anata Shipping OS</h4>"), 1)
         self.assertEqual(html.count("Anata Fulfillment</h4>"), 1)
         self.assertIn("Coming soon: additional Anata fulfillment locations", html)
         self.assertIn("Lock these rates in", html)
@@ -634,6 +637,24 @@ class RateSheetServiceTests(unittest.TestCase):
         # Generic capability claims live only in the partner section.
         self.assertEqual(html.count("2pm MT"), 1)
         self.assertEqual(html.count("Named account manager"), 1)
+
+    def test_partner_cards_balanced_with_own_icons_and_ctas(self) -> None:
+        """v5: both cards carry a 64px icon, their own CTA pill, and the
+        Fulfillment card's 4th bullet so neither card trails dead space."""
+        html = self._generate()["deck_html"]
+        partner = html[html.index('data-key="partner"'):]
+        # Fulfillment card: monogram icon + scoping-call CTA + 4th bullet.
+        fulfillment_at = partner.index("Anata Fulfillment</h4>")
+        self.assertIn('<div class="offer-icon">', partner[:fulfillment_at])
+        self.assertIn(
+            '<a class="os-cta" href="https://anatainc.com/contact" '
+            'target="_blank" rel="noreferrer">Book a scoping call →</a>',
+            partner,
+        )
+        self.assertIn("Lot control &amp; expiry tracking built in", partner)
+        # Both cards stretch to equal heights with the CTA pinned bottom.
+        self.assertIn(".offer-cards { align-items: stretch; }", html)
+        self.assertIn(".offer-card .os-cta { margin-top: auto;", html)
 
     def test_visual_sanity_written_sheet_parses(self) -> None:
         from html.parser import HTMLParser
@@ -784,20 +805,37 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertEqual(quote["orders"], 3000)
         self.assertEqual(quote["units_total"], 3000)
         self.assertEqual(quote["multiplier"], 1.15)
-        # Pallet math: cube 48*40*60*0.65 = 74,880 in³.
-        # Serum 96 in³ -> 780/pallet; Kit 320 in³ -> 234/pallet; avg 507.
-        self.assertEqual(quote["units_per_pallet"], 507)
-        # ceil(3000 / 507) = 6 pallets.
-        self.assertEqual(quote["pallets_per_month"], 6)
+        # v5 PER-PRODUCT pallet math: cube 48*40*60*0.65 = 74,880 in³.
+        # Serum 96 in³ -> 780/pallet -> ceil(2000/780) = 3 pallets.
+        # Kit 320 in³ -> 234/pallet -> ceil(1000/234) = 5 pallets.
+        self.assertEqual(
+            quote["pallet_breakdown"],
+            [
+                {"name": "Super Serum", "units": 2000,
+                 "units_per_pallet": 780, "pallets": 3},
+                {"name": "Glow Kit", "units": 1000,
+                 "units_per_pallet": 234, "pallets": 5},
+            ],
+        )
+        # Receiving/storage qty = SUM of per-product pallets: 3 + 5 = 8.
+        self.assertEqual(quote["pallets_per_month"], 8)
         by_key = {line["key"]: line for line in quote["lines"]}
-        # Receiving: 6 x $20 x 1.15 = $138.00
-        self.assertEqual(by_key["receiving"]["monthly"], 138.00)
-        # Storage: 6 x $35 x 1.15 = $241.50
-        self.assertEqual(by_key["storage"]["monthly"], 241.50)
+        # Receiving: 8 x $20 x 1.15 = $184.00
+        self.assertEqual(by_key["receiving"]["monthly"], 184.00)
+        # Storage: 8 x $35 x 1.15 = $322.00
+        self.assertEqual(by_key["storage"]["monthly"], 322.00)
         # Pick & pack: avg items = 3000/3000 = 1 -> no additional-item fee;
         # 3000 x $1.60 x 1.15 = $5,520.00
         self.assertEqual(quote["avg_items_per_order"], 1.0)
         self.assertEqual(by_key["pick_pack"]["monthly"], 5520.00)
+        # Packaging: largest DTC dim = 10in (Kit) -> small box class $0.65;
+        # 3000 x $0.65 x 1.15 = $2,242.50.
+        self.assertEqual(quote["packaging_class"], "small box")
+        self.assertEqual(by_key["packaging"]["monthly"], 2242.50)
+        self.assertTrue(by_key["packaging"]["scales_with_orders"])
+        self.assertIn("cost +10%", by_key["packaging"]["label"])
+        # No fragile product -> no special-handling line.
+        self.assertNotIn("fragile", by_key)
         # Tech: $75 flat, NO multiplier.
         self.assertEqual(by_key["tech"]["monthly"], 75.00)
         self.assertEqual(by_key["tech"]["multiplier"], 1.0)
@@ -807,12 +845,67 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertEqual(by_key["shipping"]["note"], "at the carrier rates above")
         # No wholesale-smelling product -> no wholesale line.
         self.assertNotIn("wholesale", by_key)
-        # Total 138 + 241.50 + 5520 + 75 + 22500 = 28,474.50; per order 9.49.
-        self.assertEqual(quote["monthly_total"], 28474.50)
-        self.assertEqual(quote["effective_per_order"], 9.49)
-        # Order-driven vs flat split for the scenario slider.
-        self.assertEqual(quote["variable_monthly"], 28020.00)
-        self.assertEqual(quote["fixed_monthly"], 454.50)
+        # Total 184 + 322 + 5520 + 2242.50 + 75 + 22500 = 30,843.50;
+        # per order 30,843.50 / 3000 = 10.28.
+        self.assertEqual(quote["monthly_total"], 30843.50)
+        self.assertEqual(quote["effective_per_order"], 10.28)
+        # Order-driven vs flat split for the scenario slider:
+        # variable = 5520 + 2242.50 + 22500 = 30,262.50; fixed = 581.00.
+        self.assertEqual(quote["variable_monthly"], 30262.50)
+        self.assertEqual(quote["fixed_monthly"], 581.00)
+        # HOW-DETERMINED bullets map every line to its derivation.
+        assumptions = " | ".join(quote["assumptions"])
+        self.assertIn("Super Serum: ~780 units/pallet → 3 pallets/mo", assumptions)
+        self.assertIn("Glow Kit: ~234 units/pallet → 5 pallets/mo", assumptions)
+        self.assertIn("10×8×4in parcel → small box class", assumptions)
+        self.assertIn("Rates reflect beauty-category handling", assumptions)
+        self.assertIn("Order volume: 3,000 orders/month", assumptions)
+        # The margin basis bullet never exposes the multiplier number.
+        self.assertNotIn("1.15", assumptions)
+        # One-time fees: listed, never in the monthly total.
+        one_time = {fee["key"]: fee for fee in quote["one_time"]}
+        self.assertEqual(one_time["implementation"]["amount"], 2000.00)
+        self.assertEqual(one_time["uro"]["amount"], 35.00)
+        self.assertEqual(one_time["uro"]["unit"], "per occurrence")
+
+    def test_quote_fragile_line_and_packaging_classes(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+        )
+
+        # Fragile beauty product: multiplier 1.15 + 0.05 = 1.20; special
+        # handling = 400 units x $0.50 x 1.20 = $240.00. Max dim 5in and
+        # 0.8 lb -> poly mailer ($0.35 x 1.20 = $0.42/order).
+        profile = ProspectProfile.from_dict({
+            "brand": "VaseCo",
+            "monthly_order_volume": 400,
+            "products": [
+                {"name": "Mini Vase", "length_in": 5, "width_in": 4,
+                 "height_in": 4, "weight_lb": 0.8, "monthly_units": 400,
+                 "product_category": "beauty", "fragile": True},
+            ],
+        })
+        quote = build_fulfillment_quote(profile, RateMatrix(products=()), None)
+        by_key = {line["key"]: line for line in quote["lines"]}
+        self.assertEqual(quote["multiplier"], 1.20)
+        self.assertEqual(by_key["fragile"]["label"], "Special handling (fragile)")
+        self.assertEqual(by_key["fragile"]["monthly"], 240.00)
+        self.assertEqual(quote["packaging_class"], "poly mailer")
+        self.assertEqual(by_key["packaging"]["monthly"], 168.00)  # 400 x 0.42
+        assumptions = " | ".join(quote["assumptions"])
+        self.assertIn("Mini Vase", assumptions)
+        self.assertIn("fragile", assumptions.lower())
+        self.assertIn("5×4×4in parcel → poly mailer class", assumptions)
+
+        # Medium box: a 20in product breaks the 14in small-box cut.
+        big = ProspectProfile.from_dict({
+            "brand": "BigCo", "monthly_order_volume": 100,
+            "products": [{"name": "Lamp", "length_in": 20, "width_in": 10,
+                          "height_in": 10, "weight_lb": 6,
+                          "monthly_units": 100}],
+        })
+        big_quote = build_fulfillment_quote(big, RateMatrix(products=()), None)
+        self.assertEqual(big_quote["packaging_class"], "medium box")
 
     def test_quote_multiplier_rules(self) -> None:
         from sales_support_agent.services.fulfillment_deck.quote import (
@@ -922,12 +1015,12 @@ class RateSheetServiceTests(unittest.TestCase):
             'target="_blank" rel="noreferrer">Try for free →</a>',
             html,
         )
-        # The icon asset embeds as an inline <img> inside the sized wrapper,
-        # directly above the Shipping OS card heading.
-        icon_at = html.index('<div class="offer-icon">')
+        # v5: the Shipping OS mark is now an SVG that renders INLINE inside
+        # the sized wrapper, directly above the card heading.
         heading_at = html.index("<h4>Anata Shipping OS</h4>")
-        self.assertLess(icon_at, heading_at)
-        self.assertIn("<img src='data:image/png;base64,", html[icon_at:heading_at])
+        card_at = html.rindex('<div class="offer-icon">', 0, heading_at)
+        self.assertIn("<svg", html[card_at:heading_at])
+        self.assertIn(".offer-icon svg { width: 100%; height: 100%;", html)
 
     def test_trust_stamp_only_for_live_wms_rates(self) -> None:
         from sales_support_agent.services.fulfillment_deck.rendering import (
@@ -970,6 +1063,191 @@ class RateSheetServiceTests(unittest.TestCase):
         mock_html = _render("mock")
         self.assertNotIn("Rates pulled live", mock_html)
         self.assertIn("Sample rates — illustrative", mock_html)
+
+    # ------------------------------------------------------------------
+    # v5: hero averages + weighted transit helper
+    # ------------------------------------------------------------------
+
+    def test_hero_stats_show_averages_not_best_cases(self) -> None:
+        result = self._generate()
+        html = result["deck_html"]
+        # The blended (destination-weighted) rate leads the hero…
+        blended, _method = _blended_rate(
+            ProspectProfile.from_dict(result["prospect_profile"]),
+            RateMatrix.from_dict(result["rate_matrix"]),
+        )
+        self.assertIn(f">${blended:,.2f}</div>", html)
+        self.assertIn("avg per parcel", html)
+        # …with the weighted avg transit beside it.
+        self.assertIsNotNone(result["avg_transit_days"])
+        self.assertIn("-day</div>", html)
+        self.assertIn(">~", html)
+        self.assertIn("avg delivery", html)
+        # The old best-case stats are gone.
+        self.assertNotIn("From $", html)
+        self.assertNotIn("delivery in zone", html)
+
+    def test_avg_transit_days_weighted_hand_checked(self) -> None:
+        def _zone_with_transit(zone: int, rate: float, days: int) -> ZoneRates:
+            return ZoneRates(
+                zone=zone, dest_zip="00000", dest_label="Testville, TS",
+                quotes=(
+                    RateQuote(carrier="USPS", service="Ground", rate_usd=rate,
+                              transit_days=days, zone=zone),
+                    # A pricier-but-faster quote that must NOT count — the
+                    # helper follows the BEST-RATE quote's transit days.
+                    RateQuote(carrier="UPS", service="Express",
+                              rate_usd=rate + 5.0, transit_days=1, zone=zone),
+                ),
+            )
+
+        matrix = RateMatrix(
+            origin_zip="84043",
+            products=(
+                ProductRates(
+                    product=_spec("Widget"),
+                    zones=(
+                        _zone_with_transit(2, 4.0, 1),
+                        _zone_with_transit(4, 5.0, 3),
+                        _zone_with_transit(8, 9.0, 5),
+                    ),
+                ),
+            ),
+        )
+        # From 84043: CA -> zone 4, TX -> zone 5, NY -> zone 8 (same weights
+        # as the blend). Zone 2 carries no state weight and is excluded;
+        # zone 5 isn't quoted. Hand-checked: (3*1 + 5*1) / 2 = 4.0 days.
+        weighted = ProspectProfile.from_dict(
+            {"brand": "T", "destinations_note": "CA, TX, NY"}
+        )
+        self.assertAlmostEqual(_avg_transit_days(weighted, matrix), 4.0, places=6)
+        # Flat: (1 + 3 + 5) / 3 = 3.0 days — weighting changes the number.
+        flat = ProspectProfile.from_dict({"brand": "T"})
+        self.assertAlmostEqual(_avg_transit_days(flat, matrix), 3.0, places=6)
+        # No transit data anywhere -> None.
+        bare = RateMatrix(
+            origin_zip="84043",
+            products=(
+                ProductRates(product=_spec("W"), zones=(_quoted_zone(4, 5.0),)),
+            ),
+        )
+        self.assertIsNone(_avg_transit_days(flat, bare))
+
+    # ------------------------------------------------------------------
+    # v5: map contrast + table transit intelligence
+    # ------------------------------------------------------------------
+
+    def test_map_ramp_is_contrast_safe(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.us_map import RATE_RAMP
+
+        self.assertEqual(
+            RATE_RAMP,
+            ["#9fc5e2", "#7fb1d6", "#5f9cc7", "#4f84c4",
+             "#3a6aa6", "#2d5288", "#223e68", "#1d2d44"],
+        )
+        html = self._generate()["deck_html"]
+        # The ramp ships to the JS and the old near-white steps are gone.
+        self.assertIn("#9fc5e2", html)
+        self.assertNotIn("#e7f1f9", html)
+        self.assertNotIn("#cfe3f2", html)
+        # Every cell gets the cream stroke; legend chips get a border.
+        self.assertIn('stroke="#fffdf9" stroke-width="0.75"', html)
+        self.assertIn("border: 1px solid rgba(29,45,68,0.25);", html)
+
+    def test_rates_table_controls_and_data_attrs(self) -> None:
+        html = self._generate()["deck_html"]
+        # Controls row inside the carrier-rates section, under the heading.
+        controls_at = html.index('id="rt-controls"')
+        self.assertGreater(controls_at, html.index('data-key="carrier-rates"'))
+        self.assertLess(controls_at, html.index('data-off="prod-0"'))
+        self.assertIn('data-rtview="cost"', html)
+        self.assertIn('data-rtview="transit"', html)
+        self.assertIn('id="rt-optimize"', html)
+        self.assertIn(">Cheapest<", html)
+        self.assertIn(">Fastest<", html)
+        self.assertIn("Cheapest within target", html)
+        self.assertIn('id="rt-target"', html)
+        self.assertIn("&le;2 days", html)
+        self.assertIn('<option value="any">Any</option>', html)
+        # Cells carry data-days + data-rate, and each value has its class.
+        self.assertIn("data-days=", html)
+        self.assertIn('class="rc-main"', html)
+        self.assertIn("transit-view", html)
+        # Optimizer JS lives in the never-swapped map script.
+        self.assertIn("applyTableIntel", html)
+        self.assertIn("no option meets target", html)
+        self.assertIn("rt-dim", html)
+
+    # ------------------------------------------------------------------
+    # v5: quote reveal + one-time fees
+    # ------------------------------------------------------------------
+
+    def test_quote_reveal_markup_and_one_time_fees(self) -> None:
+        result = self._generate_with_current_cost()
+        html = result["deck_html"]
+        section = html[html.index('data-key="quote"'):html.index('data-key="partner"')]
+        # Hidden body + visible calculate button + status line.
+        self.assertIn('<div class="q-body" hidden>', section)
+        self.assertIn(">Calculate my estimate</button>", section)
+        self.assertIn('id="q-status"', section)
+        # Staged loader messages + print/no-JS escape hatches.
+        self.assertIn("Pulling your live carrier rates…", html)
+        self.assertIn("Applying pallet, storage & handling math…", html)
+        self.assertIn("Building your line-item estimate…", html)
+        self.assertIn("<noscript><style>.q-body[hidden] { display: block; }", section)
+        self.assertIn(".q-body[hidden] { display: block !important; }", html)
+        self.assertIn("q-revealed", html)
+        # One-time fees: black-on-white sub-block after the monthly table,
+        # never inside the monthly total.
+        self.assertIn("One-time, so there are no surprises", section)
+        self.assertIn("Implementation &amp; onboarding", section)
+        self.assertIn("$2,000.00", section)
+        self.assertIn("Unidentified receiving order (URO)", section)
+        self.assertIn("$35.00 / occurrence", section)
+        self.assertIn("dedicated onboarding specialist", section)
+        self.assertIn("reducing or waiving your setup fee", section)
+        quote = result["fulfillment_quote"]
+        self.assertEqual(len(quote["one_time"]), 2)
+        one_time_total = sum(fee["amount"] for fee in quote["one_time"])
+        self.assertNotAlmostEqual(
+            quote["monthly_total"],
+            sum(line["monthly"] for line in quote["lines"]) + one_time_total,
+            places=2,
+        )
+        self.assertEqual(
+            quote["monthly_total"],
+            round(sum(line["monthly"] for line in quote["lines"]), 2),
+        )
+
+    # ------------------------------------------------------------------
+    # v5: share polish
+    # ------------------------------------------------------------------
+
+    def test_og_meta_and_rail_utils(self) -> None:
+        html = self._generate()["deck_html"]
+        head = html[:html.index("</head>")]
+        self.assertIn(
+            '<meta property="og:title" content="GlowCo × Anata — Fulfillment Rate Sheet">',
+            head,
+        )
+        self.assertIn(
+            "Live carrier rates, transit times, and a line-item fulfillment "
+            "estimate prepared for GlowCo by Anata.",
+            head,
+        )
+        self.assertIn('<meta property="og:type" content="website">', head)
+        self.assertIn('<meta name="twitter:card" content="summary">', head)
+        self.assertNotIn("og:image", head)
+        # Rail: Copy link + Book a call under Print PDF.
+        print_at = html.index('id="rail-print"')
+        copy_at = html.index('id="rail-copy"')
+        call_at = html.index('id="rail-call"')
+        self.assertLess(print_at, copy_at)
+        self.assertLess(copy_at, call_at)
+        self.assertIn("Copied ✓", html)
+        self.assertIn(
+            'id="rail-call" href="https://anatainc.com/contact" target="_blank"', html
+        )
 
     def test_polish_markup_hooks(self) -> None:
         result = self._generate_with_current_cost()

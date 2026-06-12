@@ -393,7 +393,13 @@ class LlmExtractionTests(unittest.TestCase):
         self.assertIn("never inferred from revenue, never invented", _SYSTEM)
         self.assertIn("volume_basis", _SYSTEM)
         self.assertIn("74 DTC Shopify + 64 B2B", _SYSTEM)
-        self.assertIn("note the conflict in volume_basis", _SYSTEM)
+        # v5: basis is ONLY the arithmetic (max ~8 words); provenance carries
+        # the sourcing (and any conflict note) for the review page.
+        self.assertIn("ONLY the arithmetic", _SYSTEM)
+        self.assertIn("at most 8 words", _SYSTEM)
+        self.assertIn("volume_provenance", _SYSTEM)
+        self.assertIn("RFP deck p.2 orders table", _SYSTEM)
+        self.assertIn("note the conflict in volume_provenance", _SYSTEM)
         # raw_notes_excerpt guidance keeps the organizational voice.
         self.assertIn("never to an individual contact by name", _SYSTEM)
         # Quote-engine inputs.
@@ -405,6 +411,25 @@ class LlmExtractionTests(unittest.TestCase):
             "Address the company, never an individual contact by name",
             _NARRATIVE_SYSTEM,
         )
+
+    def test_narrative_prompt_enforces_summary_length(self):
+        # v5: the executive summary is punchy — 2-3 sentences, ~55 words max;
+        # the bullets carry the detail.
+        self.assertIn("2-3 sentences", _NARRATIVE_SYSTEM)
+        self.assertIn("55 words MAXIMUM", _NARRATIVE_SYSTEM)
+        self.assertIn("punchy", _NARRATIVE_SYSTEM)
+        self.assertIn("the bullets carry", _NARRATIVE_SYSTEM)
+
+    def test_deterministic_fallback_summary_stays_short(self):
+        # The no-key fallback must obey the same length rule (~55 words).
+        profile = ProspectProfile(
+            company="GlowCo Inc", brand="GlowCo", monthly_order_volume=3000,
+            products=(ProductSpec(name="Serum", length_in=4, width_in=4,
+                                  height_in=6, weight_lb=1.2),),
+        )
+        with mock.patch.dict("os.environ", _NO_KEY_ENV):
+            block = generate_narrative(profile, _matrix_with_product(), None)
+        self.assertLessEqual(len(block.executive_summary.split()), 55)
 
     def test_volume_basis_round_trip_and_clamp(self):
         profile = ProspectProfile.from_dict({
@@ -419,6 +444,21 @@ class LlmExtractionTests(unittest.TestCase):
         long = ProspectProfile.from_dict({"volume_basis": "x" * 500})
         self.assertEqual(len(long.volume_basis), 200)
         self.assertEqual(ProspectProfile.from_dict({}).volume_basis, "")
+
+    def test_volume_provenance_round_trip_and_clamp(self):
+        profile = ProspectProfile.from_dict({
+            "brand": "Evre",
+            "monthly_order_volume": 138,
+            "volume_basis": "74 DTC Shopify + 64 B2B wholesale",
+            "volume_provenance": "RFP deck p.2 orders table",
+        })
+        self.assertEqual(profile.volume_provenance, "RFP deck p.2 orders table")
+        round_tripped = ProspectProfile.from_dict(profile.to_dict())
+        self.assertEqual(round_tripped.volume_provenance, profile.volume_provenance)
+        # Clamped to 200 chars; missing/None degrades to "".
+        long = ProspectProfile.from_dict({"volume_provenance": "y" * 500})
+        self.assertEqual(len(long.volume_provenance), 200)
+        self.assertEqual(ProspectProfile.from_dict({}).volume_provenance, "")
 
     def test_product_category_whitelist_and_fragile_round_trip(self):
         spec = ProductSpec.from_dict({

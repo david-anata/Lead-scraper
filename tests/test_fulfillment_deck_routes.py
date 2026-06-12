@@ -283,9 +283,25 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         summary = dict(storage.get_run(run["id"]).summary_json)
         profile = dict(summary["prospect_profile"])
         profile["volume_basis"] = "300 Shopify + 200 Amazon"
+        profile["volume_provenance"] = "RFP deck p.2 orders table"
         storage.update_summary(run["id"], {"prospect_profile": profile})
         review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        # v5: BOTH the arithmetic and where it came from render as the
+        # vetting hint; the public sheet only ever shows the basis.
         self.assertIn("Basis: 300 Shopify + 200 Amazon", review.text)
+        self.assertIn("Source: RFP deck p.2 orders table", review.text)
+        # Re-rendered public HTML never leaks the provenance.
+        from sales_support_agent.config import load_settings
+        from sales_support_agent.services.fulfillment_deck.service import (
+            rerender_rate_sheet,
+        )
+
+        rerendered = rerender_rate_sheet(run["id"], settings=load_settings())
+        self.assertNotIn("RFP deck p.2 orders table", rerendered["deck_html"])
+        self.assertEqual(
+            rerendered["prospect_profile"]["volume_provenance"],
+            "RFP deck p.2 orders table",
+        )
 
     def test_update_remove_checkbox_drops_product(self) -> None:
         run = self._generate()

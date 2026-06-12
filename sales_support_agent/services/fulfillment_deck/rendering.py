@@ -147,10 +147,15 @@ def _render_rate_table(product_rates: ProductRates) -> str:
                 if quote.transit_days
                 else ""
             )
+            days_attr = (
+                f' data-days="{quote.transit_days}"' if quote.transit_days else ""
+            )
+            # Each value carries its own class inside .rc-main, so the
+            # Cost / Transit-time view toggle just flips prominence via CSS.
             cells.append(
                 f'<td class="rate-cell{" best" if is_best else ""}" '
-                f'data-carrier="{esc_carrier}" data-rate="{quote.rate_usd:.2f}">'
-                f'<span class="rc-price">{_fmt_rate(quote.rate_usd)}</span>{transit}'
+                f'data-carrier="{esc_carrier}" data-rate="{quote.rate_usd:.2f}"{days_attr}>'
+                f'<span class="rc-main"><span class="rc-price">{_fmt_rate(quote.rate_usd)}</span>{transit}</span>'
                 f'<span class="rc-service">{html.escape(quote.service)}</span></td>'
             )
         body_rows.append(
@@ -204,16 +209,29 @@ def _render_product_tabs(matrix: RateMatrix) -> str:
     return tabs_html + "".join(panes)
 
 
+def _fmt_days(value: float) -> str:
+    """4.0 -> "4", 3.46 -> "3.5" — for the avg-delivery hero stat."""
+    rounded = round(float(value), 1)
+    if rounded == int(rounded):
+        return str(int(rounded))
+    return f"{rounded:g}"
+
+
 def _render_hero(
     profile: ProspectProfile,
     matrix: RateMatrix,
     narrative: NarrativeBlock,
     generated_on: str,
     sec: str = "01",
+    blended_rate: Optional[float] = None,
+    avg_transit_days: Optional[float] = None,
 ) -> str:
     """Cover + executive summary merged: narrative lead, stat strip,
     prospect-specific bullets, and a single muted "today" context line."""
-    # Stat strip: cheapest rate, fastest transit, monthly orders, ship-from.
+    # Stat strip (v5): AVERAGES, not best-cases — the destination-weighted
+    # blended rate and the weighted avg best-rate transit (same zone weights
+    # as the blend), plus monthly orders and ship-from. Falls back to the
+    # old min-rate/fastest stats only when the averages are unavailable.
     stats: list[tuple[str, str]] = []
     all_quotes = [
         (zone.zone, quote)
@@ -222,12 +240,17 @@ def _render_hero(
         for quote in zone.quotes
     ]
     rates = [q.rate_usd for _z, q in all_quotes]
-    if rates:
+    if blended_rate:
+        stats.append((_fmt_rate(blended_rate), "avg per parcel, your mix"))
+    elif rates:
         stats.append((f"From {_fmt_rate(min(rates))}", "per parcel, your specs"))
-    transit_pairs = [(q.transit_days, z) for z, q in all_quotes if q.transit_days]
-    if transit_pairs:
-        days, zone = min(transit_pairs)
-        stats.append((f"{days}-day", f"delivery in zone {zone}"))
+    if avg_transit_days:
+        stats.append((f"~{_fmt_days(avg_transit_days)}-day", "avg delivery"))
+    else:
+        transit_pairs = [(q.transit_days, z) for z, q in all_quotes if q.transit_days]
+        if transit_pairs:
+            days, zone = min(transit_pairs)
+            stats.append((f"{days}-day", f"delivery in zone {zone}"))
     volume = profile.monthly_order_volume or sum(
         p.monthly_units or 0 for p in profile.products
     )
@@ -297,6 +320,37 @@ def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "
     </section>"""
 
 
+def _render_table_controls() -> str:
+    """v5 transit-intelligence controls above the rates table: a Cost /
+    Transit-time view toggle, an optimize select, and a transit-target select
+    (enabled only for "Cheapest within target"). State + handlers live in the
+    never-swapped map script; the server-rendered default stays the cheapest
+    highlight so print / no-JS is unchanged."""
+    return """
+      <div class="rt-controls" id="rt-controls">
+        <div class="rt-view" role="group" aria-label="Table view">
+          <button type="button" class="active" data-rtview="cost" aria-pressed="true">Cost</button>
+          <button type="button" data-rtview="transit" aria-pressed="false">Transit time</button>
+        </div>
+        <label class="rt-label" for="rt-optimize">Optimize for
+          <select id="rt-optimize">
+            <option value="cheapest" selected>Cheapest</option>
+            <option value="fastest">Fastest</option>
+            <option value="target">Cheapest within target</option>
+          </select>
+        </label>
+        <label class="rt-label" for="rt-target">Target
+          <select id="rt-target" disabled>
+            <option value="2">&le;2 days</option>
+            <option value="3" selected>&le;3 days</option>
+            <option value="4">&le;4 days</option>
+            <option value="5">&le;5 days</option>
+            <option value="any">Any</option>
+          </select>
+        </label>
+      </div>"""
+
+
 def _render_rates_section(matrix: RateMatrix, generated_on: str, sec: str = "03") -> str:
     # Sample data keeps the SAMPLE badge; live WMS data earns the trust
     # stamp under the table instead. Never both.
@@ -318,6 +372,7 @@ def _render_rates_section(matrix: RateMatrix, generated_on: str, sec: str = "03"
         </div>
         <p class="caption">Rates per parcel for each of your product configurations, quoted to a representative city in every zone. Best rate per zone highlighted — use the carrier toggles by the map to compare. {badge}</p>
       </header>
+      {_render_table_controls()}
       {_render_product_tabs(matrix)}
       {trust}
     </section>"""
@@ -490,6 +545,36 @@ def _render_quote_section(
         f'<ul class="ql-assumptions">{assumptions}</ul>' if assumptions else ""
     )
 
+    # One-time fees: transparent, NEVER in the monthly total / per-order math.
+    one_time_rows = []
+    for fee in quote.get("one_time") or []:
+        label = html.escape(str(fee.get("label") or ""))
+        note = str(fee.get("note") or "")
+        note_html = f'<span class="ql-note">{html.escape(note)}</span>' if note else ""
+        amount = float(fee.get("amount") or 0.0)
+        unit = str(fee.get("unit") or "one-time")
+        amount_cell = _fmt_rate(amount) + (
+            " / occurrence" if unit == "per occurrence" else ""
+        )
+        one_time_rows.append(
+            f"<tr><td>{label}{note_html}</td>"
+            f'<td class="ql-monthly">{amount_cell}</td></tr>'
+        )
+    one_time_html = ""
+    if one_time_rows:
+        one_time_html = f"""
+      <div class="q-onetime">
+        <h3 class="q-onetime-title">One-time, so there are no surprises</h3>
+        <table class="data-table quote-table" style="width:100%;border-collapse:collapse">
+          <thead><tr><th>One-time item</th><th>Fee</th></tr></thead>
+          <tbody>{''.join(one_time_rows)}</tbody>
+        </table>
+        <p class="q-waiver">Mention this rate sheet on your scoping call — we&#x27;ll talk about reducing or waiving your setup fee.</p>
+      </div>"""
+
+    # v5 reveal: the whole estimate hides behind a "Calculate my estimate"
+    # button + staged loader (polish JS). Print and no-JS force it visible;
+    # once the viewer calculates, fragment swaps auto-reveal (html.q-revealed).
     return f"""
     <section class="slide" id="sec-{sec}" data-key="quote" data-screen-label="{sec} Estimated invoice">
       <header class="slide-head">
@@ -499,20 +584,35 @@ def _render_quote_section(
         </div>
         <p class="caption">Directional estimate from your stated volumes — we finalize after a 30-minute scoping call.</p>
       </header>
-      {_stat_strip(stats)}
-      {_stat_strip(sage_stats, sage=True)}
-      <table class="data-table quote-table" style="width:100%;border-collapse:collapse">
-        <thead><tr><th>Line item</th><th>Qty × rate</th><th>Monthly</th></tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
-      {assumptions_html}
+      <button type="button" class="q-reveal-btn" id="q-reveal">Calculate my estimate</button>
+      <p class="q-status" id="q-status" aria-live="polite"></p>
+      <div class="q-body" hidden>
+        {_stat_strip(stats)}
+        {_stat_strip(sage_stats, sage=True)}
+        <table class="data-table quote-table" style="width:100%;border-collapse:collapse">
+          <thead><tr><th>Line item</th><th>Qty × rate</th><th>Monthly</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+        {one_time_html}
+        {assumptions_html}
+      </div>
+      <noscript><style>.q-body[hidden] {{ display: block; }} .q-reveal-btn {{ display: none; }}</style></noscript>
     </section>"""
 
 
-def _render_partner_section(shipping_os_icon: str = "", sec: str = "05") -> str:
-    """Two ways to ship on these rates: full 3PL or Anata Shipping OS."""
+def _render_partner_section(
+    shipping_os_icon: str = "", fulfillment_icon: str = "", sec: str = "05"
+) -> str:
+    """Two ways to ship on these rates: full 3PL or Anata Shipping OS.
+
+    v5 balance pass: both cards get a 64px icon and their own CTA pill, equal
+    heights via flex stretch, and matched bullet counts so neither card has
+    trailing dead space."""
     icon_html = (
         f'<div class="offer-icon">{shipping_os_icon}</div>' if shipping_os_icon else ""
+    )
+    fulfillment_icon_html = (
+        f'<div class="offer-icon">{fulfillment_icon}</div>' if fulfillment_icon else ""
     )
     return f"""
     <section class="slide" id="sec-{sec}" data-key="partner" data-screen-label="{sec} Partner with Anata">
@@ -524,13 +624,16 @@ def _render_partner_section(shipping_os_icon: str = "", sec: str = "05") -> str:
       </header>
       <div class="offer-cards">
         <div class="offer-card">
+          {fulfillment_icon_html}
           <h4>Anata Fulfillment</h4>
           <p>Full 3PL — we receive your inventory, pick and pack every order, and ship same-day for orders in by 2pm MT, with these carrier rates built in.</p>
           <ul>
             <li>Receiving, pick/pack, returns</li>
             <li>Named account manager — a person, not a ticket queue</li>
             <li>Shopify, Amazon, and EDI retail integrations</li>
+            <li>Lot control &amp; expiry tracking built in</li>
           </ul>
+          <a class="os-cta" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Book a scoping call →</a>
         </div>
         <div class="offer-card">
           {icon_html}
@@ -643,10 +746,63 @@ _POLISH_JS = """
             requestAnimationFrame(tick);
           });
         }, { threshold: 0.4 });
+        window.__qCountIO = countIO;  // quote reveal re-observes via this
         document.querySelectorAll('[data-countup]').forEach(function(el) {
           countIO.observe(el);
         });
       }
+
+      // --- Quote reveal (v5) -------------------------------------------
+      // Delegated on document so the requote flow's fragment swap needs no
+      // re-binding. The staged loader runs once; after that the
+      // html.q-revealed class keeps the section (and any swapped-in
+      // replacement) revealed without the loader.
+      var Q_STAGES = [
+        'Pulling your live carrier rates…',
+        'Applying pallet, storage & handling math…',
+        'Building your line-item estimate…'
+      ];
+      function revealQuote(section) {
+        document.documentElement.classList.add('q-revealed');
+        var body = section.querySelector('.q-body');
+        if (body) body.hidden = false;
+        var status = section.querySelector('#q-status');
+        if (status) status.textContent = '';
+        // Nudge the count-up observer: hidden elements never intersected,
+        // so re-observe the freshly revealed stat numbers.
+        if (body) {
+          body.querySelectorAll('[data-countup]').forEach(function(el) {
+            if (window.__qCountIO) window.__qCountIO.observe(el);
+          });
+        }
+      }
+      document.addEventListener('click', function(evt) {
+        var btn = evt.target.closest('#q-reveal');
+        if (!btn) return;
+        var section = btn.closest('section');
+        if (!section) return;
+        if (document.documentElement.classList.contains('q-revealed')) {
+          revealQuote(section);
+          return;
+        }
+        btn.disabled = true;
+        var status = section.querySelector('#q-status');
+        if (reduced) {
+          revealQuote(section);
+          return;
+        }
+        var stage = 0;
+        function nextStage() {
+          if (stage < Q_STAGES.length) {
+            if (status) status.textContent = Q_STAGES[stage];
+            stage += 1;
+            setTimeout(nextStage, 1600);
+          } else {
+            revealQuote(section);
+          }
+        }
+        nextStage();
+      });
 
       // --- Scenario slider (monthly-math fragment) ---------------------
       // Delegated on document so the requote flow's fragment swap (which
@@ -839,13 +995,21 @@ def render_rate_sheet_html(
     requote_path: str = "",
     blended_rate: Optional[float] = None,
     blend_method: str = "",
+    avg_transit_days: Optional[float] = None,
     quote: Optional[dict] = None,
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
-    shipping_os_icon = load_brand_asset(settings, "assets/shipping-os-icon.png")
+    # The Shipping OS mark is an SVG (renders inline); load_brand_asset's
+    # sibling-extension resolution would also find it from the .png path,
+    # but reference the .svg directly so intent is explicit.
+    shipping_os_icon = load_brand_asset(settings, "assets/shipping-os-icon.svg")
     stylesheet = load_brand_stylesheet(settings)
     favicon_link = load_brand_favicon_link(settings)
     title = f"{profile.display_name} × Anata — Fulfillment Rate Sheet"
+    og_description = (
+        f"Live carrier rates, transit times, and a line-item fulfillment "
+        f"estimate prepared for {profile.display_name} by Anata."
+    )
     narrative = narrative or NarrativeBlock()
 
     sections: list[tuple[str, str, str]] = []  # (id, rail label, html)
@@ -857,7 +1021,8 @@ def render_rate_sheet_html(
         if block:
             sections.append((f"sec-{sec}", label, block))
 
-    _add("Overview", lambda sec: _render_hero(profile, matrix, narrative, generated_on, sec))
+    _add("Overview", lambda sec: _render_hero(
+        profile, matrix, narrative, generated_on, sec, blended_rate, avg_transit_days))
     if flags.zone_map:
         _add("Rate map", lambda sec: _render_rate_map_section(matrix, origin_label, sec, requote_path))
     if flags.rate_matrix:
@@ -868,7 +1033,8 @@ def render_rate_sheet_html(
     # The estimated invoice sits immediately BEFORE the partner closer.
     _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
     if flags.about_anata:
-        _add("Partner with Anata", lambda sec: _render_partner_section(shipping_os_icon, sec))
+        _add("Partner with Anata", lambda sec: _render_partner_section(
+            shipping_os_icon, monogram, sec))
 
     last_sec_id = sections[-1][0] if sections else "sec-01"
     rail_items = "".join(
@@ -885,6 +1051,12 @@ def render_rate_sheet_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <title>{html.escape(title)}</title>
+  <meta property="og:title" content="{html.escape(title, quote=True)}">
+  <meta property="og:description" content="{html.escape(og_description, quote=True)}">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{html.escape(title, quote=True)}">
+  <meta name="twitter:description" content="{html.escape(og_description, quote=True)}">
   {favicon_link}
   <style>{stylesheet}</style>
   <style>
@@ -1056,9 +1228,15 @@ def render_rate_sheet_html(
       background: rgba(255, 253, 249, 0.7);
     }}
 
-    /* v4: Shipping OS card icon + register CTA pill. */
+    /* v4: offer-card icon + CTA pill; v5: SVG icons render inline, cards
+       stretch to equal heights with the CTA pinned to the bottom. */
+    .offer-cards {{ align-items: stretch; }}
+    .offer-card {{ display: flex; flex-direction: column; }}
+    .offer-card ul {{ margin-bottom: 10px; }}
+    .offer-card .os-cta {{ margin-top: auto; align-self: flex-start; }}
     .offer-icon {{ width: 64px; height: 64px; margin: 0 0 10px; }}
     .offer-icon img {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+    .offer-icon svg {{ width: 100%; height: 100%; display: block; }}
     .os-cta {{
       display: inline-block;
       margin-top: 10px;
@@ -1087,6 +1265,87 @@ def render_rate_sheet_html(
     }}
     .ql-assumptions li {{
       font-size: 11.5px; line-height: 1.6; color: var(--anata-muted);
+    }}
+
+    /* v5: rates-table transit-intelligence controls. */
+    .rt-controls {{
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      margin: 0 0 14px;
+    }}
+    .rt-view {{
+      display: inline-flex; border: 1px solid var(--anata-line);
+      border-radius: 999px; overflow: hidden;
+    }}
+    .rt-view button {{
+      border: none; background: #fff; padding: 6px 14px; font: inherit;
+      font-size: 11.5px; font-weight: 700; cursor: pointer;
+      color: var(--anata-ink);
+    }}
+    .rt-view button.active {{ background: var(--anata-ink); color: #fffdf9; }}
+    .rt-label {{
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+      text-transform: uppercase; color: var(--anata-muted);
+    }}
+    .rt-label select {{
+      font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 9px;
+      border: 1px solid var(--anata-line-strong); background: #fff;
+      color: var(--anata-ink); text-transform: none; letter-spacing: normal;
+    }}
+    .rt-label select:disabled {{ opacity: 0.45; }}
+
+    /* v5: Cost / Transit view — flip which value leads inside each cell. */
+    .rc-main {{ display: flex; align-items: center; gap: 6px; }}
+    .rc-main .rc-transit {{ margin-left: 0; }}
+    table.transit-view .rc-main {{
+      flex-direction: column-reverse; align-items: flex-start; gap: 1px;
+    }}
+    table.transit-view .rc-transit {{
+      background: none; padding: 0; border-radius: 0;
+      font-size: 14px; font-weight: 700; color: var(--anata-ink);
+    }}
+    table.transit-view td.rate-cell.best .rc-transit,
+    table.transit-view td.rate-cell.js-best .rc-transit {{
+      color: var(--anata-sky-deep);
+    }}
+    table.transit-view .rc-price {{
+      font-size: 10.5px; font-weight: 500; color: var(--anata-muted);
+    }}
+    td.rate-cell.rt-dim {{ opacity: 0.45; }}
+    .rt-rowtag {{
+      display: block; margin-top: 3px; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.04em; text-transform: uppercase; color: #7a5b14;
+    }}
+
+    /* v5: quote reveal — button + staged status, body hidden until
+       calculated. Print and no-JS force the body visible; once revealed,
+       html.q-revealed keeps swapped-in fragments revealed too. */
+    .q-reveal-btn {{
+      background: var(--anata-ink); color: #fffdf9; border: none;
+      border-radius: 999px; padding: 11px 24px; font: inherit;
+      font-size: 13.5px; font-weight: 700; cursor: pointer;
+    }}
+    .q-reveal-btn:disabled {{ opacity: 0.6; cursor: wait; }}
+    .q-status {{ font-size: 12.5px; color: var(--anata-muted); min-height: 18px; margin: 10px 0 0; }}
+    html.q-revealed .q-body[hidden] {{ display: block; }}
+    html.q-revealed .q-reveal-btn {{ display: none; }}
+    html.js-anim.q-revealed .q-body {{ animation: q-fade-up 0.5s ease; }}
+    @keyframes q-fade-up {{
+      from {{ opacity: 0; transform: translateY(12px); }}
+      to {{ opacity: 1; transform: none; }}
+    }}
+
+    /* v5: one-time fees sub-block + waiver sales-lever banner. */
+    .q-onetime {{ margin-top: 22px; }}
+    .q-onetime-title {{
+      font-size: 15px; font-weight: 700; letter-spacing: -0.01em;
+      margin: 0 0 8px;
+    }}
+    .q-waiver {{
+      margin: 14px 0 0; padding: 11px 14px; border-radius: 10px;
+      border: 1px solid var(--anata-sky, #85bbda);
+      background: linear-gradient(90deg, rgba(238,233,220,0.55), rgba(133,187,218,0.18));
+      font-size: 12.5px; font-weight: 600; color: var(--anata-ink);
     }}
 
     /* v4: trust stamp under the live-rate table. */
@@ -1133,6 +1392,11 @@ def render_rate_sheet_html(
       .off-pane.rate-pane[hidden] {{ display: block !important; }}
       /* Hide interactive controls; tighten type ~10%. */
       .carrier-filter {{ display: none !important; }}
+      .rt-controls {{ display: none !important; }}
+      /* The estimate always prints, button/status never do. */
+      .q-body[hidden] {{ display: block !important; }}
+      .q-reveal-btn {{ display: none !important; }}
+      .q-status {{ display: none !important; }}
       .slide {{ padding-top: 22px; padding-bottom: 22px; page-break-inside: avoid; }}
       h2.slide-title {{ font-size: 26px; }}
       .hero-narrative {{ font-size: 13.5px; }}
@@ -1157,6 +1421,8 @@ def render_rate_sheet_html(
     <ul class="rail-list">{rail_items}</ul>
     <div class="rail-foot">
       <a class="rail-util" id="rail-print" href="#" onclick="event.preventDefault();window.print();return false;">Print PDF <span class="arrow">↗</span></a>
+      <a class="rail-util" id="rail-copy" href="#" onclick="event.preventDefault();var self=this;try{{navigator.clipboard.writeText(window.location.origin+window.location.pathname).then(function(){{self.innerHTML='Copied ✓';}});}}catch(_e){{}}return false;">Copy link <span class="arrow">⧉</span></a>
+      <a class="rail-util" id="rail-call" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Book a call <span class="arrow">→</span></a>
       <a class="rail-util primary" href="#{last_sec_id}">Get started <span class="arrow">→</span></a>
     </div>
   </aside>

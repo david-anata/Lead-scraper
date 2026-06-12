@@ -127,9 +127,12 @@ class ProspectProfile:
     current_cost_per_parcel_usd: Optional[float] = None
     source_confidence: str = "low"     # low | medium | high
     raw_notes_excerpt: str = ""
-    # How monthly_order_volume was derived — a short arithmetic note like
+    # How monthly_order_volume was derived — ONLY the arithmetic, e.g.
     # "74 DTC Shopify + 64 B2B wholesale". Empty when no stated volume.
     volume_basis: str = ""
+    # WHERE the volume number came from (vetting hint for the review page),
+    # e.g. "RFP deck p.2 orders table". Never rendered on the public sheet.
+    volume_provenance: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -166,6 +169,7 @@ class ProspectProfile:
             source_confidence=confidence,
             raw_notes_excerpt=str(payload.get("raw_notes_excerpt") or "").strip()[:600],
             volume_basis=str(payload.get("volume_basis") or "").strip()[:200],
+            volume_provenance=str(payload.get("volume_provenance") or "").strip()[:200],
         )
 
     @property
