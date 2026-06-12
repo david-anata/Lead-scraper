@@ -15,6 +15,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from sales_support_agent.services.fulfillment_deck.intake import build_extraction_context
 from sales_support_agent.services.fulfillment_deck.llm import (
+    _NARRATIVE_SYSTEM,
+    _SYSTEM,
     ExtractionMeta,
     extract_prospect_profile,
     generate_narrative,
@@ -381,6 +383,60 @@ class LlmExtractionTests(unittest.TestCase):
             extract_prospect_profile("ctx", api_key="test-key", model="claude-opus-4-6")
         self.assertEqual(client.messages.create.call_args.kwargs["model"], "claude-opus-4-6")
 
+    # ------------------------------------------------------------------
+    # v4: organizational voice + volume vetting + quote inputs
+    # ------------------------------------------------------------------
+
+    def test_extraction_prompt_has_volume_and_voice_rules(self):
+        # Volume vetting: stated totals or explicit per-channel sums only.
+        self.assertIn("monthly_order_volume MUST be a total the source states", _SYSTEM)
+        self.assertIn("never inferred from revenue, never invented", _SYSTEM)
+        self.assertIn("volume_basis", _SYSTEM)
+        self.assertIn("74 DTC Shopify + 64 B2B", _SYSTEM)
+        self.assertIn("note the conflict in volume_basis", _SYSTEM)
+        # raw_notes_excerpt guidance keeps the organizational voice.
+        self.assertIn("never to an individual contact by name", _SYSTEM)
+        # Quote-engine inputs.
+        self.assertIn("product_category", _SYSTEM)
+        self.assertIn("fragile", _SYSTEM)
+
+    def test_narrative_prompt_addresses_company_not_contact(self):
+        self.assertIn(
+            "Address the company, never an individual contact by name",
+            _NARRATIVE_SYSTEM,
+        )
+
+    def test_volume_basis_round_trip_and_clamp(self):
+        profile = ProspectProfile.from_dict({
+            "brand": "Evre",
+            "monthly_order_volume": 138,
+            "volume_basis": "74 DTC Shopify + 64 B2B wholesale",
+        })
+        self.assertEqual(profile.volume_basis, "74 DTC Shopify + 64 B2B wholesale")
+        round_tripped = ProspectProfile.from_dict(profile.to_dict())
+        self.assertEqual(round_tripped.volume_basis, profile.volume_basis)
+        # Clamped to 200 chars; missing/None degrades to "".
+        long = ProspectProfile.from_dict({"volume_basis": "x" * 500})
+        self.assertEqual(len(long.volume_basis), 200)
+        self.assertEqual(ProspectProfile.from_dict({}).volume_basis, "")
+
+    def test_product_category_whitelist_and_fragile_round_trip(self):
+        spec = ProductSpec.from_dict({
+            "name": "Serum", "product_category": "Beauty", "fragile": True,
+        })
+        self.assertEqual(spec.product_category, "beauty")  # case-normalized
+        self.assertTrue(spec.fragile)
+        self.assertEqual(
+            ProductSpec.from_dict(spec.to_dict()).product_category, "beauty"
+        )
+        # Unknown non-empty categories clamp to "other"; blank stays blank.
+        self.assertEqual(
+            ProductSpec.from_dict({"product_category": "gadgetry"}).product_category,
+            "other",
+        )
+        self.assertEqual(ProductSpec.from_dict({}).product_category, "")
+        self.assertFalse(ProductSpec.from_dict({}).fragile)
+
 
 def _matrix_with_product() -> RateMatrix:
     spec = ProductSpec(name="Super Serum", length_in=4, width_in=4, height_in=6, weight_lb=1.2)
@@ -435,6 +491,24 @@ class NarrativeTests(unittest.TestCase):
         self.assertTrue(block.executive_summary.strip())
         self.assertGreaterEqual(len(block.bullets), 2)
         self.assertEqual(block.model, "none")
+
+    def test_fallback_is_organizational_never_names_the_contact(self):
+        # v4 voice rule: the deterministic narrative addresses the BRAND,
+        # never an individual contact ("Matt"), even when one is extracted.
+        profile = ProspectProfile(
+            company="Evre Inc",
+            brand="Evre",
+            contact_name="Matt",
+            contact_email="matt@evre.example",
+            monthly_order_volume=138,
+            products=(ProductSpec(name="Candle", length_in=4, width_in=4,
+                                  height_in=5, weight_lb=1.0),),
+        )
+        with mock.patch.dict("os.environ", _NO_KEY_ENV):
+            block = generate_narrative(profile, _matrix_with_product(), self.SAVINGS)
+        text = " ".join([block.executive_summary, block.savings_text, *block.bullets])
+        self.assertIn("Evre", text)
+        self.assertNotIn("Matt", text)
 
     def test_mocked_llm_populates_fields_and_records_model(self):
         text = json.dumps({

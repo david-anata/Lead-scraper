@@ -25,6 +25,13 @@ RATE_SOURCE_MOCK = "mock"
 MAX_DIM_IN = 108.0
 MAX_WEIGHT_LB = 150.0
 
+# Whitelist for LLM-extracted product categories (drives the fulfillment
+# quote's category multiplier). Unknown non-empty values clamp to "other";
+# blank stays blank ("no claim").
+PRODUCT_CATEGORIES = (
+    "beauty", "supplements", "apparel", "food", "electronics", "home", "other",
+)
+
 
 def clean_zip(value: object) -> Optional[str]:
     """Normalize a US ZIP to 5 digits, or None."""
@@ -58,6 +65,10 @@ class ProductSpec:
     # True when the dims/weight were ESTIMATED from the product type rather
     # than provided by the prospect — rendered with a visible "estimated" tag.
     dims_estimated: bool = False
+    # Fulfillment-quote inputs: category drives the quote margin multiplier,
+    # fragile adds a handling bump. Never rendered on the public sheet.
+    product_category: str = ""  # one of PRODUCT_CATEGORIES, or "" for unknown
+    fragile: bool = False
 
     @property
     def has_full_package_spec(self) -> bool:
@@ -80,6 +91,9 @@ class ProductSpec:
             units = None
         if units is not None and units <= 0:
             units = None
+        category = str(payload.get("product_category") or "").strip().lower()
+        if category and category not in PRODUCT_CATEGORIES:
+            category = "other"
         return ProductSpec(
             name=str(payload.get("name") or "").strip()[:120],
             length_in=_pos_float(payload.get("length_in"), MAX_DIM_IN),
@@ -89,6 +103,8 @@ class ProductSpec:
             monthly_units=units,
             notes=str(payload.get("notes") or "").strip()[:300],
             dims_estimated=bool(payload.get("dims_estimated", False)),
+            product_category=category,
+            fragile=bool(payload.get("fragile", False)),
         )
 
 
@@ -111,6 +127,9 @@ class ProspectProfile:
     current_cost_per_parcel_usd: Optional[float] = None
     source_confidence: str = "low"     # low | medium | high
     raw_notes_excerpt: str = ""
+    # How monthly_order_volume was derived — a short arithmetic note like
+    # "74 DTC Shopify + 64 B2B wholesale". Empty when no stated volume.
+    volume_basis: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -146,6 +165,7 @@ class ProspectProfile:
             current_costs_note=str(payload.get("current_costs_note") or "").strip()[:400],
             source_confidence=confidence,
             raw_notes_excerpt=str(payload.get("raw_notes_excerpt") or "").strip()[:600],
+            volume_basis=str(payload.get("volume_basis") or "").strip()[:200],
         )
 
     @property

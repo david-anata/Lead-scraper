@@ -16,6 +16,7 @@ count, so rendering stays tight.
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from .schema import ANATA_HQ_ZIP, ProductRates, RateMatrix, ZoneRates, clean_zip
@@ -25,16 +26,37 @@ from .zones import representative_destinations
 
 _MAX_QUOTE_WORKERS = 6
 
+# Carriers David never wants surfaced on a prospect-facing rate sheet
+# (uppercase names). Root cause of "where's FedEx?": YSP's cheap quotes were
+# eating one of the 5 display-carrier slots, pushing FEDEX out of the cap —
+# excluding YSP here lets FedEx rank back in WITHOUT raising max_carriers.
+# Override the set (replace, not extend) via the ANATA_RATE_EXCLUDED_CARRIERS
+# env var: comma-separated, case-insensitive, e.g. "ysp,gls".
+EXCLUDED_DISPLAY_CARRIERS = {"YSP"}
+
+
+def _excluded_carriers() -> set:
+    """Effective exclusion set (uppercase), env override wins when set."""
+    raw = os.environ.get("ANATA_RATE_EXCLUDED_CARRIERS")
+    if raw is None or not raw.strip():
+        return {c.upper() for c in EXCLUDED_DISPLAY_CARRIERS}
+    return {tok.strip().upper() for tok in raw.split(",") if tok.strip()}
+
 
 def select_display_quotes(matrix: RateMatrix, max_carriers: int = 5) -> RateMatrix:
     """Trim a full rate matrix down to what the rate sheet displays.
 
-    Per product: each zone keeps only the CHEAPEST quote per carrier, then
-    the product is capped to at most ``max_carriers`` carriers, chosen by
-    their average best-rate across zones (cheapest carriers first). Quotes
-    in each rebuilt zone stay sorted by rate ascending. Cells left with no
-    quotes are dropped (matching build_rate_matrix's empty-cell behaviour).
+    Excluded carriers (EXCLUDED_DISPLAY_CARRIERS / env override) are dropped
+    FIRST, so they never occupy a display slot, never color the map, never
+    enter the hero stats or the blend math — everything downstream flows
+    from this selected matrix. Then per product: each zone keeps only the
+    CHEAPEST quote per carrier, then the product is capped to at most
+    ``max_carriers`` carriers, chosen by their average best-rate across
+    zones (cheapest carriers first). Quotes in each rebuilt zone stay sorted
+    by rate ascending. Cells left with no quotes are dropped (matching
+    build_rate_matrix's empty-cell behaviour).
     """
+    excluded = _excluded_carriers()
     products_out = []
     for product_rates in matrix.products:
         # zone -> {carrier: cheapest quote for that carrier in that zone}
@@ -42,6 +64,8 @@ def select_display_quotes(matrix: RateMatrix, max_carriers: int = 5) -> RateMatr
         for zone in product_rates.zones:
             best: dict = {}
             for quote in zone.quotes:
+                if (quote.carrier or "").strip().upper() in excluded:
+                    continue
                 current = best.get(quote.carrier)
                 if current is None or quote.rate_usd < current.rate_usd:
                     best[quote.carrier] = quote

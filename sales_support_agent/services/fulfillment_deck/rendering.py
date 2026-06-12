@@ -17,7 +17,6 @@ bullets are prospect-specific narrative output.
 from __future__ import annotations
 
 import html
-import re
 from typing import Optional
 
 from sales_support_agent.config import Settings
@@ -26,6 +25,7 @@ from sales_support_agent.services.deck.brand_assets import (
     load_brand_favicon_link,
     load_brand_stylesheet,
 )
+from sales_support_agent.services.fulfillment_deck.quote import WHOLESALE_RE
 from sales_support_agent.services.fulfillment_deck.schema import (
     RATE_SOURCE_MOCK,
     NarrativeBlock,
@@ -54,7 +54,8 @@ _ESTIMATED_PILL = (
 
 # Product names that look like wholesale/freight-shaped volume — these are
 # quoted at parcel rates with an explicit caveat, never silently blended.
-_WHOLESALE_RE = re.compile(r"b2b|wholesale|pallet|case", re.IGNORECASE)
+# (Single source of truth lives in quote.py — the quote engine reuses it.)
+_WHOLESALE_RE = WHOLESALE_RE
 
 # Tab labels longer than this are ellipsized (full name goes in title=).
 _TAB_LABEL_MAX = 26
@@ -94,55 +95,27 @@ def _carrier_order(product_rates: ProductRates) -> list[str]:
     return sorted(totals, key=lambda c: (totals[c] / counts[c], c))
 
 
-def _matrix_carriers(matrix: RateMatrix) -> list[str]:
-    """Every carrier present anywhere in the matrix, cheapest-average first."""
-    totals: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for product_rates in matrix.products:
-        for zone in product_rates.zones:
-            best: dict[str, float] = {}
-            for quote in zone.quotes:
-                current = best.get(quote.carrier)
-                if current is None or quote.rate_usd < current:
-                    best[quote.carrier] = quote.rate_usd
-            for carrier, rate in best.items():
-                totals[carrier] = totals.get(carrier, 0.0) + rate
-                counts[carrier] = counts.get(carrier, 0) + 1
-    return sorted(totals, key=lambda c: (totals[c] / counts[c], c))
+def _stat_strip(stats: list, sage: bool = False) -> str:
+    """Horizontal row of compact stats: number big, label tiny.
 
-
-def _stat_strip(stats: list[tuple[str, str]], sage: bool = False) -> str:
-    """Horizontal row of compact stats: number big, label tiny."""
+    Each stat is ``(number, label)`` or ``(number, label, extra_attrs)`` —
+    extra_attrs is a raw attribute string added to the .stat-num div (used
+    for the scenario-slider data hooks). Every numeric stat carries
+    ``data-countup`` for the once-on-view count-up animation; the final
+    value is always present in the markup for no-JS/print.
+    """
     if not stats:
         return ""
-    blocks = "".join(
-        f'<div class="stat{" sage" if sage else ""}">'
-        f'<div class="stat-num">{html.escape(number)}</div>'
-        f'<div class="stat-label">{html.escape(label)}</div></div>'
-        for number, label in stats
-    )
-    return f'<div class="stat-strip">{blocks}</div>'
-
-
-def _render_carrier_filter(matrix: RateMatrix) -> str:
-    """Viewer-local carrier toggle chips — one per carrier in the matrix.
-
-    All enabled by default; clicking toggles the carrier's table columns and
-    the map's best-rate computation (handled by the map section's JS via a
-    document-level delegate). Never persisted, not admin-preselectable.
-    """
-    carriers = _matrix_carriers(matrix)
-    if not carriers:
-        return ""
-    chips = "".join(
-        f'<button type="button" class="cf-chip" data-carrier="{html.escape(c, quote=True)}" '
-        f'aria-pressed="true">{carrier_chip(c)}</button>'
-        for c in carriers
-    )
-    return (
-        f'<div class="carrier-filter" id="carrier-filter">'
-        f'<span class="cf-label">Carriers:</span>{chips}</div>'
-    )
+    blocks = []
+    for stat in stats:
+        number, label = stat[0], stat[1]
+        extra = f" {stat[2]}" if len(stat) > 2 and stat[2] else ""
+        blocks.append(
+            f'<div class="stat{" sage" if sage else ""}">'
+            f'<div class="stat-num" data-countup{extra}>{html.escape(number)}</div>'
+            f'<div class="stat-label">{html.escape(label)}</div></div>'
+        )
+    return f'<div class="stat-strip">{"".join(blocks)}</div>'
 
 
 def _render_rate_table(product_rates: ProductRates) -> str:
@@ -259,7 +232,12 @@ def _render_hero(
         p.monthly_units or 0 for p in profile.products
     )
     if volume:
-        stats.append((f"{volume:,}", "orders / month"))
+        # The basis ("74 DTC Shopify + 64 B2B wholesale") rides as the tiny
+        # sublabel so the number is auditable at a glance.
+        label = "orders / month"
+        if profile.volume_basis.strip():
+            label = f"orders / month · {profile.volume_basis.strip()}"
+        stats.append((f"{volume:,}", label))
     stats.append(("Lehi, UT", "ship-from"))
 
     summary_html = (
@@ -319,8 +297,18 @@ def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "
     </section>"""
 
 
-def _render_rates_section(matrix: RateMatrix, sec: str = "03") -> str:
+def _render_rates_section(matrix: RateMatrix, generated_on: str, sec: str = "03") -> str:
+    # Sample data keeps the SAMPLE badge; live WMS data earns the trust
+    # stamp under the table instead. Never both.
     badge = _SAMPLE_BADGE if matrix.source == RATE_SOURCE_MOCK else ""
+    trust = (
+        ""
+        if matrix.source == RATE_SOURCE_MOCK
+        else (
+            f'<p class="trust-stamp">Rates pulled live from Anata&#x27;s carrier '
+            f"accounts · {html.escape(generated_on)}</p>"
+        )
+    )
     return f"""
     <section class="slide" id="sec-{sec}" data-key="carrier-rates" data-screen-label="{sec} Carrier rates">
       <header class="slide-head">
@@ -328,10 +316,10 @@ def _render_rates_section(matrix: RateMatrix, sec: str = "03") -> str:
           <p class="eyebrow">Carrier costs</p>
           <h2 class="slide-title">Your rates, by product and zone</h2>
         </div>
-        <p class="caption">Rates per parcel for each of your product configurations, quoted to a representative city in every zone. Best rate per zone highlighted — toggle carriers to compare. {badge}</p>
+        <p class="caption">Rates per parcel for each of your product configurations, quoted to a representative city in every zone. Best rate per zone highlighted — use the carrier toggles by the map to compare. {badge}</p>
       </header>
-      {_render_carrier_filter(matrix)}
       {_render_product_tabs(matrix)}
+      {trust}
     </section>"""
 
 
@@ -351,13 +339,19 @@ def _render_monthly_math_section(
     if not volume and not savings:
         return ""
 
-    stats: list[tuple[str, str]] = []
+    stats: list = []
     if volume:
-        stats.append((f"{volume:,}", "orders / month"))
+        stats.append((
+            f"{volume:,}", "orders / month",
+            f'data-scn="orders" data-base="{volume}"',
+        ))
     if blended_rate:
         stats.append((_fmt_rate(blended_rate), "blended best rate / parcel"))
         if volume:
-            stats.append((_fmt_rate(blended_rate * volume), "directional monthly shipping"))
+            stats.append((
+                _fmt_rate(blended_rate * volume), "directional monthly shipping",
+                f'data-scn="linear" data-base="{blended_rate * volume:.2f}"',
+            ))
 
     sage_stats: list[tuple[str, str]] = []
     caption = ""
@@ -376,6 +370,21 @@ def _render_monthly_math_section(
             ]
             if narrative.savings_text.strip():
                 caption = f'<p class="caption">{html.escape(narrative.savings_text)}</p>'
+
+    # Scenario slider: viewer-local what-if on order volume (50%–200% of the
+    # stated number, step 5%). Order-driven figures scale linearly; storage /
+    # receiving / tech stay flat (noted). Lives inside this fragment, so a
+    # requote swap resets it to 100% — the input handler is a document-level
+    # delegate (same pattern as the tabs), so no re-binding is needed.
+    slider = ""
+    if volume:
+        slider = f"""
+      <div class="mm-scenario">
+        <label for="mm-scenario-range">Scenario: <span id="mm-scenario-pct">100%</span> of stated volume</label>
+        <input type="range" id="mm-scenario-range" min="50" max="200" step="5" value="100"
+               aria-label="Scenario percentage of stated monthly orders">
+        <span class="mm-scenario-note" id="mm-scenario-note" hidden>Scenario view — order-driven lines scaled; storage, receiving &amp; tech held flat.</span>
+      </div>"""
 
     notes = []
     if blended_rate:
@@ -405,12 +414,106 @@ def _render_monthly_math_section(
       </header>
       {_stat_strip(stats)}
       {_stat_strip(sage_stats, sage=True)}
+      {slider}
       {''.join(notes)}
     </section>"""
 
 
-def _render_partner_section(sec: str = "05") -> str:
+def _render_quote_section(
+    profile: ProspectProfile, quote: Optional[dict], sec: str = "05"
+) -> str:
+    """Estimated monthly fulfillment invoice — quoted rates only.
+
+    Renders nothing when the quote engine had no orders/units to work with
+    (same render-empty pattern as the monthly-math section). The baseline
+    floors and margin multipliers NEVER appear here — quoted rates only.
+    """
+    if not quote or not quote.get("lines"):
+        return ""
+    orders = int(quote.get("orders") or 0)
+    if not orders:
+        return ""
+
+    rows = []
+    for line in quote["lines"]:
+        qty = line.get("qty") or 0
+        unit = str(line.get("unit") or "")
+        rate = float(line.get("rate") or 0.0)
+        monthly = float(line.get("monthly") or 0.0)
+        if unit == "flat":
+            qty_cell = "flat monthly"
+        else:
+            qty_cell = f"{int(qty):,} {unit} × {_fmt_rate(rate)}"
+        note = str(line.get("note") or "")
+        note_html = f'<span class="ql-note">{html.escape(note)}</span>' if note else ""
+        scn = (
+            f' data-scn="linear" data-base="{monthly:.2f}"'
+            if line.get("scales_with_orders")
+            else ""
+        )
+        rows.append(
+            f"<tr><td>{html.escape(str(line.get('label') or ''))}{note_html}</td>"
+            f'<td class="ql-qty">{html.escape(qty_cell)}</td>'
+            f'<td class="ql-monthly"><span{scn}>{_fmt_rate(monthly)}</span></td></tr>'
+        )
+    total = float(quote.get("monthly_total") or 0.0)
+    fixed = float(quote.get("fixed_monthly") or 0.0)
+    variable = float(quote.get("variable_monthly") or 0.0)
+    effective = float(quote.get("effective_per_order") or 0.0)
+    total_attrs = f'data-scn="total" data-fixed="{fixed:.2f}" data-variable="{variable:.2f}"'
+    rows.append(
+        f'<tr class="ql-total"><td><strong>Estimated monthly total</strong></td><td></td>'
+        f'<td class="ql-monthly"><strong {total_attrs}>{_fmt_rate(total)}</strong></td></tr>'
+    )
+
+    stats: list = [
+        (_fmt_rate(total), "all-in monthly", total_attrs),
+        (
+            _fmt_rate(effective), "effective per order",
+            f'data-scn="per-order" data-fixed="{fixed:.2f}" '
+            f'data-variable="{variable:.2f}" data-orders="{orders}"',
+        ),
+    ]
+    sage_stats: list = []
+    current = profile.current_cost_per_parcel_usd
+    if current:
+        delta = effective - float(current)
+        sage_stats.append((
+            f"{'+' if delta >= 0 else '−'}{_fmt_rate(abs(delta))}",
+            f"per order vs. today's {_fmt_rate(float(current))} parcel",
+        ))
+
+    assumptions = "".join(
+        f"<li>{html.escape(str(a))}</li>" for a in (quote.get("assumptions") or [])
+    )
+    assumptions_html = (
+        f'<ul class="ql-assumptions">{assumptions}</ul>' if assumptions else ""
+    )
+
+    return f"""
+    <section class="slide" id="sec-{sec}" data-key="quote" data-screen-label="{sec} Estimated invoice">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Fulfillment quote</p>
+          <h2 class="slide-title">Your estimated monthly invoice</h2>
+        </div>
+        <p class="caption">Directional estimate from your stated volumes — we finalize after a 30-minute scoping call.</p>
+      </header>
+      {_stat_strip(stats)}
+      {_stat_strip(sage_stats, sage=True)}
+      <table class="data-table quote-table" style="width:100%;border-collapse:collapse">
+        <thead><tr><th>Line item</th><th>Qty × rate</th><th>Monthly</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+      {assumptions_html}
+    </section>"""
+
+
+def _render_partner_section(shipping_os_icon: str = "", sec: str = "05") -> str:
     """Two ways to ship on these rates: full 3PL or Anata Shipping OS."""
+    icon_html = (
+        f'<div class="offer-icon">{shipping_os_icon}</div>' if shipping_os_icon else ""
+    )
     return f"""
     <section class="slide" id="sec-{sec}" data-key="partner" data-screen-label="{sec} Partner with Anata">
       <header class="slide-head">
@@ -430,6 +533,7 @@ def _render_partner_section(sec: str = "05") -> str:
           </ul>
         </div>
         <div class="offer-card">
+          {icon_html}
           <h4>Anata Shipping OS</h4>
           <p>Keep fulfillment in-house and ship on these same negotiated rates through Anata's shipping platform.</p>
           <ul>
@@ -437,6 +541,7 @@ def _render_partner_section(sec: str = "05") -> str:
             <li>Rate shopping across every carrier on this sheet</li>
             <li>Multi-channel order sync</li>
           </ul>
+          <a class="os-cta" href="https://app.anatainc.com/register" target="_blank" rel="noreferrer">Try for free →</a>
         </div>
       </div>
       <p class="coming-banner">Coming soon: additional Anata fulfillment locations — multi-node placement compresses your zones and lowers these rates further.</p>
@@ -467,6 +572,118 @@ _TABS_JS = """
         });
         document.querySelectorAll('.off-pane').forEach(function(pane) {
           pane.hidden = pane.getAttribute('data-pane') !== key;
+        });
+      });
+    })();
+  </script>
+"""
+
+# v4 polish: hero count-up, section fade-up, scenario slider. All print-safe
+# and no-JS graceful — final values live in the markup; animation state only
+# exists once JS adds the .js-anim class; prefers-reduced-motion opts out.
+_POLISH_JS = """
+  <script>
+    (function() {
+      var reduced = window.matchMedia &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      // --- Section entrance fade-up -----------------------------------
+      if (!reduced && 'IntersectionObserver' in window) {
+        document.documentElement.classList.add('js-anim');
+        var sectionIO = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (!entry.isIntersecting) return;
+            entry.target.classList.add('in-view');
+            sectionIO.unobserve(entry.target);
+          });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('section.slide').forEach(function(sec) {
+          sectionIO.observe(sec);
+        });
+        // Sections swapped in by the requote flow appear instantly (no
+        // re-animation surprise mid-interaction).
+        var main = document.querySelector('main.content');
+        if (main && 'MutationObserver' in window) {
+          new MutationObserver(function() {
+            main.querySelectorAll('section.slide:not(.in-view)').forEach(function(sec) {
+              sec.classList.add('in-view');
+            });
+          }).observe(main, { childList: true });
+        }
+      }
+
+      // --- Hero stat count-up (once, on first view) --------------------
+      if (!reduced && 'IntersectionObserver' in window) {
+        var countIO = new IntersectionObserver(function(entries) {
+          entries.forEach(function(entry) {
+            if (!entry.isIntersecting) return;
+            var el = entry.target;
+            countIO.unobserve(el);
+            var finalText = el.textContent;
+            var match = finalText.match(/[\\d,]+(?:\\.\\d+)?/);
+            if (!match) return;
+            var target = parseFloat(match[0].replace(/,/g, ''));
+            if (!isFinite(target) || target <= 0) return;
+            var grouped = match[0].indexOf(',') >= 0;
+            var decimals = (match[0].split('.')[1] || '').length;
+            var startTs = null;
+            function fmtNum(value) {
+              var s = value.toFixed(decimals);
+              if (grouped) s = s.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
+              return s;
+            }
+            function tick(ts) {
+              if (startTs === null) startTs = ts;
+              var t = Math.min(1, (ts - startTs) / 700);
+              var eased = 1 - Math.pow(1 - t, 3);
+              el.textContent = finalText.replace(match[0], fmtNum(target * eased));
+              if (t < 1) { requestAnimationFrame(tick); }
+              else { el.textContent = finalText; }
+            }
+            requestAnimationFrame(tick);
+          });
+        }, { threshold: 0.4 });
+        document.querySelectorAll('[data-countup]').forEach(function(el) {
+          countIO.observe(el);
+        });
+      }
+
+      // --- Scenario slider (monthly-math fragment) ---------------------
+      // Delegated on document so the requote flow's fragment swap (which
+      // resets the slider markup to 100%) needs no re-binding.
+      function money(value) {
+        return '$' + value.toLocaleString('en-US', {
+          minimumFractionDigits: 2, maximumFractionDigits: 2
+        });
+      }
+      document.addEventListener('input', function(evt) {
+        if (!evt.target || evt.target.id !== 'mm-scenario-range') return;
+        var factor = parseInt(evt.target.value, 10) / 100;
+        if (!isFinite(factor) || factor <= 0) return;
+        var pct = document.getElementById('mm-scenario-pct');
+        if (pct) pct.textContent = evt.target.value + '%';
+        var note = document.getElementById('mm-scenario-note');
+        if (note) note.hidden = factor === 1;
+        document.querySelectorAll('[data-scn]').forEach(function(el) {
+          var kind = el.getAttribute('data-scn');
+          if (kind === 'orders') {
+            var base = parseFloat(el.getAttribute('data-base'));
+            if (isFinite(base)) el.textContent = Math.round(base * factor).toLocaleString('en-US');
+          } else if (kind === 'linear') {
+            var lin = parseFloat(el.getAttribute('data-base'));
+            if (isFinite(lin)) el.textContent = money(lin * factor);
+          } else if (kind === 'total') {
+            var fixed = parseFloat(el.getAttribute('data-fixed'));
+            var variable = parseFloat(el.getAttribute('data-variable'));
+            if (isFinite(fixed) && isFinite(variable)) el.textContent = money(fixed + variable * factor);
+          } else if (kind === 'per-order') {
+            var f2 = parseFloat(el.getAttribute('data-fixed'));
+            var v2 = parseFloat(el.getAttribute('data-variable'));
+            var orders = parseFloat(el.getAttribute('data-orders'));
+            if (isFinite(f2) && isFinite(v2) && isFinite(orders) && orders * factor > 0) {
+              el.textContent = money((f2 + v2 * factor) / (orders * factor));
+            }
+          }
         });
       });
     })();
@@ -622,8 +839,10 @@ def render_rate_sheet_html(
     requote_path: str = "",
     blended_rate: Optional[float] = None,
     blend_method: str = "",
+    quote: Optional[dict] = None,
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
+    shipping_os_icon = load_brand_asset(settings, "assets/shipping-os-icon.png")
     stylesheet = load_brand_stylesheet(settings)
     favicon_link = load_brand_favicon_link(settings)
     title = f"{profile.display_name} × Anata — Fulfillment Rate Sheet"
@@ -642,12 +861,14 @@ def render_rate_sheet_html(
     if flags.zone_map:
         _add("Rate map", lambda sec: _render_rate_map_section(matrix, origin_label, sec, requote_path))
     if flags.rate_matrix:
-        _add("Carrier rates", lambda sec: _render_rates_section(matrix, sec))
+        _add("Carrier rates", lambda sec: _render_rates_section(matrix, generated_on, sec))
     if flags.volume_economics or savings:
         _add("The monthly math", lambda sec: _render_monthly_math_section(
             profile, matrix, narrative, savings, blended_rate, blend_method, sec))
+    # The estimated invoice sits immediately BEFORE the partner closer.
+    _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
     if flags.about_anata:
-        _add("Partner with Anata", lambda sec: _render_partner_section(sec))
+        _add("Partner with Anata", lambda sec: _render_partner_section(shipping_os_icon, sec))
 
     last_sec_id = sections[-1][0] if sections else "sec-01"
     rail_items = "".join(
@@ -835,7 +1056,78 @@ def render_rate_sheet_html(
       background: rgba(255, 253, 249, 0.7);
     }}
 
+    /* v4: Shipping OS card icon + register CTA pill. */
+    .offer-icon {{ width: 64px; height: 64px; margin: 0 0 10px; }}
+    .offer-icon img {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+    .os-cta {{
+      display: inline-block;
+      margin-top: 10px;
+      background: var(--anata-ink);
+      color: #fffdf9;
+      border-radius: 999px;
+      padding: 8px 18px;
+      font-size: 12.5px;
+      font-weight: 700;
+      text-decoration: none;
+    }}
+
+    /* v4: estimated-invoice table + assumptions. */
+    .quote-table .ql-qty {{ color: var(--anata-ink-soft); white-space: nowrap; }}
+    .quote-table .ql-monthly {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .quote-table .ql-note {{
+      display: block; font-size: 10.5px; color: var(--anata-muted); margin-top: 2px;
+    }}
+    .quote-table tr.ql-total td {{
+      border-top: 2px solid var(--anata-line-strong);
+      border-bottom: none;
+      font-size: 14px;
+    }}
+    .ql-assumptions {{
+      margin: 12px 0 0; padding-left: 18px; max-width: 70ch;
+    }}
+    .ql-assumptions li {{
+      font-size: 11.5px; line-height: 1.6; color: var(--anata-muted);
+    }}
+
+    /* v4: trust stamp under the live-rate table. */
+    .trust-stamp {{
+      margin: 12px 0 0;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: var(--anata-muted);
+    }}
+
+    /* v4: monthly-math scenario slider. */
+    .mm-scenario {{
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      margin: 12px 0 0; padding: 10px 14px;
+      border: 1px dashed var(--anata-line-strong); border-radius: 10px;
+    }}
+    .mm-scenario label {{
+      font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+      text-transform: uppercase; color: var(--anata-muted);
+    }}
+    .mm-scenario input[type=range] {{ flex: 1 1 180px; max-width: 320px; }}
+    .mm-scenario-note {{ font-size: 11px; color: var(--anata-muted); }}
+
+    /* v4: section entrance fade-up. Hidden state applies ONLY when JS adds
+       .js-anim to <html> (no-JS stays fully visible); print and
+       reduced-motion force everything visible. */
+    html.js-anim .slide {{
+      opacity: 0;
+      transform: translateY(14px);
+      transition: opacity 0.55s ease, transform 0.55s ease;
+    }}
+    html.js-anim .slide.in-view {{ opacity: 1; transform: none; }}
+    @media (prefers-reduced-motion: reduce) {{
+      html.js-anim .slide {{ opacity: 1 !important; transform: none !important; transition: none !important; }}
+    }}
+
     @media print {{
+      html.js-anim .slide {{ opacity: 1 !important; transform: none !important; }}
+      .mm-scenario {{ display: none !important; }}
+      .os-cta {{ display: none !important; }}
       /* Show every product's rates in the printed PDF, labeled. */
       .off-pane.rate-pane {{ display: block !important; }}
       .off-pane.rate-pane[hidden] {{ display: block !important; }}
@@ -876,6 +1168,7 @@ def render_rate_sheet_html(
 </div>
 
 {_TABS_JS}
+{_POLISH_JS}
 {_ENGAGEMENT_JS}
 </body>
 </html>"""

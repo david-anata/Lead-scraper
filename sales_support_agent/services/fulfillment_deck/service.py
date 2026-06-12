@@ -21,6 +21,7 @@ from sales_support_agent.services.fulfillment_deck import llm as llm_module
 from sales_support_agent.services.fulfillment_deck import storage
 from sales_support_agent.services.fulfillment_deck.intake import build_extraction_context
 from sales_support_agent.services.fulfillment_deck.llm import extract_prospect_profile
+from sales_support_agent.services.fulfillment_deck.quote import build_fulfillment_quote
 from sales_support_agent.services.fulfillment_deck.rendering import render_rate_sheet_html
 from sales_support_agent.services.fulfillment_deck.rates import build_rate_matrix
 from sales_support_agent.services.fulfillment_deck.schema import (
@@ -250,6 +251,17 @@ def _compute_savings(
 # ---------------------------------------------------------------------------
 
 
+def _opt_margin(value) -> Optional[float]:
+    """Normalize a stored/posted quote margin override; None when unset."""
+    try:
+        margin = float(value)
+    except (TypeError, ValueError):
+        return None
+    if margin <= 0:
+        return None
+    return margin
+
+
 def _assemble(
     *,
     settings: Settings,
@@ -257,8 +269,9 @@ def _assemble(
     origin: str,
     warnings: list[str],
     view_path: str = "",
+    quote_margin_override: Optional[float] = None,
 ) -> dict:
-    """Shared back half: rates -> savings -> narrative -> flags -> HTML.
+    """Shared back half: rates -> savings -> quote -> narrative -> HTML.
 
     Returns the summary fields that change whenever the profile changes.
     """
@@ -269,6 +282,9 @@ def _assemble(
     warnings.extend(savings_warnings)
 
     blended_rate, blend_method = _blended_rate(profile, matrix)
+    fulfillment_quote = build_fulfillment_quote(
+        profile, matrix, blended_rate, margin_override=quote_margin_override
+    )
     narrative = _build_narrative(profile, matrix, savings)
     flags = decide_sections(profile, matrix)
 
@@ -286,6 +302,7 @@ def _assemble(
         requote_path=f"{view_path}/requote" if view_path else "",
         blended_rate=blended_rate,
         blend_method=blend_method,
+        quote=fulfillment_quote,
     )
     return {
         "design_title": f"{profile.display_name} × Anata Rate Sheet",
@@ -298,6 +315,7 @@ def _assemble(
         "rates_source": matrix.source,
         "narrative": narrative.to_dict(),
         "savings": savings,
+        "fulfillment_quote": fulfillment_quote,
         "blend_method": blend_method,
         "warnings": warnings,
     }
@@ -385,6 +403,7 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
     patch = _assemble(
         settings=settings, profile=profile, origin=origin, warnings=[],
         view_path=str(summary.get("view_path") or ""),
+        quote_margin_override=_opt_margin(summary.get("quote_margin_override")),
     )
     storage.update_summary(run_id, patch)
     summary.update(patch)
@@ -444,6 +463,10 @@ def apply_viewer_requote(
     matrix, _rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
     savings, _savings_warnings = _compute_savings(profile, matrix)
     blended_rate, blend_method = _blended_rate(profile, matrix)
+    fulfillment_quote = build_fulfillment_quote(
+        profile, matrix, blended_rate,
+        margin_override=_opt_margin(summary.get("quote_margin_override")),
+    )
     # Deterministic narrative only — viewer edits must never trigger an LLM call.
     narrative_fn = getattr(llm_module, "_fallback_narrative", None) or _fallback_narrative
     narrative = narrative_fn(profile, matrix, savings)
@@ -463,12 +486,14 @@ def apply_viewer_requote(
         requote_path=f"{view_path}/requote" if view_path else "",
         blended_rate=blended_rate,
         blend_method=blend_method,
+        quote=fulfillment_quote,
     )
     patch = {
         "prospect_profile": profile.to_dict(),
         "origin_zip": origin,
         "rate_matrix": matrix.to_dict(),
         "savings": savings,
+        "fulfillment_quote": fulfillment_quote,
         "blend_method": blend_method,
         "narrative": narrative.to_dict(),
         "deck_html": deck_html,
@@ -505,6 +530,9 @@ def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict
         origin = clean_zip(edits.get("origin_zip"))
         if origin:
             patch["origin_zip"] = origin
+    if "quote_margin_override" in edits:
+        # None clears the override (back to automatic category margins).
+        patch["quote_margin_override"] = _opt_margin(edits.get("quote_margin_override"))
     storage.update_summary(run_id, patch)
 
     return rerender_rate_sheet(run_id, settings=settings)
