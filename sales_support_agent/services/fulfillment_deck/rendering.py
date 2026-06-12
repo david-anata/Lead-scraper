@@ -5,11 +5,19 @@ vocabulary (.app / .rail / .slide / .eyebrow / .slide-title), so the rate
 sheet looks like a sibling of the strategy deck David's prospects already
 compliment. Per-product rate tabs reuse the deck's .off-tabs classes; a small
 extra print rule expands every tab pane so the printed PDF shows all products.
+
+Story order (per David's redesign feedback): hero (narrative + stat strip +
+prospect-specific bullets) -> interactive rate map -> carrier rate matrix
+(with viewer-local carrier filter chips) -> the monthly math (volume +
+savings merged) -> partner with Anata (Fulfillment + Shipping OS offers +
+CTA). Every generic Anata claim lives ONLY in the partner section; the hero
+bullets are prospect-specific narrative output.
 """
 
 from __future__ import annotations
 
 import html
+import re
 from typing import Optional
 
 from sales_support_agent.config import Settings
@@ -19,7 +27,6 @@ from sales_support_agent.services.deck.brand_assets import (
     load_brand_stylesheet,
 )
 from sales_support_agent.services.fulfillment_deck.schema import (
-    ANATA_HQ_ADDRESS,
     RATE_SOURCE_MOCK,
     NarrativeBlock,
     ProductRates,
@@ -27,7 +34,10 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     RateMatrix,
     SectionFlags,
 )
-from sales_support_agent.services.fulfillment_deck.us_map import render_interactive_rate_map
+from sales_support_agent.services.fulfillment_deck.us_map import (
+    carrier_chip,
+    render_interactive_rate_map,
+)
 
 _SAMPLE_BADGE = (
     '<span style="display:inline-block;background:#fff4d9;border:1px solid #d2a94b;'
@@ -41,6 +51,13 @@ _ESTIMATED_PILL = (
     'letter-spacing:0.04em;text-transform:uppercase;vertical-align:middle;">'
     "estimated — to be confirmed</span>"
 )
+
+# Product names that look like wholesale/freight-shaped volume — these are
+# quoted at parcel rates with an explicit caveat, never silently blended.
+_WHOLESALE_RE = re.compile(r"b2b|wholesale|pallet|case", re.IGNORECASE)
+
+# Tab labels longer than this are ellipsized (full name goes in title=).
+_TAB_LABEL_MAX = 26
 
 
 def _fmt_rate(value: float) -> str:
@@ -77,11 +94,65 @@ def _carrier_order(product_rates: ProductRates) -> list[str]:
     return sorted(totals, key=lambda c: (totals[c] / counts[c], c))
 
 
+def _matrix_carriers(matrix: RateMatrix) -> list[str]:
+    """Every carrier present anywhere in the matrix, cheapest-average first."""
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for product_rates in matrix.products:
+        for zone in product_rates.zones:
+            best: dict[str, float] = {}
+            for quote in zone.quotes:
+                current = best.get(quote.carrier)
+                if current is None or quote.rate_usd < current:
+                    best[quote.carrier] = quote.rate_usd
+            for carrier, rate in best.items():
+                totals[carrier] = totals.get(carrier, 0.0) + rate
+                counts[carrier] = counts.get(carrier, 0) + 1
+    return sorted(totals, key=lambda c: (totals[c] / counts[c], c))
+
+
+def _stat_strip(stats: list[tuple[str, str]], sage: bool = False) -> str:
+    """Horizontal row of compact stats: number big, label tiny."""
+    if not stats:
+        return ""
+    blocks = "".join(
+        f'<div class="stat{" sage" if sage else ""}">'
+        f'<div class="stat-num">{html.escape(number)}</div>'
+        f'<div class="stat-label">{html.escape(label)}</div></div>'
+        for number, label in stats
+    )
+    return f'<div class="stat-strip">{blocks}</div>'
+
+
+def _render_carrier_filter(matrix: RateMatrix) -> str:
+    """Viewer-local carrier toggle chips — one per carrier in the matrix.
+
+    All enabled by default; clicking toggles the carrier's table columns and
+    the map's best-rate computation (handled by the map section's JS via a
+    document-level delegate). Never persisted, not admin-preselectable.
+    """
+    carriers = _matrix_carriers(matrix)
+    if not carriers:
+        return ""
+    chips = "".join(
+        f'<button type="button" class="cf-chip" data-carrier="{html.escape(c, quote=True)}" '
+        f'aria-pressed="true">{carrier_chip(c)}</button>'
+        for c in carriers
+    )
+    return (
+        f'<div class="carrier-filter" id="carrier-filter">'
+        f'<span class="cf-label">Carriers:</span>{chips}</div>'
+    )
+
+
 def _render_rate_table(product_rates: ProductRates) -> str:
     carriers = _carrier_order(product_rates)
     if not carriers or not product_rates.zones:
         return '<p class="muted small">No rates available for this product.</p>'
-    head_cells = "".join(f"<th>{html.escape(carrier)}</th>" for carrier in carriers)
+    head_cells = "".join(
+        f'<th data-carrier="{html.escape(carrier, quote=True)}">{carrier_chip(carrier)}</th>'
+        for carrier in carriers
+    )
     body_rows = []
     for zone in product_rates.zones:
         by_carrier: dict[str, object] = {}
@@ -93,21 +164,22 @@ def _render_rate_table(product_rates: ProductRates) -> str:
         cells = []
         for carrier in carriers:
             quote = by_carrier.get(carrier)
+            esc_carrier = html.escape(carrier, quote=True)
             if quote is None:
-                cells.append("<td>—</td>")
+                cells.append(f'<td class="rate-cell" data-carrier="{esc_carrier}">—</td>')
                 continue
             is_best = cheapest is not None and abs(quote.rate_usd - cheapest) < 0.005
-            style = "font-weight:700;color:var(--anata-sky-deep);" if is_best else ""
             transit = (
-                f" · {quote.transit_days} day{'s' if quote.transit_days != 1 else ''}"
+                f'<span class="rc-transit">{quote.transit_days}d</span>'
                 if quote.transit_days
                 else ""
             )
-            sub = (
-                f"<br><span style='font-size:11px;color:var(--anata-muted);font-weight:500'>"
-                f"{html.escape(quote.service)}{transit}</span>"
+            cells.append(
+                f'<td class="rate-cell{" best" if is_best else ""}" '
+                f'data-carrier="{esc_carrier}" data-rate="{quote.rate_usd:.2f}">'
+                f'<span class="rc-price">{_fmt_rate(quote.rate_usd)}</span>{transit}'
+                f'<span class="rc-service">{html.escape(quote.service)}</span></td>'
             )
-            cells.append(f"<td style='{style}'>{_fmt_rate(quote.rate_usd)}{sub}</td>")
         body_rows.append(
             f"<tr><td><strong>Zone {zone.zone}</strong><br>"
             f"<span style='font-size:11px;color:var(--anata-muted)'>{html.escape(zone.dest_label)}"
@@ -129,19 +201,28 @@ def _render_product_tabs(matrix: RateMatrix) -> str:
     for index, product_rates in enumerate(matrix.products):
         product = product_rates.product
         key = f"prod-{index}"
-        label = html.escape(product.name or f"Product {index + 1}")
+        full_name = product.name or f"Product {index + 1}"
+        display = (
+            full_name
+            if len(full_name) <= _TAB_LABEL_MAX
+            else full_name[: _TAB_LABEL_MAX - 1].rstrip() + "…"
+        )
         active_attr = ' class="active"' if index == 0 else ""
         hidden_attr = "" if index == 0 else " hidden"
-        tabs.append(f'<button{active_attr} type="button" data-off="{key}">{label}</button>')
+        tabs.append(
+            f'<button{active_attr} type="button" data-off="{key}" '
+            f'title="{html.escape(full_name, quote=True)}">{html.escape(display)}</button>'
+        )
         units = (
             f" · ~{product.monthly_units:,} units/mo" if product.monthly_units else ""
         )
-        estimated = f" · {_ESTIMATED_PILL}" if product.dims_estimated else ""
+        # The "estimated" pill lives INSIDE the pane heading, next to the name.
+        estimated = f" {_ESTIMATED_PILL}" if product.dims_estimated else ""
         panes.append(
             f'<div class="off-pane rate-pane" data-pane="{key}"{hidden_attr}>'
             f'<h3 style="font-size:18px;font-weight:700;margin:0 0 4px;letter-spacing:-0.015em">'
-            f"{label}</h3>"
-            f'<p class="muted small" style="margin:0 0 16px">{html.escape(_fmt_dims(product))}{units}{estimated}</p>'
+            f"{html.escape(full_name)}{estimated}</h3>"
+            f'<p class="muted small" style="margin:0 0 16px">{html.escape(_fmt_dims(product))}{units}</p>'
             f"{_render_rate_table(product_rates)}"
             f"</div>"
         )
@@ -150,92 +231,76 @@ def _render_product_tabs(matrix: RateMatrix) -> str:
     return tabs_html + "".join(panes)
 
 
-def _render_cover(profile: ProspectProfile, matrix: RateMatrix, origin_label: str,
-                  generated_on: str, sec: str = "01") -> str:
-    facts = []
-    if profile.monthly_order_volume:
-        facts.append(("Monthly orders", f"{profile.monthly_order_volume:,}"))
-    if matrix.products:
-        facts.append(("Products quoted", str(len(matrix.products))))
-    facts.append(("Ship-from", origin_label))
-    if profile.current_carrier:
-        facts.append(("Current carrier", profile.current_carrier))
-    fact_tiles = "".join(
-        f"<div class='off-block'><h4>{html.escape(label)}</h4><p>{html.escape(value)}</p></div>"
-        for label, value in facts[:4]
+def _render_hero(
+    profile: ProspectProfile,
+    matrix: RateMatrix,
+    narrative: NarrativeBlock,
+    generated_on: str,
+    sec: str = "01",
+) -> str:
+    """Cover + executive summary merged: narrative lead, stat strip,
+    prospect-specific bullets, and a single muted "today" context line."""
+    # Stat strip: cheapest rate, fastest transit, monthly orders, ship-from.
+    stats: list[tuple[str, str]] = []
+    all_quotes = [
+        (zone.zone, quote)
+        for product_rates in matrix.products
+        for zone in product_rates.zones
+        for quote in zone.quotes
+    ]
+    rates = [q.rate_usd for _z, q in all_quotes]
+    if rates:
+        stats.append((f"From {_fmt_rate(min(rates))}", "per parcel, your specs"))
+    transit_pairs = [(q.transit_days, z) for z, q in all_quotes if q.transit_days]
+    if transit_pairs:
+        days, zone = min(transit_pairs)
+        stats.append((f"{days}-day", f"delivery in zone {zone}"))
+    volume = profile.monthly_order_volume or sum(
+        p.monthly_units or 0 for p in profile.products
     )
+    if volume:
+        stats.append((f"{volume:,}", "orders / month"))
+    stats.append(("Lehi, UT", "ship-from"))
+
+    summary_html = (
+        f'<p class="hero-narrative">{html.escape(narrative.executive_summary)}</p>'
+        if narrative.executive_summary.strip()
+        else ""
+    )
+
+    # Single muted context line replaces the old standalone "Your context"
+    # section — what they pay today and where their orders go.
+    context_parts = []
+    if profile.current_costs_note:
+        context_parts.append(f"Today: {profile.current_costs_note}")
+    if profile.destinations_note:
+        context_parts.append(f"Destinations: {profile.destinations_note}")
+    context_html = (
+        f'<p class="hero-context">{html.escape(" · ".join(context_parts))}</p>'
+        if context_parts
+        else ""
+    )
+
+    bullets_html = ""
+    if narrative.bullets:
+        items = "".join(
+            f'<li><span class="hb-tick">✓</span><span>{html.escape(b)}</span></li>'
+            for b in narrative.bullets[:4]
+        )
+        bullets_html = f'<ul class="hero-bullets">{items}</ul>'
+
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Overview">
+    <section class="slide" id="sec-{sec}" data-key="hero" data-screen-label="{sec} Overview">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Fulfillment rate sheet · {html.escape(generated_on)}</p>
           <h2 class="slide-title">{html.escape(profile.display_name)} × Anata</h2>
         </div>
-        <p class="caption">Carrier rates, transit windows, and shipping zones for {html.escape(profile.display_name)}, shipped from Anata's fulfillment center. Built from your product specs — printable and shareable.</p>
       </header>
-      <div class="off-grid">{fact_tiles}</div>
-    </section>"""
-
-
-def _render_narrative_section(narrative: NarrativeBlock, sec: str = "02") -> str:
-    """Personalized executive summary — lead paragraph + bullet tiles."""
-    if not narrative.executive_summary.strip():
-        return ""
-    bullet_tiles = "".join(
-        f"<div class='off-block'><h4>Why this works</h4><p>{html.escape(bullet)}</p></div>"
-        for bullet in narrative.bullets[:4]
-    )
-    bullets_html = f'<div class="off-grid">{bullet_tiles}</div>' if bullet_tiles else ""
-    return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Executive summary">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Executive summary</p>
-          <h2 class="slide-title">What this sheet says</h2>
-        </div>
-        <p class="caption" style="font-size:16px;line-height:1.6">{html.escape(narrative.executive_summary)}</p>
-      </header>
+      {summary_html}
+      {context_html}
+      {_stat_strip(stats[:4])}
       {bullets_html}
-    </section>"""
-
-
-def _render_savings_section(savings: dict, narrative: NarrativeBlock, sec: str = "07") -> str:
-    """Projected savings vs the prospect's current cost per parcel."""
-    try:
-        current = float(savings["current_per_parcel"])
-        blended = float(savings["anata_blended_per_parcel"])
-        monthly_orders = int(savings["monthly_orders"])
-        monthly_savings = float(savings["monthly_savings"])
-        annual_savings = float(savings["annual_savings"])
-    except (KeyError, TypeError, ValueError):
-        return ""
-    tiles = "".join(
-        f"<div class='off-block' style='border-left:3px solid var(--anata-sage)'>"
-        f"<h4>{html.escape(label)}</h4>"
-        f"<p style='color:var(--anata-sage);font-weight:700'>{html.escape(value)}</p></div>"
-        for label, value in (
-            ("Your current cost", f"{_fmt_rate(current)} / parcel"),
-            ("Anata blended sample rate", f"{_fmt_rate(blended)} / parcel"),
-            (f"Monthly savings at {monthly_orders:,} orders", _fmt_rate(monthly_savings)),
-            ("Annualized savings", _fmt_rate(annual_savings)),
-        )
-    )
-    caption = (
-        f'<p class="caption">{html.escape(narrative.savings_text)}</p>'
-        if narrative.savings_text.strip()
-        else ""
-    )
-    return f"""
-    <section class="slide" id="sec-{sec}" data-key="savings" data-screen-label="{sec} Savings">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Projected savings</p>
-          <h2 class="slide-title">What switching is worth</h2>
-        </div>
-        {caption}
-      </header>
-      <div class="off-grid">{tiles}</div>
-      <p class="muted small" style="margin-top:14px">Directional math: blended average of the best sample rate per zone across your products, against your reported current cost per parcel. Actual savings depend on your destination mix.</p>
     </section>"""
 
 
@@ -248,7 +313,7 @@ def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "
           <p class="eyebrow">Explore your rates</p>
           <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
         </div>
-        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark the real mileage bands. Hover anywhere for the exact distance and rate. Adjust a product's dims or weight and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report.</p>
+        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark real mileage bands. Hover anywhere for the exact distance and rate. Adjust a product's dims or weight and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report.</p>
       </header>
       {render_interactive_rate_map(matrix, origin_label, requote_path)}
     </section>"""
@@ -263,101 +328,119 @@ def _render_rates_section(matrix: RateMatrix, sec: str = "03") -> str:
           <p class="eyebrow">Carrier costs</p>
           <h2 class="slide-title">Your rates, by product and zone</h2>
         </div>
-        <p class="caption">Rates per parcel for each of your product configurations, quoted to a representative city in every zone. Best rate per zone highlighted. {badge}</p>
+        <p class="caption">Rates per parcel for each of your product configurations, quoted to a representative city in every zone. Best rate per zone highlighted — toggle carriers to compare. {badge}</p>
       </header>
+      {_render_carrier_filter(matrix)}
       {_render_product_tabs(matrix)}
     </section>"""
 
 
-def _render_volume_section(profile: ProspectProfile, matrix: RateMatrix, sec: str = "04") -> str:
+def _render_monthly_math_section(
+    profile: ProspectProfile,
+    matrix: RateMatrix,
+    narrative: NarrativeBlock,
+    savings: Optional[dict],
+    blended_rate: Optional[float],
+    blend_method: str,
+    sec: str = "04",
+) -> str:
+    """Volume economics + projected savings merged into one stat strip."""
     volume = profile.monthly_order_volume or sum(
         p.product.monthly_units or 0 for p in matrix.products
     )
-    if not volume:
+    if not volume and not savings:
         return ""
-    # Blended average of the cheapest rate per zone across products — a
-    # directional planning number, clearly labeled as such.
-    cheapest_rates: list[float] = []
+
+    stats: list[tuple[str, str]] = []
+    if volume:
+        stats.append((f"{volume:,}", "orders / month"))
+    if blended_rate:
+        stats.append((_fmt_rate(blended_rate), "blended best rate / parcel"))
+        if volume:
+            stats.append((_fmt_rate(blended_rate * volume), "directional monthly shipping"))
+
+    sage_stats: list[tuple[str, str]] = []
+    caption = ""
+    if savings:
+        try:
+            current = float(savings["current_per_parcel"])
+            monthly_savings = float(savings["monthly_savings"])
+            annual_savings = float(savings["annual_savings"])
+        except (KeyError, TypeError, ValueError):
+            current = monthly_savings = annual_savings = 0.0
+        if monthly_savings:
+            sage_stats = [
+                (_fmt_rate(current), "your current cost / parcel"),
+                (_fmt_rate(monthly_savings), "monthly savings"),
+                (_fmt_rate(annual_savings), "annual savings"),
+            ]
+            if narrative.savings_text.strip():
+                caption = f'<p class="caption">{html.escape(narrative.savings_text)}</p>'
+
+    notes = []
+    if blended_rate:
+        method = blend_method or "flat average across zones"
+        notes.append(
+            f'<p class="muted small" style="margin-top:12px">Blended best-rate average, '
+            f"{html.escape(method)}. Directional math — actual spend depends on your "
+            f"destination mix.</p>"
+        )
     for product_rates in matrix.products:
-        for zone in product_rates.zones:
-            best = min((q.rate_usd for q in zone.quotes), default=None)
-            if best is not None:
-                cheapest_rates.append(best)
-    avg = sum(cheapest_rates) / len(cheapest_rates) if cheapest_rates else 0.0
-    monthly = avg * volume
-    tiles = "".join(
-        f"<div class='off-block'><h4>{html.escape(label)}</h4><p>{html.escape(value)}</p></div>"
-        for label, value in (
-            ("Monthly orders", f"{volume:,}"),
-            ("Blended best-rate average", f"{_fmt_rate(avg)} / parcel"),
-            ("Directional monthly shipping", _fmt_rate(monthly)),
-            ("Note", "Flat blended average across zones — actual mix depends on your destination distribution."),
-        )
-    )
+        name = product_rates.product.name
+        if name and _WHOLESALE_RE.search(name):
+            notes.append(
+                f'<p class="muted small" style="margin-top:6px">Note: {html.escape(name)} '
+                f"is quoted at parcel rates — wholesale volumes often move as freight; "
+                f"we'll quote that separately.</p>"
+            )
+
     return f"""
-    <section class="slide" id="sec-{sec}" data-key="volume-economics" data-screen-label="{sec} Volume economics">
+    <section class="slide" id="sec-{sec}" data-key="monthly-math" data-screen-label="{sec} The monthly math">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">Volume economics</p>
-          <h2 class="slide-title">What this looks like at your volume</h2>
+          <p class="eyebrow">The monthly math</p>
+          <h2 class="slide-title">What this means monthly</h2>
         </div>
+        {caption}
       </header>
-      <div class="off-grid">{tiles}</div>
+      {_stat_strip(stats)}
+      {_stat_strip(sage_stats, sage=True)}
+      {''.join(notes)}
     </section>"""
 
 
-def _render_context_section(profile: ProspectProfile, sec: str = "05") -> str:
-    """Cost comparison + destinations notes, when we know them."""
-    blocks = []
-    if profile.current_costs_note:
-        blocks.append(
-            "<div class='off-block'><h4>Your current shipping costs</h4>"
-            f"<p>{html.escape(profile.current_costs_note)}</p></div>"
-        )
-    if profile.current_carrier:
-        blocks.append(
-            "<div class='off-block'><h4>Current setup</h4>"
-            f"<p>{html.escape(profile.current_carrier)}</p></div>"
-        )
-    if profile.destinations_note:
-        blocks.append(
-            "<div class='off-block'><h4>Where your orders go</h4>"
-            f"<p>{html.escape(profile.destinations_note)}</p></div>"
-        )
-    if not blocks:
-        return ""
+def _render_partner_section(sec: str = "05") -> str:
+    """Two ways to ship on these rates: full 3PL or Anata Shipping OS."""
     return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Your context">
+    <section class="slide" id="sec-{sec}" data-key="partner" data-screen-label="{sec} Partner with Anata">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">Your context</p>
-          <h2 class="slide-title">What we're comparing against</h2>
+          <p class="eyebrow">Partner with Anata</p>
+          <h2 class="slide-title">Two ways to ship on these rates</h2>
         </div>
       </header>
-      <div class="off-grid">{''.join(blocks)}</div>
-    </section>"""
-
-
-def _render_about_section(sec: str = "06") -> str:
-    tiles = "".join(
-        f"<div class='off-block'><h4>{html.escape(title)}</h4><p>{html.escape(body)}</p></div>"
-        for title, body in (
-            ("Same-day turnaround", "Orders received by 2pm MT ship the same business day."),
-            ("Strategic origin", f"{ANATA_HQ_ADDRESS} — 2-4 day ground coverage to the entire continental US."),
-            ("Rate shopping built in", "Every order is rate-shopped across carriers at label time, so you always ship at the price on this sheet or better."),
-            ("People who answer", "A named account manager, not a ticket queue. Integrations with Shopify, Amazon, and EDI retail."),
-        )
-    )
-    return f"""
-    <section class="slide" id="sec-{sec}" data-screen-label="{sec} Why Anata">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Why Anata</p>
-          <h2 class="slide-title">Fulfillment that feels in-house</h2>
+      <div class="offer-cards">
+        <div class="offer-card">
+          <h4>Anata Fulfillment</h4>
+          <p>Full 3PL — we receive your inventory, pick and pack every order, and ship same-day for orders in by 2pm MT, with these carrier rates built in.</p>
+          <ul>
+            <li>Receiving, pick/pack, returns</li>
+            <li>Named account manager — a person, not a ticket queue</li>
+            <li>Shopify, Amazon, and EDI retail integrations</li>
+          </ul>
         </div>
-      </header>
-      <div class="off-grid">{tiles}</div>
-      <div class="next-steps" style="margin-top:18px">
+        <div class="offer-card">
+          <h4>Anata Shipping OS</h4>
+          <p>Keep fulfillment in-house and ship on these same negotiated rates through Anata's shipping platform.</p>
+          <ul>
+            <li>Label printing from your own dock</li>
+            <li>Rate shopping across every carrier on this sheet</li>
+            <li>Multi-channel order sync</li>
+          </ul>
+        </div>
+      </div>
+      <p class="coming-banner">Coming soon: additional Anata fulfillment locations — multi-node placement compresses your zones and lowers these rates further.</p>
+      <div class="next-steps" style="margin-top:18px;grid-template-columns:1fr">
         <div class="next-step cta">
           <span class="num">Next step</span>
           <h4>Lock these rates in</h4>
@@ -537,6 +620,8 @@ def render_rate_sheet_html(
     narrative: Optional[NarrativeBlock] = None,
     savings: Optional[dict] = None,
     requote_path: str = "",
+    blended_rate: Optional[float] = None,
+    blend_method: str = "",
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
     stylesheet = load_brand_stylesheet(settings)
@@ -553,21 +638,16 @@ def render_rate_sheet_html(
         if block:
             sections.append((f"sec-{sec}", label, block))
 
-    _add("Overview", lambda sec: _render_cover(profile, matrix, origin_label, generated_on, sec))
-    if narrative.executive_summary.strip():
-        _add("Executive summary", lambda sec: _render_narrative_section(narrative, sec))
-    if flags.rate_matrix:
-        _add("Carrier rates", lambda sec: _render_rates_section(matrix, sec))
+    _add("Overview", lambda sec: _render_hero(profile, matrix, narrative, generated_on, sec))
     if flags.zone_map:
         _add("Rate map", lambda sec: _render_rate_map_section(matrix, origin_label, sec, requote_path))
-    if flags.volume_economics:
-        _add("Volume economics", lambda sec: _render_volume_section(profile, matrix, sec))
-    if flags.cost_comparison or flags.destinations:
-        _add("Your context", lambda sec: _render_context_section(profile, sec))
-    if savings:
-        _add("Savings", lambda sec: _render_savings_section(savings, narrative, sec))
+    if flags.rate_matrix:
+        _add("Carrier rates", lambda sec: _render_rates_section(matrix, sec))
+    if flags.volume_economics or savings:
+        _add("The monthly math", lambda sec: _render_monthly_math_section(
+            profile, matrix, narrative, savings, blended_rate, blend_method, sec))
     if flags.about_anata:
-        _add("Why Anata", lambda sec: _render_about_section(sec))
+        _add("Partner with Anata", lambda sec: _render_partner_section(sec))
 
     last_sec_id = sections[-1][0] if sections else "sec-01"
     rail_items = "".join(
@@ -587,8 +667,103 @@ def render_rate_sheet_html(
   {favicon_link}
   <style>{stylesheet}</style>
   <style>
+    /* Density pass: tighter slides, left-aligned body copy everywhere. */
+    .slide {{ padding-top: 30px; padding-bottom: 30px; }}
+    .slide-head {{ margin-bottom: 16px; }}
+    .slide-head .caption {{ text-align: left; }}
+
+    .hero-narrative {{
+      max-width: 70ch;
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--anata-ink-soft);
+      text-align: left;
+      margin: 0 0 10px;
+    }}
+    .hero-context {{
+      font-size: 12px;
+      color: var(--anata-muted);
+      margin: 0 0 16px;
+      max-width: 70ch;
+    }}
+    .stat-strip {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 28px;
+      align-items: baseline;
+      margin: 14px 0;
+      padding: 12px 16px;
+      border: 1px solid var(--anata-line);
+      border-radius: 12px;
+      background: white;
+    }}
+    .stat-strip .stat {{ min-width: 110px; }}
+    .stat-strip .stat-num {{
+      font-size: 21px;
+      font-weight: 700;
+      letter-spacing: -0.015em;
+      color: var(--anata-ink);
+    }}
+    .stat-strip .stat.sage .stat-num {{ color: var(--anata-sage); }}
+    .stat-strip .stat-label {{
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--anata-muted);
+      margin-top: 2px;
+    }}
+    .hero-bullets {{
+      list-style: none;
+      margin: 12px 0 0;
+      padding: 0;
+      max-width: 70ch;
+    }}
+    .hero-bullets li {{
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--anata-ink-soft);
+      margin-bottom: 6px;
+    }}
+    .hero-bullets .hb-tick {{ color: var(--anata-sage); font-weight: 800; }}
+
+    .carrier-chip {{
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+    }}
+    .carrier-filter {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 0 0 14px;
+    }}
+    .carrier-filter .cf-label {{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--anata-muted);
+    }}
+    .cf-chip {{
+      border: 1px solid var(--anata-line);
+      background: white;
+      border-radius: 999px;
+      padding: 4px 6px;
+      cursor: pointer;
+      line-height: 1;
+    }}
+    .cf-chip.cf-off {{ opacity: 0.35; }}
+
     .data-table th, .data-table td {{
-      padding: 9px 12px;
+      padding: 8px 12px;
       text-align: left;
       border-bottom: 1px solid var(--anata-line);
       font-size: 13px;
@@ -599,10 +774,78 @@ def render_rate_sheet_html(
       color: var(--anata-ink-soft);
       border-bottom: 1px solid var(--anata-line-strong);
     }}
+    .data-table .cf-hidden {{ display: none; }}
+    .rc-price {{ font-size: 14px; font-weight: 600; }}
+    td.rate-cell.best .rc-price,
+    td.rate-cell.js-best .rc-price {{ font-weight: 700; color: var(--anata-sky-deep); }}
+    table.js-filtered td.rate-cell.best:not(.js-best) .rc-price {{
+      font-weight: 600; color: var(--anata-ink);
+    }}
+    .rc-transit {{
+      display: inline-block;
+      margin-left: 6px;
+      border-radius: 6px;
+      padding: 1px 5px;
+      font-size: 10px;
+      font-weight: 700;
+      background: var(--anata-line);
+      color: var(--anata-ink-soft);
+      vertical-align: middle;
+    }}
+    .rc-service {{
+      display: block;
+      font-size: 10px;
+      color: var(--anata-muted);
+      margin-top: 2px;
+    }}
+
+    .offer-cards {{ display: flex; gap: 14px; flex-wrap: wrap; }}
+    .offer-card {{
+      flex: 1 1 280px;
+      border: 1px solid var(--anata-line);
+      border-radius: 14px;
+      padding: 16px 18px;
+      background: white;
+    }}
+    .offer-card h4 {{
+      font-size: 15px;
+      font-weight: 700;
+      margin: 0 0 6px;
+      letter-spacing: -0.01em;
+    }}
+    .offer-card p {{
+      margin: 0 0 8px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--anata-ink-soft);
+    }}
+    .offer-card ul {{ margin: 0; padding-left: 18px; }}
+    .offer-card li {{
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--anata-ink-soft);
+    }}
+    .coming-banner {{
+      margin: 14px 0 0;
+      padding: 10px 14px;
+      border: 1px dashed var(--anata-line-strong);
+      border-radius: 10px;
+      font-size: 12px;
+      color: var(--anata-muted);
+      background: rgba(255, 253, 249, 0.7);
+    }}
+
     @media print {{
       /* Show every product's rates in the printed PDF, labeled. */
       .off-pane.rate-pane {{ display: block !important; }}
       .off-pane.rate-pane[hidden] {{ display: block !important; }}
+      /* Hide interactive controls; tighten type ~10%. */
+      .carrier-filter {{ display: none !important; }}
+      .slide {{ padding-top: 22px; padding-bottom: 22px; page-break-inside: avoid; }}
+      h2.slide-title {{ font-size: 26px; }}
+      .hero-narrative {{ font-size: 13.5px; }}
+      .data-table th, .data-table td {{ font-size: 11.5px; padding: 6px 10px; }}
+      .stat-strip .stat-num {{ font-size: 18px; }}
     }}
   </style>
 </head>

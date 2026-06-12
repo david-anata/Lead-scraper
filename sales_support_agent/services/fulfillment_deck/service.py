@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,6 +33,10 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     clean_zip,
 )
 from sales_support_agent.services.fulfillment_deck.sections import decide_sections
+from sales_support_agent.services.fulfillment_deck.us_map import (
+    STATE_REP_ZIPS,
+    state_zone_map,
+)
 from sales_support_agent.services.fulfillment_deck.wms_client import get_wms_client
 
 logger = logging.getLogger(__name__)
@@ -140,16 +145,81 @@ def _build_narrative(
 # Savings math
 # ---------------------------------------------------------------------------
 
+# Two-letter tokens in destinations_note that are real state codes drive the
+# zone weighting (e.g. "shipping mostly to CA, TX, FL").
+_STATE_CODE_RE = re.compile(r"\b([A-Z]{2})\b")
+
+BLEND_METHOD_WEIGHTED = "weighted to your stated destination mix"
+BLEND_METHOD_FLAT = "flat average across zones"
+
+
+def _blended_rate(profile: ProspectProfile, matrix: RateMatrix) -> tuple[float, str]:
+    """Blended best-rate per parcel across the matrix, plus the method label.
+
+    Per product the cheapest rate per zone wins. ZONE weights: state codes
+    parsed from ``profile.destinations_note``; with >=2 distinct known states
+    each zone is weighted by how many of those states land in it (zones with
+    zero weight excluded), else a flat average across quoted zones. PRODUCT
+    weights: ``monthly_units`` share when any product has units, else equal.
+    Returns (0.0, method) when the matrix holds no rates.
+    """
+    method = BLEND_METHOD_FLAT
+    zone_weights: dict[int, int] = {}
+    states: list[str] = []
+    for code in _STATE_CODE_RE.findall(profile.destinations_note or ""):
+        if code in STATE_REP_ZIPS and code not in states:
+            states.append(code)
+    if len(states) >= 2:
+        zones_by_state = state_zone_map(matrix.origin_zip)
+        for code in states:
+            zone = zones_by_state.get(code)
+            if zone is not None:
+                zone_weights[zone] = zone_weights.get(zone, 0) + 1
+        if zone_weights:
+            method = BLEND_METHOD_WEIGHTED
+
+    any_units = any(pr.product.monthly_units for pr in matrix.products)
+    blends: list[tuple[float, float]] = []  # (per-product blend, product weight)
+    for product_rates in matrix.products:
+        cheapest: dict[int, float] = {}
+        for zone in product_rates.zones:
+            best = min((q.rate_usd for q in zone.quotes), default=None)
+            if best is not None:
+                cheapest[zone.zone] = best
+        if not cheapest:
+            continue
+        if zone_weights:
+            weight_total = sum(zone_weights.get(z, 0) for z in cheapest)
+            if weight_total:
+                product_blend = (
+                    sum(rate * zone_weights.get(z, 0) for z, rate in cheapest.items())
+                    / weight_total
+                )
+            else:  # product quoted only in zones outside the stated mix
+                product_blend = sum(cheapest.values()) / len(cheapest)
+        else:
+            product_blend = sum(cheapest.values()) / len(cheapest)
+        weight = float(product_rates.product.monthly_units or 0) if any_units else 1.0
+        blends.append((product_blend, weight))
+
+    if not blends:
+        return 0.0, method
+    weight_total = sum(weight for _blend, weight in blends)
+    if not weight_total:  # only unit-less products carry rates -> equal weights
+        return sum(blend for blend, _w in blends) / len(blends), method
+    return sum(blend * weight for blend, weight in blends) / weight_total, method
+
 
 def _compute_savings(
     profile: ProspectProfile, matrix: RateMatrix
 ) -> tuple[Optional[dict], list[str]]:
     """Deterministic monthly/annual savings vs the prospect's reported cost.
 
-    Blended Anata rate = mean of the cheapest quote per zone across products
-    (same directional math the volume-economics section shows). Returns
-    (savings_dict, warnings); savings is None when inputs are missing or the
-    blended rate isn't actually below the prospect's current cost.
+    Blended Anata rate comes from :func:`_blended_rate` (destination-mix zone
+    weighting + units-share product weighting — same number the monthly-math
+    section shows). Returns (savings_dict, warnings); savings is None when
+    inputs are missing or the blended rate isn't actually below the
+    prospect's current cost.
     """
     current = profile.current_cost_per_parcel_usd
     if not current:
@@ -157,15 +227,9 @@ def _compute_savings(
     volume = profile.monthly_order_volume or sum(p.monthly_units or 0 for p in profile.products)
     if not volume:
         return None, []
-    cheapest_rates: list[float] = []
-    for product_rates in matrix.products:
-        for zone in product_rates.zones:
-            best = min((q.rate_usd for q in zone.quotes), default=None)
-            if best is not None:
-                cheapest_rates.append(best)
-    if not cheapest_rates:
+    blended, method = _blended_rate(profile, matrix)
+    if not blended:
         return None, []
-    blended = sum(cheapest_rates) / len(cheapest_rates)
     if blended >= current:
         return None, [
             "Blended sample rate not below prospect's current cost — savings section omitted"
@@ -177,6 +241,7 @@ def _compute_savings(
         "monthly_orders": int(volume),
         "monthly_savings": round(monthly_savings, 2),
         "annual_savings": round(monthly_savings * 12, 2),
+        "blend_method": method,
     }, []
 
 
@@ -203,6 +268,7 @@ def _assemble(
     savings, savings_warnings = _compute_savings(profile, matrix)
     warnings.extend(savings_warnings)
 
+    blended_rate, blend_method = _blended_rate(profile, matrix)
     narrative = _build_narrative(profile, matrix, savings)
     flags = decide_sections(profile, matrix)
 
@@ -218,6 +284,8 @@ def _assemble(
         narrative=narrative,
         savings=savings,
         requote_path=f"{view_path}/requote" if view_path else "",
+        blended_rate=blended_rate,
+        blend_method=blend_method,
     )
     return {
         "design_title": f"{profile.display_name} × Anata Rate Sheet",
@@ -230,6 +298,7 @@ def _assemble(
         "rates_source": matrix.source,
         "narrative": narrative.to_dict(),
         "savings": savings,
+        "blend_method": blend_method,
         "warnings": warnings,
     }
 
@@ -374,6 +443,7 @@ def apply_viewer_requote(
 
     matrix, _rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
     savings, _savings_warnings = _compute_savings(profile, matrix)
+    blended_rate, blend_method = _blended_rate(profile, matrix)
     # Deterministic narrative only — viewer edits must never trigger an LLM call.
     narrative_fn = getattr(llm_module, "_fallback_narrative", None) or _fallback_narrative
     narrative = narrative_fn(profile, matrix, savings)
@@ -391,12 +461,15 @@ def apply_viewer_requote(
         narrative=narrative,
         savings=savings,
         requote_path=f"{view_path}/requote" if view_path else "",
+        blended_rate=blended_rate,
+        blend_method=blend_method,
     )
     patch = {
         "prospect_profile": profile.to_dict(),
         "origin_zip": origin,
         "rate_matrix": matrix.to_dict(),
         "savings": savings,
+        "blend_method": blend_method,
         "narrative": narrative.to_dict(),
         "deck_html": deck_html,
         "rates_source": matrix.source,

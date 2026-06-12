@@ -42,6 +42,28 @@ STATE_REP_ZIPS: dict[str, str] = {
 # Rate ramp: cheapest -> most expensive (brand sky into brand ink).
 RATE_RAMP = ["#e7f1f9", "#cfe3f2", "#aed1e8", "#85bbda", "#5f9cc7", "#4f84c4", "#33598f", "#1d2d44"]
 
+# Carrier wordmark chips: UPPERCASE carrier name -> (background, text color).
+# Unknown carriers (YSP etc.) fall back to brand ink with white text.
+CARRIER_BRAND_COLORS: dict[str, tuple[str, str]] = {
+    "UPS": ("#351C15", "#FFB500"),
+    "USPS": ("#004B87", "#FFFFFF"),
+    "FEDEX": ("#4D148C", "#FFFFFF"),
+    "GLS": ("#061AB1", "#FFD100"),
+    "UNIUNI": ("#00B8A9", "#FFFFFF"),
+    "DHL": ("#FFCC00", "#D40511"),
+}
+_CARRIER_CHIP_FALLBACK = ("var(--anata-ink, #1d2d44)", "#FFFFFF")
+
+
+def carrier_chip(carrier: str) -> str:
+    """Small rounded pill with the carrier wordmark on its brand color."""
+    key = (carrier or "").strip().upper()
+    bg, fg = CARRIER_BRAND_COLORS.get(key, _CARRIER_CHIP_FALLBACK)
+    return (
+        f'<span class="carrier-chip" style="background:{bg};color:{fg}">'
+        f"{_html.escape(key or 'CARRIER')}</span>"
+    )
+
 # Mileage rings drawn around the origin (matches the zone band edges).
 RING_MILES = (150, 300, 600, 1000, 1400, 1800)
 
@@ -160,21 +182,29 @@ def origin_state(origin_zip: str) -> str:
 
 
 def map_payload(matrix: RateMatrix) -> dict:
-    """The JSON the in-page JS needs: per-product best rate per zone."""
+    """The JSON the in-page JS needs: per-product, per-zone, PER-CARRIER
+    cheapest quote — so the viewer-side carrier filter can recompute the
+    best rate among enabled carriers without a round trip.
+
+    Shape: products[].zoneRates = {"6": {"USPS": {rate, service,
+    transit_days}, "UPS": {...}}} (cheapest quote per carrier per zone).
+    """
     products = []
     for product_rates in matrix.products:
         product = product_rates.product
         zone_rates: dict[str, dict] = {}
         for zone in product_rates.zones:
-            best = min(zone.quotes, key=lambda q: q.rate_usd, default=None)
-            if best is None:
-                continue
-            zone_rates[str(zone.zone)] = {
-                "rate": best.rate_usd,
-                "carrier": best.carrier,
-                "service": best.service,
-                "transit_days": best.transit_days,
-            }
+            per_carrier: dict[str, dict] = {}
+            for quote in zone.quotes:
+                current = per_carrier.get(quote.carrier)
+                if current is None or quote.rate_usd < current["rate"]:
+                    per_carrier[quote.carrier] = {
+                        "rate": quote.rate_usd,
+                        "service": quote.service,
+                        "transit_days": quote.transit_days,
+                    }
+            if per_carrier:
+                zone_rates[str(zone.zone)] = per_carrier
         products.append({
             "name": product.name or "Product",
             "length_in": product.length_in,
@@ -198,6 +228,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
     """The ZIP-level 'distance from our dock' interactive section body."""
     payload = map_payload(matrix)
     payload["requoteUrl"] = requote_path
+    payload["carrierColors"] = {k: list(v) for k, v in CARRIER_BRAND_COLORS.items()}
 
     cells, origin_px, px_per_mile = _build_cells(matrix.origin_zip)
 
@@ -307,22 +338,102 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           var statusEl = document.getElementById('rm-status');
           var overlay = document.getElementById('rm-overlay');
           var edited = false;
+          // Carrier filter state — viewer-local only, never persisted. Keys
+          // are carrier names exactly as they appear in the rate data.
+          var disabledCarriers = {{}};
+          var CHIP_COLORS = DATA.carrierColors || {{}};
 
           function fmt(rate) {{ return '$' + Number(rate).toFixed(2); }}
+
+          function chipHtml(carrier) {{
+            var key = String(carrier || '').toUpperCase().replace(/[<>&]/g, '');
+            var col = CHIP_COLORS[key] || ['#1d2d44', '#ffffff'];
+            return '<span style="display:inline-block;border-radius:999px;padding:3px 8px;'
+              + 'font-size:10px;font-weight:800;letter-spacing:0.05em;'
+              + 'background:' + col[0] + ';color:' + col[1] + '">' + key + '</span>';
+          }}
+
+          function bestForZone(perCarrier, honorFilter) {{
+            var best = null, bestCarrier = null;
+            Object.keys(perCarrier).forEach(function(carrier) {{
+              if (honorFilter && disabledCarriers[carrier]) return;
+              var q = perCarrier[carrier];
+              if (!best || q.rate < best.rate) {{ best = q; bestCarrier = carrier; }}
+            }});
+            if (!best && honorFilter) return bestForZone(perCarrier, false);
+            if (!best) return null;
+            return {{ carrier: bestCarrier, rate: best.rate, service: best.service,
+                     transit_days: best.transit_days }};
+          }}
 
           function zoneInfo(zone, productIdx) {{
             var product = DATA.products[productIdx];
             if (!product || !zone) return null;
-            return product.zoneRates[String(zone)] || null;
+            var perCarrier = product.zoneRates[String(zone)];
+            if (!perCarrier) return null;
+            return bestForZone(perCarrier, true);
           }}
 
           function rateRange(productIdx) {{
             var product = DATA.products[productIdx];
             if (!product) return null;
-            var rates = Object.values(product.zoneRates).map(function(z) {{ return z.rate; }});
+            var rates = [];
+            Object.keys(product.zoneRates).forEach(function(zone) {{
+              var info = bestForZone(product.zoneRates[zone], true);
+              if (info) rates.push(info.rate);
+            }});
             if (!rates.length) return null;
             return [Math.min.apply(null, rates), Math.max.apply(null, rates)];
           }}
+
+          // One handler, both effects: the filter chips (rendered inside the
+          // carrier-rates section) repaint the map AND show/hide the matching
+          // rate-table columns. Delegated on document so chips swapped in by
+          // the requote flow keep working without re-binding.
+          function applyCarrierFilter() {{
+            var anyOff = Object.keys(disabledCarriers).some(function(k) {{ return disabledCarriers[k]; }});
+            document.querySelectorAll('.cf-chip').forEach(function(chip) {{
+              var off = !!disabledCarriers[chip.getAttribute('data-carrier')];
+              chip.classList.toggle('cf-off', off);
+              chip.setAttribute('aria-pressed', off ? 'false' : 'true');
+            }});
+            document.querySelectorAll('table.data-table').forEach(function(table) {{
+              table.classList.toggle('js-filtered', anyOff);
+              table.querySelectorAll('th[data-carrier], td[data-carrier]').forEach(function(cell) {{
+                cell.classList.toggle('cf-hidden', !!disabledCarriers[cell.getAttribute('data-carrier')]);
+              }});
+              table.querySelectorAll('tbody tr').forEach(function(row) {{
+                var best = null;
+                row.querySelectorAll('td[data-carrier]').forEach(function(cell) {{
+                  cell.classList.remove('js-best');
+                  if (disabledCarriers[cell.getAttribute('data-carrier')]) return;
+                  var rate = parseFloat(cell.getAttribute('data-rate'));
+                  if (isNaN(rate)) return;
+                  if (!best || rate < parseFloat(best.getAttribute('data-rate'))) best = cell;
+                }});
+                if (best && anyOff) best.classList.add('js-best');
+              }});
+            }});
+            paint();
+          }}
+
+          document.addEventListener('click', function(evt) {{
+            var chip = evt.target.closest('.cf-chip');
+            if (!chip) return;
+            var carrier = chip.getAttribute('data-carrier');
+            if (!carrier) return;
+            if (!disabledCarriers[carrier]) {{
+              var enabledCount = 0;
+              document.querySelectorAll('#carrier-filter .cf-chip').forEach(function(c) {{
+                if (!disabledCarriers[c.getAttribute('data-carrier')]) enabledCount += 1;
+              }});
+              if (enabledCount <= 1) return; // at least one carrier stays on
+              disabledCarriers[carrier] = true;
+            }} else {{
+              delete disabledCarriers[carrier];
+            }}
+            applyCarrierFilter();
+          }});
 
           function colorFor(rate, range) {{
             if (range[1] <= range[0]) return RAMP[3];
@@ -426,7 +537,9 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                 statusEl.textContent = isReset
                   ? 'Restored the quoted specs — rates updated and saved.'
                   : 'Rates updated and saved to this report.';
-                paint();
+                // Swapped fragments arrive unfiltered — re-apply the viewer's
+                // carrier filter to the fresh chips/columns (also repaints).
+                applyCarrierFilter();
               }})
               .catch(function() {{
                 statusEl.textContent = 'Could not re-quote right now — showing the previous rates.';
@@ -454,7 +567,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
               + (zone ? ' · zone ' + zone : '') + '<br>';
             if (info) {{
               inner += '<span class="rm-tt-rate">' + fmt(info.rate) + '</span> per parcel<br>'
-                + info.carrier + ' ' + info.service
+                + chipHtml(info.carrier) + ' ' + String(info.service || '').replace(/[<>&]/g, '')
                 + (info.transit_days ? ' · ' + info.transit_days + ' day' + (info.transit_days > 1 ? 's' : '') : '');
             }} else {{
               inner += 'No estimate available';
