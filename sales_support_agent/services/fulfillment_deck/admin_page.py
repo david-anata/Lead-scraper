@@ -298,6 +298,12 @@ def render_rate_sheet_review_page(
 
     monthly_volume = profile.get("monthly_order_volume")
     current_cost = profile.get("current_cost_per_parcel_usd")
+    volume_basis = str(profile.get("volume_basis") or "").strip()
+    volume_basis_hint = (
+        f'<span class="hint">Basis: {_esc(volume_basis)}</span>' if volume_basis else ""
+    )
+    margin_override = summary.get("quote_margin_override")
+    margin_value = "" if margin_override is None else f"{margin_override:g}"
     status_label = "Published" if published else "Draft — not publicly visible yet"
     status_pill_cls = "pill--live" if published else "pill--draft"
 
@@ -355,11 +361,17 @@ def render_rate_sheet_review_page(
               <div class="field">
                 <label for="monthly_order_volume">Monthly order volume</label>
                 <input type="text" id="monthly_order_volume" name="monthly_order_volume" value="{_esc('' if monthly_volume is None else monthly_volume)}">
+                {volume_basis_hint}
               </div>
               <div class="field">
                 <label for="current_cost_per_parcel_usd">Current $/parcel</label>
                 <input type="text" id="current_cost_per_parcel_usd" name="current_cost_per_parcel_usd" value="{_esc('' if current_cost is None else f'{current_cost:g}')}">
                 <span class="hint">Drives the savings section — leave blank to omit.</span>
+              </div>
+              <div class="field">
+                <label for="quote_margin_override">Quote margin override %</label>
+                <input type="number" id="quote_margin_override" name="quote_margin_override" step="any" min="0" value="{_esc(margin_value)}">
+                <span class="hint">Blank = automatic by product category. e.g. 12 quotes everything at baseline × 1.12.</span>
               </div>
             </div>
           </div>

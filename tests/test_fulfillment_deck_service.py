@@ -366,10 +366,13 @@ class RateSheetServiceTests(unittest.TestCase):
     def test_data_keys_and_carrier_grouped_table(self) -> None:
         result = self._generate_with_current_cost()
         html = result["deck_html"]
-        for key in ("hero", "rate-map", "carrier-rates", "monthly-math", "partner"):
+        for key in ("hero", "rate-map", "carrier-rates", "monthly-math", "quote", "partner"):
             self.assertIn(f'data-key="{key}"', html)
         for gone in ("volume-economics", "savings"):
             self.assertNotIn(f'data-key="{gone}"', html)
+        # v4: the estimated invoice sits immediately before the partner closer.
+        self.assertLess(html.index('data-key="quote"'), html.index('data-key="partner"'))
+        self.assertLess(html.index('data-key="monthly-math"'), html.index('data-key="quote"'))
         # Carrier-grouped columns: the header is a brand-colored logo chip
         # tagged with data-carrier for the viewer-side filter; the cheaper
         # service per carrier wins, so mock USPS Priority Mail is out.
@@ -400,6 +403,12 @@ class RateSheetServiceTests(unittest.TestCase):
         # Map payload ships per-carrier zone rates for the filter to re-min.
         self.assertIn('"zoneRates": {"1": {"', html)
         self.assertIn("applyCarrierFilter", html)
+        # v4: the chips live INSIDE the map section's controls (the map
+        # renders before the table), not in the carrier-rates section.
+        chips_at = html.index('id="carrier-filter"')
+        self.assertGreater(chips_at, html.index('data-key="rate-map"'))
+        self.assertLess(chips_at, html.index('data-key="carrier-rates"'))
+        self.assertIn('id="rm-controls"', html[:chips_at])
 
     def test_rerender_preserves_link_identity(self) -> None:
         result = self._generate()
@@ -630,7 +639,7 @@ class RateSheetServiceTests(unittest.TestCase):
         from html.parser import HTMLParser
 
         result = self._generate_with_current_cost()
-        path = Path(tempfile.gettempdir()) / "rate_sheet_v3_visual_sanity.html"
+        path = Path(tempfile.gettempdir()) / "rate_sheet_v4_visual_sanity.html"
         path.write_text(result["deck_html"], encoding="utf-8")
 
         class _Collector(HTMLParser):
@@ -654,8 +663,330 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertEqual(collector.open_sections, collector.closed_sections)
         self.assertEqual(
             collector.section_keys,
-            ["hero", "rate-map", "carrier-rates", "monthly-math", "partner"],
+            ["hero", "rate-map", "carrier-rates", "monthly-math", "quote", "partner"],
         )
+
+    def test_inline_scripts_pass_node_check(self) -> None:
+        """Every inline <script> in the rendered sheet is valid JS."""
+        import re as _re
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        result = self._generate_with_current_cost()
+        scripts = _re.findall(r"<script>(.*?)</script>", result["deck_html"], _re.S)
+        self.assertGreaterEqual(len(scripts), 4)  # tabs, polish, engagement, map
+        for index, script in enumerate(scripts):
+            path = Path(tempfile.gettempdir()) / f"rate_sheet_v4_script_{index}.js"
+            path.write_text(script, encoding="utf-8")
+            proc = subprocess.run(
+                [node, "--check", str(path)], capture_output=True, text=True
+            )
+            self.assertEqual(proc.returncode, 0, f"script {index}: {proc.stderr[:400]}")
+
+    # ------------------------------------------------------------------
+    # v4: state-outline map background + affine fit
+    # ------------------------------------------------------------------
+
+    def test_map_renders_state_outlines_behind_dots(self) -> None:
+        result = self._generate()
+        html = result["deck_html"]
+        svg_start = html.index('id="rm-svg"')
+        svg_end = html.index("</svg>", svg_start)
+        map_svg = html[svg_start:svg_end]
+        # Lower-48 (+DC, +faded AK/HI) outline paths render in the map svg…
+        self.assertGreater(map_svg.count("<path"), 40)
+        self.assertEqual(map_svg.count('class="rm-state'), 51)
+        self.assertEqual(map_svg.count("rm-state-faded"), 2)  # AK/HI at 50% opacity
+        # …BEHIND the dots: states group opens before the cells group.
+        self.assertLess(map_svg.index('id="rm-states"'), map_svg.index('id="rm-cells"'))
+        # Wikimedia space viewBox.
+        self.assertIn('viewBox="0 0 959 593"', html)
+        # Dots, rings, insets and tooltips survive the re-projection.
+        self.assertGreater(html.count('class="rm-cell"'), 850)
+        self.assertIn('class="rm-ring"', html)
+        self.assertIn("1800 mi", html)
+
+    def test_affine_fit_sanity(self) -> None:
+        from sales_support_agent.services.fulfillment_deck import us_map
+        from sales_support_agent.services.fulfillment_deck.zip3_centroids import (
+            ZIP3_CENTROIDS,
+        )
+
+        # Measured 28.1px max residual over kept anchors (worst: TX).
+        self.assertLess(us_map.AFFINE_MAX_RESIDUAL_PX, 35.0)
+        # UT bbox center sanity in the Wikimedia 959x593 space.
+        min_x, min_y, max_x, max_y = us_map.path_bbox("UT")
+        center = ((min_x + max_x) / 2, (min_y + max_y) / 2)
+        self.assertLess(abs(center[0] - 216), 60)
+        self.assertLess(abs(center[1] - 249), 60)
+        # The Salt Lake City (841) dot lands inside the UT path bbox (+12px).
+        lat, lon = ZIP3_CENTROIDS["841"]
+        x, y = us_map.albers_point_px(lat, lon)
+        self.assertGreater(x, min_x - 12)
+        self.assertLess(x, max_x + 12)
+        self.assertGreater(y, min_y - 12)
+        self.assertLess(y, max_y + 12)
+
+    def test_map_mode_toggle_markup(self) -> None:
+        html = self._generate()["deck_html"]
+        self.assertIn('id="rm-mode"', html)
+        self.assertIn('data-mode="cost"', html)
+        self.assertIn('data-mode="transit"', html)
+        self.assertIn("bestTransitForZone", html)
+        self.assertIn("best transit time by ZIP area", html)
+
+    # ------------------------------------------------------------------
+    # v4: volume vetting
+    # ------------------------------------------------------------------
+
+    def test_hero_shows_volume_basis_sublabel(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        summary = dict(storage.get_run(run_id).summary_json)
+        profile = dict(summary["prospect_profile"])
+        profile["volume_basis"] = "74 DTC Shopify + 64 B2B wholesale"
+        profile["monthly_order_volume"] = 138
+        storage.update_summary(run_id, {"prospect_profile": profile})
+        rerendered = rerender_rate_sheet(run_id, settings=load_settings())
+        html = rerendered["deck_html"]
+        self.assertIn("orders / month · 74 DTC Shopify + 64 B2B wholesale", html)
+        # Without a basis the plain sublabel renders.
+        clean = self._generate()
+        self.assertIn(">orders / month<", clean["deck_html"])
+        self.assertNotIn("orders / month ·", clean["deck_html"])
+
+    # ------------------------------------------------------------------
+    # v4: fulfillment quote engine
+    # ------------------------------------------------------------------
+
+    def test_quote_hand_checked_line_math(self) -> None:
+        """3,000 orders, 2,000+1,000 units, all beauty (x1.15), blended $7.50."""
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+        )
+
+        profile = ProspectProfile.from_dict({
+            "brand": "GlowCo",
+            "monthly_order_volume": 3000,
+            "products": [
+                {"name": "Super Serum", "length_in": 4, "width_in": 4,
+                 "height_in": 6, "weight_lb": 1.2, "monthly_units": 2000,
+                 "product_category": "beauty"},
+                {"name": "Glow Kit", "length_in": 10, "width_in": 8,
+                 "height_in": 4, "weight_lb": 2.5, "monthly_units": 1000,
+                 "product_category": "beauty"},
+            ],
+        })
+        quote = build_fulfillment_quote(profile, RateMatrix(products=()), 7.50)
+        self.assertEqual(quote["orders"], 3000)
+        self.assertEqual(quote["units_total"], 3000)
+        self.assertEqual(quote["multiplier"], 1.15)
+        # Pallet math: cube 48*40*60*0.65 = 74,880 in³.
+        # Serum 96 in³ -> 780/pallet; Kit 320 in³ -> 234/pallet; avg 507.
+        self.assertEqual(quote["units_per_pallet"], 507)
+        # ceil(3000 / 507) = 6 pallets.
+        self.assertEqual(quote["pallets_per_month"], 6)
+        by_key = {line["key"]: line for line in quote["lines"]}
+        # Receiving: 6 x $20 x 1.15 = $138.00
+        self.assertEqual(by_key["receiving"]["monthly"], 138.00)
+        # Storage: 6 x $35 x 1.15 = $241.50
+        self.assertEqual(by_key["storage"]["monthly"], 241.50)
+        # Pick & pack: avg items = 3000/3000 = 1 -> no additional-item fee;
+        # 3000 x $1.60 x 1.15 = $5,520.00
+        self.assertEqual(quote["avg_items_per_order"], 1.0)
+        self.assertEqual(by_key["pick_pack"]["monthly"], 5520.00)
+        # Tech: $75 flat, NO multiplier.
+        self.assertEqual(by_key["tech"]["monthly"], 75.00)
+        self.assertEqual(by_key["tech"]["multiplier"], 1.0)
+        # Shipping: 3000 x $7.50 = $22,500.00, NO multiplier.
+        self.assertEqual(by_key["shipping"]["monthly"], 22500.00)
+        self.assertEqual(by_key["shipping"]["multiplier"], 1.0)
+        self.assertEqual(by_key["shipping"]["note"], "at the carrier rates above")
+        # No wholesale-smelling product -> no wholesale line.
+        self.assertNotIn("wholesale", by_key)
+        # Total 138 + 241.50 + 5520 + 75 + 22500 = 28,474.50; per order 9.49.
+        self.assertEqual(quote["monthly_total"], 28474.50)
+        self.assertEqual(quote["effective_per_order"], 9.49)
+        # Order-driven vs flat split for the scenario slider.
+        self.assertEqual(quote["variable_monthly"], 28020.00)
+        self.assertEqual(quote["fixed_monthly"], 454.50)
+
+    def test_quote_multiplier_rules(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+            quote_multiplier,
+        )
+
+        fragile_beauty = ProspectProfile.from_dict({
+            "brand": "T", "monthly_order_volume": 100,
+            "products": [{"name": "Vase", "product_category": "beauty",
+                          "fragile": True, "monthly_units": 100}],
+        })
+        # beauty 1.15 + fragile 0.05 = 1.20 (under the 1.25 cap).
+        self.assertEqual(quote_multiplier(fragile_beauty), 1.20)
+        # Hard cap: food 1.15 + fragile would be 1.20; force cap via override.
+        self.assertEqual(quote_multiplier(fragile_beauty, margin_override=40), 1.25)
+        # Flat override replaces the table: 12 -> x1.12.
+        self.assertEqual(quote_multiplier(fragile_beauty, margin_override=12), 1.12)
+        quote = build_fulfillment_quote(
+            fragile_beauty, RateMatrix(products=()), 5.0, margin_override=12
+        )
+        self.assertEqual(quote["multiplier"], 1.12)
+        self.assertEqual(quote["margin_override_pct"], 12)
+        # Unknown category falls back to "other" (1.10).
+        other = ProspectProfile.from_dict({
+            "brand": "T", "monthly_order_volume": 100,
+            "products": [{"name": "X", "product_category": "weird stuff",
+                          "monthly_units": 100}],
+        })
+        self.assertEqual(quote_multiplier(other), 1.10)
+
+    def test_quote_none_without_orders_and_wholesale_line(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+        )
+
+        empty = ProspectProfile.from_dict({"brand": "T"})
+        self.assertIsNone(build_fulfillment_quote(empty, RateMatrix(products=()), 5.0))
+
+        wholesale = ProspectProfile.from_dict({
+            "brand": "BulkCo", "monthly_order_volume": 1000,
+            "products": [
+                {"name": "Widget", "monthly_units": 800, "product_category": "other"},
+                {"name": "Wholesale Case Pack", "monthly_units": 200,
+                 "product_category": "other"},
+            ],
+        })
+        quote = build_fulfillment_quote(wholesale, RateMatrix(products=()), None)
+        by_key = {line["key"]: line for line in quote["lines"]}
+        # 200 wholesale units x $0.15 x 1.10 = $33.00; no shipping line
+        # without a blended rate.
+        self.assertEqual(by_key["wholesale"]["monthly"], 33.00)
+        self.assertNotIn("shipping", by_key)
+
+    def test_quote_section_renders_invoice_without_internal_margins(self) -> None:
+        result = self._generate_with_current_cost()
+        html = result["deck_html"]
+        quote = result["fulfillment_quote"]
+        self.assertIsNotNone(quote)
+        self.assertIn("Your estimated monthly invoice", html)
+        self.assertIn("Estimated monthly total", html)
+        self.assertIn("all-in monthly", html)
+        self.assertIn("effective per order", html)
+        # current_cost_per_parcel_usd is set -> the "vs. today" chip renders.
+        self.assertIn("per order vs. today", html)
+        self.assertIn("we finalize after a 30-minute scoping call", html)
+        # Quoted rates only — the baseline floors and multiplier never render.
+        section = html[html.index('data-key="quote"'):html.index('data-key="partner"')]
+        self.assertNotIn("1.15", section)
+        self.assertNotIn("baseline", section.lower())
+        self.assertNotIn("multiplier", section.lower())
+        # …but the stored quote keeps the margin audit trail for History.
+        self.assertIn("multiplier", quote)
+        # Scenario hooks: the total row splits fixed vs order-driven money.
+        self.assertIn('data-scn="total"', section)
+        self.assertIn('data-scn="per-order"', section)
+
+    def test_margin_override_flows_through_edits(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        self.assertIsNone(
+            dict(storage.get_run(run_id).summary_json).get("quote_margin_override")
+        )
+        updated = apply_profile_edits(
+            run_id, {"quote_margin_override": 12.0}, settings=load_settings()
+        )
+        stored = dict(storage.get_run(run_id).summary_json)
+        self.assertEqual(stored["quote_margin_override"], 12.0)
+        self.assertEqual(updated["fulfillment_quote"]["multiplier"], 1.12)
+        self.assertEqual(stored["fulfillment_quote"]["multiplier"], 1.12)
+        # Clearing the override returns to automatic category margins.
+        apply_profile_edits(
+            run_id, {"quote_margin_override": None}, settings=load_settings()
+        )
+        stored = dict(storage.get_run(run_id).summary_json)
+        self.assertIsNone(stored["quote_margin_override"])
+        self.assertNotEqual(stored["fulfillment_quote"]["multiplier"], 1.12)
+
+    # ------------------------------------------------------------------
+    # v4: partner CTA, trust stamp, polish hooks
+    # ------------------------------------------------------------------
+
+    def test_shipping_os_card_icon_and_register_cta(self) -> None:
+        html = self._generate()["deck_html"]
+        self.assertIn(
+            '<a class="os-cta" href="https://app.anatainc.com/register" '
+            'target="_blank" rel="noreferrer">Try for free →</a>',
+            html,
+        )
+        # The icon asset embeds as an inline <img> inside the sized wrapper,
+        # directly above the Shipping OS card heading.
+        icon_at = html.index('<div class="offer-icon">')
+        heading_at = html.index("<h4>Anata Shipping OS</h4>")
+        self.assertLess(icon_at, heading_at)
+        self.assertIn("<img src='data:image/png;base64,", html[icon_at:heading_at])
+
+    def test_trust_stamp_only_for_live_wms_rates(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.rendering import (
+            render_rate_sheet_html,
+        )
+        from sales_support_agent.services.fulfillment_deck.schema import SectionFlags
+
+        def _render(source: str) -> str:
+            matrix = RateMatrix(
+                origin_zip="84043",
+                products=(
+                    ProductRates(
+                        product=_spec("Widget", units=100),
+                        zones=(
+                            ZoneRates(
+                                zone=4, dest_zip="30303", dest_label="Atlanta, GA",
+                                quotes=(RateQuote(carrier="USPS", service="GA",
+                                                  rate_usd=7.0, transit_days=3,
+                                                  zone=4, source=source),),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            return render_rate_sheet_html(
+                profile=ProspectProfile.from_dict({"brand": "T"}),
+                matrix=matrix,
+                flags=SectionFlags(rate_matrix=True, zone_map=True),
+                origin_label="ZIP 84043",
+                generated_on="June 11, 2026",
+                settings=load_settings(),
+                blended_rate=7.0,
+            )
+
+        live = _render("wms")
+        self.assertIn(
+            "Rates pulled live from Anata&#x27;s carrier accounts · June 11, 2026", live
+        )
+        self.assertNotIn("Sample rates — illustrative", live)
+        mock_html = _render("mock")
+        self.assertNotIn("Rates pulled live", mock_html)
+        self.assertIn("Sample rates — illustrative", mock_html)
+
+    def test_polish_markup_hooks(self) -> None:
+        result = self._generate_with_current_cost()
+        html = result["deck_html"]
+        # Count-up: final values in markup, animated once on view.
+        self.assertIn("data-countup", html)
+        self.assertIn("prefers-reduced-motion", html)
+        # Scenario slider inside the monthly-math fragment, 50–200% step 5.
+        mm = html[html.index('data-key="monthly-math"'):html.index('data-key="quote"')]
+        self.assertIn('id="mm-scenario-range"', mm)
+        self.assertIn('min="50" max="200" step="5" value="100"', mm)
+        self.assertIn('data-scn="orders"', mm)
+        self.assertIn('data-scn="linear"', mm)
+        # Section entrance: hidden state only under the JS-added class.
+        self.assertIn("html.js-anim .slide", html)
+        self.assertIn("js-anim", html)
+        self.assertIn("in-view", html)
 
 
 if __name__ == "__main__":

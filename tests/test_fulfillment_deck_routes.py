@@ -223,6 +223,70 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         # Re-rendered HTML reflects the edit.
         self.assertIn("9 × 7 × 4 in", summary["deck_html"])
 
+    def test_update_route_quote_margin_override_round_trip(self) -> None:
+        run = self._generate()
+        # Review page exposes the override input (blank = automatic).
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertIn("Quote margin override %", review.text)
+        self.assertIn('name="quote_margin_override"', review.text)
+
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo",
+                "origin_zip": "84043",
+                "quote_margin_override": "12",
+                "product_name": ["Widget"],
+                "product_length": ["6"],
+                "product_width": ["5"],
+                "product_height": ["3"],
+                "product_weight": ["1.5"],
+                "product_units": ["500"],
+                "product_estimated": ["0"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(summary["quote_margin_override"], 12.0)
+        self.assertEqual(summary["fulfillment_quote"]["multiplier"], 1.12)
+        self.assertEqual(summary["fulfillment_quote"]["margin_override_pct"], 12.0)
+        # The re-rendered sheet carries the quote section.
+        self.assertIn('data-key="quote"', summary["deck_html"])
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertIn('value="12"', review.text)
+
+        # Blank clears the override -> back to automatic category margins.
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo",
+                "origin_zip": "84043",
+                "quote_margin_override": "",
+                "product_name": ["Widget"],
+                "product_length": ["6"],
+                "product_width": ["5"],
+                "product_height": ["3"],
+                "product_weight": ["1.5"],
+                "product_units": ["500"],
+                "product_estimated": ["0"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        self.assertIsNone(summary["quote_margin_override"])
+        self.assertNotEqual(summary["fulfillment_quote"]["multiplier"], 1.12)
+
+    def test_review_page_shows_volume_basis_hint(self) -> None:
+        run = self._generate()
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        profile = dict(summary["prospect_profile"])
+        profile["volume_basis"] = "300 Shopify + 200 Amazon"
+        storage.update_summary(run["id"], {"prospect_profile": profile})
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertIn("Basis: 300 Shopify + 200 Amazon", review.text)
+
     def test_update_remove_checkbox_drops_product(self) -> None:
         run = self._generate()
         response = self.client.post(
@@ -310,16 +374,25 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
-        # Fragments: re-rendered swappable sections keyed by data-key (v3:
-        # volume-economics + savings merged into monthly-math).
-        self.assertEqual(set(data["fragments"]), {"carrier-rates", "monthly-math"})
+        # Fragments: re-rendered swappable sections keyed by data-key (v3
+        # merged volume-economics + savings into monthly-math; v4 adds the
+        # estimated-invoice quote section).
+        self.assertEqual(
+            set(data["fragments"]), {"carrier-rates", "monthly-math", "quote"}
+        )
         frag = data["fragments"]["carrier-rates"]
         self.assertIn('data-key="carrier-rates"', frag)
         self.assertTrue(frag.startswith("<section"))
         self.assertTrue(frag.endswith("</section>"))
         self.assertIn("10 × 8 × 6 in", frag)
-        # The fragment re-ships the filter chips so a requote keeps them.
-        self.assertIn('id="carrier-filter"', frag)
+        # v4: the filter chips live in the MAP section (never swapped), so
+        # the carrier-rates fragment no longer re-ships them — the viewer's
+        # filter state survives a requote untouched.
+        self.assertNotIn('id="carrier-filter"', frag)
+        # The quote fragment re-ships the recomputed invoice.
+        quote_frag = data["fragments"]["quote"]
+        self.assertIn('data-key="quote"', quote_frag)
+        self.assertIn("Your estimated monthly invoice", quote_frag)
         # The new dims' rates show up in the fragment (deterministic mock math).
         expected, _ = build_rate_matrix(
             [ProductSpec(name="Widget", length_in=10.0, width_in=8.0,

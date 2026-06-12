@@ -330,6 +330,53 @@ class SelectDisplayQuotesTests(unittest.TestCase):
                 sorted({q.carrier for q in zone.quotes}), ["CarrierA", "CarrierB"]
             )
 
+    def test_excluded_carriers_dropped_and_fedex_surfaces(self):
+        """YSP never displays; with YSP out of the way FEDEX ranks into the
+        5-carrier cap (the v3 bug: YSP ate FedEx's slot)."""
+
+        class _LiveLikeClient:
+            """Mimics the live EliteWorks carrier mix: 6 carriers where YSP
+            is cheap enough to claim a display slot ahead of FEDEX."""
+
+            def quote_rates(self, package, origin_zip, dest_zip):
+                zone = zone_for(origin_zip, dest_zip) or 5
+                table = (
+                    ("UNIUNI", "Standard", 4.0),
+                    ("YSP", "Economy", 4.5),
+                    ("USPS", "Ground Advantage", 5.0),
+                    ("GLS", "Ground", 5.5),
+                    ("UPS", "Ground", 6.0),
+                    ("FEDEX", "Home Delivery", 6.5),
+                )
+                return [
+                    RateQuote(carrier=carrier, service=service, rate_usd=base + zone,
+                              transit_days=3, zone=zone, source=RATE_SOURCE_WMS)
+                    for carrier, service, base in table
+                ]
+
+        matrix, _ = build_rate_matrix([_small_product()], "84043", _LiveLikeClient())
+        for zone in matrix.products[0].zones:
+            carriers = {q.carrier for q in zone.quotes}
+            self.assertNotIn("YSP", carriers)
+            self.assertIn("FEDEX", carriers)
+            # Cap stays at 5 — and with YSP excluded all 5 remaining show.
+            self.assertEqual(
+                carriers, {"UNIUNI", "USPS", "GLS", "UPS", "FEDEX"}
+            )
+
+        # Env override replaces the default set, case-insensitively.
+        with mock.patch.dict(os.environ, {"ANATA_RATE_EXCLUDED_CARRIERS": "ysp,gls"}):
+            matrix, _ = build_rate_matrix([_small_product()], "84043", _LiveLikeClient())
+            for zone in matrix.products[0].zones:
+                carriers = {q.carrier for q in zone.quotes}
+                self.assertEqual(carriers, {"UNIUNI", "USPS", "UPS", "FEDEX"})
+
+        # Empty override falls back to the default exclusion set.
+        with mock.patch.dict(os.environ, {"ANATA_RATE_EXCLUDED_CARRIERS": ""}):
+            matrix, _ = build_rate_matrix([_small_product()], "84043", _LiveLikeClient())
+            carriers = {q.carrier for q in matrix.products[0].zones[0].quotes}
+            self.assertNotIn("YSP", carriers)
+
     def test_mock_data_passes_through_with_carrier_grouping(self):
         # Mock data has 3 carriers / 4 services: only USPS loses its pricier
         # Priority Mail service; everything else is untouched.

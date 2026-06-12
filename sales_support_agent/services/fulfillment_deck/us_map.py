@@ -1,16 +1,26 @@
 """Interactive ZIP-level rate map for the rate sheet.
 
 Per David: not state averages — distance and ZIP code. Every assigned US
-3-digit ZIP prefix (~900) renders as its own cell, positioned by an Albers
-equal-area projection of its centroid and colored by what it costs to ship
-the selected product there (zone-band rate from the live quotes). Concentric
-mileage rings radiate from the ship-from origin. Hover any cell for the
-area name, ZIP prefix, true straight-line miles, zone, and rate. The viewer
+3-digit ZIP prefix (~900) renders as its own cell, colored by what it costs
+to ship the selected product there (zone-band rate from the live quotes).
+v4: the lower-48 state outlines (Wikimedia public-domain paths in
+us_states_svg) render BEHIND the dots for geographic orientation — the dots
+are transformed from our Albers projection into the Wikimedia 959x593 space
+with a least-squares affine fit (see _fit_affine). Concentric mileage rings
+radiate from the ship-from origin. Hover any cell for the area name, ZIP
+prefix, true straight-line miles, zone, and rate. A Cost / Transit-time
+toggle recolors the dots; the carrier filter chips live in the map controls
+and drive both the map repaint and the rate-table columns below. The viewer
 can edit dims/weight and press "Request rates" — the whole sheet re-quotes
-live and saves (same flow as before; only the visualization changed).
+live and saves.
 
-Alaska / Hawaii / Puerto Rico & USVI render as compact inset grids — their
-prefixes are still real, individually hoverable cells.
+Alaska / Hawaii / Puerto Rico & USVI render as compact inset rows (top-right,
+clear of the Wikimedia AK/HI inset outlines at bottom-left) — their prefixes
+are still real, individually hoverable cells.
+
+Data semantics are unchanged from v3: every dot keeps its exact per-zip
+straight-line distance; the displayed rate is the zone-band rate (one quote
+per zone), not a per-zip quote.
 """
 
 from __future__ import annotations
@@ -18,8 +28,13 @@ from __future__ import annotations
 import html as _html
 import json
 import math
+import re
 
 from sales_support_agent.services.fulfillment_deck.schema import RateMatrix, clean_zip
+from sales_support_agent.services.fulfillment_deck.us_states_svg import (
+    STATE_PATHS,
+    VIEWBOX,
+)
 from sales_support_agent.services.fulfillment_deck.zip3_centroids import ZIP3_CENTROIDS
 from sales_support_agent.services.fulfillment_deck.zip3_names import ZIP3_NAMES
 from sales_support_agent.services.fulfillment_deck.zones import haversine_miles, zone_for
@@ -89,33 +104,215 @@ def _albers(lat: float, lon: float) -> tuple[float, float]:
     return rho * math.sin(theta), _RHO0 - rho * math.cos(theta)
 
 
-# Canvas layout.
-_W, _H = 940, 580
-_PAD = 22
-_CELL = 9.0  # cell size in px
+# ---------------------------------------------------------------------------
+# Albers -> Wikimedia-space affine fit (v4 state-outline background)
+# ---------------------------------------------------------------------------
+
+# Canvas layout: the Wikimedia state-outline space (us_states_svg.VIEWBOX).
+_W, _H = 959, 593
+_CELL = 8.0  # cell size in px (shrunk from 9 — outlines make density visible)
+
+_STATE_ABBRS = frozenset(STATE_PATHS)  # 50 states + DC
+_NON_LOWER48 = frozenset({"AK", "HI"})
+
+_PATH_TOKEN_RE = re.compile(r"([MmLlHhVvZz])|(-?(?:\d+\.?\d*|\.\d+))")
+
+
+def zip3_state(prefix: str) -> str | None:
+    """State abbreviation for a zip3 prefix, parsed from the LAST token of
+    its ZIP3_NAMES label ("Springfield MA" -> "MA"). Returns None for
+    unparseable labels (e.g. "US Virgin Islands")."""
+    name = ZIP3_NAMES.get(prefix, "")
+    token = name.rsplit(" ", 1)[-1] if name else ""
+    return token if token in _STATE_ABBRS else None
+
+
+def _path_points(d: str) -> list[tuple[float, float]]:
+    """Vertices of an SVG path, supporting M/m, L/l, H/h, V/v, Z/z with
+    comma/space-separated numbers and implicit lineto repeats — exactly the
+    command vocabulary the Wikimedia state paths use (all-relative m/l/h/v/z;
+    absolute variants handled for robustness)."""
+    seq: list = []
+    for letter, num in _PATH_TOKEN_RE.findall(d):
+        seq.append(letter if letter else float(num))
+    points: list[tuple[float, float]] = []
+    cx = cy = sx = sy = 0.0
+    cmd = ""
+    i = 0
+    while i < len(seq):
+        token = seq[i]
+        if isinstance(token, str):
+            cmd = token
+            i += 1
+            if cmd in "Zz":
+                cx, cy = sx, sy
+                points.append((cx, cy))
+            continue
+        if cmd in "mM":
+            x, y = seq[i], seq[i + 1]
+            i += 2
+            if cmd == "m":
+                cx, cy = cx + x, cy + y
+            else:
+                cx, cy = x, y
+            sx, sy = cx, cy
+            points.append((cx, cy))
+            cmd = "l" if cmd == "m" else "L"  # implicit lineto after moveto
+        elif cmd in "lL":
+            x, y = seq[i], seq[i + 1]
+            i += 2
+            if cmd == "l":
+                cx, cy = cx + x, cy + y
+            else:
+                cx, cy = x, y
+            points.append((cx, cy))
+        elif cmd in "hH":
+            x = seq[i]
+            i += 1
+            cx = cx + x if cmd == "h" else x
+            points.append((cx, cy))
+        elif cmd in "vV":
+            y = seq[i]
+            i += 1
+            cy = cy + y if cmd == "v" else y
+            points.append((cx, cy))
+        else:  # pragma: no cover — vocabulary checked above
+            raise ValueError(f"Unsupported path command {cmd!r}")
+    return points
+
+
+def path_bbox(abbr: str) -> tuple[float, float, float, float]:
+    """(min_x, min_y, max_x, max_y) of a state's outline path in the
+    Wikimedia 959x593 space."""
+    points = _path_points(STATE_PATHS[abbr][1])
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _solve3(matrix: list[list[float]], rhs: list[float]) -> list[float]:
+    """Solve a 3x3 linear system by Gaussian elimination (pure Python)."""
+    m = [row[:] + [rhs[index]] for index, row in enumerate(matrix)]
+    for col in range(3):
+        pivot = max(range(col, 3), key=lambda r: abs(m[r][col]))
+        m[col], m[pivot] = m[pivot], m[col]
+        for row in range(3):
+            if row == col:
+                continue
+            factor = m[row][col] / m[col][col]
+            for c in range(col, 4):
+                m[row][c] -= factor * m[col][c]
+    return [m[index][3] / m[index][index] for index in range(3)]
+
+
+def _fit_affine() -> tuple[tuple[float, ...], tuple[float, ...], float]:
+    """Least-squares 6-param affine from Albers space to Wikimedia px space.
+
+    Anchors: per lower-48 state (+DC), the mean Albers position of its zip3
+    centroids paired with the bbox center of its Wikimedia outline path.
+    Two-pass fit: fit all ~49 anchors, drop outliers with residual > 30px
+    (MI and CA — bbox centers far from their zip mass: MI's bbox spans the
+    Upper Peninsula, CA's arc pulls its bbox center off-landmass), refit on
+    the kept anchors. Measured max residual over kept anchors: 28.1px
+    (worst: TX), comfortably under the 35px budget asserted in tests.
+
+    Returns ((a, b, c), (d, e, f), max_kept_residual_px) for
+    x' = a*x + b*y + c ; y' = d*x + e*y + f.
+    """
+    sums: dict[str, list[float]] = {}
+    for prefix, (lat, lon) in ZIP3_CENTROIDS.items():
+        state = zip3_state(prefix)
+        if state is None or state in _NON_LOWER48:
+            continue
+        x, y = _albers(lat, lon)
+        bucket = sums.setdefault(state, [0.0, 0.0, 0.0])
+        bucket[0] += x
+        bucket[1] += y
+        bucket[2] += 1.0
+
+    anchors = []
+    for state in sorted(sums):
+        sum_x, sum_y, count = sums[state]
+        min_x, min_y, max_x, max_y = path_bbox(state)
+        anchors.append((
+            state, sum_x / count, sum_y / count,
+            (min_x + max_x) / 2.0, (min_y + max_y) / 2.0,
+        ))
+
+    def fit(rows):
+        sxx = sum(a[1] * a[1] for a in rows)
+        sxy = sum(a[1] * a[2] for a in rows)
+        syy = sum(a[2] * a[2] for a in rows)
+        sx = sum(a[1] for a in rows)
+        sy = sum(a[2] for a in rows)
+        n = float(len(rows))
+        lhs = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]]
+        coef_x = _solve3(lhs, [
+            sum(a[1] * a[3] for a in rows),
+            sum(a[2] * a[3] for a in rows),
+            sum(a[3] for a in rows),
+        ])
+        coef_y = _solve3(lhs, [
+            sum(a[1] * a[4] for a in rows),
+            sum(a[2] * a[4] for a in rows),
+            sum(a[4] for a in rows),
+        ])
+        return tuple(coef_x), tuple(coef_y)
+
+    def residuals(rows, coef_x, coef_y):
+        out = []
+        for state, x, y, tx, ty in rows:
+            px = coef_x[0] * x + coef_x[1] * y + coef_x[2]
+            py = coef_y[0] * x + coef_y[1] * y + coef_y[2]
+            out.append((math.dist((px, py), (tx, ty)), state))
+        return out
+
+    coef_x, coef_y = fit(anchors)
+    first_pass = dict((state, r) for r, state in residuals(anchors, coef_x, coef_y))
+    kept = [a for a in anchors if first_pass[a[0]] <= 30.0]
+    if len(kept) >= 3:
+        coef_x, coef_y = fit(kept)
+    else:  # pragma: no cover — defensive
+        kept = anchors
+    max_residual = max(r for r, _state in residuals(kept, coef_x, coef_y))
+    return coef_x, coef_y, max_residual
+
+
+_AFFINE_X, _AFFINE_Y, AFFINE_MAX_RESIDUAL_PX = _fit_affine()
+
+
+def albers_point_px(lat: float, lon: float) -> tuple[float, float]:
+    """lat/lon -> Wikimedia-space pixel via the Albers projection + affine."""
+    x, y = _albers(lat, lon)
+    return (
+        _AFFINE_X[0] * x + _AFFINE_X[1] * y + _AFFINE_X[2],
+        _AFFINE_Y[0] * x + _AFFINE_Y[1] * y + _AFFINE_Y[2],
+    )
+
+
+def _px_per_mile() -> float:
+    """Average affine scale: transform two Albers points 200 miles apart
+    (UT origin latitude, due east) and measure the pixel distance."""
+    lat, lon = ZIP3_CENTROIDS["841"]
+    a = albers_point_px(lat, lon)
+    b = albers_point_px(lat, lon + 200.0 / (69.172 * math.cos(math.radians(lat))))
+    return math.dist(a, b) / 200.0
+
+
+# Inset rows live top-right, clear of the Wikimedia AK/HI outlines that sit
+# bottom-left in the 959x593 space.
+_INSET_X = 786.0
+_INSET_Y = 26.0
+_INSET_LABEL_X = 754.0
 
 
 def _build_cells(origin_zip: str) -> tuple[list[dict], dict, float]:
-    """All zip3 cells with projected px coords, miles, zone. Returns
-    (cells, origin_px, px_per_mile)."""
+    """All zip3 cells with Wikimedia-space px coords, miles, zone. Returns
+    (cells, origin_px, px_per_mile). Each dot keeps its EXACT per-zip
+    straight-line distance — only the rate stays zone-band."""
     lower48 = {
         p: c for p, c in ZIP3_CENTROIDS.items() if p not in _INSET_PREFIXES
     }
-    projected = {p: _albers(lat, lon) for p, (lat, lon) in lower48.items()}
-    xs = [xy[0] for xy in projected.values()]
-    ys = [xy[1] for xy in projected.values()]
-    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
-    span = max(max_x - min_x, 1e-9)
-    scale = (_W - 2 * _PAD) / span
-    # Vertical fit check (the lower 48 are wider than tall, so x drives scale).
-    used_h = (max_y - min_y) * scale
-
-    def to_px(x: float, y: float) -> tuple[float, float]:
-        return (
-            _PAD + (x - min_x) * scale,
-            _PAD + (max_y - y) * scale + max(0.0, (_H - 130 - 2 * _PAD - used_h) / 2),
-        )
-
     origin_centroid = ZIP3_CENTROIDS.get((clean_zip(origin_zip) or "841")[:3])
     if origin_centroid is None:
         origin_centroid = ZIP3_CENTROIDS["841"]
@@ -123,7 +320,7 @@ def _build_cells(origin_zip: str) -> tuple[list[dict], dict, float]:
 
     cells: list[dict] = []
     for prefix, (lat, lon) in lower48.items():
-        x, y = to_px(*projected[prefix])
+        x, y = albers_point_px(lat, lon)
         cells.append({
             "p": prefix,
             "x": round(x, 1),
@@ -133,11 +330,11 @@ def _build_cells(origin_zip: str) -> tuple[list[dict], dict, float]:
             "n": ZIP3_NAMES.get(prefix, ""),
         })
 
-    # Insets: AK, HI, PR/VI as compact rows bottom-left.
+    # Insets: AK, HI, PR/VI as compact rows top-right.
     inset_groups = (("AK", _AK_PREFIXES), ("HI", _HI_PREFIXES), ("PR/VI", _CARIB_PREFIXES))
-    iy = _H - 96
+    iy = _INSET_Y
     for label, prefixes in inset_groups:
-        ix = _PAD + 34
+        ix = _INSET_X
         for prefix in prefixes:
             centroid = ZIP3_CENTROIDS.get(prefix)
             if centroid is None:
@@ -154,12 +351,8 @@ def _build_cells(origin_zip: str) -> tuple[list[dict], dict, float]:
             ix += _CELL + 2.5
         iy += _CELL + 7
 
-    # Origin position + px/mile (project a point ~200 miles east of origin).
-    ox, oy = to_px(*_albers(o_lat, o_lon))
-    east = _albers(o_lat, o_lon + 200.0 / (69.172 * math.cos(math.radians(o_lat))))
-    ex, ey = to_px(*east)
-    px_per_mile = math.dist((ox, oy), (ex, ey)) / 200.0
-    return cells, {"x": round(ox, 1), "y": round(oy, 1)}, px_per_mile
+    ox, oy = albers_point_px(o_lat, o_lon)
+    return cells, {"x": round(ox, 1), "y": round(oy, 1)}, _px_per_mile()
 
 
 def state_zone_map(origin_zip: str) -> dict[str, int]:
@@ -223,6 +416,56 @@ def map_payload(matrix: RateMatrix) -> dict:
     }
 
 
+def _matrix_carriers(matrix: RateMatrix) -> list[str]:
+    """Every carrier present anywhere in the matrix, cheapest-average first."""
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for product_rates in matrix.products:
+        for zone in product_rates.zones:
+            best: dict[str, float] = {}
+            for quote in zone.quotes:
+                current = best.get(quote.carrier)
+                if current is None or quote.rate_usd < current:
+                    best[quote.carrier] = quote.rate_usd
+            for carrier, rate in best.items():
+                totals[carrier] = totals.get(carrier, 0.0) + rate
+                counts[carrier] = counts.get(carrier, 0) + 1
+    return sorted(totals, key=lambda c: (totals[c] / counts[c], c))
+
+
+def render_carrier_filter(matrix: RateMatrix) -> str:
+    """Viewer-local carrier toggle chips — one per carrier in the matrix.
+
+    v4: rendered INSIDE the map section's controls (the map is the first
+    thing a viewer plays with). All enabled by default; clicking toggles the
+    carrier's table columns below AND the map's best-rate computation (one
+    document-level delegated handler drives both). Never persisted, not
+    admin-preselectable.
+    """
+    carriers = _matrix_carriers(matrix)
+    if not carriers:
+        return ""
+    chips = "".join(
+        f'<button type="button" class="cf-chip" data-carrier="{_html.escape(c, quote=True)}" '
+        f'aria-pressed="true">{carrier_chip(c)}</button>'
+        for c in carriers
+    )
+    return (
+        f'<div class="carrier-filter" id="carrier-filter">'
+        f'<span class="cf-label">Carriers:</span>{chips}</div>'
+    )
+
+
+def _render_mode_toggle() -> str:
+    """Cost / Transit-time segmented toggle for the dot coloring."""
+    return (
+        '<div class="rm-mode" id="rm-mode" role="group" aria-label="Map coloring mode">'
+        '<button type="button" class="active" data-mode="cost" aria-pressed="true">Cost</button>'
+        '<button type="button" data-mode="transit" aria-pressed="false">Transit time</button>'
+        "</div>"
+    )
+
+
 def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                                 requote_path: str = "") -> str:
     """The ZIP-level 'distance from our dock' interactive section body."""
@@ -232,9 +475,17 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
 
     cells, origin_px, px_per_mile = _build_cells(matrix.origin_zip)
 
+    # Lower-48 outlines behind the dots; AK/HI outlines kept at 50% opacity
+    # (their dots live in the inset rows, not on the Wikimedia insets).
+    state_paths = "".join(
+        f'<path class="rm-state{" rm-state-faded" if abbr in _NON_LOWER48 else ""}" '
+        f'd="{d}"><title>{_html.escape(name)}</title></path>'
+        for abbr, (name, d) in sorted(STATE_PATHS.items())
+    )
+
     cell_rects = "".join(
         f'<rect class="rm-cell" x="{c["x"] - _CELL / 2}" y="{c["y"] - _CELL / 2}" '
-        f'width="{_CELL}" height="{_CELL}" rx="2.4" '
+        f'width="{_CELL}" height="{_CELL}" rx="2.2" '
         f'data-p="{c["p"]}" data-z="{c["z"] if c["z"] is not None else ""}" '
         f'data-mi="{c["mi"]}" data-n="{_html.escape(c["n"], quote=True)}"></rect>'
         for c in cells
@@ -247,9 +498,9 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
         for miles in RING_MILES
     )
     inset_labels = (
-        f'<text class="rm-inset-label" x="{_PAD}" y="{_H - 92}">AK</text>'
-        f'<text class="rm-inset-label" x="{_PAD}" y="{_H - 92 + (_CELL + 7)}">HI</text>'
-        f'<text class="rm-inset-label" x="{_PAD}" y="{_H - 92 + 2 * (_CELL + 7)}">PR</text>'
+        f'<text class="rm-inset-label" x="{_INSET_LABEL_X}" y="{_INSET_Y + 3}">AK</text>'
+        f'<text class="rm-inset-label" x="{_INSET_LABEL_X}" y="{_INSET_Y + 3 + (_CELL + 7)}">HI</text>'
+        f'<text class="rm-inset-label" x="{_INSET_LABEL_X}" y="{_INSET_Y + 3 + 2 * (_CELL + 7)}">PR</text>'
     )
     origin_marker = (
         f'<circle cx="{origin_px["x"]}" cy="{origin_px["y"]}" r="5.5" fill="#bfa889" '
@@ -260,12 +511,15 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
       <div class="rm-wrap">
         <div class="rm-controls" id="rm-controls">
           <div class="rm-products" id="rm-products"></div>
+          {render_carrier_filter(matrix)}
+          {_render_mode_toggle()}
           <div class="rm-dims" id="rm-dims"></div>
           <div class="rm-status" id="rm-status"></div>
         </div>
         <div class="rm-map-holder">
-          <svg id="rm-svg" viewBox="0 0 {_W} {_H}" role="img"
+          <svg id="rm-svg" viewBox="{VIEWBOX}" role="img"
                aria-label="Estimated shipping rates by ZIP prefix and distance from {_html.escape(origin_label)}">
+            <g id="rm-states">{state_paths}</g>
             <g id="rm-rings">{rings}</g>
             <g id="rm-cells">{cell_rects}</g>
             {origin_marker}
@@ -280,8 +534,15 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
         .rm-wrap {{ display: flex; flex-direction: column; gap: 14px; }}
         .rm-map-holder {{ position: relative; }}
         #rm-svg {{ width: 100%; height: auto; display: block; }}
+        .rm-state {{ fill: #f3efe9; stroke: #fffdf9; stroke-width: 1.5; }}
+        .rm-state-faded {{ opacity: 0.5; }}
         .rm-cell {{ fill: #eee9dc; cursor: pointer; }}
         .rm-cell:hover {{ stroke: #1d2d44; stroke-width: 1.5; }}
+        .rm-mode {{ display: inline-flex; border: 1px solid var(--anata-line, rgba(29,45,68,0.18));
+          border-radius: 999px; overflow: hidden; align-self: flex-start; }}
+        .rm-mode button {{ border: none; background: #fff; padding: 6px 14px; font: inherit;
+          font-size: 11.5px; font-weight: 700; cursor: pointer; color: var(--anata-ink, #1d2d44); }}
+        .rm-mode button.active {{ background: var(--anata-ink, #1d2d44); color: #fffdf9; }}
         .rm-ring {{ fill: none; stroke: rgba(29,45,68,0.18); stroke-dasharray: 3 4; stroke-width: 1; }}
         .rm-ring-label {{ font-size: 10px; fill: rgba(29,45,68,0.45); font-weight: 600; }}
         .rm-inset-label {{ font-size: 10px; fill: #6b7688; font-weight: 700; }}
@@ -342,6 +603,8 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           // are carrier names exactly as they appear in the rate data.
           var disabledCarriers = {{}};
           var CHIP_COLORS = DATA.carrierColors || {{}};
+          // Dot coloring mode: 'cost' (best rate) or 'transit' (best days).
+          var mode = 'cost';
 
           function fmt(rate) {{ return '$' + Number(rate).toFixed(2); }}
 
@@ -366,12 +629,32 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                      transit_days: best.transit_days }};
           }}
 
+          function bestTransitForZone(perCarrier, honorFilter) {{
+            var best = null;
+            Object.keys(perCarrier).forEach(function(carrier) {{
+              if (honorFilter && disabledCarriers[carrier]) return;
+              var days = perCarrier[carrier].transit_days;
+              if (days == null) return;
+              if (best === null || days < best) best = days;
+            }});
+            if (best === null && honorFilter) return bestTransitForZone(perCarrier, false);
+            return best;
+          }}
+
           function zoneInfo(zone, productIdx) {{
             var product = DATA.products[productIdx];
             if (!product || !zone) return null;
             var perCarrier = product.zoneRates[String(zone)];
             if (!perCarrier) return null;
             return bestForZone(perCarrier, true);
+          }}
+
+          function zoneTransit(zone, productIdx) {{
+            var product = DATA.products[productIdx];
+            if (!product || !zone) return null;
+            var perCarrier = product.zoneRates[String(zone)];
+            if (!perCarrier) return null;
+            return bestTransitForZone(perCarrier, true);
           }}
 
           function rateRange(productIdx) {{
@@ -384,6 +667,18 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             }});
             if (!rates.length) return null;
             return [Math.min.apply(null, rates), Math.max.apply(null, rates)];
+          }}
+
+          function transitRange(productIdx) {{
+            var product = DATA.products[productIdx];
+            if (!product) return null;
+            var days = [];
+            Object.keys(product.zoneRates).forEach(function(zone) {{
+              var d = bestTransitForZone(product.zoneRates[zone], true);
+              if (d != null) days.push(d);
+            }});
+            if (!days.length) return null;
+            return [Math.min.apply(null, days), Math.max.apply(null, days)];
           }}
 
           // One handler, both effects: the filter chips (rendered inside the
@@ -442,22 +737,51 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           }}
 
           function paint() {{
+            var legend = document.getElementById('rm-legend');
+            var chips = RAMP.map(function(c) {{ return '<span class="rm-chip" style="background:' + c + '"></span>'; }}).join('');
+            var suffix = (DATA.source === 'mock' ? ' · sample rates' : '')
+              + (edited ? ' · live estimate for edited specs' : '');
+            if (mode === 'transit') {{
+              var trange = transitRange(selected);
+              svg.querySelectorAll('.rm-cell').forEach(function(el) {{
+                var zone = parseInt(el.getAttribute('data-z'), 10);
+                var days = trange ? zoneTransit(zone, selected) : null;
+                el.style.fill = days != null ? colorFor(days, trange) : '#eee9dc';
+              }});
+              if (trange) {{
+                legend.innerHTML = '<span>' + trange[0] + (trange[0] === trange[1] ? '' : '–' + trange[1]) + ' days</span>' + chips
+                  + '<span style="margin-left:10px">best transit time by ZIP area' + suffix + '</span>';
+              }} else {{
+                legend.innerHTML = '';
+              }}
+              return;
+            }}
             var range = rateRange(selected);
             svg.querySelectorAll('.rm-cell').forEach(function(el) {{
               var zone = parseInt(el.getAttribute('data-z'), 10);
               var info = range ? zoneInfo(zone, selected) : null;
               el.style.fill = info ? colorFor(info.rate, range) : '#eee9dc';
             }});
-            var legend = document.getElementById('rm-legend');
             if (range) {{
-              var chips = RAMP.map(function(c) {{ return '<span class="rm-chip" style="background:' + c + '"></span>'; }}).join('');
               legend.innerHTML = '<span>' + fmt(range[0]) + '</span>' + chips + '<span>' + fmt(range[1]) + '</span>'
-                + '<span style="margin-left:10px">estimated per-parcel rate by ZIP area'
-                + (DATA.source === 'mock' ? ' · sample rates' : '') + (edited ? ' · live estimate for edited specs' : '') + '</span>';
+                + '<span style="margin-left:10px">estimated per-parcel rate by ZIP area' + suffix + '</span>';
             }} else {{
               legend.innerHTML = '';
             }}
           }}
+
+          var modeWrap = document.getElementById('rm-mode');
+          if (modeWrap) modeWrap.addEventListener('click', function(evt) {{
+            var btn = evt.target.closest('button[data-mode]');
+            if (!btn) return;
+            mode = btn.getAttribute('data-mode') === 'transit' ? 'transit' : 'cost';
+            modeWrap.querySelectorAll('button').forEach(function(b) {{
+              var on = b === btn;
+              b.classList.toggle('active', on);
+              b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            }});
+            paint();
+          }});
 
           function setBusy(busy) {{
             overlay.hidden = !busy;

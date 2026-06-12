@@ -196,6 +196,7 @@ def update_run(
     origin_zip: str = Form(default=""),
     monthly_order_volume: str = Form(default=""),
     current_cost_per_parcel_usd: str = Form(default=""),
+    quote_margin_override: str = Form(default=""),
     destinations_note: str = Form(default=""),
     current_costs_note: str = Form(default=""),
     product_name: list[str] = Form(default=[]),
@@ -242,6 +243,8 @@ def update_run(
         "origin_zip": (origin_zip or "").strip(),
         "monthly_order_volume": _opt_int(monthly_order_volume),
         "current_cost_per_parcel_usd": _opt_float(current_cost_per_parcel_usd),
+        # Blank = automatic category-based quote margins; None clears.
+        "quote_margin_override": _opt_float(quote_margin_override.replace("%", "")),
         "destinations_note": (destinations_note or "").strip(),
         "current_costs_note": (current_costs_note or "").strip(),
         "products": products,
@@ -320,8 +323,9 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
 
 # Sections the requote response re-ships as swappable HTML fragments. The
 # rate-map section is intentionally absent — its JS state lives in the page.
-# (volume-economics + savings merged into monthly-math in the v3 redesign.)
-_FRAGMENT_KEYS = ("carrier-rates", "monthly-math")
+# (volume-economics + savings merged into monthly-math in v3; the estimated
+# invoice "quote" section joined in v4 — its totals move with the dims.)
+_FRAGMENT_KEYS = ("carrier-rates", "monthly-math", "quote")
 
 
 @public_router.post("/rate-sheets/{slug}/{run_id}/{token}/requote")
