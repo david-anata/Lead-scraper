@@ -342,13 +342,17 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertIn("Glow Kit", html)
         self.assertIn('data-off="prod-0"', html)
         self.assertIn('data-off="prod-1"', html)
-        # Interactive rate map: real state paths, hover tooltip, live requote
-        # wired to this sheet's public token URL.
-        self.assertIn('data-state="UT"', html)
-        self.assertIn('data-state="NY"', html)
+        # Interactive ZIP-level rate map: ~900 zip3 cells with distance data,
+        # mileage rings, hover tooltip, live requote wired to this sheet's
+        # public token URL.
+        self.assertIn('data-p="841"', html)   # Salt Lake City prefix
+        self.assertIn('data-p="100"', html)   # Manhattan prefix
+        self.assertIn('data-p="995"', html)   # Anchorage (AK inset)
+        self.assertGreater(html.count('class="rm-cell"'), 850)
+        self.assertIn('class="rm-ring"', html)
+        self.assertIn("1800 mi", html)
         self.assertIn("rm-tooltip", html)
         self.assertIn(f"{result['view_path']}/requote", html)
-        self.assertIn('"stateZones"', html)
         # Map comes AFTER the carrier-rate tables in document order.
         self.assertLess(html.index("Your rates, by product and zone"),
                         html.index("What shipping costs, anywhere in the US"))

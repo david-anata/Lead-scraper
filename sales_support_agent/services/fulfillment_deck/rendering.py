@@ -248,7 +248,7 @@ def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "
           <p class="eyebrow">Explore your rates</p>
           <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
         </div>
-        <p class="caption">Hover any state to see the estimated per-parcel rate from our Lehi, UT dock. Pick a product, adjust its dims or weight below, and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report.</p>
+        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark the real mileage bands. Hover anywhere for the exact distance and rate. Adjust a product's dims or weight and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report.</p>
       </header>
       {render_interactive_rate_map(matrix, origin_label, requote_path)}
     </section>"""
