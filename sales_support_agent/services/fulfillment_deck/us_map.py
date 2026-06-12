@@ -55,7 +55,10 @@ STATE_REP_ZIPS: dict[str, str] = {
 }
 
 # Rate ramp: cheapest -> most expensive (brand sky into brand ink).
-RATE_RAMP = ["#e7f1f9", "#cfe3f2", "#aed1e8", "#85bbda", "#5f9cc7", "#4f84c4", "#33598f", "#1d2d44"]
+# v5 contrast pass: the old ramp started near-white and vanished against the
+# #f3efe9 state fill — every step here reads against BOTH #f3efe9 and
+# #fffdf9. Transit mode shares the same ramp.
+RATE_RAMP = ["#9fc5e2", "#7fb1d6", "#5f9cc7", "#4f84c4", "#3a6aa6", "#2d5288", "#223e68", "#1d2d44"]
 
 # Carrier wordmark chips: UPPERCASE carrier name -> (background, text color).
 # Unknown carriers (YSP etc.) fall back to brand ink with white text.
@@ -486,6 +489,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
     cell_rects = "".join(
         f'<rect class="rm-cell" x="{c["x"] - _CELL / 2}" y="{c["y"] - _CELL / 2}" '
         f'width="{_CELL}" height="{_CELL}" rx="2.2" '
+        f'stroke="#fffdf9" stroke-width="0.75" '
         f'data-p="{c["p"]}" data-z="{c["z"] if c["z"] is not None else ""}" '
         f'data-mi="{c["mi"]}" data-n="{_html.escape(c["n"], quote=True)}"></rect>'
         for c in cells
@@ -536,7 +540,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
         #rm-svg {{ width: 100%; height: auto; display: block; }}
         .rm-state {{ fill: #f3efe9; stroke: #fffdf9; stroke-width: 1.5; }}
         .rm-state-faded {{ opacity: 0.5; }}
-        .rm-cell {{ fill: #eee9dc; cursor: pointer; }}
+        .rm-cell {{ fill: #eee9dc; cursor: pointer; stroke: #fffdf9; stroke-width: 0.75; }}
         .rm-cell:hover {{ stroke: #1d2d44; stroke-width: 1.5; }}
         .rm-mode {{ display: inline-flex; border: 1px solid var(--anata-line, rgba(29,45,68,0.18));
           border-radius: 999px; overflow: hidden; align-self: flex-start; }}
@@ -581,7 +585,8 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
         .rm-status {{ font-size: 12px; color: var(--anata-muted, #6b7688); min-height: 16px; }}
         .rm-legend {{ display: flex; align-items: center; gap: 4px; margin-top: 8px;
           font-size: 11px; color: var(--anata-muted, #6b7688); flex-wrap: wrap; }}
-        .rm-legend .rm-chip {{ width: 34px; height: 12px; border-radius: 3px; display: inline-block; }}
+        .rm-legend .rm-chip {{ width: 34px; height: 12px; border-radius: 3px; display: inline-block;
+          border: 1px solid rgba(29,45,68,0.25); }}
         @media print {{
           .rm-controls {{ display: none !important; }}
           .rm-overlay {{ display: none !important; }}
@@ -605,6 +610,11 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           var CHIP_COLORS = DATA.carrierColors || {{}};
           // Dot coloring mode: 'cost' (best rate) or 'transit' (best days).
           var mode = 'cost';
+          // Rates-table intelligence state (v5) — lives HERE in the never-
+          // swapped map section so it survives requote fragment swaps.
+          // view: cost|transit cell prominence; mode: cheapest|fastest|target;
+          // target: max transit days for "cheapest within target" (null=any).
+          var rtState = {{ view: 'cost', mode: 'cheapest', target: 3 }};
 
           function fmt(rate) {{ return '$' + Number(rate).toFixed(2); }}
 
@@ -685,30 +695,124 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           // carrier-rates section) repaint the map AND show/hide the matching
           // rate-table columns. Delegated on document so chips swapped in by
           // the requote flow keep working without re-binding.
-          function applyCarrierFilter() {{
+          // v5: one optimizer drives the table highlights for every mode —
+          // cheapest, fastest (tie -> cheaper), cheapest within a transit
+          // target (none qualifies -> highlight fastest + tag the row).
+          // Re-runs on carrier-filter change and after requote fragment
+          // swaps (applyCarrierFilter calls it in both paths).
+          function applyTableIntel() {{
             var anyOff = Object.keys(disabledCarriers).some(function(k) {{ return disabledCarriers[k]; }});
+            // JS owns the highlight whenever the viewer left the
+            // server-rendered default (cheapest, all carriers on).
+            var jsManaged = anyOff || rtState.mode !== 'cheapest';
+            // Sync controls to persisted state (fragment swaps reset markup).
+            document.querySelectorAll('button[data-rtview]').forEach(function(btn) {{
+              var on = btn.getAttribute('data-rtview') === rtState.view;
+              btn.classList.toggle('active', on);
+              btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            }});
+            var opt = document.getElementById('rt-optimize');
+            if (opt) opt.value = rtState.mode;
+            var tgt = document.getElementById('rt-target');
+            if (tgt) {{
+              tgt.value = rtState.target === null ? 'any' : String(rtState.target);
+              tgt.disabled = rtState.mode !== 'target';
+            }}
+            function cheapestOf(list) {{
+              return list.reduce(function(a, b) {{ return b.rate < a.rate ? b : a; }});
+            }}
+            function fastestOf(list) {{
+              var withDays = list.filter(function(c) {{ return c.days !== null; }});
+              if (!withDays.length) return cheapestOf(list);
+              return withDays.reduce(function(a, b) {{
+                if (b.days < a.days) return b;
+                if (b.days === a.days && b.rate < a.rate) return b;
+                return a;
+              }});
+            }}
+            document.querySelectorAll('table.data-table').forEach(function(table) {{
+              table.classList.toggle('js-filtered', jsManaged);
+              table.classList.toggle('transit-view', rtState.view === 'transit');
+              table.querySelectorAll('th[data-carrier], td[data-carrier]').forEach(function(cell) {{
+                cell.classList.toggle('cf-hidden', !!disabledCarriers[cell.getAttribute('data-carrier')]);
+              }});
+              table.querySelectorAll('tbody tr').forEach(function(row) {{
+                var cells = [];
+                row.querySelectorAll('td[data-carrier]').forEach(function(cell) {{
+                  cell.classList.remove('js-best');
+                  cell.classList.remove('rt-dim');
+                  if (disabledCarriers[cell.getAttribute('data-carrier')]) return;
+                  var rate = parseFloat(cell.getAttribute('data-rate'));
+                  if (isNaN(rate)) return;
+                  var days = parseInt(cell.getAttribute('data-days'), 10);
+                  cells.push({{ el: cell, rate: rate, days: isNaN(days) ? null : days }});
+                }});
+                var oldTag = row.querySelector('.rt-rowtag');
+                if (oldTag) oldTag.parentNode.removeChild(oldTag);
+                if (!cells.length) return;
+                var winner = null;
+                var missTarget = false;
+                if (rtState.mode === 'fastest') {{
+                  winner = fastestOf(cells);
+                }} else if (rtState.mode === 'target' && rtState.target !== null) {{
+                  var qualifying = cells.filter(function(c) {{
+                    return c.days !== null && c.days <= rtState.target;
+                  }});
+                  if (qualifying.length) {{
+                    winner = cheapestOf(qualifying);
+                    // Dim non-qualifying cells in target mode only.
+                    cells.forEach(function(c) {{
+                      if (qualifying.indexOf(c) === -1) c.el.classList.add('rt-dim');
+                    }});
+                  }} else {{
+                    winner = fastestOf(cells);
+                    missTarget = true;
+                  }}
+                }} else {{
+                  winner = cheapestOf(cells);
+                }}
+                if (winner && jsManaged) winner.el.classList.add('js-best');
+                if (missTarget) {{
+                  var first = row.querySelector('td');
+                  if (first) {{
+                    var tag = document.createElement('span');
+                    tag.className = 'rt-rowtag';
+                    tag.textContent = 'no option meets target';
+                    first.appendChild(tag);
+                  }}
+                }}
+              }});
+            }});
+          }}
+
+          document.addEventListener('click', function(evt) {{
+            var btn = evt.target.closest('button[data-rtview]');
+            if (!btn) return;
+            rtState.view = btn.getAttribute('data-rtview') === 'transit' ? 'transit' : 'cost';
+            applyTableIntel();
+          }});
+
+          document.addEventListener('change', function(evt) {{
+            var t = evt.target;
+            if (!t || !t.id) return;
+            if (t.id === 'rt-optimize') {{
+              rtState.mode = t.value === 'fastest' ? 'fastest'
+                : (t.value === 'target' ? 'target' : 'cheapest');
+              applyTableIntel();
+            }} else if (t.id === 'rt-target') {{
+              var v = parseInt(t.value, 10);
+              rtState.target = isNaN(v) ? null : v;
+              applyTableIntel();
+            }}
+          }});
+
+          function applyCarrierFilter() {{
             document.querySelectorAll('.cf-chip').forEach(function(chip) {{
               var off = !!disabledCarriers[chip.getAttribute('data-carrier')];
               chip.classList.toggle('cf-off', off);
               chip.setAttribute('aria-pressed', off ? 'false' : 'true');
             }});
-            document.querySelectorAll('table.data-table').forEach(function(table) {{
-              table.classList.toggle('js-filtered', anyOff);
-              table.querySelectorAll('th[data-carrier], td[data-carrier]').forEach(function(cell) {{
-                cell.classList.toggle('cf-hidden', !!disabledCarriers[cell.getAttribute('data-carrier')]);
-              }});
-              table.querySelectorAll('tbody tr').forEach(function(row) {{
-                var best = null;
-                row.querySelectorAll('td[data-carrier]').forEach(function(cell) {{
-                  cell.classList.remove('js-best');
-                  if (disabledCarriers[cell.getAttribute('data-carrier')]) return;
-                  var rate = parseFloat(cell.getAttribute('data-rate'));
-                  if (isNaN(rate)) return;
-                  if (!best || rate < parseFloat(best.getAttribute('data-rate'))) best = cell;
-                }});
-                if (best && anyOff) best.classList.add('js-best');
-              }});
-            }});
+            applyTableIntel();
             paint();
           }}
 
