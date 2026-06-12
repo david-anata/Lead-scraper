@@ -268,9 +268,15 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         data = response.json()
         widget = next(p for p in data["products"] if p["name"] == "Widget")
         self.assertTrue(widget["zoneRates"])
+        # v3 shape: per-carrier cheapest quote per zone, so the viewer-side
+        # carrier filter can re-min without a round trip.
         first_zone = next(iter(widget["zoneRates"].values()))
-        self.assertGreater(first_zone["rate"], 0)
-        self.assertIn("carrier", first_zone)
+        self.assertIn("USPS", first_zone)
+        for carrier, quote in first_zone.items():
+            self.assertIsInstance(carrier, str)
+            self.assertGreater(quote["rate"], 0)
+            self.assertIn("service", quote)
+            self.assertIn("transit_days", quote)
         # 9999in length is clamped to None by the schema -> product excluded.
         self.assertFalse(any(p["name"] == "Bad dims" and p["zoneRates"] for p in data["products"]))
 
@@ -304,15 +310,16 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
-        # Fragments: re-rendered swappable sections keyed by data-key.
-        self.assertEqual(
-            set(data["fragments"]), {"carrier-rates", "volume-economics", "savings"}
-        )
+        # Fragments: re-rendered swappable sections keyed by data-key (v3:
+        # volume-economics + savings merged into monthly-math).
+        self.assertEqual(set(data["fragments"]), {"carrier-rates", "monthly-math"})
         frag = data["fragments"]["carrier-rates"]
         self.assertIn('data-key="carrier-rates"', frag)
         self.assertTrue(frag.startswith("<section"))
         self.assertTrue(frag.endswith("</section>"))
         self.assertIn("10 × 8 × 6 in", frag)
+        # The fragment re-ships the filter chips so a requote keeps them.
+        self.assertIn('id="carrier-filter"', frag)
         # The new dims' rates show up in the fragment (deterministic mock math).
         expected, _ = build_rate_matrix(
             [ProductSpec(name="Widget", length_in=10.0, width_in=8.0,
@@ -322,9 +329,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         )
         cheapest = expected.products[0].zones[0].quotes[0].rate_usd
         self.assertIn(f"${cheapest:,.2f}", frag)
-        # TabCo has units -> volume section re-ships; no current cost -> no savings.
-        self.assertIn('data-key="volume-economics"', data["fragments"]["volume-economics"])
-        self.assertEqual(data["fragments"]["savings"], "")
+        # TabCo has units -> the monthly-math section re-ships.
+        self.assertIn('data-key="monthly-math"', data["fragments"]["monthly-math"])
+        self.assertIn("What this means monthly", data["fragments"]["monthly-math"])
 
         # Persistence: dims landed on the stored profile, estimated cleared,
         # deck re-rendered at the same link.

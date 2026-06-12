@@ -320,7 +320,8 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
 
 # Sections the requote response re-ships as swappable HTML fragments. The
 # rate-map section is intentionally absent — its JS state lives in the page.
-_FRAGMENT_KEYS = ("carrier-rates", "volume-economics", "savings")
+# (volume-economics + savings merged into monthly-math in the v3 redesign.)
+_FRAGMENT_KEYS = ("carrier-rates", "monthly-math")
 
 
 @public_router.post("/rate-sheets/{slug}/{run_id}/{token}/requote")
