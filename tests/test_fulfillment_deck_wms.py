@@ -489,5 +489,116 @@ class SelectDisplayQuotesTests(unittest.TestCase):
         self.assertTrue(saw_priority)
 
 
+class MultiSampleCollapseTests(unittest.TestCase):
+    """v7: each zone is sampled at several cities, then collapsed to one
+    ZoneRates per zone keeping each carrier's cheapest-per-service quote across
+    sampled cities — so a metro-specific carrier (UniUni) surfaces in a zone if
+    it serves ANY sampled city, not just the first one quoted."""
+
+    def test_regional_carrier_surfaces_when_serving_one_sampled_city(self):
+        from sales_support_agent.services.fulfillment_deck.zones import (
+            representative_destinations_multi,
+        )
+
+        sampled = representative_destinations_multi("84043", per_zone=2, cap=18)
+        # The zone we'll prove UniUni surfaces in (zone 4 has >=2 sample cities).
+        target_zone = 4
+        self.assertGreaterEqual(len(sampled[target_zone]), 2)
+        served_zip = sampled[target_zone][1][0]  # UniUni serves ONLY this one
+
+        class _MetroSpecificClient:
+            """USPS everywhere; UniUni ONLY at ``served_zip`` (one of zone 4's
+            two sampled cities)."""
+
+            def quote_rates(self, package, origin_zip, dest_zip):
+                zone = zone_for(origin_zip, dest_zip) or 5
+                quotes = [
+                    RateQuote(carrier="USPS", service="Ground Advantage",
+                              rate_usd=6.0 + zone, transit_days=3, zone=zone,
+                              source=RATE_SOURCE_WMS),
+                ]
+                if dest_zip == served_zip:
+                    quotes.append(
+                        RateQuote(carrier="UNIUNI", service="Standard",
+                                  rate_usd=4.0 + zone, transit_days=4, zone=zone,
+                                  source=RATE_SOURCE_WMS)
+                    )
+                return quotes
+
+        matrix, warnings = build_rate_matrix(
+            [_small_product()], "84043", _MetroSpecificClient()
+        )
+        self.assertEqual(warnings, [])
+        product = matrix.products[0]
+        # Matrix shape unchanged: one ZoneRates per quoted zone, all with quotes.
+        zones = {z.zone: z for z in product.zones}
+        self.assertIn(target_zone, zones)
+        for z in product.zones:
+            self.assertTrue(z.quotes)
+        # BEFORE (single-city sampling) UniUni would be absent from zone 4 when
+        # the first sampled city lacked it. AFTER: UniUni surfaces in zone 4.
+        zone4_carriers = {q.carrier for q in zones[target_zone].quotes}
+        self.assertIn("UNIUNI", zone4_carriers)
+        self.assertIn("USPS", zone4_carriers)
+
+    def test_single_city_would_have_missed_the_regional_carrier(self):
+        """Control: if UniUni serves ONLY the SECOND sampled city, the legacy
+        single-city sampler (which quotes the FIRST city) misses it — proving
+        multi-sampling is what surfaces it."""
+        from sales_support_agent.services.fulfillment_deck.zones import (
+            representative_destinations,
+            representative_destinations_multi,
+        )
+
+        single = representative_destinations("84043")
+        multi = representative_destinations_multi("84043", per_zone=2, cap=18)
+        target_zone = 4
+        first_city = single[target_zone][0]
+        second_city = multi[target_zone][1][0]
+        self.assertNotEqual(first_city, second_city)
+
+        class _SecondCityOnly:
+            def quote_rates(self, package, origin_zip, dest_zip):
+                zone = zone_for(origin_zip, dest_zip) or 5
+                quotes = [
+                    RateQuote(carrier="USPS", service="GA", rate_usd=6.0 + zone,
+                              transit_days=3, zone=zone, source=RATE_SOURCE_WMS),
+                ]
+                if dest_zip == second_city:
+                    quotes.append(
+                        RateQuote(carrier="UNIUNI", service="Standard",
+                                  rate_usd=4.0 + zone, transit_days=4, zone=zone,
+                                  source=RATE_SOURCE_WMS)
+                    )
+                return quotes
+
+        matrix, _ = build_rate_matrix([_small_product()], "84043", _SecondCityOnly())
+        zone4 = next(z for z in matrix.products[0].zones if z.zone == target_zone)
+        self.assertIn("UNIUNI", {q.carrier for q in zone4.quotes})
+
+    def test_cap_bounds_total_destinations(self):
+        from sales_support_agent.services.fulfillment_deck.zones import (
+            representative_destinations_multi,
+        )
+
+        sampled = representative_destinations_multi("84043", per_zone=3, cap=10)
+        total = sum(len(v) for v in sampled.values())
+        self.assertLessEqual(total, 10)
+        # Coverage stays balanced (round-robin), not front-loaded.
+        self.assertGreaterEqual(len(sampled), 4)
+
+    def test_matrix_shape_unchanged_one_zonerates_per_zone(self):
+        matrix, _ = build_rate_matrix([_small_product()], "84043", MockWMSClient())
+        product = matrix.products[0]
+        zone_numbers = [z.zone for z in product.zones]
+        # One ZoneRates per zone (no duplicates), ascending, each with quotes.
+        self.assertEqual(len(zone_numbers), len(set(zone_numbers)))
+        self.assertEqual(zone_numbers, sorted(zone_numbers))
+        for zone in product.zones:
+            self.assertTrue(zone.quotes)
+            rates = [q.rate_usd for q in zone.quotes]
+            self.assertEqual(rates, sorted(rates))
+
+
 if __name__ == "__main__":
     unittest.main()

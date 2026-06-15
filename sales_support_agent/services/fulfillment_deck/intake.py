@@ -18,6 +18,7 @@ import csv
 import io
 import logging
 import re
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,155 @@ def _fetch_website(url: str, warnings: list) -> str:
     except Exception as exc:  # noqa: BLE001 — never raise on a flaky prospect site
         logger.warning("[fulfillment_deck] website fetch failed for %s", url, exc_info=True)
         warnings.append(f"Could not fetch website {url}: {exc.__class__.__name__}")
+        return ""
+
+
+# --- Brand identity scrape (logo + site name + tagline), SSRF-safe ---------
+
+_MAX_LOGO_BYTES = 512 * 1024            # cap the inlined logo download at 512KB
+_MAX_LOGO_DATA_URI = 700 * 1024         # guard the stored data-URI length
+_BRAND_FETCH_TIMEOUT = 8                 # total seconds across head + image
+_TAGLINE_CAP = 200
+
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+(?:property|name)\s*=\s*["\']og:image["\'][^>]*>', re.IGNORECASE
+)
+_OG_SITE_NAME_RE = re.compile(
+    r'<meta[^>]+(?:property|name)\s*=\s*["\']og:site_name["\'][^>]*>', re.IGNORECASE
+)
+_OG_DESC_RE = re.compile(
+    r'<meta[^>]+(?:property|name)\s*=\s*["\'](?:og:description|description)["\'][^>]*>',
+    re.IGNORECASE,
+)
+_APPLE_ICON_RE = re.compile(
+    r'<link[^>]+rel\s*=\s*["\'][^"\']*apple-touch-icon[^"\']*["\'][^>]*>', re.IGNORECASE
+)
+_ICON_RE = re.compile(
+    r'<link[^>]+rel\s*=\s*["\'][^"\']*\bicon\b[^"\']*["\'][^>]*>', re.IGNORECASE
+)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_CONTENT_ATTR_RE = re.compile(r'content\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+_HREF_ATTR_RE = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _meta_content(html: str, tag_re: re.Pattern) -> str:
+    match = tag_re.search(html or "")
+    if not match:
+        return ""
+    content = _CONTENT_ATTR_RE.search(match.group(0))
+    return (content.group(1).strip() if content else "")
+
+
+def _link_href(html: str, tag_re: re.Pattern) -> str:
+    match = tag_re.search(html or "")
+    if not match:
+        return ""
+    href = _HREF_ATTR_RE.search(match.group(0))
+    return (href.group(1).strip() if href else "")
+
+
+def fetch_brand_assets(website_url: str) -> dict:
+    """Scrape a prospect's logo + identity from their site, SSRF-safely.
+
+    Returns ``{logo_data_uri, site_name, tagline}`` — or ``{}`` on ANY failure
+    (never raises, never blocks generation). The image fetch is restricted to
+    the SAME host the admin supplied (http upgraded to https), capped at
+    ``_MAX_LOGO_BYTES`` with an ``image/*`` content-type, and inlined as a
+    size-bounded data-URI. Logo preference: og:image -> apple-touch-icon ->
+    favicon. The tagline comes from og:site_name's description / meta
+    description / <title>, clamped to 200 chars.
+    """
+    url = (website_url or "").strip()
+    if not url:
+        return {}
+    try:
+        import requests
+
+        parsed = urlparse(url if "://" in url else "https://" + url)
+        if parsed.scheme == "http":
+            parsed = parsed._replace(scheme="https")
+        if parsed.scheme != "https" or not parsed.hostname:
+            return {}
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        page_url = parsed.geturl()
+        same_host = parsed.hostname.lower()
+
+        resp = requests.get(
+            page_url,
+            timeout=_BRAND_FETCH_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
+        )
+        html = resp.text or ""
+
+        site_name = _meta_content(html, _OG_SITE_NAME_RE)
+        if not site_name:
+            title_match = _TITLE_RE.search(html)
+            if title_match:
+                site_name = _WS_RE.sub(" ", title_match.group(1)).strip()
+        tagline = _meta_content(html, _OG_DESC_RE)[:_TAGLINE_CAP]
+
+        # Logo candidates, best first.
+        candidates = [
+            _meta_content(html, _OG_IMAGE_RE),
+            _link_href(html, _APPLE_ICON_RE),
+            _link_href(html, _ICON_RE),
+            "/favicon.ico",
+        ]
+        logo_data_uri = ""
+        for raw in candidates:
+            if not raw:
+                continue
+            img_url = urljoin(base + "/", raw)
+            img_parsed = urlparse(img_url)
+            # SSRF guard: only fetch images from the SAME host (or a subdomain
+            # of it), over https. No redirects to arbitrary hosts.
+            if img_parsed.scheme != "https":
+                continue
+            host = (img_parsed.hostname or "").lower()
+            if host != same_host and not host.endswith("." + same_host):
+                continue
+            data_uri = _fetch_logo_data_uri(img_url)
+            if data_uri:
+                logo_data_uri = data_uri
+                break
+
+        result = {}
+        if logo_data_uri:
+            result["logo_data_uri"] = logo_data_uri
+        if site_name:
+            result["site_name"] = site_name
+        if tagline:
+            result["tagline"] = tagline
+        return result
+    except Exception:  # noqa: BLE001 — brand scrape never blocks generation
+        logger.warning("[fulfillment_deck] brand asset fetch failed for %s", url, exc_info=True)
+        return {}
+
+
+def _fetch_logo_data_uri(img_url: str) -> str:
+    """Fetch one image, validate content-type + size, return a data-URI or ""."""
+    try:
+        import requests
+
+        resp = requests.get(
+            img_url,
+            timeout=_BRAND_FETCH_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AnataRateSheet/1.0)"},
+            stream=True,
+        )
+        if resp.status_code != 200:
+            return ""
+        content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not content_type.startswith("image/"):
+            return ""
+        data = resp.content or b""
+        if not data or len(data) > _MAX_LOGO_BYTES:
+            return ""
+        data_uri = f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+        if len(data_uri) > _MAX_LOGO_DATA_URI:
+            return ""
+        return data_uri
+    except Exception:  # noqa: BLE001
         return ""
 
 

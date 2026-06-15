@@ -133,6 +133,15 @@ class ProspectProfile:
     # WHERE the volume number came from (vetting hint for the review page),
     # e.g. "RFP deck p.2 orders table". Never rendered on the public sheet.
     volume_provenance: str = ""
+    # v7: brand identity scraped from the prospect's website (intake), used to
+    # personalize the hero. logo is an inlined data-URI (size-bounded); tagline
+    # is the brand's positioning line. Both empty when unavailable.
+    brand_logo_data_uri: str = ""
+    brand_tagline: str = ""
+    # Estimated total SKUs the brand sells (warehouse-approval signal), plus
+    # the basis for the estimate. None when there's no basis to estimate from.
+    estimated_sku_count: Optional[int] = None
+    sku_count_basis: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -154,6 +163,18 @@ class ProspectProfile:
         confidence = str(payload.get("source_confidence") or "low").lower()
         if confidence not in ("low", "medium", "high"):
             confidence = "low"
+        sku_count = payload.get("estimated_sku_count")
+        try:
+            sku_count = int(sku_count) if sku_count is not None else None
+        except (TypeError, ValueError):
+            sku_count = None
+        if sku_count is not None and sku_count <= 0:
+            sku_count = None
+        # The logo data-URI is stored as-is but length-guarded (~700KB); only
+        # keep it when it actually looks like an inlined data-URI.
+        logo = str(payload.get("brand_logo_data_uri") or "")
+        if not logo.startswith("data:image/") or len(logo) > 700 * 1024:
+            logo = ""
         return ProspectProfile(
             company=str(payload.get("company") or "").strip()[:160],
             brand=str(payload.get("brand") or "").strip()[:120],
@@ -170,6 +191,10 @@ class ProspectProfile:
             raw_notes_excerpt=str(payload.get("raw_notes_excerpt") or "").strip()[:600],
             volume_basis=str(payload.get("volume_basis") or "").strip()[:200],
             volume_provenance=str(payload.get("volume_provenance") or "").strip()[:200],
+            brand_logo_data_uri=logo,
+            brand_tagline=str(payload.get("brand_tagline") or "").strip()[:200],
+            estimated_sku_count=sku_count,
+            sku_count_basis=str(payload.get("sku_count_basis") or "").strip()[:200],
         )
 
     @property

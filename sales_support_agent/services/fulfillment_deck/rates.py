@@ -7,11 +7,23 @@ specs are quoted once, and a real WMS client that isn't wired up yet
 failures warn and skip just that product x zone cell.
 
 The real EliteWorks client takes ~7s per quote call, so every
-(product x zone) cell is quoted concurrently (ThreadPoolExecutor) and the
-results are assembled deterministically afterwards. The raw carrier dump
+(product x sampled-city) cell is quoted concurrently (ThreadPoolExecutor) and
+the results are assembled deterministically afterwards. v7: each zone is
+sampled at SEVERAL representative cities (representative_destinations_multi)
+rather than one, then COLLAPSED to a single ZoneRates per zone keeping each
+carrier's cheapest quote found across the zone's sampled cities — so a
+carrier with metro-specific coverage (e.g. UniUni) surfaces in a zone if it
+serves ANY sampled city there, not just the first one quoted. The matrix
+shape (products -> zones -> quotes) is unchanged. The raw carrier dump
 (~27 services per call) never leaves this module: ``select_display_quotes``
 trims each cell to the cheapest service per carrier and caps the carrier
 count, so rendering stays tight.
+
+Latency guardrail: total quote calls per product = (sampled cities), capped
+at ``representative_destinations_multi``'s ``cap`` (18). Worst case per
+product is ~18 calls; at ~7s each the ThreadPoolExecutor (_MAX_QUOTE_WORKERS
+= 8) bounds wall-clock to roughly ceil(18/8) * 7s ≈ 21s per product, run
+server-side at draft time.
 """
 
 from __future__ import annotations
@@ -22,9 +34,13 @@ from concurrent.futures import ThreadPoolExecutor
 from .schema import ANATA_HQ_ZIP, ProductRates, RateMatrix, ZoneRates, clean_zip
 from .wms_client import MockWMSClient
 from .zip3_centroids import ZIP3_CENTROIDS
-from .zones import representative_destinations
+from .zones import representative_destinations_multi
 
-_MAX_QUOTE_WORKERS = 6
+_MAX_QUOTE_WORKERS = 8
+
+# Per-zone sample-city count + total destination cap (latency guardrail).
+_SAMPLES_PER_ZONE = 2
+_SAMPLE_CAP = 18
 
 # Carriers David never wants surfaced on a prospect-facing rate sheet
 # (uppercase names). Root cause of "where's FedEx?": YSP's cheap quotes were
@@ -192,18 +208,33 @@ def build_rate_matrix(products, origin_zip, client) -> tuple:
         seen_dims[product.dims_key] = product
         kept.append(product)
 
-    dests = representative_destinations(origin)
-    zones_sorted = sorted(dests)
+    # v7: several sample cities PER zone (capped for latency). The zone keys
+    # are the same 1-8; each maps to a list of (zip, label) sample cities.
+    dests_multi = representative_destinations_multi(
+        origin, per_zone=_SAMPLES_PER_ZONE, cap=_SAMPLE_CAP
+    )
+    zones_sorted = sorted(dests_multi)
 
-    # Quote every (product x zone) cell concurrently — the real client takes
-    # ~7s per call, so a 2-product sheet would otherwise take minutes. Threads
-    # only wrap client.quote_rates; everything else stays deterministic.
+    # Flat list of (product_index, zone, city_index) cells — one per
+    # (product x sampled-city). Quote every cell concurrently; the real client
+    # takes ~7s per call. Threads only wrap client.quote_rates; everything else
+    # stays deterministic. Guardrail: total cells per product <= _SAMPLE_CAP.
     cell_results: dict = {}
-    cells = [(index, zone) for index in range(len(kept)) for zone in zones_sorted]
+    cells = [
+        (index, zone, city_index)
+        for index in range(len(kept))
+        for zone in zones_sorted
+        for city_index in range(len(dests_multi[zone]))
+    ]
     if cells:
         with ThreadPoolExecutor(max_workers=_MAX_QUOTE_WORKERS) as pool:
             futures = {
-                key: pool.submit(client.quote_rates, kept[key[0]], origin, dests[key[1]][0])
+                key: pool.submit(
+                    client.quote_rates,
+                    kept[key[0]],
+                    origin,
+                    dests_multi[key[1]][key[2]][0],
+                )
                 for key in cells
             }
             for key, future in futures.items():
@@ -214,43 +245,66 @@ def build_rate_matrix(products, origin_zip, client) -> tuple:
                 except Exception as exc:  # noqa: BLE001 — per-cell resilience
                     cell_results[key] = ("error", exc)
 
-    # Assemble in deterministic (product, zone) order, applying fallbacks.
+    # Assemble in deterministic (product, zone) order, COLLAPSING each zone's
+    # sampled cities to one ZoneRates: keep each carrier's cheapest quote PER
+    # SERVICE found across ALL sampled cities in the zone (so a metro-specific
+    # carrier surfaces if it serves ANY sampled city, and a carrier's multi-
+    # service Pareto frontier is preserved for select_display_quotes). The
+    # zone's displayed dest_zip/dest_label is the city that produced the zone's
+    # overall-cheapest quote. Then select_display_quotes (Pareto + carrier cap)
+    # runs unchanged on the collapsed matrix.
     mock_client = None
     wms_fallback_done = False
     product_rates: list = []
     for index, product in enumerate(kept):
         zone_rates: list = []
         for zone in zones_sorted:
-            dest_zip, dest_label = dests[zone]
-            status, value = cell_results[(index, zone)]
-            if status == "not_implemented":
-                if not wms_fallback_done:
-                    warnings.append(f"WMS client unavailable ({value}) — using sample rates")
-                    wms_fallback_done = True
-                if mock_client is None:
-                    mock_client = MockWMSClient()
-                try:
-                    quotes = mock_client.quote_rates(product, origin, dest_zip)
-                except Exception as exc2:  # pragma: no cover - mock never raises
+            cities = dests_multi[zone]
+            # (carrier, service) -> cheapest RateQuote across the zone's cities.
+            best_by_service: dict = {}
+            zone_best: tuple | None = None  # (rate, dest_zip, dest_label)
+            for city_index, (dest_zip, dest_label) in enumerate(cities):
+                status, value = cell_results[(index, zone, city_index)]
+                if status == "not_implemented":
+                    if not wms_fallback_done:
+                        warnings.append(
+                            f"WMS client unavailable ({value}) — using sample rates"
+                        )
+                        wms_fallback_done = True
+                    if mock_client is None:
+                        mock_client = MockWMSClient()
+                    try:
+                        quotes = mock_client.quote_rates(product, origin, dest_zip)
+                    except Exception as exc2:  # pragma: no cover - mock never raises
+                        warnings.append(
+                            f"Rate quote failed for '{product.name}' zone {zone} "
+                            f"({dest_label}): {exc2}"
+                        )
+                        continue
+                elif status == "error":
                     warnings.append(
-                        f"Rate quote failed for '{product.name}' zone {zone} ({dest_label}): {exc2}"
+                        f"Rate quote failed for '{product.name}' zone {zone} "
+                        f"({dest_label}): {value}"
                     )
                     continue
-            elif status == "error":
-                warnings.append(
-                    f"Rate quote failed for '{product.name}' zone {zone} ({dest_label}): {value}"
-                )
+                else:
+                    quotes = value
+                for quote in quotes or ():
+                    key = (quote.carrier, quote.service)
+                    existing = best_by_service.get(key)
+                    if existing is None or quote.rate_usd < existing.rate_usd:
+                        best_by_service[key] = quote
+                    if zone_best is None or quote.rate_usd < zone_best[0]:
+                        zone_best = (quote.rate_usd, dest_zip, dest_label)
+            if not best_by_service or zone_best is None:
                 continue
-            else:
-                quotes = value
-            if not quotes:
-                continue
+            collapsed = list(best_by_service.values())
             zone_rates.append(
                 ZoneRates(
                     zone=zone,
-                    dest_zip=dest_zip,
-                    dest_label=dest_label,
-                    quotes=tuple(sorted(quotes, key=lambda q: q.rate_usd)),
+                    dest_zip=zone_best[1],
+                    dest_label=zone_best[2],
+                    quotes=tuple(sorted(collapsed, key=lambda q: q.rate_usd)),
                 )
             )
         zone_rates.sort(key=lambda z: z.zone)

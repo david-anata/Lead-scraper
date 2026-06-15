@@ -1462,6 +1462,45 @@ class RateSheetServiceTests(unittest.TestCase):
             quote["assumptions"],
         )
 
+    # ------------------------------------------------------------------
+    # v7: brand logo lockup + assortment profile in the rendered sheet
+    # ------------------------------------------------------------------
+
+    def test_hero_logo_lockup_renders_when_logo_injected(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        summary = dict(storage.get_run(run_id).summary_json)
+        profile = dict(summary["prospect_profile"])
+        profile["brand_logo_data_uri"] = "data:image/png;base64,QUJDREVG"
+        storage.update_summary(run_id, {"prospect_profile": profile})
+        rerendered = rerender_rate_sheet(run_id, settings=load_settings())
+        html = rerendered["deck_html"]
+        self.assertIn('class="hero-lockup"', html)
+        self.assertIn('class="hero-prospect-logo"', html)
+        self.assertIn("data:image/png;base64,QUJDREVG", html)
+        self.assertIn("hero-lockup-anata", html)
+        # Absent by default (no logo scraped in the no-network test path).
+        self.assertNotIn('class="hero-lockup"', self._generate()["deck_html"])
+
+    def test_assortment_profile_block_in_overview(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        summary = dict(storage.get_run(run_id).summary_json)
+        profile = dict(summary["prospect_profile"])
+        profile["estimated_sku_count"] = 100
+        profile["sku_count_basis"] = "100 SKUs stated in RFP deck"
+        storage.update_summary(run_id, {"prospect_profile": profile})
+        rerendered = rerender_rate_sheet(run_id, settings=load_settings())
+        html = rerendered["deck_html"]
+        # The assortment block lives inside the hero/Overview section.
+        hero = html[html.index('data-key="hero"'):html.index("</section>", html.index('data-key="hero"'))]
+        self.assertIn("assortment-profile", hero)
+        self.assertIn("Assortment profile", hero)
+        self.assertIn("est. SKU count", hero)
+        self.assertIn("100 SKUs stated in RFP deck", hero)
+        self.assertIn("products quoted", hero)
+        self.assertIn("size range", hero)
+
     def test_quote_c6_units_per_pallet_reconciles_with_pallet_count(self) -> None:
         from sales_support_agent.services.fulfillment_deck.quote import (
             build_fulfillment_quote,

@@ -253,6 +253,42 @@ def _product_row(index: int, product: dict, *, template: bool = False) -> str:
     )
 
 
+def _assortment_hint(profile: dict) -> str:
+    """Warehouse-approval vetting card: estimated SKU count + deterministic
+    size variance, computed from the stored profile. Internal-only."""
+    from sales_support_agent.services.fulfillment_deck.rendering import (
+        assortment_profile,
+    )
+    from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+
+    info = assortment_profile(ProspectProfile.from_dict(profile))
+    if not info["products_quoted"] and info["estimated_sku_count"] is None:
+        return ""
+
+    sku_count = info["estimated_sku_count"]
+    sku_text = f"{sku_count:,}" if sku_count is not None else "not stated"
+    basis = info["sku_count_basis"]
+    bits = [
+        f"<strong>Est. SKU count:</strong> {_esc(sku_text)}"
+        + (f' <span class="muted">({_esc(basis)})</span>' if basis else ""),
+        f"<strong>Products quoted:</strong> {info['products_quoted']}",
+    ]
+    if info["size_label"]:
+        bits.append(f"<strong>Size range:</strong> {_esc(info['size_label'])}")
+    if info["variance"]:
+        bits.append(f"<strong>Size variance:</strong> {_esc(info['variance'])}")
+    if info["any_fragile"]:
+        bits.append('<strong>Fragile items:</strong> yes')
+    items = "".join(f"<li>{b}</li>" for b in bits)
+    return (
+        '<div class="flash"><strong>Warehouse approval — assortment:</strong>'
+        f'<ul style="margin:6px 0 0;padding-left:18px">{items}</ul>'
+        '<p class="muted" style="margin:6px 0 0">Size figures computed from the '
+        "product dims below — share with the warehouse team before publishing.</p>"
+        "</div>"
+    )
+
+
 def render_rate_sheet_review_page(
     run: dict,
     summary: dict,
@@ -295,6 +331,11 @@ def render_rate_sheet_review_page(
 
     rows = "".join(_product_row(i, p) for i, p in enumerate(products))
     rows += _product_row(len(products), {}, template=True)
+
+    # v7: warehouse-approval vetting hints — estimated SKU count + size
+    # variance computed deterministically from the products. Warehouse sign-off
+    # happens here, before publish.
+    assortment_html = _assortment_hint(profile)
 
     monthly_volume = profile.get("monthly_order_volume")
     current_cost = profile.get("current_cost_per_parcel_usd")
@@ -342,6 +383,7 @@ def render_rate_sheet_review_page(
         {flash_html}
         {publish_block}
         {warnings_html}
+        {assortment_html}
         <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>
 
         <h2>Prospect details</h2>

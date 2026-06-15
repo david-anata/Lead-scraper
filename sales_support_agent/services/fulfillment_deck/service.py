@@ -19,7 +19,10 @@ from sales_support_agent.config import Settings
 from sales_support_agent.services.deck.formatting import _slugify
 from sales_support_agent.services.fulfillment_deck import llm as llm_module
 from sales_support_agent.services.fulfillment_deck import storage
-from sales_support_agent.services.fulfillment_deck.intake import build_extraction_context
+from sales_support_agent.services.fulfillment_deck.intake import (
+    build_extraction_context,
+    fetch_brand_assets,
+)
 from sales_support_agent.services.fulfillment_deck.llm import extract_prospect_profile
 from sales_support_agent.services.fulfillment_deck.quote import build_fulfillment_quote
 from sales_support_agent.services.fulfillment_deck.rendering import render_rate_sheet_html
@@ -402,6 +405,29 @@ def generate_rate_sheet(
             profile = ProspectProfile.from_dict(
                 {**profile.to_dict(), "brand": brand_override.strip()}
             )
+
+        # v7: personalize from the prospect's site — logo + identity. Part of
+        # the intake step; failure is silent (warning at most). Prefer the
+        # admin-supplied URL, else the one extraction pulled from the notes.
+        known_website = (website_url or "").strip() or profile.website
+        if known_website:
+            try:
+                assets = fetch_brand_assets(known_website)
+            except Exception:  # noqa: BLE001 — never block generation
+                logger.warning("[fulfillment_deck] brand asset fetch raised", exc_info=True)
+                assets = {}
+            if assets:
+                merged = profile.to_dict()
+                if assets.get("logo_data_uri"):
+                    merged["brand_logo_data_uri"] = assets["logo_data_uri"]
+                if assets.get("tagline") and not merged.get("brand_tagline"):
+                    merged["brand_tagline"] = assets["tagline"]
+                profile = ProspectProfile.from_dict(merged)
+            else:
+                warnings.append(
+                    f"Could not pull brand logo/identity from {known_website[:80]} — "
+                    "sheet renders without the prospect logo."
+                )
 
         origin = clean_zip(origin_zip) or ANATA_HQ_ZIP
         if origin_zip and clean_zip(origin_zip) is None:
