@@ -431,3 +431,52 @@ class RootAppGuardsTest(unittest.TestCase):
         names = {m.cls.__name__ for m in rootmain.app.user_middleware}
         self.assertIn("AccessControlMiddleware", names,
                       "root app must install AccessControlMiddleware")
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class EmailSenderTests(unittest.TestCase):
+    """Access-flow email picks Resend first, then Gmail, then falls back to the
+    copyable link (returns False) when no provider is configured."""
+
+    def test_no_provider_returns_false(self) -> None:
+        from sales_support_agent.services.access import notify
+        s = _settings()
+        # Neutralize both providers regardless of ambient env.
+        import sales_support_agent.integrations.resend as R
+        import sales_support_agent.integrations.gmail as G
+        orig_r, orig_g = R.ResendClient, G.GmailClient
+        try:
+            R.ResendClient = lambda settings: type("X", (), {"is_configured": lambda self: False})()
+            G.GmailClient = lambda settings: type("X", (), {"is_configured": lambda self: False})()
+            self.assertFalse(notify.send_invite_email(
+                s, to_email="nobody@anatainc.com", invite_link="https://x/TOK"))
+        finally:
+            R.ResendClient, G.GmailClient = orig_r, orig_g
+
+    def test_resend_preferred_over_gmail(self) -> None:
+        from sales_support_agent.services.access import notify
+        s = _settings()
+        import sales_support_agent.integrations.resend as R
+        import sales_support_agent.integrations.gmail as G
+        sent = {}
+
+        class FakeResend:
+            def __init__(self, settings): pass
+            def is_configured(self): return True
+            def send_message(self, **kw): sent["resend"] = kw
+
+        class FakeGmail:
+            def __init__(self, settings): pass
+            def is_configured(self): return True
+            def send_message(self, **kw): sent["gmail"] = kw
+
+        orig_r, orig_g = R.ResendClient, G.GmailClient
+        try:
+            R.ResendClient, G.GmailClient = FakeResend, FakeGmail
+            ok = notify.send_approval_email(s, to_email="gabe@anatainc.com",
+                                            base_url="https://agent.anatainc.com")
+            self.assertTrue(ok)
+            self.assertIn("resend", sent)
+            self.assertNotIn("gmail", sent)  # Gmail not touched when Resend works
+        finally:
+            R.ResendClient, G.GmailClient = orig_r, orig_g
