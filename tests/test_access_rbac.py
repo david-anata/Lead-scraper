@@ -413,3 +413,21 @@ class ExternalInviteTests(unittest.TestCase):
         from sales_support_agent.api.auth_router import _external_login_allowed
         store.upsert_user("returning-ext@gmail.com", "Returning Ext")
         self.assertTrue(_external_login_allowed(self._req(), "returning-ext@gmail.com"))
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class RootAppGuardsTest(unittest.TestCase):
+    """Regression: the root app (main.py, serves agent.anatainc.com) must register
+    the access middleware + ToolForbidden handler at CONSTRUCTION time. They were
+    being installed in a startup event, where add_middleware() fails after the
+    stack is frozen — leaving router-guarded sections (Finance/Advertising/
+    Fulfillment/Brand Analysis) to 500 instead of rendering a 403."""
+
+    def test_root_app_registers_rbac_middleware_and_handler(self) -> None:
+        import main as rootmain
+        from sales_support_agent.services.auth_deps import ToolForbidden
+        self.assertIn(ToolForbidden, rootmain.app.exception_handlers,
+                      "root app must register the ToolForbidden 403 handler")
+        names = {m.cls.__name__ for m in rootmain.app.user_middleware}
+        self.assertIn("AccessControlMiddleware", names,
+                      "root app must install AccessControlMiddleware")

@@ -150,6 +150,20 @@ app.include_router(_settings_router_)
 from sales_support_agent.api.qbo_auth_router import router as _qbo_auth_router  # noqa: E402
 app.include_router(_qbo_auth_router, prefix="/admin/finances/qbo")
 
+# Access control (RBAC) — MUST be registered at construction time, not in the
+# startup event: once the app starts, Starlette freezes the middleware stack and
+# add_middleware() raises, which was being swallowed — leaving the root app with
+# NO access middleware and NO ToolForbidden handler. Router-level
+# require_tool() then 500'd (Finance/Advertising/Fulfillment/Brand Analysis)
+# instead of rendering the friendly 403.
+try:
+    from sales_support_agent.services.access.middleware import install_access_middleware  # noqa: E402
+    from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response  # noqa: E402
+    install_access_middleware(app)
+    app.add_exception_handler(ToolForbidden, render_forbidden_response)
+except Exception as _e:  # noqa: BLE001
+    logger.warning("Could not install RBAC middleware: %s", _e)
+
 
 async def _run_finance_sync(settings, *, label: str = "manual") -> None:
     """Run the full finance data pipeline in sequence:
@@ -781,13 +795,9 @@ def startup() -> None:
             _access_store.seed_superadmins(getattr(app.state.agent_settings, "rbac_superadmin_emails", ()))
     except Exception as _e:
         logger.warning("Could not seed RBAC super-admins: %s", _e)
-    try:
-        from sales_support_agent.services.access.middleware import install_access_middleware
-        from sales_support_agent.services.auth_deps import ToolForbidden, render_forbidden_response
-        install_access_middleware(app)
-        app.add_exception_handler(ToolForbidden, render_forbidden_response)
-    except Exception as _e:
-        logger.warning("Could not install RBAC middleware: %s", _e)
+    # NOTE: RBAC middleware + ToolForbidden handler are installed at module
+    # construction time (above), NOT here — add_middleware() fails once the app
+    # has started.
     logger.info(
         "[Startup] app_version=%s render_git_branch=%s render_git_commit=%s apollo_mode=org_search_plus_people_search state_backend=%s github_state_repo=%s github_state_branch=%s",
         APP_VERSION,
