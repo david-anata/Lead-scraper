@@ -322,10 +322,13 @@ def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
 
 
 # Sections the requote response re-ships as swappable HTML fragments. The
-# rate-map section is intentionally absent — its JS state lives in the page.
+# combined rates-explorer section is intentionally absent — its JS state AND
+# its data-driven table live in the page and update client-side from the
+# returned products payload (v6: map + table merged into one never-swapped
+# section, so the carrier filter / toggle / optimizer survive a requote).
 # (volume-economics + savings merged into monthly-math in v3; the estimated
 # invoice "quote" section joined in v4 — its totals move with the dims.)
-_FRAGMENT_KEYS = ("carrier-rates", "monthly-math", "quote")
+_FRAGMENT_KEYS = ("monthly-math", "quote")
 
 
 @public_router.post("/rate-sheets/{slug}/{run_id}/{token}/requote")

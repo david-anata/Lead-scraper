@@ -43,52 +43,105 @@ def _excluded_carriers() -> set:
     return {tok.strip().upper() for tok in raw.split(",") if tok.strip()}
 
 
+def _pareto_frontier(quotes: list) -> list:
+    """Pareto frontier of one carrier's quotes on (rate_usd ASC, transit_days
+    ASC) — keep a quote only when no OTHER quote is both cheaper-or-equal AND
+    faster-or-equal while being strictly better on at least one axis. This
+    keeps the cheapest, the fastest, and genuine mid-tier tradeoffs (typically
+    2-4 services), dropping dominated ones.
+
+    Tie handling: when two quotes share the same (rate, days) only the first
+    seen survives (neither dominates the other, but they're redundant on the
+    display). When ANY quote in the carrier's set lacks transit_days (None) a
+    frontier can't be computed, so the single cheapest quote is returned.
+
+    Returns the kept quotes rate-sorted (ties broken by transit_days asc).
+    """
+    if not quotes:
+        return []
+    # No frontier without transit on every quote — fall back to the cheapest.
+    if any(q.transit_days is None for q in quotes):
+        return [min(quotes, key=lambda q: q.rate_usd)]
+
+    ordered = sorted(quotes, key=lambda q: (q.rate_usd, q.transit_days))
+    kept: list = []
+    for index, quote in enumerate(ordered):
+        dominated = False
+        for other_index, other in enumerate(ordered):
+            if other_index == index:
+                continue
+            cheaper_or_equal = other.rate_usd <= quote.rate_usd
+            faster_or_equal = other.transit_days <= quote.transit_days
+            strictly_better = (
+                other.rate_usd < quote.rate_usd
+                or other.transit_days < quote.transit_days
+            )
+            # An EARLIER (already-kept) duplicate with identical (rate, days)
+            # makes this one redundant; a later identical twin does not.
+            identical_earlier = (
+                other.rate_usd == quote.rate_usd
+                and other.transit_days == quote.transit_days
+                and other_index < index
+            )
+            if (cheaper_or_equal and faster_or_equal and strictly_better) or identical_earlier:
+                dominated = True
+                break
+        if not dominated:
+            kept.append(quote)
+    return sorted(kept, key=lambda q: (q.rate_usd, q.transit_days))
+
+
 def select_display_quotes(matrix: RateMatrix, max_carriers: int = 5) -> RateMatrix:
     """Trim a full rate matrix down to what the rate sheet displays.
 
     Excluded carriers (EXCLUDED_DISPLAY_CARRIERS / env override) are dropped
     FIRST, so they never occupy a display slot, never color the map, never
     enter the hero stats or the blend math — everything downstream flows
-    from this selected matrix. Then per product: each zone keeps only the
-    CHEAPEST quote per carrier, then the product is capped to at most
-    ``max_carriers`` carriers, chosen by their average best-rate across
-    zones (cheapest carriers first). Quotes in each rebuilt zone stay sorted
-    by rate ascending. Cells left with no quotes are dropped (matching
-    build_rate_matrix's empty-cell behaviour).
+    from this selected matrix. Then per product: each zone keeps each kept
+    carrier's PARETO FRONTIER on (rate ascending, transit_days ascending) —
+    the cheapest, the fastest, and any genuine mid-tier tradeoff survive;
+    dominated services are dropped (see :func:`_pareto_frontier`). The product
+    is capped to at most ``max_carriers`` carriers, ranked by each carrier's
+    AVERAGE CHEAPEST rate across zones (cheapest carriers first) — the same
+    ranking input as before, just emitting the full frontier for kept
+    carriers. Quotes in each rebuilt zone stay sorted by rate ascending. Cells
+    left with no quotes are dropped (matching build_rate_matrix's empty-cell
+    behaviour).
     """
     excluded = _excluded_carriers()
     products_out = []
     for product_rates in matrix.products:
-        # zone -> {carrier: cheapest quote for that carrier in that zone}
-        per_zone_best: list[tuple[ZoneRates, dict]] = []
+        # zone -> {carrier: [non-excluded quotes for that carrier in that zone]}
+        per_zone_groups: list[tuple[ZoneRates, dict]] = []
         for zone in product_rates.zones:
-            best: dict = {}
+            groups: dict = {}
             for quote in zone.quotes:
                 if (quote.carrier or "").strip().upper() in excluded:
                     continue
-                current = best.get(quote.carrier)
-                if current is None or quote.rate_usd < current.rate_usd:
-                    best[quote.carrier] = quote
-            per_zone_best.append((zone, best))
+                groups.setdefault(quote.carrier, []).append(quote)
+            per_zone_groups.append((zone, groups))
 
+        # Carrier ranking uses each carrier's CHEAPEST rate per zone, averaged
+        # across zones (unchanged from the per-carrier-cheapest era).
         totals: dict = {}
         counts: dict = {}
-        for _zone, best in per_zone_best:
-            for carrier, quote in best.items():
-                totals[carrier] = totals.get(carrier, 0.0) + quote.rate_usd
+        for _zone, groups in per_zone_groups:
+            for carrier, carrier_quotes in groups.items():
+                cheapest = min(q.rate_usd for q in carrier_quotes)
+                totals[carrier] = totals.get(carrier, 0.0) + cheapest
                 counts[carrier] = counts.get(carrier, 0) + 1
         keep = set(
             sorted(totals, key=lambda c: (totals[c] / counts[c], c))[:max_carriers]
         )
 
         zones_out = []
-        for zone, best in per_zone_best:
-            quotes = tuple(
-                sorted(
-                    (q for carrier, q in best.items() if carrier in keep),
-                    key=lambda q: q.rate_usd,
-                )
-            )
+        for zone, groups in per_zone_groups:
+            kept_quotes: list = []
+            for carrier, carrier_quotes in groups.items():
+                if carrier not in keep:
+                    continue
+                kept_quotes.extend(_pareto_frontier(carrier_quotes))
+            quotes = tuple(sorted(kept_quotes, key=lambda q: q.rate_usd))
             if not quotes:
                 continue
             zones_out.append(

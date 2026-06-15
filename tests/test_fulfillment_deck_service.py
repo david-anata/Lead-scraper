@@ -367,25 +367,31 @@ class RateSheetServiceTests(unittest.TestCase):
     def test_data_keys_and_carrier_grouped_table(self) -> None:
         result = self._generate_with_current_cost()
         html = result["deck_html"]
-        for key in ("hero", "rate-map", "carrier-rates", "monthly-math", "quote", "partner"):
+        # v6: the map + table merged into ONE rates-explorer section.
+        for key in ("hero", "rates-explorer", "monthly-math", "quote", "partner"):
             self.assertIn(f'data-key="{key}"', html)
-        for gone in ("volume-economics", "savings"):
+        for gone in ("rate-map", "carrier-rates", "volume-economics", "savings"):
             self.assertNotIn(f'data-key="{gone}"', html)
+        # Exactly one rates-explorer section.
+        self.assertEqual(html.count('data-key="rates-explorer"'), 1)
         # v4: the estimated invoice sits immediately before the partner closer.
         self.assertLess(html.index('data-key="quote"'), html.index('data-key="partner"'))
         self.assertLess(html.index('data-key="monthly-math"'), html.index('data-key="quote"'))
         # Carrier-grouped columns: the header is a brand-colored logo chip
-        # tagged with data-carrier for the viewer-side filter; the cheaper
-        # service per carrier wins, so mock USPS Priority Mail is out.
+        # tagged with data-carrier for the viewer-side filter.
         for carrier in ("USPS", "UPS", "FedEx"):
             self.assertIn(f'<th data-carrier="{carrier}">', html)
         self.assertIn("#004B87", html)  # USPS brand blue chip
-        self.assertNotIn("Priority Mail", html)
         self.assertIn("Ground Advantage", html)
+        # v6: USPS Priority Mail is a faster (pricier) frontier option, so it
+        # rides along in data-services even when not the static default.
+        self.assertIn("Priority Mail", html)
         # Price / transit badge / muted service line cell anatomy.
         self.assertIn('class="rc-price"', html)
         self.assertIn('class="rc-transit"', html)
         self.assertIn('class="rc-service"', html)
+        # v6: each cell carries its carrier frontier as data-services JSON.
+        self.assertIn("data-services=", html)
         # Explicit request button replaces the auto-debounce flow.
         self.assertIn("Request rates", html)
         self.assertIn("rm-overlay", html)
@@ -394,22 +400,29 @@ class RateSheetServiceTests(unittest.TestCase):
     def test_carrier_filter_chips_render_once_per_carrier(self) -> None:
         result = self._generate()
         html = result["deck_html"]
-        self.assertIn('id="carrier-filter"', html)
+        self.assertEqual(html.count('id="carrier-filter"'), 1)
         for carrier in ("USPS", "UPS", "FedEx"):
             chip = f'class="cf-chip" data-carrier="{carrier}"'
             self.assertEqual(html.count(chip), 1, chip)
         # All enabled by default; filtering is viewer-local JS only.
         self.assertIn('aria-pressed="true"', html)
         self.assertNotIn('class="cf-chip cf-off"', html)
-        # Map payload ships per-carrier zone rates for the filter to re-min.
+        # v6: map payload ships per-carrier zone rates as a rate-sorted LIST
+        # (the frontier) for the filter + optimizer to re-pick without a round
+        # trip.
         self.assertIn('"zoneRates": {"1": {"', html)
+        self.assertIn('"rate":', html)
         self.assertIn("applyCarrierFilter", html)
-        # v4: the chips live INSIDE the map section's controls (the map
-        # renders before the table), not in the carrier-rates section.
+        # v6: the chips live INSIDE the single explorer control bar, which sits
+        # in the map's control region (the control bar renders before the map
+        # svg, which renders before the rate table).
         chips_at = html.index('id="carrier-filter"')
-        self.assertGreater(chips_at, html.index('data-key="rate-map"'))
-        self.assertLess(chips_at, html.index('data-key="carrier-rates"'))
+        explorer_at = html.index('data-key="rates-explorer"')
+        self.assertGreater(chips_at, explorer_at)
         self.assertIn('id="rm-controls"', html[:chips_at])
+        # One control bar; the chips precede the map and the table.
+        self.assertLess(chips_at, html.index('id="rm-svg"'))
+        self.assertLess(html.index('id="rm-svg"'), html.index('data-off="prod-0"'))
 
     def test_rerender_preserves_link_identity(self) -> None:
         result = self._generate()
@@ -442,11 +455,15 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertIn("1800 mi", html)
         self.assertIn("rm-tooltip", html)
         self.assertIn(f"{result['view_path']}/requote", html)
-        # Map comes BEFORE the carrier-rate tables in document order (v3:
-        # hero -> rate map -> carrier rates).
-        self.assertLess(html.index("What shipping costs, anywhere in the US"),
-                        html.index("Your rates, by product and zone"))
-        self.assertLess(html.index('data-key="hero"'), html.index('data-key="rate-map"'))
+        # v6: map + table are ONE rates-explorer section; the map renders
+        # before the first rate table WITHIN that section.
+        self.assertLess(html.index('data-key="hero"'),
+                        html.index('data-key="rates-explorer"'))
+        sec_start = html.index('data-key="rates-explorer"')
+        sec_end = html.index("</section>", sec_start)
+        section = html[sec_start:sec_end]
+        self.assertIn("What shipping costs, anywhere in the US", section)
+        self.assertLess(section.index('id="rm-svg"'), section.index("data-table"))
         self.assertIn("window.print()", html)
         self.assertIn("Sample rates", html)
         self.assertIn("/heartbeat", html)
@@ -684,7 +701,7 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertEqual(collector.open_sections, collector.closed_sections)
         self.assertEqual(
             collector.section_keys,
-            ["hero", "rate-map", "carrier-rates", "monthly-math", "quote", "partner"],
+            ["hero", "rates-explorer", "monthly-math", "quote", "partner"],
         )
 
     def test_inline_scripts_pass_node_check(self) -> None:
@@ -753,11 +770,19 @@ class RateSheetServiceTests(unittest.TestCase):
 
     def test_map_mode_toggle_markup(self) -> None:
         html = self._generate()["deck_html"]
-        self.assertIn('id="rm-mode"', html)
+        # v6: exactly ONE Cost/Transit toggle drives BOTH the map dots AND the
+        # table cell prominence (the old duplicate table-only toggle is gone).
+        self.assertEqual(html.count('id="rm-mode"'), 1)
         self.assertIn('data-mode="cost"', html)
         self.assertIn('data-mode="transit"', html)
-        self.assertIn("bestTransitForZone", html)
-        self.assertIn("best transit time by ZIP area", html)
+        # The single toggle carries both hooks (dots + table prominence).
+        self.assertIn('data-mode="cost" data-rtview="cost"', html)
+        self.assertIn('data-mode="transit" data-rtview="transit"', html)
+        # The old standalone .rt-view table toggle no longer exists.
+        self.assertNotIn('class="rt-view"', html)
+        self.assertIn("transit time by ZIP area", html)
+        # Unified per-zone choice helper drives both map + table.
+        self.assertIn("zoneChoice", html)
 
     # ------------------------------------------------------------------
     # v4: volume vetting
@@ -1157,25 +1182,33 @@ class RateSheetServiceTests(unittest.TestCase):
 
     def test_rates_table_controls_and_data_attrs(self) -> None:
         html = self._generate()["deck_html"]
-        # Controls row inside the carrier-rates section, under the heading.
+        # v6: ONE control bar inside the rates-explorer section, ahead of the
+        # map svg and the rate table.
+        self.assertEqual(html.count('id="rt-controls"'), 1)
         controls_at = html.index('id="rt-controls"')
-        self.assertGreater(controls_at, html.index('data-key="carrier-rates"'))
-        self.assertLess(controls_at, html.index('data-off="prod-0"'))
+        self.assertGreater(controls_at, html.index('data-key="rates-explorer"'))
+        self.assertLess(controls_at, html.index('id="rm-svg"'))
+        self.assertLess(html.index('id="rm-svg"'), html.index('data-off="prod-0"'))
+        # The single Cost/Transit toggle carries the data-rtview hook.
         self.assertIn('data-rtview="cost"', html)
         self.assertIn('data-rtview="transit"', html)
-        self.assertIn('id="rt-optimize"', html)
+        # Optimize + target selects live in the same bar (exactly one each).
+        self.assertEqual(html.count('id="rt-optimize"'), 1)
+        self.assertEqual(html.count('id="rt-target"'), 1)
         self.assertIn(">Cheapest<", html)
         self.assertIn(">Fastest<", html)
         self.assertIn("Cheapest within target", html)
-        self.assertIn('id="rt-target"', html)
         self.assertIn("&le;2 days", html)
         self.assertIn('<option value="any">Any</option>', html)
-        # Cells carry data-days + data-rate, and each value has its class.
+        # Cells carry data-days + data-rate + the data-services frontier.
         self.assertIn("data-days=", html)
+        self.assertIn("data-services=", html)
         self.assertIn('class="rc-main"', html)
         self.assertIn("transit-view", html)
-        # Optimizer JS lives in the never-swapped map script.
-        self.assertIn("applyTableIntel", html)
+        # v6: ONE optimizer/handler set lives in the never-swapped section
+        # script and drives BOTH the map and the table.
+        self.assertIn("applyIntel", html)
+        self.assertNotIn("applyTableIntel", html)
         self.assertIn("no option meets target", html)
         self.assertIn("rt-dim", html)
 
@@ -1266,6 +1299,195 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertIn("html.js-anim .slide", html)
         self.assertIn("js-anim", html)
         self.assertIn("in-view", html)
+
+    # ------------------------------------------------------------------
+    # v6: combined explorer section + single control bar
+    # ------------------------------------------------------------------
+
+    def test_combined_explorer_one_section_one_control_bar(self) -> None:
+        result = self._generate()
+        html = result["deck_html"]
+        # Exactly ONE rates-explorer section, ONE carrier filter, ONE control
+        # bar, and exactly ONE Cost/Transit toggle.
+        self.assertEqual(html.count('data-key="rates-explorer"'), 1)
+        self.assertEqual(html.count('id="carrier-filter"'), 1)
+        self.assertEqual(html.count('id="rt-controls"'), 1)
+        self.assertEqual(html.count('id="rm-mode"'), 1)
+        # The old two sections and the duplicate table-only toggle are gone.
+        self.assertNotIn('data-key="rate-map"', html)
+        self.assertNotIn('data-key="carrier-rates"', html)
+        self.assertNotIn('class="rt-view"', html)
+        self.assertNotIn("applyTableIntel", html)
+        # Within the section: control bar -> map svg -> rate table, in order.
+        sec_start = html.index('data-key="rates-explorer"')
+        sec_end = html.index("</section>", sec_start)
+        section = html[sec_start:sec_end]
+        self.assertLess(section.index('id="rt-controls"'), section.index('id="rm-svg"'))
+        self.assertLess(section.index('id="rm-svg"'), section.index("data-table"))
+        # The rail collapses to a single "Your rates" entry (one nav item for
+        # the merged section).
+        self.assertEqual(html.count(">Your rates</a>"), 1)
+        self.assertNotIn(">Rate map</a>", html)
+        self.assertNotIn(">Carrier rates</a>", html)
+
+    def test_map_payload_zone_rates_are_rate_sorted_lists(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.us_map import map_payload
+
+        result = self._generate()
+        matrix = RateMatrix.from_dict(result["rate_matrix"])
+        payload = map_payload(matrix)
+        saw_multi = False
+        for product in payload["products"]:
+            for _zone, carriers in product["zoneRates"].items():
+                for _carrier, frontier in carriers.items():
+                    # v6: each carrier maps to a rate-sorted LIST, not a dict.
+                    self.assertIsInstance(frontier, list)
+                    self.assertTrue(frontier)
+                    rates = [q["rate"] for q in frontier]
+                    self.assertEqual(rates, sorted(rates))
+                    for q in frontier:
+                        self.assertIn("rate", q)
+                        self.assertIn("service", q)
+                        self.assertIn("transit_days", q)
+                    if len(frontier) > 1:
+                        saw_multi = True
+        # Mock USPS has a faster Priority Mail tradeoff in the far zones, so at
+        # least one carrier/zone cell carries >1 frontier service.
+        self.assertTrue(saw_multi)
+
+    def test_requote_fragment_keys_and_products_list_shape(self) -> None:
+        from sales_support_agent.api.fulfillment_deck_router import _FRAGMENT_KEYS
+
+        # v6: the explorer is never swapped; only monthly-math + quote re-ship.
+        self.assertEqual(_FRAGMENT_KEYS, ("monthly-math", "quote"))
+
+        result = self._generate()
+        run_id = result["run_id"]
+        posted = [
+            ProductSpec.from_dict(
+                {"name": "Super Serum", "length_in": 10, "width_in": 8,
+                 "height_in": 6, "weight_lb": 4.0}
+            )
+        ]
+        patch = apply_viewer_requote(run_id, posted, "84043", settings=load_settings())
+        from sales_support_agent.services.fulfillment_deck.us_map import map_payload
+
+        matrix = RateMatrix.from_dict(patch["rate_matrix"])
+        products = map_payload(matrix)["products"]
+        first = next(iter(products[0]["zoneRates"].values()))
+        # The returned products carry the new list-shaped zoneRates frontier.
+        self.assertIsInstance(next(iter(first.values())), list)
+        # Viewer requote still persists the edited dims.
+        stored = dict(storage.get_run(run_id).summary_json)
+        serum = next(
+            p for p in stored["prospect_profile"]["products"] if p["name"] == "Super Serum"
+        )
+        self.assertEqual(serum["length_in"], 10.0)
+        self.assertEqual(serum["weight_lb"], 4.0)
+
+    # ------------------------------------------------------------------
+    # v6: $500 monthly minimum + C6 pallet headline reconciliation
+    # ------------------------------------------------------------------
+
+    def test_quote_500_floor_sub_floor_hand_checked(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+        )
+
+        # Tiny volume: 10 orders / 10 units, "other" category (x1.10), no
+        # blended rate. Lines: receiving 1pallet x $20 x 1.10 = $22.00; storage
+        # 1 x $35 x 1.10 = $38.50; pick&pack 10 x $1.60 x 1.10 = $17.60;
+        # packaging 10 x ($0.35 x 1.10) poly mailer = $3.85; tech $75 flat.
+        # sum = 156.95 < 500 -> adjustment $343.05 -> total $500.00.
+        tiny = ProspectProfile.from_dict({
+            "brand": "TinyCo", "monthly_order_volume": 10,
+            "products": [{"name": "Trinket", "length_in": 3, "width_in": 3,
+                          "height_in": 3, "weight_lb": 0.3, "monthly_units": 10,
+                          "product_category": "other"}],
+        })
+        quote = build_fulfillment_quote(tiny, RateMatrix(products=()), None)
+        sum_lines = round(
+            sum(l["monthly"] for l in quote["lines"]
+                if l["label"] != "Monthly minimum adjustment"),
+            2,
+        )
+        self.assertEqual(sum_lines, 156.95)
+        adj = next(
+            l for l in quote["lines"] if l["label"] == "Monthly minimum adjustment"
+        )
+        self.assertEqual(adj["monthly"], 343.05)
+        self.assertFalse(adj["scales_with_orders"])  # counts as fixed
+        self.assertEqual(quote["monthly_total"], 500.00)
+        # effective_per_order divides the FINAL total: 500 / 10 = 50.00.
+        self.assertEqual(quote["effective_per_order"], 50.00)
+        # The adjustment is fixed, so it lands in fixed_monthly.
+        self.assertEqual(
+            round(quote["fixed_monthly"] + quote["variable_monthly"], 2), 500.00
+        )
+        self.assertIn(
+            "Anata's $500 monthly minimum applied (added as an adjustment above)",
+            quote["assumptions"],
+        )
+
+    def test_quote_above_floor_no_adjustment_hand_checked(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+        )
+
+        # The GlowCo 3,000-order quote totals $30,843.50 — well above the
+        # floor, so NO adjustment line and the total equals the line sum.
+        prof = ProspectProfile.from_dict({
+            "brand": "GlowCo", "monthly_order_volume": 3000,
+            "products": [
+                {"name": "Super Serum", "length_in": 4, "width_in": 4,
+                 "height_in": 6, "weight_lb": 1.2, "monthly_units": 2000,
+                 "product_category": "beauty"},
+                {"name": "Glow Kit", "length_in": 10, "width_in": 8,
+                 "height_in": 4, "weight_lb": 2.5, "monthly_units": 1000,
+                 "product_category": "beauty"},
+            ],
+        })
+        quote = build_fulfillment_quote(prof, RateMatrix(products=()), 7.50)
+        self.assertFalse(
+            any(l["label"] == "Monthly minimum adjustment" for l in quote["lines"])
+        )
+        self.assertEqual(quote["monthly_total"], 30843.50)
+        self.assertEqual(
+            quote["monthly_total"],
+            round(sum(l["monthly"] for l in quote["lines"]), 2),
+        )
+        self.assertEqual(quote["effective_per_order"], 10.28)
+        self.assertIn(
+            "Anata's $500 monthly minimum applies to all accounts",
+            quote["assumptions"],
+        )
+
+    def test_quote_c6_units_per_pallet_reconciles_with_pallet_count(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            build_fulfillment_quote,
+        )
+
+        prof = ProspectProfile.from_dict({
+            "brand": "GlowCo", "monthly_order_volume": 3000,
+            "products": [
+                {"name": "Super Serum", "length_in": 4, "width_in": 4,
+                 "height_in": 6, "weight_lb": 1.2, "monthly_units": 2000,
+                 "product_category": "beauty"},
+                {"name": "Glow Kit", "length_in": 10, "width_in": 8,
+                 "height_in": 4, "weight_lb": 2.5, "monthly_units": 1000,
+                 "product_category": "beauty"},
+            ],
+        })
+        quote = build_fulfillment_quote(prof, RateMatrix(products=()), 7.50)
+        # pallets total = SUM of per-product breakdown (3 + 5 = 8).
+        self.assertEqual(quote["pallets"], 8)
+        self.assertEqual(quote["pallets"], quote["pallets_per_month"])
+        self.assertEqual(quote["pallets"], sum(r["pallets"] for r in quote["pallet_breakdown"]))
+        # C6: the headline units_per_pallet reconciles with the BILLED pallet
+        # count (units_total / billed pallets), no longer the legacy pooled
+        # average. 3000 units / 8 pallets = 375.
+        self.assertEqual(quote["units_per_pallet"], round(quote["units_total"] / quote["pallets"]))
+        self.assertEqual(quote["units_per_pallet"], 375)
 
 
 if __name__ == "__main__":
