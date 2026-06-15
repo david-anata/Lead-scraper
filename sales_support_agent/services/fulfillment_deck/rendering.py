@@ -999,10 +999,8 @@ def render_rate_sheet_html(
     quote: Optional[dict] = None,
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
-    # The Shipping OS mark is an SVG (renders inline); load_brand_asset's
-    # sibling-extension resolution would also find it from the .png path,
-    # but reference the .svg directly so intent is explicit.
-    shipping_os_icon = load_brand_asset(settings, "assets/shipping-os-icon.svg")
+    # Anata Shipping OS brand mark (the arrow logo David supplied).
+    shipping_os_icon = load_brand_asset(settings, "assets/shipping-os-icon.png")
     stylesheet = load_brand_stylesheet(settings)
     favicon_link = load_brand_favicon_link(settings)
     title = f"{profile.display_name} × Anata — Fulfillment Rate Sheet"
