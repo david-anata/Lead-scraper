@@ -379,26 +379,29 @@ def origin_state(origin_zip: str) -> str:
 
 def map_payload(matrix: RateMatrix) -> dict:
     """The JSON the in-page JS needs: per-product, per-zone, PER-CARRIER
-    cheapest quote — so the viewer-side carrier filter can recompute the
-    best rate among enabled carriers without a round trip.
+    FRONTIER — so the viewer-side carrier filter + optimize/Cost-Transit
+    toggle can recompute the chosen service among enabled carriers without a
+    round trip.
 
-    Shape: products[].zoneRates = {"6": {"USPS": {rate, service,
-    transit_days}, "UPS": {...}}} (cheapest quote per carrier per zone).
+    Shape (v6): products[].zoneRates = {"6": {"USPS": [{rate, service,
+    transit_days}, ...], "UPS": [...]}} — each carrier maps to its
+    rate-sorted LIST of frontier quotes for that zone (cheapest, fastest, and
+    mid-tier tradeoffs; dominated services already dropped upstream).
     """
     products = []
     for product_rates in matrix.products:
         product = product_rates.product
         zone_rates: dict[str, dict] = {}
         for zone in product_rates.zones:
-            per_carrier: dict[str, dict] = {}
+            per_carrier: dict[str, list] = {}
             for quote in zone.quotes:
-                current = per_carrier.get(quote.carrier)
-                if current is None or quote.rate_usd < current["rate"]:
-                    per_carrier[quote.carrier] = {
-                        "rate": quote.rate_usd,
-                        "service": quote.service,
-                        "transit_days": quote.transit_days,
-                    }
+                per_carrier.setdefault(quote.carrier, []).append({
+                    "rate": quote.rate_usd,
+                    "service": quote.service,
+                    "transit_days": quote.transit_days,
+                })
+            for carrier in per_carrier:
+                per_carrier[carrier].sort(key=lambda q: q["rate"])
             if per_carrier:
                 zone_rates[str(zone.zone)] = per_carrier
         products.append({
@@ -460,13 +463,40 @@ def render_carrier_filter(matrix: RateMatrix) -> str:
 
 
 def _render_mode_toggle() -> str:
-    """Cost / Transit-time segmented toggle for the dot coloring."""
+    """The ONE Cost / Transit-time segmented toggle (v6). Drives BOTH the map
+    dot coloring AND the rate-table cell prominence — there is no longer a
+    second table-only toggle. Carries data-rtview for the table-prominence
+    handler and data-mode for the dot handler; both read the same state."""
     return (
-        '<div class="rm-mode" id="rm-mode" role="group" aria-label="Map coloring mode">'
-        '<button type="button" class="active" data-mode="cost" aria-pressed="true">Cost</button>'
-        '<button type="button" data-mode="transit" aria-pressed="false">Transit time</button>'
+        '<div class="rm-mode" id="rm-mode" role="group" aria-label="Cost or transit-time view">'
+        '<button type="button" class="active" data-mode="cost" data-rtview="cost" aria-pressed="true">Cost</button>'
+        '<button type="button" data-mode="transit" data-rtview="transit" aria-pressed="false">Transit time</button>'
         "</div>"
     )
+
+
+def _render_optimize_controls() -> str:
+    """Optimize select (Cheapest / Fastest / Cheapest within ≤N days) + the
+    transit-target select (enabled only for the target mode). v6: these live
+    in the explorer's single control bar alongside the carrier filter + the
+    one Cost/Transit toggle, so a requote never strands them."""
+    return """
+      <label class="rt-label" for="rt-optimize">Optimize for
+        <select id="rt-optimize">
+          <option value="cheapest" selected>Cheapest</option>
+          <option value="fastest">Fastest</option>
+          <option value="target">Cheapest within target</option>
+        </select>
+      </label>
+      <label class="rt-label" for="rt-target">Target
+        <select id="rt-target" disabled>
+          <option value="2">&le;2 days</option>
+          <option value="3" selected>&le;3 days</option>
+          <option value="4">&le;4 days</option>
+          <option value="5">&le;5 days</option>
+          <option value="any">Any</option>
+        </select>
+      </label>"""
 
 
 def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
@@ -515,8 +545,11 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
       <div class="rm-wrap">
         <div class="rm-controls" id="rm-controls">
           <div class="rm-products" id="rm-products"></div>
-          {render_carrier_filter(matrix)}
-          {_render_mode_toggle()}
+          <div class="rm-controlbar" id="rt-controls">
+            {render_carrier_filter(matrix)}
+            {_render_mode_toggle()}
+            {_render_optimize_controls()}
+          </div>
           <div class="rm-dims" id="rm-dims"></div>
           <div class="rm-status" id="rm-status"></div>
         </div>
@@ -536,6 +569,18 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
       </div>
       <style>
         .rm-wrap {{ display: flex; flex-direction: column; gap: 14px; }}
+        .rm-controlbar {{ display: flex; align-items: center; gap: 14px;
+          flex-wrap: wrap; }}
+        .rm-controlbar .carrier-filter {{ margin: 0; }}
+        .rm-controlbar .rt-label {{ display: inline-flex; align-items: center;
+          gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+          text-transform: uppercase; color: var(--anata-muted, #6b7688); }}
+        .rm-controlbar .rt-label select {{ font: inherit; font-size: 12.5px;
+          padding: 5px 8px; border-radius: 9px;
+          border: 1px solid var(--anata-line-strong, rgba(29,45,68,0.22));
+          background: #fff; color: var(--anata-ink, #1d2d44);
+          text-transform: none; letter-spacing: normal; }}
+        .rm-controlbar .rt-label select:disabled {{ opacity: 0.45; }}
         .rm-map-holder {{ position: relative; }}
         #rm-svg {{ width: 100%; height: auto; display: block; }}
         .rm-state {{ fill: #f3efe9; stroke: #fffdf9; stroke-width: 1.5; }}
@@ -608,13 +653,13 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           // are carrier names exactly as they appear in the rate data.
           var disabledCarriers = {{}};
           var CHIP_COLORS = DATA.carrierColors || {{}};
-          // Dot coloring mode: 'cost' (best rate) or 'transit' (best days).
-          var mode = 'cost';
-          // Rates-table intelligence state (v5) — lives HERE in the never-
-          // swapped map section so it survives requote fragment swaps.
-          // view: cost|transit cell prominence; mode: cheapest|fastest|target;
-          // target: max transit days for "cheapest within target" (null=any).
-          var rtState = {{ view: 'cost', mode: 'cheapest', target: 3 }};
+          // v6: ONE state object drives BOTH the map dots AND the rate table.
+          // view: 'cost'|'transit' — dot coloring + table cell prominence;
+          // optimize: 'cheapest'|'fastest'|'target' — which frontier service
+          // wins per zone/row; target: max transit days for the target mode
+          // (null = any). Lives HERE in the never-swapped section script so it
+          // survives requote fragment swaps.
+          var state = {{ view: 'cost', optimize: 'cheapest', target: 3 }};
 
           function fmt(rate) {{ return '$' + Number(rate).toFixed(2); }}
 
@@ -626,152 +671,163 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
               + 'background:' + col[0] + ';color:' + col[1] + '">' + key + '</span>';
           }}
 
-          function bestForZone(perCarrier, honorFilter) {{
-            var best = null, bestCarrier = null;
-            Object.keys(perCarrier).forEach(function(carrier) {{
-              if (honorFilter && disabledCarriers[carrier]) return;
-              var q = perCarrier[carrier];
-              if (!best || q.rate < best.rate) {{ best = q; bestCarrier = carrier; }}
+          // Pick the optimizer winner from a flat list of frontier options
+          // ({{rate, days, ...}}). Cheapest: lowest rate. Fastest: fewest days,
+          // tie-broken by cheaper. Target: cheapest with days<=target, else
+          // null (caller decides the no-option behaviour). honorTarget=false
+          // ignores the target window (used for the map/table "no option"
+          // fallback so map and table behave identically).
+          function cheapestOf(list) {{
+            return list.reduce(function(a, b) {{ return b.rate < a.rate ? b : a; }});
+          }}
+          function fastestOf(list) {{
+            var withDays = list.filter(function(c) {{ return c.days != null; }});
+            if (!withDays.length) return cheapestOf(list);
+            return withDays.reduce(function(a, b) {{
+              if (b.days < a.days) return b;
+              if (b.days === a.days && b.rate < a.rate) return b;
+              return a;
             }});
-            if (!best && honorFilter) return bestForZone(perCarrier, false);
-            if (!best) return null;
-            return {{ carrier: bestCarrier, rate: best.rate, service: best.service,
-                     transit_days: best.transit_days }};
+          }}
+          function chooseFrom(list) {{
+            if (!list.length) return null;
+            if (state.optimize === 'fastest') return fastestOf(list);
+            if (state.optimize === 'target' && state.target !== null) {{
+              var qualifying = list.filter(function(c) {{
+                return c.days != null && c.days <= state.target;
+              }});
+              if (qualifying.length) return cheapestOf(qualifying);
+              return null;  // no option meets target — caller handles the miss
+            }}
+            return cheapestOf(list);
           }}
 
-          function bestTransitForZone(perCarrier, honorFilter) {{
-            var best = null;
+          // All enabled carriers' frontier options for a zone, flattened to
+          // {{carrier, rate, days, service}}. Honors the carrier filter; when
+          // the filter empties a zone, returns [] (NO silent honor-filter
+          // fallback — map and table both show "—" consistently).
+          function zoneOptions(zone, productIdx) {{
+            var product = DATA.products[productIdx];
+            if (!product || !zone) return [];
+            var perCarrier = product.zoneRates[String(zone)];
+            if (!perCarrier) return [];
+            var out = [];
             Object.keys(perCarrier).forEach(function(carrier) {{
-              if (honorFilter && disabledCarriers[carrier]) return;
-              var days = perCarrier[carrier].transit_days;
-              if (days == null) return;
-              if (best === null || days < best) best = days;
+              if (disabledCarriers[carrier]) return;
+              var list = perCarrier[carrier];
+              // Back-compat: tolerate the legacy single-dict shape.
+              if (!Array.isArray(list)) list = [list];
+              list.forEach(function(q) {{
+                out.push({{ carrier: carrier, rate: q.rate, days: q.transit_days,
+                            service: q.service }});
+              }});
             }});
-            if (best === null && honorFilter) return bestTransitForZone(perCarrier, false);
-            return best;
+            return out;
           }}
 
-          function zoneInfo(zone, productIdx) {{
-            var product = DATA.products[productIdx];
-            if (!product || !zone) return null;
-            var perCarrier = product.zoneRates[String(zone)];
-            if (!perCarrier) return null;
-            return bestForZone(perCarrier, true);
-          }}
-
-          function zoneTransit(zone, productIdx) {{
-            var product = DATA.products[productIdx];
-            if (!product || !zone) return null;
-            var perCarrier = product.zoneRates[String(zone)];
-            if (!perCarrier) return null;
-            return bestTransitForZone(perCarrier, true);
+          // The chosen option for a zone under the current optimizer. In target
+          // mode with no qualifying option, falls back to fastest so the dot
+          // still colors (the table tags the row "no option meets target").
+          function zoneChoice(zone, productIdx) {{
+            var options = zoneOptions(zone, productIdx);
+            if (!options.length) return null;
+            var winner = chooseFrom(options);
+            if (winner) return winner;
+            return fastestOf(options);  // target miss — show the fastest
           }}
 
           function rateRange(productIdx) {{
+            var rates = [];
             var product = DATA.products[productIdx];
             if (!product) return null;
-            var rates = [];
             Object.keys(product.zoneRates).forEach(function(zone) {{
-              var info = bestForZone(product.zoneRates[zone], true);
-              if (info) rates.push(info.rate);
+              var c = zoneChoice(zone, productIdx);
+              if (c) rates.push(c.rate);
             }});
             if (!rates.length) return null;
             return [Math.min.apply(null, rates), Math.max.apply(null, rates)];
           }}
 
           function transitRange(productIdx) {{
+            var days = [];
             var product = DATA.products[productIdx];
             if (!product) return null;
-            var days = [];
             Object.keys(product.zoneRates).forEach(function(zone) {{
-              var d = bestTransitForZone(product.zoneRates[zone], true);
-              if (d != null) days.push(d);
+              var c = zoneChoice(zone, productIdx);
+              if (c && c.days != null) days.push(c.days);
             }});
             if (!days.length) return null;
             return [Math.min.apply(null, days), Math.max.apply(null, days)];
           }}
 
-          // One handler, both effects: the filter chips (rendered inside the
-          // carrier-rates section) repaint the map AND show/hide the matching
-          // rate-table columns. Delegated on document so chips swapped in by
-          // the requote flow keep working without re-binding.
-          // v5: one optimizer drives the table highlights for every mode —
-          // cheapest, fastest (tie -> cheaper), cheapest within a transit
-          // target (none qualifies -> highlight fastest + tag the row).
-          // Re-runs on carrier-filter change and after requote fragment
-          // swaps (applyCarrierFilter calls it in both paths).
-          function applyTableIntel() {{
-            var anyOff = Object.keys(disabledCarriers).some(function(k) {{ return disabledCarriers[k]; }});
-            // JS owns the highlight whenever the viewer left the
-            // server-rendered default (cheapest, all carriers on).
-            var jsManaged = anyOff || rtState.mode !== 'cheapest';
-            // Sync controls to persisted state (fragment swaps reset markup).
+          // v6: ONE optimizer drives the rate table AND the map dots from the
+          // same state. The table is DATA-DRIVEN — each cell carries its
+          // carrier's frontier in data-services and applyIntel rewrites the
+          // rate/service/transit spans to the chosen service + best-in-row
+          // highlight. Carrier filter hides columns. Re-runs on every state
+          // change and after requote fragment swaps.
+          function applyIntel() {{
+            // Sync controls to persisted state (fragment swaps reset markup;
+            // the controls themselves live in the never-swapped section).
             document.querySelectorAll('button[data-rtview]').forEach(function(btn) {{
-              var on = btn.getAttribute('data-rtview') === rtState.view;
+              var on = btn.getAttribute('data-rtview') === state.view;
               btn.classList.toggle('active', on);
               btn.setAttribute('aria-pressed', on ? 'true' : 'false');
             }});
             var opt = document.getElementById('rt-optimize');
-            if (opt) opt.value = rtState.mode;
+            if (opt) opt.value = state.optimize;
             var tgt = document.getElementById('rt-target');
             if (tgt) {{
-              tgt.value = rtState.target === null ? 'any' : String(rtState.target);
-              tgt.disabled = rtState.mode !== 'target';
-            }}
-            function cheapestOf(list) {{
-              return list.reduce(function(a, b) {{ return b.rate < a.rate ? b : a; }});
-            }}
-            function fastestOf(list) {{
-              var withDays = list.filter(function(c) {{ return c.days !== null; }});
-              if (!withDays.length) return cheapestOf(list);
-              return withDays.reduce(function(a, b) {{
-                if (b.days < a.days) return b;
-                if (b.days === a.days && b.rate < a.rate) return b;
-                return a;
-              }});
+              tgt.value = state.target === null ? 'any' : String(state.target);
+              tgt.disabled = state.optimize !== 'target';
             }}
             document.querySelectorAll('table.data-table').forEach(function(table) {{
-              table.classList.toggle('js-filtered', jsManaged);
-              table.classList.toggle('transit-view', rtState.view === 'transit');
-              table.querySelectorAll('th[data-carrier], td[data-carrier]').forEach(function(cell) {{
+              table.classList.add('js-filtered');
+              table.classList.toggle('transit-view', state.view === 'transit');
+              table.querySelectorAll('th[data-carrier]').forEach(function(cell) {{
                 cell.classList.toggle('cf-hidden', !!disabledCarriers[cell.getAttribute('data-carrier')]);
               }});
               table.querySelectorAll('tbody tr').forEach(function(row) {{
                 var cells = [];
                 row.querySelectorAll('td[data-carrier]').forEach(function(cell) {{
+                  var carrier = cell.getAttribute('data-carrier');
+                  cell.classList.toggle('cf-hidden', !!disabledCarriers[carrier]);
                   cell.classList.remove('js-best');
                   cell.classList.remove('rt-dim');
-                  if (disabledCarriers[cell.getAttribute('data-carrier')]) return;
-                  var rate = parseFloat(cell.getAttribute('data-rate'));
-                  if (isNaN(rate)) return;
-                  var days = parseInt(cell.getAttribute('data-days'), 10);
-                  cells.push({{ el: cell, rate: rate, days: isNaN(days) ? null : days }});
+                  // Rewrite the cell to the optimizer-chosen frontier service.
+                  // Prefer the LIVE products payload (so a requote updates the
+                  // table without an HTML swap); fall back to the static
+                  // data-services attribute for the very first paint / no live
+                  // data path.
+                  var services = cellFrontier(cell);
+                  var pick = pickCellService(services);
+                  paintCell(cell, pick);
+                  if (disabledCarriers[carrier]) return;
+                  if (!pick || pick.r == null) return;
+                  cells.push({{ el: cell, rate: pick.r,
+                               days: pick.d == null ? null : pick.d,
+                               inTarget: pick.inTarget }});
                 }});
                 var oldTag = row.querySelector('.rt-rowtag');
                 if (oldTag) oldTag.parentNode.removeChild(oldTag);
                 if (!cells.length) return;
-                var winner = null;
+                var pool = cells;
                 var missTarget = false;
-                if (rtState.mode === 'fastest') {{
-                  winner = fastestOf(cells);
-                }} else if (rtState.mode === 'target' && rtState.target !== null) {{
-                  var qualifying = cells.filter(function(c) {{
-                    return c.days !== null && c.days <= rtState.target;
-                  }});
+                if (state.optimize === 'target' && state.target !== null) {{
+                  var qualifying = cells.filter(function(c) {{ return c.inTarget; }});
                   if (qualifying.length) {{
-                    winner = cheapestOf(qualifying);
-                    // Dim non-qualifying cells in target mode only.
+                    pool = qualifying;
                     cells.forEach(function(c) {{
                       if (qualifying.indexOf(c) === -1) c.el.classList.add('rt-dim');
                     }});
                   }} else {{
-                    winner = fastestOf(cells);
                     missTarget = true;
                   }}
-                }} else {{
-                  winner = cheapestOf(cells);
                 }}
-                if (winner && jsManaged) winner.el.classList.add('js-best');
+                var winner;
+                if (state.optimize === 'fastest') winner = fastestOf(pool);
+                else winner = cheapestOf(pool);
+                if (winner) winner.el.classList.add('js-best');
                 if (missTarget) {{
                   var first = row.querySelector('td');
                   if (first) {{
@@ -785,24 +841,127 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             }});
           }}
 
-          document.addEventListener('click', function(evt) {{
-            var btn = evt.target.closest('button[data-rtview]');
-            if (!btn) return;
-            rtState.view = btn.getAttribute('data-rtview') === 'transit' ? 'transit' : 'cost';
-            applyTableIntel();
-          }});
+          // Choose which of a cell's frontier services to show, per the
+          // optimizer. Cheapest -> lowest rate; Fastest -> fewest days (tie
+          // cheaper); Target -> cheapest within the window, else cheapest with
+          // inTarget=false so the cell still shows a value (row gets tagged).
+          function pickCellService(services) {{
+            if (!services || !services.length) return null;
+            var list = services.map(function(s) {{
+              return {{ r: s.r, d: (s.d == null ? null : s.d), s: s.s }};
+            }});
+            function cheapest(arr) {{
+              return arr.reduce(function(a, b) {{ return b.r < a.r ? b : a; }});
+            }}
+            function fastest(arr) {{
+              var withDays = arr.filter(function(c) {{ return c.d != null; }});
+              if (!withDays.length) return cheapest(arr);
+              return withDays.reduce(function(a, b) {{
+                if (b.d < a.d) return b;
+                if (b.d === a.d && b.r < a.r) return b;
+                return a;
+              }});
+            }}
+            var pick;
+            if (state.optimize === 'fastest') {{
+              pick = fastest(list); pick.inTarget = true;
+            }} else if (state.optimize === 'target' && state.target !== null) {{
+              var ok = list.filter(function(c) {{ return c.d != null && c.d <= state.target; }});
+              if (ok.length) {{ pick = cheapest(ok); pick.inTarget = true; }}
+              else {{ pick = cheapest(list); pick.inTarget = false; }}
+            }} else {{
+              pick = cheapest(list); pick.inTarget = true;
+            }}
+            return pick;
+          }}
+
+          // Rewrite a rate cell's spans to a chosen frontier service.
+          function paintCell(cell, pick) {{
+            var price = cell.querySelector('.rc-price');
+            var service = cell.querySelector('.rc-service');
+            var transit = cell.querySelector('.rc-transit');
+            if (!pick || pick.r == null) {{
+              if (price) price.textContent = '—';
+              if (service) service.textContent = '';
+              if (transit) transit.remove();
+              cell.removeAttribute('data-rate');
+              cell.removeAttribute('data-days');
+              return;
+            }}
+            if (price) price.textContent = fmt(pick.r);
+            if (service) service.textContent = pick.s || '';
+            var main = cell.querySelector('.rc-main');
+            if (pick.d != null) {{
+              if (!transit && main) {{
+                transit = document.createElement('span');
+                transit.className = 'rc-transit';
+                main.appendChild(transit);
+              }}
+              if (transit) transit.textContent = pick.d + 'd';
+              cell.setAttribute('data-days', pick.d);
+            }} else {{
+              if (transit) transit.remove();
+              cell.removeAttribute('data-days');
+            }}
+            cell.setAttribute('data-rate', Number(pick.r).toFixed(2));
+          }}
+
+          // A cell's frontier options ([{{r,d,s}}]). Prefers the LIVE products
+          // payload (keyed by data-product/data-zone/data-carrier) so a requote
+          // updates the table without an HTML swap; falls back to the static
+          // data-services attribute the server rendered.
+          function cellFrontier(cell) {{
+            var pi = parseInt(cell.getAttribute('data-product'), 10);
+            var zone = cell.getAttribute('data-zone');
+            var carrier = cell.getAttribute('data-carrier');
+            if (!isNaN(pi) && zone && carrier && DATA.products[pi]
+                && DATA.products[pi].zoneRates) {{
+              var perCarrier = DATA.products[pi].zoneRates[String(zone)];
+              if (perCarrier && perCarrier[carrier] != null) {{
+                var live = perCarrier[carrier];
+                if (!Array.isArray(live)) live = [live];
+                return live.map(function(q) {{
+                  return {{ r: q.rate, d: q.transit_days, s: q.service }};
+                }});
+              }}
+              if (perCarrier) return [];  // carrier dropped for this zone now
+            }}
+            try {{ return JSON.parse(cell.getAttribute('data-services') || '[]'); }}
+            catch (_e) {{ return []; }}
+          }}
+
+          // After a requote the rates-explorer section isn't swapped, so the
+          // per-product dims headings need a client-side refresh from DATA.
+          function fmtG(n) {{
+            if (n == null) return '';
+            return (Math.round(n * 1000) / 1000).toString();
+          }}
+          function updateDimsLabels() {{
+            document.querySelectorAll('.rate-pane-dims').forEach(function(el) {{
+              var pi = parseInt(el.getAttribute('data-product'), 10);
+              var p = DATA.products[pi];
+              if (!p) return;
+              var full = (p.length_in != null && p.width_in != null
+                && p.height_in != null && p.weight_lb != null);
+              var dims = full
+                ? (fmtG(p.length_in) + ' × ' + fmtG(p.width_in) + ' × '
+                   + fmtG(p.height_in) + ' in · ' + fmtG(p.weight_lb) + ' lb')
+                : '—';
+              el.textContent = dims;
+            }});
+          }}
 
           document.addEventListener('change', function(evt) {{
             var t = evt.target;
             if (!t || !t.id) return;
             if (t.id === 'rt-optimize') {{
-              rtState.mode = t.value === 'fastest' ? 'fastest'
+              state.optimize = t.value === 'fastest' ? 'fastest'
                 : (t.value === 'target' ? 'target' : 'cheapest');
-              applyTableIntel();
+              applyIntel(); paint();
             }} else if (t.id === 'rt-target') {{
               var v = parseInt(t.value, 10);
-              rtState.target = isNaN(v) ? null : v;
-              applyTableIntel();
+              state.target = isNaN(v) ? null : v;
+              applyIntel(); paint();
             }}
           }});
 
@@ -812,7 +971,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
               chip.classList.toggle('cf-off', off);
               chip.setAttribute('aria-pressed', off ? 'false' : 'true');
             }});
-            applyTableIntel();
+            applyIntel();
             paint();
           }}
 
@@ -845,16 +1004,17 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             var chips = RAMP.map(function(c) {{ return '<span class="rm-chip" style="background:' + c + '"></span>'; }}).join('');
             var suffix = (DATA.source === 'mock' ? ' · sample rates' : '')
               + (edited ? ' · live estimate for edited specs' : '');
-            if (mode === 'transit') {{
+            if (state.view === 'transit') {{
               var trange = transitRange(selected);
               svg.querySelectorAll('.rm-cell').forEach(function(el) {{
                 var zone = parseInt(el.getAttribute('data-z'), 10);
-                var days = trange ? zoneTransit(zone, selected) : null;
+                var c = trange ? zoneChoice(zone, selected) : null;
+                var days = c && c.days != null ? c.days : null;
                 el.style.fill = days != null ? colorFor(days, trange) : '#eee9dc';
               }});
               if (trange) {{
                 legend.innerHTML = '<span>' + trange[0] + (trange[0] === trange[1] ? '' : '–' + trange[1]) + ' days</span>' + chips
-                  + '<span style="margin-left:10px">best transit time by ZIP area' + suffix + '</span>';
+                  + '<span style="margin-left:10px">chosen transit time by ZIP area' + suffix + '</span>';
               }} else {{
                 legend.innerHTML = '';
               }}
@@ -863,8 +1023,8 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             var range = rateRange(selected);
             svg.querySelectorAll('.rm-cell').forEach(function(el) {{
               var zone = parseInt(el.getAttribute('data-z'), 10);
-              var info = range ? zoneInfo(zone, selected) : null;
-              el.style.fill = info ? colorFor(info.rate, range) : '#eee9dc';
+              var c = range ? zoneChoice(zone, selected) : null;
+              el.style.fill = c ? colorFor(c.rate, range) : '#eee9dc';
             }});
             if (range) {{
               legend.innerHTML = '<span>' + fmt(range[0]) + '</span>' + chips + '<span>' + fmt(range[1]) + '</span>'
@@ -878,12 +1038,13 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           if (modeWrap) modeWrap.addEventListener('click', function(evt) {{
             var btn = evt.target.closest('button[data-mode]');
             if (!btn) return;
-            mode = btn.getAttribute('data-mode') === 'transit' ? 'transit' : 'cost';
+            state.view = btn.getAttribute('data-mode') === 'transit' ? 'transit' : 'cost';
             modeWrap.querySelectorAll('button').forEach(function(b) {{
               var on = b === btn;
               b.classList.toggle('active', on);
               b.setAttribute('aria-pressed', on ? 'true' : 'false');
             }});
+            applyIntel();
             paint();
           }});
 
@@ -962,11 +1123,14 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                 }});
                 edited = !isReset;
                 swapFragments(data.fragments);
+                updateDimsLabels();
                 statusEl.textContent = isReset
                   ? 'Restored the quoted specs — rates updated and saved.'
                   : 'Rates updated and saved to this report.';
-                // Swapped fragments arrive unfiltered — re-apply the viewer's
-                // carrier filter to the fresh chips/columns (also repaints).
+                // The combined rates-explorer section is NEVER swapped — the
+                // data-driven table + map both re-read DATA.products here, and
+                // re-applying the carrier filter repaints both (applyIntel +
+                // paint), so the viewer's filter/mode/target state survives.
                 applyCarrierFilter();
               }})
               .catch(function() {{
@@ -979,7 +1143,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             var btn = evt.target.closest('button[data-i]');
             if (!btn) return;
             selected = parseInt(btn.getAttribute('data-i'), 10) || 0;
-            renderControls(); paint();
+            renderControls(); applyIntel(); paint();
           }});
 
           svg.addEventListener('mousemove', function(evt) {{
@@ -989,14 +1153,14 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
             var miles = el.getAttribute('data-mi');
             var name = el.getAttribute('data-n') || 'ZIP area';
             var prefix = el.getAttribute('data-p');
-            var info = zoneInfo(zone, selected);
+            var info = zoneChoice(zone, selected);
             var inner = '<div class="rm-tt-state">' + name + '</div>'
               + 'ZIP ' + prefix + 'xx · ' + Number(miles).toLocaleString() + ' mi'
               + (zone ? ' · zone ' + zone : '') + '<br>';
             if (info) {{
               inner += '<span class="rm-tt-rate">' + fmt(info.rate) + '</span> per parcel<br>'
                 + chipHtml(info.carrier) + ' ' + String(info.service || '').replace(/[<>&]/g, '')
-                + (info.transit_days ? ' · ' + info.transit_days + ' day' + (info.transit_days > 1 ? 's' : '') : '');
+                + (info.days ? ' · ' + info.days + ' day' + (info.days > 1 ? 's' : '') : '');
             }} else {{
               inner += 'No estimate available';
             }}
@@ -1012,6 +1176,7 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
           svg.addEventListener('mouseleave', function() {{ tooltip.hidden = true; }});
 
           renderControls();
+          applyIntel();
           paint();
         }})();
       </script>

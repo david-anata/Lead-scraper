@@ -17,6 +17,7 @@ bullets are prospect-specific narrative output.
 from __future__ import annotations
 
 import html
+import json
 from typing import Optional
 
 from sales_support_agent.config import Settings
@@ -118,7 +119,17 @@ def _stat_strip(stats: list, sage: bool = False) -> str:
     return f'<div class="stat-strip">{"".join(blocks)}</div>'
 
 
-def _render_rate_table(product_rates: ProductRates) -> str:
+def _render_rate_table(product_rates: ProductRates, product_index: int = 0) -> str:
+    """v6: DATA-DRIVEN rate table. The server renders the static CHEAPEST
+    service per carrier per zone (progressive enhancement / print / no-JS),
+    but EACH cell also carries its carrier's full Pareto frontier for that zone
+    as a compact ``data-services`` JSON attribute (``[{r,d,s}, ...]`` — rate,
+    transit days, service). The single shared ``applyIntel()`` in the explorer
+    section script reads it to swap each cell to the optimizer-chosen service
+    and re-highlight the best-in-zone, all without an HTML fragment swap — so
+    it survives a live requote. ``data-product``/``data-zone`` let the JS
+    re-source the frontier from the live products payload after a requote.
+    """
     carriers = _carrier_order(product_rates)
     if not carriers or not product_rates.zones:
         return '<p class="muted small">No rates available for this product.</p>'
@@ -128,35 +139,63 @@ def _render_rate_table(product_rates: ProductRates) -> str:
     )
     body_rows = []
     for zone in product_rates.zones:
-        by_carrier: dict[str, object] = {}
+        # All frontier quotes per carrier (rate-sorted) for the data-services
+        # attribute; the cheapest per carrier is the static default render.
+        by_carrier: dict[str, list] = {}
         for q in zone.quotes:
-            current = by_carrier.get(q.carrier)
-            if current is None or q.rate_usd < current.rate_usd:
-                by_carrier[q.carrier] = q
+            by_carrier.setdefault(q.carrier, []).append(q)
+        for carrier in by_carrier:
+            by_carrier[carrier].sort(key=lambda q: q.rate_usd)
         cheapest: Optional[float] = min((q.rate_usd for q in zone.quotes), default=None)
         cells = []
         for carrier in carriers:
-            quote = by_carrier.get(carrier)
+            frontier = by_carrier.get(carrier)
             esc_carrier = html.escape(carrier, quote=True)
-            if quote is None:
-                cells.append(f'<td class="rate-cell" data-carrier="{esc_carrier}">—</td>')
+            if not frontier:
+                # Keep the .rc-main/.rc-price structure even when empty so the
+                # client-side applyIntel can populate it if a requote gives this
+                # carrier/zone a rate.
+                cells.append(
+                    f'<td class="rate-cell" data-carrier="{esc_carrier}" '
+                    f'data-product="{product_index}" data-zone="{zone.zone}" '
+                    f'data-services="[]">'
+                    f'<span class="rc-main"><span class="rc-price">—</span></span>'
+                    f'<span class="rc-service"></span></td>'
+                )
                 continue
-            is_best = cheapest is not None and abs(quote.rate_usd - cheapest) < 0.005
+            default = frontier[0]  # cheapest service = static default
+            services_json = html.escape(
+                json.dumps(
+                    [
+                        {
+                            "r": round(q.rate_usd, 2),
+                            "d": q.transit_days,
+                            "s": q.service,
+                        }
+                        for q in frontier
+                    ],
+                    separators=(",", ":"),
+                ),
+                quote=True,
+            )
+            is_best = cheapest is not None and abs(default.rate_usd - cheapest) < 0.005
             transit = (
-                f'<span class="rc-transit">{quote.transit_days}d</span>'
-                if quote.transit_days
+                f'<span class="rc-transit">{default.transit_days}d</span>'
+                if default.transit_days
                 else ""
             )
             days_attr = (
-                f' data-days="{quote.transit_days}"' if quote.transit_days else ""
+                f' data-days="{default.transit_days}"' if default.transit_days else ""
             )
             # Each value carries its own class inside .rc-main, so the
             # Cost / Transit-time view toggle just flips prominence via CSS.
             cells.append(
                 f'<td class="rate-cell{" best" if is_best else ""}" '
-                f'data-carrier="{esc_carrier}" data-rate="{quote.rate_usd:.2f}"{days_attr}>'
-                f'<span class="rc-main"><span class="rc-price">{_fmt_rate(quote.rate_usd)}</span>{transit}</span>'
-                f'<span class="rc-service">{html.escape(quote.service)}</span></td>'
+                f'data-carrier="{esc_carrier}" data-product="{product_index}" '
+                f'data-zone="{zone.zone}" data-services="{services_json}" '
+                f'data-rate="{default.rate_usd:.2f}"{days_attr}>'
+                f'<span class="rc-main"><span class="rc-price">{_fmt_rate(default.rate_usd)}</span>{transit}</span>'
+                f'<span class="rc-service">{html.escape(default.service)}</span></td>'
             )
         body_rows.append(
             f"<tr><td><strong>Zone {zone.zone}</strong><br>"
@@ -197,11 +236,13 @@ def _render_product_tabs(matrix: RateMatrix) -> str:
         # The "estimated" pill lives INSIDE the pane heading, next to the name.
         estimated = f" {_ESTIMATED_PILL}" if product.dims_estimated else ""
         panes.append(
-            f'<div class="off-pane rate-pane" data-pane="{key}"{hidden_attr}>'
+            f'<div class="off-pane rate-pane" data-pane="{key}" data-product="{index}"{hidden_attr}>'
             f'<h3 style="font-size:18px;font-weight:700;margin:0 0 4px;letter-spacing:-0.015em">'
             f"{html.escape(full_name)}{estimated}</h3>"
-            f'<p class="muted small" style="margin:0 0 16px">{html.escape(_fmt_dims(product))}{units}</p>'
-            f"{_render_rate_table(product_rates)}"
+            f'<p class="muted small" style="margin:0 0 16px">'
+            f'<span class="rate-pane-dims" data-product="{index}">{html.escape(_fmt_dims(product))}</span>'
+            f"<span class=\"rate-pane-units\">{units}</span></p>"
+            f"{_render_rate_table(product_rates, index)}"
             f"</div>"
         )
     multi = len(matrix.products) > 1
@@ -305,55 +346,26 @@ def _render_hero(
     </section>"""
 
 
-def _render_rate_map_section(matrix: RateMatrix, origin_label: str, sec: str = "02",
-                             requote_path: str = "") -> str:
-    return f"""
-    <section class="slide" id="sec-{sec}" data-key="rate-map" data-screen-label="{sec} Rate map">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Explore your rates</p>
-          <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
-        </div>
-        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark real mileage bands. Hover anywhere for the exact distance and rate. Adjust a product's dims or weight and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report.</p>
-      </header>
-      {render_interactive_rate_map(matrix, origin_label, requote_path)}
-    </section>"""
+def _render_rates_explorer_section(
+    matrix: RateMatrix,
+    origin_label: str,
+    generated_on: str,
+    requote_path: str = "",
+    sec: str = "02",
+) -> str:
+    """v6: the map and the carrier-rate tables merged into ONE "Explore your
+    rates" section, driven by ONE shared control bar (carrier filter chips +
+    the single Cost/Transit toggle + the optimize select + the target select).
+    The control bar lives at the top of the map (``render_interactive_rate_map``),
+    then the map, then the per-product rate tables. One toggle drives both the
+    map dot coloring AND the table cell prominence — no more duplicate toggle,
+    no more chips that mutate a table in a different section.
 
-
-def _render_table_controls() -> str:
-    """v5 transit-intelligence controls above the rates table: a Cost /
-    Transit-time view toggle, an optimize select, and a transit-target select
-    (enabled only for "Cheapest within target"). State + handlers live in the
-    never-swapped map script; the server-rendered default stays the cheapest
-    highlight so print / no-JS is unchanged."""
-    return """
-      <div class="rt-controls" id="rt-controls">
-        <div class="rt-view" role="group" aria-label="Table view">
-          <button type="button" class="active" data-rtview="cost" aria-pressed="true">Cost</button>
-          <button type="button" data-rtview="transit" aria-pressed="false">Transit time</button>
-        </div>
-        <label class="rt-label" for="rt-optimize">Optimize for
-          <select id="rt-optimize">
-            <option value="cheapest" selected>Cheapest</option>
-            <option value="fastest">Fastest</option>
-            <option value="target">Cheapest within target</option>
-          </select>
-        </label>
-        <label class="rt-label" for="rt-target">Target
-          <select id="rt-target" disabled>
-            <option value="2">&le;2 days</option>
-            <option value="3" selected>&le;3 days</option>
-            <option value="4">&le;4 days</option>
-            <option value="5">&le;5 days</option>
-            <option value="any">Any</option>
-          </select>
-        </label>
-      </div>"""
-
-
-def _render_rates_section(matrix: RateMatrix, generated_on: str, sec: str = "03") -> str:
-    # Sample data keeps the SAMPLE badge; live WMS data earns the trust
-    # stamp under the table instead. Never both.
+    Sample data keeps the SAMPLE badge; live WMS data earns the trust stamp
+    under the tables instead. Never both. The whole section is never swapped on
+    requote (``data-key="rates-explorer"``) — the table updates client-side
+    from the returned products payload.
+    """
     badge = _SAMPLE_BADGE if matrix.source == RATE_SOURCE_MOCK else ""
     trust = (
         ""
@@ -364,16 +376,18 @@ def _render_rates_section(matrix: RateMatrix, generated_on: str, sec: str = "03"
         )
     )
     return f"""
-    <section class="slide" id="sec-{sec}" data-key="carrier-rates" data-screen-label="{sec} Carrier rates">
+    <section class="slide" id="sec-{sec}" data-key="rates-explorer" data-screen-label="{sec} Your rates">
       <header class="slide-head">
         <div class="heading-stack">
-          <p class="eyebrow">Carrier costs</p>
-          <h2 class="slide-title">Your rates, by product and zone</h2>
+          <p class="eyebrow">Explore your rates</p>
+          <h2 class="slide-title">What shipping costs, anywhere in the US</h2>
         </div>
-        <p class="caption">Rates per parcel for each of your product configurations, quoted to a representative city in every zone. Best rate per zone highlighted — use the carrier toggles by the map to compare. {badge}</p>
+        <p class="caption">Every ZIP area in the country, colored by what it costs to ship there from our dock — the rings mark real mileage bands. Hover anywhere for the exact distance and rate, then see the full per-zone table below. One set of controls — carrier filter, Cost / Transit toggle, and optimizer — drives both the map and the table. Adjust a product's dims or weight and press “Request rates” — the whole sheet re-quotes with live rates and saves to this report. {badge}</p>
       </header>
-      {_render_table_controls()}
-      {_render_product_tabs(matrix)}
+      {render_interactive_rate_map(matrix, origin_label, requote_path)}
+      <div class="rates-tables" id="rates-tables">
+        {_render_product_tabs(matrix)}
+      </div>
       {trust}
     </section>"""
 
@@ -1021,10 +1035,11 @@ def render_rate_sheet_html(
 
     _add("Overview", lambda sec: _render_hero(
         profile, matrix, narrative, generated_on, sec, blended_rate, avg_transit_days))
-    if flags.zone_map:
-        _add("Rate map", lambda sec: _render_rate_map_section(matrix, origin_label, sec, requote_path))
-    if flags.rate_matrix:
-        _add("Carrier rates", lambda sec: _render_rates_section(matrix, generated_on, sec))
+    # v6: the map + carrier-rate tables are ONE "Explore your rates" section
+    # driven by a single control bar — the rail collapses to one entry.
+    if flags.zone_map or flags.rate_matrix:
+        _add("Your rates", lambda sec: _render_rates_explorer_section(
+            matrix, origin_label, generated_on, requote_path, sec))
     if flags.volume_economics or savings:
         _add("The monthly math", lambda sec: _render_monthly_math_section(
             profile, matrix, narrative, savings, blended_rate, blend_method, sec))

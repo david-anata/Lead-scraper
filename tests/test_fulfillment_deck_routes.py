@@ -27,9 +27,6 @@ from sales_support_agent.models.entities import DeckVisitSession
 from sales_support_agent.services.access import store
 from sales_support_agent.services.admin_auth import create_user_session_token
 from sales_support_agent.services.fulfillment_deck import storage
-from sales_support_agent.services.fulfillment_deck.rates import build_rate_matrix
-from sales_support_agent.services.fulfillment_deck.schema import ProductSpec
-from sales_support_agent.services.fulfillment_deck.wms_client import MockWMSClient
 
 _NOTES = "Brand: TabCo\nWidget — 6 x 5 x 3 in, 1.5 lb, ~500 units/mo"
 _BASE = "/admin/fulfillment/sales"
@@ -348,15 +345,21 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         data = response.json()
         widget = next(p for p in data["products"] if p["name"] == "Widget")
         self.assertTrue(widget["zoneRates"])
-        # v3 shape: per-carrier cheapest quote per zone, so the viewer-side
-        # carrier filter can re-min without a round trip.
+        # v6 shape: each carrier maps to a rate-sorted LIST (its Pareto
+        # frontier) so the viewer-side filter + optimizer can re-pick without a
+        # round trip.
         first_zone = next(iter(widget["zoneRates"].values()))
         self.assertIn("USPS", first_zone)
-        for carrier, quote in first_zone.items():
+        for carrier, frontier in first_zone.items():
             self.assertIsInstance(carrier, str)
-            self.assertGreater(quote["rate"], 0)
-            self.assertIn("service", quote)
-            self.assertIn("transit_days", quote)
+            self.assertIsInstance(frontier, list)
+            self.assertTrue(frontier)
+            rates = [q["rate"] for q in frontier]
+            self.assertEqual(rates, sorted(rates))  # rate-sorted
+            for quote in frontier:
+                self.assertGreater(quote["rate"], 0)
+                self.assertIn("service", quote)
+                self.assertIn("transit_days", quote)
         # 9999in length is clamped to None by the schema -> product excluded.
         self.assertFalse(any(p["name"] == "Bad dims" and p["zoneRates"] for p in data["products"]))
 
@@ -390,34 +393,24 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
 
-        # Fragments: re-rendered swappable sections keyed by data-key (v3
-        # merged volume-economics + savings into monthly-math; v4 adds the
-        # estimated-invoice quote section).
+        # v6: the combined rates-explorer section is NEVER swapped (its
+        # data-driven table updates client-side from the returned products),
+        # so the requote re-ships ONLY the monthly-math + quote fragments.
         self.assertEqual(
-            set(data["fragments"]), {"carrier-rates", "monthly-math", "quote"}
+            set(data["fragments"]), {"monthly-math", "quote"}
         )
-        frag = data["fragments"]["carrier-rates"]
-        self.assertIn('data-key="carrier-rates"', frag)
-        self.assertTrue(frag.startswith("<section"))
-        self.assertTrue(frag.endswith("</section>"))
-        self.assertIn("10 × 8 × 6 in", frag)
-        # v4: the filter chips live in the MAP section (never swapped), so
-        # the carrier-rates fragment no longer re-ships them — the viewer's
-        # filter state survives a requote untouched.
-        self.assertNotIn('id="carrier-filter"', frag)
+        self.assertNotIn("carrier-rates", data["fragments"])
+        self.assertNotIn("rates-explorer", data["fragments"])
+        # The returned products carry the new list-shaped zoneRates (frontier).
+        widget = next(p for p in data["products"] if p["name"] == "Widget")
+        first_zone = next(iter(widget["zoneRates"].values()))
+        self.assertIsInstance(next(iter(first_zone.values())), list)
         # The quote fragment re-ships the recomputed invoice.
         quote_frag = data["fragments"]["quote"]
         self.assertIn('data-key="quote"', quote_frag)
+        self.assertTrue(quote_frag.startswith("<section"))
+        self.assertTrue(quote_frag.endswith("</section>"))
         self.assertIn("Your estimated monthly invoice", quote_frag)
-        # The new dims' rates show up in the fragment (deterministic mock math).
-        expected, _ = build_rate_matrix(
-            [ProductSpec(name="Widget", length_in=10.0, width_in=8.0,
-                         height_in=6.0, weight_lb=4.0)],
-            "84043",
-            MockWMSClient(),
-        )
-        cheapest = expected.products[0].zones[0].quotes[0].rate_usd
-        self.assertIn(f"${cheapest:,.2f}", frag)
         # TabCo has units -> the monthly-math section re-ships.
         self.assertIn('data-key="monthly-math"', data["fragments"]["monthly-math"])
         self.assertIn("What this means monthly", data["fragments"]["monthly-math"])

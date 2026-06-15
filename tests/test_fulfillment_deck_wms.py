@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from sales_support_agent.services.fulfillment_deck.rates import (
+    _pareto_frontier,
     build_rate_matrix,
     select_display_quotes,
 )
@@ -296,10 +297,80 @@ class BuildRateMatrixTests(unittest.TestCase):
         self.assertGreater(len(failure_notes), 0)
 
 
-class SelectDisplayQuotesTests(unittest.TestCase):
-    """Display selection: cheapest service per carrier, max-5 carriers."""
+class ParetoFrontierTests(unittest.TestCase):
+    """v6: _pareto_frontier keeps the cheapest, the fastest, and genuine
+    mid-tier tradeoffs; drops dominated services; no-transit -> cheapest only."""
 
-    def test_trims_to_cheapest_per_carrier_and_caps_carriers(self):
+    def _q(self, service, rate, days):
+        return RateQuote(carrier="A", service=service, rate_usd=rate,
+                         transit_days=days, zone=4, source=RATE_SOURCE_WMS)
+
+    def test_cheapest_and_fastest_survive_dominated_dropped(self):
+        quotes = [
+            self._q("cheap-slow", 5.0, 5),     # cheapest
+            self._q("mid", 6.0, 3),            # genuine mid-tier tradeoff
+            self._q("fast-pricey", 8.0, 1),    # fastest
+            self._q("dominated", 9.0, 4),      # dominated by mid (cheaper+faster)
+            self._q("also-dom", 7.0, 5),       # dominated by cheap-slow
+        ]
+        front = _pareto_frontier(quotes)
+        services = [q.service for q in front]
+        self.assertIn("cheap-slow", services)   # cheapest kept
+        self.assertIn("fast-pricey", services)  # fastest kept
+        self.assertIn("mid", services)          # mid tradeoff kept
+        self.assertNotIn("dominated", services)
+        self.assertNotIn("also-dom", services)
+        # Rate-sorted (ties broken by transit asc).
+        self.assertEqual([q.rate_usd for q in front], sorted(q.rate_usd for q in front))
+
+    def test_no_transit_keeps_only_cheapest(self):
+        quotes = [
+            self._q("a", 5.0, None),
+            self._q("b", 3.0, None),
+            self._q("c", 7.0, None),
+        ]
+        front = _pareto_frontier(quotes)
+        self.assertEqual([q.service for q in front], ["b"])
+
+    def test_partial_missing_transit_falls_back_to_cheapest(self):
+        # Any None transit in the set -> can't compute a frontier -> cheapest.
+        quotes = [self._q("a", 5.0, 2), self._q("b", 3.0, None)]
+        front = _pareto_frontier(quotes)
+        self.assertEqual([q.service for q in front], ["b"])
+
+    def test_empty(self):
+        self.assertEqual(_pareto_frontier([]), [])
+
+    def test_identical_rate_and_days_dedupes_to_one(self):
+        quotes = [self._q("first", 5.0, 3), self._q("second", 5.0, 3)]
+        front = _pareto_frontier(quotes)
+        self.assertEqual(len(front), 1)
+        self.assertEqual(front[0].service, "first")
+
+
+class _FrontierClient:
+    """Per carrier: a cheapest-slow and a pricier-faster service — a genuine
+    tradeoff so BOTH survive the v6 Pareto frontier."""
+
+    def quote_rates(self, package, origin_zip, dest_zip):
+        zone = zone_for(origin_zip, dest_zip) or 5
+        table = (
+            ("USPS", "Ground Advantage", 5.0, 5),
+            ("USPS", "Priority", 9.0, 2),
+            ("UPS", "Ground", 6.0, 4),
+            ("UPS", "2-Day", 11.0, 2),
+        )
+        return [
+            RateQuote(carrier=c, service=s, rate_usd=base + zone,
+                      transit_days=d, zone=zone, source=RATE_SOURCE_WMS)
+            for c, s, base, d in table
+        ]
+
+
+class SelectDisplayQuotesTests(unittest.TestCase):
+    """Display selection: v6 Pareto frontier per carrier, max-5 carriers."""
+
+    def test_keeps_frontier_per_carrier_and_caps_carriers(self):
         matrix, warnings = build_rate_matrix(
             [_small_product()], "84043", _SixCarrierClient()
         )
@@ -308,19 +379,33 @@ class SelectDisplayQuotesTests(unittest.TestCase):
         self.assertGreater(len(product.zones), 0)
         for zone in product.zones:
             carriers = [q.carrier for q in zone.quotes]
-            # One quote per carrier (the cheapest service), 5 carriers max.
-            self.assertEqual(len(carriers), len(set(carriers)))
-            self.assertEqual(len(carriers), 5)
-            # CarrierF has the worst average rate everywhere -> dropped.
+            # 5 carriers max; CarrierF (worst average) dropped.
+            self.assertEqual(len(set(carriers)), 5)
             self.assertNotIn("CarrierF", carriers)
-            # Cheapest-per-carrier survives: CarrierA keeps A-cheap, not A-pricey.
-            carrier_a = next(q for q in zone.quotes if q.carrier == "CarrierA")
-            self.assertEqual(carrier_a.service, "A-cheap")
-            carrier_b = next(q for q in zone.quotes if q.carrier == "CarrierB")
-            self.assertEqual(carrier_b.service, "B-cheap")
+            # CarrierA's A-pricey (same 3d transit, higher rate) is DOMINATED
+            # by A-cheap, so only A-cheap survives — frontier collapses to one.
+            a_quotes = [q for q in zone.quotes if q.carrier == "CarrierA"]
+            self.assertEqual([q.service for q in a_quotes], ["A-cheap"])
+            b_quotes = [q for q in zone.quotes if q.carrier == "CarrierB"]
+            self.assertEqual([q.service for q in b_quotes], ["B-cheap"])
             # Quotes stay sorted by rate ascending.
             rates = [q.rate_usd for q in zone.quotes]
             self.assertEqual(rates, sorted(rates))
+
+    def test_frontier_keeps_genuine_tradeoffs_per_carrier(self):
+        matrix, _ = build_rate_matrix([_small_product()], "84043", _FrontierClient())
+        for zone in matrix.products[0].zones:
+            pairs = {(q.carrier, q.service) for q in zone.quotes}
+            # Both the cheap-slow and pricey-fast service survive per carrier.
+            self.assertEqual(
+                pairs,
+                {
+                    ("USPS", "Ground Advantage"),
+                    ("USPS", "Priority"),
+                    ("UPS", "Ground"),
+                    ("UPS", "2-Day"),
+                },
+            )
 
     def test_max_carriers_parameter(self):
         matrix, _ = build_rate_matrix([_small_product()], "84043", _SixCarrierClient())
@@ -377,20 +462,31 @@ class SelectDisplayQuotesTests(unittest.TestCase):
             carriers = {q.carrier for q in matrix.products[0].zones[0].quotes}
             self.assertNotIn("YSP", carriers)
 
-    def test_mock_data_passes_through_with_carrier_grouping(self):
-        # Mock data has 3 carriers / 4 services: only USPS loses its pricier
-        # Priority Mail service; everything else is untouched.
+    def test_mock_data_passes_through_with_pareto_frontier(self):
+        # Mock data has 3 carriers / 4 services. v6 keeps each carrier's
+        # PARETO FRONTIER. USPS Priority Mail is pricier than Ground Advantage:
+        # in the FAR zones it's also FASTER (genuine tradeoff -> SURVIVES); in
+        # the near zones where transit ties, it's strictly dominated -> DROPPED.
+        # UPS Ground and FedEx Home Delivery each have a single service.
         matrix, _ = build_rate_matrix([_small_product()], "84043", MockWMSClient())
+        saw_priority = False
         for zone in matrix.products[0].zones:
             pairs = {(q.carrier, q.service) for q in zone.quotes}
-            self.assertEqual(
-                pairs,
-                {
-                    ("USPS", "Ground Advantage"),
-                    ("UPS", "Ground"),
-                    ("FedEx", "Home Delivery"),
-                },
-            )
+            # Ground Advantage, UPS Ground, FedEx always present.
+            self.assertIn(("USPS", "Ground Advantage"), pairs)
+            self.assertIn(("UPS", "Ground"), pairs)
+            self.assertIn(("FedEx", "Home Delivery"), pairs)
+            usps = {q.service: q for q in zone.quotes if q.carrier == "USPS"}
+            ga = usps["Ground Advantage"]
+            if "Priority Mail" in usps:
+                saw_priority = True
+                # Survives only when strictly faster than Ground Advantage.
+                self.assertLess(usps["Priority Mail"].transit_days, ga.transit_days)
+            # Quotes stay rate-sorted ascending.
+            rates = [q.rate_usd for q in zone.quotes]
+            self.assertEqual(rates, sorted(rates))
+        # At least one (far) zone keeps the faster Priority Mail tradeoff.
+        self.assertTrue(saw_priority)
 
 
 if __name__ == "__main__":

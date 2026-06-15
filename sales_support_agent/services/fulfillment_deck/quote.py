@@ -374,7 +374,23 @@ def build_fulfillment_quote(
             )
         )
 
-    monthly_total = round(sum(line["monthly"] for line in lines), 2)
+    sum_lines = round(sum(line["monthly"] for line in lines), 2)
+    # Anata's $500 monthly minimum: a tiny-volume account that prices out below
+    # the floor is topped up to $500 with a visible adjustment line (counted as
+    # FIXED). Above the floor, the total is the line sum as-is.
+    monthly_minimum = BASELINE_RATES["monthly_minimum"]
+    floor_applied = sum_lines < monthly_minimum
+    if floor_applied:
+        lines.append({
+            "label": "Monthly minimum adjustment",
+            "qty_label": "",
+            "monthly": round(monthly_minimum - sum_lines, 2),
+            "scales_with_orders": False,
+        })
+        monthly_total = round(monthly_minimum, 2)
+    else:
+        monthly_total = sum_lines
+
     variable = round(
         sum(line["monthly"] for line in lines if line["scales_with_orders"]), 2
     )
@@ -418,16 +434,32 @@ def build_fulfillment_quote(
         )
     dominant = _dominant_category(profile)
     assumptions.append(f"Rates reflect {dominant}-category handling")
-    assumptions.append("Anata's $500 monthly minimum applies")
+    if floor_applied:
+        assumptions.append(
+            "Anata's $500 monthly minimum applied (added as an adjustment above)"
+        )
+    else:
+        assumptions.append("Anata's $500 monthly minimum applies to all accounts")
     assumptions.append(
         "Final pricing after a scoping call — this is a directional estimate"
     )
+
+    # C6: the headline pallet stat reconciles with the BILLED pallet count.
+    # ``pallets`` (total) is the unambiguous stat across mixed products — it
+    # equals the sum of the per-product breakdown that receiving/storage bill
+    # against. ``units_per_pallet`` is now the effective overall figure derived
+    # from that billed count (units_total / billed pallets), so it can no
+    # longer drift away from the breakdown the way the legacy pooled average
+    # did; the exact per-product units/pallet still live in pallet_breakdown
+    # and the assumption bullets.
+    headline_units_per_pallet = int(round(units_total / pallets)) if pallets else units_per_pallet
 
     return {
         "orders": int(orders),
         "units_total": int(units_total),
         "avg_items_per_order": round(avg_items, 2),
-        "units_per_pallet": units_per_pallet,
+        "units_per_pallet": headline_units_per_pallet,
+        "pallets": int(pallets),
         "pallets_per_month": pallets,
         "pallet_breakdown": pallet_rows,
         "packaging_class": packaging_class,
