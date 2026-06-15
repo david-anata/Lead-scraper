@@ -300,6 +300,45 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
             "RFP deck p.2 orders table",
         )
 
+    def test_review_page_shows_assortment_vetting_hint(self) -> None:
+        # v7: warehouse-approval hint — est. SKU count + deterministic size
+        # variance — renders on the review page before publish.
+        run = self._generate()
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        profile = dict(summary["prospect_profile"])
+        profile["estimated_sku_count"] = 80
+        profile["sku_count_basis"] = "estimated from ~6 product lines"
+        storage.update_summary(run["id"], {"prospect_profile": profile})
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(review.status_code, 200)
+        self.assertIn("Warehouse approval — assortment", review.text)
+        self.assertIn("Est. SKU count:", review.text)
+        self.assertIn("80", review.text)
+        self.assertIn("estimated from ~6 product lines", review.text)
+        self.assertIn("Size range:", review.text)
+        # Size variance needs >=2 fully-specced products to compare.
+        self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo", "origin_zip": "84043",
+                "product_name": ["Widget", "Crate"],
+                "product_length": ["6", "20"],
+                "product_width": ["5", "16"],
+                "product_height": ["3", "12"],
+                "product_weight": ["1.5", "9"],
+                "product_units": ["500", "100"],
+                "product_estimated": ["0", "0"],
+            },
+            follow_redirects=False,
+        )
+        # SKU count survives the product edit (only products were edited).
+        profile = dict(storage.get_run(run["id"]).summary_json)["prospect_profile"]
+        profile["estimated_sku_count"] = 80
+        profile["sku_count_basis"] = "estimated from ~6 product lines"
+        storage.update_summary(run["id"], {"prospect_profile": profile})
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertIn("Size variance:", review.text)
+
     def test_update_remove_checkbox_drops_product(self) -> None:
         run = self._generate()
         response = self.client.post(

@@ -66,6 +66,108 @@ def _fmt_rate(value: float) -> str:
     return f"${value:,.2f}"
 
 
+def _fmt_num(value: float) -> str:
+    """Compact number: 4.0 -> "4", 6.5 -> "6.5"."""
+    return f"{float(value):g}"
+
+
+def assortment_profile(profile: ProspectProfile) -> dict:
+    """DETERMINISTIC assortment summary for the Overview / warehouse approval.
+
+    Computes size/weight variance from the extracted products that carry full
+    dims — never trusts the LLM for these numbers. Returns:
+      {
+        products_quoted, estimated_sku_count, sku_count_basis,
+        longest_dim_range (in, or None), weight_range (lb, or None),
+        cubic_range (in^3, or None), variance ("uniform"|"moderate"|"wide"|""),
+        any_fragile, size_label ("4–16 in, 1.0–6.0 lb" or ""),
+      }
+    Variance is the ratio of the largest to smallest package VOLUME:
+      <=2x uniform, <=8x moderate, else wide. Empty descriptor when fewer than
+    two fully-specced products (nothing to compare).
+    """
+    specced = [p for p in profile.products if p.has_full_package_spec]
+    longest = [max(p.length_in, p.width_in, p.height_in) for p in specced]
+    weights = [p.weight_lb for p in specced]
+    volumes = [p.length_in * p.width_in * p.height_in for p in specced]
+
+    longest_range = (min(longest), max(longest)) if longest else None
+    weight_range = (min(weights), max(weights)) if weights else None
+    cubic_range = (min(volumes), max(volumes)) if volumes else None
+
+    variance = ""
+    if len(volumes) >= 2 and min(volumes) > 0:
+        ratio = max(volumes) / min(volumes)
+        if ratio <= 2.0:
+            variance = "uniform"
+        elif ratio <= 8.0:
+            variance = "moderate"
+        else:
+            variance = "wide"
+
+    size_label = ""
+    if longest_range and weight_range:
+        size_label = (
+            f"{_fmt_num(longest_range[0])}–{_fmt_num(longest_range[1])} in, "
+            f"{weight_range[0]:.1f}–{weight_range[1]:.1f} lb"
+        )
+
+    return {
+        "products_quoted": len(specced),
+        "estimated_sku_count": profile.estimated_sku_count,
+        "sku_count_basis": profile.sku_count_basis,
+        "longest_dim_range": longest_range,
+        "weight_range": weight_range,
+        "cubic_range": cubic_range,
+        "variance": variance,
+        "any_fragile": any(p.fragile for p in profile.products),
+        "size_label": size_label,
+    }
+
+
+def _render_assortment_block(profile: ProspectProfile) -> str:
+    """Ops-factual assortment stat strip for the Overview / warehouse approval.
+
+    Server-rendered (no-JS safe), print-safe. Renders nothing when there's no
+    SKU count AND no fully-specced product to summarize."""
+    info = assortment_profile(profile)
+    if not info["products_quoted"] and info["estimated_sku_count"] is None:
+        return ""
+
+    rows: list[str] = []
+
+    def _row(value: str, label: str, sub: str = "") -> None:
+        sub_html = (
+            f'<div class="ap-sub">{html.escape(sub)}</div>' if sub else ""
+        )
+        rows.append(
+            f'<div class="ap-item"><div class="ap-val">{html.escape(value)}</div>'
+            f'<div class="ap-label">{html.escape(label)}</div>{sub_html}</div>'
+        )
+
+    if info["estimated_sku_count"] is not None:
+        _row(f"{info['estimated_sku_count']:,}", "est. SKU count",
+             info["sku_count_basis"] or "")
+    elif info["sku_count_basis"]:
+        _row("—", "est. SKU count", info["sku_count_basis"])
+
+    _row(str(info["products_quoted"]), "products quoted")
+    if info["size_label"]:
+        _row(info["size_label"], "size range")
+    if info["variance"]:
+        _row(info["variance"].capitalize(), "size variance")
+    if info["any_fragile"]:
+        _row("Yes", "fragile items")
+
+    if not rows:
+        return ""
+    return (
+        '<div class="assortment-profile" data-key-block="assortment-profile">'
+        '<div class="ap-title">Assortment profile</div>'
+        f'<div class="ap-strip">{"".join(rows)}</div></div>'
+    )
+
+
 def _fmt_dims(product) -> str:
     if not product.has_full_package_spec:
         return "—"
@@ -331,17 +433,41 @@ def _render_hero(
         )
         bullets_html = f'<ul class="hero-bullets">{items}</ul>'
 
+    # v7: when the prospect's logo was scraped, show a small lockup beside the
+    # title — prospect logo · × · Anata monogram. Graceful (title only) when
+    # absent; print-safe.
+    if profile.brand_logo_data_uri:
+        logo_lockup = (
+            '<div class="hero-lockup">'
+            f'<img class="hero-prospect-logo" src="{html.escape(profile.brand_logo_data_uri, quote=True)}" '
+            f'alt="{html.escape(profile.display_name, quote=True)} logo">'
+            '<span class="hero-lockup-x">×</span>'
+            '<span class="hero-lockup-anata">Anata</span>'
+            "</div>"
+        )
+        title_html = (
+            f"{logo_lockup}"
+            f'<h2 class="slide-title">{html.escape(profile.display_name)} × Anata</h2>'
+        )
+    else:
+        title_html = (
+            f'<h2 class="slide-title">{html.escape(profile.display_name)} × Anata</h2>'
+        )
+
+    assortment_html = _render_assortment_block(profile)
+
     return f"""
     <section class="slide" id="sec-{sec}" data-key="hero" data-screen-label="{sec} Overview">
       <header class="slide-head">
         <div class="heading-stack">
           <p class="eyebrow">Fulfillment rate sheet · {html.escape(generated_on)}</p>
-          <h2 class="slide-title">{html.escape(profile.display_name)} × Anata</h2>
+          {title_html}
         </div>
       </header>
       {summary_html}
       {context_html}
       {_stat_strip(stats[:4])}
+      {assortment_html}
       {bullets_html}
     </section>"""
 
@@ -1135,6 +1261,80 @@ def render_rate_sheet_html(
       margin-bottom: 6px;
     }}
     .hero-bullets .hb-tick {{ color: var(--anata-sage); font-weight: 800; }}
+
+    /* v7: hero logo lockup — prospect logo · × · Anata. */
+    .hero-lockup {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 8px;
+    }}
+    .hero-prospect-logo {{
+      width: 56px;
+      height: 56px;
+      max-width: 56px;
+      max-height: 56px;
+      border-radius: 12px;
+      object-fit: contain;
+      background: #fff;
+      border: 1px solid var(--anata-line);
+      padding: 4px;
+    }}
+    .hero-lockup-x {{
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--anata-muted);
+    }}
+    .hero-lockup-anata {{
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      color: var(--anata-ink);
+    }}
+
+    /* v7: assortment profile — ops-factual SKU/size strip for the warehouse. */
+    .assortment-profile {{
+      margin: 14px 0;
+      padding: 12px 16px;
+      border: 1px solid var(--anata-line);
+      border-radius: 12px;
+      background: white;
+    }}
+    .assortment-profile .ap-title {{
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--anata-muted);
+      margin: 0 0 8px;
+    }}
+    .assortment-profile .ap-strip {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 28px;
+      align-items: baseline;
+    }}
+    .assortment-profile .ap-item {{ min-width: 110px; }}
+    .assortment-profile .ap-val {{
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--anata-ink);
+    }}
+    .assortment-profile .ap-label {{
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--anata-muted);
+      margin-top: 2px;
+    }}
+    .assortment-profile .ap-sub {{
+      font-size: 11px;
+      color: var(--anata-muted);
+      margin-top: 2px;
+      max-width: 24ch;
+    }}
 
     .carrier-chip {{
       display: inline-block;

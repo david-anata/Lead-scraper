@@ -13,7 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from sales_support_agent.services.fulfillment_deck.intake import build_extraction_context
+from sales_support_agent.services.fulfillment_deck.intake import (
+    build_extraction_context,
+    fetch_brand_assets,
+)
 from sales_support_agent.services.fulfillment_deck.llm import (
     _NARRATIVE_SYSTEM,
     _SYSTEM,
@@ -197,6 +200,102 @@ class IntakeAttachmentTests(unittest.TestCase):
         self.assertEqual(len(attachments), 1)
         self.assertEqual(attachments[0]["kind"], "pdf")
         self.assertEqual(warnings, [])
+
+
+class FetchBrandAssetsTests(unittest.TestCase):
+    """v7: SSRF-safe logo + identity scrape; {} on any failure."""
+
+    _HTML = (
+        '<html><head>'
+        '<title>GlowCo — Clean Skincare</title>'
+        '<meta property="og:site_name" content="GlowCo">'
+        '<meta property="og:description" content="Clean skincare, shipped fast.">'
+        '<meta property="og:image" content="https://glowco.example/logo.png">'
+        '</head><body>hi</body></html>'
+    )
+
+    def _img_resp(self, content=b"\x89PNG\r\nlogo", content_type="image/png", status=200):
+        r = mock.Mock()
+        r.status_code = status
+        r.headers = {"Content-Type": content_type}
+        r.content = content
+        return r
+
+    def _page_resp(self, html=None):
+        r = mock.Mock()
+        r.text = html if html is not None else self._HTML
+        return r
+
+    def test_success_returns_data_uri_and_identity(self):
+        def _get(url, **kwargs):
+            if url.endswith(".png"):
+                return self._img_resp()
+            return self._page_resp()
+
+        with mock.patch("requests.get", side_effect=_get):
+            assets = fetch_brand_assets("https://glowco.example")
+        self.assertTrue(assets["logo_data_uri"].startswith("data:image/png;base64,"))
+        self.assertEqual(assets["site_name"], "GlowCo")
+        self.assertEqual(assets["tagline"], "Clean skincare, shipped fast.")
+
+    def test_http_upgraded_to_https(self):
+        seen = {}
+
+        def _get(url, **kwargs):
+            seen.setdefault("first", url)
+            if url.endswith(".png"):
+                return self._img_resp()
+            return self._page_resp()
+
+        with mock.patch("requests.get", side_effect=_get):
+            fetch_brand_assets("http://glowco.example")
+        self.assertTrue(seen["first"].startswith("https://"))
+
+    def test_non_image_content_type_drops_logo(self):
+        def _get(url, **kwargs):
+            if url.endswith(".png"):
+                return self._img_resp(content_type="text/html")
+            return self._page_resp()
+
+        with mock.patch("requests.get", side_effect=_get):
+            assets = fetch_brand_assets("https://glowco.example")
+        # No favicon either (also html) -> no logo, but identity still returns.
+        self.assertNotIn("logo_data_uri", assets)
+        self.assertEqual(assets["site_name"], "GlowCo")
+
+    def test_oversize_image_dropped(self):
+        big = b"x" * (513 * 1024)
+
+        def _get(url, **kwargs):
+            if url.endswith(".png"):
+                return self._img_resp(content=big)
+            return self._page_resp()
+
+        with mock.patch("requests.get", side_effect=_get):
+            assets = fetch_brand_assets("https://glowco.example")
+        self.assertNotIn("logo_data_uri", assets)
+
+    def test_cross_host_image_is_blocked(self):
+        html = self._HTML.replace(
+            "https://glowco.example/logo.png", "https://evil.example/logo.png"
+        )
+
+        def _get(url, **kwargs):
+            if url.endswith(".png"):
+                return self._img_resp()  # would succeed IF fetched
+            return self._page_resp(html)
+
+        with mock.patch("requests.get", side_effect=_get):
+            assets = fetch_brand_assets("https://glowco.example")
+        # og:image points off-host -> blocked; favicon (same host) returns "" here.
+        self.assertNotIn("logo_data_uri", assets)
+
+    def test_fetch_error_returns_empty(self):
+        with mock.patch("requests.get", side_effect=ConnectionError("boom")):
+            self.assertEqual(fetch_brand_assets("https://down.example"), {})
+
+    def test_blank_url_returns_empty(self):
+        self.assertEqual(fetch_brand_assets(""), {})
 
 
 class LlmExtractionTests(unittest.TestCase):
@@ -460,6 +559,49 @@ class LlmExtractionTests(unittest.TestCase):
         self.assertEqual(len(long.volume_provenance), 200)
         self.assertEqual(ProspectProfile.from_dict({}).volume_provenance, "")
 
+    def test_extraction_prompt_has_sku_and_tagline_rules(self):
+        # v7: SKU count + basis + tagline join the extraction schema.
+        self.assertIn("estimated_sku_count", _SYSTEM)
+        self.assertIn("sku_count_basis", _SYSTEM)
+        self.assertIn("never invent a precise count without a basis", _SYSTEM)
+        self.assertIn("brand_tagline", _SYSTEM)
+
+    def test_narrative_prompt_weaves_tagline(self):
+        self.assertIn("brand_tagline", _NARRATIVE_SYSTEM)
+        self.assertIn("positioning", _NARRATIVE_SYSTEM)
+
+    def test_sku_and_logo_fields_round_trip_and_clamp(self):
+        good_logo = "data:image/png;base64,QUJD"
+        profile = ProspectProfile.from_dict({
+            "brand": "GlowCo",
+            "estimated_sku_count": 100,
+            "sku_count_basis": "100 SKUs stated in RFP deck",
+            "brand_tagline": "Clean skincare, shipped fast.",
+            "brand_logo_data_uri": good_logo,
+        })
+        self.assertEqual(profile.estimated_sku_count, 100)
+        self.assertEqual(profile.sku_count_basis, "100 SKUs stated in RFP deck")
+        self.assertEqual(profile.brand_logo_data_uri, good_logo)
+        rt = ProspectProfile.from_dict(profile.to_dict())
+        self.assertEqual(rt.estimated_sku_count, 100)
+        self.assertEqual(rt.brand_logo_data_uri, good_logo)
+        self.assertEqual(rt.brand_tagline, "Clean skincare, shipped fast.")
+        # Non-data-URI logo strings are rejected; <=0 SKU -> None.
+        self.assertEqual(
+            ProspectProfile.from_dict({"brand_logo_data_uri": "http://x/y.png"}).brand_logo_data_uri,
+            "",
+        )
+        self.assertIsNone(
+            ProspectProfile.from_dict({"estimated_sku_count": 0}).estimated_sku_count
+        )
+        self.assertIsNone(ProspectProfile.from_dict({}).estimated_sku_count)
+        # Oversize logo data-URI guard (~700KB).
+        huge = "data:image/png;base64," + "A" * (700 * 1024)
+        self.assertEqual(
+            ProspectProfile.from_dict({"brand_logo_data_uri": huge}).brand_logo_data_uri,
+            "",
+        )
+
     def test_product_category_whitelist_and_fragile_round_trip(self):
         spec = ProductSpec.from_dict({
             "name": "Serum", "product_category": "Beauty", "fragile": True,
@@ -603,6 +745,81 @@ class NarrativeTests(unittest.TestCase):
             )
         self.assertEqual(block.model, "none")
         self.assertTrue(block.executive_summary.strip())
+
+
+class AssortmentProfileTests(unittest.TestCase):
+    """v7: deterministic size/weight variance + assortment block + hero lockup."""
+
+    def _profile(self, **extra) -> ProspectProfile:
+        return ProspectProfile.from_dict({
+            "brand": "GlowCo",
+            "products": [
+                {"name": "Serum", "length_in": 4, "width_in": 4, "height_in": 4,
+                 "weight_lb": 1.0},
+                {"name": "Kit", "length_in": 16, "width_in": 10, "height_in": 8,
+                 "weight_lb": 6.0},
+            ],
+            **extra,
+        })
+
+    def test_computes_size_ranges_and_variance_deterministically(self):
+        from sales_support_agent.services.fulfillment_deck.rendering import (
+            assortment_profile,
+        )
+
+        info = assortment_profile(self._profile(
+            estimated_sku_count=120, sku_count_basis="120 SKUs stated in RFP deck"
+        ))
+        self.assertEqual(info["products_quoted"], 2)
+        self.assertEqual(info["estimated_sku_count"], 120)
+        # Longest dim: 4in -> 16in; weight 1.0 -> 6.0 lb.
+        self.assertEqual(info["longest_dim_range"], (4.0, 16.0))
+        self.assertEqual(info["weight_range"], (1.0, 6.0))
+        self.assertEqual(info["size_label"], "4–16 in, 1.0–6.0 lb")
+        # Volumes: 64 vs 1280 in^3 -> ratio 20x -> "wide".
+        self.assertEqual(info["variance"], "wide")
+        self.assertFalse(info["any_fragile"])
+
+    def test_uniform_and_moderate_variance(self):
+        from sales_support_agent.services.fulfillment_deck.rendering import (
+            assortment_profile,
+        )
+
+        uniform = ProspectProfile.from_dict({"products": [
+            {"name": "A", "length_in": 4, "width_in": 4, "height_in": 4, "weight_lb": 1},
+            {"name": "B", "length_in": 5, "width_in": 4, "height_in": 4, "weight_lb": 1.2},
+        ]})
+        # 64 vs 80 in^3 -> 1.25x -> uniform.
+        self.assertEqual(assortment_profile(uniform)["variance"], "uniform")
+        moderate = ProspectProfile.from_dict({"products": [
+            {"name": "A", "length_in": 4, "width_in": 4, "height_in": 4, "weight_lb": 1},
+            {"name": "B", "length_in": 8, "width_in": 6, "height_in": 4, "weight_lb": 3},
+        ]})
+        # 64 vs 192 in^3 -> 3x -> moderate.
+        self.assertEqual(assortment_profile(moderate)["variance"], "moderate")
+
+    def test_render_block_present_with_basis_sublabel(self):
+        from sales_support_agent.services.fulfillment_deck.rendering import (
+            _render_assortment_block,
+        )
+
+        html = _render_assortment_block(self._profile(
+            estimated_sku_count=120, sku_count_basis="120 SKUs stated in RFP deck"
+        ))
+        self.assertIn("assortment-profile", html)
+        self.assertIn("Assortment profile", html)
+        self.assertIn("est. SKU count", html)
+        self.assertIn("120 SKUs stated in RFP deck", html)
+        self.assertIn("size range", html)
+        self.assertIn("size variance", html)
+        self.assertIn("4–16 in, 1.0–6.0 lb", html)
+
+    def test_render_block_empty_when_nothing_to_show(self):
+        from sales_support_agent.services.fulfillment_deck.rendering import (
+            _render_assortment_block,
+        )
+
+        self.assertEqual(_render_assortment_block(ProspectProfile()), "")
 
 
 class SectionsTests(unittest.TestCase):
