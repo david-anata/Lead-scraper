@@ -1015,12 +1015,13 @@ class RateSheetServiceTests(unittest.TestCase):
             'target="_blank" rel="noreferrer">Try for free →</a>',
             html,
         )
-        # v5: the Shipping OS mark is now an SVG that renders INLINE inside
-        # the sized wrapper, directly above the card heading.
+        # The Shipping OS mark is the supplied PNG brand logo, embedded as an
+        # inline data-URI <img> in the sized wrapper above the card heading.
         heading_at = html.index("<h4>Anata Shipping OS</h4>")
         card_at = html.rindex('<div class="offer-icon">', 0, heading_at)
-        self.assertIn("<svg", html[card_at:heading_at])
-        self.assertIn(".offer-icon svg { width: 100%; height: 100%;", html)
+        icon_markup = html[card_at:heading_at]
+        self.assertIn("<img", icon_markup)
+        self.assertIn("data:image/png;base64,", icon_markup)
 
     def test_trust_stamp_only_for_live_wms_rates(self) -> None:
         from sales_support_agent.services.fulfillment_deck.rendering import (
