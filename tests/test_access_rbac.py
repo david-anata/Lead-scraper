@@ -128,6 +128,19 @@ class EnforcementTests(unittest.TestCase):
         r = self.client.get("/admin/login", follow_redirects=False)
         self.assertNotEqual(r.headers.get("location"), "/admin/login")
 
+    def test_cs_only_user_fulfillment_root_redirects_to_cs(self) -> None:
+        # A CS-only user (fulfillment.dashboard) hitting /admin/fulfillment must be
+        # routed to the CS dashboard, NOT /sales (which would 403). Regression for
+        # the access-safe redirect handler.
+        uid = store.upsert_user("enf_cs@anatainc.com", "CS")
+        store.set_user_permissions(uid, ["fulfillment.dashboard"])
+        r = self._get("/admin/fulfillment", "enf_cs@anatainc.com")
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers.get("location"), "/admin/fulfillment/cs/")
+        # And the CS page itself must not 403 for this user.
+        r_cs = self._get("/admin/fulfillment/cs/", "enf_cs@anatainc.com")
+        self.assertNotIn(r_cs.status_code, (302, 403))
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class AccessUITests(unittest.TestCase):
@@ -660,3 +673,89 @@ class GoogleSessionMintTests(unittest.TestCase):
         token = sess.split("=", 1)[1].split(";")[0]
         # The crux: /admin's strict validator accepts the Google-minted token
         self.assertTrue(validate_admin_session_token(admin_dash, token))
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class NavAccessSafetyTests(unittest.TestCase):
+    """The regression guard: every href the nav renders must point at a page the
+    user can actually open (no link to a tool they don't hold)."""
+
+    @staticmethod
+    def _hrefs(nav_html: str) -> list:
+        import re
+        return re.findall(r'href="([^"]+)"', nav_html)
+
+    def _assert_all_hrefs_accessible(self, nav_html: str, granted: set, is_superadmin: bool = False) -> None:
+        from sales_support_agent.services.access.middleware import _resolve_tool
+        for href in self._hrefs(nav_html):
+            if not href.startswith("/admin"):
+                continue  # external / logout etc.
+            if href in ("/admin", "/admin/logout", "/admin/access", "/admin/settings"):
+                # /admin = the brandmark home link (always present, like a logo);
+                # the rest are profile-dropdown links gated separately.
+                continue
+            tool = _resolve_tool(href)
+            if tool is None:
+                continue  # ungated page (e.g. /admin maps to sales.priorities, but None tool = fine)
+            if is_superadmin:
+                continue
+            self.assertIn(
+                tool.key, granted,
+                f"nav exposed {href} (tool {tool.key}) the user does not hold",
+            )
+
+    def test_no_forbidden_link_for_any_permission_set(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        for perms in (
+            {"fulfillment.dashboard"},
+            {"fulfillment.rate_sheets"},
+            {"finance"},
+        ):
+            nav = render_agent_nav(permissions=perms)
+            self._assert_all_hrefs_accessible(nav, perms)
+        # Superadmin: every link is fair game, just assert it renders without error.
+        nav = render_agent_nav(is_superadmin=True)
+        self._assert_all_hrefs_accessible(nav, set(), is_superadmin=True)
+
+    def test_cs_only_user_primary_points_at_cs_not_sales(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        nav = render_agent_nav("fulfillment_dashboard", permissions={"fulfillment.dashboard"})
+        # Primary (and only) fulfillment link is the CS dashboard, NOT /sales.
+        self.assertIn('href="/admin/fulfillment/cs/"', nav)
+        self.assertNotIn('href="/admin/fulfillment/sales"', nav)
+
+    def test_cs_dashboard_plus_reports_renders_dropdown(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        nav = render_agent_nav(
+            "fulfillment_dashboard",
+            permissions={"fulfillment.dashboard", "fulfillment.reports"},
+        )
+        # >=2 accessible CS pages -> a dropdown of pills, none pointing at /sales.
+        self.assertIn("nav-dropdown", nav)
+        self.assertIn('href="/admin/fulfillment/cs/"', nav)
+        self.assertIn('href="/admin/fulfillment/cs/reports/"', nav)
+        self.assertNotIn('href="/admin/fulfillment/sales"', nav)
+
+    def test_single_accessible_page_section_has_no_dropdown(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        # finance has exactly one subpage -> plain link, no .nav-dropdown markup.
+        nav = render_agent_nav(permissions={"finance"})
+        self.assertIn('href="/admin/finances"', nav)
+        self.assertNotIn("nav-dropdown", nav)
+
+    def test_multi_accessible_page_section_renders_dropdown(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        # website_ops with 2+ tools -> dropdown with the right pills.
+        nav = render_agent_nav(permissions={"website_ops.seo", "website_ops.queue"})
+        self.assertIn("nav-dropdown", nav)
+        self.assertIn('href="/admin/website-ops"', nav)
+        self.assertIn('href="/admin/website-ops/queue"', nav)
+        # reports tool not held -> its pill must not appear.
+        self.assertNotIn('href="/admin/website-ops/reports"', nav)
+
+    def test_section_with_zero_accessible_pages_is_hidden(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        nav = render_agent_nav(permissions={"finance"})
+        # No fulfillment tools held -> Fulfillment section must not render at all.
+        self.assertNotIn("Fulfillment", nav)
+        self.assertNotIn('href="/admin/fulfillment/cs/"', nav)

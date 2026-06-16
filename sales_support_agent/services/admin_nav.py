@@ -9,10 +9,73 @@ from pathlib import Path
 from typing import Optional
 
 
-from sales_support_agent.services.access.catalog import SECTIONS as _CATALOG_SECTIONS
+# ---------------------------------------------------------------------------
+# Data-driven nav definition. ONE ordered structure replaces the old hardcoded
+# `_primary_specs` list and the per-section secondary blocks.
+#
+# Each subpage is (tool_key, label, href, active_key):
+#   tool_key   — the catalog tool that gates this page (used for access filtering
+#                AND to compute the access-safe primary href).
+#   label      — the pill / primary label.
+#   href       — exact destination.
+#   active_key — the value of the section's "current sub-page" that highlights it.
+#
+# A section is shown iff the user can reach at least one of its subpages, and the
+# primary link points at the FIRST reachable subpage (the access-safe fix).
+# ---------------------------------------------------------------------------
+class _NavSubpage:
+    __slots__ = ("tool_key", "label", "href", "active_key")
 
-# Section name -> the tool keys it contains (for nav visibility filtering).
-_SECTION_TOOLS = {sec: [t.key for t in tools] for sec, tools in _CATALOG_SECTIONS.items()}
+    def __init__(self, tool_key: str, label: str, href: str, active_key: str) -> None:
+        self.tool_key = tool_key
+        self.label = label
+        self.href = href
+        self.active_key = active_key
+
+
+class _NavSection:
+    __slots__ = ("key", "label", "primary_active", "subpages")
+
+    def __init__(self, key: str, label: str, primary_active: str, subpages: list) -> None:
+        self.key = key
+        self.label = label
+        self.primary_active = primary_active
+        self.subpages = subpages
+
+
+_NAV_SECTIONS = [
+    _NavSection("sales", "Sales Priorities", "sales", [
+        _NavSubpage("sales.priorities", "Sales Priorities", "/admin", "sales"),
+        _NavSubpage("sales.decks", "Generate sales deck", "/admin/sales-decks", "sales_decks"),
+    ]),
+    _NavSection("website_ops", "Website Ops", "website_ops", [
+        _NavSubpage("website_ops.seo", "SEO Dashboard", "/admin/website-ops", "seo_dashboard"),
+        _NavSubpage("website_ops.queue", "Queue", "/admin/website-ops/queue", "queue"),
+        _NavSubpage("website_ops.reports", "Reports", "/admin/website-ops/reports", "reports"),
+    ]),
+    _NavSection("finance", "Finance", "finance", [
+        _NavSubpage("finance", "Finance", "/admin/finances", "finance"),
+    ]),
+    _NavSection("advertising", "Advertising", "advertising", [
+        _NavSubpage("advertising.audit", "Audit", "/admin/advertising/audit", "advertising_audit"),
+    ]),
+    _NavSection("executive", "Executive", "executive", [
+        _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
+        _NavSubpage("executive.brand_analysis", "Brand Analysis", "/admin/executive/brand-analysis", "brand_analysis"),
+    ]),
+    _NavSection("fulfillment", "Fulfillment", "fulfillment", [
+        _NavSubpage("fulfillment.rate_sheets", "Sales Deck", "/admin/fulfillment/sales", "fulfillment_sales"),
+        _NavSubpage("fulfillment.dashboard", "CS Dashboard", "/admin/fulfillment/cs/", "fulfillment_dashboard"),
+        _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
+        _NavSubpage("fulfillment.reports", "Latest", "/admin/fulfillment/cs/reports/latest", "fulfillment_latest"),
+    ]),
+    _NavSection("hr", "HR", "hr", [
+        _NavSubpage("hr.access", "HR", "/admin/hr", "hr"),
+    ]),
+    # Access/Team management is intentionally NOT a primary nav section — it lives
+    # only in the profile dropdown ("Team"). Keeps the top nav identical on every
+    # page.
+]
 
 
 def _nav_item(label: str, href: str, *, active: bool = False, extra_class: str = "") -> str:
@@ -129,6 +192,63 @@ def render_agent_nav_styles() -> str:
         border-color: rgba(133, 187, 218, 0.52);
         color: #2B3644;
         box-shadow: inset 0 0 0 1px rgba(133, 187, 218, 0.16);
+      }
+      /* Primary nav item with an access-safe sub-page dropdown */
+      .nav-item {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .nav-item > .top-link {
+        gap: 6px;
+      }
+      .nav-caret {
+        font-size: 9px;
+        line-height: 1;
+        margin-left: 2px;
+        opacity: 0.55;
+      }
+      .nav-dropdown {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        display: none;
+        min-width: 200px;
+        background: #fff;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        border-radius: 14px;
+        box-shadow: 0 16px 40px rgba(43, 54, 68, 0.14);
+        padding: 6px;
+        z-index: 100;
+      }
+      /* Invisible hover "bridge" so the 6px gap doesn't close the menu. */
+      .nav-dropdown::before {
+        content: "";
+        position: absolute;
+        top: -8px;
+        left: 0;
+        right: 0;
+        height: 8px;
+      }
+      .nav-item:hover .nav-dropdown,
+      .nav-item:focus-within .nav-dropdown,
+      .nav-item[data-open] .nav-dropdown {
+        display: block;
+      }
+      .nav-dropdown .top-link--secondary {
+        display: flex;
+        width: 100%;
+        justify-content: flex-start;
+        border-radius: 8px;
+        margin: 2px 0;
+        background: transparent;
+        border-color: transparent;
+      }
+      .nav-dropdown .top-link--secondary:hover {
+        background: rgba(43, 54, 68, 0.05);
+        border-color: transparent;
+        transform: none;
+        box-shadow: none;
       }
       .topbar-divider {
         height: 1px;
@@ -278,6 +398,13 @@ def render_agent_nav_styles() -> str:
         .brandmark {
           font-size: 34px;
         }
+        /* On touch, hover can't open the menu — rely on the [data-open] tap path
+           (the .nav-item is tabindex/onclick toggleable). Keep panels readable. */
+        .nav-dropdown {
+          left: 0;
+          right: auto;
+          max-width: calc(100vw - 48px);
+        }
       }
     """
 
@@ -349,11 +476,6 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     def _can(key: str) -> bool:
         return _show_all or (_granted is not None and key in _granted)
 
-    def _can_section(section: str) -> bool:
-        if _show_all:
-            return True
-        return any(_can(k) for k in _SECTION_TOOLS.get(section, ()))
-
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"
@@ -367,107 +489,65 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "access"
     if active == "hr" or active.startswith("hr_"):
         primary_active = "hr"
-    _primary_specs = [
-        ("Sales Priorities", "/admin", primary_active == "sales", _can_section("Sales Priorities")),
-        ("Website Ops", "/admin/website-ops", primary_active == "website_ops", _can_section("Website Ops")),
-        ("Finance", "/admin/finances", primary_active == "finance", _can_section("Finance")),
-        ("Advertising", "/admin/advertising/audit", primary_active == "advertising", _can_section("Advertising")),
-        ("Executive", "/admin/executive", primary_active == "executive", _can_section("Executive")),
-        ("Fulfillment", "/admin/fulfillment", primary_active == "fulfillment", _can_section("Fulfillment")),
-        ("HR", "/admin/hr", primary_active == "hr", _can_section("HR")),
-        # Access/Team management is intentionally NOT a primary nav item — it
-        # lives only in the profile dropdown ("Team"). Keeps the top nav
-        # identical on every page.
-    ]
-    primary_links = [
-        _nav_item(label, href, active=is_active)
-        for (label, href, is_active, visible) in _primary_specs if visible
-    ]
-    secondary_nav = ""
-    current_sales_section = sales_section or active
-    if primary_active == "sales":
-        sales_links = [
-            link for key, link in (
-                ("sales.priorities", _nav_item("Sales Priorities", "/admin", active=current_sales_section == "sales", extra_class="top-link--secondary")),
-                ("sales.decks", _nav_item("Generate sales deck", "/admin/sales-decks", active=current_sales_section == "sales_decks", extra_class="top-link--secondary")),
-            ) if _can(key)
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(sales_links)}
-        </nav>
-        """
-    current_section = website_ops_section or ("seo_dashboard" if active == "website_ops" else active)
-    if primary_active == "website_ops":
-        secondary_links = [
-            link for key, link in (
-                ("website_ops.seo", _nav_item("SEO Dashboard", "/admin/website-ops", active=current_section == "seo_dashboard", extra_class="top-link--secondary")),
-                ("website_ops.queue", _nav_item("Queue", "/admin/website-ops/queue", active=current_section == "queue", extra_class="top-link--secondary")),
-                ("website_ops.reports", _nav_item("Reports", "/admin/website-ops/reports", active=current_section == "reports", extra_class="top-link--secondary")),
-            ) if _can(key)
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(secondary_links)}
-        </nav>
-        """
-    current_advertising_section = advertising_section or ("advertising_audit" if active == "advertising" else active)
-    if primary_active == "advertising":
-        advertising_links = [
-            link for key, link in (
-                ("advertising.audit", _nav_item("Audit", "/admin/advertising/audit", active=current_advertising_section == "advertising_audit", extra_class="top-link--secondary")),
-            ) if _can(key)
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(advertising_links)}
-        </nav>
-        """
-    current_executive_section = executive_section or ("executive" if active == "executive" else active)
-    if primary_active == "executive":
-        executive_links = [
-            link for key, link in (
-                ("executive.summary", _nav_item("Executive Summary", "/admin/executive", active=current_executive_section == "executive", extra_class="top-link--secondary")),
-                ("executive.brand_analysis", _nav_item("Brand Analysis", "/admin/executive/brand-analysis", active=current_executive_section == "brand_analysis", extra_class="top-link--secondary")),
-            ) if _can(key)
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(executive_links)}
-        </nav>
-        """
-    if primary_active == "fulfillment":
-        fulfillment_links = [
-            link for key, link in (
-                ("fulfillment.rate_sheets", _nav_item("Sales Deck", "/admin/fulfillment/sales", active=current_section == "fulfillment_sales", extra_class="top-link--secondary")),
-                ("fulfillment.dashboard", _nav_item("CS Dashboard", "/admin/fulfillment/cs/", active=current_section == "fulfillment_dashboard", extra_class="top-link--secondary")),
-                ("fulfillment.reports", _nav_item("CS Reports", "/admin/fulfillment/cs/reports/", active=current_section == "fulfillment_reports", extra_class="top-link--secondary")),
-                ("fulfillment.reports", _nav_item("Latest", "/admin/fulfillment/cs/reports/latest", active=current_section == "fulfillment_latest", extra_class="top-link--secondary")),
-            ) if _can(key)
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(fulfillment_links)}
-        </nav>
-        """
-    # Access has no secondary sub-nav — it's a single People page reached from
-    # the profile dropdown, so the top bar stays the same on it as everywhere.
+
+    # Per-section "current sub-page" — preserves today's active-highlight logic
+    # exactly. Each section reads from its dedicated *_section kwarg (falling back
+    # to the same defaults as before); fulfillment derives from `active`.
+    _current_subpage = {
+        "sales": sales_section or active,
+        "website_ops": website_ops_section or ("seo_dashboard" if active == "website_ops" else active),
+        "advertising": advertising_section or ("advertising_audit" if active == "advertising" else active),
+        "executive": executive_section or ("executive" if active == "executive" else active),
+        "finance": active,
+        "fulfillment": active,
+        "hr": active,
+    }
+
+    nav_items: list = []
+    for section in _NAV_SECTIONS:
+        accessible = [sp for sp in section.subpages if _can(sp.tool_key)]
+        if not accessible:
+            continue  # zero reachable pages — section is hidden (was _can_section)
+
+        is_primary_active = primary_active == section.primary_active
+        primary_href = accessible[0].href  # first page the user can actually open
+        current = _current_subpage.get(section.primary_active, active)
+
+        if len(accessible) == 1:
+            # Single reachable page — plain link, no caret/dropdown.
+            nav_items.append(_nav_item(section.label, primary_href, active=is_primary_active))
+            continue
+
+        # >=2 reachable pages — primary link + caret + dropdown of pills.
+        primary_link = _nav_item(section.label, primary_href, active=is_primary_active)
+        # Splice the caret in before the closing tag of the primary link.
+        primary_link = primary_link.replace(
+            "</a>", '<span class="nav-caret">&#9660;</span></a>', 1
+        )
+        pills = "".join(
+            _nav_item(sp.label, sp.href, active=(current == sp.active_key), extra_class="top-link--secondary")
+            for sp in accessible
+        )
+        nav_items.append(
+            f"""<div class="nav-item" tabindex="0" onclick="this.toggleAttribute('data-open')">
+              {primary_link}
+              <div class="nav-dropdown">{pills}</div>
+            </div>"""
+        )
+
+    # Access/Team management is intentionally NOT a primary nav section — it lives
+    # only in the profile dropdown ("Team"), so the top bar stays identical on
+    # every page.
     return f"""
     <header class="topbar">
       <div class="topbar-shell">
         <div class="topbar-inner">
           <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
           <nav class="top-actions">
-            {"".join(primary_links)}
+            {"".join(nav_items)}
           </nav>
           {_user_chip_html(user)}
         </div>
-        {secondary_nav}
       </div>
     </header>
     """
