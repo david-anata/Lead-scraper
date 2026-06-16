@@ -10,7 +10,7 @@ from __future__ import annotations
 import html
 from typing import Optional
 
-from sales_support_agent.services.access.catalog import SECTIONS
+from sales_support_agent.services.access.catalog import SECTIONS, label_for
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
     render_agent_nav,
@@ -212,9 +212,10 @@ def _flash_html(flash: Optional[str]) -> str:
         "taken":   ("A role with that name already exists.", "err"),
         "noname":  ("Role name is required.", "err"),
         "revoked": ("✓ Invite revoked.", "ok"),
-        "approved": ("✓ Access approved — they can sign in now.", "ok"),
+        "approved": ("✓ Person approved — set their access with “Manage access”.", "ok"),
         "denied":  ("✓ Request denied.", "ok"),
         "noemail": ("An email address is required to send an invite.", "err"),
+        "access":  ("✓ Access updated.", "ok"),
     }
     text, kind = msgs.get(flash, (f"Action: {_esc(flash)}.", "ok"))
     return f'<div class="flash flash-{kind}">{text}</div>'
@@ -225,21 +226,32 @@ def _people_badge(text: str, bg: str, fg: str) -> str:
             f'border:1px solid {fg}22">{_esc(text)}</span>')
 
 
+def _access_summary(u: dict) -> str:
+    """Short human label for a user's granted access, for the People table."""
+    if u.get("is_superadmin"):
+        return '<span class="badge badge-super">Full access</span>'
+    perms = sorted(u.get("permissions") or [])
+    if not perms:
+        return '<span class="cell-muted">No access yet</span>'
+    labels = [label_for(k) for k in perms]
+    shown = ", ".join(labels[:3])
+    if len(labels) > 3:
+        shown += f" +{len(labels) - 3} more"
+    return f'<span class="cell-muted">{_esc(shown)}</span>'
+
+
 def render_users_page(users: list, roles: list, *, current_user: dict,
                       flash: Optional[str] = None,
                       invites: Optional[list] = None,
                       requests_list: Optional[list] = None,
                       history: Optional[list] = None) -> str:
     """Unified People page — pending access requests, pending invites, and
-    provisioned users all in one table, with the invite form + decision history
-    below. A Status badge distinguishes each row's kind."""
+    provisioned users in one table. Access is granted per-person after a user
+    exists (Manage access), not via roles: invites carry no role, and approving
+    a request just creates the person with no access until you grant it."""
     current_email = (current_user or {}).get("email", "")
     invites = invites or []
     requests_list = requests_list or []
-    roles_opts = "".join(
-        f'<option value="{_esc(r["id"])}">{_esc(r["name"])}</option>'
-        for r in roles
-    )
 
     # --- Pending access requests (need a decision — listed first) ---
     def _req_row(req: dict) -> str:
@@ -252,11 +264,7 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
           <td class="cell-muted">—</td>
           <td class="cell-sm">{_esc(requested)}</td>
           <td><div class="acts">
-            <form method="post" action="/admin/access/requests/{rid}/approve"
-              style="display:flex;align-items:center;gap:6px">
-              <select name="role_id" class="role-sel" style="min-width:120px">
-                <option value="">— No role —</option>{roles_opts}
-              </select>
+            <form method="post" action="/admin/access/requests/{rid}/approve">
               <button type="submit" class="btn-xs btn-dark">Approve</button>
             </form>
             <form method="post" action="/admin/access/requests/{rid}/deny">
@@ -269,12 +277,11 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
     def _inv_row(inv: dict) -> str:
         iid = _esc(inv["id"])
         created = (inv.get("created_at") or "")[:10]
-        role_name = inv.get("role_name") or "—"
         return f"""<tr>
           <td class="cell-email">{_esc(inv.get("email") or "")}</td>
           <td class="cell-muted">—</td>
           <td>{_people_badge("Invited", "#e7f0ff", "#2456b8")}</td>
-          <td class="cell-muted">{_esc(role_name)}</td>
+          <td class="cell-muted">—</td>
           <td class="cell-sm">{_esc(created)}</td>
           <td><div class="acts">
             <form method="post" action="/admin/access/invites/{iid}/revoke">
@@ -290,17 +297,6 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
         is_super = bool(u.get("is_superadmin"))
         status = u.get("status", "active")
 
-        opts = '<option value="">— No role —</option>'
-        for r in roles:
-            sel = ' selected' if u.get("role_id") == r["id"] else ""
-            opts += f'<option value="{_esc(r["id"])}"{sel}>{_esc(r["name"])}</option>'
-        role_cell = f"""<form class="role-form" method="post" action="/admin/access/users/{uid}/role">
-          <select name="role_id" class="role-sel">{opts}</select>
-          <button type="submit" class="btn-xs btn-dark">Save</button>
-        </form>"""
-        if is_super:
-            role_cell = '<span class="badge badge-super">Super-admin</span>'
-
         if is_super:
             status_cell = _people_badge("Super-admin", "#efe7ff", "#5b3aa8")
         elif status == "active":
@@ -311,15 +307,18 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
         ll = u.get("last_login_at") or ""
         ll_display = ll[:10] if ll else "—"
 
+        # Manage access — not shown for super-admins (always full) or self.
+        manage = "" if (is_super or is_self) else (
+            f'<a class="btn-xs btn-dark" href="/admin/access/users/{uid}/access">Manage access</a>')
         if is_super or is_self:
-            action_cell = ""
+            status_action = ""
         elif status == "active":
-            action_cell = f"""<form method="post" action="/admin/access/users/{uid}/status">
+            status_action = f"""<form method="post" action="/admin/access/users/{uid}/status">
               <input type="hidden" name="action" value="suspend">
               <button type="submit" class="btn-xs btn-red">Suspend</button>
             </form>"""
         else:
-            action_cell = f"""<form method="post" action="/admin/access/users/{uid}/status">
+            status_action = f"""<form method="post" action="/admin/access/users/{uid}/status">
               <input type="hidden" name="action" value="activate">
               <button type="submit" class="btn-xs btn-blue">Activate</button>
             </form>"""
@@ -328,9 +327,9 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
           <td class="cell-email">{_esc(u["email"])}</td>
           <td class="cell-muted">{_esc(u.get("name") or "")}</td>
           <td>{status_cell}</td>
-          <td>{role_cell}</td>
+          <td>{_access_summary(u)}</td>
           <td class="cell-sm">{_esc(ll_display)}</td>
-          <td><div class="acts">{action_cell}</div></td>
+          <td><div class="acts">{manage}{status_action}</div></td>
         </tr>"""
 
     rows = ("".join(_req_row(r) for r in requests_list)
@@ -347,7 +346,6 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
     {_flash_html(flash)}
     <div class="page-header">
       <h2>People</h2>
-      <a class="btn-primary" href="/admin/access/roles">Manage roles →</a>
     </div>
     <div class="tbl-card" style="margin-bottom:28px">
       <div class="tbl-card-header">
@@ -357,27 +355,22 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
       <table>
         <thead><tr>
           <th>Email</th><th>Name</th><th>Status</th>
-          <th>Role</th><th>Date</th><th>Actions</th>
+          <th>Access</th><th>Date</th><th>Actions</th>
         </tr></thead>
         <tbody>{rows}</tbody>
       </table>
     </div>
     <div class="form-card" style="margin-bottom:28px">
-      <div class="tbl-card-title" style="margin-bottom:18px">Send new invite</div>
-      <form method="post" action="/admin/access/invites/new">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Email address *</label>
-            <input class="form-input" type="email" name="email" required
-              placeholder="colleague@anatainc.com">
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Role</label>
-            <select class="form-input" name="role_id">
-              <option value="">— No role (assign later) —</option>
-              {roles_opts}
-            </select>
-          </div>
+      <div class="tbl-card-title" style="margin-bottom:6px">Send new invite</div>
+      <p class="cell-muted" style="margin:0 0 16px;font-size:13px">
+        Invite by email — once they accept, set their access with “Manage access”.
+      </p>
+      <form method="post" action="/admin/access/invites/new"
+        style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="margin-bottom:0;flex:1;min-width:260px">
+          <label class="form-label">Email address *</label>
+          <input class="form-input" type="email" name="email" required
+            placeholder="colleague@anatainc.com">
         </div>
         <button type="submit" class="btn-primary">Generate invite link</button>
       </form>
@@ -385,6 +378,51 @@ def render_users_page(users: list, roles: list, *, current_user: dict,
     {_history_html(history)}
     """
     return _shell("Access — People", body, user=current_user, active="access_users", wide=True)
+
+
+def render_user_access_page(user: dict, *, current_user: dict,
+                            error: Optional[str] = None) -> str:
+    """Per-person access editor — a checkbox grid of tools granted directly to
+    one user (replaces the role system)."""
+    uid = _esc(user.get("id", ""))
+    email = _esc(user.get("email", ""))
+    granted = set(user.get("permissions") or [])
+
+    grid_blocks = []
+    for section_name, tools in SECTIONS.items():
+        checks = ""
+        for t in tools:
+            checked = ' checked' if t.key in granted else ""
+            tid = f"tool_{t.key.replace('.', '_')}"
+            checks += f"""<label class="tool-row" for="{tid}">
+              <input type="checkbox" id="{tid}" name="permissions" value="{_esc(t.key)}"{checked}>
+              <span class="tool-row-label">{_esc(t.label)}</span>
+            </label>"""
+        grid_blocks.append(f"""<div class="sec-block">
+          <div class="sec-name">{_esc(section_name)}</div>
+          {checks}
+        </div>""")
+
+    error_html = f'<div class="flash flash-err">{_esc(error)}</div>' if error else ""
+    body = f"""
+    {error_html}
+    <div class="page-header">
+      <h2>Access for {email}</h2>
+    </div>
+    <div class="form-card">
+      <p class="cell-muted" style="margin:0 0 18px;font-size:13px">
+        Tick the tools this person can use. Changes take effect on their next page load.
+      </p>
+      <form method="post" action="/admin/access/users/{uid}/access">
+        <div class="tool-grid">{"".join(grid_blocks)}</div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Save access</button>
+          <a class="btn-cancel" href="/admin/access">Cancel</a>
+        </div>
+      </form>
+    </div>
+    """
+    return _shell(f"Access — {email}", body, user=current_user, active="access_users", wide=True)
 
 
 # ---------------------------------------------------------------------------

@@ -43,8 +43,19 @@ def _register_models() -> None:
     import sales_support_agent.models.entities  # noqa: F401
 
 
+def _normalize_db_url(url: str) -> str:
+    """Accept the 'postgres://' scheme that Render/Supabase/Heroku hand out —
+    SQLAlchemy 2.0 only recognizes 'postgresql://'. So a pasted persistent-DB URL
+    boots cleanly regardless of which form it's in. Other URLs (sqlite,
+    postgresql+driver) pass through untouched."""
+    if url.startswith("postgres://"):
+        return "postgresql://" + url[len("postgres://"):]
+    return url
+
+
 def create_session_factory(database_url: str) -> sessionmaker[Session]:
     global engine
+    database_url = _normalize_db_url(database_url)
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, future=True, connect_args=connect_args)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, expire_on_commit=False)
@@ -54,9 +65,10 @@ def init_cashflow_db(db_url: str) -> None:
     """Re-initialize the module-level engine from a specific DB URL.
     Call this at app startup to ensure cashflow services use the same DB as the main app."""
     global engine
+    db_url = _normalize_db_url(db_url)
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
     engine = create_engine(db_url, future=True, connect_args=connect_args)
-    logger.info("Cashflow DB initialized: %s", db_url[:40])
+    logger.info("Cashflow DB initialized: %s", db_url.split("@")[-1][:40] if "@" in db_url else db_url[:40])
 
 
 def init_database(session_factory: sessionmaker[Session]) -> None:
@@ -119,6 +131,7 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         },
         "app_users": {
             "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
+            "permissions_json": "ALTER TABLE app_users ADD COLUMN permissions_json JSON NOT NULL DEFAULT '[]'",
         },
         "cash_events": {
             "subcategory":           "ALTER TABLE cash_events ADD COLUMN subcategory VARCHAR(64) NOT NULL DEFAULT ''",
@@ -648,6 +661,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 name          VARCHAR(255) NOT NULL DEFAULT '',
                 picture_url   VARCHAR(512) NOT NULL DEFAULT '',
                 role_id       TEXT         NULL,
+                permissions_json JSON      NOT NULL DEFAULT '[]',
                 status        VARCHAR(16)  NOT NULL DEFAULT 'active',
                 is_superadmin BOOLEAN      NOT NULL DEFAULT FALSE,
                 created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -657,6 +671,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_app_users_email ON app_users (email)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_users_role_id ON app_users (role_id)"))
         connection.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS picture_url VARCHAR(512) NOT NULL DEFAULT ''"))
+        connection.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS permissions_json JSON NOT NULL DEFAULT '[]'"))
         connection.execute(text("""
             CREATE TABLE IF NOT EXISTS app_invites (
                 id          TEXT         PRIMARY KEY,
