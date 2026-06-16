@@ -42,6 +42,8 @@ class NarrativeResult:
     stands_out: list = field(default_factory=list)
     verdict_text: str = ""
     recommendation: str = ""
+    investment_thesis: list = field(default_factory=list)  # bull case (for)
+    key_risks: list = field(default_factory=list)          # bear case (against)
     model: str = "none"
     input_tokens: int = 0
     output_tokens: int = 0
@@ -56,8 +58,11 @@ _SYSTEM = (
     "JSON object with keys: executive_summary (2-4 sentence paragraph), "
     "stands_out (array of 3-5 short bullet strings of things that stand out "
     "beyond standard KPIs), verdict (2-3 sentence buy/pass paragraph that "
-    "restates the grade and gives a recommendation). No markdown, no prose "
-    "outside the JSON."
+    "restates the grade and gives a recommendation), investment_thesis (array "
+    "of 3-5 short bullets — the bull case / reasons this is an attractive "
+    "opportunity, grounded only in the supplied figures), key_risks (array of "
+    "3-5 short bullets — the bear case / what must be diligenced before close). "
+    "No markdown, no prose outside the JSON."
 )
 
 
@@ -130,11 +135,34 @@ def build_deterministic(brand: str, current: Metrics, growth_bps: Optional[int],
         + ("Single-period data limits confidence — request prior-year and the latest quarter." if not has_yoy else "")
     ).strip()
 
+    # Bull case: the strongest scorecard dimensions (A/B) become thesis points.
+    thesis = []
+    for d in sorted(scorecard.dimensions, key=lambda x: x.points, reverse=True):
+        if d.letter in ("A", "B") and len(thesis) < 4:
+            thesis.append(f"{d.label}: {d.reason}")
+    if current.blended_mer is not None and current.blended_mer >= 3.0:
+        thesis.append(f"Efficient acquisition — every $1 of marketing returns {fmt_mult(current.blended_mer)}.")
+    if not thesis:
+        thesis.append("No standout strengths in the supplied data — thesis depends on diligence upside.")
+
+    # Bear case: critical/high red flags + the weakest dimensions.
+    risks = [f"{f.title}: {f.detail}" if f.detail else f.title
+             for f in red_flags if f.severity in ("Critical", "High")][:4]
+    for d in sorted(scorecard.dimensions, key=lambda x: x.points):
+        if d.letter in ("D", "F") and len(risks) < 5:
+            risks.append(f"{d.label}: {d.reason}")
+    if not has_yoy:
+        risks.append("Single-period data — no prior-year trend to confirm trajectory.")
+    if not risks:
+        risks.append("No material risks surfaced in the supplied data.")
+
     return NarrativeResult(
         executive_summary=summary,
         stands_out=stands_out,
         verdict_text=verdict,
         recommendation=rec,
+        investment_thesis=thesis,
+        key_risks=risks,
         model="deterministic",
     )
 
@@ -177,6 +205,8 @@ def generate_narrative(
             stands_out=[str(s).strip() for s in (data.get("stands_out") or baseline.stands_out) if str(s).strip()],
             verdict_text=str(data.get("verdict") or baseline.verdict_text).strip(),
             recommendation=baseline.recommendation,  # recommendation stays deterministic (tied to grade)
+            investment_thesis=[str(s).strip() for s in (data.get("investment_thesis") or baseline.investment_thesis) if str(s).strip()],
+            key_risks=[str(s).strip() for s in (data.get("key_risks") or baseline.key_risks) if str(s).strip()],
             model=message.model,
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,

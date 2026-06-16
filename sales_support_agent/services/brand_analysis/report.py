@@ -14,9 +14,13 @@ from sales_support_agent.services.brand_analysis import confidence as confidence
 from sales_support_agent.services.brand_analysis import intake as intake_mod
 from sales_support_agent.services.brand_analysis import llm as llm_mod
 from sales_support_agent.services.brand_analysis import scoring as scoring_mod
+from sales_support_agent.services.brand_analysis import valuation as valuation_mod
 from sales_support_agent.services.brand_analysis.schema import (
     CATEGORY_DTC,
     BrandReport,
+    fmt_money,
+    fmt_mult,
+    fmt_pct,
 )
 
 
@@ -27,9 +31,14 @@ def build_report(
     category: str = CATEGORY_DTC,
     prepared_date: str = "",
     use_llm: bool = True,
+    context_notes: str = "",
+    brand_website: str = "",
+    logo_data_uri: str = "",
+    brand_tagline: str = "",
+    product_images: Optional[list] = None,
 ) -> BrandReport:
     category = (category or CATEGORY_DTC).lower()
-    intake = intake_mod.parse_dump(files, category=category)
+    intake = intake_mod.parse_dump(files, category=category, use_llm=use_llm)
 
     scored = scoring_mod.score(intake.current, intake.prior, category=category)
     current = scored["current"]
@@ -56,6 +65,14 @@ def build_report(
     )
 
     scorecard.verdict = narrative.verdict_text
+
+    completeness = conf.get("completeness_pct", 0)
+    valuation = valuation_mod.estimate(
+        current, category=category, grade=scorecard.letter,
+        data_completeness_pct=completeness,
+    )
+    info_ribbon = _build_ribbon(scorecard, current, growth, narrative.recommendation,
+                                valuation, intake.has_yoy)
 
     report = BrandReport(
         brand=brand or (intake.detected_brands[0] if intake.detected_brands else "Brand"),
@@ -88,8 +105,50 @@ def build_report(
         recommendation=narrative.recommendation,
         narrative_model=narrative.model,
         intake_summary=intake.summary(),
+        data_completeness_pct=completeness,
+        account_mappings=intake.account_mappings,
+        unmapped_accounts=intake.unmapped_accounts,
+        classifier_model=intake.classifier_model,
+        valuation=valuation.to_dict(),
+        investment_thesis=narrative.investment_thesis,
+        key_risks=narrative.key_risks,
+        info_ribbon=info_ribbon,
+        brand_website=brand_website,
+        logo_data_uri=logo_data_uri,
+        product_images=list(product_images or []),
+        brand_tagline=brand_tagline,
+        context_notes=context_notes,
     )
     return report
+
+
+_GRADE_TONE = {"A": "good", "B": "good", "C": "warn", "D": "warn", "F": "bad"}
+
+
+def _build_ribbon(scorecard, current, growth_bps, recommendation, valuation, has_yoy) -> list:
+    """Quick-glance KPI chips for the exec-summary callout ribbon.
+    Each chip: {label, value, tone}. tone in good|warn|bad|neutral."""
+    chips: list = []
+    chips.append({"label": "Grade", "value": f"{scorecard.letter} · {scorecard.score_100}/100",
+                  "tone": _GRADE_TONE.get(scorecard.letter, "neutral")})
+    chips.append({"label": "Recommendation", "value": recommendation or "—",
+                  "tone": _GRADE_TONE.get(scorecard.letter, "neutral")})
+    if current.net_revenue_cents is not None:
+        chips.append({"label": "Net revenue", "value": fmt_money(current.net_revenue_cents), "tone": "neutral"})
+    if growth_bps is not None:
+        chips.append({"label": "YoY growth", "value": fmt_pct(growth_bps),
+                      "tone": "good" if growth_bps >= 0 else "bad"})
+    elif not has_yoy:
+        chips.append({"label": "YoY growth", "value": "No prior year", "tone": "warn"})
+    if current.net_margin_bps is not None:
+        chips.append({"label": "Net margin", "value": fmt_pct(current.net_margin_bps),
+                      "tone": "good" if current.net_margin_bps >= 0 else "bad"})
+    if current.blended_mer is not None:
+        chips.append({"label": "Blended MER", "value": fmt_mult(current.blended_mer),
+                      "tone": "good" if current.blended_mer >= 3.0 else "warn"})
+    if valuation.is_meaningful():
+        chips.append({"label": "Indicative range", "value": valuation.headline(), "tone": "neutral"})
+    return chips
 
 
 def _acquisition_data(period) -> dict:
