@@ -41,6 +41,7 @@ def _register_models() -> None:
     """Import ORM models so Base.metadata is fully populated before schema work."""
 
     import sales_support_agent.models.entities  # noqa: F401
+    import sales_support_agent.models.hr  # noqa: F401  — HR / payroll tables
 
 
 def _normalize_db_url(url: str) -> str:
@@ -92,6 +93,20 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if not inspector.get_table_names():
         Base.metadata.create_all(bind=engine)
     _apply_postgres_compat_migrations(engine)
+    _ensure_hr_tables(engine)
+
+
+def _ensure_hr_tables(engine: Any) -> None:
+    """Create any missing HR/payroll tables (single-org Anata port of Base44 HR).
+
+    On a fresh DB the bulk create_all already made them; on an existing Postgres
+    (where create_all is skipped to keep boot fast) this adds just the new HR
+    tables. checkfirst=True makes it idempotent and emits dialect-correct DDL
+    straight from the ORM models, so there's no hand-written SQL to drift."""
+    import sales_support_agent.models.hr  # noqa: F401 — ensure models are registered
+    hr_tables = [t for name, t in Base.metadata.tables.items() if name.startswith("hr_")]
+    if hr_tables:
+        Base.metadata.create_all(bind=engine, tables=hr_tables, checkfirst=True)
 
 
 @contextmanager
