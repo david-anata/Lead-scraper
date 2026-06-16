@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from sales_support_agent.services.brand_analysis import intake_llm
 from sales_support_agent.services.brand_analysis.schema import (
     PeriodFinancials,
     parse_cents,
@@ -270,6 +271,9 @@ class IntakeResult:
     files_read: list           # [(filename, n_tables)]
     files_ignored: list        # filenames that yielded nothing
     notes: list                # human-readable detection notes
+    account_mappings: dict = field(default_factory=dict)   # field -> {sources, confidence}
+    unmapped_accounts: list = field(default_factory=list)  # accounts the classifier couldn't place
+    classifier_model: str = ""                             # LLM model if classification ran
 
     @property
     def has_yoy(self) -> bool:
@@ -297,8 +301,14 @@ def _brand_from_filename(filename: str) -> str:
     return stem.title() if stem and len(stem) > 1 else ""
 
 
-def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc") -> IntakeResult:
-    """Parse a batch of uploaded financial files into current/prior periods."""
+def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
+               use_llm: bool = True) -> IntakeResult:
+    """Parse a batch of uploaded financial files into current/prior periods.
+
+    Runs the fast deterministic substring mapper first; when it leaves a
+    material P&L bucket empty (the tell-tale of a trial-balance / GL dump) and
+    an LLM key is configured, an LLM classifier folds the raw GL accounts into
+    the canonical buckets and fills the gaps (see intake_llm)."""
     current = PeriodFinancials(period_label="Current period")
     prior: Optional[PeriodFinancials] = None
     detected_brands: list[str] = []
@@ -306,6 +316,7 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc") -> Inta
     files_ignored: list = []
     notes: list = []
     all_years: set[int] = set()
+    all_tables: list = []
 
     # First pass: collect every year token across all files to fix current/prior.
     parsed_files: list[tuple[str, list[_Table]]] = []
@@ -314,6 +325,7 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc") -> Inta
         if not tables:
             files_ignored.append(filename)
             continue
+        all_tables.extend(tables)
         parsed_files.append((filename, tables))
         files_read.append((filename, len(tables)))
         brand = _brand_from_filename(filename)
@@ -398,6 +410,28 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc") -> Inta
         if period.marketing_total_cents is None and period.marketing_by_channel:
             period.marketing_total_cents = sum(period.marketing_by_channel.values())
 
+    # LLM gap-fill for GL / trial-balance dumps the substring matcher can't fold.
+    account_mappings: dict = {}
+    unmapped_accounts: list = []
+    classifier_model = ""
+    if use_llm and all_tables and intake_llm.should_classify(current):
+        result = intake_llm.classify(all_tables)
+        if result is not None:
+            classifier_model = result.model
+            intake_llm.merge_into(current, result, account_mappings, prior=False)
+            if prior is not None:
+                intake_llm.merge_into(prior, result, account_mappings, prior=True)
+            elif result.prior:
+                # Classifier found a prior period the year-scan missed.
+                prior = PeriodFinancials(period_label=result.period_prior_label or "Prior period")
+                intake_llm.merge_into(prior, result, account_mappings, prior=True)
+            unmapped_accounts = list(result.unmapped)
+            if classifier_model:
+                notes.append(
+                    f"LLM classifier folded {len(account_mappings)} GL bucket(s) the "
+                    f"line-item matcher left empty."
+                )
+
     if current_year and prior_year:
         notes.append(f"Detected periods {current_year} (current) vs {prior_year} (prior).")
     elif not all_years:
@@ -412,4 +446,7 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc") -> Inta
         files_read=files_read,
         files_ignored=files_ignored,
         notes=notes,
+        account_mappings=account_mappings,
+        unmapped_accounts=unmapped_accounts,
+        classifier_model=classifier_model,
     )
