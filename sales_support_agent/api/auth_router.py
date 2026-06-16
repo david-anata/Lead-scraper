@@ -26,11 +26,22 @@ _OAUTH_STATE_COOKIE = "oauth_state"
 
 
 def _auth_settings(request: Request):
-    """Resolve the settings object that carries Google OAuth + admin-session
-    config. On the standalone sales-support app that's app.state.settings; on the
-    root app (main.py) the agent config lives on app.state.agent_settings while
-    app.state.settings is the unrelated root Settings. Prefer agent_settings."""
+    """Settings carrying Google OAuth config (client id/secret, allowed domain).
+    On the standalone app that's app.state.settings; on the root app it's
+    app.state.agent_settings. Used for the OAuth handshake + domain check."""
     return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+
+
+def _session_settings(request: Request):
+    """Settings used to MINT the session cookie — must match whatever the host
+    app validates `/admin` against, or the user gets bounced to login.
+
+    On the root app (main.py) every @app /admin route validates against
+    `admin_dashboard_settings` (that's what password login mints with), so we
+    must mint with the same one — agent_settings has a different cookie
+    name/secret and would be rejected at /admin. On the standalone app there's no
+    admin_dashboard_settings, so fall back to the OAuth/session settings."""
+    return getattr(request.app.state, "admin_dashboard_settings", None) or _auth_settings(request)
 
 
 def _callback_uri(request: Request) -> str:
@@ -44,7 +55,7 @@ def _callback_uri(request: Request) -> str:
 def _cookie_opts(request: Request) -> dict:
     secure = "localhost" not in str(request.base_url)
     return {
-        "key": _auth_settings(request).admin_cookie_name,
+        "key": _session_settings(request).admin_cookie_name,
         "httponly": True,
         "samesite": "lax",
         "path": "/",
@@ -153,9 +164,17 @@ def _external_login_allowed(request: Request, email: str) -> bool:
 
 
 def _mint_session(request: Request, settings, email: str, name: str) -> RedirectResponse:
-    """Mint a session cookie and redirect to /admin."""
-    role = get_user_role(settings, email)
-    token = create_user_session_token(settings, email=email, name=name, role=role)
+    """Mint a session cookie and redirect to /admin.
+
+    The cookie MUST be signed with the host app's session settings (see
+    _session_settings) so /admin accepts it; `settings` here is the OAuth config
+    and is only used for the (cosmetic) role label."""
+    sess = _session_settings(request)
+    try:
+        role = get_user_role(settings, email)
+    except Exception:  # noqa: BLE001 — role label is non-critical; never block login
+        role = "member"
+    token = create_user_session_token(sess, email=email, name=name, role=role)
     response = RedirectResponse("/admin", status_code=302)
     response.delete_cookie(_OAUTH_STATE_COOKIE, path="/")
     response.set_cookie(value=token, **_cookie_opts(request))
