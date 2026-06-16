@@ -60,16 +60,16 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(u["is_superadmin"])
         self.assertEqual(u["permissions"], set(ALL_TOOL_KEYS))
 
-    def test_role_assignment_resolves_permissions(self) -> None:
-        rid = _role_id("Finance Only", ["finance"])
-        store.upsert_user("fin1@anatainc.com", "Fin", role_id=rid)
+    def test_per_user_permissions_resolve(self) -> None:
+        uid = store.upsert_user("fin1@anatainc.com", "Fin")
+        store.set_user_permissions(uid, ["finance", "not.a.real.key"])  # invalid filtered
         u = store.get_user_by_email("fin1@anatainc.com")
         self.assertEqual(u["permissions"], {"finance"})
         self.assertFalse(u["is_superadmin"])
 
     def test_suspended_user_has_no_permissions(self) -> None:
-        rid = _role_id("Ops", ["website_ops.seo"])
-        uid = store.upsert_user("ops1@anatainc.com", "Ops", role_id=rid)
+        uid = store.upsert_user("ops1@anatainc.com", "Ops")
+        store.set_user_permissions(uid, ["website_ops.seo"])
         store.set_user_status(uid, "suspended")
         access = store.resolve_access("ops1@anatainc.com")
         self.assertEqual(access["status"], "suspended")
@@ -86,9 +86,8 @@ class EnforcementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
         # A finance-only user (idempotent — the temp DB persists across tests).
-        existing = store.get_role_by_name("FinanceOnlyEnf")
-        self.fin_role = existing["id"] if existing else store.create_role("FinanceOnlyEnf", ["finance"], description="")
-        store.upsert_user("enf_fin@anatainc.com", "Fin", role_id=self.fin_role)
+        uid = store.upsert_user("enf_fin@anatainc.com", "Fin")
+        store.set_user_permissions(uid, ["finance"])  # per-person grant (roles removed)
 
     def _get(self, path, email):
         name, token = _cookie_for(email)
@@ -558,3 +557,56 @@ class UnifiedPeoplePageTests(unittest.TestCase):
         # Approve/Deny + Revoke actions are inline
         self.assertIn("/requests/", r.text)
         self.assertIn("/revoke", r.text)
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class PerPersonAccessTests(unittest.TestCase):
+    """Roles are gone — access is granted per-person via the Manage-access editor;
+    invites carry no role."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+        self.sa_name, self.sa_token = _cookie_for("david@anatainc.com", "David", "admin")
+
+    def _get(self, path):
+        self.client.cookies.set(self.sa_name, self.sa_token)
+        try:
+            return self.client.get(path, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def _post(self, path, data):
+        self.client.cookies.set(self.sa_name, self.sa_token)
+        try:
+            return self.client.post(path, data=data, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def test_people_page_has_manage_access_not_roles(self) -> None:
+        store.upsert_user("pp_user@anatainc.com", "PP")
+        r = self._get("/admin/access")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Manage access", r.text)
+        self.assertNotIn("Manage roles", r.text)
+        self.assertNotIn("No role (assign later)", r.text)  # invite form is email-only
+
+    def test_user_access_editor_renders_and_saves(self) -> None:
+        uid = store.upsert_user("editme@anatainc.com", "Edit Me")
+        # Editor renders
+        r = self._get(f"/admin/access/users/{uid}/access")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("editme@anatainc.com", r.text)
+        self.assertIn('value="finance"', r.text)
+        # Saving grants exactly the ticked tools
+        r2 = self._post(f"/admin/access/users/{uid}/access",
+                        {"permissions": ["finance", "advertising.audit"]})
+        self.assertIn(r2.status_code, (302, 303))
+        u = store.get_user_by_email("editme@anatainc.com")
+        self.assertEqual(u["permissions"], {"finance", "advertising.audit"})
+
+    def test_invite_without_role(self) -> None:
+        r = self._post("/admin/access/invites/new", {"email": "norole@anatainc.com"})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Invite created", r.text)
+        inv = next(i for i in store.list_pending_invites() if i["email"] == "norole@anatainc.com")
+        self.assertIsNone(inv["role_id"])

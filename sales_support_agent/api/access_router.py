@@ -42,6 +42,7 @@ from sales_support_agent.services.access.pages import (
     render_requests_page,
     render_role_form_page,
     render_roles_page,
+    render_user_access_page,
     render_users_page,
 )
 from sales_support_agent.services.access.notify import send_approval_email, send_invite_email
@@ -130,6 +131,32 @@ async def set_status(user_id: str,
         return _redirect("/admin/access", "status")
     store.set_user_status(user_id, new_status)
     return _redirect("/admin/access", "status")
+
+
+# ---------------------------------------------------------------------------
+# Per-user access editor (replaces roles — permissions live on the person)
+# ---------------------------------------------------------------------------
+
+
+def _find_user(user_id: str) -> Optional[dict]:
+    return next((u for u in store.list_users() if u["id"] == user_id), None)
+
+
+@router.get("/users/{user_id}/access", response_class=HTMLResponse)
+async def user_access_form(user_id: str, current_user: dict = Depends(_guard)):
+    user = _find_user(user_id)
+    if not user:
+        return RedirectResponse("/admin/access", status_code=303)
+    return HTMLResponse(render_user_access_page(user, current_user=current_user))
+
+
+@router.post("/users/{user_id}/access")
+async def update_user_access(user_id: str,
+                             permissions: List[str] = Form(default=[]),
+                             current_user: dict = Depends(_guard)):
+    if not store.set_user_permissions(user_id, permissions):
+        return RedirectResponse("/admin/access", status_code=303)
+    return _redirect("/admin/access", "access")
 
 
 # ---------------------------------------------------------------------------
@@ -276,29 +303,24 @@ async def invites_page(request: Request, current_user: dict = Depends(_guard)):
 async def create_invite(
     request: Request,
     email: str = Form(""),
-    role_id: str = Form(""),
     current_user: dict = Depends(_guard),
 ):
+    # Invites carry no role — access is granted per-person after they accept.
     email = email.strip().lower()
     if not email:
         return RedirectResponse("/admin/access?err=noemail", status_code=303)
     token = secrets.token_urlsafe(32)
     expires = datetime.utcnow() + timedelta(days=7)
-    store.create_invite(email, role_id or None, token=token,
+    store.create_invite(email, None, token=token,
                         invited_by=current_user.get("email", ""),
                         expires_at=expires)
     base = str(request.base_url).rstrip("/")
     if "localhost" not in base and "127.0.0.1" not in base:
         base = base.replace("http://", "https://")
     invite_link = f"{base}/admin/access/invite/{token}"
-    role_name = ""
-    if role_id:
-        role = store.get_role(role_id)
-        role_name = (role or {}).get("name") or ""
     email_sent = send_invite_email(_email_settings(request), to_email=email,
                                    invite_link=invite_link,
-                                   invited_by=current_user.get("email", ""),
-                                   role_name=role_name)
+                                   invited_by=current_user.get("email", ""))
     return HTMLResponse(render_invite_created_page(invite_link, email,
                                                    current_user=current_user,
                                                    email_sent=email_sent))

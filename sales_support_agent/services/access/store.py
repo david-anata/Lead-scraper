@@ -199,22 +199,33 @@ def list_users() -> list:
 
 
 def _user_dict(s: Session, user: AppUser, *, roles: Optional[dict] = None) -> dict:
-    role = None
-    if user.role_id:
-        role = roles.get(user.role_id) if roles is not None else s.get(AppRole, user.role_id)
-    perms = set(ALL_TOOL_KEYS) if user.is_superadmin else set(valid_keys(role.permissions_json if role else []))
+    # Permissions are granted per-user (user.permissions_json). Super-admins get
+    # everything. (The legacy role system is gone; role_id is retained only so
+    # old rows don't break and is no longer consulted for access.)
+    own = valid_keys(user.permissions_json or [])
+    perms = set(ALL_TOOL_KEYS) if user.is_superadmin else set(own)
     return {
         "id": user.id,
         "email": user.email,
         "name": user.name or user.email,
         "picture": user.picture_url or "",
         "role_id": user.role_id,
-        "role_name": (role.name if role else ("Super-admin" if user.is_superadmin else "")),
+        "role_name": ("Super-admin" if user.is_superadmin else ""),
         "status": user.status,
         "is_superadmin": bool(user.is_superadmin),
         "permissions": perms,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
     }
+
+
+def set_user_permissions(user_id: str, keys) -> bool:
+    """Replace a user's granted tool keys (validated against the catalog)."""
+    with _session() as s:
+        user = s.get(AppUser, user_id)
+        if not user:
+            return False
+        user.permissions_json = valid_keys(keys)
+        return True
 
 
 # ---------------------------------------------------------------------------

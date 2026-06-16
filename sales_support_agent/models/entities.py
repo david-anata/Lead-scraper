@@ -760,7 +760,8 @@ class AppUser(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
     picture_url: Mapped[str] = mapped_column(String(512), default="")
-    role_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    role_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)  # legacy; per-user permissions below supersede it
+    permissions_json: Mapped[list] = mapped_column(JSON, default=list)  # list[str] of tool keys granted directly to this user
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|suspended
     is_superadmin: Mapped[bool] = mapped_column(Boolean, default=False)
 
