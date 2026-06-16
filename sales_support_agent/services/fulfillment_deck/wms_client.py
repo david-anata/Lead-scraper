@@ -155,7 +155,12 @@ class AnataWMSClient:
                         "length": package.length_in,
                         "width": package.width_in,
                         "height": package.height_in,
-                        "weight": package.weight_lb,
+                        # EliteWorks expects package weight in OUNCES (its own
+                        # docs ship a 4x3x5 box at "weight": 54 — i.e. 54 oz,
+                        # not 54 lb). Our ProductSpec carries pounds, so convert
+                        # — otherwise every quote rates a 1/16th-weight parcel
+                        # and comes back far too cheap. Dims stay in inches.
+                        "weight": max(1, round((package.weight_lb or 0) * 16)),
                         "contents_value": 25,
                         "shipment_items": [
                             {
