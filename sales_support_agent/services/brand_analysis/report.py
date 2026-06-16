@@ -38,7 +38,8 @@ def build_report(
     product_images: Optional[list] = None,
 ) -> BrandReport:
     category = (category or CATEGORY_DTC).lower()
-    intake = intake_mod.parse_dump(files, category=category, use_llm=use_llm)
+    intake = intake_mod.parse_dump(files, category=category, use_llm=use_llm,
+                                   context_notes=context_notes)
 
     scored = scoring_mod.score(intake.current, intake.prior, category=category)
     current = scored["current"]
@@ -59,6 +60,7 @@ def build_report(
         red_flags,
         conf["confidence"],
         intake.has_yoy,
+        context_notes=context_notes,
     ) if use_llm else llm_mod.build_deterministic(
         brand or (intake.detected_brands[0] if intake.detected_brands else ""),
         current, growth, scorecard, red_flags, intake.has_yoy,

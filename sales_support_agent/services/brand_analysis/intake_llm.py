@@ -196,10 +196,15 @@ def _clean_channels(raw: dict) -> dict:
 def classify(
     tables,
     *,
+    context_notes: str = "",
     api_key: Optional[str] = None,
     model: str = "claude-haiku-4-5-20251001",
 ) -> Optional[ClassificationResult]:
     """Classify raw parsed rows into canonical buckets via the LLM.
+
+    ``context_notes`` is analyst-supplied guidance (e.g. "the legal entity
+    differs from the brand", "treat the owner loan as related-party") that
+    helps the model map ambiguous accounts correctly.
 
     Returns None when there is no API key or the call fails — callers keep the
     deterministic mapping. Never raises.
@@ -211,9 +216,13 @@ def classify(
     if not body.strip():
         return None
 
+    context_block = (
+        f"\nANALYST CONTEXT (use to disambiguate, never to fabricate numbers):\n{context_notes.strip()}\n"
+        if context_notes and context_notes.strip() else ""
+    )
     prompt = (
         "Classify these financial line items into the JSON schema below.\n\n"
-        f"SCHEMA:\n{_SCHEMA_HINT}\n\nLINE ITEMS:\n{body}\n\nReturn the JSON now."
+        f"SCHEMA:\n{_SCHEMA_HINT}\n{context_block}\nLINE ITEMS:\n{body}\n\nReturn the JSON now."
     )
     try:
         import anthropic

@@ -144,6 +144,17 @@ def _exec_summary(report: BrandReport) -> str:
     </section>"""
 
 
+def _context_callout(report: BrandReport) -> str:
+    notes = (report.context_notes or "").strip()
+    if not notes:
+        return ""
+    return f"""
+    <section class="card context-callout">
+      <h3 style="margin:0 0 8px">Analyst context</h3>
+      <p style="margin:0;white-space:pre-wrap">{_e(notes)}</p>
+    </section>"""
+
+
 def _charts_section(report: BrandReport) -> str:
     has_media = bool(report.media_mix)
     has_monthly = bool(report.monthly_revenue)
@@ -341,6 +352,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
         _ribbon(report),
         _completeness_meter(report),
         _exec_summary(report),
+        _context_callout(report),
         _charts_section(report),
         _thesis_risks(report),
         _valuation_section(report),
@@ -434,6 +446,8 @@ body{margin:0;background:var(--cream);color:var(--navy);font-family:"Inter","Seg
 .flag-detail{font-size:13px;color:rgba(43,54,68,.6);margin-top:2px}
 .prov{padding:18px 22px}.prov summary{cursor:pointer;font-family:"Montserrat";font-weight:700;font-size:14px}
 .prov-note{font-size:12px;color:rgba(43,54,68,.5);margin:10px 0}
+.context-callout{background:rgba(133,187,218,.10);border-left:4px solid var(--blue)}
+.context-callout h3{color:var(--navy)}
 .confidential{text-align:center;font-size:12px;color:rgba(43,54,68,.4);margin:22px 0 8px}
 .foot{text-align:center;font-size:12px;color:rgba(43,54,68,.35);margin-top:10px}
 @media(max-width:760px){.cover{flex-direction:column}.chart-grid,.two-col{grid-template-columns:1fr}.cover-brand{font-size:34px}}

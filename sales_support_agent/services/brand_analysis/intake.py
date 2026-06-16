@@ -302,7 +302,7 @@ def _brand_from_filename(filename: str) -> str:
 
 
 def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
-               use_llm: bool = True) -> IntakeResult:
+               use_llm: bool = True, context_notes: str = "") -> IntakeResult:
     """Parse a batch of uploaded financial files into current/prior periods.
 
     Runs the fast deterministic substring mapper first; when it leaves a
@@ -415,7 +415,7 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     unmapped_accounts: list = []
     classifier_model = ""
     if use_llm and all_tables and intake_llm.should_classify(current):
-        result = intake_llm.classify(all_tables)
+        result = intake_llm.classify(all_tables, context_notes=context_notes)
         if result is not None:
             classifier_model = result.model
             intake_llm.merge_into(current, result, account_mappings, prior=False)

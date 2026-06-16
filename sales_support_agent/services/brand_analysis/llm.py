@@ -177,6 +177,7 @@ def generate_narrative(
     confidence: str,
     has_yoy: bool,
     *,
+    context_notes: str = "",
     api_key: Optional[str] = None,
     model: str = "claude-haiku-4-5-20251001",
 ) -> NarrativeResult:
@@ -186,6 +187,11 @@ def generate_narrative(
         return baseline
 
     prompt = _facts(brand, category, current, growth_bps, scorecard, red_flags, confidence, has_yoy)
+    if context_notes and context_notes.strip():
+        prompt += (
+            "\n\nANALYST CONTEXT (incorporate where relevant; do not invent numbers):\n"
+            + context_notes.strip()
+        )
     try:
         import anthropic
 
