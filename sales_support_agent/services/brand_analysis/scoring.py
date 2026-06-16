@@ -18,6 +18,7 @@ from sales_support_agent.services.brand_analysis.schema import (
     DIMENSIONS,
     GRADE_POINTS,
     Metrics,
+    NOT_ASSESSED,
     PeriodFinancials,
     RedFlag,
     Scorecard,
@@ -103,7 +104,7 @@ def _grade_band(value: Optional[int], low: int, high: int) -> Optional[str]:
 
 def _grade_revenue(cur: Metrics, prior: Optional[Metrics], growth_bps: Optional[int], bm: Benchmarks) -> tuple[str, str]:
     if growth_bps is None:
-        return "C", "No prior-year revenue supplied — trajectory not assessable; graded neutral."
+        return NOT_ASSESSED, "No prior-year revenue supplied — trajectory not assessable (penalised pending data)."
     g = growth_bps / 100
     if growth_bps >= 2000:
         letter = "A"
@@ -122,7 +123,7 @@ def _grade_revenue(cur: Metrics, prior: Optional[Metrics], growth_bps: Optional[
 def _grade_margin_like(value_bps: Optional[int], low: int, high: int, prior_bps: Optional[int], label: str) -> tuple[str, str]:
     letter = _grade_band(value_bps, low, high)
     if letter is None:
-        return "C", f"{label} not derivable from the supplied data — graded neutral."
+        return NOT_ASSESSED, f"{label} not derivable from the supplied data (penalised pending data)."
     reason = f"{label} {fmt_pct(value_bps)} vs healthy {low/100:.0f}–{high/100:.0f}%."
     # Direction of travel: a declining-but-positive metric grades worse than stable.
     if prior_bps is not None and value_bps is not None and value_bps < prior_bps - 100:
@@ -136,7 +137,7 @@ def _grade_margin_like(value_bps: Optional[int], low: int, high: int, prior_bps:
 def _grade_marketing(cur: Metrics, prior: Optional[Metrics], bm: Benchmarks) -> tuple[str, str]:
     mer = cur.blended_mer
     if mer is None:
-        return "C", "Blended MER not derivable (marketing spend or revenue missing) — graded neutral."
+        return NOT_ASSESSED, "Blended MER not derivable (marketing spend or revenue missing) — penalised pending data."
     if mer >= bm.blended_mer_min * 1.5:
         letter = "A"
     elif mer >= bm.blended_mer_min:
@@ -183,7 +184,7 @@ def _grade_acquisition(cur: Metrics, period: PeriodFinancials, bm: Benchmarks) -
         score += 3.0 if ret >= 0.3 else 1.5
         signals.append(f"returning-customer share {ret*100:.0f}%")
     if n == 0:
-        return "C", "New-vs-returning split, owned-channel share and concentration not supplied — graded neutral; see data gaps."
+        return NOT_ASSESSED, "New-vs-returning split, owned-channel share and concentration not supplied — penalised pending data."
     avg = score / n
     letter = "A" if avg >= 3.0 else "B" if avg >= 2.5 else "C" if avg >= 1.8 else "D" if avg >= 1.0 else "F"
     return letter, "Acquisition signals: " + ", ".join(signals) + "."
@@ -192,7 +193,7 @@ def _grade_acquisition(cur: Metrics, period: PeriodFinancials, bm: Benchmarks) -
 def _grade_media(period: PeriodFinancials, bm: Benchmarks) -> tuple[str, str]:
     channels = period.marketing_by_channel or {}
     if not channels:
-        return "C", "Channel-level media mix not supplied — graded neutral; concentration risk unknown."
+        return NOT_ASSESSED, "Channel-level media mix not supplied — penalised pending data; concentration risk unknown."
     total = sum(channels.values()) or 1
     top_channel, top_spend = max(channels.items(), key=lambda kv: kv[1])
     share = top_spend / total
@@ -211,7 +212,7 @@ def _grade_media(period: PeriodFinancials, bm: Benchmarks) -> tuple[str, str]:
 
 def _grade_balance(period: PeriodFinancials, cur: Metrics, bm: Benchmarks) -> tuple[str, str]:
     if period.total_assets_cents is None and period.total_equity_cents is None and not period.related_party_flag:
-        return "C", "Balance sheet not supplied — earnings quality not assessable; graded neutral."
+        return NOT_ASSESSED, "Balance sheet not supplied — earnings quality not assessable (penalised pending data)."
     letter = "B"
     notes = []
     if period.total_equity_cents is not None and period.total_equity_cents < 0:
@@ -275,9 +276,14 @@ def build_scorecard(current: Metrics, prior: Optional[Metrics], period: PeriodFi
     weighted_points = 0.0
     for key, label, weight in DIMENSIONS:
         letter, reason = graders[key]()
-        points = GRADE_POINTS[letter]
+        assessed = letter != NOT_ASSESSED
+        # Unassessed dimensions score ZERO (penalty) but keep their weight in the
+        # denominator, so incomplete data drags the grade toward F. The
+        # data-completeness meter explains *why* the grade is low.
+        points = GRADE_POINTS[letter] if assessed else 0.0
         weighted_points += points * weight
-        dims.append(DimensionGrade(key=key, label=label, weight=weight, letter=letter, points=points, reason=reason))
+        dims.append(DimensionGrade(key=key, label=label, weight=weight, letter=letter,
+                                   points=points, reason=reason, assessed=assessed))
     score_100 = int(round(weighted_points / 4.0 * 100))
     letter = letter_from_score(score_100)
     return Scorecard(dimensions=dims, score_100=score_100, letter=letter)

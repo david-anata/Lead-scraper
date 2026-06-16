@@ -42,16 +42,23 @@ GRADE_POINTS = {"A": 4.0, "B": 3.0, "C": 2.0, "D": 1.0, "F": 0.0}
 
 
 def letter_from_score(score_100: float) -> str:
-    """Letter grade from the rebased /100 score (spec thresholds)."""
+    """Letter grade from the rebased /100 score — standard academic scale."""
     if score_100 >= 90:
         return "A"
     if score_100 >= 80:
         return "B"
-    if score_100 >= 65:
+    if score_100 >= 70:
         return "C"
-    if score_100 >= 45:
+    if score_100 >= 60:
         return "D"
     return "F"
+
+
+# Sentinel for a dimension we could not assess from the supplied data. It scores
+# ZERO points (a deliberate penalty — incomplete submissions trend toward F
+# until more is supplied) but renders distinctly from a real "F" so a reader
+# sees "not assessed", not "assessed and failed".
+NOT_ASSESSED = "NA"
 
 
 # ---------------------------------------------------------------------------
@@ -269,9 +276,17 @@ class DimensionGrade:
     letter: str
     points: float
     reason: str
+    assessed: bool = True  # False = data not supplied; scores 0 (penalised)
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DimensionGrade":
+        data = dict(data or {})
+        # Tolerate older rows persisted before `assessed` existed.
+        data.setdefault("assessed", True)
+        return cls(**data)
 
 
 @dataclass
@@ -293,7 +308,7 @@ class Scorecard:
     def from_dict(cls, data: dict) -> "Scorecard":
         data = data or {}
         return cls(
-            dimensions=[DimensionGrade(**d) for d in data.get("dimensions", [])],
+            dimensions=[DimensionGrade.from_dict(d) for d in data.get("dimensions", [])],
             score_100=data.get("score_100", 0),
             letter=data.get("letter", "F"),
             verdict=data.get("verdict", ""),
