@@ -35,6 +35,14 @@ def _report(brand: str = "Luxmery") -> BrandReport:
 class ShareRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Pin the global engine to a fresh DB so this test is deterministic
+        # regardless of which other test last (re)initialised the shared engine.
+        from sales_support_agent.models.database import create_session_factory, init_database
+        db = os.path.join(tempfile.gettempdir(), "ba_share_route_isolated.db")
+        if os.path.exists(db):
+            os.remove(db)
+        url = "sqlite:///" + db
+        init_database(create_session_factory(url))
         cls.client = TestClient(app)
 
     def test_public_page_served_with_valid_token_no_auth(self) -> None:
