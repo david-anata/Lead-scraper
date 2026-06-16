@@ -480,3 +480,30 @@ class EmailSenderTests(unittest.TestCase):
             self.assertNotIn("gmail", sent)  # Gmail not touched when Resend works
         finally:
             R.ResendClient, G.GmailClient = orig_r, orig_g
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class InviteTimezoneTests(unittest.TestCase):
+    """Regression: invite lookup compared a naive datetime.utcnow() against the
+    invite's expires_at. On Postgres (TIMESTAMPTZ) that column is tz-AWARE, so
+    the comparison raised TypeError and 500'd the public invite-accept link.
+    Lookup must be timezone-safe regardless of how 'now'/expires_at are stored."""
+
+    def test_lookup_survives_aware_now(self) -> None:
+        import secrets
+        from datetime import datetime, timezone, timedelta
+        tok = secrets.token_urlsafe(16)
+        store.create_invite("tz-reg@anatainc.com", None, token=tok,
+                            expires_at=datetime.utcnow() + timedelta(days=7))
+        aware_now = datetime.now(timezone.utc)  # mimics a TIMESTAMPTZ-driven compare
+        inv = store.get_pending_invite_by_token(tok, now=aware_now)  # must not raise
+        self.assertIsNotNone(inv)
+        self.assertEqual(inv["email"], "tz-reg@anatainc.com")
+
+    def test_expired_invite_returns_none_not_crash(self) -> None:
+        import secrets
+        from datetime import datetime, timezone, timedelta
+        tok = secrets.token_urlsafe(16)
+        store.create_invite("tz-old@anatainc.com", None, token=tok,
+                            expires_at=datetime.utcnow() - timedelta(days=1))
+        self.assertIsNone(store.get_pending_invite_by_token(tok, now=datetime.now(timezone.utc)))
