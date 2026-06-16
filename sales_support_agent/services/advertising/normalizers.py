@@ -953,17 +953,34 @@ def merge_duplicate_entities(ad_rows: "list[AdRow]") -> "tuple[list[AdRow], int]
     return passthrough + list(best.values()), collapsed
 
 
+def _brand_variants(brand_name: str) -> set:
+    """Common written forms of a brand for harvest-dedup. Critically covers the
+    'numbered brand' family: "Number 4" is also typed no 4 / no. 4 / no4 / n4 /
+    num 4 — all of which already exist as your keywords, so harvesting them is
+    rejected 'already exists'. (_norm_kw_text already folds punctuation, so 'no. 4'
+    matches the 'no 4' key.)"""
+    b = _norm_kw_text(brand_name)
+    if not b:
+        return set()
+    out = {b, b.replace(" ", "")}
+    m = re.fullmatch(r"(number|num|no|n)\s*(\d+)", b)  # <number-word> <digits>
+    if m:
+        digits = m.group(2)
+        for pre in ("number", "num", "no", "n"):
+            out.add(f"{pre} {digits}")
+            out.add(f"{pre}{digits}")
+    return {k for k in out if len(k) >= 2}
+
+
 def drop_brand_term_harvests(recs: list, brand_name: str) -> int:
     """Don't harvest a search term that contains the brand name — you already bid
     on your own brand, so creating it as a 'new' keyword is redundant AND almost
     always rejected as 'already exists'. Leaves NEGATIVES alone (a competitor
     using your brand is a valid negative). Only drops positive create_keyword
     harvests. Returns the count dropped."""
-    brand = _norm_kw_text(brand_name)
-    if not brand:
+    keys = _brand_variants(brand_name)
+    if not keys:
         return 0
-    keys = {brand, brand.replace(" ", "")}  # "number 4" and "number4"
-    keys = {k for k in keys if len(k) >= 2}
     n = 0
     for r in recs:
         br = getattr(r, "bulk_row", None) or {}
