@@ -175,6 +175,10 @@ class AnataWMSClientUnitTests(unittest.TestCase):
         package = body["model"]["shipment_packages"][0]
         self.assertTrue(package["shipment_items"])
         self.assertEqual(package["shipment_items"][0]["quantity"], 1)
+        # EliteWorks rates in OUNCES — a 1.5 lb product must be sent as 24 oz,
+        # and dims stay in inches. (Sending pounds rated 1/16th-weight parcels.)
+        self.assertEqual(package["weight"], 24)
+        self.assertEqual(package["length"], 8.0)
 
         # Quote mapping: unparseable/zero rates dropped; the rest map cleanly.
         self.assertEqual(len(quotes), 2)
