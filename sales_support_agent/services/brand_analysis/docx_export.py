@@ -79,6 +79,33 @@ def _kv_table(doc, headers: list[str], rows: list[list], *, align_right_from: in
     doc.add_paragraph()
 
 
+def _valuation_section(doc, r, Pt) -> None:
+    """Indicative valuation table + caveats (docx parity with the share page)."""
+    from sales_support_agent.services.brand_analysis.valuation import ValuationRange
+
+    v = ValuationRange.from_dict(r.valuation)
+    _heading(doc, "Indicative Valuation", 1)
+    if not v.is_meaningful():
+        doc.add_paragraph("Insufficient established financials to size an indicative range yet.")
+        for c in v.caveats:
+            doc.add_paragraph(c, style="List Bullet")
+        return
+    hp = doc.add_paragraph()
+    hp.add_run(v.headline()).bold = True
+    hp.add_run(f"   indicative enterprise value · {v.primary_basis} basis · {v.confidence} confidence")
+    rows = []
+    if v.rev_ev_low_cents is not None:
+        rows.append(("Revenue multiple", f"{v.rev_multiple_low:.2f}–{v.rev_multiple_high:.2f}x net revenue",
+                     f"{fmt_money(v.rev_ev_low_cents)} – {fmt_money(v.rev_ev_high_cents)}"))
+    if v.earn_ev_low_cents is not None:
+        rows.append(("Earnings multiple", f"{v.earn_multiple_low:.2f}–{v.earn_multiple_high:.2f}x {v.earnings_basis_label.lower()}",
+                     f"{fmt_money(v.earn_ev_low_cents)} – {fmt_money(v.earn_ev_high_cents)}"))
+    if rows:
+        _kv_table(doc, ["Method", "Multiple", "Implied EV"], rows)
+    for c in v.caveats:
+        doc.add_paragraph(c, style="List Bullet")
+
+
 def build_docx(report: BrandReport) -> bytes:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -130,12 +157,33 @@ def build_docx(report: BrandReport) -> bytes:
         for item in r.missing_data:
             doc.add_paragraph(item, style="List Bullet")
 
+    # Data-completeness line (investor-facing confidence signal)
+    if r.data_completeness_pct:
+        cp = doc.add_paragraph()
+        cp.add_run(f"Data completeness: {r.data_completeness_pct}% · {r.confidence} confidence — ").italic = True
+        cp.add_run("higher completeness tightens the grade and valuation band.").italic = True
+
     # 1. Executive Summary
     _heading(doc, "1. Executive Summary", 1)
     doc.add_paragraph(r.executive_summary)
     doc.add_paragraph().add_run("What stands out beyond standard KPIs").bold = True
     for s in r.stands_out:
         doc.add_paragraph(s, style="List Bullet")
+
+    # Investment thesis & key risks
+    if r.investment_thesis or r.key_risks:
+        _heading(doc, "Investment Thesis & Key Risks", 1)
+        if r.investment_thesis:
+            doc.add_paragraph().add_run("Why it's interesting").bold = True
+            for t in r.investment_thesis:
+                doc.add_paragraph(t, style="List Bullet")
+        if r.key_risks:
+            doc.add_paragraph().add_run("What to diligence").bold = True
+            for k in r.key_risks:
+                doc.add_paragraph(k, style="List Bullet")
+
+    # Indicative valuation
+    _valuation_section(doc, r, Pt)
 
     # 2. Financial Overview (YoY)
     _heading(doc, "2. Financial Overview (YoY)", 1)
