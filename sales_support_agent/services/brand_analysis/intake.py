@@ -301,6 +301,23 @@ def _brand_from_filename(filename: str) -> str:
     return stem.title() if stem and len(stem) > 1 else ""
 
 
+def _year_of_file(filename: str, tables: list) -> Optional[int]:
+    """Best-effort fiscal year for a whole file — many real exports put the
+    year in the filename and/or a title row ("January–December, 2025"), NOT in
+    a column header. Scan the filename first, then the first few rows of each
+    table. Returns the latest plausible year found, or None."""
+    years: set[int] = set()
+    m = _YEAR_RE.findall(filename or "")
+    years.update(int(y) for y in m)
+    for t in tables:
+        head_rows = [t.header or []] + (t.rows[:4] if t.rows else [])
+        for row in head_rows:
+            for cell in row:
+                for y in _YEAR_RE.findall(str(cell)):
+                    years.add(int(y))
+    return max(years) if years else None
+
+
 def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                use_llm: bool = True, context_notes: str = "") -> IntakeResult:
     """Parse a batch of uploaded financial files into current/prior periods.
@@ -318,8 +335,11 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     all_years: set[int] = set()
     all_tables: list = []
 
-    # First pass: collect every year token across all files to fix current/prior.
+    # First pass: parse each file and tag it with a fiscal year (filename +
+    # title rows + column headers), so prior-year data living in a *separate
+    # file* is recognised for YoY — not just year-labelled columns.
     parsed_files: list[tuple[str, list[_Table]]] = []
+    file_years: dict[str, Optional[int]] = {}
     for filename, data in files:
         tables = _read_file(filename, data)
         if not tables:
@@ -331,6 +351,10 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
         brand = _brand_from_filename(filename)
         if brand and brand not in detected_brands:
             detected_brands.append(brand)
+        fy = _year_of_file(filename, tables)
+        file_years[filename] = fy
+        if fy:
+            all_years.add(fy)
         for t in tables:
             for cell in (t.header or []):
                 m = _YEAR_RE.search(str(cell))
@@ -348,6 +372,13 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     synonyms_all = _PNL_SYNONYMS + _BALANCE_SYNONYMS + _ACQ_SYNONYMS
 
     for filename, tables in parsed_files:
+        # A whole-file prior year (e.g. a separate "Financials 2024" workbook)
+        # routes its single value column into the PRIOR period.
+        file_year = file_years.get(filename)
+        file_is_prior = (
+            prior is not None and prior_year is not None and current_year is not None
+            and file_year == prior_year and file_year != current_year
+        )
         for t in tables:
             value_cols = _value_columns(t)
             if not value_cols:
@@ -393,15 +424,19 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                     return parse_cents(r[col]) if col is not None and col < len(r) else None
 
                 cur_v, prior_v = _val(cur_col), _val(prior_col)
+                # When the whole file is the prior year, its primary column is
+                # prior-period data (no in-table current column to compare).
+                dest_primary = prior if file_is_prior else current
+                other = None if file_is_prior else prior
                 if field_name:
-                    _set_if_absent(current, field_name, cur_v)
-                    if prior is not None:
-                        _set_if_absent(prior, field_name, prior_v)
+                    _set_if_absent(dest_primary, field_name, cur_v)
+                    if other is not None:
+                        _set_if_absent(other, field_name, prior_v)
                 elif channel:
                     if cur_v is not None:
-                        current.marketing_by_channel.setdefault(channel, cur_v)
-                    if prior is not None and prior_v is not None:
-                        prior.marketing_by_channel.setdefault(channel, prior_v)
+                        dest_primary.marketing_by_channel.setdefault(channel, cur_v)
+                    if other is not None and prior_v is not None:
+                        other.marketing_by_channel.setdefault(channel, prior_v)
 
     # Roll channel marketing into a total when no explicit total line was found.
     for period in (current, prior):
@@ -415,7 +450,10 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     unmapped_accounts: list = []
     classifier_model = ""
     if use_llm and all_tables and intake_llm.should_classify(current):
-        result = intake_llm.classify(all_tables, context_notes=context_notes)
+        file_groups = [(fn, file_years.get(fn), tbls) for fn, tbls in parsed_files]
+        result = intake_llm.classify(
+            all_tables, file_groups=file_groups, context_notes=context_notes,
+            current_year=current_year, prior_year=prior_year)
         if result is not None:
             classifier_model = result.model
             intake_llm.merge_into(current, result, account_mappings, prior=False)

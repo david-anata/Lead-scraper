@@ -128,9 +128,7 @@ _SCHEMA_HINT = (
 )
 
 
-def _serialise_rows(tables, *, max_rows: int = _MAX_ROWS) -> str:
-    """Compact label→values text of every parsed row across all tables."""
-    lines: list[str] = []
+def _serialise_tables(tables, *, lines: list, max_rows: int) -> None:
     for t in tables:
         header = [str(c).strip() for c in (t.header or [])]
         if header and any(header):
@@ -145,7 +143,27 @@ def _serialise_rows(tables, *, max_rows: int = _MAX_ROWS) -> str:
                 continue
             lines.append(f"{label} :: {' | '.join(nums)}")
             if len(lines) >= max_rows:
-                return "\n".join(lines)
+                return
+
+
+def _serialise_rows(tables, *, max_rows: int = _MAX_ROWS) -> str:
+    """Compact label→values text of every parsed row across all tables."""
+    lines: list[str] = []
+    _serialise_tables(tables, lines=lines, max_rows=max_rows)
+    return "\n".join(lines)
+
+
+def _serialise_groups(file_groups, *, max_rows: int = _MAX_ROWS) -> str:
+    """Like _serialise_rows but bucketed by file, with each file's fiscal year
+    marked — so the model can map current-vs-prior across SEPARATE files
+    (e.g. a 2024 workbook + 2025 workbooks), not just year-labelled columns."""
+    lines: list[str] = []
+    for filename, year, tables in file_groups:
+        yr = f" — fiscal year {year}" if year else ""
+        lines.append(f"\n===== FILE: {filename}{yr} =====")
+        _serialise_tables(tables, lines=lines, max_rows=max_rows)
+        if len(lines) >= max_rows:
+            break
     return "\n".join(lines)
 
 
@@ -196,33 +214,43 @@ def _clean_channels(raw: dict) -> dict:
 def classify(
     tables,
     *,
+    file_groups=None,
+    current_year: Optional[int] = None,
+    prior_year: Optional[int] = None,
     context_notes: str = "",
     api_key: Optional[str] = None,
     model: str = "claude-haiku-4-5-20251001",
 ) -> Optional[ClassificationResult]:
     """Classify raw parsed rows into canonical buckets via the LLM.
 
-    ``context_notes`` is analyst-supplied guidance (e.g. "the legal entity
-    differs from the brand", "treat the owner loan as related-party") that
-    helps the model map ambiguous accounts correctly.
-
-    Returns None when there is no API key or the call fails — callers keep the
+    ``file_groups`` is an optional list of ``(filename, year, tables)`` so the
+    model can map current-vs-prior across SEPARATE files (e.g. a 2024 workbook
+    alongside 2025 ones). ``context_notes`` is analyst guidance to disambiguate
+    accounts. Returns None without an API key or on failure — callers keep the
     deterministic mapping. Never raises.
     """
     key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         return None
-    body = _serialise_rows(tables)
+    body = _serialise_groups(file_groups) if file_groups else _serialise_rows(tables)
     if not body.strip():
         return None
 
+    period_block = ""
+    if current_year:
+        period_block = (
+            f"\nPERIODS: current = fiscal year {current_year}"
+            + (f", prior = fiscal year {prior_year}" if prior_year else " (single period)")
+            + ". Map each file's lines to the period matching its fiscal year; "
+            "SUM revenue/expense accounts within each period separately.\n"
+        )
     context_block = (
         f"\nANALYST CONTEXT (use to disambiguate, never to fabricate numbers):\n{context_notes.strip()}\n"
         if context_notes and context_notes.strip() else ""
     )
     prompt = (
         "Classify these financial line items into the JSON schema below.\n\n"
-        f"SCHEMA:\n{_SCHEMA_HINT}\n{context_block}\nLINE ITEMS:\n{body}\n\nReturn the JSON now."
+        f"SCHEMA:\n{_SCHEMA_HINT}\n{period_block}{context_block}\nLINE ITEMS:\n{body}\n\nReturn the JSON now."
     )
     try:
         import anthropic

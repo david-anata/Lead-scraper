@@ -171,5 +171,38 @@ class ParseDumpWiringTests(unittest.TestCase):
         self.assertIsNone(res.current.net_revenue_cents)
 
 
+class CrossFilePeriodTests(unittest.TestCase):
+    """Prior-year data living in a SEPARATE file (no year-labelled columns)
+    must be recognised for YoY — the real Doggyvers case."""
+
+    def test_year_of_file_from_filename_and_title(self) -> None:
+        t = intake_mod._Table(source="x", header=["Profit and Loss"],
+                              rows=[["January-December, 2024"], ["Net Revenue", "500000"]])
+        self.assertEqual(intake_mod._year_of_file("Financials 2024 V3.xlsx", [t]), 2024)
+        self.assertEqual(intake_mod._year_of_file("no-year.xlsx", [t]), 2024)  # from title row
+        self.assertIsNone(intake_mod._year_of_file(
+            "plain.xlsx", [intake_mod._Table(source="y", rows=[["Net Revenue", "1"]])]))
+
+    def test_separate_year_files_split_current_and_prior(self) -> None:
+        cur = b"Line,Amount\nNet Revenue,1000000\nCOGS,400000\nNet Income,90000\n"
+        prr = b"Line,Amount\nNet Revenue,800000\nCOGS,330000\nNet Income,60000\n"
+        res = intake_mod.parse_dump(
+            [("Brand Financials 2025.csv", cur), ("Brand Financials 2024.csv", prr)],
+            use_llm=False)
+        self.assertTrue(res.has_yoy)
+        self.assertEqual(res.current.period_label, "FY 2025")
+        self.assertEqual(res.prior.period_label, "FY 2024")
+        self.assertEqual(res.current.net_revenue_cents, 100_000_000)
+        self.assertEqual(res.prior.net_revenue_cents, 80_000_000)  # routed to prior, not current
+
+    def test_classifier_group_serialisation_marks_years(self) -> None:
+        t25 = intake_mod._Table(source="pl25", rows=[["400011 Sales", "2280930"]])
+        t24 = intake_mod._Table(source="pl24", rows=[["Stripe - Sales", "4623600"]])
+        body = L._serialise_groups([("pl-2025.xlsx", 2025, [t25]), ("fin-2024.xlsx", 2024, [t24])])
+        self.assertIn("fiscal year 2025", body)
+        self.assertIn("fiscal year 2024", body)
+        self.assertIn("400011 Sales :: 2280930", body)
+
+
 if __name__ == "__main__":
     unittest.main()
