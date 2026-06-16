@@ -100,8 +100,14 @@ def _flash(request: Request) -> Optional[str]:
 async def users_page(request: Request, current_user: dict = Depends(_guard)):
     users = store.list_users()
     roles = store.list_roles()
+    invites = store.list_pending_invites()
+    requests_list = store.list_access_requests(status="pending")
+    history = sorted(
+        store.list_access_requests(status="approved") + store.list_access_requests(status="denied"),
+        key=lambda r: r.get("decided_at") or "", reverse=True)[:50]
     return HTMLResponse(render_users_page(users, roles, current_user=current_user,
-                                          flash=_flash(request)))
+                                          flash=_flash(request), invites=invites,
+                                          requests_list=requests_list, history=history))
 
 
 @router.post("/users/{user_id}/role")
@@ -275,7 +281,7 @@ async def create_invite(
 ):
     email = email.strip().lower()
     if not email:
-        return RedirectResponse("/admin/access/invites?err=noname", status_code=303)
+        return RedirectResponse("/admin/access?err=noemail", status_code=303)
     token = secrets.token_urlsafe(32)
     expires = datetime.utcnow() + timedelta(days=7)
     store.create_invite(email, role_id or None, token=token,
@@ -301,7 +307,7 @@ async def create_invite(
 @router.post("/invites/{invite_id}/revoke")
 async def revoke_invite(invite_id: str, current_user: dict = Depends(_guard)):
     store.revoke_invite(invite_id)
-    return _redirect("/admin/access/invites", "deleted")
+    return _redirect("/admin/access", "revoked")
 
 
 # ---------------------------------------------------------------------------
@@ -336,14 +342,14 @@ async def approve_request(
             base = base.replace("http://", "https://")
         send_approval_email(_email_settings(request), to_email=approved_email,
                             base_url=base, decided_by=current_user.get("email", ""))
-    return _redirect("/admin/access/requests", "role")
+    return _redirect("/admin/access", "approved")
 
 
 @router.post("/requests/{request_id}/deny")
 async def deny_request(request_id: str, current_user: dict = Depends(_guard)):
     store.decide_access_request(request_id, approve=False,
                                 decided_by=current_user.get("email", ""))
-    return _redirect("/admin/access/requests", "status")
+    return _redirect("/admin/access", "denied")
 
 
 # ---------------------------------------------------------------------------

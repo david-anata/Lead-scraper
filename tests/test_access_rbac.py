@@ -169,7 +169,7 @@ class AccessUITests(unittest.TestCase):
     def test_superadmin_can_view_users_page(self) -> None:
         r = self._get("/admin/access", (self.sa_name, self.sa_token))
         self.assertEqual(r.status_code, 200)
-        self.assertIn("Users", r.text)
+        self.assertIn("People", r.text)  # unified People page (users + invites + requests)
 
     def test_superadmin_can_view_roles_page(self) -> None:
         r = self._get("/admin/access/roles", (self.sa_name, self.sa_token))
@@ -507,3 +507,43 @@ class InviteTimezoneTests(unittest.TestCase):
         store.create_invite("tz-old@anatainc.com", None, token=tok,
                             expires_at=datetime.utcnow() - timedelta(days=1))
         self.assertIsNone(store.get_pending_invite_by_token(tok, now=datetime.now(timezone.utc)))
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class UnifiedPeoplePageTests(unittest.TestCase):
+    """The /admin/access page combines pending requests, pending invites, and
+    provisioned users into one table (+ the invite form + decision history)."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+        self.sa_name, self.sa_token = _cookie_for("david@anatainc.com", "David", "admin")
+
+    def _get(self, path):
+        self.client.cookies.set(self.sa_name, self.sa_token)
+        try:
+            return self.client.get(path, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+
+    def test_people_page_shows_requests_invites_and_users(self) -> None:
+        import secrets
+        store.create_invite("combined-invite@anatainc.com", None,
+                            token=secrets.token_urlsafe(16), invited_by="david@anatainc.com")
+        store.create_access_request("combined-request@anatainc.com", "Combined Req")
+
+        r = self._get("/admin/access")
+        self.assertEqual(r.status_code, 200)
+        # One unified page
+        self.assertIn("People", r.text)
+        # All three kinds present in the same page
+        self.assertIn("combined-request@anatainc.com", r.text)  # a request
+        self.assertIn("combined-invite@anatainc.com", r.text)   # an invite
+        self.assertIn("david@anatainc.com", r.text)             # a user (superadmin)
+        # Status badges that distinguish the kinds
+        self.assertIn("Requested", r.text)
+        self.assertIn("Invited", r.text)
+        # The invite form lives on the same page now
+        self.assertIn("Send new invite", r.text)
+        # Approve/Deny + Revoke actions are inline
+        self.assertIn("/requests/", r.text)
+        self.assertIn("/revoke", r.text)
