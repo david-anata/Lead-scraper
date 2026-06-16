@@ -143,6 +143,10 @@ from sales_support_agent.api.access_router import router as _access_router, _set
 app.include_router(_access_router)
 app.include_router(_settings_router_)
 
+# HR / payroll section — /admin/hr/* (employees, teams; payroll/settings later).
+from sales_support_agent.api.hr_router import router as _hr_router  # noqa: E402
+app.include_router(_hr_router)
+
 # Google OAuth start + callback — /admin/auth/google and /admin/auth/callback.
 # The login page's "Sign in with Google" button and the invite-accept flow both
 # bounce here; without this router those paths 404 on the root app. The router
