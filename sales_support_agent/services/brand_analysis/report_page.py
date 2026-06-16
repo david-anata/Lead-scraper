@@ -100,9 +100,14 @@ def _styles() -> str:
       .drop input[type=file] { margin-top: 10px; }
       .field { display: grid; gap: 5px; margin: 10px 0; }
       .field label { font-family: "Montserrat",sans-serif; font-weight: 700; font-size: 12px; color: var(--dark-blue); }
-      .field input, .field select { min-height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 14px; }
+      .field input, .field select, .field textarea { min-height: 40px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 14px; font-family: inherit; }
+      .field textarea { resize: vertical; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
       .flash { background: rgba(133,187,218,0.18); border: 1px solid rgba(133,187,218,0.5); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; font-size: 13.5px; }
+      .share-frame { width: 100%; height: 1400px; border: 1px solid var(--border); border-radius: 16px; background: #fff; margin-top: 12px; }
+      .row-actions { white-space: nowrap; }
+      .row-act { font-size: 12px; font-weight: 600; color: var(--dark-blue); text-decoration: none; background: rgba(43,54,68,0.06); border: 1px solid var(--border); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
+      .row-act:hover { background: rgba(43,54,68,0.11); }
       .stands-out { margin: 6px 0; padding-left: 18px; }
       .stands-out li { margin: 4px 0; }
       @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } .grade-banner { grid-template-columns: 96px 1fr; } }
@@ -164,6 +169,17 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
             <select id="category" name="category">{options}</select>
           </div>
         </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="brand_website">Brand website (optional — pulls logo &amp; product imagery)</label>
+            <input id="brand_website" name="brand_website" placeholder="luxmery.com">
+          </div>
+          <div class="field"></div>
+        </div>
+        <div class="field">
+          <label for="context_notes">Context notes (optional — anything you know about the brand)</label>
+          <textarea id="context_notes" name="context_notes" rows="3" placeholder="e.g. legal entity differs from brand; related-party loan is owner financing."></textarea>
+        </div>
         <div class="btn-row"><button class="btn" type="submit">Run analysis</button></div>
       </form>
       {_history_table(runs, heading="Analysis history", empty="No analyses yet — run one above.")}
@@ -192,15 +208,32 @@ def _history_table(runs: list, *, heading: str = "", empty: str = "No analyses y
         period = _esc(r.get("period_current") or "")
         if r.get("period_prior"):
             period += f' vs {_esc(r["period_prior"])}'
+        actions = ""
+        if status != "error":
+            share = r.get("share_path") or ""
+            actions = f'<a class="row-act" href="{link}">Open</a>'
+            actions += f' <a class="row-act" href="{link}/edit">Edit</a>'
+            if share:
+                actions += (f' <a class="row-act" href="{_esc(share)}" target="_blank" rel="noreferrer">Public</a>'
+                            f' <button type="button" class="row-act copy-link" data-path="{_esc(share)}">Copy link</button>')
         rows.append(
             f"<tr><td>{brand_cell}</td><td>{_esc(when)}</td><td>{grade_cell}</td>"
-            f'<td><span class="pill conf-{_esc(conf)}">{_esc(conf)}</span></td><td>{period}</td></tr>'
+            f'<td><span class="pill conf-{_esc(conf)}">{_esc(conf)}</span></td><td>{period}</td>'
+            f'<td class="row-actions">{actions}</td></tr>'
         )
     return head + f"""
       <table>
-        <thead><tr><th>Brand</th><th>Date</th><th>Grade</th><th>Confidence</th><th>Periods</th></tr></thead>
+        <thead><tr><th>Brand</th><th>Date</th><th>Grade</th><th>Confidence</th><th>Periods</th><th>Actions</th></tr></thead>
         <tbody>{"".join(rows)}</tbody>
       </table>
+      <script>
+        document.querySelectorAll('.copy-link').forEach(function(b){{
+          b.addEventListener('click', function(){{
+            navigator.clipboard.writeText(window.location.origin + b.dataset.path);
+            var t=b.textContent; b.textContent='Copied ✓'; setTimeout(function(){{b.textContent=t;}},1500);
+          }});
+        }});
+      </script>
     """
 
 
@@ -211,6 +244,91 @@ def _history_table(runs: list, *, heading: str = "", empty: str = "No analyses y
 
 def render_report(report: BrandReport, *, report_id: str = "", user: Optional[dict] = None) -> str:
     return _doc(f"Brand Analysis — {report.brand}", _report_body(report, report_id=report_id), user=user)
+
+
+def render_admin_view(report: BrandReport, *, report_id: str, share_html: str,
+                      share_path: str = "", user: Optional[dict] = None) -> str:
+    """Admin view of a report: the exact investor landing page in a live
+    preview frame, with a toolbar (Copy link, Open public, Edit & rerun,
+    Download). Matches the deck review pattern."""
+    import html as _html
+    srcdoc = _html.escape(share_html, quote=True)
+    copy_btn = (
+        f'<button type="button" class="btn copy-link" data-path="{_esc(share_path)}">Copy share link</button>'
+        f'<a class="btn btn--ghost" href="{_esc(share_path)}" target="_blank" rel="noreferrer">Open public page</a>'
+        if share_path else ""
+    )
+    body = f"""
+      <span class="eyebrow">Executive Acquisition Brief</span>
+      <h1>{_esc(report.brand)}</h1>
+      <div class="btn-row">
+        {copy_btn}
+        <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{report_id}/edit">Edit &amp; rerun</a>
+        <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{report_id}/download">Download .docx</a>
+        <a class="btn btn--ghost" href="/admin/executive/brand-analysis">← Brand Analysis</a>
+      </div>
+      <iframe class="share-frame" srcdoc="{srcdoc}" title="Investor brief preview"></iframe>
+      <script>
+        document.querySelectorAll('.copy-link').forEach(function(b){{
+          b.addEventListener('click', function(){{
+            navigator.clipboard.writeText(window.location.origin + b.dataset.path);
+            var t=b.textContent; b.textContent='Copied ✓'; setTimeout(function(){{b.textContent=t;}},1500);
+          }});
+        }});
+      </script>
+    """
+    return _doc(f"Brand Analysis — {report.brand}", body, user=user)
+
+
+def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
+                     user: Optional[dict] = None, flash: str = "") -> str:
+    """Edit + rerun form, prefilled from the saved row. Lets the analyst add
+    more files and accumulate context, then rerun in place (same share link)."""
+    options = "".join(
+        f'<option value="{k}"{" selected" if k == row.get("category") else ""}>{_esc(v)}</option>'
+        for k, v in CATEGORY_LABELS.items()
+    )
+    flash_html = f'<div class="flash">{_esc(flash)}</div>' if flash else ""
+    rid = row.get("id")
+    body = f"""
+      <span class="eyebrow">Executive · Brand Analysis</span>
+      <h1>Edit &amp; rerun — {_esc(row.get("brand") or "Brand")}</h1>
+      <p class="muted">Add more financial files and accumulate context, then rerun. The analysis updates in place and your existing share link stays live.</p>
+      {flash_html}
+      <form method="post" action="/admin/executive/brand-analysis/{rid}/rerun" enctype="multipart/form-data">
+        <div class="drop">
+          <strong>Add more financial files (optional)</strong>
+          <div class="muted">New files are analysed together with the originals.</div>
+          <input type="file" name="files" multiple accept=".xlsx,.xls,.csv,.pdf">
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="brand">Brand name</label>
+            <input id="brand" name="brand" value="{_esc(row.get("brand") or "")}">
+          </div>
+          <div class="field">
+            <label for="category">Category / business model</label>
+            <select id="category" name="category">{options}</select>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="brand_website">Brand website (for logo &amp; product imagery)</label>
+            <input id="brand_website" name="brand_website" placeholder="luxmery.com" value="{_esc(row.get("brand_website") or "")}">
+          </div>
+          <div class="field"></div>
+        </div>
+        <div class="field">
+          <label for="context_notes">Context notes (accumulates — what you've learned about this brand)</label>
+          <textarea id="context_notes" name="context_notes" rows="5" placeholder="e.g. Doggyvers Ltd is the legal entity; related-party loan is owner financing; Q1 actuals pending.">{_esc(row.get("context_notes") or "")}</textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn" type="submit">Rerun analysis</button>
+          <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{rid}">← Back to report</a>
+        </div>
+      </form>
+    """
+    return _doc("Edit — Brand Analysis", body, user=user)
 
 
 def _report_body(r: BrandReport, *, report_id: str = "") -> str:

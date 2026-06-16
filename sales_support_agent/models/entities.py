@@ -725,6 +725,15 @@ class BrandAnalysisReport(Base):
     report_json: Mapped[dict] = mapped_column(JSON, default=dict)      # full BrandReport.to_dict()
     error: Mapped[str] = mapped_column(Text, default="")
 
+    # Shareable hosted landing page: token-gated public URL + pre-rendered HTML
+    # (same pattern as the sales/fulfillment decks). slug is the brand slug.
+    slug: Mapped[str] = mapped_column(String(96), default="", index=True)
+    share_token: Mapped[str] = mapped_column(String(64), default="", index=True)
+    report_html: Mapped[str] = mapped_column(Text, default="")         # standalone branded LP
+    # Inputs persisted for edit + rerun (overwrite-in-place).
+    brand_website: Mapped[str] = mapped_column(String(512), default="")
+    context_notes: Mapped[str] = mapped_column(Text, default="")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

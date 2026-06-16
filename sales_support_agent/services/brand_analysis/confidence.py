@@ -84,4 +84,5 @@ def evaluate(current: PeriodFinancials, has_yoy: bool) -> dict:
         "data_gaps": gaps,
         "inputs_present": present,
         "inputs_missing": missing,
+        "completeness_pct": int(round(share * 100)),
     }

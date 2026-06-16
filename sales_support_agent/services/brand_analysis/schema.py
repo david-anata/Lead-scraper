@@ -370,6 +370,29 @@ class BrandReport:
 
     intake_summary: str = ""
 
+    # ---- Investor-package additions ----------------------------------------
+    # How much of the material input set was actually present (0–100); drives
+    # the data-completeness meter and gates the valuation ranges.
+    data_completeness_pct: int = 0
+    # Provenance from the LLM classifier: field -> {sources:[...], confidence}.
+    account_mappings: dict = field(default_factory=dict)
+    unmapped_accounts: list = field(default_factory=list)
+    classifier_model: str = ""
+    # Indicative valuation ranges (ValuationRange.to_dict()) — caveated.
+    valuation: dict = field(default_factory=dict)
+    # Investor narrative: thesis "for", risks "against".
+    investment_thesis: list = field(default_factory=list)  # list[str]
+    key_risks: list = field(default_factory=list)          # list[str]
+    # Exec-summary callout ribbon: list of {label, value, tone}.
+    info_ribbon: list = field(default_factory=list)
+    # Branding pulled from the brand's site (logo + product imagery).
+    brand_website: str = ""
+    logo_data_uri: str = ""
+    product_images: list = field(default_factory=list)     # list[url|data-uri]
+    brand_tagline: str = ""
+    # Free-text context the analyst accumulates across reruns.
+    context_notes: str = ""
+
     def to_dict(self) -> dict:
         return {
             "brand": self.brand,
@@ -402,6 +425,19 @@ class BrandReport:
             "recommendation": self.recommendation,
             "narrative_model": self.narrative_model,
             "intake_summary": self.intake_summary,
+            "data_completeness_pct": self.data_completeness_pct,
+            "account_mappings": self.account_mappings,
+            "unmapped_accounts": self.unmapped_accounts,
+            "classifier_model": self.classifier_model,
+            "valuation": self.valuation,
+            "investment_thesis": self.investment_thesis,
+            "key_risks": self.key_risks,
+            "info_ribbon": self.info_ribbon,
+            "brand_website": self.brand_website,
+            "logo_data_uri": self.logo_data_uri,
+            "product_images": self.product_images,
+            "brand_tagline": self.brand_tagline,
+            "context_notes": self.context_notes,
         }
 
     @classmethod
@@ -438,6 +474,19 @@ class BrandReport:
             recommendation=data.get("recommendation", ""),
             narrative_model=data.get("narrative_model", "none"),
             intake_summary=data.get("intake_summary", ""),
+            data_completeness_pct=data.get("data_completeness_pct", 0),
+            account_mappings=data.get("account_mappings", {}),
+            unmapped_accounts=data.get("unmapped_accounts", []),
+            classifier_model=data.get("classifier_model", ""),
+            valuation=data.get("valuation", {}),
+            investment_thesis=data.get("investment_thesis", []),
+            key_risks=data.get("key_risks", []),
+            info_ribbon=data.get("info_ribbon", []),
+            brand_website=data.get("brand_website", ""),
+            logo_data_uri=data.get("logo_data_uri", ""),
+            product_images=data.get("product_images", []),
+            brand_tagline=data.get("brand_tagline", ""),
+            context_notes=data.get("context_notes", ""),
         )
 
 
