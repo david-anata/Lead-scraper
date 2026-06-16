@@ -11,7 +11,7 @@ import hashlib
 import logging
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -248,15 +248,25 @@ def create_invite(email: str, role_id: Optional[str], *, token: str, invited_by:
     return iid
 
 
+def _as_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Coerce a datetime to timezone-aware UTC. Postgres TIMESTAMPTZ columns come
+    back tz-aware while datetime.utcnow() and SQLite values are naive — comparing
+    the two raises TypeError. Normalize both sides through here before comparing."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def get_pending_invite_by_token(token: str, *, now: Optional[datetime] = None) -> Optional[dict]:
-    now = now or datetime.utcnow()
+    now = _as_aware_utc(now or datetime.now(timezone.utc))
     with _session() as s:
         inv = (s.query(AppInvite)
                .filter(AppInvite.token_hash == hash_token(token), AppInvite.status == "pending")
                .first())
         if not inv:
             return None
-        if inv.expires_at and now > inv.expires_at:
+        expires_at = _as_aware_utc(inv.expires_at)
+        if expires_at and now > expires_at:
             inv.status = "expired"
             return None
         return {"id": inv.id, "email": inv.email, "role_id": inv.role_id}

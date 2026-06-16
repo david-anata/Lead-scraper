@@ -238,7 +238,11 @@ async def delete_role(role_id: str, current_user: dict = Depends(_guard)):
 
 @router.get("/invite/{token}", response_class=HTMLResponse)
 async def invite_landing(token: str, request: Request):
-    invite = store.get_pending_invite_by_token(token)
+    try:
+        invite = store.get_pending_invite_by_token(token)
+    except Exception:  # noqa: BLE001 — a public invite link must never 500
+        logger.exception("Invite landing failed for token lookup")
+        invite = None
     if not invite:
         return HTMLResponse(render_invite_invalid_page(), status_code=410)
     # Store the raw token in a short-lived cookie, then bounce to Google login.
