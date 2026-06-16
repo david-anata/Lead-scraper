@@ -432,6 +432,17 @@ class RootAppGuardsTest(unittest.TestCase):
         self.assertIn("AccessControlMiddleware", names,
                       "root app must install AccessControlMiddleware")
 
+    def test_root_app_mounts_google_auth_routes(self) -> None:
+        """The 'Sign in with Google' button and invite-accept both bounce to
+        /admin/auth/google → /admin/auth/callback. Those routes live in
+        auth_router and MUST be mounted on the root app, or both 404."""
+        import main as rootmain
+        paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
+        self.assertIn("/admin/auth/google", paths,
+                      "root app must mount the Google login-start route")
+        self.assertIn("/admin/auth/callback", paths,
+                      "root app must mount the Google OAuth callback route")
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class EmailSenderTests(unittest.TestCase):

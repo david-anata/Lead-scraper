@@ -143,6 +143,13 @@ from sales_support_agent.api.access_router import router as _access_router, _set
 app.include_router(_access_router)
 app.include_router(_settings_router_)
 
+# Google OAuth start + callback — /admin/auth/google and /admin/auth/callback.
+# The login page's "Sign in with Google" button and the invite-accept flow both
+# bounce here; without this router those paths 404 on the root app. The router
+# resolves its config from app.state.agent_settings (see _auth_settings).
+from sales_support_agent.api.auth_router import router as _google_auth_router  # noqa: E402
+app.include_router(_google_auth_router)
+
 # QuickBooks OAuth routes — NO auth guard on /connect, /callback, /disconnect
 # so Intuit's reviewer can complete the flow without an Anata session.
 # Prefix: /admin/finances/qbo — redirect URI must be registered in Intuit portal as

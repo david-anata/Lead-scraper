@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 _OAUTH_STATE_COOKIE = "oauth_state"
 
 
+def _auth_settings(request: Request):
+    """Resolve the settings object that carries Google OAuth + admin-session
+    config. On the standalone sales-support app that's app.state.settings; on the
+    root app (main.py) the agent config lives on app.state.agent_settings while
+    app.state.settings is the unrelated root Settings. Prefer agent_settings."""
+    return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+
+
 def _callback_uri(request: Request) -> str:
     # Always use HTTPS in production; fall back to request URL scheme in dev.
     base = str(request.base_url).rstrip("/")
@@ -36,7 +44,7 @@ def _callback_uri(request: Request) -> str:
 def _cookie_opts(request: Request) -> dict:
     secure = "localhost" not in str(request.base_url)
     return {
-        "key": request.app.state.settings.admin_cookie_name,
+        "key": _auth_settings(request).admin_cookie_name,
         "httponly": True,
         "samesite": "lax",
         "path": "/",
@@ -46,7 +54,7 @@ def _cookie_opts(request: Request) -> dict:
 
 @router.get("/admin/auth/google")
 def google_login_start(request: Request) -> RedirectResponse:
-    settings = request.app.state.settings
+    settings = _auth_settings(request)
     if not google_oauth_enabled(settings):
         return RedirectResponse("/admin/login", status_code=302)
 
@@ -68,7 +76,7 @@ def google_login_start(request: Request) -> RedirectResponse:
 
 @router.get("/admin/auth/callback")
 def google_callback(request: Request, code: str = "", state: str = "", error: str = "") -> Response:
-    settings = request.app.state.settings
+    settings = _auth_settings(request)
 
     if error:
         logger.warning("Google OAuth error: %s", error)
