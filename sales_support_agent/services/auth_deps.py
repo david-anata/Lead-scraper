@@ -136,7 +136,9 @@ def get_current_user(request: Request) -> Optional[dict]:
         access = None
     if access:
         if access.get("is_superadmin"):
-            return _superadmin_dict(email, access.get("name") or name)
+            sa = _superadmin_dict(email, access.get("name") or name)
+            sa["picture"] = access.get("picture") or ""  # keep the Google avatar
+            return sa
         return access
 
     # Authenticated, domain-allowed, but not provisioned -> default deny.
