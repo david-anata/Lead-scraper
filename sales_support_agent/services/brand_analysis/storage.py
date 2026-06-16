@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
+import secrets
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -26,6 +28,21 @@ logger = logging.getLogger(__name__)
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return (s[:60] or "brand")
+
+
+def share_path(row_or_dict) -> str:
+    """Public token-gated share URL path for a report row/dict, or '' if not
+    publishable yet."""
+    g = (lambda k: getattr(row_or_dict, k, None)) if not isinstance(row_or_dict, dict) else row_or_dict.get
+    slug, rid, token = g("slug"), g("id"), g("share_token")
+    if not (rid and token):
+        return ""
+    return f"/brand/{slug or 'brand'}/{rid}/{token}"
 
 
 @contextmanager
@@ -56,8 +73,10 @@ def _docx_key(report_id: str) -> str:
 
 def save_report(report: BrandReport, *, label: str = "",
                 source_files: Optional[list[tuple[str, bytes]]] = None,
-                docx_bytes: Optional[bytes] = None) -> str:
-    """Persist a completed report and its artifacts; returns the report id."""
+                docx_bytes: Optional[bytes] = None,
+                report_html: str = "") -> str:
+    """Persist a completed report and its artifacts; returns the report id.
+    Mints the slug + share token for the public landing page."""
     rid = _new_id()
     with _session() as s:
         s.add(ReportRow(
@@ -72,12 +91,55 @@ def save_report(report: BrandReport, *, label: str = "",
             period_current=report.period_current_label[:64],
             period_prior=report.period_prior_label[:64],
             report_json=report.to_dict(),
+            slug=_slugify(report.brand),
+            share_token=secrets.token_urlsafe(18),
+            report_html=report_html or "",
+            brand_website=report.brand_website[:512],
+            context_notes=report.context_notes,
         ))
     if source_files:
         _save_sources(rid, source_files)
     if docx_bytes:
         save_docx(rid, docx_bytes)
     return rid
+
+
+def update_report(report_id: str, report: BrandReport, *,
+                  label: Optional[str] = None,
+                  source_files: Optional[list[tuple[str, bytes]]] = None,
+                  docx_bytes: Optional[bytes] = None,
+                  report_html: str = "") -> bool:
+    """Overwrite an existing report in place (edit + rerun). Keeps the same id,
+    slug, and share token so a link already shared stays live."""
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        if label is not None:
+            row.label = label or report.brand
+        row.brand = report.brand[:255]
+        row.category = report.category
+        row.status = "complete"
+        row.grade = report.scorecard.letter
+        row.score_100 = report.scorecard.score_100
+        row.confidence = report.confidence
+        row.period_current = report.period_current_label[:64]
+        row.period_prior = report.period_prior_label[:64]
+        row.report_json = report.to_dict()
+        row.brand_website = report.brand_website[:512]
+        row.context_notes = report.context_notes
+        if report_html:
+            row.report_html = report_html
+        if not row.slug:
+            row.slug = _slugify(report.brand)
+        if not row.share_token:
+            row.share_token = secrets.token_urlsafe(18)
+        row.updated_at = datetime.utcnow()
+    if source_files:
+        _save_sources(report_id, source_files)
+    if docx_bytes:
+        save_docx(report_id, docx_bytes)
+    return True
 
 
 def save_error(brand: str, error: str, *, label: str = "") -> str:
@@ -136,6 +198,40 @@ def get_report(report_id: str) -> Optional[BrandReport]:
         return BrandReport.from_dict(row.report_json)
 
 
+def get_report_row(report_id: str) -> Optional[dict]:
+    """Row-level fields (slug, token, website, context, html) for the edit
+    form prefill, the share link, and the public route."""
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if not row:
+            return None
+        return {
+            "id": row.id, "label": row.label, "brand": row.brand, "category": row.category,
+            "status": row.status, "slug": row.slug, "share_token": row.share_token,
+            "report_html": row.report_html, "brand_website": row.brand_website,
+            "context_notes": row.context_notes,
+        }
+
+
+def get_share_html(report_id: str, token: str) -> Optional[str]:
+    """Pre-rendered standalone HTML for the public route — only when the token
+    matches. Returns None on mismatch/missing (the route 404s)."""
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if not row or row.status != "complete":
+            return None
+        if not token or not row.share_token or token != row.share_token:
+            return None
+        return row.report_html or None
+
+
+def set_share_html(report_id: str, report_html: str) -> None:
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row:
+            row.report_html = report_html or ""
+
+
 def list_reports(limit: int = 50) -> list[dict]:
     """Slim list for History: brand, date, grade, confidence."""
     with _session() as s:
@@ -152,6 +248,9 @@ def list_reports(limit: int = 50) -> list[dict]:
                 "confidence": r.confidence,
                 "period_current": r.period_current,
                 "period_prior": r.period_prior,
+                "slug": r.slug,
+                "share_token": r.share_token,
+                "share_path": share_path(r),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows

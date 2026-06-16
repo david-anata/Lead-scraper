@@ -126,8 +126,12 @@ app.include_router(_advertising_router)
 
 # Executive > Brand Analysis — self-contained router serving
 # /admin/executive/brand-analysis/* in process (same pattern as above).
-from sales_support_agent.api.brand_analysis_router import router as _brand_analysis_router  # noqa: E402
+from sales_support_agent.api.brand_analysis_router import (  # noqa: E402
+    public_router as _brand_analysis_public_router,
+    router as _brand_analysis_router,
+)
 app.include_router(_brand_analysis_router)
+app.include_router(_brand_analysis_public_router)
 
 # Fulfillment > Sales Deck (rate sheets) — admin generator/history plus the
 # public token-gated /rate-sheets/* hosted views (same in-process pattern).
