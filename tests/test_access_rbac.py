@@ -624,3 +624,39 @@ class GoogleAuthUrlTests(unittest.TestCase):
         self.assertNotIn("hd=", url)
         self.assertIn("client_id=", url)
         self.assertIn("prompt=select_account", url)
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class GoogleSessionMintTests(unittest.TestCase):
+    """Regression: Google login must mint the session cookie with the SAME
+    settings the root app validates /admin against (admin_dashboard_settings),
+    or the user is recognized by RBAC but bounced to login at /admin."""
+
+    def test_google_session_validates_at_admin(self) -> None:
+        import main as rootmain
+        from sales_support_agent.api import auth_router
+        from sales_support_agent.config import load_settings as load_agent
+        from sales_support_agent.services.admin_auth import validate_admin_session_token
+
+        admin_dash = rootmain.load_admin_dashboard_settings()
+        agent = load_agent()
+
+        class _URL:
+            def __str__(self): return "https://agent.anatainc.com/"
+
+        class _Req:
+            def __init__(self):
+                st = type("St", (), {"admin_dashboard_settings": admin_dash, "agent_settings": agent})()
+                self.app = type("A", (), {"state": st})()
+                self.base_url = _URL()
+
+        # Session settings must resolve to admin_dashboard_settings on the root app
+        self.assertIs(auth_router._session_settings(_Req()), admin_dash)
+
+        resp = auth_router._mint_session(_Req(), agent, "ext-partner@gmail.com", "Ext")
+        cookies = [v.decode() for k, v in resp.raw_headers if k.decode().lower() == "set-cookie"]
+        sess = next((c for c in cookies if c.startswith(admin_dash.admin_cookie_name + "=")), None)
+        self.assertIsNotNone(sess, "must mint a cookie named like the root app's session cookie")
+        token = sess.split("=", 1)[1].split(";")[0]
+        # The crux: /admin's strict validator accepts the Google-minted token
+        self.assertTrue(validate_admin_session_token(admin_dash, token))
