@@ -306,6 +306,16 @@ def _rule_harvest_keywords(ad_rows: list[AdRow], thr: Thresholds) -> list[Recomm
         for r in ad_rows
         if r.entity_level == "keyword"
     }
+    # A search term that matched via EXACT is, by definition, already an exact
+    # keyword — harvesting it would be rejected by Amazon as "already exists!".
+    # The uploaded bulk often misses these (a partial/short-window export lists
+    # only entities with activity that day), so the search-term report's own
+    # match type is the more reliable existence signal. Treat them as existing.
+    existing |= {
+        (r.ad_type, r.entity_text.strip().lower())
+        for r in ad_rows
+        if r.entity_level == "search_term" and (r.match_type or "").strip().lower() == "exact"
+    }
     out: list[Recommendation] = []
     for r in ad_rows:
         if r.entity_level != "search_term" or r.orders < thr.promote_keyword_min_orders:
