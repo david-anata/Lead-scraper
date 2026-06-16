@@ -144,6 +144,13 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         "communication_events": {
             "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
         },
+        "brand_analysis_reports": {
+            "slug": "ALTER TABLE brand_analysis_reports ADD COLUMN slug VARCHAR(96) NOT NULL DEFAULT ''",
+            "share_token": "ALTER TABLE brand_analysis_reports ADD COLUMN share_token VARCHAR(64) NOT NULL DEFAULT ''",
+            "report_html": "ALTER TABLE brand_analysis_reports ADD COLUMN report_html TEXT NOT NULL DEFAULT ''",
+            "brand_website": "ALTER TABLE brand_analysis_reports ADD COLUMN brand_website VARCHAR(512) NOT NULL DEFAULT ''",
+            "context_notes": "ALTER TABLE brand_analysis_reports ADD COLUMN context_notes TEXT NOT NULL DEFAULT ''",
+        },
         "app_users": {
             "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
             "permissions_json": "ALTER TABLE app_users ADD COLUMN permissions_json JSON NOT NULL DEFAULT '[]'",
@@ -649,12 +656,27 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 period_prior   VARCHAR(64)  NOT NULL DEFAULT '',
                 report_json    JSON         NOT NULL DEFAULT '{}',
                 error          TEXT         NOT NULL DEFAULT '',
+                slug           VARCHAR(96)  NOT NULL DEFAULT '',
+                share_token    VARCHAR(64)  NOT NULL DEFAULT '',
+                report_html    TEXT         NOT NULL DEFAULT '',
+                brand_website  VARCHAR(512) NOT NULL DEFAULT '',
+                context_notes  TEXT         NOT NULL DEFAULT '',
                 created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
                 updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
             )
         """))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_created_at ON brand_analysis_reports (created_at)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_brand ON brand_analysis_reports (brand)"))
+        # Additive columns for the investor-package redesign (existing tables).
+        for _stmt in (
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS slug VARCHAR(96) NOT NULL DEFAULT ''",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS share_token VARCHAR(64) NOT NULL DEFAULT ''",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS report_html TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS brand_website VARCHAR(512) NOT NULL DEFAULT ''",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS context_notes TEXT NOT NULL DEFAULT ''",
+        ):
+            connection.execute(text(_stmt))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_share_token ON brand_analysis_reports (share_token)"))
 
     # Access control (RBAC) — users, custom roles, invites, access requests.
     with engine.begin() as connection:
