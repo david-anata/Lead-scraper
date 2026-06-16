@@ -18,13 +18,19 @@ def google_oauth_enabled(settings: Settings) -> bool:
 
 
 def google_auth_url(settings: Settings, *, redirect_uri: str, state: str) -> str:
+    # NOTE: we intentionally do NOT send the `hd` (hosted-domain) parameter.
+    # Sending hd=<domain> makes Google reject any account outside that domain,
+    # which blocks invited external users (e.g. personal Gmail). Authorization is
+    # enforced app-side instead (google_callback): @<allowed_domain> accounts are
+    # auto-allowed, and other accounts are allowed only with a pending invite —
+    # uninvited strangers are still rejected. (Requires the Google OAuth consent
+    # screen to be "External"; an "Internal" app blocks outside accounts at Google.)
     params = {
         "client_id": settings.google_oauth_client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "state": state,
-        "hd": settings.google_oauth_allowed_domain,
         "access_type": "online",
         "prompt": "select_account",
     }
