@@ -212,8 +212,22 @@ def run_audit(
         #  • "additions" → harvests + negatives (Creates) — best-effort; a Create
         #                  can still hit "already exists!" if the bulk snapshot is
         #                  stale. Upload separately; a failure here won't touch bids.
-        bids = build_apply_sheet(recs, kinds={"set_bid"})
-        additions = build_apply_sheet(recs, kinds={"create_keyword", "create_negative"})
+        # Auto/manual-campaign bid-downs come off a campaign aggregate with no
+        # single Keyword/Target ID, so they'd be skipped from the apply sheet.
+        # Expand each into per-target Update rows (the bulk file has the IDs +
+        # bids) so the headline cuts actually become applyable. Burn list keeps
+        # the readable aggregate; only the apply sheet sees the expansion.
+        apply_recs = recs
+        expanded_bid_rows = 0
+        if inputs.bulk_xlsx:
+            apply_recs, expanded_bid_rows = N.expand_aggregate_bid_recs_for_apply(recs, inputs.bulk_xlsx)
+            if expanded_bid_rows:
+                logger.info("[advertising] expanded auto/manual aggregate bid-downs into %d per-target apply rows", expanded_bid_rows)
+        summary["expanded_bid_rows"] = expanded_bid_rows
+
+        bids = build_apply_sheet(apply_recs, kinds={"set_bid"})
+        additions = build_apply_sheet(apply_recs, kinds={"create_keyword", "create_negative"})
+        summary["apply_skipped"] = (bids.skipped or 0) + (additions.skipped or 0)
         if bids.has_file:
             storage.save_bulk_file(run_id, "bids", bids.xlsx_bytes)
         if additions.has_file:

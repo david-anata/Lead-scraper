@@ -802,6 +802,123 @@ def enforce_targeting_type(recs: list, file_bytes: bytes) -> int:
     return changed
 
 
+def _clamp_bid_cents(c: int) -> int:
+    """Amazon bid bounds: $0.02 – $1000."""
+    return max(2, min(100000, int(c)))
+
+
+_AUTO_EXPR = {"close-match", "loose-match", "substitutes", "complements"}
+
+
+def _auto_targets_by_campaign(file_bytes: bytes) -> dict:
+    """campaign_id -> [{target_id, expr, bid_cents, ad_group_id}] for the auto
+    targeting entities (close/loose-match, substitutes, complements) in the SP
+    bulk sheets. These carry the Target IDs + current bids that the report-level
+    `AUTOMATIC` aggregate lacks."""
+    out: dict = {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] could not open bulk workbook for auto-target scan")
+        return out
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) != "SP":
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {n: (header.index(n) if n in header else None) for n in (
+            "Entity", "Campaign ID", "Ad Group ID", "Product Targeting ID",
+            "Product Targeting Expression", "Bid")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        for row in it:
+            if str(g(row, "Entity") or "").strip() != "Product Targeting":
+                continue
+            expr = str(g(row, "Product Targeting Expression") or "").strip().lower()
+            if expr not in _AUTO_EXPR:
+                continue
+            cid = str(g(row, "Campaign ID") or "").strip().replace(".0", "")
+            tid = str(g(row, "Product Targeting ID") or "").strip().replace(".0", "")
+            if not (cid and tid):
+                continue
+            out.setdefault(cid, []).append({
+                "target_id": tid, "expr": expr,
+                "bid_cents": parse_cents(g(row, "Bid")),
+                "ad_group_id": str(g(row, "Ad Group ID") or "").strip().replace(".0", ""),
+            })
+    return out
+
+
+def expand_aggregate_bid_recs_for_apply(recs: list, bulk_file_bytes: bytes):
+    """Make AUTO-campaign bid changes APPLYABLE.
+
+    A bid-down on an auto campaign is generated off the full-period *aggregate*
+    (`AUTOMATIC`) performance row, which carries no single Target ID — so Amazon's
+    "Update" op can't write it and the row is skipped from the apply sheet (the
+    headline cuts vanish). The 4 underlying auto-targets (close/loose-match,
+    substitutes, complements) DO exist in the bulk file with Target IDs + current
+    bids; there's just rarely enough per-target signal to trigger them alone.
+
+    Each `AUTOMATIC` set_bid rec is replaced (for the APPLY SHEET only) by one
+    Update per auto-target in that campaign, scaling each target's current bid by
+    the aggregate's proposed/old ratio (clamped to Amazon bounds). MANUAL
+    aggregates are intentionally NOT expanded — a manual campaign's keywords have
+    individual performance the engine already cuts one by one; blanket-cutting
+    every keyword off a campaign rollup would be wrong. The burn list keeps the
+    readable aggregate. Returns (apply_recs, expanded_count)."""
+    import copy
+
+    by_cid = _auto_targets_by_campaign(bulk_file_bytes) if bulk_file_bytes else {}
+    apply_recs: list = []
+    expanded = 0
+    for rec in recs:
+        br = getattr(rec, "bulk_row", None) or {}
+        text = str(br.get("keyword_text") or br.get("targeting_expression") or "").strip().upper()
+        cid = str(br.get("campaign_id") or "")
+        if not (br.get("action") == "set_bid"
+                and not (br.get("keyword_id") or br.get("target_id"))
+                and text == "AUTOMATIC"
+                and cid in by_cid):
+            apply_recs.append(rec)
+            continue
+
+        old = parse_cents(getattr(rec, "current_value", "")) or 0
+        new = br.get("new_bid_cents") or 0
+        ratio = (new / old) if (old and new) else None
+        for ent in by_cid[cid]:
+            base = ent.get("bid_cents") or 0
+            nb = _clamp_bid_cents(round(base * ratio)) if (ratio and base) else (new or base)
+            if not nb:
+                continue
+            new_rec = copy.copy(rec)
+            new_rec.bulk_row = {
+                **br,
+                "keyword_id": "",
+                "target_id": ent["target_id"],
+                "ad_group_id": ent.get("ad_group_id") or br.get("ad_group_id", ""),
+                "keyword_text": ent["expr"],
+                "targeting_expression": ent["expr"],
+                "bulk_sheet": br.get("bulk_sheet", ""),
+                "new_bid_cents": nb,
+            }
+            new_rec.is_bulk_actionable = True
+            apply_recs.append(new_rec)
+            expanded += 1
+        # aggregate dropped from the apply list (replaced); stays in burn list.
+    return apply_recs, expanded
+
+
 def merge_duplicate_entities(ad_rows: "list[AdRow]") -> "tuple[list[AdRow], int]":
     """The SAME keyword/target arrives as multiple rows — once from the
     performance reports and once from the bulk file — often with different click
