@@ -365,6 +365,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "executive"
     if active in {"access", "access_users", "access_roles", "access_invites", "access_requests"}:
         primary_active = "access"
+    if active == "hr" or active.startswith("hr_"):
+        primary_active = "hr"
     _primary_specs = [
         ("Sales Priorities", "/admin", primary_active == "sales", _can_section("Sales Priorities")),
         ("Website Ops", "/admin/website-ops", primary_active == "website_ops", _can_section("Website Ops")),
@@ -372,6 +374,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         ("Advertising", "/admin/advertising/audit", primary_active == "advertising", _can_section("Advertising")),
         ("Executive", "/admin/executive", primary_active == "executive", _can_section("Executive")),
         ("Fulfillment", "/admin/fulfillment", primary_active == "fulfillment", _can_section("Fulfillment")),
+        ("HR", "/admin/hr", primary_active == "hr", _can_section("HR")),
         # Access/Team management is intentionally NOT a primary nav item — it
         # lives only in the profile dropdown ("Team"). Keeps the top nav
         # identical on every page.

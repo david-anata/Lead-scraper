@@ -37,6 +37,12 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("fulfillment.rate_sheets", "Fulfillment Sales Deck", "Fulfillment", ("/admin/fulfillment/sales",)),
     Tool("fulfillment.dashboard", "CS Dashboard", "Fulfillment", ("/admin/fulfillment/cs",), exact=True),
     Tool("fulfillment.reports", "CS Reports", "Fulfillment", ("/admin/fulfillment/cs/reports",)),
+    # HR — employees/time/reports under hr.access; the sensitive money + config
+    # (payroll runs, pay schedules, tax settings) gated separately by hr.payroll.
+    # Most-specific prefix wins, so /admin/hr/payroll resolves to hr.payroll even
+    # though hr.access covers the broader /admin/hr.
+    Tool("hr.access", "HR — people, time & reports", "HR", ("/admin/hr",)),
+    Tool("hr.payroll", "HR — run payroll & settings", "HR", ("/admin/hr/payroll", "/admin/hr/settings")),
     Tool("access.manage", "Access admin (users & roles)", "Access", ("/admin/access",)),
 )
 
