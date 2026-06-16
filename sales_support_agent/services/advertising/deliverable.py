@@ -119,33 +119,87 @@ def _verdict(cvr_bps, sessions, ad_acos_bps, target_acos_bps, breakeven_bps=None
     return "Hold / monitor"
 
 
-def _campaign_actions(ad_rows: list[AdRow], target_acos_bps: int, limit: int = 15) -> list[dict]:
-    by_campaign: dict[str, dict] = defaultdict(lambda: {"spend": 0, "sales": 0})
+_CHANGE_CATS = ("bid_down", "bid_up", "negative_keyword", "new_keyword")
+
+
+def _rec_campaign_name(rec) -> str:
+    br = getattr(rec, "bulk_row", None) or {}
+    name = (br.get("campaign_name") or "").strip()
+    if name:
+        return name
+    ref = (getattr(rec, "entity_ref", "") or "")
+    return ref.split("›")[0].strip() if "›" in ref else ""
+
+
+def _campaign_actions(ad_rows: list[AdRow], recommendations: list, target_acos_bps: int,
+                      limit: int = 20) -> list[dict]:
+    """One row per campaign, showing the SPECIFIC moves the audit is making there
+    (bid trims/raises, negatives, harvests) rolled up from the recommendations,
+    with spend/sales/ACoS for context. Previously this only summed
+    product_ad/campaign/ad_group rows — empty for accounts whose data is all
+    keyword/target level — so the tab came out blank."""
+    by_campaign: dict[str, dict] = defaultdict(
+        lambda: {"spend": 0, "sales": 0, "bid_down": 0, "bid_up": 0,
+                 "negative_keyword": 0, "new_keyword": 0})
+
+    # Spend/sales context: sum the performance-bearing rows (keyword/target/ad)
+    # by campaign. Distinct entities don't overlap, so this is the campaign total.
     for r in ad_rows:
-        if r.entity_level not in ("product_ad", "campaign", "ad_group"):
+        if r.entity_level in ("keyword", "target", "product_ad", "campaign", "ad_group"):
+            c = by_campaign[r.campaign_name or "(unnamed)"]
+            c["spend"] += r.spend_cents
+            c["sales"] += r.sales_cents
+
+    # The actual changes, counted per campaign.
+    for rec in recommendations:
+        cat = getattr(rec, "category", "")
+        if cat not in _CHANGE_CATS:
             continue
-        c = by_campaign[r.campaign_name or "(unnamed)"]
-        c["spend"] += r.spend_cents
-        c["sales"] += r.sales_cents
+        name = _rec_campaign_name(rec) or "(unnamed)"
+        by_campaign[name][cat] += 1
+
     rows = []
     for name, agg in by_campaign.items():
+        changes = sum(agg[k] for k in _CHANGE_CATS)
+        if not (changes or agg["spend"] or agg["sales"]):
+            continue
         a = acos_bps(agg["spend"], agg["sales"])
-        rows.append({"campaign": name, "spend": agg["spend"], "sales": agg["sales"],
-                     "acos_bps": a, **_campaign_move(a, target_acos_bps)})
-    rows.sort(key=lambda r: r["spend"], reverse=True)
+        rows.append({
+            "campaign": name, "spend": agg["spend"], "sales": agg["sales"], "acos_bps": a,
+            "changes": changes, "action": _action_str(agg), "why": _why(a, target_acos_bps, agg),
+        })
+    # Campaigns WITH changes first, then by spend.
+    rows.sort(key=lambda r: (0 if r["changes"] else 1, -r["spend"]))
     return rows[:limit]
 
 
-def _campaign_move(acos, target) -> dict:
+def _action_str(agg: dict) -> str:
+    def n(c, label):
+        k = agg[c]
+        return f"{label}{k}" if k else ""
+    parts = [p for p in (n("bid_down", "↓"), n("bid_up", "↑")) if p]
+    bids = " ".join(parts) + (" bid" + ("s" if (agg["bid_down"] + agg["bid_up"]) > 1 else "")) if parts else ""
+    extra = [x for x in (
+        (f"+{agg['negative_keyword']} neg" if agg["negative_keyword"] else ""),
+        (f"+{agg['new_keyword']} kw" if agg["new_keyword"] else ""),
+    ) if x]
+    out = " · ".join([p for p in [bids] + extra if p])
+    return out or "Hold"
+
+
+def _why(acos, target, agg: dict) -> str:
+    cut = agg["bid_down"] or agg["negative_keyword"]
+    grow = agg["bid_up"] or agg["new_keyword"]
     if acos is None:
-        return {"action": "Review", "why": "No attributed sales in window"}
-    if acos > 12000:
-        return {"action": "PAUSE", "why": f"{acos/100:.0f}% ACoS — unprofitable"}
-    if acos > target * 1.3:
-        return {"action": "CUT / Tighten", "why": f"{acos/100:.0f}% ACoS over target — harvest winners, negate junk"}
-    if acos < target * 0.7:
-        return {"action": "SCALE", "why": f"{acos/100:.0f}% ACoS — headroom to push"}
-    return {"action": "Hold", "why": "Near target"}
+        return "Spend with no attributed sales — trim / negate" if cut else "Review"
+    a, t = acos / 100, (target or 0) / 100
+    if cut and not grow:
+        return f"{a:.0f}% ACoS vs {t:.0f}% target — trim bids / cut waste"
+    if grow and not cut:
+        return f"{a:.0f}% ACoS under {t:.0f}% target — scale winners"
+    if cut and grow:
+        return f"{a:.0f}% ACoS — trim losers, scale winners"
+    return "Near target — hold"
 
 
 # --- burn-list phase mapping ------------------------------------------------
@@ -284,13 +338,13 @@ def build_growth_plan(
     # ---- Campaign Actions ----
     ws = wb.create_sheet("Campaign Actions")
     _title(ws, st, f"{label.upper()} CAMPAIGN ACTIONS")
-    ws.append(["Top campaigns by spend with the specific move."])
+    ws.append(["Every campaign we're changing, with the specific moves (↓/↑ bids, negatives, harvests)."])
     ws.append([])
-    _head(ws, st, ["Campaign", "Spend", "Sales", "ACoS", "Action", "Why"])
-    for r in _campaign_actions(ad_rows, target_acos):
+    _head(ws, st, ["Campaign", "Spend", "Sales", "ACoS", "Changes", "Moves", "Why"])
+    for r in _campaign_actions(ad_rows, recommendations, target_acos):
         _row(ws, [r["campaign"], _dollars(r["spend"]), _dollars(r["sales"]), _pct(r["acos_bps"]),
-                  r["action"], r["why"]], money_cols=(1, 2), pct_cols=(3,), wrap_cols=(0, 5))
-    _widths(ws, [46, 12, 12, 9, 14, 40])
+                  r["changes"] or "", r["action"], r["why"]], money_cols=(1, 2), pct_cols=(3,), wrap_cols=(0, 5, 6))
+    _widths(ws, [46, 12, 12, 9, 9, 18, 38])
 
     # ---- Negatives to Add ----
     ws = wb.create_sheet("Negatives to Add")
