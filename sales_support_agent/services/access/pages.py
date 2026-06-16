@@ -176,12 +176,12 @@ def render_forbidden_page(*, user: Optional[dict], tool_label: str) -> str:
     unprovisioned = (user or {}).get("status") == "unprovisioned"
     if unprovisioned:
         sub = (
-            "Your account isn't set up with any tools yet. An administrator needs to "
-            "assign you a role before you can use the dashboard."
+            "You're signed in, but an administrator hasn't granted you access to any "
+            "tools yet. They can set this up under People → Manage access."
         )
     else:
-        sub = (f"Your role doesn't include access to <strong>{_esc(tool_label)}</strong>. "
-               "Ask an administrator to grant it.")
+        sub = (f"You don't have access to <strong>{_esc(tool_label)}</strong> yet. "
+               "Ask an administrator to grant it under People → Manage access.")
     body = f"""
       <div class="card">
         <div class="lock">🔒</div>
