@@ -97,7 +97,7 @@ from sales_support_agent.services.website_ops import (
     save_feedback_record,
 )
 from sales_support_agent.config import is_active_pipeline_status, normalize_status_key
-from sales_support_agent.services.auth_deps import get_current_user, get_session_user_from_request, is_authenticated
+from sales_support_agent.services.auth_deps import get_current_user, get_session_user_from_request, has_tool, is_authenticated
 
 
 router = APIRouter()
@@ -620,6 +620,15 @@ def admin_fulfillment_root(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
+    # Access-safe: send the user to the FIRST fulfillment page they can open so a
+    # CS-only user (fulfillment.dashboard) isn't bounced into a 403 on /sales.
+    # Belt-and-suspenders for direct hits/bookmarks; the nav already points here.
+    if has_tool(request, "fulfillment.rate_sheets"):
+        return RedirectResponse(url="/admin/fulfillment/sales", status_code=302)
+    if has_tool(request, "fulfillment.dashboard"):
+        return RedirectResponse(url="/admin/fulfillment/cs/", status_code=302)
+    # No reachable fulfillment page — fall through to the existing /sales target,
+    # whose own guard renders the friendly 403 (preserves prior behavior).
     return RedirectResponse(url="/admin/fulfillment/sales", status_code=302)
 
 
