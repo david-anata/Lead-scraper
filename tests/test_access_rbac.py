@@ -610,3 +610,17 @@ class PerPersonAccessTests(unittest.TestCase):
         self.assertIn("Invite created", r.text)
         inv = next(i for i in store.list_pending_invites() if i["email"] == "norole@anatainc.com")
         self.assertIsNone(inv["role_id"])
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class GoogleAuthUrlTests(unittest.TestCase):
+    """The Google auth URL must NOT pin `hd` (hosted domain) — that would block
+    invited external users (personal Gmail). Authorization is enforced app-side."""
+
+    def test_auth_url_omits_hd(self) -> None:
+        from sales_support_agent.services.admin_auth_google import google_auth_url
+        s = _settings()
+        url = google_auth_url(s, redirect_uri="https://agent.anatainc.com/admin/auth/callback", state="s")
+        self.assertNotIn("hd=", url)
+        self.assertIn("client_id=", url)
+        self.assertIn("prompt=select_account", url)
