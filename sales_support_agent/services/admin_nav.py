@@ -354,8 +354,6 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
             return True
         return any(_can(k) for k in _SECTION_TOOLS.get(section, ()))
 
-    show_access = is_superadmin or bool(permissions is not None and "access.manage" in permissions)
-
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks"}:
         primary_active = "sales"
@@ -374,7 +372,9 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         ("Advertising", "/admin/advertising/audit", primary_active == "advertising", _can_section("Advertising")),
         ("Executive", "/admin/executive", primary_active == "executive", _can_section("Executive")),
         ("Fulfillment", "/admin/fulfillment", primary_active == "fulfillment", _can_section("Fulfillment")),
-        ("Access", "/admin/access", primary_active == "access", show_access),
+        # Access/Team management is intentionally NOT a primary nav item — it
+        # lives only in the profile dropdown ("Team"). Keeps the top nav
+        # identical on every page.
     ]
     primary_links = [
         _nav_item(label, href, active=is_active)
@@ -452,18 +452,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           {"".join(fulfillment_links)}
         </nav>
         """
-    if primary_active == "access":
-        access_links = [
-            link for key, link in (
-                ("access.manage", _nav_item("People", "/admin/access", active=active in {"access", "access_users", "access_invites", "access_requests", "access_roles"}, extra_class="top-link--secondary")),
-            ) if _can(key)
-        ]
-        secondary_nav = f"""
-        <div class="topbar-divider"></div>
-        <nav class="top-actions top-actions--secondary">
-          {"".join(access_links)}
-        </nav>
-        """
+    # Access has no secondary sub-nav — it's a single People page reached from
+    # the profile dropdown, so the top bar stays the same on it as everywhere.
     return f"""
     <header class="topbar">
       <div class="topbar-shell">
