@@ -2,446 +2,522 @@
 
 Served at /brand-intake (and /brand-intake?print=1 for the browser-print PDF
 flow). Self-contained HTML — no admin chrome, no login required.
+Styled to match the Anata brand guide (share_page.py palette + typography).
 """
 
 from __future__ import annotations
 
+import base64
+import os
+
 _FONTS = (
-    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&"
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&"
     "family=Montserrat:wght@700;800;900&display=swap"
 )
 
+
+def _wordmark_src() -> str:
+    """Return a data-URI for wordmark.png, or '' if the file is missing."""
+    assets_dir = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "shared", "anata_brand", "assets")
+    )
+    path = os.path.join(assets_dir, "wordmark.png")
+    try:
+        with open(path, "rb") as fh:
+            return f"data:image/png;base64,{base64.b64encode(fh.read()).decode()}"
+    except OSError:
+        return ""
+
+
 _CSS = """
 :root {
-  --ink:       #1d2d44;
-  --ink-soft:  #314664;
-  --sky:       #85bbda;
-  --sky-deep:  #4f84c4;
-  --sand:      #bfa889;
-  --sand-soft: #f7f3ec;
-  --paper:     #fffdf9;
-  --muted:     #6b7688;
-  --line:      rgba(29,45,68,.12);
-  --shadow:    rgba(29,45,68,.10);
+  --navy:   #2B3644;
+  --blue:   #85BBDA;
+  --blue-d: #4f84c4;
+  --brown:  #BFA889;
+  --cream:  #F9F7F3;
+  --white:  #fff;
+  --line:   rgba(43,54,68,.10);
+  --shadow: rgba(43,54,68,.10);
+  --muted:  rgba(43,54,68,.55);
+  --good:   #1A7F4B;
+  --rec:    #1565C0;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: Inter, system-ui, sans-serif;
-  background: linear-gradient(180deg, #eef5fb 0%, #f7f3ec 100%) fixed;
-  color: var(--ink);
-  min-height: 100vh;
+  font-family: Inter, "Segoe UI", sans-serif;
+  background: var(--cream);
+  color: var(--navy);
   -webkit-font-smoothing: antialiased;
 }
 
 /* ── header ────────────────────────────────── */
 .site-header {
-  background: var(--ink);
-  padding: 20px 40px;
+  background: var(--navy);
+  padding: 18px 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
-.logo {
+.wordmark { height: 28px; display: block; filter: brightness(0) invert(1); }
+.wordmark-fallback {
   font-family: Montserrat, sans-serif;
   font-weight: 900;
-  font-size: 22px;
-  letter-spacing: -0.02em;
+  font-size: 20px;
+  letter-spacing: -.01em;
   color: #fff;
-  text-decoration: none;
 }
-.logo span { color: var(--sky); }
-.header-cta {
-  background: var(--sky-deep);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 20px;
-  border-radius: 999px;
-  text-decoration: none;
-  letter-spacing: 0.01em;
-  transition: opacity .15s;
-}
-.header-cta:hover { opacity: .85; }
-
-/* ── hero ──────────────────────────────────── */
-.hero {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 60px 40px 36px;
-  text-align: center;
-}
-.eyebrow {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .18em;
-  text-transform: uppercase;
-  color: var(--sky-deep);
-  margin-bottom: 14px;
-}
-.hero h1 {
-  font-family: Montserrat, sans-serif;
-  font-weight: 800;
-  font-size: clamp(1.8rem, 3.5vw, 2.8rem);
-  color: var(--ink);
-  line-height: 1.15;
-  margin-bottom: 18px;
-}
-.hero p {
-  font-size: 16px;
-  line-height: 1.65;
-  color: var(--ink-soft);
-  max-width: 620px;
-  margin: 0 auto 32px;
-}
+.wordmark-fallback span { color: var(--blue); }
 .pdf-btn {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: var(--ink);
+  gap: 7px;
+  background: var(--blue-d);
   color: #fff;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 12px 26px;
+  padding: 8px 18px;
   border-radius: 999px;
   text-decoration: none;
-  letter-spacing: 0.01em;
-  box-shadow: 0 8px 24px var(--shadow);
+  letter-spacing: .01em;
+  white-space: nowrap;
   transition: opacity .15s;
 }
 .pdf-btn:hover { opacity: .85; }
-.pdf-btn svg { flex-shrink: 0; }
 
-/* ── content grid ─────────────────────────── */
-.content {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 8px 40px 60px;
-}
-.section-label {
-  font-size: 11px;
+/* ── page wrapper ─────────────────────────── */
+.page { max-width: 900px; margin: 0 auto; padding: 48px 28px 72px; }
+
+/* ── hero ──────────────────────────────────── */
+.eyebrow {
+  font-family: Montserrat, sans-serif;
   font-weight: 800;
+  font-size: 11px;
   letter-spacing: .14em;
   text-transform: uppercase;
+  color: var(--blue-d);
+  margin-bottom: 12px;
+}
+.hero-title {
+  font-family: Montserrat, sans-serif;
+  font-weight: 900;
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+  line-height: 1.12;
+  letter-spacing: -.02em;
+  color: var(--navy);
+  margin-bottom: 14px;
+}
+.hero-sub {
+  font-size: 15.5px;
+  line-height: 1.65;
   color: var(--muted);
-  margin: 36px 0 14px;
+  max-width: 640px;
+  margin-bottom: 36px;
 }
 
-/* ── slide cards ──────────────────────────── */
-.slide {
-  background: #fff;
-  border-radius: 20px;
-  padding: 30px 32px;
-  box-shadow: 0 6px 24px var(--shadow);
-  margin-bottom: 16px;
+/* ── section heading ──────────────────────── */
+.section-block {
+  background: var(--navy);
+  border-radius: 10px 10px 0 0;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.section-block h2 {
+  font-family: Montserrat, sans-serif;
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.badge-req  { background: var(--good);  color: #fff; }
+.badge-rec  { background: var(--rec);   color: #fff; }
+.badge-opt  { background: rgba(255,255,255,.18); color: rgba(255,255,255,.85); }
+
+/* ── card ─────────────────────────────────── */
+.card {
+  background: var(--white);
   border: 1px solid var(--line);
+  border-top: none;
+  border-radius: 0 0 16px 16px;
+  padding: 26px 28px;
+  box-shadow: 0 8px 24px var(--shadow);
+  margin-bottom: 22px;
   page-break-inside: avoid;
 }
-.slide-header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 16px;
+.card-intro {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+  font-style: italic;
+  margin-bottom: 18px;
 }
-.slide-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--sand-soft);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+
+/* ── tables ────────────────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
 }
-.slide-icon svg { color: var(--sky-deep); }
-.slide h2 {
+.data-table th {
+  text-align: left;
   font-family: Montserrat, sans-serif;
   font-weight: 700;
-  font-size: 17px;
-  color: var(--ink);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: #fff;
+  background: #16213E;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,.1);
 }
-.slide p.desc {
-  font-size: 13.5px;
+.data-table td {
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  vertical-align: top;
+  line-height: 1.5;
+}
+.data-table tr:nth-child(odd) td { background: #fafafa; }
+.data-table tr:nth-child(even) td { background: var(--white); }
+.data-table td strong { color: var(--navy); }
+.data-table td em { color: var(--muted); font-size: 12.5px; }
+
+/* quick-checklist #, Required? columns */
+.col-num  { width: 36px; text-align: center; color: var(--blue-d); font-weight: 700; }
+.col-req  { width: 120px; text-align: center; }
+.col-unlocks { color: var(--muted); font-style: italic; font-size: 12.5px; }
+
+/* badge inside table cell */
+.req-badge { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+.req-yes  { background:#d1fae5; color:#065f46; }
+.req-rec  { background:#dbeafe; color:#1e40af; }
+.req-opt  { background:#f3f4f6; color:#6b7280; }
+
+/* ── callout ───────────────────────────────── */
+.callout {
+  background: #EBF4FB;
+  border-left: 4px solid var(--blue-d);
+  border-radius: 0 8px 8px 0;
+  padding: 14px 16px;
+  margin-top: 16px;
+}
+.callout p {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--navy);
+  margin-bottom: 8px;
+}
+.callout ul {
+  padding-left: 18px;
+  margin: 0;
+}
+.callout li {
+  font-size: 13px;
+  color: var(--muted);
   line-height: 1.6;
-  color: var(--ink-soft);
-  margin-bottom: 16px;
+  margin: 4px 0;
 }
-.file-list {
+
+/* ── bullet list (sections 4, 5) ─────────────*/
+.bullet-list {
+  padding-left: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.file-list li {
+.bullet-list li {
   display: flex;
   gap: 10px;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 13.5px;
+  line-height: 1.55;
 }
-.file-list li::before {
+.bullet-list li::before {
   content: "";
   display: block;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--sky-deep);
-  margin-top: 6px;
+  background: var(--blue-d);
+  margin-top: 5px;
   flex-shrink: 0;
 }
-.file-list .item-name {
-  font-weight: 600;
-  color: var(--ink);
-  margin-right: 4px;
-}
-.file-list .item-why {
-  color: var(--muted);
-}
-.tag {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 999px;
-  margin-left: 6px;
-  vertical-align: middle;
-}
-.tag-required { background: #fef2f2; color: #991b1b; }
-.tag-optional { background: #f0fdf4; color: #166534; }
 
-/* ── quick checklist table ────────────────── */
-.checklist-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 24px;
-  margin-top: 4px;
+/* ── closing CTA ───────────────────────────── */
+.cta-block {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--blue-d);
+  border-radius: 14px;
+  padding: 24px 28px;
+  box-shadow: 0 6px 20px var(--shadow);
+  margin-top: 8px;
 }
-.checklist-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-  line-height: 1.4;
-}
-.checklist-item .box {
-  width: 15px;
-  height: 15px;
-  border: 2px solid var(--sky-deep);
-  border-radius: 3px;
-  flex-shrink: 0;
-  margin-top: 1px;
-}
+.cta-block p { font-size: 14px; line-height: 1.7; color: var(--navy); }
+.cta-block a { color: var(--blue-d); font-weight: 600; text-decoration: none; }
 
 /* ── footer ────────────────────────────────── */
 .site-footer {
-  background: var(--ink);
-  color: rgba(255,255,255,.6);
+  background: var(--navy);
+  color: rgba(255,255,255,.5);
   text-align: center;
-  padding: 28px 40px;
-  font-size: 13px;
+  padding: 24px 40px;
+  font-size: 12.5px;
   line-height: 1.8;
 }
-.site-footer a { color: var(--sky); text-decoration: none; }
-.site-footer strong { color: #fff; }
+.site-footer a { color: var(--blue); text-decoration: none; }
+.site-footer strong { color: rgba(255,255,255,.85); }
 
 /* ── print ─────────────────────────────────── */
 @media print {
-  .site-header .header-cta,
-  .pdf-btn,
-  .no-print { display: none !important; }
-
-  body {
-    background: #fff;
-    font-size: 11pt;
-  }
+  .no-print, .pdf-btn { display: none !important; }
+  body { background: #fff; font-size: 11pt; }
   .site-header {
-    background: var(--ink) !important;
-    print-color-adjust: exact;
-    -webkit-print-color-adjust: exact;
-    padding: 14px 24px;
+    background: var(--navy) !important;
+    print-color-adjust: exact; -webkit-print-color-adjust: exact;
+    padding: 12px 24px;
   }
-  .hero { padding: 28px 24px 20px; }
-  .content { padding: 0 24px 32px; }
-  .slide {
-    box-shadow: none;
-    border: 1px solid var(--line);
-    padding: 20px 22px;
-    margin-bottom: 12px;
+  .section-block {
+    print-color-adjust: exact; -webkit-print-color-adjust: exact;
   }
-  .checklist-grid { gap: 6px 20px; }
-  .site-footer { background: var(--ink) !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .data-table th {
+    print-color-adjust: exact; -webkit-print-color-adjust: exact;
+  }
+  .page { padding: 24px 18px 40px; }
+  .card { box-shadow: none; margin-bottom: 14px; }
+  .cta-block { box-shadow: none; }
+  .site-footer { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  @page { margin: 14mm; }
 }
-@media (max-width: 600px) {
-  .site-header { padding: 16px 20px; }
-  .hero { padding: 36px 20px 24px; }
-  .content { padding: 0 20px 40px; }
-  .slide { padding: 22px 20px; }
-  .checklist-grid { grid-template-columns: 1fr; }
+
+@media (max-width: 620px) {
+  .site-header { padding: 14px 18px; }
+  .page { padding: 32px 16px 48px; }
+  .card { padding: 18px 16px; }
+  .data-table { font-size: 12px; }
+  .data-table th, .data-table td { padding: 7px 8px; }
 }
 """
 
-_PDF_ICON = """<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>"""
-
-
-def _icon(paths: str) -> str:
-    return (
-        f'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-        f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{paths}</svg>'
-    )
-
-
-_ICON_FINANCE = _icon(
-    '<rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>'
-    '<line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'
-)
-_ICON_ADS = _icon(
-    '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'
-)
-_ICON_BRAND = _icon(
-    '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>'
-)
-_ICON_CUSTOMER = _icon(
-    '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>'
-    '<circle cx="9" cy="7" r="4"/>'
-    '<path d="M23 21v-2a4 4 0 0 0-3-3.87"/>'
-    '<path d="M16 3.13a4 4 0 0 1 0 7.75"/>'
-)
-_ICON_CONTEXT = _icon(
-    '<circle cx="12" cy="12" r="10"/>'
-    '<line x1="12" y1="8" x2="12" y2="12"/>'
-    '<line x1="12" y1="16" x2="12.01" y2="16"/>'
-)
-_ICON_CHECKLIST = _icon(
-    '<polyline points="9 11 12 14 22 4"/>'
-    '<path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'
+_PDF_ICON = (
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>'
+    '<polyline points="14 2 14 8 20 8"/>'
+    '<line x1="12" y1="18" x2="12" y2="12"/>'
+    '<line x1="9" y1="15" x2="15" y2="15"/></svg>'
 )
 
 
-def _tag(kind: str, label: str) -> str:
-    return f'<span class="tag tag-{kind}">{label}</span>'
-
-
-def _slide(icon: str, title: str, desc: str, items: list[tuple[str, str, str]]) -> str:
-    lis = ""
-    for name, why, req in items:
-        tag_html = _tag("required", "Required") if req == "R" else _tag("optional", "Optional")
-        lis += f"<li><span class='item-name'>{name}{tag_html}</span><span class='item-why'>{why}</span></li>\n"
+def _section(num: str, title: str, badge_label: str, badge_cls: str, intro: str, body: str) -> str:
     return f"""
-<div class="slide">
-  <div class="slide-header">
-    <div class="slide-icon">{icon}</div>
-    <h2>{title}</h2>
+<div>
+  <div class="section-block">
+    <h2>{num}&ensp;&ensp;{title}</h2>
+    <span class="badge {badge_cls}">{badge_label}</span>
   </div>
-  <p class="desc">{desc}</p>
-  <ul class="file-list">{lis}</ul>
+  <div class="card">
+    <p class="card-intro">{intro}</p>
+    {body}
+  </div>
 </div>"""
 
 
-def _checklist_grid(items: list[str]) -> str:
-    cells = "".join(
-        f'<div class="checklist-item"><div class="box"></div><span>{item}</span></div>'
-        for item in items
-    )
-    return f'<div class="checklist-grid">{cells}</div>'
+def _table(headers: list[str], rows: list[list[str]], extra_class: str = "") -> str:
+    ths = "".join(f"<th>{h}</th>" for h in headers)
+    trs = ""
+    for row in rows:
+        tds = "".join(f"<td>{cell}</td>" for cell in row)
+        trs += f"<tr>{tds}</tr>\n"
+    return f'<table class="data-table {extra_class}"><thead><tr>{ths}</tr></thead><tbody>{trs}</tbody></table>'
+
+
+def _callout(title: str, items: list[str]) -> str:
+    lis = "".join(f"<li>{item}</li>" for item in items)
+    return f'<div class="callout"><p>{title}</p><ul>{lis}</ul></div>'
+
+
+def _bullets(items: list[str]) -> str:
+    lis = "".join(f"<li>{item}</li>" for item in items)
+    return f'<ul class="bullet-list">{lis}</ul>'
+
+
+def _rb(label: str, cls: str) -> str:
+    return f'<span class="req-badge {cls}">{label}</span>'
 
 
 def render_intake_guide(print_mode: bool = False) -> str:
-    pdf_button = (
+    wm = _wordmark_src()
+    logo_html = (
+        f'<img src="{wm}" alt="Anata" class="wordmark">'
+        if wm else
+        '<span class="wordmark-fallback">ANA<span>TA</span></span>'
+    )
+    pdf_btn = (
         "" if print_mode else
         f'<a href="/brand-intake?print=1" class="pdf-btn no-print" target="_blank">'
         f'{_PDF_ICON} Download PDF</a>'
     )
-
     print_script = (
         "<script>window.addEventListener('load',function(){window.print();});</script>"
         if print_mode else ""
     )
 
-    sections = (
-        _slide(
-            _ICON_FINANCE,
-            "Financial Documents",
-            "Your P&amp;L and balance sheet are the foundation of the analysis. "
-            "Export directly from your accounting software — QuickBooks, Xero, or NetSuite. "
-            "Multi-year comparisons (2+ years) unlock YoY trend scoring.",
+    # ── Section 1: Financial ─────────────────────────────────────────────────
+    fin_table = _table(
+        ["What to provide", "Format / Source", "Why it matters"],
+        [
             [
-                ("Profit &amp; Loss (P&amp;L)", "Revenue, COGS, marketing, and net income by period", "R"),
-                ("Balance Sheet", "Assets, liabilities, and equity snapshot", "R"),
-                ("Prior-Year P&amp;L", "Enables YoY growth and trend grading", "O"),
-                ("Trial Balance", "Full GL summary — useful if P&amp;L is unavailable", "O"),
-                ("General Ledger (GL)", "Transaction-level detail for deeper margin decomposition", "O"),
+                "<strong>Profit &amp; Loss Statement</strong> — current fiscal year",
+                "QuickBooks Online, Xero, or any P&amp;L summary",
+                "Revenue, profitability, gross margin, contribution margin",
             ],
-        )
-        + _slide(
-            _ICON_ADS,
-            "Advertising &amp; Channel Data",
-            "Platform-level performance exports show where marketing spend is going and how "
-            "efficiently it drives revenue. Download from each platform's reporting UI.",
             [
-                ("Meta Ads export (CSV)", "Spend, impressions, ROAS by campaign", "O"),
-                ("Google Ads export (CSV)", "Spend and conversion data", "O"),
-                ("Amazon Ads report", "Sponsored Products / Brands / Display performance", "O"),
-                ("TikTok / Snap / Pinterest", "Any additional paid-social exports", "O"),
-                ("Email revenue report", "Klaviyo, Attentive, or similar — attributed revenue", "O"),
+                "<strong>Profit &amp; Loss Statement</strong> — prior fiscal year",
+                "Same source, prior year — or a two-year P&amp;L in one file",
+                "Year-over-year revenue growth grade",
             ],
-        )
-        + _slide(
-            _ICON_BRAND,
-            "Brand &amp; Social",
-            "We pull a lightweight brand signal from public channels. "
-            "Providing direct handles is faster and more accurate than auto-detection.",
             [
-                ("Instagram handle", "Follower count and engagement rate baseline", "O"),
-                ("TikTok handle", "Organic reach signal", "O"),
-                ("Amazon brand page URL", "Rating, review count, listing quality", "O"),
-                ("Website URL", "We pull logo, product imagery, and SEO signals automatically", "O"),
+                "<strong>Balance Sheet</strong> — most recent period",
+                "QBO, Xero, or equivalent",
+                "Earnings quality, equity position, related-party flags",
             ],
-        )
-        + _slide(
-            _ICON_CUSTOMER,
-            "Customer Data",
-            "Cohort and retention metrics unlock the acquisition and LTV scoring dimensions. "
-            "These can come from your e-commerce platform (Shopify, WooCommerce) or CRM.",
-            [
-                ("New vs. returning revenue split", "Retention proxy if full cohorts unavailable", "O"),
-                ("Cohort LTV CSV", "Customer acquisition month + cumulative spend over time", "O"),
-                ("CAC by channel", "Blended or per-channel cost to acquire a customer", "O"),
-                ("Repeat purchase rate", "% of customers who bought more than once", "O"),
-            ],
-        )
-        + _slide(
-            _ICON_CONTEXT,
-            "Context Notes",
-            "A few sentences from you can prevent misinterpretations that would otherwise "
-            "surface as flags in the report. No structured format needed — plain text is fine.",
-            [
-                ("Legal entity vs. brand name", "If the filing name differs from the brand", "O"),
-                ("Related-party transactions", "Owner loans, intercompany lines, non-arm's-length entries", "O"),
-                ("Seasonality or one-time events", "e.g. launch year, supply disruption, clearance sale", "O"),
-                ("Channel mix shifts", "e.g. moved from retail wholesale to DTC mid-year", "O"),
-                ("Pending operational changes", "Warehouse moves, 3PL switches, pricing resets", "O"),
-            ],
-        )
-        + f"""
-<div class="slide">
-  <div class="slide-header">
-    <div class="slide-icon">{_ICON_CHECKLIST}</div>
-    <h2>Quick Reference Checklist</h2>
-  </div>
-  <p class="desc">
-    Everything at a glance. Required items are needed for a complete graded report;
-    optional items improve scoring confidence.
-  </p>
-  {_checklist_grid([
-      "P&L (current year)", "Balance sheet", "Prior-year P&L",
-      "Trial balance (if no P&L)", "Meta Ads CSV", "Google Ads CSV",
-      "Amazon Ads report", "Email revenue report", "Instagram handle",
-      "Amazon brand URL", "New vs returning split", "Cohort LTV CSV",
-      "CAC by channel", "Context notes (plain text)", "Website URL",
-  ])}
-</div>"""
+        ],
     )
+    fin_callout = _callout(
+        "Export tips",
+        [
+            "QBO users: Reports → Profit and Loss → set date range → Export to Excel. Include both years in one export if possible.",
+            "Xero users: Accounting → Reports → Profit &amp; Loss → set date range → Export.",
+            "If you only have a combined multi-year file (both years in one spreadsheet), that's fine — no need to export separately.",
+            "General Ledger transaction exports are NOT needed; summary statements only.",
+        ],
+    )
+    s1 = _section(
+        "01", "Financial Documents", "Required", "badge-req",
+        "These drive the core financial scorecard. We accept .xlsx, .xls, .csv, and .pdf.",
+        fin_table + fin_callout,
+    )
+
+    # ── Section 2: Advertising ───────────────────────────────────────────────
+    ads_table = _table(
+        ["Platform", "What to export", "Notes"],
+        [
+            ["Meta (Facebook / Instagram)", "Ads Manager → Campaigns → Export CSV", "Full year spend by campaign"],
+            ["Google Ads", "Reports → Campaigns → Download CSV", "Full year spend"],
+            ["Amazon Advertising", "Sponsored Products / Brands report", "Annual totals or monthly"],
+            ["TikTok Ads", "Campaigns → Export", "If applicable"],
+            ["Klaviyo / Email revenue", "Revenue attribution report", "Optional but valued for owned-channel grade"],
+        ],
+    )
+    ads_callout = _callout(
+        "P&amp;L-only path",
+        [
+            "If your total ad spend appears as a single line in your P&amp;L (e.g. 'Total Marketing — $89,000'), you can skip individual platform exports. We'll use the P&amp;L total for efficiency scoring, but Media Mix concentration will remain N/A.",
+        ],
+    )
+    s2 = _section(
+        "02", "Advertising &amp; Marketing Data", "Recommended", "badge-rec",
+        "Unlocks the Marketing Efficiency and Media Mix grades. Without these, both dimensions score N/A.",
+        ads_table + ads_callout,
+    )
+
+    # ── Section 3: Brand & Social ────────────────────────────────────────────
+    social_table = _table(
+        ["Item", "Example / Notes"],
+        [
+            ["Brand website URL", "<em>https://yourbrand.com</em>"],
+            ["Instagram handle", "<em>@yourbrand</em>"],
+            ["TikTok handle", "<em>@yourbrand</em>"],
+            ["Facebook page URL", "<em>facebook.com/yourbrand</em>"],
+            ["YouTube channel URL", "<em>youtube.com/c/yourbrand</em>"],
+            ["Pinterest URL", "<em>pinterest.com/yourbrand</em>"],
+            ["<strong>Email list size</strong> (approximate)", "<em>45,000 subscribers</em>"],
+            ["<strong>Review platform + rating + count</strong>", "<em>Amazon 4.6★ / 1,200 reviews</em>"],
+            ["Trustpilot / Google rating + count", "<em>4.8★ / 320 reviews</em>"],
+        ],
+    )
+    s3 = _section(
+        "03", "Brand &amp; Social", "Recommended", "badge-rec",
+        "Used for the Brand &amp; Social scorecard, which is graded separately from the financial track.",
+        social_table,
+    )
+
+    # ── Section 4: Customer Data ─────────────────────────────────────────────
+    cust_bullets = _bullets([
+        "New customer revenue vs. returning customer revenue (annual split, $ or %)",
+        "Owned / email channel revenue as % of total revenue",
+        "Average Order Value (AOV)",
+        "Customer Acquisition Cost (CAC) — blended or by channel",
+        "Lifetime Value (LTV) — 12-month or full cohort",
+        "Return / refund rate (% of gross sales)",
+        "Discount / promotion rate (% of gross sales)",
+    ])
+    s4 = _section(
+        "04", "Customer &amp; Acquisition Data", "Optional", "badge-opt",
+        "This dimension is frequently N/A without a CRM or cohort export. Provide what you have — partial data is better than none.",
+        cust_bullets,
+    )
+
+    # ── Section 5: Context Notes ─────────────────────────────────────────────
+    ctx_bullets = _bullets([
+        "Significant one-time events (warehouse move, product recall, major relaunch)",
+        "Seasonality patterns (e.g. 70% of revenue in Q4)",
+        "Reason for revenue change year-over-year",
+        "Pending contracts, LOIs, or distribution deals not yet reflected in financials",
+        "Ownership structure notes (family loans, intercompany transactions, related-party leases)",
+    ])
+    s5 = _section(
+        "05", "Context Notes", "Optional", "badge-opt",
+        "A few sentences from your team helps us interpret the numbers accurately. Useful things to note:",
+        ctx_bullets,
+    )
+
+    # ── Section 6: Quick Checklist ───────────────────────────────────────────
+    cl_table = _table(
+        ["#", "Item", "Required?", "Unlocks"],
+        [
+            ["1",  "P&amp;L — current fiscal year",               _rb("✅ Required",    "req-yes"), "Revenue, Profit, Gross Margin, Contribution"],
+            ["2",  "P&amp;L — prior fiscal year",                 _rb("✅ Required",    "req-yes"), "Year-over-year Revenue Growth grade"],
+            ["3",  "Balance Sheet",                               _rb("✅ Required",    "req-yes"), "Earnings Quality / Balance grade"],
+            ["4",  "Ad platform exports (Meta, Google, etc.)",    _rb("Recommended", "req-rec"),  "Marketing Efficiency + Media Mix grades"],
+            ["5",  "Brand website URL",                           _rb("Recommended", "req-rec"),  "Social discovery, brand imagery"],
+            ["6",  "Social handles + email list size",            _rb("Recommended", "req-rec"),  "Brand &amp; Social scorecard"],
+            ["7",  "Review ratings + review count",               _rb("Recommended", "req-rec"),  "Social Reputation grade"],
+            ["8",  "New vs. returning revenue split",             _rb("Optional",    "req-opt"),  "Acquisition Mix grade"],
+            ["9",  "AOV, CAC, Lifetime Value",                    _rb("Optional",    "req-opt"),  "Acquisition Mix grade"],
+            ["10", "Context notes",                               _rb("Optional",    "req-opt"),  "Analyst interpretation accuracy"],
+        ],
+        "checklist-tbl",
+    )
+    s6 = _section(
+        "06", "Quick Checklist at a Glance", "", "badge-opt",
+        "Everything at a glance. Required items are needed for a complete graded report.",
+        cl_table,
+    )
+
+    cta = """
+<div class="cta-block">
+  <p>
+    <strong>Ready to submit?</strong> Upload your files at
+    <a href="https://agent.anatainc.com/admin/executive/brand-analysis" target="_blank">agent.anatainc.com</a>
+    → Executive → Brand Analysis → New Analysis
+  </p>
+  <p style="margin-top:8px">
+    <strong>Questions?</strong> Contact your Anata analyst or email
+    <a href="mailto:david@anatainc.com">david@anatainc.com</a>
+  </p>
+</div>"""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -456,28 +532,33 @@ def render_intake_guide(print_mode: bool = False) -> str:
 <body>
 
 <header class="site-header">
-  <a class="logo" href="https://anatainc.com">ANA<span>TA</span></a>
-  {pdf_button}
+  {logo_html}
+  {pdf_btn}
 </header>
 
-<section class="hero">
+<main class="page">
   <div class="eyebrow">Brand Acquisition</div>
-  <h1>What We Need From You</h1>
-  <p>
-    This guide covers every file and data point we use to produce your brand acquisition report.
-    The more complete the upload, the more dimensions we can grade — and the faster we can
-    give you a confident recommendation.
+  <h1 class="hero-title">Brand Intake Checklist</h1>
+  <p class="hero-sub">
+    To complete your acquisition analysis, please provide the items below. Documents can be
+    uploaded directly at <strong>agent.anatainc.com</strong> or sent to your Anata contact.
+    The more complete your submission, the more dimensions of the scorecard we can grade —
+    missing data is noted as N/A rather than penalized arbitrarily.
   </p>
-</section>
 
-<main class="content">
-  <div class="section-label">File-by-file breakdown</div>
-  {sections}
+  {s1}
+  {s2}
+  {s3}
+  {s4}
+  {s5}
+  {s6}
+  {cta}
 </main>
 
 <footer class="site-footer">
   <strong>Anata Inc.</strong><br>
-  Questions? Reach us at <a href="mailto:david@anatainc.com">david@anatainc.com</a>
+  Questions? Email <a href="mailto:david@anatainc.com">david@anatainc.com</a>
+  &nbsp;|&nbsp; Upload at <a href="https://agent.anatainc.com">agent.anatainc.com</a>
 </footer>
 
 {print_script}
