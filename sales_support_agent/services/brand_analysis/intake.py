@@ -335,6 +335,35 @@ def _table_doc_type(filename: str, table) -> str:
     return "other"
 
 
+def _income_total_col(table, col: int) -> Optional[int]:
+    """Extract the Total-for-Income value from a specific column index.
+    Used for the prior-year column of a multi-year P&L where _income_total
+    only captures the first (current) money column."""
+    vcols = _value_columns(table)
+    cands: list[tuple[int, bool]] = []
+    for r in table.rows:
+        label = _label_of(r, vcols)
+        if "income" not in label or "total" not in label:
+            continue
+        if "other income" in label or "cost" in label or "interest" in label:
+            continue
+        if col >= len(r):
+            continue
+        c = parse_cents(r[col])
+        if c is None or abs(c) <= 100_000:
+            continue
+        # Detect the 100%-of-income marker in any adjacent column
+        pct100 = any(
+            (ic < len(r) and (lambda v: v is not None and 95 <= abs(v) / 100 <= 105)(parse_cents(r[ic])))
+            for ic in vcols if ic != col
+        )
+        cands.append((abs(c), pct100))
+    if not cands:
+        return None
+    base = [m for m, p in cands if p]
+    return base[-1] if base else cands[-1][0]
+
+
 def _income_total(table) -> Optional[int]:
     """Net total income (revenue) from a P&L table, in cents. Picks the
     'Total … Income' row that is the 100%-of-income base (the %-of-income
@@ -368,11 +397,10 @@ def _income_total(table) -> Optional[int]:
     return base[-1] if base else cands[-1][0]
 
 
-def _year_of_file(filename: str, tables: list) -> Optional[int]:
-    """Best-effort fiscal year for a whole file — many real exports put the
-    year in the filename and/or a title row ("January–December, 2025"), NOT in
-    a column header. Scan the filename first, then the first few rows of each
-    table. Returns the latest plausible year found, or None."""
+def _years_of_file(filename: str, tables: list) -> set[int]:
+    """All plausible fiscal years found in a file's name and title rows.
+    Returns a set so multi-year exports (e.g. Xero P&L with 2025/2024
+    columns) contribute both years to the period-detection logic."""
     years: set[int] = set()
     m = _YEAR_RE.findall(filename or "")
     years.update(int(y) for y in m)
@@ -382,7 +410,7 @@ def _year_of_file(filename: str, tables: list) -> Optional[int]:
             for cell in row:
                 for y in _YEAR_RE.findall(str(cell)):
                     years.add(int(y))
-    return max(years) if years else None
+    return years
 
 
 def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
@@ -419,10 +447,13 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
         # of thousands of rows that flood the classifier and bury revenue.
         kept = [t for t in tables if _table_doc_type(filename, t) not in _TRANSACTION_TYPES]
         excluded_ledger += len(tables) - len(kept)
-        fy = _year_of_file(filename, tables)
+        # _years_of_file returns ALL years found (filename + title rows), so a
+        # Xero/multi-year P&L that puts both "2025" and "2024" in a title row
+        # contributes both years — not just the max — to period detection.
+        file_yr_set = _years_of_file(filename, tables)
+        fy = max(file_yr_set) if file_yr_set else None
         file_years[filename] = fy
-        if fy:
-            all_years.add(fy)
+        all_years.update(file_yr_set)
         if not kept:
             continue  # whole file was a ledger — recorded, but not scored
         all_tables.extend(kept)
@@ -538,6 +569,35 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                 if tot:
                     target.net_revenue_cents = tot
                     break
+
+    # Prior-revenue fallback for multi-year P&Ls. QBO/Xero put both current and
+    # prior columns in the SAME sheet. The loop above fills current; prior stays
+    # None because the file isn't tagged as a prior-year file. Extract from the
+    # prior column directly using _income_total_col.
+    if prior is not None and prior.net_revenue_cents is None:
+        for filename, tables in parsed_files:
+            fy = file_years.get(filename)
+            is_prior = (prior_year is not None and current_year is not None
+                        and fy == prior_year and fy != current_year)
+            if is_prior:
+                continue  # already handled above
+            for t in tables:
+                if _table_doc_type(filename, t) != "pnl":
+                    continue
+                vcols = _value_columns(t)
+                col_yrs = _column_years(t, vcols)
+                if not col_yrs:
+                    continue
+                ordered = sorted(col_yrs.items(), key=lambda kv: kv[1], reverse=True)
+                if len(ordered) < 2:
+                    continue
+                prior_col = ordered[1][0]
+                tot = _income_total_col(t, prior_col)
+                if tot:
+                    prior.net_revenue_cents = tot
+                    break
+            if prior.net_revenue_cents is not None:
+                break
 
     # Marketing-noise guard. A GL occasionally has a tiny "marketing" account
     # that gets matched, implying an absurd MER (e.g. 6969x) and a falsely good

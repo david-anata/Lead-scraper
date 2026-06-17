@@ -194,8 +194,13 @@ def _grade_media(period: PeriodFinancials, bm: Benchmarks) -> tuple[str, str]:
     channels = period.marketing_by_channel or {}
     if not channels:
         return NOT_ASSESSED, "Channel-level media mix not supplied — penalised pending data; concentration risk unknown."
-    total = sum(channels.values()) or 1
-    top_channel, top_spend = max(channels.items(), key=lambda kv: kv[1])
+    total = sum(channels.values())
+    # Need ≥2 channels with real spend to assess concentration; a single
+    # "marketing" line or $0 spend tells us nothing about channel diversification.
+    real_channels = {k: v for k, v in channels.items() if v > 0}
+    if total == 0 or len(real_channels) < 2:
+        return NOT_ASSESSED, "Fewer than 2 channels with spend detected — concentration not assessable (penalised pending data; add per-channel ad exports)."
+    top_channel, top_spend = max(real_channels.items(), key=lambda kv: kv[1])
     share = top_spend / total
     if share <= 0.5:
         letter = "A"
