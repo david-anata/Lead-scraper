@@ -204,5 +204,31 @@ class CrossFilePeriodTests(unittest.TestCase):
         self.assertIn("400011 Sales :: 2280930", body)
 
 
+class DocTriageTests(unittest.TestCase):
+    """Transaction-level General Ledger sheets are kept OUT of scoring; summary
+    statements (P&L, Trial Balance, Balance Sheet) are kept."""
+
+    def test_table_doc_type_classification(self) -> None:
+        def tbl(src, rows=1):
+            return intake_mod._Table(source=src, rows=[["x", "1"]] * rows)
+        self.assertEqual(intake_mod._table_doc_type("General Ledger 2025.xlsx", tbl("GL::Sheet1")), "general_ledger")
+        self.assertEqual(intake_mod._table_doc_type("x.xlsx", tbl("x.xlsx::Trial Balance")), "trial_balance")
+        self.assertEqual(intake_mod._table_doc_type("x.xlsx", tbl("x.xlsx::BS")), "balance_sheet")
+        self.assertEqual(intake_mod._table_doc_type("Profit and Loss.xlsx", tbl("x::Sheet1")), "pnl")
+        # Safety net: a huge unnamed table is treated as a transaction dump.
+        self.assertEqual(intake_mod._table_doc_type("mystery.xlsx", tbl("mystery::Sheet1", rows=2500)), "general_ledger")
+
+    def test_general_ledger_excluded_from_scoring(self) -> None:
+        pnl = b"Line,Amount\nNet Revenue,1000000\nCOGS,400000\nNet Income,90000\n"
+        # A 'general ledger' file with a revenue-looking line that must NOT be scored.
+        gl = "Date,Account,Amount\n" + "\n".join(
+            f"2025-01-{i:02d},Some Txn,{i}" for i in range(1, 13)) + "\n"
+        res = intake_mod.parse_dump(
+            [("Brand P&L 2025.csv", pnl), ("Brand General Ledger 2025.csv", gl.encode())],
+            use_llm=False)
+        self.assertTrue(any("Excluded" in n and "Ledger" in n for n in res.notes))
+        self.assertEqual(res.current.net_revenue_cents, 100_000_000)  # from the P&L, GL ignored
+
+
 if __name__ == "__main__":
     unittest.main()

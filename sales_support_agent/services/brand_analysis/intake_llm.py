@@ -49,7 +49,8 @@ _MARKETING_CHANNELS = ("meta", "google", "tiktok", "amazon", "email_sms", "influ
 # that the dump is GL/trial-balance shaped and worth an LLM classification.
 _MATERIAL_FOR_TRIGGER = ("net_revenue_cents", "cogs_cents", "marketing_total_cents", "opex_cents")
 
-_MAX_ROWS = 400  # cap the prompt; trial balances rarely exceed this
+_MAX_ROWS = 800  # cap the prompt; GL transaction dumps are triaged out upstream,
+# so this only needs to hold the summary statements for current + prior periods
 
 
 @dataclass
