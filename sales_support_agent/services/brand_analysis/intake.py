@@ -201,14 +201,33 @@ def _value_columns(table: _Table) -> list[int]:
 
 
 def _column_years(table: _Table, value_cols: list[int]) -> dict:
-    """Map value-column index -> year, from header tokens when present."""
+    """Map value-column index -> year, from header tokens when present.
+
+    Scans the first 6 rows (covers QBO row-0 headers, Xero row-3/4 year rows,
+    and custom export title rows). Only uses a candidate row when it looks like
+    a label/title row — i.e. fewer than half of its value-column cells parse as
+    a large monetary amount (rules out data rows that happen to contain a year
+    like 2024 units-sold)."""
     years: dict[int, int] = {}
-    header = table.header or (table.rows[0] if table.rows else [])
-    for i in value_cols:
-        cell = header[i] if i < len(header) else ""
-        m = _YEAR_RE.search(str(cell))
-        if m:
-            years[i] = int(m.group(1))
+    candidate_rows = ([table.header] if table.header else []) + (table.rows[:6] if table.rows else [])
+    for row in candidate_rows:
+        # Skip rows that look like financial data (most value cells are large numbers).
+        big_nums = sum(
+            1 for i in value_cols
+            if i < len(row) and parse_cents(row[i]) is not None and abs(parse_cents(row[i])) > 100_000
+        )
+        if big_nums > len(value_cols) // 2:
+            continue
+        found: dict[int, int] = {}
+        for i in value_cols:
+            cell = row[i] if i < len(row) else ""
+            m = _YEAR_RE.search(str(cell))
+            if m:
+                found[i] = int(m.group(1))
+        if found:
+            for col, yr in found.items():
+                if col not in years:
+                    years[col] = yr
     return years
 
 
@@ -485,6 +504,20 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
             prior is not None and prior_year is not None and current_year is not None
             and file_year == prior_year and file_year != current_year
         )
+        # When 3+ years are present, skip whole files that belong to a year
+        # outside the current/prior window — prevents a 3rd-year file from
+        # silently backfilling current-period fields via _set_if_absent.
+        if (
+            file_year is not None
+            and current_year is not None
+            and prior_year is not None
+            and file_year not in (current_year, prior_year)
+        ):
+            notes.append(
+                f"Skipped '{filename}' (FY {file_year}) — outside the two-period "
+                f"window ({prior_year}–{current_year})."
+            )
+            continue
         for t in tables:
             value_cols = _value_columns(t)
             if not value_cols:
@@ -558,6 +591,14 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     # classifier can't run or errors.
     for filename, tables in parsed_files:
         fy = file_years.get(filename)
+        # Skip files outside the current/prior window (same guard as the main loop).
+        if (
+            fy is not None
+            and current_year is not None
+            and prior_year is not None
+            and fy not in (current_year, prior_year)
+        ):
+            continue
         is_prior = (prior is not None and prior_year is not None and current_year is not None
                     and fy == prior_year and fy != current_year)
         target = prior if is_prior else current

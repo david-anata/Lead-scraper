@@ -301,5 +301,101 @@ class ParserBugRegressionTests(unittest.TestCase):
         self.assertEqual(letter, "C")
 
 
+@unittest.skipUnless(DEPS_AVAILABLE, "brand_analysis deps required")
+class MultiYearIntakeTests(unittest.TestCase):
+    """Regression tests for 3+ year uploads."""
+
+    def _make_single_year_xlsx(self, year: int, revenue: int) -> bytes:
+        """Minimal single-year P&L file named for that year."""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "P&L"
+        ws.append(["Line Item", str(year)])
+        ws.append(["Net Revenue", revenue])
+        ws.append(["COGS", revenue // 3])
+        ws.append(["Net Earnings", revenue // 10])
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def _make_three_col_xlsx(self) -> bytes:
+        """QBO-style P&L with 3 year columns: 2025 | 2024 | 2023."""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Profit and Loss"
+        ws.append(["", "Jan - Dec 2025", "Jan - Dec 2024", "Jan - Dec 2023"])
+        ws.append(["Income", "", "", ""])
+        ws.append(["Product Sales", "1000000", "900000", "800000"])
+        ws.append(["Total for Income", "1000000", "900000", "800000"])
+        ws.append(["COGS", "400000", "360000", "320000"])
+        ws.append(["Net Income", "200000", "180000", "160000"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    def test_three_separate_files_no_contamination(self) -> None:
+        """Bug: FY2023 file was routed to current (file_is_prior=False) and
+        backfilled any missing current fields with 2023 data. FY2023 must be
+        skipped entirely — only FY2025 (current) and FY2024 (prior) are used."""
+        files = [
+            ("FY2025_PnL.xlsx", self._make_single_year_xlsx(2025, 1_000_000)),
+            ("FY2024_PnL.xlsx", self._make_single_year_xlsx(2024, 900_000)),
+            ("FY2023_PnL.xlsx", self._make_single_year_xlsx(2023, 500_000)),  # must be ignored
+        ]
+        result = intake_mod.parse_dump(files, use_llm=False)
+        self.assertEqual(result.current.year, 2025)
+        self.assertIsNotNone(result.prior)
+        self.assertEqual(result.prior.year, 2024)
+        # Current revenue must be 2025's $1M, NOT contaminated by 2023's $500K
+        self.assertEqual(result.current.net_revenue_cents, 100_000_000)
+        # Prior revenue must be 2024's $900K
+        self.assertEqual(result.prior.net_revenue_cents, 90_000_000)
+        # FY2023 skipped message should appear in notes
+        self.assertTrue(any("2023" in n and "Skipped" in n for n in result.notes))
+
+    def test_three_column_pnl_uses_correct_two_years(self) -> None:
+        """3-column P&L (2025/2024/2023): parser must use 2025 as current,
+        2024 as prior, and ignore the 2023 column entirely."""
+        files = [("PnL_3yr.xlsx", self._make_three_col_xlsx())]
+        result = intake_mod.parse_dump(files, use_llm=False)
+        self.assertTrue(result.has_yoy, "3-column P&L must produce a YoY comparison")
+        self.assertEqual(result.current.year, 2025)
+        self.assertEqual(result.prior.year, 2024)
+        # Current revenue = $1,000,000 (2025 column)
+        self.assertEqual(result.current.net_revenue_cents, 100_000_000)
+        # Prior revenue = $900,000 (2024 column, NOT 2023 = $800K)
+        self.assertEqual(result.prior.net_revenue_cents, 90_000_000)
+
+    def test_column_years_scans_title_rows(self) -> None:
+        """Bug: _column_years only checked header/rows[0]. Xero-style P&Ls put
+        the year row at rows[3] — this must now be detected and not fall back
+        to positional assignment."""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "P&L"
+        # Years appear in row 4 (index 3), NOT in the header row
+        ws.append(["Company Name", "", "", ""])          # row 0
+        ws.append(["Profit & Loss", "", "", ""])         # row 1
+        ws.append(["Year ended 31 Dec 2025", "", "", ""]) # row 2
+        ws.append(["", "2025", "2024", "2023"])          # row 3 — year labels
+        ws.append(["Revenue", "", "", ""])
+        ws.append(["Sales Revenue", "1000000", "900000", "800000"])
+        ws.append(["Total Revenue", "1000000", "900000", "800000"])
+        ws.append(["COGS", "400000", "360000", "320000"])
+        ws.append(["Net Profit", "200000", "180000", "160000"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        result = intake_mod.parse_dump([("Xero_3yr.xlsx", buf.getvalue())], use_llm=False)
+        self.assertEqual(result.current.year, 2025)
+        self.assertIsNotNone(result.prior)
+        self.assertEqual(result.prior.year, 2024)
+        # Must use 2025 column ($1M), NOT fall back to positional and land on 2023 ($800K)
+        self.assertEqual(result.current.net_revenue_cents, 100_000_000)
+        self.assertEqual(result.prior.net_revenue_cents, 90_000_000)
+
+
 if __name__ == "__main__":
     unittest.main()
