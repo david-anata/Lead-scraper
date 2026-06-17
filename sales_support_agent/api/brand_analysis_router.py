@@ -35,6 +35,7 @@ from sales_support_agent.services.brand_analysis.report_page import (
     render_edit_page,
 )
 from sales_support_agent.services.brand_analysis.share_page import render_share_page
+from sales_support_agent.services.brand_analysis.intake_guide_page import render_intake_guide
 from sales_support_agent.services.brand_analysis.schema import CATEGORY_DTC
 
 logger = logging.getLogger(__name__)
@@ -342,3 +343,8 @@ def public_brand_page(slug: str, report_id: str, token: str) -> HTMLResponse:
     if not html:
         return HTMLResponse("Brief not found.", status_code=404)
     return HTMLResponse(html)
+
+
+@public_router.get("/brand-intake", response_class=HTMLResponse)
+def public_intake_guide(print: bool = False) -> HTMLResponse:
+    return HTMLResponse(render_intake_guide(print_mode=print))
