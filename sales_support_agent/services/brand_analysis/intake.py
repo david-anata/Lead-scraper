@@ -335,6 +335,39 @@ def _table_doc_type(filename: str, table) -> str:
     return "other"
 
 
+def _income_total(table) -> Optional[int]:
+    """Net total income (revenue) from a P&L table, in cents. Picks the
+    'Total … Income' row that is the 100%-of-income base (the %-of-income
+    column reads ~100 on the true total); else the outermost such total.
+    Excludes 'other income', cost, and interest lines. None if not found."""
+    vcols = _value_columns(table)
+    cands: list[tuple[int, bool]] = []
+    for r in table.rows:
+        label = _label_of(r, vcols)
+        if "income" not in label or "total" not in label:
+            continue
+        if "other income" in label or "cost" in label or "interest" in label:
+            continue
+        money = None
+        pct100 = False
+        for i in vcols:
+            if i >= len(r):
+                continue
+            c = parse_cents(r[i])
+            if c is None:
+                continue
+            if money is None and abs(c) > 100_000:   # > $1,000 in cents = the money column
+                money = abs(c)
+            if 95 <= abs(c) / 100 <= 105:             # a bare ~100 = the %-of-income base
+                pct100 = True
+        if money is not None:
+            cands.append((money, pct100))
+    if not cands:
+        return None
+    base = [m for m, p in cands if p]
+    return base[-1] if base else cands[-1][0]
+
+
 def _year_of_file(filename: str, tables: list) -> Optional[int]:
     """Best-effort fiscal year for a whole file — many real exports put the
     year in the filename and/or a title row ("January–December, 2025"), NOT in
@@ -486,6 +519,25 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
             continue
         if period.marketing_total_cents is None and period.marketing_by_channel:
             period.marketing_total_cents = sum(period.marketing_by_channel.values())
+
+    # Deterministic revenue fallback. Real QBO/Xero P&L exports spread revenue
+    # across numbered income accounts with no "Net Revenue" row, but carry a
+    # "Total for Income" line (the 100%-of-income base). Use it when revenue is
+    # still missing — works without the LLM, so revenue lands even if the
+    # classifier can't run or errors.
+    for filename, tables in parsed_files:
+        fy = file_years.get(filename)
+        is_prior = (prior is not None and prior_year is not None and current_year is not None
+                    and fy == prior_year and fy != current_year)
+        target = prior if is_prior else current
+        if target is None or target.net_revenue_cents is not None:
+            continue
+        for t in tables:
+            if _table_doc_type(filename, t) == "pnl":
+                tot = _income_total(t)
+                if tot:
+                    target.net_revenue_cents = tot
+                    break
 
     # LLM gap-fill for GL / trial-balance dumps the substring matcher can't fold.
     account_mappings: dict = {}

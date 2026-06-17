@@ -204,6 +204,41 @@ class CrossFilePeriodTests(unittest.TestCase):
         self.assertIn("400011 Sales :: 2280930", body)
 
 
+class IncomeTotalFallbackTests(unittest.TestCase):
+    """Deterministic revenue from a QBO/Xero P&L: numbered income accounts with
+    no 'Net Revenue' row, but a 'Total for Income' line (100%-of-income base)."""
+
+    def _pnl_table(self):
+        # Mirrors the real Doggyvers P&L: nested totals + a %-of-income column.
+        return intake_mod._Table(source="pnl.xlsx::Sheet1", header=["", "Total", "% of Income"], rows=[
+            ["Income", "", ""],
+            ["400011 Sales", "2280930.47", "203.5"],
+            ["Total for Income", "1169300.83", "104.3"],   # inner subtotal
+            ["Uncategorised Income", "546.08", "0.04"],
+            ["Total for Income", "1120483.26", "100"],       # outer total = 100% base
+            ["Total for Cost of Sales", "591835.18", "52.8"],
+            ["Total for Other Income(Loss)", "7825.97", "0.7"],
+        ])
+
+    def test_income_total_picks_the_100pct_base(self) -> None:
+        self.assertEqual(intake_mod._income_total(self._pnl_table()), 112_048_326)
+
+    def test_excludes_other_income_and_cost(self) -> None:
+        # Only an "other income" total present -> not treated as revenue.
+        t = intake_mod._Table(source="pnl.xlsx::Sheet1", rows=[
+            ["Total for Other Income(Loss)", "7825.97"],
+            ["Total for Cost of Sales", "591835.18"]])
+        self.assertIsNone(intake_mod._income_total(t))
+
+    def test_parse_dump_fills_revenue_from_income_total(self) -> None:
+        csv = ("Account,Total,% of Income\n"
+               "400011 Sales,2280930,203\n"
+               "Total for Income,1120483,100\n"
+               "Total for Cost of Sales,591835,52\n").encode()
+        res = intake_mod.parse_dump([("Brand Profit and Loss 2025.csv", csv)], use_llm=False)
+        self.assertEqual(res.current.net_revenue_cents, 112_048_300)
+
+
 class DocTriageTests(unittest.TestCase):
     """Transaction-level General Ledger sheets are kept OUT of scoring; summary
     statements (P&L, Trial Balance, Balance Sheet) are kept."""
