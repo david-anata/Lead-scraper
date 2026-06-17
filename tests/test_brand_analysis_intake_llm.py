@@ -239,6 +239,29 @@ class IncomeTotalFallbackTests(unittest.TestCase):
         self.assertEqual(res.current.net_revenue_cents, 112_048_300)
 
 
+class MarketingNoiseGuardTests(unittest.TestCase):
+    """A tiny mis-matched 'marketing' GL line shouldn't imply an absurd MER and
+    a falsely-good grade — treat it as not-supplied (N/A)."""
+
+    def test_implausible_marketing_is_cleared(self) -> None:
+        csv = ("Account,Total,% of Income\n"
+               "Total for Income,1000000,100\n"
+               "Total for Cost of Sales,400000,40\n"
+               "Marketing - misc,161,0\n").encode()
+        res = intake_mod.parse_dump([("Brand Profit and Loss 2025.csv", csv)], use_llm=False)
+        self.assertEqual(res.current.net_revenue_cents, 100_000_000)
+        self.assertIsNone(res.current.marketing_total_cents)  # $161 vs $1M -> noise
+        self.assertEqual(res.current.marketing_by_channel, {})
+        self.assertTrue(any("implausibly small" in n for n in res.notes))
+
+    def test_plausible_marketing_is_kept(self) -> None:
+        csv = ("Account,Total,% of Income\n"
+               "Total for Income,1000000,100\n"
+               "Total Marketing,250000,25\n").encode()
+        res = intake_mod.parse_dump([("Brand Profit and Loss 2025.csv", csv)], use_llm=False)
+        self.assertEqual(res.current.marketing_total_cents, 25_000_000)  # 25% of rev -> kept
+
+
 class DocTriageTests(unittest.TestCase):
     """Transaction-level General Ledger sheets are kept OUT of scoring; summary
     statements (P&L, Trial Balance, Balance Sheet) are kept."""

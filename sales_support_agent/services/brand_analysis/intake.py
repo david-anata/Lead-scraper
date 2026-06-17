@@ -539,6 +539,28 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                     target.net_revenue_cents = tot
                     break
 
+    # Marketing-noise guard. A GL occasionally has a tiny "marketing" account
+    # that gets matched, implying an absurd MER (e.g. 6969x) and a falsely good
+    # marketing/media grade. Real DTC ad spend lives in ad-platform exports, not
+    # the P&L — so when the implied MER is implausible (marketing < ~2% of
+    # revenue), treat marketing as NOT supplied: grade it N/A, not a fake A/B.
+    _flagged = False
+    for period in (current, prior):
+        if period is None:
+            continue
+        rev = period.net_revenue_or_derived()
+        mkt = period.marketing_total_cents
+        if rev and rev > 0 and mkt and mkt > 0 and rev / mkt > 50:
+            period.marketing_total_cents = None
+            period.marketing_by_channel = {}
+            _flagged = True
+    if _flagged:
+        notes.append(
+            "Marketing spend was implausibly small vs revenue (likely not in the "
+            "supplied financials) — left unscored. Add ad-platform exports "
+            "(Meta/Google/Klaviyo) for real marketing efficiency."
+        )
+
     # LLM gap-fill for GL / trial-balance dumps the substring matcher can't fold.
     account_mappings: dict = {}
     unmapped_accounts: list = []
