@@ -65,18 +65,31 @@ NOT_ASSESSED = "NA"
 # Weighted dimensions (spec table) — weights sum to 1.00
 # ---------------------------------------------------------------------------
 
+# FINANCIAL track — the deterministic acquisition grade. Two-track model:
+# brand/social is scored SEPARATELY (see BRAND_SOCIAL_DIMENSIONS) and never
+# folded into this grade, so the headline number stays hard-numbers-only.
+# Reweighted to sum 1.00 after moving "brand" to its own track.
 DIMENSIONS = (
-    ("revenue", "Revenue trajectory & growth", 0.25),
-    ("profitability", "Profitability & net margin", 0.15),
-    ("marketing", "Marketing efficiency (MER)", 0.15),
-    ("acquisition", "Acquisition mix & dependency", 0.12),
-    ("media", "Media mix & concentration", 0.10),
+    ("revenue", "Revenue trajectory & growth", 0.26),
+    ("profitability", "Profitability & net margin", 0.16),
+    ("marketing", "Marketing efficiency (MER)", 0.16),
+    ("acquisition", "Acquisition mix & dependency", 0.13),
+    ("media", "Media mix & concentration", 0.11),
     ("contribution", "Contribution / unit economics", 0.10),
     ("balance", "Balance sheet & earnings quality", 0.08),
-    ("brand", "Brand equity & defensibility", 0.05),
 )
 DIMENSION_LABELS = {k: label for k, label, _ in DIMENSIONS}
 DIMENSION_WEIGHTS = {k: w for k, _, w in DIMENSIONS}
+
+# BRAND & SOCIAL track — a separate A–F shown alongside the financial grade.
+# Soft, often-incomplete signals (scraped/manual), kept out of the financial
+# number on purpose. Weights sum to 1.00.
+BRAND_SOCIAL_DIMENSIONS = (
+    ("brand_equity", "Brand equity & defensibility", 0.30),
+    ("owned_audience", "Owned audience (email/SMS list)", 0.25),
+    ("social_presence", "Social presence & activity", 0.20),
+    ("social_reputation", "Reviews & reputation", 0.25),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +421,12 @@ class BrandReport:
     # Free-text context the analyst accumulates across reruns.
     context_notes: str = ""
 
+    # ---- Brand & Social track (separate A–F, NOT in the financial grade) ----
+    brand_social: dict = field(default_factory=dict)   # Scorecard.to_dict() + confidence + caveats
+    email_list_size: int = 0                            # owned-audience size (analyst-supplied)
+    social_handles: dict = field(default_factory=dict)  # platform -> url
+    social_signals: dict = field(default_factory=dict)  # measured signals + measured/estimated flags
+
     def to_dict(self) -> dict:
         return {
             "brand": self.brand,
@@ -453,6 +472,10 @@ class BrandReport:
             "product_images": self.product_images,
             "brand_tagline": self.brand_tagline,
             "context_notes": self.context_notes,
+            "brand_social": self.brand_social,
+            "email_list_size": self.email_list_size,
+            "social_handles": self.social_handles,
+            "social_signals": self.social_signals,
         }
 
     @classmethod
@@ -502,6 +525,10 @@ class BrandReport:
             product_images=data.get("product_images", []),
             brand_tagline=data.get("brand_tagline", ""),
             context_notes=data.get("context_notes", ""),
+            brand_social=data.get("brand_social", {}),
+            email_list_size=data.get("email_list_size", 0),
+            social_handles=data.get("social_handles", {}),
+            social_signals=data.get("social_signals", {}),
         )
 
 
