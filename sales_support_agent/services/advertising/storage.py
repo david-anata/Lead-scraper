@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.entities import (
+    AdClient,
     AdGoal,
     AdSnapshot,
     AuditRun,
@@ -70,15 +71,21 @@ def _session():
 # ---------------------------------------------------------------------------
 
 
-def save_goals(goals: Goals, *, label: str = "") -> str:
-    """Upsert the single active goal set. Deactivates prior active goals."""
+def save_goals(goals: Goals, *, label: str = "", client_id: Optional[str] = None) -> str:
+    """Upsert the active goal set for a client (client_id=None = the global/
+    ad-hoc set). Deactivates prior active goals within the same client scope, so
+    each client keeps its own targets independent of every other client."""
     with _session() as s:
-        for row in s.query(AdGoal).filter(AdGoal.is_active.is_(True)).all():
+        prior = s.query(AdGoal).filter(
+            AdGoal.is_active.is_(True), AdGoal.client_id == client_id
+        ).all()
+        for row in prior:
             row.is_active = False
         gid = _new_id()
         s.add(
             AdGoal(
                 id=gid,
+                client_id=client_id,
                 label=label or goals.label,
                 period=goals.period,
                 revenue_target_cents=goals.revenue_target_cents,
@@ -91,11 +98,11 @@ def save_goals(goals: Goals, *, label: str = "") -> str:
         return gid
 
 
-def get_active_goals() -> Optional[Goals]:
+def get_active_goals(*, client_id: Optional[str] = None) -> Optional[Goals]:
     with _session() as s:
         row = (
             s.query(AdGoal)
-            .filter(AdGoal.is_active.is_(True))
+            .filter(AdGoal.is_active.is_(True), AdGoal.client_id == client_id)
             .order_by(AdGoal.updated_at.desc())
             .first()
         )
@@ -109,6 +116,114 @@ def get_active_goals() -> Optional[Goals]:
             period=row.period,
             label=row.label,
         )
+
+
+# ---------------------------------------------------------------------------
+# Clients — a repository of advertising clients, each with its own objectives +
+# active goals (AdGoal.client_id) + run history (AuditRun.client_id). Brand stays
+# a free-text per-run scope; a client does NOT own a managed brand list.
+# ---------------------------------------------------------------------------
+
+
+def create_client(name: str, *, objectives: str = "") -> str:
+    cid = _new_id()
+    with _session() as s:
+        s.add(AdClient(id=cid, name=(name or "").strip()[:255], objectives=objectives or "", status="active"))
+    return cid
+
+
+def update_client(client_id: str, *, name: Optional[str] = None, objectives: Optional[str] = None) -> None:
+    with _session() as s:
+        row = s.get(AdClient, client_id)
+        if not row:
+            return
+        if name is not None:
+            row.name = name.strip()[:255]
+        if objectives is not None:
+            row.objectives = objectives
+        row.updated_at = datetime.utcnow()
+
+
+def archive_client(client_id: str) -> None:
+    with _session() as s:
+        row = s.get(AdClient, client_id)
+        if row:
+            row.status = "archived"
+            row.updated_at = datetime.utcnow()
+
+
+def get_client(client_id: str) -> Optional[dict]:
+    with _session() as s:
+        row = s.get(AdClient, client_id)
+        return _client_to_dict(row) if row else None
+
+
+def list_clients(*, include_archived: bool = False) -> list[dict]:
+    with _session() as s:
+        q = s.query(AdClient)
+        if not include_archived:
+            q = q.filter(AdClient.status == "active")
+        rows = q.order_by(AdClient.name.asc()).all()
+        return [_client_to_dict(r) for r in rows]
+
+
+def get_client_goals_map() -> dict[str, dict]:
+    """{client_id: goals.to_dict()} for every active client's active goal set —
+    embedded in the intake page so picking a client pre-fills the goal fields
+    client-side with no extra round-trip."""
+    out: dict[str, dict] = {}
+    with _session() as s:
+        rows = s.query(AdGoal).filter(
+            AdGoal.is_active.is_(True), AdGoal.client_id.isnot(None)
+        ).all()
+        for row in rows:
+            out[row.client_id] = Goals(
+                revenue_target_cents=row.revenue_target_cents,
+                acos_target_bps=row.acos_target_bps,
+                tacos_target_bps=row.tacos_target_bps,
+                units_target=row.units_target,
+                period=row.period,
+                label=row.label,
+            ).to_dict()
+    return out
+
+
+def _client_to_dict(row: AdClient) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "objectives": row.objectives or "",
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pending uploads — staged across the brand-mismatch confirm round-trip so the
+# user doesn't have to re-attach files. Stored in kv_store (durable, survives
+# Render redeploys); payload carries base64 file bytes + the form fields.
+# ---------------------------------------------------------------------------
+
+_PENDING_PREFIX = "adv:pending:"
+
+
+def stage_pending_upload(payload: dict) -> str:
+    from sales_support_agent.models.database import kv_set_json
+    token = _new_id()
+    kv_set_json(_PENDING_PREFIX + token, payload)
+    return token
+
+
+def get_pending_upload(token: str) -> Optional[dict]:
+    from sales_support_agent.models.database import kv_get_json
+    data = kv_get_json(_PENDING_PREFIX + token, {}) or {}
+    return data or None
+
+
+def clear_pending_upload(token: str) -> None:
+    from sales_support_agent.models.database import kv_set_json
+    kv_set_json(_PENDING_PREFIX + token, {})  # empty = cleared (no kv delete helper)
 
 
 # ---------------------------------------------------------------------------
@@ -159,12 +274,14 @@ def get_external_costs(run_id: Optional[str] = None) -> list[ExternalCostRow]:
 
 
 def create_run(*, label: str = "", goals: Optional[Goals] = None,
-               week_start: Optional[datetime] = None, week_end: Optional[datetime] = None) -> str:
+               week_start: Optional[datetime] = None, week_end: Optional[datetime] = None,
+               client_id: Optional[str] = None) -> str:
     rid = _new_id()
     with _session() as s:
         s.add(
             AuditRun(
                 id=rid,
+                client_id=client_id,
                 label=label,
                 week_start=week_start,
                 week_end=week_end,
@@ -243,9 +360,12 @@ def get_run(run_id: str) -> Optional[dict]:
         return _run_to_dict(run)
 
 
-def list_runs(limit: int = 25) -> list[dict]:
+def list_runs(limit: int = 25, *, client_id: Optional[str] = None) -> list[dict]:
     with _session() as s:
-        runs = s.query(AuditRun).order_by(AuditRun.created_at.desc()).limit(limit).all()
+        q = s.query(AuditRun)
+        if client_id is not None:
+            q = q.filter(AuditRun.client_id == client_id)
+        runs = q.order_by(AuditRun.created_at.desc()).limit(limit).all()
         return [_run_to_dict(r) for r in runs]
 
 
@@ -278,6 +398,7 @@ def get_prior_run(before_run_id: str) -> Optional[dict]:
 def _run_to_dict(run: AuditRun) -> dict:
     return {
         "id": run.id,
+        "client_id": run.client_id,
         "label": run.label,
         "status": run.status,
         "week_start": run.week_start.isoformat() if run.week_start else None,

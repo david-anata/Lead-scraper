@@ -514,17 +514,38 @@ class RecurringTemplate(Base):
 # ===========================================================================
 
 
+class AdClient(Base):
+    """An advertising client the audit is run for. Each client owns its own
+    objectives + active goal set (AdGoal.client_id) and a history of runs
+    (AuditRun.client_id), so the same engine optimizes toward per-client targets
+    instead of one global set. Brand stays a free-text per-run scope — a client
+    does NOT own a managed brand list.
+    """
+
+    __tablename__ = "ad_clients"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), default="", index=True)
+    objectives: Mapped[str] = mapped_column(Text, default="")  # free-text strategy notes
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|archived
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class AdGoal(Base):
     """A standing set of advertising/sales targets the audit scales toward.
 
     Snapshotted into each AuditRun.goal_snapshot_json at run time so historical
     runs reflect the goal that was active then, even after the goal is edited.
-    Percentages are basis points; money is integer cents.
+    Percentages are basis points; money is integer cents. Scoped to a client via
+    client_id (NULL = the global/ad-hoc set used when no client is selected).
     """
 
     __tablename__ = "ad_goals"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    client_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     label: Mapped[str] = mapped_column(String(255), default="")
     period: Mapped[str] = mapped_column(String(32), default="monthly")  # weekly|monthly|quarterly
 
@@ -571,6 +592,7 @@ class AuditRun(Base):
     __tablename__ = "audit_runs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    client_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     label: Mapped[str] = mapped_column(String(255), default="")
     week_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     week_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

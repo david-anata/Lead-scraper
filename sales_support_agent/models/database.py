@@ -155,6 +155,12 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
             "permissions_json": "ALTER TABLE app_users ADD COLUMN permissions_json JSON NOT NULL DEFAULT '[]'",
         },
+        "ad_goals": {
+            "client_id": "ALTER TABLE ad_goals ADD COLUMN client_id VARCHAR(64)",
+        },
+        "audit_runs": {
+            "client_id": "ALTER TABLE audit_runs ADD COLUMN client_id VARCHAR(64)",
+        },
         "cash_events": {
             "subcategory":           "ALTER TABLE cash_events ADD COLUMN subcategory VARCHAR(64) NOT NULL DEFAULT ''",
             "description":           "ALTER TABLE cash_events ADD COLUMN description TEXT NOT NULL DEFAULT ''",
@@ -506,6 +512,16 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
     # percentages are basis points (see entities.py).
     with engine.begin() as connection:
         connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS ad_clients (
+                id          TEXT         PRIMARY KEY,
+                name        VARCHAR(255) NOT NULL DEFAULT '',
+                objectives  TEXT         NOT NULL DEFAULT '',
+                status      VARCHAR(16)  NOT NULL DEFAULT 'active',
+                created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("""
             CREATE TABLE IF NOT EXISTS ad_goals (
                 id                   TEXT         PRIMARY KEY,
                 label                VARCHAR(255) NOT NULL DEFAULT '',
@@ -626,6 +642,14 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 created_at            TIMESTAMPTZ   NOT NULL DEFAULT NOW()
             )
         """))
+        # Per-client scoping (added after the ad tables shipped) — additive,
+        # NULL means the global/ad-hoc set (no client selected).
+        connection.execute(text("ALTER TABLE ad_goals ADD COLUMN IF NOT EXISTS client_id TEXT NULL"))
+        connection.execute(text("ALTER TABLE audit_runs ADD COLUMN IF NOT EXISTS client_id TEXT NULL"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_clients_name ON ad_clients (name)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_clients_status ON ad_clients (status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_goals_client_id ON ad_goals (client_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_runs_client_id ON audit_runs (client_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_ad_goals_is_active ON ad_goals (is_active)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_external_costs_run_id ON external_costs (run_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_external_costs_channel ON external_costs (channel)"))

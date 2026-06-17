@@ -74,22 +74,38 @@ class AuditResult:
     error: str = ""
 
 
+def detect_brand_in_business_report(business_report_csv: Optional[bytes]) -> str:
+    """Cheap pre-detect of the dominant brand in an uploaded Business Report —
+    used to catch a client/file mismatch before the full audit runs. Returns ""
+    when it can't tell (never raises)."""
+    if not business_report_csv:
+        return ""
+    try:
+        sales_rows = N.normalize_business_report_csv(business_report_csv)
+        return detect_primary_brand(sales_rows, [])
+    except Exception:  # noqa: BLE001 — detection is best-effort
+        return ""
+
+
 def run_audit(
     inputs: AuditInputs,
     *,
     goals: Optional[Goals] = None,
     label: str = "",
     brand: str = "",
+    client_id: Optional[str] = None,
     week_start: Optional[datetime] = None,
     week_end: Optional[datetime] = None,
 ) -> AuditResult:
     """Execute one audit run end to end. Never raises on bad input data — a
     malformed file yields fewer rows, not a crash. Hard failures are recorded on
     the run and returned with status='error'."""
-    goals = goals or storage.get_active_goals() or Goals()
+    goals = goals or storage.get_active_goals(client_id=client_id) or Goals()
     brand = (brand or "").strip()
     run_label = f"{brand} — {label}".strip(" —") if brand else label
-    run_id = storage.create_run(label=run_label, goals=goals, week_start=week_start, week_end=week_end)
+    run_id = storage.create_run(
+        label=run_label, goals=goals, week_start=week_start, week_end=week_end, client_id=client_id,
+    )
 
     try:
         # --- Parse (inside the try so any malformed file fails gracefully) ---

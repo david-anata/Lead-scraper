@@ -183,7 +183,11 @@ class HttpTest(_Base):
 
         app = FastAPI()
         app.include_router(ar.router)
-        app.dependency_overrides[ar._check_admin_access] = lambda: None
+        # The router guards every route with a single Depends(require_tool(...));
+        # override that exact dependency callable to bypass auth in tests.
+        app.dependency_overrides[ar.router.dependencies[0].dependency] = lambda: {
+            "email": "test@anatainc.com", "is_superadmin": True, "permissions": set(),
+        }
         return TestClient(app)
 
     def test_get_page_ok(self):
