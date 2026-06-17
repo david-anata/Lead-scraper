@@ -39,10 +39,16 @@ def build_report(
     email_list_size: int = 0,
     social_handles: Optional[dict] = None,
     social_signals: Optional[dict] = None,
+    overrides: Optional[dict] = None,
 ) -> BrandReport:
     category = (category or CATEGORY_DTC).lower()
     intake = intake_mod.parse_dump(files, category=category, use_llm=use_llm,
                                    context_notes=context_notes)
+
+    # Analyst overrides win over parsed values — the escape hatch for anything
+    # mis-parsed. Values are dollars; stored on the period in cents.
+    overrides = overrides or {}
+    _apply_overrides(intake.current, overrides, intake.account_mappings)
 
     scored = scoring_mod.score(intake.current, intake.prior, category=category)
     current = scored["current"]
@@ -136,8 +142,29 @@ def build_report(
         email_list_size=email_list_size,
         social_handles=social_handles or {},
         social_signals=social_signals or {},
+        overrides=overrides,
     )
     return report
+
+
+# Canonical P&L fields an analyst may override (dollars in the form).
+OVERRIDE_FIELDS = (
+    "net_revenue_cents", "cogs_cents", "marketing_total_cents",
+    "reported_gross_profit_cents", "opex_cents", "net_earnings_cents",
+)
+
+
+def _apply_overrides(period, overrides: dict, account_mappings: dict) -> None:
+    """Set analyst-supplied exact values (dollars) over the parsed period."""
+    for field_name, dollars in (overrides or {}).items():
+        if field_name not in OVERRIDE_FIELDS or dollars in (None, ""):
+            continue
+        try:
+            cents = int(round(float(str(dollars).replace(",", "").replace("$", "")) * 100))
+        except (TypeError, ValueError):
+            continue
+        setattr(period, field_name, cents)
+        account_mappings[field_name] = {"sources": ["analyst override"], "confidence": "override"}
 
 
 _GRADE_TONE = {"A": "good", "B": "good", "C": "warn", "D": "warn", "F": "bad"}

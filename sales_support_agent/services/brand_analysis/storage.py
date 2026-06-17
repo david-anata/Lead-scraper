@@ -110,7 +110,9 @@ def update_report(report_id: str, report: BrandReport, *,
                   docx_bytes: Optional[bytes] = None,
                   report_html: str = "") -> bool:
     """Overwrite an existing report in place (edit + rerun). Keeps the same id,
-    slug, and share token so a link already shared stays live."""
+    slug, and share token so a link already shared stays live. Snapshots the
+    prior grade into version history first, so progression stays visible."""
+    _snapshot_version(report_id)
     with _session() as s:
         row = s.get(ReportRow, report_id)
         if row is None:
@@ -172,6 +174,32 @@ def list_source_names(report_id: str) -> list[str]:
     """Filenames of the persisted source uploads (for the file manager)."""
     payload = kv_get_json(_sources_key(report_id), {}) or {}
     return list(payload.keys())
+
+
+def _versions_key(report_id: str) -> str:
+    return f"brand_analysis:versions:{report_id}"
+
+
+def _snapshot_version(report_id: str) -> None:
+    """Append the report's current grade/score to a capped version history,
+    so a rerun (overwrite-in-place) doesn't erase how the grade evolved."""
+    try:
+        with _session() as s:
+            row = s.get(ReportRow, report_id)
+            if row is None or row.status != "complete":
+                return
+            snap = {"grade": row.grade, "score_100": row.score_100,
+                    "confidence": row.confidence, "period_current": row.period_current,
+                    "at": (row.updated_at.isoformat() if row.updated_at else None)}
+        history = kv_get_json(_versions_key(report_id), []) or []
+        history.append(snap)
+        kv_set_json(_versions_key(report_id), history[-10:])  # keep last 10
+    except Exception:  # noqa: BLE001 — history is a nicety, never block a rerun
+        logger.exception("[brand_analysis] version snapshot failed")
+
+
+def list_versions(report_id: str) -> list[dict]:
+    return kv_get_json(_versions_key(report_id), []) or []
 
 
 def save_docx(report_id: str, docx_bytes: bytes) -> None:

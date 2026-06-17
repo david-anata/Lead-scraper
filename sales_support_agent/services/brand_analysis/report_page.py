@@ -189,11 +189,64 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
           <textarea id="context_notes" name="context_notes" rows="3" placeholder="e.g. legal entity differs from brand; related-party loan is owner financing."></textarea>
         </div>
         {_social_fields()}
+        {_override_fields()}
         <div class="btn-row"><button class="btn" type="submit">Run analysis</button></div>
       </form>
       {_history_table(runs, heading="Analysis history", empty="No analyses yet — run one above.")}
     """
     return _doc("Brand Analysis", body, user=user)
+
+
+_OVERRIDE_INPUTS = (
+    ("override_net_revenue", "Net revenue"),
+    ("override_cogs", "COGS"),
+    ("override_reported_gross_profit", "Reported gross profit"),
+    ("override_marketing_total", "Marketing spend"),
+    ("override_opex", "Operating expenses"),
+    ("override_net_earnings", "Net earnings"),
+)
+
+
+def _version_history(versions: Optional[list]) -> str:
+    """Prior grades captured before each rerun — shows how the analysis evolved
+    even though the live report overwrites in place."""
+    if not versions:
+        return ""
+    rows = ""
+    for v in reversed(versions):
+        when = (v.get("at") or "")[:16].replace("T", " ")
+        grade = v.get("grade") or "—"
+        color = _GRADE_COLORS.get(grade, "#666")
+        rows += (f"<tr><td><span class='grade-cell' style='color:{color}'>{_esc(grade)}</span> "
+                 f"<span class='muted'>{v.get('score_100', 0)}/100</span></td>"
+                 f"<td><span class='pill conf-{_esc(v.get('confidence') or '')}'>{_esc(v.get('confidence') or '—')}</span></td>"
+                 f"<td class='muted'>{_esc(v.get('period_current') or '')}</td>"
+                 f"<td class='muted'>{_esc(when)}</td></tr>")
+    return f"""
+      <h2 style="margin-top:30px;font-size:17px">Version history</h2>
+      <p class="muted" style="margin-top:-4px">Grades captured before each rerun (most recent first). The live link always shows the latest.</p>
+      <table><thead><tr><th>Grade</th><th>Confidence</th><th>Period</th><th>Saved</th></tr></thead>
+      <tbody>{rows}</tbody></table>
+    """
+
+
+def _override_fields(row: Optional[dict] = None) -> str:
+    """Manual corrections — exact dollar values that win over the parsed numbers.
+    The escape hatch when a figure is mis-parsed."""
+    row = row or {}
+    cells = ""
+    for key, label in _OVERRIDE_INPUTS:
+        cells += f"""
+            <div class="field">
+              <label for="{key}">{label}</label>
+              <input id="{key}" name="{key}" inputmode="numeric" placeholder="$ — leave blank to keep parsed" value="{_esc(row.get(key) or '')}">
+            </div>"""
+    return f"""
+        <details class="social-block">
+          <summary>Corrections (optional — override a mis-parsed number)</summary>
+          <p class="muted" style="margin:8px 0 4px">Enter exact dollar amounts to override what the parser found. Blank fields keep the parsed value.</p>
+          <div class="grid2">{cells}</div>
+        </details>"""
 
 
 def _social_fields(*, email_list_size: object = "", social_urls: str = "",
@@ -329,7 +382,8 @@ def render_admin_view(report: BrandReport, *, report_id: str, share_html: str,
 
 def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
                      user: Optional[dict] = None, flash: str = "",
-                     source_names: Optional[list] = None) -> str:
+                     source_names: Optional[list] = None,
+                     versions: Optional[list] = None) -> str:
     """Edit + rerun form, prefilled from the saved row. Lets the analyst manage
     the attached files (add new / remove existing) and accumulate context, then
     rerun in place (same share link)."""
@@ -389,11 +443,13 @@ def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
           <textarea id="context_notes" name="context_notes" rows="5" placeholder="e.g. Doggyvers Ltd is the legal entity; related-party loan is owner financing; Q1 actuals pending.">{_esc(row.get("context_notes") or "")}</textarea>
         </div>
         {_social_fields(email_list_size=row.get("email_list_size") or "", social_urls=row.get("social_urls") or "", review_rating=row.get("review_rating") or "", review_count=row.get("review_count") or "")}
+        {_override_fields(row)}
         <div class="btn-row">
           <button class="btn" type="submit">Rerun analysis</button>
           <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{rid}">← Back to report</a>
         </div>
       </form>
+      {_version_history(versions)}
     """
     return _doc("Edit — Brand Analysis", body, user=user)
 

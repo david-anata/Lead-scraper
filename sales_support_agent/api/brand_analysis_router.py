@@ -95,9 +95,29 @@ def _parse_social_urls(text: str) -> dict:
     return out
 
 
+_OVERRIDE_FORM_MAP = {
+    "override_net_revenue": "net_revenue_cents",
+    "override_cogs": "cogs_cents",
+    "override_marketing_total": "marketing_total_cents",
+    "override_reported_gross_profit": "reported_gross_profit_cents",
+    "override_opex": "opex_cents",
+    "override_net_earnings": "net_earnings_cents",
+}
+
+
+def _collect_overrides(form_values: dict) -> dict:
+    out: dict = {}
+    for form_key, field_name in _OVERRIDE_FORM_MAP.items():
+        v = str(form_values.get(form_key) or "").strip()
+        if v:
+            out[field_name] = v
+    return out
+
+
 def _run_and_render(batch, *, brand, category, context_notes, brand_website, prepared,
-                    email_list_size=0, social_urls="", review_rating=None, review_count=None):
-    """Build the report (with branding + social) and render its share HTML."""
+                    email_list_size=0, social_urls="", review_rating=None, review_count=None,
+                    overrides=None):
+    """Build the report (with branding + social + overrides) and render share HTML."""
     assets = _fetch_brand_assets(brand_website)
     # Auto-discover socials from the site, then let manual URLs override.
     from sales_support_agent.services.brand_analysis.social import discover_socials
@@ -115,6 +135,7 @@ def _run_and_render(batch, *, brand, category, context_notes, brand_website, pre
         brand_tagline=assets.get("tagline", ""),
         product_images=assets.get("product_images", []),
         email_list_size=email_list_size, social_handles=handles, social_signals=signals,
+        overrides=overrides or {},
     )
     share_html = render_share_page(report)
     return report, share_html
@@ -151,6 +172,7 @@ def _opt_float(v) -> Optional[float]:
 
 @router.post("/run")
 async def run(
+    request: Request,
     files: list[UploadFile] = File(default=[]),
     brand: str = Form(default=""),
     category: str = Form(default=CATEGORY_DTC),
@@ -162,6 +184,7 @@ async def run(
     review_rating: str = Form(default=""),
     review_count: str = Form(default=""),
 ) -> RedirectResponse:
+    overrides = _collect_overrides(await request.form())
     batch = await _collect_files(files)
     if not batch:
         return RedirectResponse(
@@ -174,7 +197,8 @@ async def run(
             batch, brand=brand, category=category, context_notes=context_notes,
             brand_website=brand_website, prepared=prepared,
             email_list_size=_opt_int(email_list_size) or 0, social_urls=social_urls,
-            review_rating=_opt_float(review_rating), review_count=_opt_int(review_count))
+            review_rating=_opt_float(review_rating), review_count=_opt_int(review_count),
+            overrides=overrides)
         docx_bytes = build_docx(report)
         report_id = storage.save_report(
             report, label=label, source_files=batch, docx_bytes=docx_bytes, report_html=share_html)
@@ -204,13 +228,18 @@ def edit(request: Request, report_id: str) -> HTMLResponse:
                "social_urls": " ".join((rep.social_handles or {}).values()),
                "review_rating": (rep.social_signals or {}).get("review_rating") or "",
                "review_count": (rep.social_signals or {}).get("review_count") or ""}
+        ov = rep.overrides or {}
+        for form_key, field_name in _OVERRIDE_FORM_MAP.items():
+            row[form_key] = ov.get(field_name, "")
     return HTMLResponse(render_edit_page(
         row, user=get_session_user_from_request(request),
-        source_names=storage.list_source_names(report_id)))
+        source_names=storage.list_source_names(report_id),
+        versions=storage.list_versions(report_id)))
 
 
 @router.post("/{report_id}/rerun")
 async def rerun(
+    request: Request,
     report_id: str,
     files: list[UploadFile] = File(default=[]),
     brand: str = Form(default=""),
@@ -226,6 +255,7 @@ async def rerun(
     row = storage.get_report_row(report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
+    overrides = _collect_overrides(await request.form())
     # Kept originals (minus any the analyst removed) + newly added files.
     drop = {n for n in (remove_files or [])}
     kept = [(n, d) for (n, d) in storage.get_sources(report_id) if n not in drop]
@@ -240,7 +270,8 @@ async def rerun(
             batch, brand=brand or row.get("brand", ""), category=category,
             context_notes=context_notes, brand_website=brand_website, prepared=prepared,
             email_list_size=_opt_int(email_list_size) or 0, social_urls=social_urls,
-            review_rating=_opt_float(review_rating), review_count=_opt_int(review_count))
+            review_rating=_opt_float(review_rating), review_count=_opt_int(review_count),
+            overrides=overrides)
         docx_bytes = build_docx(report)
         storage.update_report(
             report_id, report, source_files=batch, docx_bytes=docx_bytes, report_html=share_html)
