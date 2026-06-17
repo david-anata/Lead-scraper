@@ -204,13 +204,14 @@ def _why(acos, target, agg: dict) -> str:
 
 # --- burn-list phase mapping ------------------------------------------------
 
-_ACTION_CATEGORIES = ("negative_keyword", "bid_down", "new_keyword", "bid_up", "budget", "placement", "dayparting")
+_ACTION_CATEGORIES = ("negative_keyword", "bid_down", "new_keyword", "bid_up", "structure", "budget", "placement", "dayparting")
 
 _PHASE = {
     "negative_keyword": ("1 Stop bleed", "P0", "S"),
     "bid_down": ("1 Stop bleed", "P0", "S"),
     "new_keyword": ("2 Scale winners", "P1", "S"),
     "bid_up": ("2 Scale winners", "P1", "S"),
+    "structure": ("2 Scale winners", "P1", "M"),
     "external": ("3 Strategic", "P2", "M"),
     "manual": ("3 Strategic", "P1", "M"),
 }
@@ -345,6 +346,25 @@ def build_growth_plan(
         _row(ws, [r["campaign"], _dollars(r["spend"]), _dollars(r["sales"]), _pct(r["acos_bps"]),
                   r["changes"] or "", r["action"], r["why"]], money_cols=(1, 2), pct_cols=(3,), wrap_cols=(0, 5, 6))
     _widths(ws, [46, 12, 12, 9, 9, 18, 38])
+
+    # ---- New Campaigns (proven search terms promoted to their own campaign) ----
+    promos = [r for r in recommendations if (r.bulk_row or {}).get("action") == "create_campaign"]
+    if promos:
+        ws = wb.create_sheet("New Campaigns")
+        _title(ws, st, "NEW CAMPAIGNS — PROVEN WINNERS TO ISOLATE")
+        ws.append(["⚠️ Apply-ready ones are CREATED LIVE when you upload the Additions file. Review each before uploading."])
+        ws.append([])
+        _head(ws, st, ["Campaign", "Keyword (exact)", "Target SKU(s)", "Bid", "Daily budget", "State", "Why", "In Additions file?"])
+        for rec in promos:
+            br = rec.bulk_row or {}
+            skus = ", ".join(p.get("sku", "") for p in br.get("products", [])) or "—"
+            in_file = ("Yes — LIVE on upload" if rec.is_bulk_actionable
+                       else f"Review only ({br.get('review_only_reason', 'unresolved')})")
+            _row(ws, [br.get("campaign_name", ""), br.get("keyword_text", ""), skus,
+                      _dollars(br.get("new_bid_cents")), _dollars(br.get("daily_budget_cents")),
+                      br.get("state", "enabled"), rec.detail, in_file],
+                 money_cols=(3, 4), wrap_cols=(0, 2, 6, 7))
+        _widths(ws, [34, 24, 22, 9, 12, 10, 40, 22])
 
     # ---- Negatives to Add ----
     ws = wb.create_sheet("Negatives to Add")

@@ -243,7 +243,10 @@ def build_apply_sheet(recommendations: list[Recommendation], kinds: Optional[set
             col = {name: _col_index(header, name) for name in
                    ("Product", "Entity", "Operation", "Campaign ID", "Ad Group ID", "Keyword ID",
                     "Product Targeting ID", "Product Targeting Expression",
-                    "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State")}
+                    "Campaign Name", "Ad Group Name", "Keyword Text", "Match Type", "Bid", "State",
+                    # New-campaign creation columns.
+                    "Daily Budget", "Targeting Type", "Start Date", "Bidding Strategy",
+                    "Ad Group Default Bid", "SKU")}
             _ctx_cache[ws.title] = (header, col)
         return _ctx_cache[ws.title]
 
@@ -251,6 +254,7 @@ def build_apply_sheet(recommendations: list[Recommendation], kinds: Optional[set
     # for the same Keyword ID). Track each row's unique key and skip repeats —
     # recs are ranked, so the first (highest-priority) one wins.
     _seen: set = set()
+    _camp_n = [0]  # per-file counter for unique placeholder Campaign/Ad Group IDs
 
     for rec in actionable:
         br = rec.bulk_row
@@ -304,6 +308,61 @@ def build_apply_sheet(recommendations: list[Recommendation], kinds: Optional[set
             _seen.add(dup_key)
             ws.append(row)
             result.applied += 1
+            result.applied_titles.append(rec.title)
+            continue
+
+        # create_campaign — expand ONE promotion into the linked rows that build a
+        # whole new exact-match campaign in a single file (Amazon resolves the
+        # placeholder Campaign/Ad Group IDs in-upload). Written in dependency
+        # order: Campaign → Ad Group → Product Ad(s) → Keyword (+ source negative).
+        if action == "create_campaign":
+            products = [p for p in (br.get("products") or []) if p.get("sku")]
+            kind, kw = _classify_target_text(br.get("keyword_text", ""))
+            if br.get("ad_type") != "SP" or not products or kind != "keyword":
+                result.skipped += 1
+                result.skipped_titles.append(rec.title)
+                continue
+            _camp_n[0] += 1
+            cid_ph = f"NEW-{br.get('slug') or 'term'}-{_camp_n[0]}"
+            aid_ph = f"{cid_ph}-AG"
+            bid = br.get("new_bid_cents")
+
+            def emit(_header=header, _col=col, **vals):
+                rrow = [""] * len(_header)
+                for k, v in vals.items():
+                    i = _col.get(k)
+                    if i is not None:
+                        rrow[i] = v
+                ws.append(rrow)
+
+            emit(**{"Product": product, "Entity": "Campaign", "Operation": "Create",
+                    "Campaign ID": cid_ph, "Campaign Name": br.get("campaign_name") or cid_ph,
+                    "Daily Budget": _dollars(br.get("daily_budget_cents") or 1000),
+                    "Targeting Type": br.get("targeting_type") or "MANUAL",
+                    "State": br.get("state") or "enabled",
+                    "Start Date": _today_yyyymmdd(),
+                    "Bidding Strategy": br.get("bidding_strategy") or "Dynamic bids - down only"})
+            emit(**{"Product": product, "Entity": "Ad Group", "Operation": "Create",
+                    "Campaign ID": cid_ph, "Ad Group ID": aid_ph,
+                    "Ad Group Name": br.get("ad_group_name") or aid_ph,
+                    "Ad Group Default Bid": _dollars(bid or 20), "State": "enabled"})
+            for p in products:
+                emit(**{"Product": product, "Entity": "Product Ad", "Operation": "Create",
+                        "Campaign ID": cid_ph, "Ad Group ID": aid_ph,
+                        "SKU": p["sku"], "State": "enabled"})
+            kw_vals = {"Product": product, "Entity": "Keyword", "Operation": "Create",
+                       "Campaign ID": cid_ph, "Ad Group ID": aid_ph, "State": "enabled",
+                       "Keyword Text": kw, "Match Type": "exact"}
+            if bid:
+                kw_vals["Bid"] = _dollars(bid)
+            emit(**kw_vals)
+            scid = str(br.get("source_campaign_id") or "").strip()
+            said = str(br.get("source_ad_group_id") or "").strip()
+            if scid and said:
+                emit(**{"Product": product, "Entity": "Negative Keyword", "Operation": "Create",
+                        "Campaign ID": scid, "Ad Group ID": said, "State": "enabled",
+                        "Keyword Text": kw, "Match Type": "negativeExact"})
+            result.applied += 1  # count one logical campaign, not the N rows
             result.applied_titles.append(rec.title)
             continue
 
@@ -392,6 +451,12 @@ def _col_index(header: list[str], *aliases: str) -> Optional[int]:
 
 def _dollars(cents: int) -> float:
     return round(cents / 100, 2)
+
+
+def _today_yyyymmdd() -> str:
+    """Amazon bulk Start Date format (today, account-local is fine for a start)."""
+    from datetime import date
+    return date.today().strftime("%Y%m%d")
 
 
 def build_bulk_workbook(uploaded_xlsx_bytes: bytes, recommendations: list[Recommendation]) -> BulkBuildResult:

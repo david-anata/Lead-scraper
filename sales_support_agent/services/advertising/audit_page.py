@@ -346,11 +346,21 @@ def _last_run_strip(latest: dict) -> str:
     if latest.get("has_apply"):  # legacy combined file
         dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/combined.xlsx">⬇ Apply sheet</a>')
     dl_html = " ".join(dls) or '<span class="empty">No downloads for this run.</span>'
+    ncc = s.get("new_campaign_count") or 0
+    warn = ""
+    if ncc:
+        warn = (
+            f'<div class="flash" style="background:#fdf6e9;border-color:#d9a441;margin:10px 0 0;">'
+            f'⚠️ The <strong>Additions</strong> file creates <strong>{_esc(ncc)} new campaign'
+            f'{"s" if ncc != 1 else ""}</strong> that go <strong>live on upload</strong> — review the '
+            f'<strong>New Campaigns</strong> tab in the Growth plan first.</div>'
+        )
     return (
         '<div class="card strip">'
         f'<div class="strip-info"><strong>{_esc(brand)}</strong> '
         f'<span class="empty">· {_esc(when)} · {meta}</span></div>'
         f'<div class="strip-actions">{dl_html}</div>'
+        f'{warn}'
         "</div>"
     )
 

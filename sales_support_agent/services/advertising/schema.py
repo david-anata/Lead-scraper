@@ -89,6 +89,14 @@ class Thresholds:
     max_bid_cents: int = 1000
     # A converting search term promotes to an exact keyword after this many orders.
     promote_keyword_min_orders: int = 2
+    # Promote a proven search term into its OWN dedicated exact-match SP campaign
+    # (SKAG) once it clears a higher bar than an in-place harvest. "Moderate":
+    # ≥5 orders, ACoS within 1.1× target, and enough clicks to trust it.
+    promote_campaign_min_orders: int = 5
+    promote_campaign_max_acos_ratio: float = 1.1
+    # Conservative daily budget (cents) for an auto-generated campaign. Capped low
+    # so an AM reviews + raises it; the campaign ships enabled per the run config.
+    default_new_campaign_budget_cents: int = 1000  # $10/day
     # Fallback target ACoS (bps) when the goal sets none, used for bid math.
     default_acos_target_bps: int = 3000  # 30%
 

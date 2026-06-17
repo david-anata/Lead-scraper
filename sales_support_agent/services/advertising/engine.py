@@ -23,6 +23,7 @@ from sales_support_agent.services.advertising.schema import (
     CAT_MANUAL,
     CAT_NEGATIVE,
     CAT_NEW_KEYWORD,
+    CAT_STRUCTURE,
     BULK_SUPPORTED,
     ExternalCostRow,
     Goals,
@@ -177,11 +178,116 @@ def build_recommendations(
     recs: list[Recommendation] = []
     recs += _rule_wasted_spend_negatives(ad_rows, thr)
     recs += _rule_bid_to_target(ad_rows, target_acos, thr)
-    recs += _rule_harvest_keywords(ad_rows, thr)
+
+    # A proven search term can be either harvested as an exact keyword into its
+    # existing ad group OR promoted into its own dedicated campaign — never both
+    # (that would make two of your own campaigns compete on the same exact term).
+    # The higher-bar promotion claims the term; suppress the in-place harvest.
+    harvest = _rule_harvest_keywords(ad_rows, thr)
+    promote = _rule_promote_to_campaign(ad_rows, target_acos, thr)
+    promoted = {
+        (p.bulk_row.get("ad_type"), (p.bulk_row.get("keyword_text") or "").strip().lower())
+        for p in promote
+    }
+    harvest = [
+        h for h in harvest
+        if (h.bulk_row.get("ad_type"), (h.bulk_row.get("keyword_text") or "").strip().lower()) not in promoted
+    ]
+    recs += harvest
+    recs += promote
+
     recs += _rule_external_efficiency(external_rows, sales_rows, goals)
     recs += _rule_strategic_gap(ad_rows, sales_rows, external_rows, goals, thr)
 
     return rank_recommendations(recs)
+
+
+def _campaign_slug(text: str) -> str:
+    """A short, deterministic, file-safe token used for the placeholder Campaign/
+    Ad Group IDs that link a new campaign's rows together in one bulk file."""
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return (s[:40] or "term")
+
+
+def _rule_promote_to_campaign(ad_rows: list[AdRow], target_acos: int, thr: Thresholds) -> list[Recommendation]:
+    """Proven search terms (≥promote_campaign_min_orders, ACoS within
+    max_acos_ratio of target, enough clicks) → propose isolating each into its own
+    dedicated exact-match SP campaign for independent budget + bid control. The
+    rec carries the whole campaign spec in bulk_row; bulk_sheets expands it into
+    the linked Campaign→AdGroup→ProductAd→Keyword rows. Target SKUs are filled in
+    later by normalizers.resolve_promotion_targets (needs the bulk file), so these
+    start is_bulk_actionable=False (review-only until a SKU resolves)."""
+    # A term already running as exact (in the account or marked exact in the
+    # search-term report) is not a promotion candidate — it already exists.
+    existing = {
+        (r.ad_type, r.entity_text.strip().lower())
+        for r in ad_rows
+        if r.entity_level == "keyword"
+    }
+    existing |= {
+        (r.ad_type, r.entity_text.strip().lower())
+        for r in ad_rows
+        if r.entity_level == "search_term" and (r.match_type or "").strip().lower() == "exact"
+    }
+    ceiling = round(target_acos * thr.promote_campaign_max_acos_ratio)
+    out: list[Recommendation] = []
+    seen: set = set()
+    for r in ad_rows:
+        if r.entity_level != "search_term" or not _bulk_ok(r.ad_type):
+            continue
+        if r.orders < thr.promote_campaign_min_orders or r.clicks < thr.min_clicks_significant:
+            continue
+        ra = r.acos_bps
+        if ra is None or ra > ceiling:
+            continue  # not efficient enough to scale into its own campaign
+        key = (r.ad_type, r.entity_text.strip().lower())
+        if key in existing or key in seen:
+            continue
+        seen.add(key)
+        term = r.entity_text.strip()
+        bid = _clamp_bid(r.cpc_cents or thr.min_bid_cents, thr)
+        slug = _campaign_slug(term)
+        campaign_name = f"SP | {term} | Exact"[:128]
+        ad_group_name = f"{term} | Exact"[:128]
+        rec = Recommendation(
+            category=CAT_STRUCTURE,
+            ad_type=r.ad_type,
+            severity=SEV_MEDIUM,
+            title=f"New campaign for '{term}' — {r.orders} orders at {fmt_pct(ra)} ACoS",
+            detail=(
+                f"Proven winner: {r.orders} orders / {fmt_money(r.sales_cents)} sales / {r.clicks} clicks "
+                f"in '{r.campaign_name}'. Isolate it in its own exact campaign for budget + bid control."
+            ),
+            rationale="A search term beating target deserves its own campaign so it isn't capped by a shared budget or diluted by other terms' bids.",
+            entity_ref=f"NEW › {campaign_name} › {term}",
+            current_value=f"in '{r.campaign_name}'",
+            proposed_value=f"new exact campaign @ {fmt_money(bid)}",
+            projected_impact={"orders": r.orders, "sales_cents": r.sales_cents, "acos_bps": ra},
+            bulk_row={
+                "action": "create_campaign",
+                "ad_type": r.ad_type,
+                "slug": slug,
+                "campaign_name": campaign_name,
+                "ad_group_name": ad_group_name,
+                "keyword_text": term,
+                "match_type": "exact",
+                "new_bid_cents": bid,
+                "daily_budget_cents": thr.default_new_campaign_budget_cents,
+                "targeting_type": "MANUAL",
+                "bidding_strategy": "Dynamic bids - down only",
+                "state": "enabled",
+                "products": [],  # [{sku, asin}] — filled by resolve_promotion_targets
+                "source_campaign_id": r.campaign_id,
+                "source_ad_group_id": r.ad_group_id,
+                "source_campaign_name": r.campaign_name,
+                "source_ad_group_name": r.ad_group_name,
+            },
+            is_bulk_actionable=False,  # becomes True once a SKU resolves
+        )
+        rec.score = float(r.sales_cents) * 0.6  # rank above plain harvests
+        out.append(rec)
+    return out
 
 
 def _bulk_ok(ad_type: str) -> bool:

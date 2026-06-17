@@ -217,6 +217,24 @@ def run_audit(
             existing = N.drop_existing_creates(recs, inputs.bulk_xlsx)
             if existing:
                 logger.info("[advertising] dropped %d create(s) that already exist in-account", existing)
+        # New-campaign promotions: resolve the SKU(s) each proposed campaign should
+        # advertise (source campaign's ASIN → Business-Report SKU). Unresolved ones
+        # stay review-only (workbook proposal, not in the apply file).
+        promo_ready = N.resolve_promotion_targets(recs, inputs.bulk_xlsx, sales_rows)
+        promo_total = sum(1 for r in recs if (r.bulk_row or {}).get("action") == "create_campaign")
+        if promo_total:
+            logger.info("[advertising] %d new-campaign proposal(s), %d apply-ready", promo_total, promo_ready)
+        summary["new_campaign_count"] = promo_ready
+        summary["new_campaigns_review_only"] = promo_total - promo_ready
+        summary["new_campaigns"] = [
+            {
+                "name": (r.bulk_row or {}).get("campaign_name", ""),
+                "keyword": (r.bulk_row or {}).get("keyword_text", ""),
+                "skus": [p.get("sku") for p in (r.bulk_row or {}).get("products", [])],
+                "apply_ready": bool(r.is_bulk_actionable),
+            }
+            for r in recs if (r.bulk_row or {}).get("action") == "create_campaign"
+        ]
         storage.save_recommendations(run_id, recs)
         counts["recommendations"] = len(recs)
         summary["recommendation_count"] = len(recs)
@@ -242,7 +260,9 @@ def run_audit(
         summary["expanded_bid_rows"] = expanded_bid_rows
 
         bids = build_apply_sheet(apply_recs, kinds={"set_bid"})
-        additions = build_apply_sheet(apply_recs, kinds={"create_keyword", "create_negative"})
+        # Per David's call, new-campaign creates ride in the Additions file (they go
+        # LIVE on upload). The workbook's New Campaigns tab + the run flash warn first.
+        additions = build_apply_sheet(apply_recs, kinds={"create_keyword", "create_negative", "create_campaign"})
         summary["apply_skipped"] = (bids.skipped or 0) + (additions.skipped or 0)
         if bids.has_file:
             storage.save_bulk_file(run_id, "bids", bids.xlsx_bytes)
