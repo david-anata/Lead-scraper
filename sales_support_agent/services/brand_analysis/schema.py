@@ -427,6 +427,10 @@ class BrandReport:
     social_handles: dict = field(default_factory=dict)  # platform -> url
     social_signals: dict = field(default_factory=dict)  # measured signals + measured/estimated flags
 
+    # Analyst overrides: canonical field -> exact dollar value, applied over the
+    # parsed numbers (the escape hatch when a value is mis-parsed). Persisted.
+    overrides: dict = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return {
             "brand": self.brand,
@@ -476,6 +480,7 @@ class BrandReport:
             "email_list_size": self.email_list_size,
             "social_handles": self.social_handles,
             "social_signals": self.social_signals,
+            "overrides": self.overrides,
         }
 
     @classmethod
@@ -529,6 +534,7 @@ class BrandReport:
             email_list_size=data.get("email_list_size", 0),
             social_handles=data.get("social_handles", {}),
             social_signals=data.get("social_signals", {}),
+            overrides=data.get("overrides", {}),
         )
 
 
