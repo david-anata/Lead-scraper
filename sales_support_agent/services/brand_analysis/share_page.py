@@ -388,8 +388,21 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
 <script src="{_CHART_CDN}"></script>
 <script>window.__BA = {json.dumps(data)};</script>
 <script>{_CHART_JS}</script>
+<script>{_PRINT_JS}</script>
 </body>
 </html>"""
+
+
+# Opening the page with ?print=1 (the "Download PDF" button) auto-opens the
+# browser's print dialog once the charts have drawn → Save as PDF gives a
+# pixel-faithful copy of this branded page, no server-side PDF dependency.
+_PRINT_JS = """
+(function(){
+  if(!/[?&]print=1/.test(location.search))return;
+  var fire=function(){setTimeout(function(){window.print();}, 900);};
+  if(document.readyState==='complete')fire(); else window.addEventListener('load', fire);
+})();
+"""
 
 
 _STYLES = """
@@ -449,6 +462,15 @@ body{margin:0;background:var(--cream);color:var(--navy);font-family:"Inter","Seg
 .context-callout{background:rgba(133,187,218,.10);border-left:4px solid var(--blue)}
 .context-callout h3{color:var(--navy)}
 .confidential{text-align:center;font-size:12px;color:rgba(43,54,68,.4);margin:22px 0 8px}
+@media print{
+  body{background:#fff}
+  .page{max-width:none;padding:0}
+  .card,.cover,.chip,.meter-wrap{box-shadow:none;break-inside:avoid;page-break-inside:avoid}
+  .cover{border-top-width:6px}
+  section.card{margin-bottom:14px}
+  .chart-card canvas{max-height:260px}
+  @page{margin:14mm}
+}
 .foot{text-align:center;font-size:12px;color:rgba(43,54,68,.35);margin-top:10px}
 @media(max-width:760px){.cover{flex-direction:column}.chart-grid,.two-col{grid-template-columns:1fr}.cover-brand{font-size:34px}}
 """

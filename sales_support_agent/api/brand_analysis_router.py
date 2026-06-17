@@ -148,7 +148,9 @@ def edit(request: Request, report_id: str) -> HTMLResponse:
     row = storage.get_report_row(report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
-    return HTMLResponse(render_edit_page(row, user=get_session_user_from_request(request)))
+    return HTMLResponse(render_edit_page(
+        row, user=get_session_user_from_request(request),
+        source_names=storage.list_source_names(report_id)))
 
 
 @router.post("/{report_id}/rerun")
@@ -159,12 +161,15 @@ async def rerun(
     category: str = Form(default=CATEGORY_DTC),
     context_notes: str = Form(default=""),
     brand_website: str = Form(default=""),
+    remove_files: list[str] = Form(default=[]),
 ) -> RedirectResponse:
     row = storage.get_report_row(report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
-    # Original files + any newly added ones are analysed together.
-    batch = list(storage.get_sources(report_id)) + await _collect_files(files)
+    # Kept originals (minus any the analyst removed) + newly added files.
+    drop = {n for n in (remove_files or [])}
+    kept = [(n, d) for (n, d) in storage.get_sources(report_id) if n not in drop]
+    batch = kept + await _collect_files(files)
     if not batch:
         return RedirectResponse(
             f"{_BASE}/{report_id}/edit?msg=" + quote_plus("No files to analyse."),
