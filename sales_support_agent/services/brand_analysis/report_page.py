@@ -105,6 +105,12 @@ def _styles() -> str:
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
       .flash { background: rgba(133,187,218,0.18); border: 1px solid rgba(133,187,218,0.5); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; font-size: 13.5px; }
       .share-frame { width: 100%; height: 1400px; border: 1px solid var(--border); border-radius: 16px; background: #fff; margin-top: 12px; }
+      .file-list { display: grid; gap: 6px; }
+      .file-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: #fff; font-size: 13.5px; cursor: pointer; }
+      .file-row:has(input:checked) { background: rgba(139,76,66,0.06); border-color: rgba(139,76,66,0.3); }
+      .file-row:has(input:checked) .file-name { text-decoration: line-through; color: rgba(43,54,68,0.45); }
+      .file-name { flex: 1; }
+      .file-rm { font-size: 11px; color: #8b4c42; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
       .row-actions { white-space: nowrap; }
       .row-act { font-size: 12px; font-weight: 600; color: var(--dark-blue); text-decoration: none; background: rgba(43,54,68,0.06); border: 1px solid var(--border); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
       .row-act:hover { background: rgba(43,54,68,0.11); }
@@ -253,8 +259,14 @@ def render_admin_view(report: BrandReport, *, report_id: str, share_html: str,
     Download). Matches the deck review pattern."""
     import html as _html
     srcdoc = _html.escape(share_html, quote=True)
+    # "Download PDF" opens the branded page in print mode (Save as PDF) — a
+    # faithful copy of what's on screen, unlike the reflowed .docx.
+    pdf_btn = (
+        f'<a class="btn" href="{_esc(share_path)}?print=1" target="_blank" rel="noreferrer">Download PDF</a>'
+        if share_path else ""
+    )
     copy_btn = (
-        f'<button type="button" class="btn copy-link" data-path="{_esc(share_path)}">Copy share link</button>'
+        f'<button type="button" class="btn btn--ghost copy-link" data-path="{_esc(share_path)}">Copy share link</button>'
         f'<a class="btn btn--ghost" href="{_esc(share_path)}" target="_blank" rel="noreferrer">Open public page</a>'
         if share_path else ""
     )
@@ -262,6 +274,7 @@ def render_admin_view(report: BrandReport, *, report_id: str, share_html: str,
       <span class="eyebrow">Executive Acquisition Brief</span>
       <h1>{_esc(report.brand)}</h1>
       <div class="btn-row">
+        {pdf_btn}
         {copy_btn}
         <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{report_id}/edit">Edit &amp; rerun</a>
         <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{report_id}/download">Download .docx</a>
@@ -281,24 +294,43 @@ def render_admin_view(report: BrandReport, *, report_id: str, share_html: str,
 
 
 def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
-                     user: Optional[dict] = None, flash: str = "") -> str:
-    """Edit + rerun form, prefilled from the saved row. Lets the analyst add
-    more files and accumulate context, then rerun in place (same share link)."""
+                     user: Optional[dict] = None, flash: str = "",
+                     source_names: Optional[list] = None) -> str:
+    """Edit + rerun form, prefilled from the saved row. Lets the analyst manage
+    the attached files (add new / remove existing) and accumulate context, then
+    rerun in place (same share link)."""
     options = "".join(
         f'<option value="{k}"{" selected" if k == row.get("category") else ""}>{_esc(v)}</option>'
         for k, v in CATEGORY_LABELS.items()
     )
     flash_html = f'<div class="flash">{_esc(flash)}</div>' if flash else ""
     rid = row.get("id")
+
+    # File manager: list the persisted uploads, each with a remove checkbox.
+    files_block = ""
+    if source_names:
+        rows = "".join(
+            f'<label class="file-row"><input type="checkbox" name="remove_files" value="{_esc(n)}"> '
+            f'<span class="file-name">{_esc(n)}</span> <span class="file-rm">remove</span></label>'
+            for n in source_names
+        )
+        files_block = f"""
+        <div class="field">
+          <label>Attached files ({len(source_names)})</label>
+          <div class="muted" style="margin:-2px 0 8px">Tick a file to drop it from the next run. Untouched files are re-analysed automatically.</div>
+          <div class="file-list">{rows}</div>
+        </div>"""
+
     body = f"""
       <span class="eyebrow">Executive · Brand Analysis</span>
       <h1>Edit &amp; rerun — {_esc(row.get("brand") or "Brand")}</h1>
-      <p class="muted">Add more financial files and accumulate context, then rerun. The analysis updates in place and your existing share link stays live.</p>
+      <p class="muted">Manage the attached files, add context, then rerun. The analysis updates in place and your existing share link stays live.</p>
       {flash_html}
       <form method="post" action="/admin/executive/brand-analysis/{rid}/rerun" enctype="multipart/form-data">
+        {files_block}
         <div class="drop">
           <strong>Add more financial files (optional)</strong>
-          <div class="muted">New files are analysed together with the originals.</div>
+          <div class="muted">New files are analysed together with the ones you keep.</div>
           <input type="file" name="files" multiple accept=".xlsx,.xls,.csv,.pdf">
         </div>
         <div class="grid2">

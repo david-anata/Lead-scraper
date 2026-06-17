@@ -168,6 +168,12 @@ def get_sources(report_id: str) -> list[tuple[str, bytes]]:
     return out
 
 
+def list_source_names(report_id: str) -> list[str]:
+    """Filenames of the persisted source uploads (for the file manager)."""
+    payload = kv_get_json(_sources_key(report_id), {}) or {}
+    return list(payload.keys())
+
+
 def save_docx(report_id: str, docx_bytes: bytes) -> None:
     try:
         kv_set_json(_docx_key(report_id), {"docx": base64.b64encode(docx_bytes).decode("ascii")})
