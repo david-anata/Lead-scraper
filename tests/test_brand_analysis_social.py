@@ -73,6 +73,20 @@ class SocialDiscoveryTests(unittest.TestCase):
     def test_discover_socials_empty_for_blank(self) -> None:
         self.assertEqual(S.discover_socials(""), {})
 
+    def test_router_parse_social_urls(self) -> None:
+        # Regression: the router's _parse_social_urls uses re.split — exercise
+        # the router glue so a missing `import re` (which broke prod) is caught.
+        try:
+            from sales_support_agent.api.brand_analysis_router import _parse_social_urls
+        except ModuleNotFoundError as exc:
+            if exc.name in {"fastapi", "sqlalchemy"}:
+                self.skipTest("fastapi/sqlalchemy not installed")
+            raise
+        out = _parse_social_urls("instagram.com/luxmery  https://tiktok.com/@luxmery")
+        self.assertEqual(out.get("instagram"), "https://instagram.com/luxmery")
+        self.assertEqual(out.get("tiktok"), "https://tiktok.com/@luxmery")
+        self.assertEqual(_parse_social_urls(""), {})
+
 
 if __name__ == "__main__":
     unittest.main()
