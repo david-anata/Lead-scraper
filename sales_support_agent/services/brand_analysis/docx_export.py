@@ -185,6 +185,20 @@ def build_docx(report: BrandReport) -> bytes:
     # Indicative valuation
     _valuation_section(doc, r, Pt)
 
+    # Brand & Social (separate track)
+    bs = r.brand_social or {}
+    if bs.get("dimensions"):
+        _heading(doc, "Brand & Social (separate track)", 1)
+        p = doc.add_paragraph()
+        p.add_run(f"{bs.get('letter','F')} · {bs.get('score_100',0)}/100").bold = True
+        p.add_run(f"  ({bs.get('confidence','Low')} confidence · {bs.get('assessed_weight_pct',0)}% of signals supplied) — separate from the financial grade.")
+        _kv_table(doc, ["Dimension", "Weight", "Grade", "Signal"],
+                  [[d.get("label", ""), f"{int(d.get('weight',0)*100)}%",
+                    d.get("letter") if d.get("assessed", True) else "n/a", d.get("reason", "")]
+                   for d in bs.get("dimensions", [])], align_right_from=99)
+        for c in bs.get("caveats", []):
+            doc.add_paragraph(c, style="List Bullet")
+
     # 2. Financial Overview (YoY)
     _heading(doc, "2. Financial Overview (YoY)", 1)
     c, p = r.current, r.prior

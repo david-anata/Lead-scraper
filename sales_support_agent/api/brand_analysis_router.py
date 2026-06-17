@@ -80,15 +80,41 @@ async def _collect_files(files) -> list[tuple[str, bytes]]:
     return batch
 
 
-def _run_and_render(batch, *, brand, category, context_notes, brand_website, prepared):
-    """Build the report (with branding) and render its standalone share HTML."""
+def _parse_social_urls(text: str) -> dict:
+    """Manual social URLs (one per line / space-separated) -> {platform: url}."""
+    from sales_support_agent.services.brand_analysis.social import _SOCIAL_PATTERNS
+    out: dict = {}
+    for tok in re.split(r"[\s,]+", text or ""):
+        tok = tok.strip()
+        if not tok:
+            continue
+        for platform, pat in _SOCIAL_PATTERNS.items():
+            if pat.match(tok if tok.startswith("http") else "https://" + tok):
+                out.setdefault(platform, tok if tok.startswith("http") else "https://" + tok)
+                break
+    return out
+
+
+def _run_and_render(batch, *, brand, category, context_notes, brand_website, prepared,
+                    email_list_size=0, social_urls="", review_rating=None, review_count=None):
+    """Build the report (with branding + social) and render its share HTML."""
     assets = _fetch_brand_assets(brand_website)
+    # Auto-discover socials from the site, then let manual URLs override.
+    from sales_support_agent.services.brand_analysis.social import discover_socials
+    handles = discover_socials(brand_website)
+    handles.update(_parse_social_urls(social_urls))
+    signals: dict = {}
+    if review_rating is not None:
+        signals["review_rating"] = review_rating
+    if review_count is not None:
+        signals["review_count"] = review_count
     report = build_report(
         batch, brand=brand, category=category, prepared_date=prepared,
         context_notes=context_notes, brand_website=brand_website,
         logo_data_uri=assets.get("logo_data_uri", ""),
         brand_tagline=assets.get("tagline", ""),
         product_images=assets.get("product_images", []),
+        email_list_size=email_list_size, social_handles=handles, social_signals=signals,
     )
     share_html = render_share_page(report)
     return report, share_html
@@ -107,6 +133,22 @@ def landing(request: Request, msg: str = "", detail: str = "") -> HTMLResponse:
     ))
 
 
+def _opt_int(v) -> Optional[int]:
+    try:
+        s = str(v or "").replace(",", "").strip()
+        return int(float(s)) if s else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(v) -> Optional[float]:
+    try:
+        s = str(v or "").strip()
+        return float(s) if s else None
+    except (TypeError, ValueError):
+        return None
+
+
 @router.post("/run")
 async def run(
     files: list[UploadFile] = File(default=[]),
@@ -115,6 +157,10 @@ async def run(
     label: str = Form(default=""),
     context_notes: str = Form(default=""),
     brand_website: str = Form(default=""),
+    email_list_size: str = Form(default=""),
+    social_urls: str = Form(default=""),
+    review_rating: str = Form(default=""),
+    review_count: str = Form(default=""),
 ) -> RedirectResponse:
     batch = await _collect_files(files)
     if not batch:
@@ -126,7 +172,9 @@ async def run(
     try:
         report, share_html = _run_and_render(
             batch, brand=brand, category=category, context_notes=context_notes,
-            brand_website=brand_website, prepared=prepared)
+            brand_website=brand_website, prepared=prepared,
+            email_list_size=_opt_int(email_list_size) or 0, social_urls=social_urls,
+            review_rating=_opt_float(review_rating), review_count=_opt_int(review_count))
         docx_bytes = build_docx(report)
         report_id = storage.save_report(
             report, label=label, source_files=batch, docx_bytes=docx_bytes, report_html=share_html)
@@ -148,6 +196,14 @@ def edit(request: Request, report_id: str) -> HTMLResponse:
     row = storage.get_report_row(report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
+    # Social inputs live in the report JSON (no row column) — prefill from there.
+    rep = storage.get_report(report_id)
+    if rep is not None:
+        row = {**row,
+               "email_list_size": rep.email_list_size or "",
+               "social_urls": " ".join((rep.social_handles or {}).values()),
+               "review_rating": (rep.social_signals or {}).get("review_rating") or "",
+               "review_count": (rep.social_signals or {}).get("review_count") or ""}
     return HTMLResponse(render_edit_page(
         row, user=get_session_user_from_request(request),
         source_names=storage.list_source_names(report_id)))
@@ -162,6 +218,10 @@ async def rerun(
     context_notes: str = Form(default=""),
     brand_website: str = Form(default=""),
     remove_files: list[str] = Form(default=[]),
+    email_list_size: str = Form(default=""),
+    social_urls: str = Form(default=""),
+    review_rating: str = Form(default=""),
+    review_count: str = Form(default=""),
 ) -> RedirectResponse:
     row = storage.get_report_row(report_id)
     if row is None:
@@ -178,7 +238,9 @@ async def rerun(
     try:
         report, share_html = _run_and_render(
             batch, brand=brand or row.get("brand", ""), category=category,
-            context_notes=context_notes, brand_website=brand_website, prepared=prepared)
+            context_notes=context_notes, brand_website=brand_website, prepared=prepared,
+            email_list_size=_opt_int(email_list_size) or 0, social_urls=social_urls,
+            review_rating=_opt_float(review_rating), review_count=_opt_int(review_count))
         docx_bytes = build_docx(report)
         storage.update_report(
             report_id, report, source_files=batch, docx_bytes=docx_bytes, report_html=share_html)

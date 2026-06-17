@@ -111,6 +111,8 @@ def _styles() -> str:
       .file-row:has(input:checked) .file-name { text-decoration: line-through; color: rgba(43,54,68,0.45); }
       .file-name { flex: 1; }
       .file-rm { font-size: 11px; color: #8b4c42; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+      .social-block { border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; margin: 10px 0; background: rgba(133,187,218,0.05); }
+      .social-block summary { font-family: "Montserrat",sans-serif; font-weight: 700; font-size: 13px; cursor: pointer; }
       .row-actions { white-space: nowrap; }
       .row-act { font-size: 12px; font-weight: 600; color: var(--dark-blue); text-decoration: none; background: rgba(43,54,68,0.06); border: 1px solid var(--border); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
       .row-act:hover { background: rgba(43,54,68,0.11); }
@@ -186,11 +188,43 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
           <label for="context_notes">Context notes (optional — anything you know about the brand)</label>
           <textarea id="context_notes" name="context_notes" rows="3" placeholder="e.g. legal entity differs from brand; related-party loan is owner financing."></textarea>
         </div>
+        {_social_fields()}
         <div class="btn-row"><button class="btn" type="submit">Run analysis</button></div>
       </form>
       {_history_table(runs, heading="Analysis history", empty="No analyses yet — run one above.")}
     """
     return _doc("Brand Analysis", body, user=user)
+
+
+def _social_fields(*, email_list_size: object = "", social_urls: str = "",
+                   review_rating: object = "", review_count: object = "") -> str:
+    """Brand & Social inputs — separate A–F track. Socials auto-discover from the
+    website; these let the analyst supply what public pages don't expose."""
+    return f"""
+        <details class="social-block">
+          <summary>Brand &amp; Social signals (optional — scored as a separate grade)</summary>
+          <p class="muted" style="margin:8px 0 4px">Social profiles auto-discover from the website; add anything below to sharpen the Brand &amp; Social score. Public follower counts are unreliable, so owned-list size and reviews carry the most weight.</p>
+          <div class="grid2">
+            <div class="field">
+              <label for="email_list_size">Email/SMS list size</label>
+              <input id="email_list_size" name="email_list_size" inputmode="numeric" placeholder="e.g. 45000" value="{_esc(email_list_size)}">
+            </div>
+            <div class="field">
+              <label for="social_urls">Social profile URLs (override auto-detect)</label>
+              <input id="social_urls" name="social_urls" placeholder="instagram.com/brand  tiktok.com/@brand" value="{_esc(social_urls)}">
+            </div>
+          </div>
+          <div class="grid2">
+            <div class="field">
+              <label for="review_rating">Avg review rating (1–5)</label>
+              <input id="review_rating" name="review_rating" inputmode="decimal" placeholder="e.g. 4.6" value="{_esc(review_rating)}">
+            </div>
+            <div class="field">
+              <label for="review_count">Total review count</label>
+              <input id="review_count" name="review_count" inputmode="numeric" placeholder="e.g. 1200" value="{_esc(review_count)}">
+            </div>
+          </div>
+        </details>"""
 
 
 def _history_table(runs: list, *, heading: str = "", empty: str = "No analyses yet.") -> str:
@@ -354,6 +388,7 @@ def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
           <label for="context_notes">Context notes (accumulates — what you've learned about this brand)</label>
           <textarea id="context_notes" name="context_notes" rows="5" placeholder="e.g. Doggyvers Ltd is the legal entity; related-party loan is owner financing; Q1 actuals pending.">{_esc(row.get("context_notes") or "")}</textarea>
         </div>
+        {_social_fields(email_list_size=row.get("email_list_size") or "", social_urls=row.get("social_urls") or "", review_rating=row.get("review_rating") or "", review_count=row.get("review_count") or "")}
         <div class="btn-row">
           <button class="btn" type="submit">Rerun analysis</button>
           <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{rid}">← Back to report</a>

@@ -36,6 +36,9 @@ def build_report(
     logo_data_uri: str = "",
     brand_tagline: str = "",
     product_images: Optional[list] = None,
+    email_list_size: int = 0,
+    social_handles: Optional[dict] = None,
+    social_signals: Optional[dict] = None,
 ) -> BrandReport:
     category = (category or CATEGORY_DTC).lower()
     intake = intake_mod.parse_dump(files, category=category, use_llm=use_llm,
@@ -72,6 +75,15 @@ def build_report(
     valuation = valuation_mod.estimate(
         current, category=category, grade=scorecard.letter,
         data_completeness_pct=completeness,
+    )
+
+    # Brand & Social — separate track, never folded into the financial grade.
+    from sales_support_agent.services.brand_analysis import social as social_mod
+    brand_social = social_mod.build_brand_social(
+        current, intake.current,
+        email_list_size=email_list_size,
+        social_handles=social_handles or {},
+        social_signals=social_signals or {},
     )
     info_ribbon = _build_ribbon(scorecard, current, growth, narrative.recommendation,
                                 valuation, intake.has_yoy)
@@ -120,6 +132,10 @@ def build_report(
         product_images=list(product_images or []),
         brand_tagline=brand_tagline,
         context_notes=context_notes,
+        brand_social=brand_social,
+        email_list_size=email_list_size,
+        social_handles=social_handles or {},
+        social_signals=social_signals or {},
     )
     return report
 

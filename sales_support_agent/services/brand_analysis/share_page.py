@@ -290,6 +290,36 @@ def _red_flags(report: BrandReport) -> str:
     return f'<section class="card"><h2>Red flags</h2><div class="flags">{items}</div></section>'
 
 
+def _brand_social(report: BrandReport) -> str:
+    bs = report.brand_social or {}
+    if not bs or not bs.get("dimensions"):
+        return ""
+    letter = bs.get("letter", "F")
+    fill = _GRADE_FILL.get(letter, "#2B3644")
+    rows = ""
+    for d in bs.get("dimensions", []):
+        assessed = d.get("assessed", True)
+        dl = d.get("letter", "")
+        shown = dl if assessed else "n/a"
+        color = _GRADE_FILL.get(dl, "#7a8694") if assessed else "#7a8694"
+        rows += (f"<tr><td>{_e(d.get('label'))}</td><td class='num'>{int(d.get('weight',0)*100)}%</td>"
+                 f"<td style='color:{color};font-weight:800'>{_e(shown)}</td>"
+                 f"<td class='reason'>{_e(d.get('reason'))}</td></tr>")
+    caveats = "".join(f"<li>{_e(c)}</li>" for c in bs.get("caveats", []))
+    return f"""
+    <section class="card">
+      <h2>Brand &amp; Social <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— separate from the financial grade</span></h2>
+      <div class="val-headline">
+        <span class="grade-badge" style="background:{fill};width:54px;height:54px;font-size:30px;border-radius:14px">{_e(letter)}</span>
+        <span class="val-band" style="font-size:22px">{bs.get('score_100',0)}/100</span>
+        <span class="val-basis">{_e(bs.get('confidence','Low'))} confidence · {bs.get('assessed_weight_pct',0)}% of signals supplied</span>
+      </div>
+      <table class="data-table" style="margin-top:8px"><thead><tr><th>Dimension</th><th class="num">Weight</th><th>Grade</th><th>Signal</th></tr></thead>
+      <tbody>{rows}</tbody></table>
+      <ul class="caveats">{caveats}</ul>
+    </section>"""
+
+
 def _scorecard(report: BrandReport) -> str:
     rows = ""
     for d in report.scorecard.dimensions:
@@ -355,6 +385,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
         _context_callout(report),
         _charts_section(report),
         _thesis_risks(report),
+        _brand_social(report),
         _valuation_section(report),
         _yoy_table(report),
         _benchmarks(report),
