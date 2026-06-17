@@ -518,11 +518,13 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
             nav_items.append(_nav_item(section.label, primary_href, active=is_primary_active))
             continue
 
-        # >=2 reachable pages — primary link + caret + dropdown of pills.
-        primary_link = _nav_item(section.label, primary_href, active=is_primary_active)
-        # Splice the caret in before the closing tag of the primary link.
-        primary_link = primary_link.replace(
-            "</a>", '<span class="nav-caret">&#9660;</span></a>', 1
+        # >=2 reachable pages — non-navigating trigger + caret + dropdown of pills.
+        # The trigger is a <span> (not <a>) so clicking the header label only
+        # opens/closes the dropdown; navigation happens via the pills inside.
+        active_class = " active" if is_primary_active else ""
+        primary_trigger = (
+            f'<span class="top-link{active_class}" style="cursor:default;user-select:none">'
+            f'{section.label}<span class="nav-caret">&#9660;</span></span>'
         )
         pills = "".join(
             _nav_item(sp.label, sp.href, active=(current == sp.active_key), extra_class="top-link--secondary")
@@ -530,7 +532,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         )
         nav_items.append(
             f"""<div class="nav-item" tabindex="0" onclick="this.toggleAttribute('data-open')">
-              {primary_link}
+              {primary_trigger}
               <div class="nav-dropdown">{pills}</div>
             </div>"""
         )
