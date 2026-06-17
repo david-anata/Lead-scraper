@@ -325,8 +325,10 @@ def _do_run(
         )
     applied = result.bulk.applied if result.bulk else 0
     detect = quote_plus(report.summary()) if batch else ""
+    ncc = (result.summary or {}).get("new_campaign_count") or 0
+    extra = f" ⚠ {ncc} NEW campaign(s) in the Additions file — live on upload." if ncc else ""
     msg = quote_plus(
-        f"Audit complete: {result.counts.get('recommendations', 0)} recommendations, {applied} bulk changes."
+        f"Audit complete: {result.counts.get('recommendations', 0)} recommendations, {applied} bulk changes.{extra}"
     )
     suffix = f"&detail={detect}" if detect else ""
     return RedirectResponse(f"/admin/advertising/audit?run={result.run_id}&msg={msg}{suffix}", status_code=303)

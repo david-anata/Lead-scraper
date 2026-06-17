@@ -701,6 +701,120 @@ def redirect_harvests_to_sp(recs: list, sp_home: dict) -> int:
     return n
 
 
+def campaign_asin_map(file_bytes: bytes) -> dict:
+    """Scan the bulk file's Product Ad rows to learn which product(s) each campaign
+    advertises — SKU is read directly off the Product Ad row (the reliable source;
+    the Business Report often omits SKU). Returns
+        {"by_id": {campaign_id: [{sku, asin}, …]},
+         "by_name": {campaign_name_lower: [{sku, asin}, …]},
+         "names": {campaign_name_lower, …}}.
+    Memory-safe; never raises."""
+    from collections import defaultdict
+    out = {"by_id": {}, "by_name": {}, "names": set()}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[advertising] failed to open bulk workbook for campaign-product map")
+        return out
+
+    by_id: dict = defaultdict(list)
+    by_name: dict = defaultdict(list)
+    names: set = set()
+    for sheet in wb.worksheets:
+        if _ad_type_from_sheet(sheet.title) != "SP":
+            continue
+        try:
+            sheet.reset_dimensions()
+        except Exception:  # noqa: BLE001
+            pass
+        it = sheet.iter_rows(values_only=True)
+        try:
+            header = [str(h).strip() if h is not None else "" for h in next(it)]
+        except StopIteration:
+            continue
+        idx = {h: (header.index(h) if h in header else None) for h in (
+            "Entity", "Campaign ID", "SKU", "ASIN (Informational only)",
+            "Campaign Name (Informational only)", "Campaign Name")}
+
+        def g(row, name, _idx=idx):
+            i = _idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        for row in it:
+            entity = str(g(row, "Entity") or "")
+            cid = str(g(row, "Campaign ID") or "").strip()
+            cname = str(g(row, "Campaign Name (Informational only)") or g(row, "Campaign Name") or "").strip()
+            if entity == "Campaign" and cname:
+                names.add(cname.lower())
+            if entity == "Product Ad":
+                sku = str(g(row, "SKU") or "").strip()
+                asin = str(g(row, "ASIN (Informational only)") or "").strip().upper()
+                if sku or asin:
+                    prod = {"sku": sku, "asin": asin}
+                    if cid:
+                        by_id[cid].append(prod)
+                    if cname:
+                        by_name[cname.lower()].append(prod)
+    wb.close()
+    out["by_id"] = dict(by_id)
+    out["by_name"] = dict(by_name)
+    out["names"] = names
+    return out
+
+
+def resolve_promotion_targets(recs: list, file_bytes: bytes, sales_rows: list) -> int:
+    """Fill each new-campaign (create_campaign) rec with the SKU(s) it should
+    advertise — the source campaign's products, read from the bulk file's Product
+    Ad rows (SKU there is authoritative; the Business Report's ASIN→SKU is a
+    fallback). A Product Ad Create needs a SKU; recs that can't resolve one stay
+    is_bulk_actionable=False (review-only in the workbook, absent from the apply
+    file). Also drops a promotion whose campaign name already exists. Returns the
+    count made apply-ready. Mutates rec.bulk_row in place."""
+    promos = [r for r in recs if (getattr(r, "bulk_row", None) or {}).get("action") == "create_campaign"]
+    if not promos:
+        return 0
+    asin_sku = {
+        (s.asin or "").strip().upper(): (s.sku or "").strip()
+        for s in sales_rows if (s.asin or "").strip() and (s.sku or "").strip()
+    }
+    cmap = campaign_asin_map(file_bytes) if file_bytes else {"by_id": {}, "by_name": {}, "names": set()}
+    made = 0
+    for r in promos:
+        br = r.bulk_row
+        if (br.get("campaign_name") or "").strip().lower() in cmap.get("names", set()):
+            r.is_bulk_actionable = False  # a campaign with this name already exists
+            br["review_only_reason"] = "campaign name already exists"
+            continue
+        src = (
+            cmap["by_id"].get(str(br.get("source_campaign_id") or "").strip())
+            or cmap["by_name"].get((br.get("source_campaign_name") or "").strip().lower())
+            or []
+        )
+        # Last resort: an ASIN-named source campaign with no Product Ad rows mapped.
+        if not src:
+            m = _ASIN_RE.search((br.get("source_campaign_name") or "").upper())
+            if m:
+                src = [{"sku": "", "asin": m.group(0)}]
+        products: list = []
+        seen: set = set()
+        for prod in src:
+            sku = (prod.get("sku") or "").strip() or asin_sku.get((prod.get("asin") or "").strip().upper(), "")
+            if sku and sku not in seen:
+                seen.add(sku)
+                products.append({"sku": sku, "asin": (prod.get("asin") or "").strip().upper()})
+            if len(products) >= 20:  # keep a single-keyword ad group sane
+                break
+        br["products"] = products
+        if products:
+            r.is_bulk_actionable = True
+            made += 1
+        else:
+            r.is_bulk_actionable = False
+            br["review_only_reason"] = "no SKU resolved for the source campaign's product(s)"
+    return made
+
+
 _AUTO_EXPRS = {"close-match", "loose-match", "substitutes", "complements"}
 
 
