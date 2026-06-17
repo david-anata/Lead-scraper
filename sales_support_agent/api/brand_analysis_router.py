@@ -14,6 +14,7 @@ needs no session (the unguessable token is the gate).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote_plus
