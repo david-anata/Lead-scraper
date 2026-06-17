@@ -397,5 +397,113 @@ class MultiYearIntakeTests(unittest.TestCase):
         self.assertEqual(result.prior.net_revenue_cents, 90_000_000)
 
 
+class FormatCoverageTests(unittest.TestCase):
+    """Regression tests for real-world accounting platform label variations and
+    column-layout quirks (% columns, Sage/Wave/Xero-AU terminology)."""
+
+    def _csv_batch(self, rows: list[list], filename: str = "pnl.csv") -> list[tuple[str, bytes]]:
+        import csv, io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        for row in rows:
+            writer.writerow(row)
+        return [(filename, buf.getvalue().encode())]
+
+    def test_percentage_columns_excluded_from_value_cols(self) -> None:
+        """QBO/Xero exports interleave '% of Income' columns between dollar columns.
+        When _column_years falls back to positional, col[1] could be a % column —
+        resulting in prior-period values like $0.42 (for 42%). Must be excluded."""
+        rows = [
+            ["", "Jan-Dec 2025", "% of Income", "Jan-Dec 2024", "% of Income"],
+            ["Total Income", "1500000", "100.0%", "1200000", "100.0%"],
+            ["Cost of Goods Sold", "600000", "40.0%", "480000", "40.0%"],
+            ["Gross Profit", "900000", "60.0%", "720000", "60.0%"],
+            ["Total Expenses", "300000", "20.0%", "240000", "20.0%"],
+            ["Net Income", "600000", "40.0%", "480000", "40.0%"],
+        ]
+        batch = self._csv_batch(rows, "QBO_with_pct.csv")
+        result = intake_mod.parse_dump(batch, use_llm=False)
+        # Prior revenue must be $1.2M, NOT ~$1,200 (if the 100.0% column was used)
+        self.assertIsNotNone(result.prior)
+        self.assertAlmostEqual(result.prior.net_revenue_cents / 100, 1_200_000, delta=5000)
+
+    def test_sage_uk_turnover_maps_to_revenue(self) -> None:
+        """'Turnover' is the standard UK/Sage term for revenue (top-line sales)."""
+        rows = [
+            ["", "2025", "2024"],
+            ["Turnover", "2000000", "1800000"],
+            ["Cost of Sales", "800000", "720000"],
+            ["Gross Profit", "1200000", "1080000"],
+            ["Administrative Expenses", "400000", "360000"],
+            ["Operating Result", "800000", "720000"],
+        ]
+        batch = self._csv_batch(rows, "Sage_UK_pnl.csv")
+        result = intake_mod.parse_dump(batch, use_llm=False)
+        self.assertIsNotNone(result.current.net_revenue_cents)
+        self.assertAlmostEqual(result.current.net_revenue_cents / 100, 2_000_000, delta=5000)
+
+    def test_sage_uk_operating_result_maps_to_net_earnings(self) -> None:
+        """'Operating Result' (Sage UK) must map to net_earnings_cents."""
+        rows = [
+            ["", "2025", "2024"],
+            ["Turnover", "2000000", "1800000"],
+            ["Cost of Sales", "800000", "720000"],
+            ["Gross Profit", "1200000", "1080000"],
+            ["Administrative Expenses", "400000", "360000"],
+            ["Operating Result", "800000", "720000"],
+        ]
+        batch = self._csv_batch(rows, "Sage_UK_pnl.csv")
+        result = intake_mod.parse_dump(batch, use_llm=False)
+        self.assertIsNotNone(result.current.net_earnings_cents)
+        self.assertAlmostEqual(result.current.net_earnings_cents / 100, 800_000, delta=5000)
+
+    def test_wave_total_income_maps_to_revenue(self) -> None:
+        """Wave accounting uses 'Total Income' as the top-line revenue label."""
+        rows = [
+            ["", "2025", "2024"],
+            ["Income", "", ""],
+            ["Product Sales", "1100000", "950000"],
+            ["Service Revenue", "400000", "350000"],
+            ["Total Income", "1500000", "1300000"],
+            ["Cost of Goods Sold", "600000", "520000"],
+            ["Gross Profit", "900000", "780000"],
+            ["Total Expenses", "300000", "260000"],
+            ["Net Income", "600000", "520000"],
+        ]
+        batch = self._csv_batch(rows, "Wave_pnl.csv")
+        result = intake_mod.parse_dump(batch, use_llm=False)
+        self.assertIsNotNone(result.current.net_revenue_cents)
+        # Should pick up the explicit "Total Income" line, not the sub-lines
+        self.assertAlmostEqual(result.current.net_revenue_cents / 100, 1_500_000, delta=10000)
+
+    def test_xero_au_purchases_maps_to_cogs(self) -> None:
+        """Xero (AU/NZ) uses 'Purchases' as the COGS label instead of 'Cost of Sales'."""
+        rows = [
+            ["", "2025", "2024"],
+            ["Revenue", "1800000", "1600000"],
+            ["Purchases", "720000", "640000"],
+            ["Gross Profit", "1080000", "960000"],
+            ["Net Profit", "540000", "480000"],
+        ]
+        batch = self._csv_batch(rows, "Xero_AU_pnl.csv")
+        result = intake_mod.parse_dump(batch, use_llm=False)
+        self.assertIsNotNone(result.current.cogs_cents)
+        self.assertAlmostEqual(result.current.cogs_cents / 100, 720_000, delta=5000)
+
+    def test_sage_cost_of_materials_maps_to_cogs(self) -> None:
+        """'Cost of Materials' is Sage's manufacturing-oriented COGS label."""
+        rows = [
+            ["", "2025", "2024"],
+            ["Net Revenue", "2500000", "2200000"],
+            ["Cost of Materials", "1000000", "880000"],
+            ["Gross Profit", "1500000", "1320000"],
+            ["Net Earnings", "750000", "660000"],
+        ]
+        batch = self._csv_batch(rows, "Sage_manuf_pnl.csv")
+        result = intake_mod.parse_dump(batch, use_llm=False)
+        self.assertIsNotNone(result.current.cogs_cents)
+        self.assertAlmostEqual(result.current.cogs_cents / 100, 1_000_000, delta=5000)
+
+
 if __name__ == "__main__":
     unittest.main()

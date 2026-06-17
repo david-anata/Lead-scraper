@@ -40,17 +40,38 @@ _MONTHS = {
 # ---------------------------------------------------------------------------
 
 _PNL_SYNONYMS: list[tuple[str, tuple[str, ...]]] = [
-    ("reported_gross_profit_cents", ("gross profit", "gross margin")),
-    ("net_revenue_cents", ("net revenue", "net sales", "total net revenue", "total revenue", "total sales", "revenue, net")),
-    ("gross_sales_cents", ("gross sales", "gross revenue", "product sales", "sales revenue")),
+    ("reported_gross_profit_cents", ("gross profit", "gross margin", "gross income")),
+    # "turnover" = UK/Sage term for revenue; "total income"/"income total" = Wave/FreshBooks
+    ("net_revenue_cents", (
+        "net revenue", "net sales", "total net revenue", "total revenue", "total sales",
+        "revenue, net", "turnover", "net turnover", "total income", "income total",
+        "total operating revenue",
+    )),
+    # "service revenue"/"product revenue" = FreshBooks sub-lines; kept under gross_sales
+    # so they feed net_revenue_or_derived() when no explicit total is found
+    ("gross_sales_cents", ("gross sales", "gross revenue", "product sales", "sales revenue",
+                           "service revenue", "product revenue")),
     ("discounts_cents", ("discount", "promotions", "promotional", "markdown")),
     ("returns_cents", ("returns", "refunds", "allowances", "chargebacks")),
-    ("cogs_cents", ("cogs", "cost of goods", "cost of sales", "cost of revenue", "product cost")),
+    # "purchases" = Xero (AU/NZ) term for COGS; "cost of materials"/"direct costs" = Sage
+    ("cogs_cents", ("cogs", "cost of goods", "cost of sales", "cost of revenue", "product cost",
+                    "purchases", "cost of materials", "materials cost", "direct costs",
+                    "variable costs")),
     ("freight_3pl_cents", ("freight", "3pl", "fulfillment", "fulfilment", "shipping cost", "logistics", "warehous")),
     ("customer_support_cents", ("customer support", "customer service", "support cost", "cx ")),
     ("other_income_cents", ("other income", "non-operating", "non operating", "miscellaneous income", "interest income")),
-    ("net_earnings_cents", ("net earnings", "net income", "net profit", "net loss", "bottom line")),
-    ("opex_cents", ("operating expense", "total opex", "opex", "sg&a", "sga", "general & admin", "overhead")),
+    # "profit before tax" / "profit for the year" = UK GAAP; "operating result" = Sage
+    ("net_earnings_cents", (
+        "net earnings", "net income", "net profit", "net loss", "bottom line",
+        "profit before tax", "profit for the year", "profit for period", "operating result",
+        "profit after tax", "earnings after tax",
+    )),
+    # "admin expenses"/"staff costs" = Sage/UK; "total expenses" = Wave
+    ("opex_cents", (
+        "operating expense", "total opex", "opex", "sg&a", "sga", "general & admin", "overhead",
+        "admin expenses", "administrative expenses", "staff costs", "total expenses",
+        "general and administrative",
+    )),
 ]
 
 # Marketing: a single total OR per-channel lines that we also sum.
@@ -185,19 +206,32 @@ def _read_file(filename: str, data: bytes) -> list[_Table]:
 
 
 def _value_columns(table: _Table) -> list[int]:
-    """Column indices that carry numbers across the data rows (majority rule)."""
+    """Column indices that carry numbers across the data rows (majority rule).
+
+    Columns where the majority of non-empty cells contain "%" are excluded —
+    QBO/Xero/Wave exports interleave "% of revenue" columns between monetary
+    columns, and these must never be treated as prior-period dollar values.
+    """
     width = max((len(r) for r in table.rows), default=0)
-    hits = [0] * width
+    hits = [0] * width      # cells that parse as monetary amounts
+    pct_hits = [0] * width  # cells that look like percentages (contain %)
     counts = [0] * width
     for r in table.rows:
         for i, cell in enumerate(r):
-            if not str(cell).strip():
+            s = str(cell).strip()
+            if not s:
                 continue
             counts[i] += 1
-            if parse_cents(cell) is not None and re.search(r"\d", str(cell)):
+            if "%" in s:
+                pct_hits[i] += 1
+            elif parse_cents(cell) is not None and re.search(r"\d", s):
                 hits[i] += 1
-    cols = [i for i in range(width) if counts[i] and hits[i] >= max(2, counts[i] * 0.5)]
-    return cols
+    return [
+        i for i in range(width)
+        if counts[i]
+        and hits[i] >= max(2, counts[i] * 0.5)
+        and pct_hits[i] <= hits[i]
+    ]
 
 
 def _column_years(table: _Table, value_cols: list[int]) -> dict:
