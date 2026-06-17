@@ -301,8 +301,59 @@ def _brand_from_filename(filename: str) -> str:
     return stem.title() if stem and len(stem) > 1 else ""
 
 
+# Document triage. Each parsed sheet/table is classified so transaction-level
+# dumps (a General Ledger can be tens of thousands of rows) are kept OUT of the
+# scoring/classifier input — the summary statements (P&L, Trial Balance, Balance
+# Sheet) carry the account totals we actually grade on. Order matters: most
+# specific first. GL is detected first so a GL sheet never falls through.
+_DOC_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
+    ("general_ledger", ("general ledger", "genledger", "::gl", " gl ", "_gl ", "_gl.", "_gl_")),
+    ("trial_balance", ("trial balance", "trial_balance", "trialbalance", "::tb")),
+    ("balance_sheet", ("balance sheet", "balance_sheet", "::bs")),
+    ("pnl", ("profit and loss", "profit n loss", "profit & loss", "p&l", "pnl", "income statement")),
+    ("ad_platform", ("meta ads", "facebook ads", "google ads", "adwords", "tiktok ads", "klaviyo", "ad report", "ads report", "campaign report")),
+    ("cohort_ltv", ("cohort", "ltv", "lifetime value", "retention", "repeat purchase")),
+    ("inventory_supplier", ("inventory report", "supplier", "3pl", "purchase order", "stock on hand")),
+]
+
+# Doc types excluded from scoring/classification (kept only as reference).
+_TRANSACTION_TYPES = ("general_ledger",)
+
+
+def _table_doc_type(filename: str, table) -> str:
+    """Best-effort statement type for a single sheet/table, from the filename,
+    sheet name (table.source), and the first few title rows."""
+    hay = f" {filename} {table.source} ".lower()
+    for row in ([table.header or []] + (table.rows[:3] if table.rows else [])):
+        hay += " " + " ".join(str(c).lower() for c in row)
+    for dtype, pats in _DOC_PATTERNS:
+        if any(p in hay for p in pats):
+            return dtype
+    # Safety net: an enormous table is a transaction dump regardless of naming.
+    if len(table.rows) > 2000:
+        return "general_ledger"
+    return "other"
+
+
+def _year_of_file(filename: str, tables: list) -> Optional[int]:
+    """Best-effort fiscal year for a whole file — many real exports put the
+    year in the filename and/or a title row ("January–December, 2025"), NOT in
+    a column header. Scan the filename first, then the first few rows of each
+    table. Returns the latest plausible year found, or None."""
+    years: set[int] = set()
+    m = _YEAR_RE.findall(filename or "")
+    years.update(int(y) for y in m)
+    for t in tables:
+        head_rows = [t.header or []] + (t.rows[:4] if t.rows else [])
+        for row in head_rows:
+            for cell in row:
+                for y in _YEAR_RE.findall(str(cell)):
+                    years.add(int(y))
+    return max(years) if years else None
+
+
 def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
-               use_llm: bool = True) -> IntakeResult:
+               use_llm: bool = True, context_notes: str = "") -> IntakeResult:
     """Parse a batch of uploaded financial files into current/prior periods.
 
     Runs the fast deterministic substring mapper first; when it leaves a
@@ -318,20 +369,35 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     all_years: set[int] = set()
     all_tables: list = []
 
-    # First pass: collect every year token across all files to fix current/prior.
+    # First pass: parse each file and tag it with a fiscal year (filename +
+    # title rows + column headers), so prior-year data living in a *separate
+    # file* is recognised for YoY — not just year-labelled columns.
     parsed_files: list[tuple[str, list[_Table]]] = []
+    file_years: dict[str, Optional[int]] = {}
+    excluded_ledger = 0
     for filename, data in files:
         tables = _read_file(filename, data)
         if not tables:
             files_ignored.append(filename)
             continue
-        all_tables.extend(tables)
-        parsed_files.append((filename, tables))
         files_read.append((filename, len(tables)))
+        # Triage: drop transaction-level General Ledger sheets from scoring —
+        # the summary statements carry the account totals, and a GL can be tens
+        # of thousands of rows that flood the classifier and bury revenue.
+        kept = [t for t in tables if _table_doc_type(filename, t) not in _TRANSACTION_TYPES]
+        excluded_ledger += len(tables) - len(kept)
+        fy = _year_of_file(filename, tables)
+        file_years[filename] = fy
+        if fy:
+            all_years.add(fy)
+        if not kept:
+            continue  # whole file was a ledger — recorded, but not scored
+        all_tables.extend(kept)
+        parsed_files.append((filename, kept))
         brand = _brand_from_filename(filename)
         if brand and brand not in detected_brands:
             detected_brands.append(brand)
-        for t in tables:
+        for t in kept:
             for cell in (t.header or []):
                 m = _YEAR_RE.search(str(cell))
                 if m:
@@ -348,6 +414,13 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     synonyms_all = _PNL_SYNONYMS + _BALANCE_SYNONYMS + _ACQ_SYNONYMS
 
     for filename, tables in parsed_files:
+        # A whole-file prior year (e.g. a separate "Financials 2024" workbook)
+        # routes its single value column into the PRIOR period.
+        file_year = file_years.get(filename)
+        file_is_prior = (
+            prior is not None and prior_year is not None and current_year is not None
+            and file_year == prior_year and file_year != current_year
+        )
         for t in tables:
             value_cols = _value_columns(t)
             if not value_cols:
@@ -393,15 +466,19 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                     return parse_cents(r[col]) if col is not None and col < len(r) else None
 
                 cur_v, prior_v = _val(cur_col), _val(prior_col)
+                # When the whole file is the prior year, its primary column is
+                # prior-period data (no in-table current column to compare).
+                dest_primary = prior if file_is_prior else current
+                other = None if file_is_prior else prior
                 if field_name:
-                    _set_if_absent(current, field_name, cur_v)
-                    if prior is not None:
-                        _set_if_absent(prior, field_name, prior_v)
+                    _set_if_absent(dest_primary, field_name, cur_v)
+                    if other is not None:
+                        _set_if_absent(other, field_name, prior_v)
                 elif channel:
                     if cur_v is not None:
-                        current.marketing_by_channel.setdefault(channel, cur_v)
-                    if prior is not None and prior_v is not None:
-                        prior.marketing_by_channel.setdefault(channel, prior_v)
+                        dest_primary.marketing_by_channel.setdefault(channel, cur_v)
+                    if other is not None and prior_v is not None:
+                        other.marketing_by_channel.setdefault(channel, prior_v)
 
     # Roll channel marketing into a total when no explicit total line was found.
     for period in (current, prior):
@@ -415,7 +492,10 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
     unmapped_accounts: list = []
     classifier_model = ""
     if use_llm and all_tables and intake_llm.should_classify(current):
-        result = intake_llm.classify(all_tables)
+        file_groups = [(fn, file_years.get(fn), tbls) for fn, tbls in parsed_files]
+        result = intake_llm.classify(
+            all_tables, file_groups=file_groups, context_notes=context_notes,
+            current_year=current_year, prior_year=prior_year)
         if result is not None:
             classifier_model = result.model
             intake_llm.merge_into(current, result, account_mappings, prior=False)
@@ -432,6 +512,11 @@ def parse_dump(files: list[tuple[str, bytes]], *, category: str = "dtc",
                     f"line-item matcher left empty."
                 )
 
+    if excluded_ledger:
+        notes.append(
+            f"Excluded {excluded_ledger} General Ledger sheet(s) from scoring "
+            "(transaction detail) — used the summary statements for account totals."
+        )
     if current_year and prior_year:
         notes.append(f"Detected periods {current_year} (current) vs {prior_year} (prior).")
     elif not all_years:

@@ -171,5 +171,64 @@ class ParseDumpWiringTests(unittest.TestCase):
         self.assertIsNone(res.current.net_revenue_cents)
 
 
+class CrossFilePeriodTests(unittest.TestCase):
+    """Prior-year data living in a SEPARATE file (no year-labelled columns)
+    must be recognised for YoY — the real Doggyvers case."""
+
+    def test_year_of_file_from_filename_and_title(self) -> None:
+        t = intake_mod._Table(source="x", header=["Profit and Loss"],
+                              rows=[["January-December, 2024"], ["Net Revenue", "500000"]])
+        self.assertEqual(intake_mod._year_of_file("Financials 2024 V3.xlsx", [t]), 2024)
+        self.assertEqual(intake_mod._year_of_file("no-year.xlsx", [t]), 2024)  # from title row
+        self.assertIsNone(intake_mod._year_of_file(
+            "plain.xlsx", [intake_mod._Table(source="y", rows=[["Net Revenue", "1"]])]))
+
+    def test_separate_year_files_split_current_and_prior(self) -> None:
+        cur = b"Line,Amount\nNet Revenue,1000000\nCOGS,400000\nNet Income,90000\n"
+        prr = b"Line,Amount\nNet Revenue,800000\nCOGS,330000\nNet Income,60000\n"
+        res = intake_mod.parse_dump(
+            [("Brand Financials 2025.csv", cur), ("Brand Financials 2024.csv", prr)],
+            use_llm=False)
+        self.assertTrue(res.has_yoy)
+        self.assertEqual(res.current.period_label, "FY 2025")
+        self.assertEqual(res.prior.period_label, "FY 2024")
+        self.assertEqual(res.current.net_revenue_cents, 100_000_000)
+        self.assertEqual(res.prior.net_revenue_cents, 80_000_000)  # routed to prior, not current
+
+    def test_classifier_group_serialisation_marks_years(self) -> None:
+        t25 = intake_mod._Table(source="pl25", rows=[["400011 Sales", "2280930"]])
+        t24 = intake_mod._Table(source="pl24", rows=[["Stripe - Sales", "4623600"]])
+        body = L._serialise_groups([("pl-2025.xlsx", 2025, [t25]), ("fin-2024.xlsx", 2024, [t24])])
+        self.assertIn("fiscal year 2025", body)
+        self.assertIn("fiscal year 2024", body)
+        self.assertIn("400011 Sales :: 2280930", body)
+
+
+class DocTriageTests(unittest.TestCase):
+    """Transaction-level General Ledger sheets are kept OUT of scoring; summary
+    statements (P&L, Trial Balance, Balance Sheet) are kept."""
+
+    def test_table_doc_type_classification(self) -> None:
+        def tbl(src, rows=1):
+            return intake_mod._Table(source=src, rows=[["x", "1"]] * rows)
+        self.assertEqual(intake_mod._table_doc_type("General Ledger 2025.xlsx", tbl("GL::Sheet1")), "general_ledger")
+        self.assertEqual(intake_mod._table_doc_type("x.xlsx", tbl("x.xlsx::Trial Balance")), "trial_balance")
+        self.assertEqual(intake_mod._table_doc_type("x.xlsx", tbl("x.xlsx::BS")), "balance_sheet")
+        self.assertEqual(intake_mod._table_doc_type("Profit and Loss.xlsx", tbl("x::Sheet1")), "pnl")
+        # Safety net: a huge unnamed table is treated as a transaction dump.
+        self.assertEqual(intake_mod._table_doc_type("mystery.xlsx", tbl("mystery::Sheet1", rows=2500)), "general_ledger")
+
+    def test_general_ledger_excluded_from_scoring(self) -> None:
+        pnl = b"Line,Amount\nNet Revenue,1000000\nCOGS,400000\nNet Income,90000\n"
+        # A 'general ledger' file with a revenue-looking line that must NOT be scored.
+        gl = "Date,Account,Amount\n" + "\n".join(
+            f"2025-01-{i:02d},Some Txn,{i}" for i in range(1, 13)) + "\n"
+        res = intake_mod.parse_dump(
+            [("Brand P&L 2025.csv", pnl), ("Brand General Ledger 2025.csv", gl.encode())],
+            use_llm=False)
+        self.assertTrue(any("Excluded" in n and "Ledger" in n for n in res.notes))
+        self.assertEqual(res.current.net_revenue_cents, 100_000_000)  # from the P&L, GL ignored
+
+
 if __name__ == "__main__":
     unittest.main()
