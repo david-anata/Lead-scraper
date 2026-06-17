@@ -180,5 +180,126 @@ class DocxExportTests(unittest.TestCase):
         self.assertEqual(data[:2], b"PK")  # docx is a zip container
 
 
+@unittest.skipUnless(DEPS_AVAILABLE, "brand_analysis deps required")
+class ParserBugRegressionTests(unittest.TestCase):
+    """Regression tests for parser bugs fixed in the audit pass."""
+
+    def _make_qbo_xlsx(self) -> bytes:
+        """QBO-style P&L: revenue spread across income accounts, 'Total for Income'
+        is the real total, years in column headers."""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = "Profit and Loss"
+        rows = [
+            ["Profit and Loss", "", "Jan - Dec 2025", "%", "Jan - Dec 2024", "%"],
+            ["Income", "", "", "", "", ""],
+            ["400011 Product Sales", "", "850000", "75.9%", "900000", "78.3%"],
+            ["400022 Amazon Sales",  "", "270483", "24.1%", "249567", "21.7%"],
+            ["Total for Income",     "", "1120483", "100.0%", "1149567", "100.0%"],
+            ["Cost of Goods Sold",   "", "", "", "", ""],
+            ["500100 Product Cost",  "", "448193", "40.0%", "459827", "40.0%"],
+            ["Gross Profit",         "", "672290", "60.0%", "689740", "60.0%"],
+            ["Net Income",           "", "470603", "42.0%", "505809", "44.0%"],
+        ]
+        for r in rows: ws.append(r)
+        buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+    def test_qbo_prior_revenue_from_income_total_not_sub_line(self) -> None:
+        """Bug: prior.net_revenue_or_derived() used to return $900K (first income
+        sub-line) instead of $1,149,567 (Total for Income). This caused a fake
+        +24% YoY growth (Revenue A) when the brand was actually down -2.5% (D)."""
+        data = self._make_qbo_xlsx()
+        result = intake_mod.parse_dump([("PnL_2025.xlsx", data)], use_llm=False)
+        self.assertTrue(result.has_yoy)
+        # Current revenue: _income_total picks up "Total for Income" = $1,120,483
+        self.assertEqual(result.current.net_revenue_cents, 112_048_300)
+        # Prior revenue: must also come from "Total for Income" col B, not $900K sub-line
+        self.assertIsNotNone(result.prior)
+        prior_rev = result.prior.net_revenue_or_derived()  # type: ignore[union-attr]
+        self.assertEqual(prior_rev, 114_956_700)  # $1,149,567
+
+    def test_qbo_revenue_grade_reflects_true_growth(self) -> None:
+        """With correct prior revenue the revenue grade must be D (-2.5% YoY),
+        not the former false A (+24% from wrong prior)."""
+        from sales_support_agent.services.brand_analysis.schema import NOT_ASSESSED
+        data = self._make_qbo_xlsx()
+        result = intake_mod.parse_dump([("PnL_2025.xlsx", data)], use_llm=False)
+        scored = scoring_mod.score(result.current, result.prior, category="dtc")
+        rev_dim = next(d for d in scored["scorecard"].dimensions if d.key == "revenue")
+        self.assertNotEqual(rev_dim.letter, "A")   # must NOT be fake A
+        self.assertEqual(rev_dim.letter, "D")       # -2.5% YoY → D
+
+    def test_xero_yoy_detected_from_title_row(self) -> None:
+        """Bug: Xero P&L puts years in row 4 not the header, so both 2025 and
+        2024 must be found via _years_of_file scanning title rows. Prior period
+        was never created before because only max-year was added to all_years."""
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = "P&L"
+        rows = [
+            ["Your Company", "", "", ""],
+            ["Profit & Loss", "", "", ""],
+            ["For the year ended 31 December 2025", "", "", ""],
+            ["", "2025", "2024", ""],
+            ["Revenue", "", "", ""],
+            ["Sales Revenue", "1120483", "1149567", ""],
+            ["Total Revenue", "1120483", "1149567", ""],
+            ["Cost of Sales", "", "", ""],
+            ["Purchases", "448193", "459827", ""],
+            ["Gross Profit", "672290", "689740", ""],
+            ["Advertising Expense", "89639", "80470", ""],
+            ["Net Profit", "470603", "505809", ""],
+        ]
+        for r in rows: ws.append(r)
+        buf = io.BytesIO(); wb.save(buf)
+        result = intake_mod.parse_dump([("Xero_PnL.xlsx", buf.getvalue())], use_llm=False)
+        self.assertTrue(result.has_yoy, "Xero P&L must detect prior year from title row")
+        self.assertEqual(result.current.net_revenue_cents, 112_048_300)
+        self.assertIsNotNone(result.prior)
+
+    def test_media_grade_na_with_zero_spend(self) -> None:
+        """Bug: _grade_media returned A when marketing_by_channel had entries but
+        total spend = 0. Should return N/A — 0 spend tells us nothing."""
+        from sales_support_agent.services.brand_analysis.schema import (
+            PeriodFinancials, benchmarks_for, NOT_ASSESSED,
+        )
+        period = PeriodFinancials(
+            net_revenue_cents=100_000_000,
+            marketing_by_channel={"other_marketing": 0},
+        )
+        bm = benchmarks_for("dtc")
+        letter, reason = scoring_mod._grade_media(period, bm)
+        self.assertEqual(letter, NOT_ASSESSED)
+
+    def test_media_grade_na_with_single_channel(self) -> None:
+        """Bug: a single P&L 'Marketing' line created 1 channel with 100% share →
+        F for media. Should be N/A — 1 channel can't show concentration."""
+        from sales_support_agent.services.brand_analysis.schema import (
+            PeriodFinancials, benchmarks_for, NOT_ASSESSED,
+        )
+        period = PeriodFinancials(
+            net_revenue_cents=100_000_000,
+            marketing_by_channel={"other_marketing": 89_639_00},
+        )
+        bm = benchmarks_for("dtc")
+        letter, reason = scoring_mod._grade_media(period, bm)
+        self.assertEqual(letter, NOT_ASSESSED)
+
+    def test_media_grade_real_with_two_channels(self) -> None:
+        """Media grading must still work (and not N/A) when 2+ real channels exist."""
+        from sales_support_agent.services.brand_analysis.schema import (
+            PeriodFinancials, benchmarks_for, NOT_ASSESSED,
+        )
+        period = PeriodFinancials(
+            net_revenue_cents=100_000_000,
+            marketing_by_channel={"meta": 15_000_000, "google": 7_000_000},
+        )
+        bm = benchmarks_for("dtc")
+        letter, reason = scoring_mod._grade_media(period, bm)
+        self.assertNotEqual(letter, NOT_ASSESSED)   # must produce a real grade
+        # meta = 15M / (15+7)M = 68% share → C (>65% but ≤80%)
+        self.assertEqual(letter, "C")
+
+
 if __name__ == "__main__":
     unittest.main()
