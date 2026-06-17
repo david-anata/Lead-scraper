@@ -33,6 +33,24 @@ _GRADE_COLORS = {
 }
 _SEV_COLORS = {"Critical": "#8b4c42", "High": "#c2663b", "Medium": "#b8860b"}
 
+_STAGE_META: dict[str, dict] = {
+    "new":           {"label": "New",             "color": "#64748b"},
+    "reviewing":     {"label": "Reviewing",        "color": "#0ea5e9"},
+    "advancing":     {"label": "Advancing",        "color": "#8b5cf6"},
+    "loi":           {"label": "LOI Sent",         "color": "#f59e0b"},
+    "diligence":     {"label": "Due Diligence",    "color": "#ef4444"},
+    "closed_won":    {"label": "Closed — Won",    "color": "#22c55e"},
+    "closed_passed": {"label": "Closed — Passed", "color": "#94a3b8"},
+}
+
+_REC_COLORS: dict[str, str] = {
+    "Strong Buy":              "#2e7d5b",
+    "Conditional Buy":         "#1a5e8f",
+    "Monitor":                 "#8a6508",
+    "Pass":                    "#64748b",
+    "Pass – Insufficient Data": "#94a3b8",
+}
+
 
 def _esc(text: object) -> str:
     return html.escape(str(text if text is not None else ""))
@@ -201,9 +219,11 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
         </div>
         {_social_fields()}
         {_override_fields()}
-        <div class="btn-row"><button class="btn" type="submit">Run analysis</button></div>
+        <div class="btn-row">
+          <button class="btn" type="submit">Run analysis</button>
+          <a class="btn btn--ghost" href="/admin/executive/brand-analysis/pipeline">Pipeline &rarr;</a>
+        </div>
       </form>
-      {_history_table(runs, heading="Analysis history", empty="No analyses yet — run one above.")}
     """
     return _doc("Brand Analysis", body, user=user)
 
@@ -339,6 +359,344 @@ def _history_table(runs: list, *, heading: str = "", empty: str = "No analyses y
         }});
       </script>
     """
+
+
+# ---------------------------------------------------------------------------
+# Pipeline CRM page
+# ---------------------------------------------------------------------------
+
+
+def _stage_select(report_id: str, current_stage: str) -> str:
+    options = "".join(
+        f'<option value="{k}"{" selected" if k == current_stage else ""}>{_esc(m["label"])}</option>'
+        for k, m in _STAGE_META.items()
+    )
+    color = _STAGE_META.get(current_stage, _STAGE_META["new"])["color"]
+    return (
+        f'<div class="stage-cell" data-id="{_esc(report_id)}" style="--stage-color:{color}">'
+        f'<select class="stage-select" onchange="patchStage(this)">{options}</select>'
+        f'</div>'
+    )
+
+
+def _expand_panel(row: dict) -> str:
+    """Pre-rendered hidden detail panel for a pipeline row."""
+    # Zone A — Financial Snapshot
+    rev = fmt_money(row.get("net_revenue_cents"))
+    cm = fmt_pct(row.get("contribution_margin_bps"))
+    mer_raw = row.get("blended_mer")
+    mer = f"{mer_raw:.2f}x" if mer_raw else "—"
+    yoy_raw = row.get("yoy_revenue_growth_bps")
+    yoy = fmt_pct(yoy_raw) if yoy_raw is not None else "—"
+    yoy_color = "#2e7d5b" if (yoy_raw or 0) >= 0 else "#8b4c42"
+    zone_a = f"""
+      <div class="ep-zone">
+        <div class="ep-zone-title">Financial Snapshot</div>
+        <table class="ep-table">
+          <tr><td>Net Revenue</td><td class="num">{_esc(rev)}</td></tr>
+          <tr><td>Contribution Margin</td><td class="num">{_esc(cm)}</td></tr>
+          <tr><td>Blended MER</td><td class="num">{_esc(mer)}</td></tr>
+          <tr><td>YoY Growth</td><td class="num" style="color:{yoy_color}">{_esc(yoy)}</td></tr>
+        </table>
+      </div>"""
+
+    # Zone B — Scorecard Dimensions
+    dims = row.get("scorecard_dimensions") or []
+    dim_rows = ""
+    for d in dims:
+        letter = d.get("letter") or "—"
+        color = _GRADE_COLORS.get(letter, "#666")
+        reason = _esc((d.get("reason") or "")[:90])
+        dim_rows += (
+            f'<tr><td>{_esc(d.get("label",""))}</td>'
+            f'<td><span class="grade-cell" style="color:{color}">{_esc(letter)}</span></td>'
+            f'<td class="muted">{reason}</td></tr>'
+        )
+    zone_b = f"""
+      <div class="ep-zone">
+        <div class="ep-zone-title">Scorecard</div>
+        <table class="ep-table">
+          <thead><tr><th>Dimension</th><th>Grade</th><th>Reason</th></tr></thead>
+          <tbody>{dim_rows or "<tr><td colspan=3 class=muted>No data</td></tr>"}</tbody>
+        </table>
+      </div>"""
+
+    # Zone C — Thesis & Risks
+    thesis = row.get("investment_thesis") or []
+    risks = row.get("key_risks") or []
+    for_items = "".join(f"<li>{_esc(t)}</li>" for t in thesis[:3]) or "<li class='muted'>—</li>"
+    against_items = "".join(f"<li>{_esc(r)}</li>" for r in risks[:3]) or "<li class='muted'>—</li>"
+    zone_c = f"""
+      <div class="ep-zone">
+        <div class="ep-zone-title">Investment Case</div>
+        <div class="ep-two-col">
+          <div>
+            <div class="ep-sub pass">For</div>
+            <ul class="ep-list">{for_items}</ul>
+          </div>
+          <div>
+            <div class="ep-sub fail">Against</div>
+            <ul class="ep-list">{against_items}</ul>
+          </div>
+        </div>
+      </div>"""
+
+    # Zone D — Red Flags (Critical + High only)
+    all_flags = row.get("red_flags") or []
+    flags = [f for f in all_flags if f.get("severity") in ("Critical", "High")]
+    if flags:
+        flag_items = ""
+        for f in flags:
+            sev = f.get("severity", "")
+            col = _SEV_COLORS.get(sev, "#666")
+            flag_items += (
+                f'<div class="flag-row">'
+                f'<span class="sev" style="color:{col}">{_esc(sev)}</span> '
+                f'<strong>{_esc(f.get("title",""))}</strong>'
+                f'<div class="muted" style="font-size:12px;margin-top:2px">{_esc(f.get("detail","")[:120])}</div>'
+                f'</div>'
+            )
+    else:
+        flag_items = '<div class="muted">No critical or high flags.</div>'
+    zone_d = f"""
+      <div class="ep-zone">
+        <div class="ep-zone-title">Red Flags</div>
+        {flag_items}
+      </div>"""
+
+    return f"""
+      <div class="expand-panel">
+        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}</div>
+      </div>"""
+
+
+def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
+    stage_opts_all = "".join(
+        f'<option value="{k}">{_esc(m["label"])}</option>'
+        for k, m in _STAGE_META.items()
+    )
+
+    if not runs:
+        empty_body = """
+          <span class="eyebrow">Executive · Brand Analysis</span>
+          <h1>Pipeline</h1>
+          <p class="muted">No analyses yet. <a href="/admin/executive/brand-analysis">Run your first analysis &rarr;</a></p>
+        """
+        return _doc("Brand Analysis — Pipeline", empty_body, user=user)
+
+    rows_html = ""
+    for r in runs:
+        rid = _esc(r["id"])
+        brand = _esc(r.get("brand") or r.get("label") or "Brand")
+        brand_link = f'/admin/executive/brand-analysis/{r["id"]}'
+        grade = r.get("grade") or "—"
+        score = r.get("score_100", 0)
+        grade_color = _GRADE_COLORS.get(grade, "#666")
+        conf = r.get("confidence") or "—"
+        period = _esc(r.get("period_current") or "")
+
+        # Recommendation badge
+        rec = r.get("recommendation") or ""
+        rec_color = _REC_COLORS.get(rec, "#64748b")
+        rec_cell = (
+            f'<span class="rec-badge" style="background:{rec_color}18;color:{rec_color};border:1px solid {rec_color}40">'
+            f'{_esc(rec or "—")}</span>'
+        ) if rec else '<span class="muted">—</span>'
+
+        # Revenue / growth / margin
+        rev = fmt_money(r.get("net_revenue_cents"))
+        yoy_raw = r.get("yoy_revenue_growth_bps")
+        yoy_str = fmt_pct(yoy_raw) if yoy_raw is not None else "—"
+        yoy_color = "#2e7d5b" if (yoy_raw or 0) >= 0 else "#8b4c42"
+        margin = fmt_pct(r.get("net_margin_bps"))
+
+        # Updated date
+        updated = (r.get("updated_at") or r.get("created_at") or "")[:10]
+
+        # Three-dot menu
+        share = _esc(r.get("share_path") or "")
+        share_token = r.get("share_token") or ""
+        copy_item = (
+            f'<div class="dot-item" onclick="copyLink(\'{share}\')">Copy share link</div>'
+            if share_token else ""
+        )
+        public_item = (
+            f'<a class="dot-item" href="{share}" target="_blank" rel="noreferrer">Open public page</a>'
+            if share_token else ""
+        )
+        dot_menu = f"""
+          <div class="dot-wrap">
+            <button class="dot-btn" onclick="toggleDot(this)" title="Actions">&#8943;</button>
+            <div class="dot-menu">
+              <a class="dot-item" href="{_esc(brand_link)}">Open report</a>
+              <a class="dot-item" href="{_esc(brand_link)}/edit">Edit &amp; rerun</a>
+              {copy_item}
+              {public_item}
+              <a class="dot-item" href="{_esc(brand_link)}/download">Download .docx</a>
+              <div class="dot-item dot-item--danger" onclick="deleteReport('{rid}', this)">Delete</div>
+            </div>
+          </div>"""
+
+        status = r.get("status")
+        if status == "error":
+            grade_cell = '<span class="muted">error</span>'
+        else:
+            grade_cell = f'<span class="grade-cell" style="color:{grade_color}">{_esc(grade)}</span> <span class="muted">{score}/100</span>'
+
+        expand_html = _expand_panel(r)
+        expand_id = f"exp-{r['id']}"
+
+        rows_html += f"""
+          <tr class="data-row" data-expand="{expand_id}">
+            <td><a href="{_esc(brand_link)}">{brand}</a></td>
+            <td>{_stage_select(r["id"], r.get("stage") or "new")}</td>
+            <td>{grade_cell}</td>
+            <td>{rec_cell}</td>
+            <td class="num">{_esc(rev)}</td>
+            <td class="num" style="color:{yoy_color}">{_esc(yoy_str)}</td>
+            <td class="num">{_esc(margin)}</td>
+            <td><span class="pill conf-{_esc(conf)}">{_esc(conf)}</span></td>
+            <td>{period}</td>
+            <td class="dot-cell">{dot_menu}</td>
+          </tr>
+          <tr class="expand-row" id="{expand_id}" style="display:none">
+            <td colspan="10" style="padding:0">{expand_html}</td>
+          </tr>"""
+
+    body = f"""
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div>
+          <span class="eyebrow">Executive · Brand Analysis</span>
+          <h1 style="margin-top:8px">Pipeline</h1>
+        </div>
+        <a class="btn btn--ghost" href="/admin/executive/brand-analysis">&larr; New Analysis</a>
+      </div>
+      <style>
+        .stage-cell {{ display:flex;align-items:center; }}
+        .stage-select {{
+          appearance:none; -webkit-appearance:none;
+          border:none; background:transparent; font-size:12px; font-weight:700;
+          font-family:"Montserrat",sans-serif; cursor:pointer; padding:3px 18px 3px 8px;
+          border-radius:20px; background-color:color-mix(in srgb,var(--stage-color) 12%,transparent);
+          color:var(--stage-color);
+          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+          background-repeat:no-repeat; background-position:right 5px center;
+        }}
+        .stage-select:focus {{ outline:2px solid var(--stage-color); outline-offset:1px; }}
+        .rec-badge {{ font-size:11px;font-weight:700;font-family:"Montserrat",sans-serif;
+          padding:3px 10px;border-radius:20px;white-space:nowrap; }}
+        .dot-cell {{ width:44px;text-align:center;padding:6px; }}
+        .dot-wrap {{ position:relative;display:inline-block; }}
+        .dot-btn {{ background:none;border:none;font-size:20px;cursor:pointer;color:var(--dark-blue);
+          padding:2px 6px;border-radius:6px;line-height:1; }}
+        .dot-btn:hover {{ background:rgba(43,54,68,0.08); }}
+        .dot-menu {{ display:none;position:absolute;right:0;top:100%;background:#fff;
+          border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 16px rgba(43,54,68,0.14);
+          min-width:170px;z-index:200;overflow:hidden; }}
+        .dot-item {{ display:block;padding:9px 14px;font-size:13px;color:var(--dark-blue);
+          text-decoration:none;cursor:pointer;white-space:nowrap; }}
+        .dot-item:hover {{ background:rgba(133,187,218,0.12); }}
+        .dot-item--danger {{ color:#8b4c42; }}
+        .dot-item--danger:hover {{ background:rgba(139,76,66,0.08); }}
+        .data-row {{ cursor:pointer; }}
+        .data-row:hover td {{ background:rgba(133,187,218,0.07); }}
+        .expand-row td {{ background:var(--light-brown)!important; }}
+        .expand-panel {{ padding:20px; }}
+        .ep-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:16px; }}
+        .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px; }}
+        .ep-zone-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
+          text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:10px; }}
+        .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse; }}
+        .ep-table td,th {{ padding:4px 6px;border-bottom:1px solid var(--border); }}
+        .ep-table thead th {{ background:rgba(133,187,218,0.15);font-size:10px; }}
+        .ep-sub {{ font-size:11px;font-weight:700;font-family:"Montserrat",sans-serif;
+          text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px; }}
+        .ep-two-col {{ display:grid;grid-template-columns:1fr 1fr;gap:12px; }}
+        .ep-list {{ margin:0;padding-left:16px;font-size:12.5px; }}
+        .ep-list li {{ margin:3px 0; }}
+        .flag-row {{ padding:5px 0;border-bottom:1px solid var(--border); }}
+        .flag-row:last-child {{ border-bottom:none; }}
+        @media(max-width:780px){{ .ep-grid{{grid-template-columns:1fr;}} .ep-two-col{{grid-template-columns:1fr;}} }}
+        table.pipeline {{ table-layout:auto; }}
+        table.pipeline td, table.pipeline th {{ vertical-align:middle; }}
+      </style>
+      <table class="pipeline">
+        <thead>
+          <tr>
+            <th>Brand</th><th>Stage</th><th>Grade</th><th>Recommendation</th>
+            <th class="num">Revenue</th><th class="num">YoY</th><th class="num">Net Margin</th>
+            <th>Confidence</th><th>Period</th><th></th>
+          </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+      <script>
+        // Expand/collapse row panels
+        document.querySelector('tbody').addEventListener('click', function(e){{
+          if(e.target.closest('.dot-wrap,.stage-select')) return;
+          var row = e.target.closest('tr.data-row');
+          if(!row) return;
+          var expId = row.dataset.expand;
+          var expRow = document.getElementById(expId);
+          if(!expRow) return;
+          var open = expRow.style.display !== 'none';
+          // Close all open panels
+          document.querySelectorAll('tr.expand-row').forEach(function(r){{r.style.display='none';}});
+          if(!open) expRow.style.display = 'table-row';
+        }});
+
+        // Three-dot menu toggle
+        function toggleDot(btn){{
+          var menu = btn.nextElementSibling;
+          var isOpen = menu.style.display === 'block';
+          document.querySelectorAll('.dot-menu').forEach(function(m){{m.style.display='none';}});
+          if(!isOpen) menu.style.display = 'block';
+          event.stopPropagation();
+        }}
+        document.addEventListener('click', function(){{
+          document.querySelectorAll('.dot-menu').forEach(function(m){{m.style.display='none';}});
+        }});
+
+        // Stage PATCH
+        function patchStage(sel){{
+          var cell = sel.closest('.stage-cell');
+          var id = cell.dataset.id;
+          var stage = sel.value;
+          fetch('/admin/executive/brand-analysis/' + id + '/stage', {{
+            method:'PATCH',
+            headers:{{'Content-Type':'application/json'}},
+            body:JSON.stringify({{stage:stage}})
+          }}).then(function(r){{
+            if(r.ok){{
+              var meta = {{{",".join(f'"{k}":{{"color":"{m["color"]}"}}' for k,m in _STAGE_META.items())}}};
+              if(meta[stage]) cell.style.setProperty('--stage-color', meta[stage].color);
+              cell.style.outline = '2px solid #22c55e';
+              setTimeout(function(){{cell.style.outline='';}}, 800);
+            }}
+          }});
+          event.stopPropagation();
+        }}
+
+        // Copy share link
+        function copyLink(path){{
+          navigator.clipboard.writeText(window.location.origin + path);
+        }}
+
+        // Delete report
+        function deleteReport(id, el){{
+          if(!confirm('Delete this report permanently?')) return;
+          fetch('/admin/executive/brand-analysis/' + id, {{method:'DELETE'}}).then(function(r){{
+            if(r.ok){{
+              var dataRow = el.closest('.dot-menu').previousElementSibling.closest('tr');
+              var expRow = document.getElementById('exp-' + id);
+              if(dataRow) dataRow.remove();
+              if(expRow) expRow.remove();
+            }}
+          }});
+        }}
+      </script>
+    """
+    return _doc("Brand Analysis — Pipeline", body, user=user)
 
 
 # ---------------------------------------------------------------------------

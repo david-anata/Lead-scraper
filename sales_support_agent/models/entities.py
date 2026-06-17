@@ -755,6 +755,7 @@ class BrandAnalysisReport(Base):
     # Inputs persisted for edit + rerun (overwrite-in-place).
     brand_website: Mapped[str] = mapped_column(String(512), default="")
     context_notes: Mapped[str] = mapped_column(Text, default="")
+    stage: Mapped[str] = mapped_column(String(32), default="new", index=True)  # acquisition funnel stage
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

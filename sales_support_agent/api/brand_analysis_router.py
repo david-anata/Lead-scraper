@@ -33,6 +33,8 @@ from sales_support_agent.services.brand_analysis.report_page import (
     render_admin_view,
     render_brand_analysis_page,
     render_edit_page,
+    render_pipeline_page,
+    _STAGE_META,
 )
 from sales_support_agent.services.brand_analysis.share_page import render_share_page
 from sales_support_agent.services.brand_analysis.intake_guide_page import render_intake_guide
@@ -154,6 +156,12 @@ def landing(request: Request, msg: str = "", detail: str = "") -> HTMLResponse:
     return HTMLResponse(render_brand_analysis_page(
         runs=runs, user=get_session_user_from_request(request), flash=msg, detail=detail,
     ))
+
+
+@router.get("/pipeline", response_class=HTMLResponse)
+def pipeline(request: Request) -> HTMLResponse:
+    runs = storage.list_pipeline_reports()
+    return HTMLResponse(render_pipeline_page(runs, user=get_session_user_from_request(request)))
 
 
 def _opt_int(v) -> Optional[int]:
@@ -283,6 +291,35 @@ async def rerun(
             f"{_BASE}/{report_id}/edit?msg=" + quote_plus(f"Rerun failed: {str(exc)[:120]}"),
             status_code=303)
     return RedirectResponse(f"{_BASE}/{report_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline PATCH/DELETE helpers
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel
+
+
+class _StageBody(_BaseModel):
+    stage: str
+
+
+@router.patch("/{report_id}/stage")
+def update_stage(report_id: str, body: _StageBody) -> dict:
+    if body.stage not in _STAGE_META:
+        raise HTTPException(status_code=422, detail=f"Unknown stage '{body.stage}'.")
+    ok = storage.set_stage(report_id, body.stage)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True}
+
+
+@router.delete("/{report_id}")
+def delete_report(report_id: str) -> dict:
+    ok = storage.delete_report(report_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

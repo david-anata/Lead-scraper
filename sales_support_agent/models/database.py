@@ -150,6 +150,7 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "report_html": "ALTER TABLE brand_analysis_reports ADD COLUMN report_html TEXT NOT NULL DEFAULT ''",
             "brand_website": "ALTER TABLE brand_analysis_reports ADD COLUMN brand_website VARCHAR(512) NOT NULL DEFAULT ''",
             "context_notes": "ALTER TABLE brand_analysis_reports ADD COLUMN context_notes TEXT NOT NULL DEFAULT ''",
+            "stage": "ALTER TABLE brand_analysis_reports ADD COLUMN stage VARCHAR(32) NOT NULL DEFAULT 'new'",
         },
         "app_users": {
             "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
@@ -698,9 +699,11 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
             "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS report_html TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS brand_website VARCHAR(512) NOT NULL DEFAULT ''",
             "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS context_notes TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS stage VARCHAR(32) NOT NULL DEFAULT 'new'",
         ):
             connection.execute(text(_stmt))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_share_token ON brand_analysis_reports (share_token)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_stage ON brand_analysis_reports (stage)"))
 
     # Access control (RBAC) — users, custom roles, invites, access requests.
     with engine.begin() as connection:

@@ -277,6 +277,7 @@ def list_reports(limit: int = 50) -> list[dict]:
                 "brand": r.brand,
                 "category": r.category,
                 "status": r.status,
+                "stage": r.stage,
                 "grade": r.grade,
                 "score_100": r.score_100,
                 "confidence": r.confidence,
@@ -289,3 +290,77 @@ def list_reports(limit: int = 50) -> list[dict]:
             }
             for r in rows
         ]
+
+
+def list_pipeline_reports(limit: int = 200) -> list[dict]:
+    """Full pipeline CRM list — includes report_json for financial columns."""
+    with _session() as s:
+        rows = (
+            s.query(ReportRow)
+            .order_by(ReportRow.updated_at.desc())
+            .limit(limit)
+            .all()
+        )
+        out = []
+        for r in rows:
+            rj: dict = r.report_json or {}
+            current: dict = rj.get("current") or {}
+            out.append({
+                "id": r.id,
+                "label": r.label,
+                "brand": r.brand,
+                "category": r.category,
+                "status": r.status,
+                "stage": r.stage,
+                "grade": r.grade,
+                "score_100": r.score_100,
+                "confidence": r.confidence,
+                "period_current": r.period_current,
+                "period_prior": r.period_prior,
+                "slug": r.slug,
+                "share_token": r.share_token,
+                "share_path": share_path(r),
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                # Financial columns extracted from report_json
+                "recommendation": rj.get("recommendation") or "",
+                "net_revenue_cents": current.get("net_revenue_cents"),
+                "net_margin_bps": current.get("net_margin_bps"),
+                "contribution_margin_bps": current.get("contribution_margin_bps"),
+                "blended_mer": current.get("blended_mer"),
+                "yoy_revenue_growth_bps": rj.get("yoy_revenue_growth_bps"),
+                # Expand-panel data
+                "scorecard_dimensions": (rj.get("scorecard") or {}).get("dimensions") or [],
+                "investment_thesis": rj.get("investment_thesis") or [],
+                "key_risks": rj.get("key_risks") or [],
+                "red_flags": rj.get("red_flags") or [],
+            })
+        return out
+
+
+def set_stage(report_id: str, stage: str) -> bool:
+    """Update the pipeline stage for a report. Returns False if not found."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        row.stage = stage
+        row.updated_at = datetime.now(timezone.utc)
+        return True
+
+
+def delete_report(report_id: str) -> bool:
+    """Delete a report row and its kv_store artifacts. Returns False if not found."""
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        s.delete(row)
+    # Best-effort kv_store cleanup (don't crash if keys are absent).
+    for suffix in ("sources", "docx", "versions"):
+        try:
+            kv_set_json(f"brand_analysis:{report_id}:{suffix}", None)
+        except Exception:  # noqa: BLE001
+            pass
+    return True
