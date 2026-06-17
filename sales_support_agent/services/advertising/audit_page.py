@@ -5,6 +5,7 @@ fulfillment_dashboard.py) that emits a full page using the shared agent nav +
 from __future__ import annotations
 
 import html
+import json
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -189,10 +190,50 @@ def _download_guide() -> str:
     """
 
 
-def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None) -> str:
+def _goals_display(raw: Optional[dict]) -> dict:
+    """Turn a stored goals dict (cents / bps) into the display strings the goal
+    inputs expect, so client-side pre-fill can set values directly."""
+    g = raw or {}
+    rev = g.get("revenue_target_cents")
+    acos = g.get("acos_target_bps")
+    tacos = g.get("tacos_target_bps")
+    units = g.get("units_target")
+    return {
+        "revenue": "" if rev is None else f"{rev / 100:.2f}",
+        "acos": "" if acos is None else f"{acos / 100:.1f}",
+        "tacos": "" if tacos is None else f"{tacos / 100:.1f}",
+        "units": "" if units is None else str(units),
+        "period": g.get("period") or "monthly",
+    }
+
+
+def _client_select(clients: list[dict]) -> str:
+    opts = ['<option value="">— No client (ad-hoc) —</option>']
+    for c in clients or []:
+        opts.append(f'<option value="{_esc(c.get("id"))}">{_esc(c.get("name") or "Untitled client")}</option>')
+    return (
+        '<div class="field" style="max-width:480px;">'
+        '<label>Client</label>'
+        '<select id="adv-client" name="client_id" onchange="advClientChange()">'
+        + "".join(opts) +
+        '</select>'
+        '<span class="hint">Pick the client to run this audit for — its goals pre-fill below and the run is '
+        'saved to its history. <a href="/admin/advertising/clients">+ Add a client</a>.</span>'
+        '</div>'
+    )
+
+
+def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
+                 clients: Optional[list[dict]] = None,
+                 client_goals_map: Optional[dict] = None) -> str:
     ext_channels = "".join(f'<option value="{c}">{c.title()}</option>' for c in EXTERNAL_CHANNELS)
+    # {client_id: display-ready goal strings} so picking a client fills the goal
+    # inputs client-side with no extra round-trip.
+    prefill = {cid: _goals_display(raw) for cid, raw in (client_goals_map or {}).items()}
+    prefill_json = json.dumps(prefill)
     return f"""
     <form id="adv-run-form" class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
+      {_client_select(clients or [])}
       <div class="dropzone">
         <label for="adv-files"><strong>Drop all your Amazon exports here</strong><br>
         <span class="empty">Bulk file, Search Term, Business Report, SQP, DSP — in any order. The tool detects what each file is.</span></label>
@@ -236,6 +277,19 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None) -
       <div><button class="btn" type="submit">Run audit &amp; build burn list</button></div>
     </form>
     <script>
+    window.__advClientGoals = {prefill_json};
+    function advClientChange(){{
+      var sel = document.getElementById('adv-client');
+      var form = document.getElementById('adv-run-form');
+      if (!sel || !form) return;
+      var g = window.__advClientGoals[sel.value];
+      if (!g) return;  // ad-hoc / unknown — leave whatever's typed
+      if (form.revenue_target) form.revenue_target.value = g.revenue;
+      if (form.acos_target) form.acos_target.value = g.acos;
+      if (form.tacos_target) form.tacos_target.value = g.tacos;
+      if (form.units_target) form.units_target.value = g.units;
+      if (form.period) form.period.value = g.period;
+    }}
     (function(){{
       var add = document.getElementById('adv-add-ext');
       var rows = document.getElementById('ext-rows');
@@ -341,6 +395,8 @@ def render_audit_page(
     user: Optional[dict] = None,
     flash: str = "",
     detail: str = "",
+    clients: Optional[list[dict]] = None,
+    client_goals_map: Optional[dict] = None,
 ) -> str:
     flash_html = ""
     if flash:
@@ -359,7 +415,7 @@ def render_audit_page(
       </section>
       {flash_html}
       {strip_html}
-      <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest, goals)}</div>
+      <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest, goals, clients, client_goals_map)}</div>
       <div class="card"><h2>History <small>· past runs &amp; downloads</small></h2>{_history_table(runs)}</div>
       {_how_to()}
       <div id="adv-loading" class="loading-overlay">
@@ -372,6 +428,42 @@ def render_audit_page(
       </div>
     """
     return _page("agent | Advertising Burn List", body, user=user)
+
+
+def render_brand_mismatch_page(
+    *,
+    client_name: str,
+    detected: str,
+    known: list[str],
+    token: str,
+    user: Optional[dict] = None,
+) -> str:
+    """The block/confirm gate: the uploaded files' detected brand doesn't match
+    anything this client has run before. Make the user confirm before running."""
+    known_html = ", ".join(f"<strong>{_esc(k)}</strong>" for k in known) or "—"
+    body = f"""
+      <section class="page-header">
+        <span class="eyebrow">Advertising</span>
+        <h1 class="page-title">Hold on<span class="highlight">.</span></h1>
+        <p class="page-copy">These files don't look like <strong>{_esc(client_name)}</strong>'s usual brand.
+        Double-check you picked the right client before running.</p>
+      </section>
+      <div class="card" style="border:2px solid #d9a441;background:#fdf6e9;">
+        <h2>⚠️ Possible client / file mismatch</h2>
+        <p style="font-size:15px;line-height:1.6;">
+          The uploaded Business Report looks like <strong>{_esc(detected or "an unknown brand")}</strong>,
+          but <strong>{_esc(client_name)}</strong>'s past audits have been for {known_html}.
+        </p>
+        <p class="empty" style="font-size:14px;">If that's expected (a new brand for this client), run anyway.
+        Otherwise cancel, pick the correct client, and re-upload.</p>
+        <form method="post" action="/admin/advertising/audit/run/confirm" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+          <input type="hidden" name="confirm_token" value="{_esc(token)}">
+          <button class="btn" type="submit">Run anyway for {_esc(client_name)}</button>
+          <a class="btn secondary" href="/admin/advertising/audit">Cancel</a>
+        </form>
+      </div>
+    """
+    return _page("agent | Confirm client", body, user=user)
 
 
 _FAQ = [

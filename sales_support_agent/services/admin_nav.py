@@ -58,6 +58,7 @@ _NAV_SECTIONS = [
     ]),
     _NavSection("advertising", "Advertising", "advertising", [
         _NavSubpage("advertising.audit", "Audit", "/admin/advertising/audit", "advertising_audit"),
+        _NavSubpage("advertising.audit", "Clients", "/admin/advertising/clients", "advertising_clients"),
     ]),
     _NavSection("executive", "Executive", "executive", [
         _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
