@@ -361,6 +361,51 @@ def set_stage(report_id: str, stage: str) -> bool:
         return True
 
 
+def set_social_data(
+    report_id: str,
+    email_list_size: int,
+    social_handles: dict,
+    social_signals: dict,
+) -> Optional[dict]:
+    """Re-run the social opportunity track with updated inputs and persist.
+    Returns the new brand_social dict (with grade/score/confidence), or None if
+    the report doesn't exist.  Clears report_html so the share page is
+    re-rendered on next view with the fresh social section."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return None
+        rj: dict = dict(row.report_json or {})
+        # Merge new inputs into report_json (keep existing fields untouched).
+        rj["email_list_size"] = email_list_size
+        rj["social_handles"] = social_handles
+        rj["social_signals"] = social_signals
+        # Recompute social track using the already-computed financial metrics.
+        from sales_support_agent.services.brand_analysis.schema import (
+            BrandReport, Metrics, PeriodFinancials,
+        )
+        from sales_support_agent.services.brand_analysis.social import build_brand_social
+        try:
+            report_obj = BrandReport.from_dict(rj)
+            metrics = report_obj.current
+            period = PeriodFinancials()
+        except Exception:
+            metrics = Metrics()
+            period = PeriodFinancials()
+        brand_social = build_brand_social(
+            metrics, period,
+            email_list_size=email_list_size,
+            social_handles=social_handles,
+            social_signals=social_signals,
+        )
+        rj["brand_social"] = brand_social
+        row.report_json = rj
+        row.report_html = ""  # force re-render on next share-page view
+        row.updated_at = datetime.now(timezone.utc)
+        return brand_social
+
+
 def set_notes(report_id: str, notes: str) -> bool:
     """Persist analyst deal notes. Returns False if not found."""
     from datetime import timezone

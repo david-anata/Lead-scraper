@@ -322,6 +322,30 @@ def delete_report(report_id: str) -> dict:
     return {"ok": True}
 
 
+class _SocialBody(_BaseModel):
+    email_list_size: int = 0
+    social_handles: dict = {}
+    social_signals: dict = {}
+
+
+@router.patch("/{report_id}/social")
+def update_social(report_id: str, body: _SocialBody) -> dict:
+    result = storage.set_social_data(
+        report_id,
+        email_list_size=body.email_list_size,
+        social_handles=body.social_handles,
+        social_signals=body.social_signals,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {
+        "ok": True,
+        "social_grade": result.get("letter") or "",
+        "social_score_100": result.get("score_100") or 0,
+        "social_confidence": result.get("confidence") or "",
+    }
+
+
 class _NoteBody(_BaseModel):
     notes: str
 

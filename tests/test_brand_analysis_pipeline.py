@@ -193,6 +193,27 @@ class PipelineEndpoints(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match["ask_price_cents"], 250000_00)
 
+    def test_social_patch_recomputes_grade(self) -> None:
+        rid = _make_row("SocialPatchBrand")
+        resp = self.client.patch(
+            f"/admin/executive/brand-analysis/{rid}/social",
+            json={
+                "email_list_size": 0,
+                "social_handles": {},
+                "social_signals": {"review_rating": 4.8, "review_count": 800},
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertIn(data["social_grade"], ("A", "B", "C", "D", "F"))
+        self.assertGreater(data["social_score_100"], 0)
+        # Persisted to report_json
+        rows = storage.list_pipeline_reports()
+        match = next((r for r in rows if r["id"] == rid), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["social_grade"], data["social_grade"])
+
     def test_deal_patch_null_clears_price(self) -> None:
         rid = _make_row("DealBrandClear")
         self.client.patch(

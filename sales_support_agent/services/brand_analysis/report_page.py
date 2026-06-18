@@ -500,6 +500,102 @@ def _expand_panel(row: dict) -> str:
     else:
         zone_e = ""
 
+    # Zone G — Social Metrics (editable; saves via PATCH and recomputes grade)
+    rid_g = _esc(row.get("id") or "")
+    s_signals = row.get("social_signals") or {}
+    s_handles = row.get("social_handles") or {}
+    s_email   = int(row.get("email_list_size") or 0)
+    _inp = "style='width:100%;height:30px;padding:0 8px;border:1px solid var(--border);border-radius:6px;font-size:12.5px;font-family:inherit;color:var(--text);box-sizing:border-box'"
+
+    def _soc_url(platform):
+        return _esc(s_handles.get(platform) or "")
+
+    def _soc_fol(key):
+        v = s_signals.get(key)
+        return _esc(str(int(v)) if v else "")
+
+    zone_g = f"""
+      <div class="ep-zone" style="grid-column:1/-1">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div class="ep-zone-title" style="margin:0">Social Metrics</div>
+          <button onclick="saveSocial('{rid_g}',this)"
+            style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid var(--dark-blue);
+            background:rgba(133,187,218,.12);color:var(--dark-blue);cursor:pointer;font-family:inherit">
+            Update grade
+          </button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Email / SMS list</div>
+            <input id="soc-email-{rid_g}" type="number" min="0" step="100" value="{s_email}" placeholder="0" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Avg review rating</div>
+            <input id="soc-rating-{rid_g}" type="number" min="1" max="5" step="0.1"
+              value="{_esc(str(s_signals.get('review_rating','') or ''))}" placeholder="4.5" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Total review count</div>
+            <input id="soc-rcount-{rid_g}" type="number" min="0"
+              value="{_esc(str(int(s_signals['review_count']) if s_signals.get('review_count') else ''))}" placeholder="500" {_inp}>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Instagram URL</div>
+            <input id="soc-ig-url-{rid_g}" type="url" value="{_soc_url('instagram')}" placeholder="instagram.com/brand" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">IG followers</div>
+            <input id="soc-ig-fol-{rid_g}" type="number" min="0" value="{_soc_fol('instagram_followers')}" placeholder="0" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">TikTok URL</div>
+            <input id="soc-tt-url-{rid_g}" type="url" value="{_soc_url('tiktok')}" placeholder="tiktok.com/@brand" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">TT followers</div>
+            <input id="soc-tt-fol-{rid_g}" type="number" min="0" value="{_soc_fol('tiktok_followers')}" placeholder="0" {_inp}>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Facebook URL</div>
+            <input id="soc-fb-url-{rid_g}" type="url" value="{_soc_url('facebook')}" placeholder="facebook.com/brand" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">FB followers</div>
+            <input id="soc-fb-fol-{rid_g}" type="number" min="0" value="{_soc_fol('facebook_followers')}" placeholder="0" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">YouTube URL</div>
+            <input id="soc-yt-url-{rid_g}" type="url" value="{_soc_url('youtube')}" placeholder="youtube.com/@brand" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">YT subscribers</div>
+            <input id="soc-yt-sub-{rid_g}" type="number" min="0" value="{_soc_fol('youtube_subscribers')}" placeholder="0" {_inp}>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Days since last post</div>
+            <input id="soc-recency-{rid_g}" type="number" min="0"
+              value="{_esc(str(int(s_signals['posting_recency_days']) if s_signals.get('posting_recency_days') else ''))}"
+              placeholder="e.g. 14" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Engagement rate %</div>
+            <input id="soc-eng-{rid_g}" type="number" min="0" max="100" step="0.1"
+              value="{_esc(str(s_signals.get('engagement_rate_pct','') or ''))}" placeholder="e.g. 3.2" {_inp}>
+          </div>
+          <div style="display:flex;align-items:flex-end;padding-bottom:2px">
+            <span class="muted" style="font-size:11.5px;line-height:1.4">
+              Grade updates instantly. No social = A (Ascend builds from Day 1).
+            </span>
+          </div>
+        </div>
+      </div>"""
+
     # Zone F — Deal Info (notes + ask price)
     rid = _esc(row.get("id") or "")
     notes_val = html.escape(row.get("notes") or "", quote=True)
@@ -534,7 +630,7 @@ def _expand_panel(row: dict) -> str:
 
     return f"""
       <div class="expand-panel">
-        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_f}</div>
+        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_g}{zone_f}</div>
       </div>"""
 
 
@@ -572,14 +668,28 @@ def _social_tooltip(r: dict) -> str:
         )
 
     handles = r.get("social_handles") or {}
+    _FOLLOWER_KEYS = {
+        "instagram": "instagram_followers", "tiktok": "tiktok_followers",
+        "facebook": "facebook_followers", "youtube": "youtube_subscribers",
+        "twitter": "twitter_followers",
+    }
     for platform, url in sorted(handles.items()):
         handle = (url or "").rstrip("/").rsplit("/", 1)[-1] if "/" in (url or "") else (url or "")
         if handle and not handle.startswith("@"):
             handle = f"@{handle}"
+        fkey = _FOLLOWER_KEYS.get(platform)
+        followers = signals.get(fkey) if fkey else None
+        follower_str = ""
+        if followers:
+            try:
+                f = int(followers)
+                follower_str = f" · {f/1000:.0f}K" if f >= 1000 else f" · {f}"
+            except (TypeError, ValueError):
+                pass
         if handle:
             lines.append(
                 f'<div class="tt-row"><span class="tt-lbl">{_esc(platform.title())}</span>'
-                f'<span>{_esc(handle)}</span></div>'
+                f'<span>{_esc(handle)}{_esc(follower_str)}</span></div>'
             )
 
     dims = r.get("social_dimensions") or []
@@ -1090,6 +1200,101 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           }});
         }}
 
+        // ── Social Metrics save ───────────────────────────────────────────────
+        var _gradeColors = {{A:'#2e7d5b',B:'#3f8f6e',C:'#b8860b',D:'#c2663b',F:'#8b4c42'}};
+
+        function _v(id) {{
+          var el = document.getElementById(id);
+          return el ? el.value : '';
+        }}
+        function _parseUrl(url) {{
+          var s = (url || '').trim();
+          if (!s) return '';
+          if (!s.startsWith('http')) return 'https://' + s;
+          return s;
+        }}
+
+        function saveSocial(rid, btn) {{
+          var handles = {{}};
+          var igUrl = _parseUrl(_v('soc-ig-url-' + rid));
+          var ttUrl = _parseUrl(_v('soc-tt-url-' + rid));
+          var fbUrl = _parseUrl(_v('soc-fb-url-' + rid));
+          var ytUrl = _parseUrl(_v('soc-yt-url-' + rid));
+          if (igUrl) handles['instagram'] = igUrl;
+          if (ttUrl) handles['tiktok']    = ttUrl;
+          if (fbUrl) handles['facebook']  = fbUrl;
+          if (ytUrl) handles['youtube']   = ytUrl;
+
+          var signals = {{}};
+          var rating  = parseFloat(_v('soc-rating-' + rid));
+          var rcount  = parseInt(_v('soc-rcount-' + rid), 10);
+          var recency = parseInt(_v('soc-recency-' + rid), 10);
+          var eng     = parseFloat(_v('soc-eng-' + rid));
+          var igFol   = parseInt(_v('soc-ig-fol-' + rid), 10);
+          var ttFol   = parseInt(_v('soc-tt-fol-' + rid), 10);
+          var fbFol   = parseInt(_v('soc-fb-fol-' + rid), 10);
+          var ytSub   = parseInt(_v('soc-yt-sub-' + rid), 10);
+          if (!isNaN(rating))  signals['review_rating']        = rating;
+          if (!isNaN(rcount))  signals['review_count']         = rcount;
+          if (!isNaN(recency)) signals['posting_recency_days'] = recency;
+          if (!isNaN(eng))     signals['engagement_rate_pct']  = eng;
+          if (!isNaN(igFol))   signals['instagram_followers']  = igFol;
+          if (!isNaN(ttFol))   signals['tiktok_followers']     = ttFol;
+          if (!isNaN(fbFol))   signals['facebook_followers']   = fbFol;
+          if (!isNaN(ytSub))   signals['youtube_subscribers']  = ytSub;
+
+          var email = parseInt(_v('soc-email-' + rid), 10) || 0;
+          if (btn) {{ btn.textContent = 'Saving…'; btn.disabled = true; }}
+
+          fetch('/admin/executive/brand-analysis/' + rid + '/social', {{
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{
+              email_list_size: email,
+              social_handles: handles,
+              social_signals: signals
+            }})
+          }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+            if (btn) {{ btn.textContent = 'Update grade'; btn.disabled = false; }}
+            if (!data.ok) return;
+            // Update the Social cell in the table row
+            var grade = data.social_grade || '—';
+            var score = data.social_score_100 || 0;
+            var color = _gradeColors[grade] || '#94a3b8';
+            var expRow = document.getElementById('exp-' + rid);
+            if (expRow) {{
+              var dataRow = expRow.previousElementSibling;
+              if (dataRow && dataRow.classList.contains('data-row')) {{
+                // Social cell is column index 9
+                var sgCell = dataRow.cells[9];
+                if (sgCell) {{
+                  var inner = sgCell.querySelector('.sg-wrap');
+                  if (inner) {{
+                    var gcEl = inner.querySelector('.grade-cell');
+                    if (gcEl) {{ gcEl.style.color = color; gcEl.textContent = grade; }}
+                    var sc = inner.querySelector('.muted');
+                    if (sc) sc.textContent = score + '/100';
+                  }}
+                  sgCell.dataset.v = {{'A':5,'B':4,'C':3,'D':2,'F':1}}[grade] || 0;
+                  dataRow.dataset.grade = grade;
+                }}
+              }}
+            }}
+            // Flash the save button zone
+            if (btn) {{
+              var orig = btn.style.background;
+              btn.style.background = 'rgba(34,197,94,.2)';
+              btn.textContent = 'Saved ✓';
+              setTimeout(function() {{
+                btn.style.background = orig;
+                btn.textContent = 'Update grade';
+              }}, 1200);
+            }}
+          }}).catch(function() {{
+            if (btn) {{ btn.textContent = 'Error — retry'; btn.disabled = false; }}
+          }});
+        }}
+
         // ── Deal Info save ────────────────────────────────────────────────────
         function saveNote(el) {{
           var rid = el.dataset.rid;
@@ -1129,7 +1334,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
 
         // ── Row expand ────────────────────────────────────────────────────────
         document.querySelector('tbody').addEventListener('click', function(e) {{
-          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap,.ms-wrap,.deal-note,.deal-price')) return;
+          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap,.ms-wrap,.deal-note,.deal-price,input,button,select')) return;
           var row = e.target.closest('tr.data-row');
           if (!row) return;
           var expRow = document.getElementById(row.dataset.expand);
