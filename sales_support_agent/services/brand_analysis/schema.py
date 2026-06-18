@@ -82,13 +82,13 @@ DIMENSION_LABELS = {k: label for k, label, _ in DIMENSIONS}
 DIMENSION_WEIGHTS = {k: w for k, _, w in DIMENSIONS}
 
 # BRAND & SOCIAL track — a separate A–F shown alongside the financial grade.
-# Soft, often-incomplete signals (scraped/manual), kept out of the financial
-# number on purpose. Weights sum to 1.00.
+# For Ascend this tracks ACQUISITION OPPORTUNITY: absence of social/DTC is a
+# positive signal (maximum build runway), not a penalty. Weights sum to 1.00.
 BRAND_SOCIAL_DIMENSIONS = (
-    ("brand_equity", "Brand equity & defensibility", 0.30),
-    ("owned_audience", "Owned audience (email/SMS list)", 0.25),
-    ("social_presence", "Social presence & activity", 0.20),
-    ("social_reputation", "Reviews & reputation", 0.25),
+    ("brand_equity",    "Brand defensibility & moat",           0.25),
+    ("dtc_opportunity", "DTC & email build opportunity",         0.25),
+    ("social_oppty",    "Social channel opportunity",            0.25),
+    ("product_signal",  "Product-market fit (reviews & demand)", 0.25),
 )
 
 

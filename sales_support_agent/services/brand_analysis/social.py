@@ -1,14 +1,17 @@
-"""Brand & Social track — a SEPARATE A–F shown alongside the financial grade.
+"""Brand & Social Opportunity track — a SEPARATE A–F alongside the financial grade.
 
-Soft, often-incomplete signals (scraped + analyst-supplied), deliberately kept
-out of the deterministic financial grade. Same penalise-unknowns rule: a
-dimension we can't measure scores zero (assessed=False) so a thin social
-footprint reads honestly, with the confidence meter carrying the uncertainty.
-Every signal is tagged measured-vs-estimated; nothing is fabricated.
+Framing: Ascend grades on ACQUISITION OPPORTUNITY, not current presence.
+- No social footprint = "A" (maximum build runway — Ascend launches TikTok,
+  Instagram, Facebook, YouTube from Day 1 per the integration playbook).
+- No email/DTC list = "B" (Ascend builds via Shopify + email from Month 6;
+  clean-slate is expected for Amazon-only brands).
+- Strong existing social/email = still positive (transferable asset) but less
+  incremental upside for Ascend to capture.
+- Reviews/reputation: always grades current state — high reviews = proven
+  product-market fit, which IS the signal Ascend wants.
 
-Auto-discovery scrapes social profile links from the brand site (best-effort,
-never raises); the analyst can override and supply the email-list size + review
-numbers that public pages don't reliably expose.
+Auto-discovery scrapes social links from the brand site (best-effort, never
+raises); analyst can supply email-list size + review numbers.
 """
 
 from __future__ import annotations
@@ -76,6 +79,7 @@ def discover_socials(website: str) -> dict:
 
 
 def _grade_brand_equity(metrics: Metrics, period: PeriodFinancials) -> tuple[str, str, bool]:
+    """Defensibility & moat — high margin + owned channel = brand can hold price."""
     pts, proxies = [], []
     if metrics.owned_pct_bps is not None:
         pts.append(3.0 if metrics.owned_pct_bps >= 2000 else 1.5)
@@ -90,53 +94,78 @@ def _grade_brand_equity(metrics: Metrics, period: PeriodFinancials) -> tuple[str
     return letter, "Defensibility proxies: " + ", ".join(proxies) + ".", True
 
 
-def _grade_owned_audience(email_list_size: int) -> tuple[str, str, bool]:
+def _grade_dtc_opportunity(email_list_size: int) -> tuple[str, str, bool]:
+    """DTC & email build opportunity — for Ascend, ABSENCE of a list is HIGH upside.
+    No list = Ascend launches Shopify + list-build from scratch at Month 6 (expected
+    state for Amazon-only brands). A large existing list is also an asset but means
+    less incremental build opportunity for Ascend."""
     n = int(email_list_size or 0)
     if n <= 0:
-        return NOT_ASSESSED, "Email/SMS list size not supplied — owned-audience strength unknown.", False
+        return (
+            "A",
+            "No email/SMS list yet — Ascend launches DTC Shopify + list-build at Month 6. "
+            "Clean-slate, full-control audience acquisition opportunity.",
+            True,
+        )
     if n >= 100_000:
-        letter = "A"
-    elif n >= 50_000:
-        letter = "B"
-    elif n >= 10_000:
-        letter = "C"
-    elif n >= 1_000:
-        letter = "D"
-    else:
-        letter = "F"
-    return letter, f"Owned list of {n:,} contacts (analyst-supplied).", True
+        return "B", f"Substantial owned list of {n:,} contacts — transferable DTC asset, less incremental build upside.", True
+    if n >= 50_000:
+        return "A", f"Strong owned list of {n:,} contacts — DTC retention program ready to launch.", True
+    if n >= 10_000:
+        return "B", f"Growing owned list of {n:,} contacts — foundation for Shopify email flows.", True
+    if n >= 1_000:
+        return "C", f"Small owned list of {n:,} contacts — Ascend builds from here.", True
+    return "B", f"Minimal list ({n:,}) — effectively a clean-slate build opportunity.", True
 
 
-def _grade_social_presence(social_handles: dict, signals: dict) -> tuple[str, str, bool]:
+def _grade_social_oppty(social_handles: dict, signals: dict) -> tuple[str, str, bool]:
+    """Social channel opportunity — for Ascend, NO social = MAXIMUM opportunity.
+    Ascend's integration playbook launches Instagram, TikTok, Facebook, YouTube
+    from Day 1. No legacy accounts means full brand voice control and no handover
+    complexity. Existing active social is still positive (transferable audience)
+    but represents less incremental opportunity for Ascend to capture."""
     handles = {k: v for k, v in (social_handles or {}).items() if v}
+    _ASCEND_PLATFORMS = {"instagram", "tiktok", "facebook", "youtube"}
     if not handles:
-        return NOT_ASSESSED, "No social profiles found or supplied — presence unknown.", False
+        to_build = sorted(_ASCEND_PLATFORMS)
+        return (
+            "A",
+            f"No social footprint — Ascend builds {', '.join(p.title() for p in to_build)} "
+            "from Day 1. Full brand voice control, zero legacy management overhead.",
+            True,
+        )
+    existing = set(handles.keys())
+    missing = sorted(_ASCEND_PLATFORMS - existing)
     n = len(handles)
-    letter = "A" if n >= 4 else "B" if n == 3 else "C" if n == 2 else "D"
-    note = f"{n} platform(s): {', '.join(sorted(handles))}"
+    note = f"{n} platform(s) exist: {', '.join(sorted(handles))}"
     recency = (signals or {}).get("posting_recency_days")
     if isinstance(recency, (int, float)):
         if recency <= 7:
-            note += "; posting in the last week"
+            note += "; active posting — transferable audience"
         elif recency > 60:
-            letter = _step_down(letter)
-            note += f"; last post ~{int(recency)}d ago (stale)"
+            note += f"; last post ~{int(recency)}d ago (stale, needs reactivation)"
+    if missing:
+        note += f". Ascend adds {', '.join(p.title() for p in missing)}."
+    letter = "B" if n >= 3 else "A" if n < 2 else "B"
     return letter, note + ".", True
 
 
-def _grade_social_reputation(signals: dict) -> tuple[str, str, bool]:
+def _grade_product_signal(signals: dict) -> tuple[str, str, bool]:
+    """Product-market fit — reviews & demand signal. Strong reviews prove the
+    product has real demand before Ascend deploys capital. Always graded on
+    current state (high reviews = A, no data = not assessed)."""
     s = signals or {}
     rating = s.get("review_rating")
     count = s.get("review_count")
     if rating is None and count is None:
-        return NOT_ASSESSED, "No review volume/rating supplied (Yotpo/Okendo/Trustpilot etc.).", False
+        return NOT_ASSESSED, "No review volume/rating supplied — product-market fit not verified.", False
     try:
         rating = float(rating) if rating is not None else None
         count = int(count) if count is not None else 0
     except (TypeError, ValueError):
         return NOT_ASSESSED, "Review data not parseable.", False
     if rating is None:
-        return "C", f"{count:,} reviews (no average rating supplied).", True
+        return "C", f"{count:,} reviews (no average rating supplied — verify before LOI).", True
     if rating >= 4.5 and count >= 500:
         letter = "A"
     elif rating >= 4.3 and count >= 100:
@@ -147,7 +176,7 @@ def _grade_social_reputation(signals: dict) -> tuple[str, str, bool]:
         letter = "D"
     else:
         letter = "F"
-    return letter, f"{rating:.1f}/5 across {count:,} reviews.", True
+    return letter, f"{rating:.1f}/5 across {count:,} reviews — {'strong' if letter in ('A','B') else 'weak'} product-market fit signal.", True
 
 
 _LETTERS = ("A", "B", "C", "D", "F")
@@ -171,15 +200,19 @@ def build_brand_social(
     social_handles: Optional[dict] = None,
     social_signals: Optional[dict] = None,
 ) -> dict:
-    """Compute the separate Brand & Social scorecard. Returns a dict with
-    dimensions, score_100, letter, confidence, and caveats."""
+    """Compute the Acquisition Opportunity scorecard (Brand & Social track).
+    Returns a dict with dimensions, score_100, letter, confidence, and caveats.
+
+    High score = HIGH acquisition opportunity for Ascend.
+    Absence of social/email is graded as OPPORTUNITY, not as a deficit.
+    """
     social_handles = social_handles or {}
     social_signals = social_signals or {}
     graders = {
-        "brand_equity": lambda: _grade_brand_equity(metrics, period),
-        "owned_audience": lambda: _grade_owned_audience(email_list_size),
-        "social_presence": lambda: _grade_social_presence(social_handles, social_signals),
-        "social_reputation": lambda: _grade_social_reputation(social_signals),
+        "brand_equity":    lambda: _grade_brand_equity(metrics, period),
+        "dtc_opportunity": lambda: _grade_dtc_opportunity(email_list_size),
+        "social_oppty":    lambda: _grade_social_oppty(social_handles, social_signals),
+        "product_signal":  lambda: _grade_product_signal(social_signals),
     }
     dims: list[DimensionGrade] = []
     weighted = 0.0
@@ -196,11 +229,10 @@ def build_brand_social(
     letter = letter_from_score(score_100)
     confidence = "High" if assessed_weight >= 0.85 else "Medium" if assessed_weight >= 0.5 else "Low"
     caveats = [
-        "Brand & Social is a separate read — it does NOT affect the financial "
-        "acquisition grade.",
-        "Social metrics are best-effort: public follower/engagement numbers are "
-        "unreliable, so this leans on owned-list size and review data; verify "
-        "anything marked estimated.",
+        "Social Opportunity grade is separate from the financial acquisition grade — "
+        "it does NOT affect the composite A–F score.",
+        "High score = maximum growth opportunity for Ascend. No social footprint is "
+        "graded as an OPPORTUNITY (Ascend builds it), not a deficit.",
     ]
     sc = Scorecard(dimensions=dims, score_100=score_100, letter=letter)
     out = sc.to_dict()

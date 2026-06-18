@@ -50,24 +50,40 @@ class NarrativeResult:
 
 
 _SYSTEM = (
-    "You are a senior M&A analyst writing the narrative for an executive "
-    "acquisition report on a consumer brand. You are given ALREADY-COMPUTED "
-    "metrics, a letter grade, a weighted scorecard, and ranked red flags — do "
-    "NOT recalculate or invent any numbers; cite only the figures provided. "
-    "Write in crisp, direct prose for a buy-side decision-maker. Return ONLY a "
-    "JSON object with keys: executive_summary (2-4 sentence paragraph), "
-    "stands_out (array of 3-5 short bullet strings of things that stand out "
-    "beyond standard KPIs), verdict (2-3 sentence buy/pass paragraph that "
-    "restates the grade and gives a recommendation), investment_thesis (array "
-    "of 3-5 short bullets — the bull case / reasons this is an attractive "
-    "opportunity, grounded only in the supplied figures), key_risks (array of "
-    "3-5 short bullets — the bear case / what must be diligenced before close). "
-    "No markdown, no prose outside the JSON."
+    "You are an acquisition analyst for Ascend Companies, a PE-style holding "
+    "company that buys Amazon FBA brands at 2-3.5x SDE and scales them to "
+    "$32M/brand by Year 5 via channel diversification and operational integration. "
+    "Acquisition criteria: $1M+ revenue, 40%+ EBITDA margin, 5+ SKUs, trademark "
+    "+ Brand Registry, 4.3+ star reviews, TACoS <15%. "
+    "Structural advantages Ascend deploys post-acquisition: Anata Fulfillment LLC "
+    "(3PL warehouse, Day 1 cost savings), Anata Shipping OS (last-mile rate "
+    "arbitrage), in-house Amazon PPC (target ACOS <15%), channel diversification "
+    "playbook (Y0: Amazon 100% → Y1: Amazon 55%/TikTok 25%/DTC 15%/Walmart 5% "
+    "→ Y3-5: 25/25/25/25), DTC Shopify launch at Month 6, social brand-build "
+    "(Instagram/TikTok/Facebook/YouTube from Day 1). Exit at 5-6.5x EBITDA, "
+    "Year 3-5. "
+    "CRITICAL FRAMING: Amazon-only concentration = channel expansion OPPORTUNITY, "
+    "not a risk. No social presence = OPPORTUNITY (Ascend builds it). The grade "
+    "answers: 'How attractive is this as an acquisition at 2-3.5x SDE?' "
+    "You are given ALREADY-COMPUTED metrics, a letter grade, a weighted "
+    "scorecard, and ranked red flags — do NOT recalculate or invent any numbers; "
+    "cite only the figures provided. Write in crisp, direct prose for a "
+    "buy-side decision-maker evaluating Amazon FBA acquisitions. "
+    "Return ONLY a JSON object with keys: executive_summary (2-4 sentence "
+    "paragraph), stands_out (array of 3-5 short bullet strings of things that "
+    "stand out beyond standard KPIs), verdict (2-3 sentence buy/pass paragraph "
+    "that restates the grade and gives a recommendation grounded in Ascend's "
+    "acquisition thesis), investment_thesis (array of 3-5 short bullets — the "
+    "bull case / reasons this is an attractive acquisition for Ascend, grounded "
+    "only in the supplied figures), key_risks (array of 3-5 short bullets — the "
+    "bear case / what must be diligenced before close, including any hard "
+    "disqualifiers). No markdown, no prose outside the JSON."
 )
 
 
 def _facts(brand: str, category: str, current: Metrics, growth_bps: Optional[int],
-           scorecard: Scorecard, red_flags: list, confidence: str, has_yoy: bool) -> str:
+           scorecard: Scorecard, red_flags: list, confidence: str, has_yoy: bool,
+           brand_social: Optional[dict] = None) -> str:
     lines = [
         f"BRAND: {brand or 'Unknown'}  CATEGORY: {category}",
         f"OVERALL GRADE: {scorecard.letter} ({scorecard.score_100}/100)  CONFIDENCE: {confidence}",
@@ -89,6 +105,14 @@ def _facts(brand: str, category: str, current: Metrics, growth_bps: Optional[int
             lines.append(f"  [{f.severity}] {f.title} — {f.detail}")
     else:
         lines.append("RED FLAGS: none material.")
+    if brand_social and brand_social.get("dimensions"):
+        bs = brand_social
+        lines.append(
+            f"\nSOCIAL & DTC OPPORTUNITY (separate track — A=max build opportunity): "
+            f"{bs.get('letter','?')} ({bs.get('score_100','?')}/100, {bs.get('confidence','?')} confidence)"
+        )
+        for d in (bs.get("dimensions") or []):
+            lines.append(f"  [{d.get('letter','?')}] {d.get('label','?')}: {d.get('reason','')}")
     lines.append("\nWrite the JSON narrative now.")
     return "\n".join(lines)
 
@@ -178,6 +202,7 @@ def generate_narrative(
     has_yoy: bool,
     *,
     context_notes: str = "",
+    brand_social: Optional[dict] = None,
     api_key: Optional[str] = None,
     model: str = "claude-haiku-4-5-20251001",
 ) -> NarrativeResult:
@@ -186,7 +211,8 @@ def generate_narrative(
     if not key:
         return baseline
 
-    prompt = _facts(brand, category, current, growth_bps, scorecard, red_flags, confidence, has_yoy)
+    prompt = _facts(brand, category, current, growth_bps, scorecard, red_flags, confidence, has_yoy,
+                    brand_social=brand_social)
     if context_notes and context_notes.strip():
         prompt += (
             "\n\nANALYST CONTEXT (incorporate where relevant; do not invent numbers):\n"

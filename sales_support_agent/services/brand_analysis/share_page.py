@@ -308,7 +308,7 @@ def _brand_social(report: BrandReport) -> str:
     caveats = "".join(f"<li>{_e(c)}</li>" for c in bs.get("caveats", []))
     return f"""
     <section class="card">
-      <h2>Brand &amp; Social <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— separate from the financial grade</span></h2>
+      <h2>Social &amp; DTC Opportunity <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— channel expansion upside (separate from financial grade)</span></h2>
       <div class="val-headline">
         <span class="grade-badge" style="background:{fill};width:54px;height:54px;font-size:30px;border-radius:14px">{_e(letter)}</span>
         <span class="val-band" style="font-size:22px">{bs.get('score_100',0)}/100</span>
@@ -317,6 +317,143 @@ def _brand_social(report: BrandReport) -> str:
       <table class="data-table" style="margin-top:8px"><thead><tr><th>Dimension</th><th class="num">Weight</th><th>Grade</th><th>Signal</th></tr></thead>
       <tbody>{rows}</tbody></table>
       <ul class="caveats">{caveats}</ul>
+    </section>"""
+
+
+def _ascend_growth_playbook(report: BrandReport) -> str:
+    """Deterministic Ascend integration roadmap and value-creation plan."""
+    bs = report.brand_social or {}
+    cur = report.current
+    if not cur:
+        return ""
+
+    rev_cents = cur.net_revenue_cents or 0
+
+    # Day 1 EBITDA lift: 10–15% of revenue from Anata 3PL + Shipping OS
+    lo_str = fmt_money(int(rev_cents * 0.10)) if rev_cents else "—"
+    hi_str = fmt_money(int(rev_cents * 0.15)) if rev_cents else "—"
+    uplift_str = f"{lo_str} – {hi_str}/yr" if rev_cents else "—"
+
+    # Exit range: Y5 revenue ≈ current × 2.5; EBITDA at 40%; exit at 5–6.5×
+    exit_lo = fmt_money(int(rev_cents * 2.5 * 0.40 * 5.0)) if rev_cents else "—"
+    exit_hi = fmt_money(int(rev_cents * 2.5 * 0.40 * 6.5)) if rev_cents else "—"
+    exit_range = f"{exit_lo} – {exit_hi}" if rev_cents else "—"
+
+    # Social & DTC build plan from brand_social dimensions
+    dims_by_key = {d.get("key"): d for d in (bs.get("dimensions") or [])}
+    soc = dims_by_key.get("social_oppty", {})
+    dtc = dims_by_key.get("dtc_opportunity", {})
+
+    if soc.get("letter") == "A":
+        social_note = "Ascend builds Instagram, TikTok, Facebook, and YouTube from Day 1 — full brand voice control, zero legacy overhead."
+    else:
+        social_note = soc.get("reason") or "Existing social presence — Ascend expands and reactivates stale channels."
+
+    if dtc.get("letter") == "A":
+        dtc_note = "Ascend launches Shopify store + email/SMS flows at Month 6 — clean-slate list build, full first-party data ownership."
+    else:
+        dtc_note = dtc.get("reason") or "Existing email list — Ascend activates DTC retention and win-back flows."
+
+    # Work effort signal: high social opportunity score + few red flags = low integration overhead
+    ss = bs.get("score_100", 0)
+    crit_flags = len([f for f in (report.red_flags or [])
+                      if (getattr(f, "severity", None) or (f.get("severity") if isinstance(f, dict) else "")) == "Critical"])
+    if ss >= 75 and crit_flags == 0:
+        effort = ("Low", "#2E7D5B", "Minimal legacy overhead — Ascend builds from a clean slate across social, DTC, and ops.")
+    elif ss >= 50 and crit_flags <= 1:
+        effort = ("Medium", "#B8860B", "Some existing channels to transition. Plan for 60-90 days of onboarding complexity.")
+    else:
+        effort = ("High", "#8B4C42", "Significant integration work — multiple existing channels to migrate and critical flags to resolve.")
+
+    return f"""
+    <section class="card">
+      <h2>Ascend Growth Playbook <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— integration &amp; value-creation roadmap</span></h2>
+
+      <h3 style="margin:0 0 10px">Integration Timeline</h3>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">
+        <div style="background:rgba(43,54,68,.04);border-radius:12px;padding:14px">
+          <div style="font-family:Montserrat;font-weight:800;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#85BBDA;margin-bottom:4px">Phase 0 &middot; Day 1–60</div>
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:#2B3644">Handoff</div>
+          <ul style="margin:0;padding-left:16px;font-size:12px;color:rgba(43,54,68,.65);line-height:1.6">
+            <li>Ops &amp; inventory transfer</li>
+            <li>Anata 3PL + Shipping OS onboard</li>
+            <li>PPC audit &amp; in-house takeover</li>
+          </ul>
+        </div>
+        <div style="background:rgba(43,54,68,.04);border-radius:12px;padding:14px">
+          <div style="font-family:Montserrat;font-weight:800;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#85BBDA;margin-bottom:4px">Phase 1 &middot; Month 3–12</div>
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:#2B3644">Optimization</div>
+          <ul style="margin:0;padding-left:16px;font-size:12px;color:rgba(43,54,68,.65);line-height:1.6">
+            <li>ACOS target &lt;15%</li>
+            <li>Anata cost savings realized</li>
+            <li>First EBITDA lift ~10–15%</li>
+          </ul>
+        </div>
+        <div style="background:rgba(43,54,68,.04);border-radius:12px;padding:14px">
+          <div style="font-family:Montserrat;font-weight:800;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#85BBDA;margin-bottom:4px">Phase 2 &middot; Month 6–18</div>
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:#2B3644">Channel Diversification</div>
+          <ul style="margin:0;padding-left:16px;font-size:12px;color:rgba(43,54,68,.65);line-height:1.6">
+            <li>Shopify + email list launch</li>
+            <li>TikTok Shop activation</li>
+            <li>Walmart listing</li>
+          </ul>
+        </div>
+        <div style="background:rgba(43,54,68,.04);border-radius:12px;padding:14px">
+          <div style="font-family:Montserrat;font-weight:800;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#85BBDA;margin-bottom:4px">Phase 3 &middot; Year 1–3</div>
+          <div style="font-weight:700;font-size:13px;margin-bottom:6px;color:#2B3644">Brand Expansion</div>
+          <ul style="margin:0;padding-left:16px;font-size:12px;color:rgba(43,54,68,.65);line-height:1.6">
+            <li>New SKU development</li>
+            <li>Retail door expansion</li>
+            <li>Adjacent categories</li>
+          </ul>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:22px">
+        <div>
+          <h3 style="margin:0 0 10px">Channel Revenue Mix Roadmap</h3>
+          <table class="data-table" style="font-size:13px">
+            <thead><tr><th>Year</th><th class="num">Amazon</th><th class="num">TikTok</th><th class="num">DTC</th><th class="num">Walmart</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Y0</strong></td><td class="num">100%</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+              <tr><td><strong>Y1</strong></td><td class="num">55%</td><td class="num">25%</td><td class="num">15%</td><td class="num">5%</td></tr>
+              <tr><td><strong>Y3</strong></td><td class="num">25%</td><td class="num">25%</td><td class="num">25%</td><td class="num">25%</td></tr>
+              <tr><td><strong>Y5</strong></td><td class="num">25%</td><td class="num">25%</td><td class="num">25%</td><td class="num">25%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h3 style="margin:0 0 10px">Day 1 EBITDA Uplift (Anata Advantage)</h3>
+          <table class="data-table" style="font-size:13px">
+            <tbody>
+              <tr><td>Anata 3PL + Shipping OS savings</td><td class="num" style="color:#2E7D5B"><strong>{_e(uplift_str)}</strong></td></tr>
+              <tr><td>PPC target (in-house)</td><td class="num">TACoS &lt;15%</td></tr>
+              <tr><td>Industry avg TACoS baseline</td><td class="num" style="color:#8B4C42">~18–22%</td></tr>
+              <tr><td>Estimated blended MER target (Y1)</td><td class="num">&gt;3.5×</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:22px">
+        <div>
+          <h3 style="margin:0 0 10px">Social &amp; DTC Build Plan</h3>
+          <p style="font-size:13px;margin:0 0 8px;color:rgba(43,54,68,.8)"><strong>Social:</strong> {_e(social_note)}</p>
+          <p style="font-size:13px;margin:0;color:rgba(43,54,68,.8)"><strong>DTC/Email:</strong> {_e(dtc_note)}</p>
+        </div>
+        <div>
+          <h3 style="margin:0 0 10px">Exit Positioning</h3>
+          <p style="font-size:13px;margin:0 0 6px"><strong>Target exit:</strong> Year 3–5 at 5–6.5× EBITDA</p>
+          <p style="font-size:13px;margin:0 0 6px"><strong>Est. exit value range:</strong> <strong style="color:#2E7D5B">{_e(exit_range)}</strong></p>
+          <p style="font-size:12px;color:rgba(43,54,68,.45);margin:0">Based on current revenue × 2.5 (Y5 growth) × 40% EBITDA × 5–6.5× multiple.</p>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:rgba(43,54,68,.04);border-radius:10px">
+        <div style="font-family:Montserrat;font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(43,54,68,.5)">Integration Effort</div>
+        <div style="font-family:Montserrat;font-weight:800;font-size:14px;color:{effort[1]}">{effort[0]}</div>
+        <div style="font-size:12.5px;color:rgba(43,54,68,.65)">{_e(effort[2])}</div>
+      </div>
     </section>"""
 
 
@@ -386,6 +523,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
         _charts_section(report),
         _thesis_risks(report),
         _brand_social(report),
+        _ascend_growth_playbook(report),
         _valuation_section(report),
         _yoy_table(report),
         _benchmarks(report),

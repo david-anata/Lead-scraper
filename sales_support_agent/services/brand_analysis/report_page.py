@@ -759,6 +759,16 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           .ep-two-col{{grid-template-columns:1fr;}}
           .filter-bar input{{min-width:140px;}}
         }}
+        /* Pipeline legend */
+        .legend-box{{margin-top:20px;background:#fff;border:1px solid var(--border);border-radius:14px;padding:14px 20px;}}
+        .legend-box summary{{cursor:pointer;font-family:"Montserrat",sans-serif;font-weight:700;font-size:13px;color:var(--dark-blue);user-select:none;}}
+        .legend-body{{margin-top:14px;display:grid;grid-template-columns:repeat(3,1fr);gap:18px;font-size:12.5px;}}
+        .legend-title{{font-family:"Montserrat",sans-serif;font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--dark-blue);margin-bottom:8px;}}
+        .legend-row{{display:flex;gap:8px;padding:4px 0;border-bottom:1px solid rgba(43,54,68,.06);}}
+        .legend-row:last-child{{border-bottom:none;}}
+        .legend-key{{font-weight:600;min-width:80px;flex-shrink:0;}}
+        .legend-val{{color:rgba(43,54,68,.6);}}
+        @media(max-width:900px){{.legend-body{{grid-template-columns:1fr;}}}}
       </style>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -796,6 +806,49 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         </thead>
         <tbody>{rows_html}</tbody>
       </table>
+
+      <details class="legend-box">
+        <summary>Table Guide &amp; Grade Key</summary>
+        <div class="legend-body">
+          <div>
+            <div class="legend-title">Column Reference</div>
+            <div class="legend-row"><span class="legend-key">Brand</span><span class="legend-val">Link to full report sheet</span></div>
+            <div class="legend-row"><span class="legend-key">Stage</span><span class="legend-val">Where in the acquisition pipeline</span></div>
+            <div class="legend-row"><span class="legend-key">Grade</span><span class="legend-val">Financial composite A–F (7 weighted dimensions, separate from Social)</span></div>
+            <div class="legend-row"><span class="legend-key">Rec</span><span class="legend-val">Buy signal — tied directly to Grade</span></div>
+            <div class="legend-row"><span class="legend-key">Revenue</span><span class="legend-val">LTM net revenue</span></div>
+            <div class="legend-row"><span class="legend-key">YoY</span><span class="legend-val">Revenue growth vs. prior period (green = up)</span></div>
+            <div class="legend-row"><span class="legend-key">Net Margin</span><span class="legend-val">Net earnings &divide; net revenue</span></div>
+            <div class="legend-row"><span class="legend-key">Social</span><span class="legend-val">Channel expansion opportunity — hover to see details</span></div>
+            <div class="legend-row"><span class="legend-key">Confidence</span><span class="legend-val">% of key inputs actually supplied</span></div>
+          </div>
+          <div>
+            <div class="legend-title">Financial Grade Scale</div>
+            <div class="legend-row"><span class="legend-key" style="color:#2E7D5B">A &nbsp;90–100</span><span class="legend-val">Strong acquisition candidate — proceed to NDA</span></div>
+            <div class="legend-row"><span class="legend-key" style="color:#3F8F6E">B &nbsp;70–89</span><span class="legend-val">Solid candidate — verify top risk before LOI</span></div>
+            <div class="legend-row"><span class="legend-key" style="color:#B8860B">C &nbsp;50–69</span><span class="legend-val">Conditional — one or more dimensions need work</span></div>
+            <div class="legend-row"><span class="legend-key" style="color:#C2663B">D &nbsp;30–49</span><span class="legend-val">Proceed with caution — significant diligence needed</span></div>
+            <div class="legend-row"><span class="legend-key" style="color:#8B4C42">F &nbsp;&lt;50</span><span class="legend-val">Pass — does not meet Ascend criteria</span></div>
+            <div style="margin-top:10px" class="legend-title">Social Grade (Opportunity Score)</div>
+            <div class="legend-row"><span class="legend-key" style="color:#2E7D5B">A</span><span class="legend-val">Maximum channel-build upside — Ascend builds social &amp; DTC from Day 1</span></div>
+            <div class="legend-row"><span class="legend-key" style="color:#3F8F6E">B</span><span class="legend-val">Good opportunity — some existing presence to expand</span></div>
+            <div class="legend-row"><span class="legend-key" style="color:#B8860B">C/D</span><span class="legend-val">Complex migration — legacy channels need reactivation</span></div>
+          </div>
+          <div>
+            <div class="legend-title">Pipeline Stage Guide</div>
+            <div class="legend-row"><span class="legend-key">New</span><span class="legend-val">Initial analysis run — not yet reviewed</span></div>
+            <div class="legend-row"><span class="legend-key">Reviewing</span><span class="legend-val">Team reviewing financials and fit</span></div>
+            <div class="legend-row"><span class="legend-key">Advancing</span><span class="legend-val">Passed initial screen — pursuing seller contact</span></div>
+            <div class="legend-row"><span class="legend-key">LOI Sent</span><span class="legend-val">Letter of intent submitted to seller</span></div>
+            <div class="legend-row"><span class="legend-key">Due Diligence</span><span class="legend-val">Formal diligence underway</span></div>
+            <div class="legend-row"><span class="legend-key">Closed Won</span><span class="legend-val">Acquisition complete</span></div>
+            <div class="legend-row"><span class="legend-key">Closed Passed</span><span class="legend-val">Decided not to proceed</span></div>
+            <div style="margin-top:10px;padding:10px 12px;background:rgba(133,187,218,.12);border-radius:8px;font-size:12px;color:rgba(43,54,68,.65)">
+              Ascend target: 2–3.5&times; SDE &middot; $1M+ revenue &middot; 40%+ EBITDA &middot; TACoS &lt;15% &middot; 4.3+ stars
+            </div>
+          </div>
+        </div>
+      </details>
 
       <script>
         var _sortState = {{col:-1, dir:1}};

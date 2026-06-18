@@ -505,5 +505,62 @@ class FormatCoverageTests(unittest.TestCase):
         self.assertAlmostEqual(result.current.cogs_cents / 100, 1_000_000, delta=5000)
 
 
+@unittest.skipUnless(DEPS_AVAILABLE, "brand_analysis deps required")
+class SocialOpportunityTests(unittest.TestCase):
+    """Brand & Social opportunity graders — absence of social/email = acquisition upside."""
+
+    def test_no_email_list_grades_A(self) -> None:
+        from sales_support_agent.services.brand_analysis.social import _grade_dtc_opportunity
+        letter, reason, assessed = _grade_dtc_opportunity(0)
+        self.assertEqual(letter, "A")
+        self.assertTrue(assessed)
+        self.assertIn("Ascend", reason)
+
+    def test_no_social_handles_grades_A(self) -> None:
+        from sales_support_agent.services.brand_analysis.social import _grade_social_oppty
+        letter, reason, assessed = _grade_social_oppty({}, {})
+        self.assertEqual(letter, "A")
+        self.assertTrue(assessed)
+        self.assertIn("Day 1", reason)
+
+    def test_strong_reviews_grade_A(self) -> None:
+        from sales_support_agent.services.brand_analysis.social import _grade_product_signal
+        letter, reason, assessed = _grade_product_signal({"review_rating": 4.7, "review_count": 1000})
+        self.assertEqual(letter, "A")
+        self.assertTrue(assessed)
+
+    def test_no_reviews_returns_not_assessed(self) -> None:
+        from sales_support_agent.services.brand_analysis.social import _grade_product_signal
+        from sales_support_agent.services.brand_analysis.schema import NOT_ASSESSED
+        letter, reason, assessed = _grade_product_signal({})
+        self.assertEqual(letter, NOT_ASSESSED)
+        self.assertFalse(assessed)
+
+    def test_build_brand_social_returns_required_keys(self) -> None:
+        from sales_support_agent.services.brand_analysis.schema import Metrics, PeriodFinancials
+        from sales_support_agent.services.brand_analysis.social import build_brand_social
+        result = build_brand_social(Metrics(), PeriodFinancials())
+        for key in ("letter", "score_100", "confidence", "dimensions", "caveats"):
+            self.assertIn(key, result)
+        self.assertEqual(len(result["dimensions"]), 4)
+
+    def test_no_social_no_email_yields_high_score(self) -> None:
+        from sales_support_agent.services.brand_analysis.schema import Metrics, PeriodFinancials
+        from sales_support_agent.services.brand_analysis.social import build_brand_social
+        result = build_brand_social(
+            Metrics(), PeriodFinancials(),
+            email_list_size=0,
+            social_handles={},
+            social_signals={"review_rating": 4.5, "review_count": 500},
+        )
+        self.assertGreaterEqual(result["score_100"], 75)
+
+    def test_large_email_list_grades_below_A(self) -> None:
+        from sales_support_agent.services.brand_analysis.social import _grade_dtc_opportunity
+        letter, _, _ = _grade_dtc_opportunity(150_000)
+        # Large existing list = "B" — still positive but less incremental upside than clean slate
+        self.assertEqual(letter, "B")
+
+
 if __name__ == "__main__":
     unittest.main()
