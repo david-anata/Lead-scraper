@@ -1739,7 +1739,7 @@ def _acquisition_evaluation(r: BrandReport) -> str:
             f'<div style="display:flex;align-items:flex-start;gap:14px;margin-bottom:18px;">'
             f'<div style="font-size:36px;font-weight:900;color:{color};font-family:Montserrat,sans-serif;'
             f'line-height:1;min-width:48px;text-align:center;">{_esc(acq_dim.letter)}</div>'
-            f'<div><strong style="font-size:14px;">Acquisition mix &amp; dependency &nbsp;·&nbsp; 12% weight</strong>'
+            f'<div><strong style="font-size:14px;">Product quality &amp; repeat customers &nbsp;·&nbsp; 13% weight</strong>'
             f'<p class="muted" style="margin:4px 0 0;">{_esc(acq_dim.reason)}</p></div>'
             f'</div>'
         )
@@ -1776,10 +1776,10 @@ def _acquisition_evaluation(r: BrandReport) -> str:
         _split_row("Returning-customer share", fmt_pct(ret_pct_bps), fmt_pct(ret_pct_bps_p) if yoy_col else None,
                    "≥ 30%", None if ret_pct_bps is None else ret_pct_bps >= 3000) +
         _split_row("New-customer share", fmt_pct(new_pct_bps), fmt_pct(new_pct_bps_p) if yoy_col else None, "—", None) +
-        _split_row("Owned-channel (email/SMS) %",
+        _split_row("DTC / owned-channel % (expansion opportunity)",
                    fmt_pct(c.owned_pct_bps), fmt_pct(p.owned_pct_bps) if yoy_col else None,
-                   f"{bm.owned_pct_bps[0]//100}–{bm.owned_pct_bps[1]//100}%",
-                   None if c.owned_pct_bps is None else c.owned_pct_bps >= bm.owned_pct_bps[0])
+                   "0% → Ascend builds",
+                   None)
     )
     split_table = (
         f'<p style="font-weight:700;margin:16px 0 8px;">Customer Revenue Split</p>'
@@ -1844,15 +1844,22 @@ def _acquisition_evaluation(r: BrandReport) -> str:
 def _media_table(r: BrandReport) -> str:
     ch = r.media_mix or {}
     if not ch:
-        return '<p class="muted">Channel-level media mix not supplied — request ad-platform exports (Meta, Google, TikTok) for spend by channel and concentration read-through.</p>'
+        return '<p class="muted">Channel-level ad data not supplied — Ascend adds TikTok, DTC, and Walmart channels post-acquisition regardless of current mix.</p>'
     total = sum(ch.values()) or 1
     top_share = max(ch.values()) / total
     rows = "".join(
         f'<tr><td>{_esc(k)}</td><td class="num">{fmt_money(v)}</td><td class="num">{v/total*100:.0f}%</td></tr>'
         for k, v in sorted(ch.items(), key=lambda kv: kv[1], reverse=True)
     )
-    note = f'<p class="muted">Top channel is {top_share*100:.0f}% of spend — {"high concentration risk" if top_share > 0.7 else "reasonably diversified"}.</p>'
-    return f'<table><thead><tr><th>Channel</th><th class="num">Spend</th><th class="num">% allocation</th></tr></thead><tbody>{rows}</tbody></table>{note}'
+    n_channels = len([v for v in ch.values() if v > 0])
+    note = (
+        f'<p class="muted">{n_channels} channel(s) — '
+        + ("Amazon-only: full expansion runway — Ascend launches TikTok, DTC &amp; Walmart post-acquisition."
+           if n_channels == 1 else
+           "Multi-channel already in place — Ascend expands further.")
+        + "</p>"
+    )
+    return f'<table><thead><tr><th>Channel</th><th class="num">Spend</th><th class="num">% share</th></tr></thead><tbody>{rows}</tbody></table>{note}'
 
 
 def _contribution_table(r: BrandReport) -> str:

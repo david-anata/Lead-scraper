@@ -160,14 +160,12 @@ def _grade_marketing(cur: Metrics, prior: Optional[Metrics], bm: Benchmarks) -> 
 
 
 def _grade_acquisition(cur: Metrics, period: PeriodFinancials, bm: Benchmarks) -> tuple[str, str]:
+    # Ascend grading: owned-channel % is NOT scored here — 0% owned is the
+    # expected Amazon FBA baseline that Ascend's DTC playbook builds post-acquisition.
+    # Only hard quality signals are used: return rate, discount rate, repeat buyers.
     signals = []
     score = 0.0
     n = 0
-    if cur.owned_pct_bps is not None:
-        n += 1
-        lo, hi = bm.owned_pct_bps
-        score += 3.0 if cur.owned_pct_bps >= lo else 1.5
-        signals.append(f"owned/email {fmt_pct(cur.owned_pct_bps)} of revenue")
     if cur.return_rate_bps is not None:
         n += 1
         score += 3.0 if cur.return_rate_bps <= bm.return_rate_max_bps else 1.0
@@ -184,35 +182,36 @@ def _grade_acquisition(cur: Metrics, period: PeriodFinancials, bm: Benchmarks) -
         score += 3.0 if ret >= 0.3 else 1.5
         signals.append(f"returning-customer share {ret*100:.0f}%")
     if n == 0:
-        return NOT_ASSESSED, "New-vs-returning split, owned-channel share and concentration not supplied — penalised pending data."
+        return NOT_ASSESSED, "Return rate, discount rate, and repeat-customer split not supplied — product quality signals not assessable (penalised pending data)."
     avg = score / n
     letter = "A" if avg >= 3.0 else "B" if avg >= 2.5 else "C" if avg >= 1.8 else "D" if avg >= 1.0 else "F"
-    return letter, "Acquisition signals: " + ", ".join(signals) + "."
+    return letter, "Product quality signals: " + ", ".join(signals) + "."
 
 
 def _grade_media(period: PeriodFinancials, bm: Benchmarks) -> tuple[str, str]:
+    # Ascend framing: Amazon-only ad concentration is an OPPORTUNITY (Ascend's
+    # integration playbook adds TikTok, DTC, Walmart post-acquisition). Single-
+    # channel = maximum expansion runway = A. Multi-channel = also good (B).
     channels = period.marketing_by_channel or {}
-    if not channels:
-        return NOT_ASSESSED, "Channel-level media mix not supplied — penalised pending data; concentration risk unknown."
-    total = sum(channels.values())
-    # Need ≥2 channels with real spend to assess concentration; a single
-    # "marketing" line or $0 spend tells us nothing about channel diversification.
     real_channels = {k: v for k, v in channels.items() if v > 0}
-    if total == 0 or len(real_channels) < 2:
-        return NOT_ASSESSED, "Fewer than 2 channels with spend detected — concentration not assessable (penalised pending data; add per-channel ad exports)."
+    if not real_channels:
+        # No channel data — grade neutral rather than penalise; Amazon FBA brands
+        # often have only a single "Amazon PPC" line, not per-channel breakdowns.
+        return "B", "Channel-level ad data not supplied — graded neutral. Ascend adds TikTok, DTC, and Walmart channels post-acquisition regardless of current mix."
+    n = len(real_channels)
+    if n == 1:
+        ch = next(iter(real_channels))
+        return "A", (
+            f"Single channel ({ch}) — maximum expansion runway for Ascend. "
+            "Integration playbook: add TikTok + DTC at Month 6, Walmart at Year 1."
+        )
     top_channel, top_spend = max(real_channels.items(), key=lambda kv: kv[1])
+    total = sum(real_channels.values()) or 1
     share = top_spend / total
-    if share <= 0.5:
-        letter = "A"
-    elif share <= 0.65:
-        letter = "B"
-    elif share <= 0.8:
-        letter = "C"
-    elif share <= 0.9:
-        letter = "D"
-    else:
-        letter = "F"
-    return letter, f"{len(channels)} channel(s); top channel '{top_channel}' = {share*100:.0f}% of spend (concentration read-through)."
+    return "B", (
+        f"{n} channels; top '{top_channel}' = {share*100:.0f}% of spend. "
+        "Already multi-channel — Ascend expands further post-acquisition."
+    )
 
 
 def _grade_balance(period: PeriodFinancials, cur: Metrics, bm: Benchmarks) -> tuple[str, str]:
@@ -322,13 +321,6 @@ def build_red_flags(current: Metrics, period: PeriodFinancials, growth_bps: Opti
         add(SEV_HIGH, "Elevated return rate", f"Returns {fmt_pct(current.return_rate_bps)} of gross sales (healthy <{bm.return_rate_max_bps/100:.0f}%).")
     if period.intercompany_cents and period.total_assets_cents and abs(period.intercompany_cents) / max(1, period.total_assets_cents) >= 0.2:
         add(SEV_HIGH, "Large intercompany balances", f"Intercompany {fmt_money(period.intercompany_cents)} is {abs(period.intercompany_cents)/period.total_assets_cents*100:.0f}% of assets — collectability unproven.")
-    channels = period.marketing_by_channel or {}
-    if channels:
-        total = sum(channels.values()) or 1
-        top_channel, top_spend = max(channels.items(), key=lambda kv: kv[1])
-        if top_spend / total > 0.8:
-            add(SEV_HIGH, "Media concentration risk", f"'{top_channel}' is {top_spend/total*100:.0f}% of marketing spend.")
-
     if current.marketing_pct_bps is not None and current.marketing_pct_bps > bm.marketing_pct_bps[1]:
         add(SEV_MEDIUM, "Marketing spend above healthy band", f"Marketing {fmt_pct(current.marketing_pct_bps)} of revenue (healthy {bm.marketing_pct_bps[0]/100:.0f}–{bm.marketing_pct_bps[1]/100:.0f}%).")
     if current.product_gm_bps is not None and current.product_gm_bps < bm.product_gm_bps[0]:
@@ -367,8 +359,8 @@ def build_benchmarks(current: Metrics, bm: Benchmarks, growth_bps: Optional[int]
                              None if current.contribution_margin_bps is None else current.contribution_margin_bps >= bm.contribution_margin_bps[0]))
     rows.append(BenchmarkRow("Net margin", _band_label(*bm.net_margin_bps), fmt_pct(current.net_margin_bps),
                              None if current.net_margin_bps is None else current.net_margin_bps >= bm.net_margin_bps[0]))
-    rows.append(BenchmarkRow("Email / owned % of revenue", _band_label(*bm.owned_pct_bps), fmt_pct(current.owned_pct_bps),
-                             None if current.owned_pct_bps is None else current.owned_pct_bps >= bm.owned_pct_bps[0]))
+    rows.append(BenchmarkRow("DTC / owned % of revenue (expansion opportunity)", "0% → Ascend builds", fmt_pct(current.owned_pct_bps),
+                             None))
     rows.append(BenchmarkRow("Discount rate", _band_label(*bm.discount_rate_bps), fmt_pct(current.discount_rate_bps),
                              None if current.discount_rate_bps is None else current.discount_rate_bps <= bm.discount_rate_bps[1]))
     rows.append(BenchmarkRow("Return rate", f"< {bm.return_rate_max_bps/100:.0f}%", fmt_pct(current.return_rate_bps),

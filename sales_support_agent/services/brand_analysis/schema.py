@@ -73,8 +73,8 @@ DIMENSIONS = (
     ("revenue", "Revenue trajectory & growth", 0.26),
     ("profitability", "Profitability & net margin", 0.16),
     ("marketing", "Marketing efficiency (MER)", 0.16),
-    ("acquisition", "Acquisition mix & dependency", 0.13),
-    ("media", "Media mix & concentration", 0.11),
+    ("acquisition", "Product quality & repeat customers", 0.13),
+    ("media", "Channel expansion runway", 0.11),
     ("contribution", "Contribution / unit economics", 0.10),
     ("balance", "Balance sheet & earnings quality", 0.08),
 )

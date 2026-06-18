@@ -257,11 +257,11 @@ class ParserBugRegressionTests(unittest.TestCase):
         self.assertEqual(result.current.net_revenue_cents, 112_048_300)
         self.assertIsNotNone(result.prior)
 
-    def test_media_grade_na_with_zero_spend(self) -> None:
-        """Bug: _grade_media returned A when marketing_by_channel had entries but
-        total spend = 0. Should return N/A — 0 spend tells us nothing."""
+    def test_media_grade_zero_spend_neutral(self) -> None:
+        """Zero-spend channels are ignored; no real channels → neutral B (Ascend
+        adds channels post-acquisition regardless of current mix)."""
         from sales_support_agent.services.brand_analysis.schema import (
-            PeriodFinancials, benchmarks_for, NOT_ASSESSED,
+            PeriodFinancials, benchmarks_for,
         )
         period = PeriodFinancials(
             net_revenue_cents=100_000_000,
@@ -269,26 +269,27 @@ class ParserBugRegressionTests(unittest.TestCase):
         )
         bm = benchmarks_for("dtc")
         letter, reason = scoring_mod._grade_media(period, bm)
-        self.assertEqual(letter, NOT_ASSESSED)
+        self.assertEqual(letter, "B")  # neutral — not penalised
 
-    def test_media_grade_na_with_single_channel(self) -> None:
-        """Bug: a single P&L 'Marketing' line created 1 channel with 100% share →
-        F for media. Should be N/A — 1 channel can't show concentration."""
+    def test_media_grade_single_channel_is_A(self) -> None:
+        """Ascend framing: single-channel Amazon brand = A (full expansion runway).
+        Old framing penalised this as N/A; new framing grades it highest."""
         from sales_support_agent.services.brand_analysis.schema import (
-            PeriodFinancials, benchmarks_for, NOT_ASSESSED,
+            PeriodFinancials, benchmarks_for,
         )
         period = PeriodFinancials(
             net_revenue_cents=100_000_000,
-            marketing_by_channel={"other_marketing": 89_639_00},
+            marketing_by_channel={"amazon_ppc": 89_639_00},
         )
         bm = benchmarks_for("dtc")
         letter, reason = scoring_mod._grade_media(period, bm)
-        self.assertEqual(letter, NOT_ASSESSED)
+        self.assertEqual(letter, "A")
+        self.assertIn("expansion runway", reason.lower())
 
-    def test_media_grade_real_with_two_channels(self) -> None:
-        """Media grading must still work (and not N/A) when 2+ real channels exist."""
+    def test_media_grade_multi_channel_is_B(self) -> None:
+        """Multi-channel brand scores B — healthy, but less incremental for Ascend."""
         from sales_support_agent.services.brand_analysis.schema import (
-            PeriodFinancials, benchmarks_for, NOT_ASSESSED,
+            PeriodFinancials, benchmarks_for,
         )
         period = PeriodFinancials(
             net_revenue_cents=100_000_000,
@@ -296,9 +297,7 @@ class ParserBugRegressionTests(unittest.TestCase):
         )
         bm = benchmarks_for("dtc")
         letter, reason = scoring_mod._grade_media(period, bm)
-        self.assertNotEqual(letter, NOT_ASSESSED)   # must produce a real grade
-        # meta = 15M / (15+7)M = 68% share → C (>65% but ≤80%)
-        self.assertEqual(letter, "C")
+        self.assertEqual(letter, "B")
 
 
 @unittest.skipUnless(DEPS_AVAILABLE, "brand_analysis deps required")
