@@ -334,6 +334,14 @@ def list_pipeline_reports(limit: int = 200) -> list[dict]:
                 "investment_thesis": rj.get("investment_thesis") or [],
                 "key_risks": rj.get("key_risks") or [],
                 "red_flags": rj.get("red_flags") or [],
+                # Social track
+                "social_grade": (rj.get("brand_social") or {}).get("letter") or "",
+                "social_score_100": (rj.get("brand_social") or {}).get("score_100") or 0,
+                "social_confidence": (rj.get("brand_social") or {}).get("confidence") or "",
+                "social_dimensions": (rj.get("brand_social") or {}).get("dimensions") or [],
+                "email_list_size": rj.get("email_list_size") or 0,
+                "social_handles": rj.get("social_handles") or {},
+                "social_signals": rj.get("social_signals") or {},
             })
         return out
 

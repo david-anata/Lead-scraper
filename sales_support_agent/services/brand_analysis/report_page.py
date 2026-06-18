@@ -470,45 +470,128 @@ def _expand_panel(row: dict) -> str:
       </div>"""
 
 
-def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
-    stage_opts_all = "".join(
-        f'<option value="{k}">{_esc(m["label"])}</option>'
-        for k, m in _STAGE_META.items()
+def _fmt_email_list(n) -> str:
+    if not n:
+        return ""
+    n = int(n)
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n//1_000}K"
+    return f"{n:,}"
+
+
+def _social_tooltip(r: dict) -> str:
+    """Hover tooltip content for the Social Grade badge cell."""
+    lines: list[str] = []
+
+    email = r.get("email_list_size") or 0
+    if email:
+        lines.append(
+            f'<div class="tt-row"><span class="tt-lbl">Email/SMS</span>'
+            f'<span>{_esc(_fmt_email_list(email))} subscribers</span></div>'
+        )
+
+    signals = r.get("social_signals") or {}
+    rating = signals.get("review_rating")
+    count = signals.get("review_count")
+    if rating is not None or count is not None:
+        stars = f"{float(rating):.1f} ★" if rating is not None else ""
+        cnt = f"({int(count):,} reviews)" if count is not None else ""
+        lines.append(
+            f'<div class="tt-row"><span class="tt-lbl">Reviews</span>'
+            f'<span>{_esc(f"{stars} {cnt}".strip())}</span></div>'
+        )
+
+    handles = r.get("social_handles") or {}
+    for platform, url in sorted(handles.items()):
+        handle = (url or "").rstrip("/").rsplit("/", 1)[-1] if "/" in (url or "") else (url or "")
+        if handle and not handle.startswith("@"):
+            handle = f"@{handle}"
+        if handle:
+            lines.append(
+                f'<div class="tt-row"><span class="tt-lbl">{_esc(platform.title())}</span>'
+                f'<span>{_esc(handle)}</span></div>'
+            )
+
+    dims = r.get("social_dimensions") or []
+    if dims and lines:
+        lines.append('<div class="tt-divider"></div>')
+    for d in dims:
+        letter = d.get("letter") or "—"
+        label = d.get("label") or d.get("key", "")
+        color = _GRADE_COLORS.get(letter, "#94a3b8")
+        lines.append(
+            f'<div class="tt-row"><span class="tt-lbl">{_esc(label)}</span>'
+            f'<span class="grade-cell" style="color:{color};font-size:11px">{_esc(letter)}</span></div>'
+        )
+
+    if not lines:
+        return ""
+    return (
+        '<div class="social-tooltip">'
+        '<div class="tt-title">Brand &amp; Social</div>'
+        + "".join(lines)
+        + '</div>'
     )
+
+
+def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
+    # Grade → numeric sort value
+    _grade_val = {"A": 5, "B": 4, "C": 3, "D": 2, "F": 1}
+    _stage_order = {k: i for i, k in enumerate(_STAGE_META)}
 
     if not runs:
         empty_body = """
-          <span class="eyebrow">Executive · Brand Analysis</span>
+          <style>.shell{max-width:none!important;padding:20px 28px!important}
+          .workspace{border-radius:12px!important}</style>
+          <span class="eyebrow">Executive &middot; Brand Analysis</span>
           <h1>Pipeline</h1>
           <p class="muted">No analyses yet. <a href="/admin/executive/brand-analysis">Run your first analysis &rarr;</a></p>
         """
         return _doc("Brand Analysis — Pipeline", empty_body, user=user)
 
+    total = len(runs)
     rows_html = ""
     for r in runs:
         rid = _esc(r["id"])
-        brand = _esc(r.get("brand") or r.get("label") or "Brand")
+        brand_raw = r.get("brand") or r.get("label") or "Brand"
+        brand = _esc(brand_raw)
         brand_link = f'/admin/executive/brand-analysis/{r["id"]}'
         grade = r.get("grade") or "—"
         score = r.get("score_100", 0)
         grade_color = _GRADE_COLORS.get(grade, "#666")
         conf = r.get("confidence") or "—"
         period = _esc(r.get("period_current") or "")
+        stage_key = r.get("stage") or "new"
 
         # Recommendation badge
         rec = r.get("recommendation") or ""
         rec_color = _REC_COLORS.get(rec, "#64748b")
         rec_cell = (
             f'<span class="rec-badge" style="background:{rec_color}18;color:{rec_color};border:1px solid {rec_color}40">'
-            f'{_esc(rec or "—")}</span>'
+            f'{_esc(rec)}</span>'
         ) if rec else '<span class="muted">—</span>'
 
         # Revenue / growth / margin
         rev = fmt_money(r.get("net_revenue_cents"))
+        rev_cents = r.get("net_revenue_cents") or 0
         yoy_raw = r.get("yoy_revenue_growth_bps")
         yoy_str = fmt_pct(yoy_raw) if yoy_raw is not None else "—"
         yoy_color = "#2e7d5b" if (yoy_raw or 0) >= 0 else "#8b4c42"
-        margin = fmt_pct(r.get("net_margin_bps"))
+        margin_bps = r.get("net_margin_bps")
+        margin = fmt_pct(margin_bps)
+
+        # Social grade
+        sg = r.get("social_grade") or ""
+        sg_color = _GRADE_COLORS.get(sg, "#94a3b8")
+        sg_tooltip = _social_tooltip(r)
+        sg_cell = (
+            f'<div class="sg-wrap">'
+            f'<span class="grade-cell" style="color:{sg_color};font-size:15px">{_esc(sg)}</span>'
+            f'{sg_tooltip}'
+            f'</div>'
+        ) if sg else '<span class="muted">—</span>'
 
         # Updated date
         updated = (r.get("updated_at") or r.get("created_at") or "")[:10]
@@ -524,90 +607,143 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             f'<a class="dot-item" href="{share}" target="_blank" rel="noreferrer">Open public page</a>'
             if share_token else ""
         )
-        dot_menu = f"""
-          <div class="dot-wrap">
-            <button class="dot-btn" onclick="toggleDot(this)" title="Actions">&#8943;</button>
-            <div class="dot-menu">
-              <a class="dot-item" href="{_esc(brand_link)}">Open report</a>
-              <a class="dot-item" href="{_esc(brand_link)}/edit">Edit &amp; rerun</a>
-              {copy_item}
-              {public_item}
-              <a class="dot-item" href="{_esc(brand_link)}/download">Download .docx</a>
-              <div class="dot-item dot-item--danger" onclick="deleteReport('{rid}', this)">Delete</div>
-            </div>
-          </div>"""
+        dot_menu = (
+            f'<div class="dot-wrap">'
+            f'<button class="dot-btn" onclick="toggleDot(this,event)" title="Actions">&#8943;</button>'
+            f'<div class="dot-menu">'
+            f'<a class="dot-item" href="{_esc(brand_link)}">Open report</a>'
+            f'<a class="dot-item" href="{_esc(brand_link)}/edit">Edit &amp; rerun</a>'
+            f'{copy_item}{public_item}'
+            f'<a class="dot-item" href="{_esc(brand_link)}/download">Download .docx</a>'
+            f'<div class="dot-item dot-item--danger" onclick="deleteReport(\'{rid}\',this)">Delete</div>'
+            f'</div></div>'
+        )
 
         status = r.get("status")
         if status == "error":
             grade_cell = '<span class="muted">error</span>'
         else:
-            grade_cell = f'<span class="grade-cell" style="color:{grade_color}">{_esc(grade)}</span> <span class="muted">{score}/100</span>'
+            grade_cell = (
+                f'<span class="grade-cell" style="color:{grade_color}">{_esc(grade)}</span>'
+                f' <span class="muted">{score}/100</span>'
+            )
+
+        # Sort values (embedded as data-v on each sortable td)
+        grade_sort = _grade_val.get(grade, 0)
+        sg_sort = _grade_val.get(sg, 0)
+        stage_sort = _stage_order.get(stage_key, 0)
 
         expand_html = _expand_panel(r)
         expand_id = f"exp-{r['id']}"
 
-        rows_html += f"""
-          <tr class="data-row" data-expand="{expand_id}">
-            <td><a href="{_esc(brand_link)}">{brand}</a></td>
-            <td>{_stage_select(r["id"], r.get("stage") or "new")}</td>
-            <td>{grade_cell}</td>
-            <td>{rec_cell}</td>
-            <td class="num">{_esc(rev)}</td>
-            <td class="num" style="color:{yoy_color}">{_esc(yoy_str)}</td>
-            <td class="num">{_esc(margin)}</td>
-            <td><span class="pill conf-{_esc(conf)}">{_esc(conf)}</span></td>
-            <td>{period}</td>
-            <td class="dot-cell">{dot_menu}</td>
-          </tr>
-          <tr class="expand-row" id="{expand_id}" style="display:none">
-            <td colspan="10" style="padding:0">{expand_html}</td>
-          </tr>"""
+        rows_html += (
+            f'<tr class="data-row" data-expand="{expand_id}"'
+            f' data-brand="{brand}" data-stage="{_esc(stage_key)}"'
+            f' data-grade="{_esc(grade)}" data-conf="{_esc(conf)}">'
+            f'<td data-v="{brand_raw.lower()}"><a href="{_esc(brand_link)}">{brand}</a></td>'
+            f'<td data-v="{stage_sort}">{_stage_select(r["id"], stage_key)}</td>'
+            f'<td data-v="{grade_sort}">{grade_cell}</td>'
+            f'<td data-v="{_esc(rec)}">{rec_cell}</td>'
+            f'<td class="num" data-v="{rev_cents}">{_esc(rev)}</td>'
+            f'<td class="num" data-v="{yoy_raw if yoy_raw is not None else -9999}" style="color:{yoy_color}">{_esc(yoy_str)}</td>'
+            f'<td class="num" data-v="{margin_bps if margin_bps is not None else -9999}">{_esc(margin)}</td>'
+            f'<td data-v="{sg_sort}">{sg_cell}</td>'
+            f'<td data-v="{_esc(conf)}"><span class="pill conf-{_esc(conf)}">{_esc(conf)}</span></td>'
+            f'<td data-v="{period}">{period}</td>'
+            f'<td class="dot-cell">{dot_menu}</td>'
+            f'</tr>'
+            f'<tr class="expand-row" id="{expand_id}" style="display:none">'
+            f'<td colspan="11" style="padding:0">{expand_html}</td>'
+            f'</tr>'
+        )
+
+    # Stage filter options
+    stage_filter_opts = '<option value="">All stages</option>' + "".join(
+        f'<option value="{k}">{_esc(m["label"])}</option>' for k, m in _STAGE_META.items()
+    )
+    grade_filter_opts = '<option value="">All grades</option>' + "".join(
+        f'<option value="{g}">{g}</option>' for g in ("A", "B", "C", "D", "F")
+    )
+    conf_filter_opts = '<option value="">All confidence</option>' + "".join(
+        f'<option value="{c}">{c}</option>' for c in ("High", "Medium", "Low")
+    )
+
+    stage_meta_js = "{" + ",".join(f'"{k}":{{"color":"{m["color"]}"}}' for k, m in _STAGE_META.items()) + "}"
 
     body = f"""
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div>
-          <span class="eyebrow">Executive · Brand Analysis</span>
-          <h1 style="margin-top:8px">Pipeline</h1>
-        </div>
-        <a class="btn btn--ghost" href="/admin/executive/brand-analysis">&larr; New Analysis</a>
-      </div>
       <style>
+        /* Full-width pipeline layout */
+        .shell {{ max-width: none !important; padding: 16px 28px 64px !important; }}
+        .workspace {{ border-radius: 12px !important; padding: 20px 24px !important; }}
+        /* Filter bar */
+        .filter-bar {{ display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+          padding:12px 0 14px;border-bottom:1px solid var(--border);margin-bottom:12px; }}
+        .filter-bar input, .filter-bar select {{
+          height:34px;padding:0 10px;border-radius:8px;border:1px solid var(--border);
+          font-size:13px;font-family:inherit;background:#fff;color:var(--text); }}
+        .filter-bar input {{ min-width:200px; }}
+        .filter-bar select {{ cursor:pointer; }}
+        #row-count {{ font-size:12px;color:rgba(43,54,68,0.5);margin-left:auto; }}
+        .filter-clear {{ font-size:12px;color:var(--dark-blue);cursor:pointer;
+          background:none;border:none;padding:0 4px;text-decoration:underline; }}
+        /* Sortable headers */
+        table.pipeline th {{ cursor:pointer;user-select:none;white-space:nowrap; }}
+        table.pipeline th:hover {{ background:rgba(133,187,218,0.30); }}
+        table.pipeline th .sort-arrow {{ font-size:10px;opacity:0.6;margin-left:3px; }}
+        /* Stage select */
         .stage-cell {{ display:flex;align-items:center; }}
         .stage-select {{
-          appearance:none; -webkit-appearance:none;
-          border:none; background:transparent; font-size:12px; font-weight:700;
-          font-family:"Montserrat",sans-serif; cursor:pointer; padding:3px 18px 3px 8px;
-          border-radius:20px; background-color:color-mix(in srgb,var(--stage-color) 12%,transparent);
+          appearance:none;-webkit-appearance:none;border:none;background:transparent;
+          font-size:12px;font-weight:700;font-family:"Montserrat",sans-serif;cursor:pointer;
+          padding:3px 20px 3px 8px;border-radius:20px;
+          background-color:color-mix(in srgb,var(--stage-color) 14%,transparent);
           color:var(--stage-color);
           background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
-          background-repeat:no-repeat; background-position:right 5px center;
-        }}
-        .stage-select:focus {{ outline:2px solid var(--stage-color); outline-offset:1px; }}
+          background-repeat:no-repeat;background-position:right 5px center; }}
+        .stage-select:focus {{ outline:2px solid var(--stage-color);outline-offset:1px; }}
+        /* Recommendation badge */
         .rec-badge {{ font-size:11px;font-weight:700;font-family:"Montserrat",sans-serif;
           padding:3px 10px;border-radius:20px;white-space:nowrap; }}
-        .dot-cell {{ width:44px;text-align:center;padding:6px; }}
+        /* Social grade tooltip */
+        .sg-wrap {{ position:relative;display:inline-block;cursor:default; }}
+        .social-tooltip {{
+          display:none;position:absolute;left:50%;transform:translateX(-50%);top:calc(100% + 6px);
+          background:#fff;border:1px solid var(--border);border-radius:10px;
+          box-shadow:0 4px 20px rgba(43,54,68,0.16);min-width:200px;max-width:280px;
+          padding:12px 14px;z-index:300;font-size:12.5px; }}
+        .sg-wrap:hover .social-tooltip {{ display:block; }}
+        .tt-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:10px;
+          text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:8px; }}
+        .tt-row {{ display:flex;justify-content:space-between;gap:12px;padding:3px 0;
+          border-bottom:1px solid rgba(43,54,68,0.06); }}
+        .tt-row:last-child {{ border-bottom:none; }}
+        .tt-lbl {{ color:rgba(43,54,68,0.55);flex-shrink:0; }}
+        .tt-divider {{ border-top:1px solid var(--border);margin:6px 0; }}
+        /* Three-dot menu */
+        .dot-cell {{ width:40px;text-align:center;padding:4px; }}
         .dot-wrap {{ position:relative;display:inline-block; }}
         .dot-btn {{ background:none;border:none;font-size:20px;cursor:pointer;color:var(--dark-blue);
           padding:2px 6px;border-radius:6px;line-height:1; }}
         .dot-btn:hover {{ background:rgba(43,54,68,0.08); }}
         .dot-menu {{ display:none;position:absolute;right:0;top:100%;background:#fff;
-          border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 16px rgba(43,54,68,0.14);
-          min-width:170px;z-index:200;overflow:hidden; }}
+          border:1px solid var(--border);border-radius:10px;
+          box-shadow:0 4px 16px rgba(43,54,68,0.14);min-width:170px;z-index:400;overflow:hidden; }}
         .dot-item {{ display:block;padding:9px 14px;font-size:13px;color:var(--dark-blue);
           text-decoration:none;cursor:pointer;white-space:nowrap; }}
         .dot-item:hover {{ background:rgba(133,187,218,0.12); }}
         .dot-item--danger {{ color:#8b4c42; }}
         .dot-item--danger:hover {{ background:rgba(139,76,66,0.08); }}
+        /* Rows */
         .data-row {{ cursor:pointer; }}
         .data-row:hover td {{ background:rgba(133,187,218,0.07); }}
         .expand-row td {{ background:var(--light-brown)!important; }}
-        .expand-panel {{ padding:20px; }}
-        .ep-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:16px; }}
+        .expand-panel {{ padding:18px 20px; }}
+        .ep-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px; }}
         .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px; }}
         .ep-zone-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
           text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:10px; }}
         .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse; }}
-        .ep-table td,th {{ padding:4px 6px;border-bottom:1px solid var(--border); }}
+        .ep-table td, .ep-table th {{ padding:4px 6px;border-bottom:1px solid var(--border); }}
         .ep-table thead th {{ background:rgba(133,187,218,0.15);font-size:10px; }}
         .ep-sub {{ font-size:11px;font-weight:700;font-family:"Montserrat",sans-serif;
           text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px; }}
@@ -616,81 +752,170 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .ep-list li {{ margin:3px 0; }}
         .flag-row {{ padding:5px 0;border-bottom:1px solid var(--border); }}
         .flag-row:last-child {{ border-bottom:none; }}
-        @media(max-width:780px){{ .ep-grid{{grid-template-columns:1fr;}} .ep-two-col{{grid-template-columns:1fr;}} }}
-        table.pipeline {{ table-layout:auto; }}
+        table.pipeline {{ table-layout:auto;width:100%; }}
         table.pipeline td, table.pipeline th {{ vertical-align:middle; }}
+        @media(max-width:900px){{
+          .ep-grid{{grid-template-columns:1fr;}}
+          .ep-two-col{{grid-template-columns:1fr;}}
+          .filter-bar input{{min-width:140px;}}
+        }}
       </style>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div>
+          <span class="eyebrow">Executive &middot; Brand Analysis</span>
+          <h1 style="margin-top:8px;margin-bottom:0">Pipeline</h1>
+        </div>
+        <a class="btn btn--ghost" href="/admin/executive/brand-analysis">&larr; New Analysis</a>
+      </div>
+
+      <div class="filter-bar">
+        <input id="f-search" type="search" placeholder="Search brand…" oninput="applyFilters()" autocomplete="off">
+        <select id="f-stage" onchange="applyFilters()">{stage_filter_opts}</select>
+        <select id="f-grade" onchange="applyFilters()">{grade_filter_opts}</select>
+        <select id="f-conf" onchange="applyFilters()">{conf_filter_opts}</select>
+        <button class="filter-clear" onclick="clearFilters()">Clear</button>
+        <span id="row-count">{total} brand{'' if total == 1 else 's'}</span>
+      </div>
+
       <table class="pipeline">
         <thead>
           <tr>
-            <th>Brand</th><th>Stage</th><th>Grade</th><th>Recommendation</th>
-            <th class="num">Revenue</th><th class="num">YoY</th><th class="num">Net Margin</th>
-            <th>Confidence</th><th>Period</th><th></th>
+            <th onclick="sortBy(0,'str')">Brand<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(1,'num')">Stage<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(2,'num')">Grade<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(3,'str')">Recommendation<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(4,'num')">Revenue<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(5,'num')">YoY<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(6,'num')">Net Margin<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(7,'num')">Social<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(8,'str')">Confidence<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(9,'str')">Period<span class="sort-arrow"></span></th>
+            <th></th>
           </tr>
         </thead>
         <tbody>{rows_html}</tbody>
       </table>
+
       <script>
-        // Expand/collapse row panels
-        document.querySelector('tbody').addEventListener('click', function(e){{
-          if(e.target.closest('.dot-wrap,.stage-select')) return;
+        var _sortState = {{col:-1, dir:1}};
+
+        // ── Sort ──────────────────────────────────────────────────────────────
+        function sortBy(colIdx, type) {{
+          var dir = (_sortState.col === colIdx) ? -_sortState.dir : 1;
+          _sortState = {{col: colIdx, dir: dir}};
+          document.querySelectorAll('table.pipeline thead th .sort-arrow').forEach(function(a){{ a.textContent=''; }});
+          var ths = document.querySelectorAll('table.pipeline thead th');
+          if (ths[colIdx]) ths[colIdx].querySelector('.sort-arrow').textContent = dir > 0 ? ' ↑' : ' ↓';
+          var tbody = document.querySelector('table.pipeline tbody');
+          var rows = Array.from(tbody.querySelectorAll('tr.data-row'));
+          rows.sort(function(a, b) {{
+            var av = (a.cells[colIdx] ? a.cells[colIdx].dataset.v : '') || '';
+            var bv = (b.cells[colIdx] ? b.cells[colIdx].dataset.v : '') || '';
+            if (type === 'num') return dir * ((parseFloat(av) || 0) - (parseFloat(bv) || 0));
+            return dir * av.localeCompare(bv, undefined, {{sensitivity:'base'}});
+          }});
+          rows.forEach(function(row) {{
+            tbody.appendChild(row);
+            var exp = document.getElementById(row.dataset.expand);
+            if (exp) tbody.appendChild(exp);
+          }});
+        }}
+
+        // ── Filter ────────────────────────────────────────────────────────────
+        function applyFilters() {{
+          var search = (document.getElementById('f-search').value || '').toLowerCase().trim();
+          var stage  = document.getElementById('f-stage').value;
+          var grade  = document.getElementById('f-grade').value;
+          var conf   = document.getElementById('f-conf').value;
+          var visible = 0, total = 0;
+          document.querySelectorAll('tr.data-row').forEach(function(row) {{
+            total++;
+            var show = (
+              (!search || row.dataset.brand.toLowerCase().includes(search)) &&
+              (!stage  || row.dataset.stage === stage) &&
+              (!grade  || row.dataset.grade === grade) &&
+              (!conf   || row.dataset.conf  === conf)
+            );
+            row.style.display = show ? '' : 'none';
+            var exp = document.getElementById(row.dataset.expand);
+            if (exp && !show) exp.style.display = 'none';
+            if (show) visible++;
+          }});
+          var counter = document.getElementById('row-count');
+          if (counter) counter.textContent = visible + ' of ' + total + ' brand' + (total === 1 ? '' : 's');
+        }}
+
+        function clearFilters() {{
+          document.getElementById('f-search').value = '';
+          document.getElementById('f-stage').value = '';
+          document.getElementById('f-grade').value = '';
+          document.getElementById('f-conf').value  = '';
+          applyFilters();
+        }}
+
+        // ── Row expand ────────────────────────────────────────────────────────
+        document.querySelector('tbody').addEventListener('click', function(e) {{
+          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap')) return;
           var row = e.target.closest('tr.data-row');
-          if(!row) return;
-          var expId = row.dataset.expand;
-          var expRow = document.getElementById(expId);
-          if(!expRow) return;
+          if (!row) return;
+          var expRow = document.getElementById(row.dataset.expand);
+          if (!expRow) return;
           var open = expRow.style.display !== 'none';
-          // Close all open panels
-          document.querySelectorAll('tr.expand-row').forEach(function(r){{r.style.display='none';}});
-          if(!open) expRow.style.display = 'table-row';
+          document.querySelectorAll('tr.expand-row').forEach(function(r) {{ r.style.display = 'none'; }});
+          if (!open) expRow.style.display = 'table-row';
         }});
 
-        // Three-dot menu toggle
-        function toggleDot(btn){{
+        // ── Three-dot menu ────────────────────────────────────────────────────
+        function toggleDot(btn, e) {{
+          e.stopPropagation();
           var menu = btn.nextElementSibling;
           var isOpen = menu.style.display === 'block';
-          document.querySelectorAll('.dot-menu').forEach(function(m){{m.style.display='none';}});
-          if(!isOpen) menu.style.display = 'block';
-          event.stopPropagation();
+          document.querySelectorAll('.dot-menu').forEach(function(m) {{ m.style.display = 'none'; }});
+          if (!isOpen) menu.style.display = 'block';
         }}
-        document.addEventListener('click', function(){{
-          document.querySelectorAll('.dot-menu').forEach(function(m){{m.style.display='none';}});
+        document.addEventListener('click', function() {{
+          document.querySelectorAll('.dot-menu').forEach(function(m) {{ m.style.display = 'none'; }});
         }});
 
-        // Stage PATCH
-        function patchStage(sel){{
+        // ── Stage PATCH ───────────────────────────────────────────────────────
+        var _stageMeta = {stage_meta_js};
+        function patchStage(sel) {{
           var cell = sel.closest('.stage-cell');
-          var id = cell.dataset.id;
+          var id   = cell.dataset.id;
           var stage = sel.value;
+          event.stopPropagation();
           fetch('/admin/executive/brand-analysis/' + id + '/stage', {{
-            method:'PATCH',
-            headers:{{'Content-Type':'application/json'}},
-            body:JSON.stringify({{stage:stage}})
-          }}).then(function(r){{
-            if(r.ok){{
-              var meta = {{{",".join(f'"{k}":{{"color":"{m["color"]}"}}' for k,m in _STAGE_META.items())}}};
-              if(meta[stage]) cell.style.setProperty('--stage-color', meta[stage].color);
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{stage: stage}})
+          }}).then(function(r) {{
+            if (r.ok) {{
+              if (_stageMeta[stage]) cell.style.setProperty('--stage-color', _stageMeta[stage].color);
               cell.style.outline = '2px solid #22c55e';
-              setTimeout(function(){{cell.style.outline='';}}, 800);
+              setTimeout(function() {{ cell.style.outline = ''; }}, 800);
+              // Update data attribute for filter consistency
+              var row = cell.closest('tr.data-row');
+              if (row) row.dataset.stage = stage;
             }}
           }});
-          event.stopPropagation();
         }}
 
-        // Copy share link
-        function copyLink(path){{
+        // ── Helpers ───────────────────────────────────────────────────────────
+        function copyLink(path) {{
           navigator.clipboard.writeText(window.location.origin + path);
         }}
 
-        // Delete report
-        function deleteReport(id, el){{
-          if(!confirm('Delete this report permanently?')) return;
-          fetch('/admin/executive/brand-analysis/' + id, {{method:'DELETE'}}).then(function(r){{
-            if(r.ok){{
-              var dataRow = el.closest('.dot-menu').previousElementSibling.closest('tr');
-              var expRow = document.getElementById('exp-' + id);
-              if(dataRow) dataRow.remove();
-              if(expRow) expRow.remove();
+        function deleteReport(id, el) {{
+          if (!confirm('Delete this report permanently?')) return;
+          fetch('/admin/executive/brand-analysis/' + id, {{method: 'DELETE'}}).then(function(r) {{
+            if (r.ok) {{
+              var menu    = el.closest('.dot-menu');
+              var dataRow = menu.closest('tr.data-row');
+              var expRow  = document.getElementById('exp-' + id);
+              if (dataRow) dataRow.remove();
+              if (expRow)  expRow.remove();
+              applyFilters();
             }}
           }});
         }}
