@@ -322,6 +322,30 @@ def delete_report(report_id: str) -> dict:
     return {"ok": True}
 
 
+class _NoteBody(_BaseModel):
+    notes: str
+
+
+class _DealBody(_BaseModel):
+    ask_price_cents: Optional[int] = None
+
+
+@router.patch("/{report_id}/note")
+def update_note(report_id: str, body: _NoteBody) -> dict:
+    ok = storage.set_notes(report_id, body.notes)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True}
+
+
+@router.patch("/{report_id}/deal")
+def update_deal(report_id: str, body: _DealBody) -> dict:
+    ok = storage.set_ask_price(report_id, body.ask_price_cents)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # View (admin) + download
 # ---------------------------------------------------------------------------

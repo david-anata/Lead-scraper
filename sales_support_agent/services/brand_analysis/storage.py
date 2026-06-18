@@ -342,6 +342,9 @@ def list_pipeline_reports(limit: int = 200) -> list[dict]:
                 "email_list_size": rj.get("email_list_size") or 0,
                 "social_handles": rj.get("social_handles") or {},
                 "social_signals": rj.get("social_signals") or {},
+                # Deal metadata
+                "notes": getattr(r, "notes", "") or "",
+                "ask_price_cents": getattr(r, "ask_price_cents", None),
             })
         return out
 
@@ -354,6 +357,30 @@ def set_stage(report_id: str, stage: str) -> bool:
         if row is None:
             return False
         row.stage = stage
+        row.updated_at = datetime.now(timezone.utc)
+        return True
+
+
+def set_notes(report_id: str, notes: str) -> bool:
+    """Persist analyst deal notes. Returns False if not found."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        row.notes = notes
+        row.updated_at = datetime.now(timezone.utc)
+        return True
+
+
+def set_ask_price(report_id: str, cents: Optional[int]) -> bool:
+    """Persist proposed ask price in cents. Returns False if not found."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        row.ask_price_cents = cents
         row.updated_at = datetime.now(timezone.utc)
         return True
 

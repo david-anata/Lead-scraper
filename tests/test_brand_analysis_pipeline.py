@@ -167,6 +167,47 @@ class PipelineEndpoints(unittest.TestCase):
         self.assertIn("Pipeline", resp.text)
         self.assertIn("stage-select", resp.text)
 
+    def test_note_patch_persists(self) -> None:
+        rid = _make_row("NoteBrand")
+        resp = self.client.patch(
+            f"/admin/executive/brand-analysis/{rid}/note",
+            json={"notes": "Great margins, check seller tenure"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True})
+        rows = storage.list_pipeline_reports()
+        match = next((r for r in rows if r["id"] == rid), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["notes"], "Great margins, check seller tenure")
+
+    def test_deal_patch_persists(self) -> None:
+        rid = _make_row("DealBrand")
+        resp = self.client.patch(
+            f"/admin/executive/brand-analysis/{rid}/deal",
+            json={"ask_price_cents": 250000_00},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True})
+        rows = storage.list_pipeline_reports()
+        match = next((r for r in rows if r["id"] == rid), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["ask_price_cents"], 250000_00)
+
+    def test_deal_patch_null_clears_price(self) -> None:
+        rid = _make_row("DealBrandClear")
+        self.client.patch(
+            f"/admin/executive/brand-analysis/{rid}/deal",
+            json={"ask_price_cents": 500000_00},
+        )
+        resp = self.client.patch(
+            f"/admin/executive/brand-analysis/{rid}/deal",
+            json={"ask_price_cents": None},
+        )
+        self.assertEqual(resp.status_code, 200)
+        rows = storage.list_pipeline_reports()
+        match = next((r for r in rows if r["id"] == rid), None)
+        self.assertIsNone(match["ask_price_cents"])
+
 
 @unittest.skipUnless(DEPS_AVAILABLE, "pipeline deps required")
 class RenderPipelinePage(unittest.TestCase):
@@ -174,10 +215,10 @@ class RenderPipelinePage(unittest.TestCase):
         html = render_pipeline_page([], user=None)
         self.assertIn("No analyses yet", html)
 
-    def test_renders_brand_and_grade(self) -> None:
-        row = {
+    def _make_pipeline_row(self, brand: str = "TestBrand") -> dict:
+        return {
             "id": "abc123",
-            "brand": "TestBrand",
+            "brand": brand,
             "label": "",
             "status": "complete",
             "stage": "reviewing",
@@ -188,6 +229,7 @@ class RenderPipelinePage(unittest.TestCase):
             "period_prior": "FY2024",
             "share_token": "",
             "share_path": "",
+            "slug": "",
             "updated_at": None,
             "created_at": None,
             "recommendation": "Conditional Buy",
@@ -196,15 +238,45 @@ class RenderPipelinePage(unittest.TestCase):
             "contribution_margin_bps": 4000,
             "blended_mer": 3.2,
             "yoy_revenue_growth_bps": 2000,
+            "social_grade": "A",
+            "social_score_100": 82,
+            "social_confidence": "High",
+            "social_dimensions": [],
+            "email_list_size": 0,
+            "social_handles": {},
+            "social_signals": {},
+            "notes": "",
+            "ask_price_cents": None,
             "scorecard_dimensions": [],
             "investment_thesis": ["Strong brand"],
             "key_risks": ["Concentration risk"],
             "red_flags": [],
         }
+
+    def test_renders_brand_and_grade(self) -> None:
+        row = self._make_pipeline_row()
         html = render_pipeline_page([row], user=None)
         self.assertIn("TestBrand", html)
         self.assertIn("Reviewing", html)
         self.assertIn("Conditional Buy", html)
+
+    def test_renders_mer_and_cm_columns(self) -> None:
+        row = self._make_pipeline_row()
+        html = render_pipeline_page([row], user=None)
+        self.assertIn("Blended MER", html)
+        self.assertIn("CM%", html)
+
+    def test_renders_social_score(self) -> None:
+        row = self._make_pipeline_row()
+        html = render_pipeline_page([row], user=None)
+        self.assertIn("82/100", html)
+
+    def test_renders_deal_info_zone(self) -> None:
+        row = self._make_pipeline_row()
+        html = render_pipeline_page([row], user=None)
+        self.assertIn("Deal Info", html)
+        self.assertIn("deal-note", html)
+        self.assertIn("deal-price", html)
 
 
 if __name__ == "__main__":

@@ -756,6 +756,8 @@ class BrandAnalysisReport(Base):
     brand_website: Mapped[str] = mapped_column(String(512), default="")
     context_notes: Mapped[str] = mapped_column(Text, default="")
     stage: Mapped[str] = mapped_column(String(32), default="new", index=True)  # acquisition funnel stage
+    notes: Mapped[str] = mapped_column(Text, default="")                       # analyst deal notes
+    ask_price_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # proposed ask price
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

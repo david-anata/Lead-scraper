@@ -500,9 +500,41 @@ def _expand_panel(row: dict) -> str:
     else:
         zone_e = ""
 
+    # Zone F — Deal Info (notes + ask price)
+    rid = _esc(row.get("id") or "")
+    notes_val = html.escape(row.get("notes") or "", quote=True)
+    ask_raw = row.get("ask_price_cents")
+    ask_dollars = f"{ask_raw / 100:.0f}" if ask_raw else ""
+    zone_f = f"""
+      <div class="ep-zone" style="grid-column:1/-1">
+        <div class="ep-zone-title">Deal Info</div>
+        <div class="ep-two-col" style="gap:16px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:6px">Analyst Notes</div>
+            <textarea class="deal-note" data-rid="{rid}"
+              onblur="saveNote(this)"
+              placeholder="Add notes about this deal…"
+              style="width:100%;min-height:72px;resize:vertical;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12.5px;font-family:inherit;color:var(--text)">{notes_val}</textarea>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:6px">Ask Price</div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:14px;color:rgba(43,54,68,.4)">$</span>
+              <input class="deal-price" data-rid="{rid}"
+                type="number" min="0" step="1000"
+                onblur="savePrice(this)"
+                placeholder="0"
+                value="{_esc(ask_dollars)}"
+                style="width:140px;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;color:var(--text)">
+              <span class="muted" style="font-size:12px">USD</span>
+            </div>
+          </div>
+        </div>
+      </div>"""
+
     return f"""
       <div class="expand-panel">
-        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}</div>
+        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_f}</div>
       </div>"""
 
 
@@ -609,7 +641,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             f'{_esc(rec)}</span>'
         ) if rec else '<span class="muted">—</span>'
 
-        # Revenue / growth / margin
+        # Revenue / growth / margin / MER / CM%
         rev = fmt_money(r.get("net_revenue_cents"))
         rev_cents = r.get("net_revenue_cents") or 0
         yoy_raw = r.get("yoy_revenue_growth_bps")
@@ -617,17 +649,24 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         yoy_color = "#2e7d5b" if (yoy_raw or 0) >= 0 else "#8b4c42"
         margin_bps = r.get("net_margin_bps")
         margin = fmt_pct(margin_bps)
+        mer_raw = r.get("blended_mer")
+        mer_str = fmt_mult(mer_raw) if mer_raw is not None else "—"
+        cm_bps = r.get("contribution_margin_bps")
+        cm_str = fmt_pct(cm_bps) if cm_bps is not None else "—"
 
-        # Social grade
+        # Social grade (show score/100 alongside letter)
         sg = r.get("social_grade") or ""
+        sg_score = r.get("social_score_100") or 0
         sg_color = _GRADE_COLORS.get(sg, "#94a3b8")
         sg_tooltip = _social_tooltip(r)
-        sg_cell = (
-            f'<div class="sg-wrap">'
-            f'<span class="grade-cell" style="color:{sg_color};font-size:15px">{_esc(sg)}</span>'
-            f'{sg_tooltip}'
-            f'</div>'
-        ) if sg else '<span class="muted">—</span>'
+        if sg:
+            sg_label = (
+                f'<span class="grade-cell" style="color:{sg_color};font-size:15px">{_esc(sg)}</span>'
+                f' <span class="muted" style="font-size:11px">{sg_score}/100</span>'
+            )
+            sg_cell = f'<div class="sg-wrap">{sg_label}{sg_tooltip}</div>'
+        else:
+            sg_cell = '<span class="muted">—</span>'
 
         # Updated date
         updated = (r.get("updated_at") or r.get("created_at") or "")[:10]
@@ -635,12 +674,9 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         # Three-dot menu
         share = _esc(r.get("share_path") or "")
         share_token = r.get("share_token") or ""
+        preview_href = share if share_token else _esc(brand_link)
         copy_item = (
             f'<div class="dot-item" onclick="copyLink(\'{share}\')">Copy share link</div>'
-            if share_token else ""
-        )
-        public_item = (
-            f'<a class="dot-item" href="{share}" target="_blank" rel="noreferrer">Open public page</a>'
             if share_token else ""
         )
         dot_menu = (
@@ -648,8 +684,11 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             f'<button class="dot-btn" onclick="toggleDot(this,event)" title="Actions">&#8943;</button>'
             f'<div class="dot-menu">'
             f'<a class="dot-item" href="{_esc(brand_link)}">Open report</a>'
+            f'<a class="dot-item" href="{preview_href}" target="_blank" rel="noreferrer">Preview report</a>'
             f'<a class="dot-item" href="{_esc(brand_link)}/edit">Edit &amp; rerun</a>'
-            f'{copy_item}{public_item}'
+            f'{copy_item}'
+            f'<div class="dot-item" onclick="openDealZone(\'{rid}\',\'note\')">Add / edit note</div>'
+            f'<div class="dot-item" onclick="openDealZone(\'{rid}\',\'price\')">Set ask price</div>'
             f'<a class="dot-item" href="{_esc(brand_link)}/download">Download .docx</a>'
             f'<div class="dot-item dot-item--danger" onclick="deleteReport(\'{rid}\',this)">Delete</div>'
             f'</div></div>'
@@ -685,13 +724,15 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             f'<td class="num" data-v="{rev_cents}">{_esc(rev)}</td>'
             f'<td class="num" data-v="{yoy_raw if yoy_raw is not None else -9999}" style="color:{yoy_color}">{_esc(yoy_str)}</td>'
             f'<td class="num" data-v="{margin_bps if margin_bps is not None else -9999}">{_esc(margin)}</td>'
+            f'<td class="num" data-v="{mer_raw if mer_raw is not None else -9999}">{_esc(mer_str)}</td>'
+            f'<td class="num" data-v="{cm_bps if cm_bps is not None else -9999}">{_esc(cm_str)}</td>'
             f'<td data-v="{sg_sort}">{sg_cell}</td>'
             f'<td data-v="{_esc(conf)}"><span class="pill conf-{_esc(conf)}">{_esc(conf)}</span></td>'
             f'<td data-v="{period}">{period}</td>'
             f'<td class="dot-cell">{dot_menu}</td>'
             f'</tr>'
             f'<tr class="expand-row" id="{expand_id}" style="display:none">'
-            f'<td colspan="11" style="padding:0">{expand_html}</td>'
+            f'<td colspan="13" style="padding:0">{expand_html}</td>'
             f'</tr>'
         )
 
@@ -879,9 +920,11 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             <th class="num" onclick="sortBy(4,'num')">Revenue<span class="sort-arrow"></span></th>
             <th class="num" onclick="sortBy(5,'num')">YoY<span class="sort-arrow"></span></th>
             <th class="num" onclick="sortBy(6,'num')">Net Margin<span class="sort-arrow"></span></th>
-            <th onclick="sortBy(7,'num')">Social<span class="sort-arrow"></span></th>
-            <th onclick="sortBy(8,'str')">Confidence<span class="sort-arrow"></span></th>
-            <th onclick="sortBy(9,'str')">Period<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(7,'num')">Blended MER<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(8,'num')">CM%<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(9,'num')">Social<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(10,'str')">Confidence<span class="sort-arrow"></span></th>
+            <th onclick="sortBy(11,'str')">Period<span class="sort-arrow"></span></th>
             <th></th>
           </tr>
         </thead>
@@ -900,7 +943,9 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             <div class="legend-row"><span class="legend-key">Revenue</span><span class="legend-val">LTM net revenue</span></div>
             <div class="legend-row"><span class="legend-key">YoY</span><span class="legend-val">Revenue growth vs. prior period (green = up)</span></div>
             <div class="legend-row"><span class="legend-key">Net Margin</span><span class="legend-val">Net earnings &divide; net revenue</span></div>
-            <div class="legend-row"><span class="legend-key">Social</span><span class="legend-val">Channel expansion opportunity — hover to see details</span></div>
+            <div class="legend-row"><span class="legend-key">Blended MER</span><span class="legend-val">Every $1 marketing spend returns X revenue (higher = more efficient)</span></div>
+            <div class="legend-row"><span class="legend-key">CM%</span><span class="legend-val">Contribution margin % — revenue after COGS + marketing + fulfillment</span></div>
+            <div class="legend-row"><span class="legend-key">Social</span><span class="legend-val">Channel expansion opportunity score (0–100) — hover to see details</span></div>
             <div class="legend-row"><span class="legend-key">Confidence</span><span class="legend-val">% of key inputs actually supplied</span></div>
           </div>
           <div>
@@ -1039,15 +1084,52 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             var hdr = document.createElement('tr');
             hdr.className = 'group-hdr';
             var n = counts[g.val];
-            hdr.innerHTML = '<td colspan="11"><span class="group-hdr-label">' + g.val + '</span>'
+            hdr.innerHTML = '<td colspan="13"><span class="group-hdr-label">' + g.val + '</span>'
               + '<span class="group-count">' + n + ' brand' + (n === 1 ? '' : 's') + '</span></td>';
             tbody.insertBefore(hdr, g.firstRow);
           }});
         }}
 
+        // ── Deal Info save ────────────────────────────────────────────────────
+        function saveNote(el) {{
+          var rid = el.dataset.rid;
+          fetch('/admin/executive/brand-analysis/' + rid + '/note', {{
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{notes: el.value}})
+          }}).then(function(r) {{
+            if (r.ok) {{ el.style.outline = '2px solid #22c55e'; setTimeout(function() {{ el.style.outline = ''; }}, 700); }}
+          }});
+        }}
+
+        function savePrice(el) {{
+          var rid = el.dataset.rid;
+          var dollars = parseFloat(el.value);
+          var cents = isNaN(dollars) ? null : Math.round(dollars * 100);
+          fetch('/admin/executive/brand-analysis/' + rid + '/deal', {{
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{ask_price_cents: cents}})
+          }}).then(function(r) {{
+            if (r.ok) {{ el.style.outline = '2px solid #22c55e'; setTimeout(function() {{ el.style.outline = ''; }}, 700); }}
+          }});
+        }}
+
+        function openDealZone(rid, field) {{
+          var expRow = document.getElementById('exp-' + rid);
+          if (!expRow) return;
+          document.querySelectorAll('tr.expand-row').forEach(function(r) {{ r.style.display = 'none'; }});
+          expRow.style.display = 'table-row';
+          setTimeout(function() {{
+            var sel = field === 'note' ? '.deal-note[data-rid="' + rid + '"]' : '.deal-price[data-rid="' + rid + '"]';
+            var el = expRow.querySelector(sel);
+            if (el) {{ el.focus(); el.select && el.select(); }}
+          }}, 50);
+        }}
+
         // ── Row expand ────────────────────────────────────────────────────────
         document.querySelector('tbody').addEventListener('click', function(e) {{
-          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap,.ms-wrap')) return;
+          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap,.ms-wrap,.deal-note,.deal-price')) return;
           var row = e.target.closest('tr.data-row');
           if (!row) return;
           var expRow = document.getElementById(row.dataset.expand);
