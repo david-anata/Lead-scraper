@@ -464,9 +464,45 @@ def _expand_panel(row: dict) -> str:
         {flag_items}
       </div>"""
 
+    # Zone E — Social & DTC Opportunity
+    soc_dims = row.get("social_dimensions") or []
+    sg = row.get("social_grade") or ""
+    sg_color = _GRADE_COLORS.get(sg, "#94a3b8")
+    if soc_dims:
+        soc_rows = ""
+        for d in soc_dims:
+            dl = d.get("letter") or "NA"
+            color = _GRADE_COLORS.get(dl, "#94a3b8")
+            reason = _esc((d.get("reason") or "")[:110])
+            label = _esc(d.get("label") or d.get("key", ""))
+            soc_rows += (
+                f'<tr><td>{label}</td>'
+                f'<td><span style="color:{color};font-weight:700">{_esc(dl)}</span></td>'
+                f'<td class="muted">{reason}</td></tr>'
+            )
+        soc_header = (
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+            f'<span style="font-family:Montserrat,sans-serif;font-weight:800;font-size:18px;color:{sg_color}">{_esc(sg)}</span>'
+            f'<span style="font-size:11px;color:rgba(43,54,68,.45)">opportunity score</span></div>'
+        )
+        zone_e = f"""
+          <div class="ep-zone" style="grid-column:1/-1">
+            <div class="ep-zone-title">Social &amp; DTC Opportunity</div>
+            {soc_header}
+            <table class="ep-table">
+              <thead><tr><th>Dimension</th><th>Grade</th><th>Signal</th></tr></thead>
+              <tbody>{soc_rows}</tbody>
+            </table>
+            <div style="font-size:11px;color:rgba(43,54,68,.4);margin-top:6px">
+              High grade = maximum channel-build opportunity for Ascend. No social = Ascend builds from Day 1.
+            </div>
+          </div>"""
+    else:
+        zone_e = ""
+
     return f"""
       <div class="expand-panel">
-        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}</div>
+        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}</div>
       </div>"""
 
 
@@ -530,7 +566,7 @@ def _social_tooltip(r: dict) -> str:
         return ""
     return (
         '<div class="social-tooltip">'
-        '<div class="tt-title">Brand &amp; Social</div>'
+        '<div class="tt-title">Social &amp; DTC Opportunity</div>'
         + "".join(lines)
         + '</div>'
     )
@@ -636,10 +672,12 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         expand_html = _expand_panel(r)
         expand_id = f"exp-{r['id']}"
 
+        created_month = (r.get("created_at") or "")[:7]  # YYYY-MM
         rows_html += (
             f'<tr class="data-row" data-expand="{expand_id}"'
             f' data-brand="{brand}" data-stage="{_esc(stage_key)}"'
-            f' data-grade="{_esc(grade)}" data-conf="{_esc(conf)}">'
+            f' data-grade="{_esc(grade)}" data-conf="{_esc(conf)}"'
+            f' data-created="{_esc(created_month)}">'
             f'<td data-v="{brand_raw.lower()}"><a href="{_esc(brand_link)}">{brand}</a></td>'
             f'<td data-v="{stage_sort}">{_stage_select(r["id"], stage_key)}</td>'
             f'<td data-v="{grade_sort}">{grade_cell}</td>'
@@ -657,15 +695,18 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             f'</tr>'
         )
 
-    # Stage filter options
-    stage_filter_opts = '<option value="">All stages</option>' + "".join(
-        f'<option value="{k}">{_esc(m["label"])}</option>' for k, m in _STAGE_META.items()
+    # Multi-select checkbox panels
+    stage_ms_opts = "".join(
+        f'<label class="ms-opt"><input type="checkbox" value="{k}" onchange="applyFilters()"> {_esc(m["label"])}</label>'
+        for k, m in _STAGE_META.items()
     )
-    grade_filter_opts = '<option value="">All grades</option>' + "".join(
-        f'<option value="{g}">{g}</option>' for g in ("A", "B", "C", "D", "F")
+    grade_ms_opts = "".join(
+        f'<label class="ms-opt"><input type="checkbox" value="{g}" onchange="applyFilters()"> {g}</label>'
+        for g in ("A", "B", "C", "D", "F")
     )
-    conf_filter_opts = '<option value="">All confidence</option>' + "".join(
-        f'<option value="{c}">{c}</option>' for c in ("High", "Medium", "Low")
+    conf_ms_opts = "".join(
+        f'<label class="ms-opt"><input type="checkbox" value="{c}" onchange="applyFilters()"> {c}</label>'
+        for c in ("High", "Medium", "Low")
     )
 
     stage_meta_js = "{" + ",".join(f'"{k}":{{"color":"{m["color"]}"}}' for k, m in _STAGE_META.items()) + "}"
@@ -708,9 +749,9 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .sg-wrap {{ position:relative;display:inline-block;cursor:default; }}
         .social-tooltip {{
           display:none;position:absolute;left:50%;transform:translateX(-50%);top:calc(100% + 6px);
-          background:#fff;border:1px solid var(--border);border-radius:10px;
-          box-shadow:0 4px 20px rgba(43,54,68,0.16);min-width:200px;max-width:280px;
-          padding:12px 14px;z-index:300;font-size:12.5px; }}
+          background:#fff;border:1px solid var(--border);border-radius:12px;
+          box-shadow:0 6px 24px rgba(43,54,68,0.18);min-width:260px;max-width:340px;
+          padding:14px 16px;z-index:300;font-size:12.5px; }}
         .sg-wrap:hover .social-tooltip {{ display:block; }}
         .tt-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:10px;
           text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:8px; }}
@@ -759,6 +800,24 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           .ep-two-col{{grid-template-columns:1fr;}}
           .filter-bar input{{min-width:140px;}}
         }}
+        /* Multi-select filter */
+        .ms-wrap{{position:relative;display:inline-block;}}
+        .ms-btn{{height:34px;padding:0 28px 0 10px;border-radius:8px;border:1px solid var(--border);
+          font-size:13px;font-family:inherit;background:#fff;color:var(--text);cursor:pointer;
+          white-space:nowrap;text-align:left;position:relative;}}
+        .ms-arr{{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9px;opacity:0.45;pointer-events:none;}}
+        .ms-btn.ms-active{{border-color:var(--dark-blue);background:rgba(133,187,218,.12);color:var(--dark-blue);}}
+        .ms-panel{{display:none;position:absolute;top:calc(100% + 4px);left:0;min-width:170px;
+          background:#fff;border:1px solid var(--border);border-radius:10px;
+          box-shadow:0 4px 16px rgba(43,54,68,.14);z-index:500;padding:5px 0;}}
+        .ms-opt{{display:flex;align-items:center;gap:9px;padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap;}}
+        .ms-opt:hover{{background:rgba(133,187,218,.10);}}
+        .ms-opt input{{cursor:pointer;accent-color:var(--dark-blue);}}
+        /* Group-by header rows */
+        .group-hdr td{{background:rgba(133,187,218,.12)!important;padding:6px 12px;border-bottom:1px solid var(--border);}}
+        .group-hdr-label{{font-family:"Montserrat",sans-serif;font-weight:800;font-size:11.5px;
+          text-transform:uppercase;letter-spacing:.06em;color:var(--dark-blue);}}
+        .group-count{{font-size:11px;color:rgba(43,54,68,.4);margin-left:8px;}}
         /* Pipeline legend */
         .legend-box{{margin-top:20px;background:#fff;border:1px solid var(--border);border-radius:14px;padding:14px 20px;}}
         .legend-box summary{{cursor:pointer;font-family:"Montserrat",sans-serif;font-weight:700;font-size:13px;color:var(--dark-blue);user-select:none;}}
@@ -781,9 +840,31 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
 
       <div class="filter-bar">
         <input id="f-search" type="search" placeholder="Search brand…" oninput="applyFilters()" autocomplete="off">
-        <select id="f-stage" onchange="applyFilters()">{stage_filter_opts}</select>
-        <select id="f-grade" onchange="applyFilters()">{grade_filter_opts}</select>
-        <select id="f-conf" onchange="applyFilters()">{conf_filter_opts}</select>
+        <div class="ms-wrap" id="ms-stage">
+          <button class="ms-btn" type="button" onclick="msToggle('ms-stage',event)">
+            <span id="ms-stage-lbl">Stage</span><span class="ms-arr">&#9660;</span>
+          </button>
+          <div class="ms-panel" id="ms-stage-panel">{stage_ms_opts}</div>
+        </div>
+        <div class="ms-wrap" id="ms-grade">
+          <button class="ms-btn" type="button" onclick="msToggle('ms-grade',event)">
+            <span id="ms-grade-lbl">Grade</span><span class="ms-arr">&#9660;</span>
+          </button>
+          <div class="ms-panel" id="ms-grade-panel">{grade_ms_opts}</div>
+        </div>
+        <div class="ms-wrap" id="ms-conf">
+          <button class="ms-btn" type="button" onclick="msToggle('ms-conf',event)">
+            <span id="ms-conf-lbl">Confidence</span><span class="ms-arr">&#9660;</span>
+          </button>
+          <div class="ms-panel" id="ms-conf-panel">{conf_ms_opts}</div>
+        </div>
+        <select id="f-groupby" onchange="applyFilters()" style="height:34px;padding:0 10px;border-radius:8px;border:1px solid var(--border);font-size:13px;font-family:inherit;background:#fff;cursor:pointer;">
+          <option value="">Group: None</option>
+          <option value="stage">Group by Stage</option>
+          <option value="grade">Group by Grade</option>
+          <option value="conf">Group by Confidence</option>
+          <option value="created">Group by Month</option>
+        </select>
         <button class="filter-clear" onclick="clearFilters()">Clear</button>
         <span id="row-count">{total} brand{'' if total == 1 else 's'}</span>
       </div>
@@ -873,22 +954,51 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             var exp = document.getElementById(row.dataset.expand);
             if (exp) tbody.appendChild(exp);
           }});
+          applyGroupBy();
+        }}
+
+        // ── Multi-select helpers ──────────────────────────────────────────────
+        function msToggle(id, e) {{
+          e.stopPropagation();
+          var panel = document.getElementById(id + '-panel');
+          var isOpen = panel.style.display === 'block';
+          document.querySelectorAll('.ms-panel').forEach(function(p) {{ p.style.display = 'none'; }});
+          document.querySelectorAll('.ms-btn').forEach(function(b) {{ b.classList.remove('ms-active'); }});
+          if (!isOpen) {{
+            panel.style.display = 'block';
+            panel.previousElementSibling.classList.add('ms-active');
+          }}
+        }}
+
+        function msGetSelected(id) {{
+          return Array.from(document.querySelectorAll('#' + id + '-panel input:checked')).map(function(i) {{ return i.value; }});
+        }}
+
+        function msUpdateLabel(id, allLabel) {{
+          var sel = msGetSelected(id);
+          var lbl = document.getElementById(id + '-lbl');
+          if (!lbl) return;
+          if (sel.length === 0) {{ lbl.textContent = allLabel; }}
+          else if (sel.length === 1) {{ lbl.textContent = sel[0].charAt(0).toUpperCase() + sel[0].slice(1); }}
+          else {{ lbl.textContent = sel.length + ' selected'; }}
+          var btn = lbl.closest('.ms-btn');
+          if (btn) btn.classList.toggle('ms-active', sel.length > 0);
         }}
 
         // ── Filter ────────────────────────────────────────────────────────────
         function applyFilters() {{
           var search = (document.getElementById('f-search').value || '').toLowerCase().trim();
-          var stage  = document.getElementById('f-stage').value;
-          var grade  = document.getElementById('f-grade').value;
-          var conf   = document.getElementById('f-conf').value;
+          var stages = msGetSelected('ms-stage');
+          var grades = msGetSelected('ms-grade');
+          var confs  = msGetSelected('ms-conf');
           var visible = 0, total = 0;
           document.querySelectorAll('tr.data-row').forEach(function(row) {{
             total++;
             var show = (
               (!search || row.dataset.brand.toLowerCase().includes(search)) &&
-              (!stage  || row.dataset.stage === stage) &&
-              (!grade  || row.dataset.grade === grade) &&
-              (!conf   || row.dataset.conf  === conf)
+              (!stages.length || stages.includes(row.dataset.stage)) &&
+              (!grades.length || grades.includes(row.dataset.grade)) &&
+              (!confs.length  || confs.includes(row.dataset.conf))
             );
             row.style.display = show ? '' : 'none';
             var exp = document.getElementById(row.dataset.expand);
@@ -897,19 +1007,47 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           }});
           var counter = document.getElementById('row-count');
           if (counter) counter.textContent = visible + ' of ' + total + ' brand' + (total === 1 ? '' : 's');
+          msUpdateLabel('ms-stage', 'Stage');
+          msUpdateLabel('ms-grade', 'Grade');
+          msUpdateLabel('ms-conf', 'Confidence');
+          applyGroupBy();
         }}
 
         function clearFilters() {{
           document.getElementById('f-search').value = '';
-          document.getElementById('f-stage').value = '';
-          document.getElementById('f-grade').value = '';
-          document.getElementById('f-conf').value  = '';
+          document.getElementById('f-groupby').value = '';
+          document.querySelectorAll('.ms-panel input[type=checkbox]').forEach(function(cb) {{ cb.checked = false; }});
           applyFilters();
+        }}
+
+        // ── Group by ──────────────────────────────────────────────────────────
+        function applyGroupBy() {{
+          var field = (document.getElementById('f-groupby') || {{}}).value || '';
+          var tbody = document.querySelector('table.pipeline tbody');
+          tbody.querySelectorAll('tr.group-hdr').forEach(function(r) {{ r.remove(); }});
+          if (!field) return;
+          var rows = Array.from(tbody.querySelectorAll('tr.data-row')).filter(function(r) {{
+            return r.style.display !== 'none';
+          }});
+          var seen = [], order = [], counts = {{}};
+          rows.forEach(function(row) {{
+            var val = row.dataset[field] || '—';
+            counts[val] = (counts[val] || 0) + 1;
+            if (seen.indexOf(val) === -1) {{ seen.push(val); order.push({{val: val, firstRow: row}}); }}
+          }});
+          order.forEach(function(g) {{
+            var hdr = document.createElement('tr');
+            hdr.className = 'group-hdr';
+            var n = counts[g.val];
+            hdr.innerHTML = '<td colspan="11"><span class="group-hdr-label">' + g.val + '</span>'
+              + '<span class="group-count">' + n + ' brand' + (n === 1 ? '' : 's') + '</span></td>';
+            tbody.insertBefore(hdr, g.firstRow);
+          }});
         }}
 
         // ── Row expand ────────────────────────────────────────────────────────
         document.querySelector('tbody').addEventListener('click', function(e) {{
-          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap')) return;
+          if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap,.ms-wrap')) return;
           var row = e.target.closest('tr.data-row');
           if (!row) return;
           var expRow = document.getElementById(row.dataset.expand);
@@ -928,7 +1066,8 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           if (!isOpen) menu.style.display = 'block';
         }}
         document.addEventListener('click', function() {{
-          document.querySelectorAll('.dot-menu').forEach(function(m) {{ m.style.display = 'none'; }});
+          document.querySelectorAll('.dot-menu,.ms-panel').forEach(function(m) {{ m.style.display = 'none'; }});
+          document.querySelectorAll('.ms-btn').forEach(function(b) {{ b.classList.remove('ms-active'); }});
         }});
 
         // ── Stage PATCH ───────────────────────────────────────────────────────
