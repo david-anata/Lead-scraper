@@ -193,6 +193,20 @@ class PipelineEndpoints(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match["ask_price_cents"], 250000_00)
 
+    def test_contact_patch_persists(self) -> None:
+        rid = _make_row("ContactBrand")
+        resp = self.client.patch(
+            f"/admin/executive/brand-analysis/{rid}/contact",
+            json={"contact_name": "Jane Smith", "contact_email": "jane@brand.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True})
+        rows = storage.list_pipeline_reports()
+        match = next((r for r in rows if r["id"] == rid), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["contact_name"], "Jane Smith")
+        self.assertEqual(match["contact_email"], "jane@brand.com")
+
     def test_social_patch_recomputes_grade(self) -> None:
         rid = _make_row("SocialPatchBrand")
         resp = self.client.patch(

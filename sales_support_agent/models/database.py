@@ -153,6 +153,8 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "stage": "ALTER TABLE brand_analysis_reports ADD COLUMN stage VARCHAR(32) NOT NULL DEFAULT 'new'",
             "notes": "ALTER TABLE brand_analysis_reports ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
             "ask_price_cents": "ALTER TABLE brand_analysis_reports ADD COLUMN ask_price_cents INTEGER",
+            "contact_name": "ALTER TABLE brand_analysis_reports ADD COLUMN contact_name VARCHAR(255) NOT NULL DEFAULT ''",
+            "contact_email": "ALTER TABLE brand_analysis_reports ADD COLUMN contact_email VARCHAR(255) NOT NULL DEFAULT ''",
         },
         "app_users": {
             "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
@@ -704,6 +706,8 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
             "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS stage VARCHAR(32) NOT NULL DEFAULT 'new'",
             "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS ask_price_cents INTEGER",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS contact_name VARCHAR(255) NOT NULL DEFAULT ''",
+            "ALTER TABLE brand_analysis_reports ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255) NOT NULL DEFAULT ''",
         ):
             connection.execute(text(_stmt))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_brand_analysis_reports_share_token ON brand_analysis_reports (share_token)"))

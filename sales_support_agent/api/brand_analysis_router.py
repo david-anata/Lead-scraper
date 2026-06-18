@@ -346,6 +346,19 @@ def update_social(report_id: str, body: _SocialBody) -> dict:
     }
 
 
+class _ContactBody(_BaseModel):
+    contact_name: str = ""
+    contact_email: str = ""
+
+
+@router.patch("/{report_id}/contact")
+def update_contact(report_id: str, body: _ContactBody) -> dict:
+    ok = storage.set_contact(report_id, body.contact_name, body.contact_email)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True}
+
+
 class _NoteBody(_BaseModel):
     notes: str
 

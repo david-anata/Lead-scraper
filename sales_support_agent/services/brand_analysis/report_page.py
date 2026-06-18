@@ -596,15 +596,33 @@ def _expand_panel(row: dict) -> str:
         </div>
       </div>"""
 
-    # Zone F — Deal Info (notes + ask price)
+    # Zone F — Deal Info (contact + notes + ask price)
     rid = _esc(row.get("id") or "")
     notes_val = html.escape(row.get("notes") or "", quote=True)
     ask_raw = row.get("ask_price_cents")
     ask_dollars = f"{ask_raw / 100:.0f}" if ask_raw else ""
+    contact_name_val  = _esc(row.get("contact_name") or "")
+    contact_email_val = _esc(row.get("contact_email") or "")
+    _fi = ("style='width:100%;height:32px;padding:0 8px;border:1px solid var(--border);"
+           "border-radius:6px;font-size:12.5px;font-family:inherit;color:var(--text)'")
     zone_f = f"""
       <div class="ep-zone" style="grid-column:1/-1">
         <div class="ep-zone-title">Deal Info</div>
-        <div class="ep-two-col" style="gap:16px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Contact name</div>
+            <input class="deal-cname" data-rid="{rid}" type="text"
+              onblur="saveContact(this)" value="{contact_name_val}"
+              placeholder="Seller / broker name" {_fi}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Contact email</div>
+            <input class="deal-cemail" data-rid="{rid}" type="email"
+              onblur="saveContact(this)" value="{contact_email_val}"
+              placeholder="email@example.com" {_fi}>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <div>
             <div class="ep-sub" style="margin-bottom:6px">Analyst Notes</div>
             <textarea class="deal-note" data-rid="{rid}"
@@ -827,7 +845,12 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             f' data-brand="{brand}" data-stage="{_esc(stage_key)}"'
             f' data-grade="{_esc(grade)}" data-conf="{_esc(conf)}"'
             f' data-created="{_esc(created_month)}">'
-            f'<td data-v="{brand_raw.lower()}"><a href="{_esc(brand_link)}">{brand}</a></td>'
+            f'<td data-v="{brand_raw.lower()}">'
+            f'<a href="{_esc(brand_link)}">{brand}</a>'
+            + (f'<div style="font-size:11px;color:rgba(43,54,68,.45);margin-top:1px">'
+               f'{_esc(r.get("contact_name") or "")}</div>'
+               if r.get("contact_name") else "")
+            + f'</td>'
             f'<td data-v="{stage_sort}">{_stage_select(r["id"], stage_key)}</td>'
             f'<td data-v="{grade_sort}">{grade_cell}</td>'
             f'<td data-v="{_esc(rec)}">{rec_cell}</td>'
@@ -1296,6 +1319,44 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         }}
 
         // ── Deal Info save ────────────────────────────────────────────────────
+        function saveContact(el) {{
+          var rid = el.dataset.rid;
+          var nameEl  = document.querySelector('.deal-cname[data-rid="'  + rid + '"]');
+          var emailEl = document.querySelector('.deal-cemail[data-rid="' + rid + '"]');
+          var name  = nameEl  ? nameEl.value  : '';
+          var email = emailEl ? emailEl.value : '';
+          fetch('/admin/executive/brand-analysis/' + rid + '/contact', {{
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{contact_name: name, contact_email: email}})
+          }}).then(function(r) {{
+            if (r.ok) {{
+              el.style.outline = '2px solid #22c55e';
+              setTimeout(function() {{ el.style.outline = ''; }}, 700);
+              // Update the contact sub-line in the Brand cell
+              var expRow = document.getElementById('exp-' + rid);
+              if (expRow) {{
+                var dataRow = expRow.previousElementSibling;
+                if (dataRow && dataRow.classList.contains('data-row')) {{
+                  var brandCell = dataRow.cells[0];
+                  if (brandCell) {{
+                    var sub = brandCell.querySelector('div');
+                    if (name) {{
+                      if (sub) {{ sub.textContent = name; }}
+                      else {{
+                        var d = document.createElement('div');
+                        d.style = 'font-size:11px;color:rgba(43,54,68,.45);margin-top:1px';
+                        d.textContent = name;
+                        brandCell.appendChild(d);
+                      }}
+                    }} else if (sub) {{ sub.remove(); }}
+                  }}
+                }}
+              }}
+            }}
+          }});
+        }}
+
         function saveNote(el) {{
           var rid = el.dataset.rid;
           fetch('/admin/executive/brand-analysis/' + rid + '/note', {{

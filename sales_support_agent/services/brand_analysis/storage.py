@@ -345,6 +345,8 @@ def list_pipeline_reports(limit: int = 200) -> list[dict]:
                 # Deal metadata
                 "notes": getattr(r, "notes", "") or "",
                 "ask_price_cents": getattr(r, "ask_price_cents", None),
+                "contact_name": getattr(r, "contact_name", "") or "",
+                "contact_email": getattr(r, "contact_email", "") or "",
             })
         return out
 
@@ -404,6 +406,19 @@ def set_social_data(
         row.report_html = ""  # force re-render on next share-page view
         row.updated_at = datetime.now(timezone.utc)
         return brand_social
+
+
+def set_contact(report_id: str, name: str, email: str) -> bool:
+    """Persist seller/broker contact details. Returns False if not found."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        row.contact_name = name[:255]
+        row.contact_email = email[:255]
+        row.updated_at = datetime.now(timezone.utc)
+        return True
 
 
 def set_notes(report_id: str, notes: str) -> bool:
