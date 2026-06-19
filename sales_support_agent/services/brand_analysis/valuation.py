@@ -187,3 +187,36 @@ def _confidence(pct: int) -> str:
     if pct >= 60:
         return "Medium"
     return "Low"
+
+
+def deal_value(ask_price_cents: int, ev_low_cents: int, ev_high_cents: int) -> dict:
+    """Price vs. Ascend EV range. Returns ratio, label, and tone."""
+    ev_mid = (ev_low_cents + ev_high_cents) / 2
+    ratio = round(ask_price_cents / ev_mid, 2)
+    if ratio <= 0.50:
+        return {"ratio": ratio, "label": "Deep Value", "tone": "great"}
+    if ratio <= 0.70:
+        return {"ratio": ratio, "label": "Discounted", "tone": "good"}
+    if ratio <= 1.00:
+        return {"ratio": ratio, "label": "Fair Value", "tone": "neutral"}
+    if ratio <= 1.25:
+        return {"ratio": ratio, "label": "At Premium", "tone": "caution"}
+    return {"ratio": ratio, "label": "Overpriced", "tone": "bad"}
+
+
+def deal_recommendation(grade: str, ratio: float) -> str:
+    """Grade + price combined acquisition recommendation."""
+    if ratio <= 0.50:
+        return "Strong Buy" if grade in ("A", "B", "C") else "Distressed Offer"
+    if ratio <= 0.70:
+        if grade == "A": return "Strong Buy"
+        if grade in ("B", "C"): return "Buy"
+        return "Distressed Offer"
+    if ratio <= 1.00:
+        return {"A": "Strong Buy", "B": "Buy", "C": "Conditional",
+                "D": "Proceed Carefully", "F": "Pass"}.get(grade, "Pass")
+    if ratio <= 1.25:
+        if grade == "A": return "Buy"
+        if grade == "B": return "Conditional"
+        return "Pass"
+    return "Conditional" if grade == "A" else "Pass"

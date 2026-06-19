@@ -356,9 +356,13 @@ def list_pipeline_reports(limit: int = 200) -> list[dict]:
                 "comp_signals": rj.get("comp_signals") or {},
                 # Deal metadata
                 "notes": getattr(r, "notes", "") or "",
+                "context_notes": getattr(r, "context_notes", "") or "",
                 "ask_price_cents": getattr(r, "ask_price_cents", None),
                 "contact_name": getattr(r, "contact_name", "") or "",
                 "contact_email": getattr(r, "contact_email", "") or "",
+                # EV range from last report run (for deal value calculation)
+                "ev_low_cents": (rj.get("valuation") or {}).get("ev_low_cents"),
+                "ev_high_cents": (rj.get("valuation") or {}).get("ev_high_cents"),
             })
         return out
 

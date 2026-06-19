@@ -602,6 +602,31 @@ def _expand_panel(row: dict) -> str:
     ctx_notes_val = html.escape(row.get("context_notes") or "", quote=True)
     ask_raw = row.get("ask_price_cents")
     ask_dollars = f"{ask_raw / 100:.0f}" if ask_raw else ""
+
+    # Deal value hint — shown when ask price AND EV range are both known
+    deal_hint = ""
+    ev_low_z = row.get("ev_low_cents")
+    ev_high_z = row.get("ev_high_cents")
+    if ask_raw and ev_low_z and ev_high_z and ev_low_z > 0 and ev_high_z > 0:
+        from sales_support_agent.services.brand_analysis.valuation import (
+            deal_value as _dv_fn, deal_recommendation as _dr_fn,
+        )
+        _dv = _dv_fn(ask_raw, ev_low_z, ev_high_z)
+        _dr = _dr_fn(row.get("grade") or "F", _dv["ratio"])
+        _tone_c = {"great": "#2e7d5b", "good": "#3a6e5e", "neutral": "#64748b",
+                   "caution": "#c07a1f", "bad": "#8b4c42"}[_dv["tone"]]
+        _ev_mid_str = fmt_money(int((ev_low_z + ev_high_z) / 2))
+        deal_hint = (
+            f'<div style="margin-top:8px;padding:8px 10px;border-radius:8px;'
+            f'background:{_tone_c}12;border:1px solid {_tone_c}30">'
+            f'<span style="font-size:12px;font-weight:600;color:{_tone_c}">'
+            f'{_dv["ratio"]:.2f}× EV midpoint ({_ev_mid_str}) — {_dv["label"]}'
+            f'</span>'
+            f'<span style="font-size:11px;color:{_tone_c};margin-left:10px">'
+            f'→ Deal rec: {_dr}'
+            f'</span>'
+            f'</div>'
+        )
     contact_name_val  = _esc(row.get("contact_name") or "")
     contact_email_val = _esc(row.get("contact_email") or "")
     _fi = ("style='width:100%;height:32px;padding:0 8px;border:1px solid var(--border);"
@@ -660,6 +685,7 @@ def _expand_panel(row: dict) -> str:
                 style="width:140px;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;color:var(--text)">
               <span class="muted" style="font-size:12px">USD</span>
             </div>
+            {deal_hint}
           </div>
         </div>
       </div>"""
@@ -860,13 +886,34 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         period = _esc(r.get("period_current") or "")
         stage_key = r.get("stage") or "new"
 
-        # Recommendation badge
+        # Recommendation badge — deal-adjusted when ask price + EV are known
         rec = r.get("recommendation") or ""
-        rec_color = _REC_COLORS.get(rec, "#64748b")
-        rec_cell = (
-            f'<span class="rec-badge" style="background:{rec_color}18;color:{rec_color};border:1px solid {rec_color}40">'
-            f'{_esc(rec)}</span>'
-        ) if rec else '<span class="muted">—</span>'
+        ask_p = r.get("ask_price_cents")
+        ev_lo = r.get("ev_low_cents")
+        ev_hi = r.get("ev_high_cents")
+        if ask_p and ev_lo and ev_hi and ev_lo > 0 and ev_hi > 0:
+            from sales_support_agent.services.brand_analysis.valuation import (
+                deal_value as _dv_fn2, deal_recommendation as _dr_fn2,
+            )
+            _dv2 = _dv_fn2(ask_p, ev_lo, ev_hi)
+            display_rec = _dr_fn2(grade, _dv2["ratio"])
+            _tone_c2 = {"great": "#2e7d5b", "good": "#3a6e5e", "neutral": "#64748b",
+                        "caution": "#c07a1f", "bad": "#8b4c42"}[_dv2["tone"]]
+            rec_color = _REC_COLORS.get(display_rec, "#64748b")
+            rec_cell = (
+                f'<div style="display:flex;flex-direction:column;gap:2px">'
+                f'<span class="rec-badge" style="background:{rec_color}18;color:{rec_color};border:1px solid {rec_color}40">'
+                f'{_esc(display_rec)}</span>'
+                f'<span style="font-size:10px;color:{_tone_c2}">'
+                f'{_dv2["ratio"]:.2f}× — {_dv2["label"]}</span>'
+                f'</div>'
+            )
+        else:
+            rec_color = _REC_COLORS.get(rec, "#64748b")
+            rec_cell = (
+                f'<span class="rec-badge" style="background:{rec_color}18;color:{rec_color};border:1px solid {rec_color}40">'
+                f'{_esc(rec)}</span>'
+            ) if rec else '<span class="muted">—</span>'
 
         # Revenue / growth / margin / MER / CM%
         rev = fmt_money(r.get("net_revenue_cents"))

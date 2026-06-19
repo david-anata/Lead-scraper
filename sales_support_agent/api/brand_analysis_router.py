@@ -120,14 +120,18 @@ def _collect_overrides(form_values: dict) -> dict:
 
 def _run_and_render(batch, *, brand, category, context_notes, brand_website, prepared,
                     email_list_size=0, social_urls="", review_rating=None, review_count=None,
-                    overrides=None):
+                    overrides=None, _stored_signals=None, _stored_handles=None):
     """Build the report (with branding + social + overrides) and render share HTML."""
     assets = _fetch_brand_assets(brand_website)
-    # Auto-discover socials from the site, then let manual URLs override.
     from sales_support_agent.services.brand_analysis.social import discover_socials
     handles = discover_socials(brand_website)
+    # Stored Zone-G handles survive reruns; form URL input wins over both.
+    if _stored_handles:
+        handles.update(_stored_handles)
     handles.update(_parse_social_urls(social_urls))
-    signals: dict = {}
+    # Stored Zone-G signals (follower counts, posting recency…) survive reruns;
+    # explicit form fields (review_rating, review_count) override.
+    signals: dict = dict(_stored_signals or {})
     if review_rating is not None:
         signals["review_rating"] = review_rating
     if review_count is not None:
@@ -266,6 +270,10 @@ async def rerun(
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
     overrides = _collect_overrides(await request.form())
+    # Carry forward Zone-G social signals so follower counts survive reruns.
+    existing_report = storage.get_report(report_id)
+    stored_signals = dict(existing_report.social_signals or {}) if existing_report else {}
+    stored_handles = dict(existing_report.social_handles or {}) if existing_report else {}
     # Kept originals (minus any the analyst removed) + newly added files.
     drop = {n for n in (remove_files or [])}
     kept = [(n, d) for (n, d) in storage.get_sources(report_id) if n not in drop]
@@ -281,7 +289,7 @@ async def rerun(
             context_notes=context_notes, brand_website=brand_website, prepared=prepared,
             email_list_size=_opt_int(email_list_size) or 0, social_urls=social_urls,
             review_rating=_opt_float(review_rating), review_count=_opt_int(review_count),
-            overrides=overrides)
+            overrides=overrides, _stored_signals=stored_signals, _stored_handles=stored_handles)
         docx_bytes = build_docx(report)
         storage.update_report(
             report_id, report, source_files=batch, docx_bytes=docx_bytes, report_html=share_html)
