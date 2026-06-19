@@ -1119,8 +1119,10 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .data-row:hover td {{ background:rgba(133,187,218,0.07); }}
         .expand-row td {{ background:var(--light-brown)!important; }}
         .expand-panel {{ padding:18px 20px;width:0;min-width:100%;box-sizing:border-box;overflow-x:hidden; }}
-        .ep-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;min-width:0; }}
+        .expand-panel * {{ box-sizing:border-box; }}
+        .ep-grid {{ display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;min-width:0; }}
         .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0;overflow:hidden; }}
+        .ep-zone > div {{ min-width:0; }}
         .ep-zone-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
           text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:10px; }}
         .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse;table-layout:fixed; }}
