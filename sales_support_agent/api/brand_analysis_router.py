@@ -439,8 +439,8 @@ def update_competitive(report_id: str, body: _CompetitiveBody) -> dict:
 
 @router.get("/{report_id}/enrich")
 def enrich(report_id: str) -> dict:
-    """Fetch missing social + competitive data for a report. Returns partial
-    dict — keys only present when data was actually found. Never 500s."""
+    """Fetch missing social + competitive data for a report, persist gaps,
+    and return the full discovered dict. Never 500s."""
     row = storage.get_report_row(report_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
@@ -448,6 +448,9 @@ def enrich(report_id: str) -> dict:
     brand_name = (row.get("brand") or "")
     brand_website = (row.get("brand_website") or "")
     existing_handles = dict(getattr(rep, "social_handles", None) or {}) if rep else {}
+    existing_signals = dict(getattr(rep, "social_signals", None) or {}) if rep else {}
+    existing_email = int(getattr(rep, "email_list_size", None) or 0) if rep else 0
+
     try:
         from sales_support_agent.services.brand_analysis.enrich import auto_enrich
         result = auto_enrich(
@@ -458,6 +461,42 @@ def enrich(report_id: str) -> dict:
     except Exception as exc:
         logger.exception("[brand_analysis] enrich failed for %s", report_id[:8])
         result = {"_errors": [str(exc)[:120]]}
+
+    # ── Persist discovered data (fill gaps only — never overwrite user values) ─
+    _URL_TO_PLATFORM = {
+        "instagram_url": "instagram",
+        "tiktok_url":    "tiktok",
+        "facebook_url":  "facebook",
+        "youtube_url":   "youtube",
+    }
+    _SIGNAL_FIELDS = {
+        "review_rating", "review_count",
+        "ig_followers", "tt_followers", "fb_followers", "yt_subscribers",
+        "bsr_rank", "brand_price_cents", "category_name",
+        "top_competitor_name", "competitor_reviews", "competitor_bsr",
+    }
+
+    new_handles = dict(existing_handles)
+    for url_key, platform in _URL_TO_PLATFORM.items():
+        if result.get(url_key) and not new_handles.get(platform):
+            new_handles[platform] = result[url_key]
+
+    new_signals = dict(existing_signals)
+    for field in _SIGNAL_FIELDS:
+        if result.get(field) is not None and not new_signals.get(field):
+            new_signals[field] = result[field]
+
+    if new_handles != existing_handles or new_signals != existing_signals:
+        try:
+            storage.set_social_data(
+                report_id,
+                email_list_size=existing_email,
+                social_handles=new_handles,
+                social_signals=new_signals,
+            )
+        except Exception:
+            logger.warning("[enrich] failed to persist social data for %s", report_id[:8])
+
     return result
 
 

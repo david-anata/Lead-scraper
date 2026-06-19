@@ -125,7 +125,24 @@ def _grade_social_oppty(social_handles: dict, signals: dict) -> tuple[str, str, 
     complexity. Existing active social is still positive (transferable audience)
     but represents less incremental opportunity for Ascend to capture."""
     handles = {k: v for k, v in (social_handles or {}).items() if v}
+    s = signals or {}
     _ASCEND_PLATFORMS = {"instagram", "tiktok", "facebook", "youtube"}
+
+    # Aggregate known follower counts for audience sizing
+    _FOLLOWER_KEYS = {
+        "instagram": "ig_followers",
+        "tiktok":    "tt_followers",
+        "facebook":  "fb_followers",
+        "youtube":   "yt_subscribers",
+    }
+
+    def _fmt(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n//1_000}K"
+        return str(n)
+
     if not handles:
         to_build = sorted(_ASCEND_PLATFORMS)
         return (
@@ -134,11 +151,25 @@ def _grade_social_oppty(social_handles: dict, signals: dict) -> tuple[str, str, 
             "from Day 1. Full brand voice control, zero legacy management overhead.",
             True,
         )
+
     existing = set(handles.keys())
     missing = sorted(_ASCEND_PLATFORMS - existing)
     n = len(handles)
     note = f"{n} platform(s) exist: {', '.join(sorted(handles))}"
-    recency = (signals or {}).get("posting_recency_days")
+
+    # Append per-platform follower counts when available
+    follower_parts = []
+    total_followers = 0
+    for platform in sorted(existing):
+        fol_key = _FOLLOWER_KEYS.get(platform)
+        if fol_key and s.get(fol_key):
+            count = int(s[fol_key])
+            total_followers += count
+            follower_parts.append(f"{platform.title()} {_fmt(count)}")
+    if follower_parts:
+        note += f" ({', '.join(follower_parts)}; {_fmt(total_followers)} total audience)"
+
+    recency = s.get("posting_recency_days")
     if isinstance(recency, (int, float)):
         if recency <= 7:
             note += "; active posting — transferable audience"
