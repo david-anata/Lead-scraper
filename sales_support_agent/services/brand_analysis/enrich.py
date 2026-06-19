@@ -4,13 +4,17 @@
 Fetches missing data from public social profile pages and Amazon search
 results so analysts don't have to look up follower counts manually.
 Never raises — always returns a partial dict with whatever succeeded.
+
+All platforms are scraped via regex against the embedded page JSON first
+(YouTube ytInitialData, Instagram edge_followed_by, TikTok followerCount,
+Facebook fan_count), with a Claude Haiku fallback for anything that slips
+through. No external API keys required.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Optional
 from urllib.parse import quote_plus
@@ -72,49 +76,121 @@ def _claude_extract(html_text: str, prompt: str) -> Optional[dict]:
         return None
 
 
+def _parse_count_text(text: str) -> Optional[int]:
+    """Parse '1.23M', '5.4K', '120,000', '1.2M subscribers' → int."""
+    if not text:
+        return None
+    text = text.replace(",", "").strip()
+    m = re.search(r"([\d.]+)\s*([KkMmBbGg]?)", text)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+        suffix = m.group(2).upper()
+        multipliers = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000, "G": 1_000_000_000}
+        return int(val * multipliers.get(suffix, 1))
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
-# Per-platform follower extraction
+# Per-platform scraping  (regex-first, Claude Haiku fallback)
 # ---------------------------------------------------------------------------
 
 
 def _yt_subscribers(yt_url: str) -> Optional[int]:
-    """YouTube subscriber count via Data API v3 (if GOOGLE_API_KEY set) or page scrape."""
-    google_key = os.environ.get("GOOGLE_API_KEY", "")
-    if google_key:
-        handle_m = re.search(r"youtube\.com/@([\w.-]+)", yt_url)
-        channel_m = re.search(r"youtube\.com/channel/([\w-]+)", yt_url)
-        try:
-            if handle_m:
-                api_url = (
-                    "https://www.googleapis.com/youtube/v3/channels"
-                    f"?part=statistics&forHandle=%40{handle_m.group(1)}&key={google_key}"
-                )
-            elif channel_m:
-                api_url = (
-                    "https://www.googleapis.com/youtube/v3/channels"
-                    f"?part=statistics&id={channel_m.group(1)}&key={google_key}"
-                )
-            else:
-                api_url = ""
-            if api_url:
-                raw = _fetch(api_url)
-                data = json.loads(raw)
-                items = data.get("items") or []
-                if items:
-                    return int(items[0].get("statistics", {}).get("subscriberCount") or 0) or None
-        except Exception:
-            logger.debug("[enrich] YouTube Data API failed", exc_info=True)
-
-    # Fallback: scrape the page
+    """YouTube subscriber count via ytInitialData embedded JSON (no API key needed)."""
     page_html = _fetch(yt_url)
+    if not page_html:
+        return None
+
+    # Exact count — YouTube embeds the raw number in ytInitialData
+    m = re.search(r'"subscriberCount":"(\d+)"', page_html)
+    if m:
+        return int(m.group(1))
+
+    # Human-readable text like "1.23M subscribers"
+    m2 = re.search(r'"subscriberCountText":\{"simpleText":"([^"]+)"', page_html)
+    if m2:
+        count = _parse_count_text(m2.group(1))
+        if count:
+            return count
+
+    # Also try simpleText variant inside accessibilityData
+    m3 = re.search(r'"subscribers"[^}]*"simpleText":"([^"]+)"', page_html)
+    if m3:
+        count = _parse_count_text(m3.group(1))
+        if count:
+            return count
+
+    # Haiku fallback
     result = _claude_extract(
         page_html,
-        'Extract the YouTube channel subscriber count. '
+        "Extract the YouTube channel subscriber count from this page HTML. "
         'Return JSON: {"subscribers": <integer or null>}',
     )
     if result and result.get("subscribers"):
         return int(result["subscribers"])
     return None
+
+
+def _ig_followers(page_html: str) -> Optional[int]:
+    """Extract Instagram follower count from page HTML."""
+    for pattern in [
+        r'"edge_followed_by":\{"count":(\d+)',
+        r'"followerCount":(\d+)',
+        r'"followers":(\d+)',
+        r'"userInteractionCount":(\d+)',
+    ]:
+        m = re.search(pattern, page_html)
+        if m:
+            val = int(m.group(1))
+            if val > 0:
+                return val
+    return None
+
+
+def _tt_followers(page_html: str) -> Optional[int]:
+    """Extract TikTok follower count from page HTML."""
+    for pattern in [
+        r'"followerCount":(\d+)',
+        r'"fans":(\d+)',
+        r'"authorStats":\{[^}]*"followerCount":(\d+)',
+    ]:
+        m = re.search(pattern, page_html)
+        if m:
+            val = int(m.group(1))
+            if val > 0:
+                return val
+    return None
+
+
+def _fb_followers(page_html: str) -> Optional[int]:
+    """Extract Facebook follower/like count from page HTML."""
+    for pattern in [
+        r'"follower_count":(\d+)',
+        r'"fan_count":(\d+)',
+        r'"interactionStatistic"[^}]*"userInteractionCount":(\d+)',
+    ]:
+        m = re.search(pattern, page_html)
+        if m:
+            val = int(m.group(1))
+            if val > 0:
+                return val
+    # Human-readable in visible text like "12,345 people follow this"
+    m2 = re.search(r'([\d,]+)\s+people\s+follow', page_html, re.IGNORECASE)
+    if m2:
+        count = _parse_count_text(m2.group(1))
+        if count:
+            return count
+    return None
+
+
+_REGEX_EXTRACTORS = {
+    "instagram": _ig_followers,
+    "tiktok": _tt_followers,
+    "facebook": _fb_followers,
+}
 
 
 def _social_followers(platform: str, url: str) -> Optional[int]:
@@ -126,6 +202,14 @@ def _social_followers(platform: str, url: str) -> Optional[int]:
     if not page_html:
         return None
 
+    # Try fast regex first
+    extractor = _REGEX_EXTRACTORS.get(platform)
+    if extractor:
+        count = extractor(page_html)
+        if count:
+            return count
+
+    # Haiku fallback
     labels = {
         "instagram": "follower",
         "tiktok": "follower",
@@ -136,7 +220,7 @@ def _social_followers(platform: str, url: str) -> Optional[int]:
     label = labels.get(platform, "follower")
     result = _claude_extract(
         page_html,
-        f"Extract the {platform} {label} count from this profile page. "
+        f"Extract the {platform} {label} count from this profile page HTML. "
         f'Return JSON: {{"followers": <integer or null>}}',
     )
     if result and result.get("followers"):

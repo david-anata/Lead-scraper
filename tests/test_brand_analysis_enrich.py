@@ -62,16 +62,38 @@ def test_auto_enrich_skips_amazon_on_error():
     assert "amazon" in " ".join(result.get("_errors", []))
 
 
-def test_yt_subscribers_uses_google_api():
-    """YouTube API path is used when GOOGLE_API_KEY is set."""
-    import os
-    with patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key"}), \
-         patch("sales_support_agent.services.brand_analysis.enrich._fetch") as mock_fetch:
-        mock_fetch.return_value = '{"items":[{"statistics":{"subscriberCount":"5000"}}]}'
+def test_yt_subscribers_parses_ytInitialData():
+    """YouTube subscriber count is parsed from embedded ytInitialData JSON (no API key)."""
+    with patch("sales_support_agent.services.brand_analysis.enrich._fetch") as mock_fetch:
+        mock_fetch.return_value = (
+            'window["ytInitialData"] = {..., "subscriberCount":"125000", ...}'
+        )
         from sales_support_agent.services.brand_analysis.enrich import _yt_subscribers
         result = _yt_subscribers("https://youtube.com/@testchannel")
 
-    assert result == 5000
+    assert result == 125000
+
+
+def test_yt_subscribers_parses_count_text():
+    """YouTube subscriberCountText '1.23M subscribers' is parsed correctly."""
+    with patch("sales_support_agent.services.brand_analysis.enrich._fetch") as mock_fetch:
+        mock_fetch.return_value = (
+            '"subscriberCountText":{"simpleText":"1.23M subscribers"}'
+        )
+        from sales_support_agent.services.brand_analysis.enrich import _yt_subscribers
+        result = _yt_subscribers("https://youtube.com/@testchannel")
+
+    assert result == 1_230_000
+
+
+def test_parse_count_text():
+    """_parse_count_text converts human-readable counts to integers."""
+    from sales_support_agent.services.brand_analysis.enrich import _parse_count_text
+    assert _parse_count_text("1.23M subscribers") == 1_230_000
+    assert _parse_count_text("5.4K followers") == 5_400
+    assert _parse_count_text("120,000") == 120_000
+    assert _parse_count_text("2B") == 2_000_000_000
+    assert _parse_count_text(None) is None
 
 
 def test_parse_usd():
