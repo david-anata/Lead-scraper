@@ -79,6 +79,7 @@ def derive_metrics(p: PeriodFinancials) -> Metrics:
             + (p.addback_items_cents or 0)
         )
         m.sde_margin_bps = margin_bps(m.sde_cents, net_rev)
+    m.inventory_cents = p.inventory_cents
     return m
 
 

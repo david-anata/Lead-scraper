@@ -28,6 +28,24 @@ from sales_support_agent.services.brand_analysis.schema import (
     safe_div,
 )
 
+
+def _fmt_mtn(iso_str: str, date_only: bool = False) -> str:
+    """Format a UTC ISO timestamp in Mountain Time (America/Denver)."""
+    if not iso_str:
+        return "—"
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        mtn = dt.astimezone(ZoneInfo("America/Denver"))
+        if date_only:
+            return mtn.strftime("%b %-d, %Y")
+        return mtn.strftime("%b %-d, %Y · %-I:%M %p %Z")
+    except Exception:
+        return iso_str[:16].replace("T", " ")
+
 _GRADE_COLORS = {
     "A": "#2e7d5b", "B": "#3f8f6e", "C": "#b8860b", "D": "#c2663b", "F": "#8b4c42",
 }
@@ -245,7 +263,7 @@ def _version_history(versions: Optional[list]) -> str:
         return ""
     rows = ""
     for v in reversed(versions):
-        when = (v.get("at") or "")[:16].replace("T", " ")
+        when = _fmt_mtn(v.get("at") or "")
         grade = v.get("grade") or "—"
         color = _GRADE_COLORS.get(grade, "#666")
         rows += (f"<tr><td><span class='grade-cell' style='color:{color}'>{_esc(grade)}</span> "
@@ -406,7 +424,7 @@ def _expand_panel(row: dict) -> str:
     for d in dims:
         letter = d.get("letter") or "—"
         color = _GRADE_COLORS.get(letter, "#666")
-        reason = _esc((d.get("reason") or "")[:90])
+        reason = _esc(d.get("reason") or "")
         dim_rows += (
             f'<tr><td>{_esc(d.get("label",""))}</td>'
             f'<td><span class="grade-cell" style="color:{color}">{_esc(letter)}</span></td>'
@@ -416,6 +434,7 @@ def _expand_panel(row: dict) -> str:
       <div class="ep-zone">
         <div class="ep-zone-title">Scorecard</div>
         <table class="ep-table">
+          <colgroup><col class="col-dim"><col class="col-grade"><col class="col-reason"></colgroup>
           <thead><tr><th>Dimension</th><th>Grade</th><th>Reason</th></tr></thead>
           <tbody>{dim_rows or "<tr><td colspan=3 class=muted>No data</td></tr>"}</tbody>
         </table>
@@ -473,7 +492,7 @@ def _expand_panel(row: dict) -> str:
         for d in soc_dims:
             dl = d.get("letter") or "NA"
             color = _GRADE_COLORS.get(dl, "#94a3b8")
-            reason = _esc((d.get("reason") or "")[:110])
+            reason = _esc(d.get("reason") or "")
             label = _esc(d.get("label") or d.get("key", ""))
             soc_rows += (
                 f'<tr><td>{label}</td>'
@@ -490,6 +509,7 @@ def _expand_panel(row: dict) -> str:
             <div class="ep-zone-title">Social &amp; DTC Opportunity</div>
             {soc_header}
             <table class="ep-table">
+              <colgroup><col class="col-dim"><col class="col-grade"><col class="col-reason"></colgroup>
               <thead><tr><th>Dimension</th><th>Grade</th><th>Signal</th></tr></thead>
               <tbody>{soc_rows}</tbody>
             </table>
@@ -943,7 +963,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             sg_cell = '<span class="muted">—</span>'
 
         # Updated date
-        updated = (r.get("updated_at") or r.get("created_at") or "")[:10]
+        updated = _fmt_mtn(r.get("updated_at") or r.get("created_at") or "", date_only=True)
 
         # Three-dot menu
         share = _esc(r.get("share_path") or "")
@@ -1103,9 +1123,12 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px; }}
         .ep-zone-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
           text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:10px; }}
-        .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse; }}
-        .ep-table td, .ep-table th {{ padding:4px 6px;border-bottom:1px solid var(--border); }}
+        .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse;table-layout:fixed; }}
+        .ep-table td, .ep-table th {{ padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:top;word-wrap:break-word; }}
         .ep-table thead th {{ background:rgba(133,187,218,0.15);font-size:10px; }}
+        .ep-table col.col-dim {{ width:36%; }}
+        .ep-table col.col-grade {{ width:10%; }}
+        .ep-table col.col-reason {{ width:54%; }}
         .ep-sub {{ font-size:11px;font-weight:700;font-family:"Montserrat",sans-serif;
           text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px; }}
         .ep-two-col {{ display:grid;grid-template-columns:1fr 1fr;gap:12px; }}

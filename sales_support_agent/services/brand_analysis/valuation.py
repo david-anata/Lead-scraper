@@ -58,6 +58,7 @@ class ValuationRange:
     earn_ev_high_cents: Optional[int] = None
     earnings_basis_label: str = ""            # what the earnings proxy was
     earnings_basis_cents: Optional[int] = None
+    inventory_cents: Optional[int] = None     # balance-sheet inventory at cost (additive to EV)
     confidence: str = "Low"                   # mirrors data confidence
     caveats: list = field(default_factory=list)
 
@@ -157,6 +158,10 @@ def estimate(
         out.ev_low_cents, out.ev_high_cents = rev_pair
     else:
         caveats.append("No usable revenue or earnings basis — provide a P&L to size a range.")
+
+    # Inventory is additive to EV (negotiated at close, typically at cost)
+    if metrics.inventory_cents and metrics.inventory_cents > 0:
+        out.inventory_cents = metrics.inventory_cents
 
     if thin and out.is_meaningful():
         caveats.append(

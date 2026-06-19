@@ -284,6 +284,7 @@ class Metrics:
     owned_pct_bps: Optional[int] = None
     sde_cents: Optional[int] = None         # Seller Discretionary Earnings
     sde_margin_bps: Optional[int] = None    # SDE as % of net revenue
+    inventory_cents: Optional[int] = None   # Balance sheet inventory at cost
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)

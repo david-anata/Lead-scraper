@@ -216,6 +216,24 @@ def _valuation_section(report: BrandReport) -> str:
         rows.append((f"Earnings multiple", f"{v.earn_multiple_low:.2f}–{v.earn_multiple_high:.2f}x {v.earnings_basis_label.lower()}",
                      f"{fmt_money(v.earn_ev_low_cents)} – {fmt_money(v.earn_ev_high_cents)}"))
     body_rows = "".join(f"<tr><td>{_e(a)}</td><td>{_e(b)}</td><td class='num'>{_e(c)}</td></tr>" for a, b, c in rows)
+
+    # Inventory row — additive to EV, negotiated at close
+    inv = v.inventory_cents
+    if inv and inv > 0:
+        total_lo = fmt_money((v.ev_low_cents or 0) + inv)
+        total_hi = fmt_money((v.ev_high_cents or 0) + inv)
+        inventory_block = f"""
+      <div class="inv-note">
+        <strong>+ Inventory at cost: {fmt_money(inv)}</strong>
+        <span> — typically negotiated separately at close</span><br>
+        <span class="muted">Total consideration range: {total_lo} – {total_hi}</span>
+      </div>"""
+    else:
+        inventory_block = (
+            '<p class="muted inv-note" style="font-size:12px">'
+            'Inventory not established — confirm and add to total consideration at close.</p>'
+        )
+
     caveats = "".join(f"<li>{_e(c)}</li>" for c in v.caveats)
     return f"""
     <section id="valuation" class="card valuation">
@@ -228,6 +246,7 @@ def _valuation_section(report: BrandReport) -> str:
         <thead><tr><th>Method</th><th>Multiple</th><th class="num">Implied EV</th></tr></thead>
         <tbody>{body_rows}</tbody>
       </table>
+      {inventory_block}
       <ul class="caveats">{caveats}</ul>
     </section>"""
 
@@ -925,6 +944,7 @@ body{margin:0;background:var(--cream);color:var(--navy);font-family:"Inter","Seg
 .val-band{font-family:"Montserrat";font-weight:900;font-size:30px;color:var(--navy)}
 .val-basis{font-size:13px;color:rgba(43,54,68,.5)}
 .caveats{margin:14px 0 0;padding-left:18px;font-size:12.5px;color:rgba(43,54,68,.55)}.caveats li{margin:5px 0}
+.inv-note{margin:12px 0;padding:10px 14px;background:rgba(133,187,218,0.1);border:1px solid rgba(133,187,218,0.3);border-radius:8px;font-size:13px}
 .flags{display:flex;flex-direction:column;gap:10px}
 .flag{display:flex;gap:12px;align-items:flex-start}
 .flag-sev{color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:99px;flex-shrink:0;font-family:"Montserrat"}
