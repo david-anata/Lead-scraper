@@ -553,11 +553,7 @@ def view(request: Request, report_id: str) -> HTMLResponse:
     row = storage.get_report_row(report_id)
     if report is None or row is None:
         raise HTTPException(status_code=404, detail="Report not found.")
-    share_html = row.get("report_html") or ""
-    if not share_html:
-        # Legacy rows (pre-redesign) have no pre-rendered HTML — render + cache now.
-        share_html = render_share_page(report)
-        storage.set_share_html(report_id, share_html)
+    share_html = render_share_page(report)
     return HTMLResponse(render_admin_view(
         report, report_id=report_id, share_html=share_html,
         share_path=storage.share_path(row), user=get_session_user_from_request(request)))
@@ -588,17 +584,16 @@ def download(report_id: str) -> Response:
 
 @public_router.get("/brand/{slug}/{report_id}/{token}", response_class=HTMLResponse)
 def public_brand_page(slug: str, report_id: str, token: str) -> HTMLResponse:
-    html = storage.get_share_html(report_id, token)
-    if html is None:
-        # Render on demand if the cache is empty but the token is valid.
-        row = storage.get_report_row(report_id)
-        if row and row.get("share_token") and token == row["share_token"]:
-            report = storage.get_report(report_id)
-            if report is not None:
-                html = render_share_page(report)
-                storage.set_share_html(report_id, html)
-    if not html:
+    # Always render fresh so share_page.py changes take effect without DB cache flush.
+    row = storage.get_report_row(report_id)
+    if not row or not row.get("share_token") or token != row["share_token"]:
         return HTMLResponse("Brief not found.", status_code=404)
+    if row.get("status") != "complete":
+        return HTMLResponse("Brief not found.", status_code=404)
+    report = storage.get_report(report_id)
+    if report is None:
+        return HTMLResponse("Brief not found.", status_code=404)
+    html = render_share_page(report)
     return HTMLResponse(html)
 
 
