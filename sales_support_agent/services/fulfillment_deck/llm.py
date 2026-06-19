@@ -14,7 +14,7 @@ Two jobs:
 Mirrors brand_analysis/llm.py conventions: lazy ``import anthropic``,
 ANTHROPIC_API_KEY env, JSON-only system prompts, tolerant outermost-braces
 parse, deterministic fallbacks so the pipeline never crashes. Default model
-is ``claude-sonnet-4-6`` (override via the FULFILLMENT_DECK_MODEL env var).
+is ``claude-haiku-4-5-20251001`` (override via the FULFILLMENT_DECK_MODEL env var).
 
 Schema (ProspectProfile.from_dict / NarrativeBlock.from_dict) does all
 clamping/validation; this layer never trusts the model's numbers directly.
@@ -36,7 +36,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-4-6"
+_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _resolve_model(model: Optional[str]) -> str:
