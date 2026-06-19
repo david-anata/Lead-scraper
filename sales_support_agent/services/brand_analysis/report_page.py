@@ -793,7 +793,7 @@ def _expand_panel(row: dict) -> str:
 
     return f"""
       <div class="expand-panel">
-        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_g}{zone_h}{zone_f}</div>
+        <div class="ep-grid" style="min-width:0">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_g}{zone_h}{zone_f}</div>
       </div>"""
 
 
@@ -1118,9 +1118,9 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .data-row {{ cursor:pointer; }}
         .data-row:hover td {{ background:rgba(133,187,218,0.07); }}
         .expand-row td {{ background:var(--light-brown)!important; }}
-        .expand-panel {{ padding:18px 20px; }}
-        .ep-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px; }}
-        .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px; }}
+        .expand-panel {{ padding:18px 20px;width:0;min-width:100%;box-sizing:border-box;overflow-x:hidden; }}
+        .ep-grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;min-width:0; }}
+        .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0;overflow:hidden; }}
         .ep-zone-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
           text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:10px; }}
         .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse;table-layout:fixed; }}
@@ -1251,7 +1251,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             <div class="legend-title">Column Reference</div>
             <div class="legend-row"><span class="legend-key">Brand</span><span class="legend-val">Link to full report sheet</span></div>
             <div class="legend-row"><span class="legend-key">Stage</span><span class="legend-val">Where in the acquisition pipeline</span></div>
-            <div class="legend-row"><span class="legend-key">Grade</span><span class="legend-val">Financial composite A–F (7 weighted dimensions, separate from Social)</span></div>
+            <div class="legend-row"><span class="legend-key">Grade</span><span class="legend-val">Financial composite A–F (8 weighted dimensions, separate from Social)</span></div>
             <div class="legend-row"><span class="legend-key">Rec</span><span class="legend-val">Buy signal — tied directly to Grade</span></div>
             <div class="legend-row"><span class="legend-key">Revenue</span><span class="legend-val">LTM net revenue</span></div>
             <div class="legend-row"><span class="legend-key">YoY</span><span class="legend-val">Revenue growth vs. prior period (green = up)</span></div>
