@@ -195,7 +195,7 @@ def render_fulfillment_sales_page(
             <div>
               <div class="field">
                 <label for="website_url">Website <span class="hint">— optional</span></label>
-                <input type="url" id="website_url" name="website_url" placeholder="https://prospect.com">
+                <input type="text" id="website_url" name="website_url" placeholder="prospect.com">
               </div>
               <div class="field">
                 <label for="brand">Brand name <span class="hint">— optional override</span></label>

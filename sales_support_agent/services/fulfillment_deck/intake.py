@@ -331,6 +331,8 @@ def build_extraction_context(
 
     url = (website_url or "").strip()
     if url:
+        if "://" not in url:
+            url = "https://" + url
         body = _fetch_website(url, warnings)
         if body:
             sections.append(_section(f"WEBSITE: {url}", body))
