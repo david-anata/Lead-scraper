@@ -64,8 +64,8 @@ class Sh007PageTests(unittest.TestCase):
         self.assertIn("Luxmery", html)
         self.assertIn("Comfort, redefined", html)
         for needle in ("Executive Summary", "Investment thesis", "Indicative valuation",
-                       "Financial overview", "Category benchmarks", "Red flags",
-                       "Weighted scorecard", "Data completeness", "Data provenance",
+                       "Financial overview", "Category benchmarks", "Red Flags",
+                       "Weighted Scorecard", "Data completeness", "Data provenance",
                        "chart.js@4.4.0", "yoyChart", "radarChart", "mediaChart", "monthlyChart"):
             self.assertIn(needle, html, f"missing: {needle}")
 

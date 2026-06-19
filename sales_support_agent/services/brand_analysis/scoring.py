@@ -70,6 +70,15 @@ def derive_metrics(p: PeriodFinancials) -> Metrics:
     m.discount_rate_bps = margin_bps(p.discounts_cents, p.gross_sales_cents)
     m.return_rate_bps = margin_bps(p.returns_cents, p.gross_sales_cents)
     m.owned_pct_bps = margin_bps(p.owned_channel_revenue_cents, net_rev)
+    # SDE = net earnings + owner compensation + depreciation + one-time addbacks
+    if p.net_earnings_cents is not None:
+        m.sde_cents = (
+            p.net_earnings_cents
+            + (p.owner_compensation_cents or 0)
+            + (p.depreciation_cents or 0)
+            + (p.addback_items_cents or 0)
+        )
+        m.sde_margin_bps = margin_bps(m.sde_cents, net_rev)
     return m
 
 
@@ -242,20 +251,24 @@ def _grade_balance(period: PeriodFinancials, cur: Metrics, bm: Benchmarks) -> tu
 
 
 def _grade_brand(cur: Metrics, period: PeriodFinancials) -> tuple[str, str]:
-    # Defensibility proxy: owned-channel share + returning-customer share + gross margin.
+    # Defensibility: gross margin (pricing power) + returning-customer share (loyalty).
+    # owned_pct_bps is NOT used — 0% owned is the expected Amazon-only baseline
+    # and is graded as opportunity in the social track, not penalised here.
     proxies = []
     pts = []
-    if cur.owned_pct_bps is not None:
-        pts.append(3.0 if cur.owned_pct_bps >= 2000 else 1.5)
-        proxies.append(f"owned-channel {fmt_pct(cur.owned_pct_bps)}")
     if cur.product_gm_bps is not None:
-        pts.append(3.0 if cur.product_gm_bps >= 5500 else 1.5)
+        pts.append(3.0 if cur.product_gm_bps >= 5500 else 2.0 if cur.product_gm_bps >= 4000 else 1.0)
         proxies.append(f"gross margin {fmt_pct(cur.product_gm_bps)}")
+    if period.new_customer_revenue_cents is not None and period.returning_customer_revenue_cents is not None:
+        total = period.new_customer_revenue_cents + period.returning_customer_revenue_cents
+        ret = safe_div(period.returning_customer_revenue_cents, total) or 0
+        pts.append(3.0 if ret >= 0.35 else 2.0 if ret >= 0.20 else 1.0)
+        proxies.append(f"returning-customer share {ret*100:.0f}%")
     if not pts:
-        return "C", "Brand-equity inputs (repeat rate, owned reach, pricing power) not supplied — graded neutral."
+        return "C", "Brand defensibility signals (gross margin, repeat rate) not supplied — graded neutral."
     avg = sum(pts) / len(pts)
     letter = "A" if avg >= 3.0 else "B" if avg >= 2.5 else "C" if avg >= 1.8 else "D"
-    return letter, "Defensibility proxies: " + ", ".join(proxies) + "."
+    return letter, "Brand defensibility: " + ", ".join(proxies) + "."
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +311,45 @@ def build_scorecard(current: Metrics, prior: Optional[Metrics], period: PeriodFi
 # ---------------------------------------------------------------------------
 
 
-def build_red_flags(current: Metrics, period: PeriodFinancials, growth_bps: Optional[int], bm: Benchmarks) -> list:
+def build_red_flags(current: Metrics, period: PeriodFinancials, growth_bps: Optional[int],
+                    bm: Benchmarks, *, social_signals: Optional[dict] = None) -> list:
     flags: list[RedFlag] = []
 
     def add(sev, title, detail=""):
         flags.append(RedFlag(severity=sev, title=title, detail=detail))
 
+    # ---- Ascend hard-criteria disqualifiers (checked first; any Critical = Pass) ----
+    if current.net_revenue_cents is not None and current.net_revenue_cents < 100_000_000:
+        add(SEV_CRITICAL, "Below minimum revenue ($1M+ required)",
+            f"Net revenue {fmt_money(current.net_revenue_cents)} — Ascend requires $1M+ LTM net revenue.")
+    ss = social_signals or {}
+    rating = ss.get("review_rating")
+    if rating is not None:
+        try:
+            rating = float(rating)
+            if rating < 4.3:
+                add(SEV_CRITICAL, "Review rating below Ascend minimum (4.3+ required)",
+                    f"{rating:.1f}/5 average rating — poor reviews indicate product-market fit issues "
+                    "that are difficult to reverse post-acquisition.")
+        except (TypeError, ValueError):
+            pass
+    if period.tacos_bps is not None and period.tacos_bps > 1500:
+        add(SEV_HIGH, "Total ACoS above Ascend threshold (<15% required)",
+            f"TACoS {fmt_pct(period.tacos_bps)} — Ascend's in-house PPC targets <15%. "
+            "High ad dependency reduces post-acquisition margin runway.")
+    if period.sku_count is not None and period.sku_count < 5:
+        add(SEV_HIGH, "Below minimum SKU count (5+ required)",
+            f"Only {period.sku_count} active SKU(s) — Ascend requires 5+. "
+            "Single-SKU concentration creates supply and demand fragility.")
+    if period.has_trademark is False:
+        add(SEV_HIGH, "Trademark not confirmed",
+            "Trademark filed/registered status not confirmed — required for Brand Registry, "
+            "brand protection, and sponsor brand ads.")
+    if period.has_brand_registry is False:
+        add(SEV_HIGH, "Amazon Brand Registry not enrolled",
+            "Brand Registry enrollment required for A+ content, brand analytics, "
+            "and counterfeit protection.")
+    # ---- Standard financial flags ------------------------------------------
     if current.net_earnings_cents is not None and current.net_earnings_cents < 0:
         add(SEV_CRITICAL, "Net loss for the period", f"Net earnings {fmt_money(current.net_earnings_cents)}.")
     if period.total_equity_cents is not None and period.total_equity_cents < 0:
@@ -375,7 +421,8 @@ def build_benchmarks(current: Metrics, bm: Benchmarks, growth_bps: Optional[int]
 # ---------------------------------------------------------------------------
 
 
-def score(current_period: PeriodFinancials, prior_period: Optional[PeriodFinancials], *, category: str = "dtc") -> dict:
+def score(current_period: PeriodFinancials, prior_period: Optional[PeriodFinancials], *,
+          category: str = "dtc", social_signals: Optional[dict] = None) -> dict:
     """Run the full deterministic pass. Returns the pieces the report assembler
     needs (metrics, scorecard, red flags, benchmarks, yoy growth)."""
     bm = benchmarks_for(category)
@@ -383,7 +430,7 @@ def score(current_period: PeriodFinancials, prior_period: Optional[PeriodFinanci
     prior = derive_metrics(prior_period) if prior_period is not None else None
     growth = yoy_growth_bps(current, prior)
     scorecard = build_scorecard(current, prior, current_period, growth, bm)
-    red_flags = build_red_flags(current, current_period, growth, bm)
+    red_flags = build_red_flags(current, current_period, growth, bm, social_signals=social_signals)
     benchmarks = build_benchmarks(current, bm, growth)
     return {
         "current": current,

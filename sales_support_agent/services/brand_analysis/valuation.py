@@ -26,11 +26,13 @@ from sales_support_agent.services.brand_analysis.schema import (
 
 # Base multiple bands by category: (revenue_low, revenue_high), (earn_low, earn_high).
 # Earnings multiple is applied to an EBITDA/SDE-style proxy.
+# Ascend acquires DTC/FBA brands at 2–3.5× SDE — use that range for the
+# earnings multiple. Revenue multiple stays as a secondary check.
 _MULTIPLES = {
-    CATEGORY_DTC:    {"rev": (0.8, 2.0), "earn": (3.0, 5.0)},
-    "retail":        {"rev": (0.5, 1.2), "earn": (3.5, 5.5)},
+    CATEGORY_DTC:    {"rev": (0.8, 2.0), "earn": (2.0, 3.5)},
+    "retail":        {"rev": (0.5, 1.2), "earn": (3.0, 4.5)},
     "saas":          {"rev": (3.0, 8.0), "earn": (8.0, 15.0)},
-    "other":         {"rev": (0.6, 1.5), "earn": (3.0, 5.0)},
+    "other":         {"rev": (0.6, 1.5), "earn": (2.0, 3.5)},
 }
 
 # Quality premium/discount applied to both ends of every band.
@@ -167,8 +169,11 @@ def estimate(
 
 
 def _earnings_proxy(metrics: Metrics) -> tuple[Optional[int], str]:
-    """Prefer operating result excluding non-recurring other income (the
-    cleaner go-forward earnings signal); fall back to reported net earnings."""
+    """For FBA acquisitions the primary valuation basis is SDE (Seller
+    Discretionary Earnings = net earnings + owner comp + D&A + addbacks).
+    Falls back to operating result ex-other, then reported net earnings."""
+    if metrics.sde_cents is not None and metrics.sde_cents > 0:
+        return metrics.sde_cents, "SDE (net earnings + owner addbacks)"
     if metrics.operating_result_ex_other_cents is not None:
         return metrics.operating_result_ex_other_cents, "Operating result ex-other-income"
     if metrics.net_earnings_cents is not None:

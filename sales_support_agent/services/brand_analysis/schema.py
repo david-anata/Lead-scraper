@@ -200,6 +200,17 @@ class PeriodFinancials:
     cac_cents: Optional[int] = None
     ltv_cents: Optional[int] = None
 
+    # SDE addbacks — normalize owner-operated FBA businesses for acquisition pricing
+    owner_compensation_cents: Optional[int] = None  # owner salary/draws to add back
+    depreciation_cents: Optional[int] = None        # D&A addback
+    addback_items_cents: Optional[int] = None       # one-time / non-recurring items
+
+    # Amazon & business hard criteria (Ascend minimums)
+    sku_count: Optional[int] = None            # active SKU count (requires 5+)
+    tacos_bps: Optional[int] = None            # Total ACoS in bps (requires <1500)
+    has_trademark: Optional[bool] = None       # trademark filed / registered
+    has_brand_registry: Optional[bool] = None  # Amazon Brand Registry enrolled
+
     # Monthly revenue trajectory (label, cents) in calendar order, if derivable.
     monthly_revenue: list = field(default_factory=list)
 
@@ -224,6 +235,13 @@ class PeriodFinancials:
             "aov_cents": self.aov_cents,
             "cac_cents": self.cac_cents,
             "ltv_cents": self.ltv_cents,
+            "owner_compensation_cents": self.owner_compensation_cents,
+            "depreciation_cents": self.depreciation_cents,
+            "addback_items_cents": self.addback_items_cents,
+            "sku_count": self.sku_count,
+            "tacos_bps": self.tacos_bps,
+            "has_trademark": self.has_trademark,
+            "has_brand_registry": self.has_brand_registry,
             **{f: getattr(self, f) for f in PNL_FIELDS},
             **{f: getattr(self, f) for f in BALANCE_FIELDS},
         }
@@ -263,6 +281,8 @@ class Metrics:
     discount_rate_bps: Optional[int] = None
     return_rate_bps: Optional[int] = None
     owned_pct_bps: Optional[int] = None
+    sde_cents: Optional[int] = None         # Seller Discretionary Earnings
+    sde_margin_bps: Optional[int] = None    # SDE as % of net revenue
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -350,6 +370,49 @@ class BenchmarkRow:
 
 
 # ---------------------------------------------------------------------------
+# Competitive signals — analyst-supplied Amazon competitive context
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CompetitiveSignals:
+    """Amazon competitive landscape — filled by the analyst in the pipeline CRM.
+    Used to compute the competitive position grade (third track alongside
+    financial grade and social/DTC opportunity)."""
+
+    # Brand's own Amazon position
+    brand_bsr: Optional[int] = None          # BSR in primary subcategory
+    brand_review_count: Optional[int] = None
+    brand_review_rating: Optional[float] = None
+    brand_price_cents: Optional[int] = None  # typical listing price
+
+    # Top competitor
+    top_competitor_name: str = ""
+    top_competitor_bsr: Optional[int] = None
+    top_competitor_review_count: Optional[int] = None
+    top_competitor_price_cents: Optional[int] = None
+
+    # Category context
+    category_name: str = ""
+    category_median_price_cents: Optional[int] = None
+
+    # Additional competitors list: [{name, bsr, reviews, price_cents}]
+    competitors: list = field(default_factory=list)
+    analyst_notes: str = ""
+
+    def to_dict(self) -> dict:
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CompetitiveSignals":
+        obj = cls()
+        for k, v in (data or {}).items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        return obj
+
+
+# ---------------------------------------------------------------------------
 # Full report
 # ---------------------------------------------------------------------------
 
@@ -423,6 +486,9 @@ class BrandReport:
 
     # ---- Brand & Social track (separate A–F, NOT in the financial grade) ----
     brand_social: dict = field(default_factory=dict)   # Scorecard.to_dict() + confidence + caveats
+    # ---- Competitive Position track (third A–F track) ----------------------
+    brand_competitive: dict = field(default_factory=dict)  # competitive grade + dimensions
+    comp_signals: dict = field(default_factory=dict)        # raw CompetitiveSignals.to_dict()
     email_list_size: int = 0                            # owned-audience size (analyst-supplied)
     social_handles: dict = field(default_factory=dict)  # platform -> url
     social_signals: dict = field(default_factory=dict)  # measured signals + measured/estimated flags
@@ -477,6 +543,8 @@ class BrandReport:
             "brand_tagline": self.brand_tagline,
             "context_notes": self.context_notes,
             "brand_social": self.brand_social,
+            "brand_competitive": self.brand_competitive,
+            "comp_signals": self.comp_signals,
             "email_list_size": self.email_list_size,
             "social_handles": self.social_handles,
             "social_signals": self.social_signals,
@@ -531,6 +599,8 @@ class BrandReport:
             brand_tagline=data.get("brand_tagline", ""),
             context_notes=data.get("context_notes", ""),
             brand_social=data.get("brand_social", {}),
+            brand_competitive=data.get("brand_competitive", {}),
+            comp_signals=data.get("comp_signals", {}),
             email_list_size=data.get("email_list_size", 0),
             social_handles=data.get("social_handles", {}),
             social_signals=data.get("social_signals", {}),

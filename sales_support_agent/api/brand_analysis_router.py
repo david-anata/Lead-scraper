@@ -383,6 +383,34 @@ def update_deal(report_id: str, body: _DealBody) -> dict:
     return {"ok": True}
 
 
+class _CompetitiveBody(_BaseModel):
+    brand_bsr: Optional[int] = None
+    brand_review_count: Optional[int] = None
+    brand_review_rating: Optional[float] = None
+    brand_price_cents: Optional[int] = None
+    top_competitor_name: str = ""
+    top_competitor_bsr: Optional[int] = None
+    top_competitor_review_count: Optional[int] = None
+    top_competitor_price_cents: Optional[int] = None
+    category_name: str = ""
+    category_median_price_cents: Optional[int] = None
+    competitors: list = []
+    analyst_notes: str = ""
+
+
+@router.patch("/{report_id}/competitive")
+def update_competitive(report_id: str, body: _CompetitiveBody) -> dict:
+    result = storage.set_competitive(report_id, body.dict())
+    if result is None:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {
+        "ok": True,
+        "comp_grade": result.get("letter") or "",
+        "comp_score_100": result.get("score_100") or 0,
+        "comp_confidence": result.get("confidence") or "",
+    }
+
+
 # ---------------------------------------------------------------------------
 # View (admin) + download
 # ---------------------------------------------------------------------------

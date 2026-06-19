@@ -342,6 +342,11 @@ def list_pipeline_reports(limit: int = 200) -> list[dict]:
                 "email_list_size": rj.get("email_list_size") or 0,
                 "social_handles": rj.get("social_handles") or {},
                 "social_signals": rj.get("social_signals") or {},
+                # Competitive position track
+                "comp_grade": (rj.get("brand_competitive") or {}).get("letter") or "",
+                "comp_score_100": (rj.get("brand_competitive") or {}).get("score_100") or 0,
+                "comp_confidence": (rj.get("brand_competitive") or {}).get("confidence") or "",
+                "comp_signals": rj.get("comp_signals") or {},
                 # Deal metadata
                 "notes": getattr(r, "notes", "") or "",
                 "ask_price_cents": getattr(r, "ask_price_cents", None),
@@ -443,6 +448,27 @@ def set_ask_price(report_id: str, cents: Optional[int]) -> bool:
         row.ask_price_cents = cents
         row.updated_at = datetime.now(timezone.utc)
         return True
+
+
+def set_competitive(report_id: str, signals_dict: dict) -> Optional[dict]:
+    """Re-run the competitive position track with updated analyst signals.
+    Returns the new brand_competitive dict, or None if not found."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return None
+        rj: dict = dict(row.report_json or {})
+        rj["comp_signals"] = signals_dict
+        from sales_support_agent.services.brand_analysis.schema import CompetitiveSignals
+        from sales_support_agent.services.brand_analysis.competitive import build_competitive_grade
+        signals = CompetitiveSignals.from_dict(signals_dict)
+        brand_competitive = build_competitive_grade(signals)
+        rj["brand_competitive"] = brand_competitive
+        row.report_json = rj
+        row.report_html = ""
+        row.updated_at = datetime.now(timezone.utc)
+        return brand_competitive
 
 
 def delete_report(report_id: str) -> bool:

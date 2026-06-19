@@ -646,9 +646,90 @@ def _expand_panel(row: dict) -> str:
         </div>
       </div>"""
 
+    # Zone H — Competitive Signals (analyst-supplied Amazon competitive context)
+    rid_h = _esc(row.get("id") or "")
+    cs = row.get("comp_signals") or {}
+    comp_grade = row.get("comp_grade") or ""
+    comp_score = row.get("comp_score_100") or 0
+    comp_badge = ""
+    if comp_grade and comp_grade != "NA":
+        cg_color = _GRADE_COLORS.get(comp_grade, "#64748b")
+        comp_badge = (f'<span style="font-family:Montserrat;font-weight:800;font-size:16px;'
+                      f'color:{cg_color}">{comp_grade} {comp_score}/100</span>')
+
+    def _cv(key):
+        v = cs.get(key)
+        return _esc(str(int(v)) if isinstance(v, (int, float)) and v else (str(v) if v else ""))
+
+    def _cf(key):
+        v = cs.get(key)
+        return _esc(f"{float(v):.1f}" if v is not None else "")
+
+    zone_h = f"""
+      <div class="ep-zone" style="grid-column:1/-1">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div class="ep-zone-title" style="margin:0">Competitive Signals</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            {comp_badge}
+            <button onclick="saveCompetitive('{rid_h}',this)"
+              style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid var(--dark-blue);
+              background:rgba(133,187,218,.12);color:var(--dark-blue);cursor:pointer;font-family:inherit">
+              Update grade
+            </button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Brand BSR rank</div>
+            <input id="cp-bsr-{rid_h}" type="number" min="1" value="{_cv('brand_bsr')}" placeholder="e.g. 342" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Brand reviews</div>
+            <input id="cp-rcount-{rid_h}" type="number" min="0" value="{_cv('brand_review_count')}" placeholder="e.g. 1200" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Brand rating</div>
+            <input id="cp-rating-{rid_h}" type="number" min="1" max="5" step="0.1" value="{_cf('brand_review_rating')}" placeholder="4.5" {_inp}>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Brand price ($)</div>
+            <input id="cp-price-{rid_h}" type="number" min="0" step="0.01" value="{_esc(str(cs.get('brand_price_cents', '') or ''))}" placeholder="e.g. 2999 (cents)" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Category median price ($)</div>
+            <input id="cp-mdn-{rid_h}" type="number" min="0" step="0.01" value="{_esc(str(cs.get('category_median_price_cents', '') or ''))}" placeholder="e.g. 2499 (cents)" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Category name</div>
+            <input id="cp-cat-{rid_h}" type="text" value="{_esc(cs.get('category_name',''))}" placeholder="e.g. Vitamin C Supplements" {_inp}>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:8px">
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Top competitor name</div>
+            <input id="cp-cname-{rid_h}" type="text" value="{_esc(cs.get('top_competitor_name',''))}" placeholder="Brand / ASIN name" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Competitor reviews</div>
+            <input id="cp-crcount-{rid_h}" type="number" min="0" value="{_cv('top_competitor_review_count')}" placeholder="e.g. 850" {_inp}>
+          </div>
+          <div>
+            <div class="ep-sub" style="margin-bottom:4px">Competitor BSR</div>
+            <input id="cp-cbsr-{rid_h}" type="number" min="1" value="{_cv('top_competitor_bsr')}" placeholder="e.g. 280" {_inp}>
+          </div>
+        </div>
+        <div>
+          <div class="ep-sub" style="margin-bottom:4px">Analyst notes</div>
+          <textarea id="cp-notes-{rid_h}" placeholder="Category trends, seasonal factors, notable competitors…"
+            style="width:100%;min-height:56px;resize:vertical;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12.5px;font-family:inherit;color:var(--text)">{_esc(cs.get('analyst_notes',''))}</textarea>
+        </div>
+      </div>"""
+
     return f"""
       <div class="expand-panel">
-        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_g}{zone_f}</div>
+        <div class="ep-grid">{zone_a}{zone_b}{zone_c}{zone_d}{zone_e}{zone_g}{zone_h}{zone_f}</div>
       </div>"""
 
 
@@ -1312,6 +1393,54 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
                 btn.style.background = orig;
                 btn.textContent = 'Update grade';
               }}, 1200);
+            }}
+          }}).catch(function() {{
+            if (btn) {{ btn.textContent = 'Error — retry'; btn.disabled = false; }}
+          }});
+        }}
+
+        // ── Competitive signals save ──────────────────────────────────────────
+        function saveCompetitive(rid, btn) {{
+          var bsr      = parseInt(_v('cp-bsr-' + rid), 10);
+          var rcount   = parseInt(_v('cp-rcount-' + rid), 10);
+          var rating   = parseFloat(_v('cp-rating-' + rid));
+          var price    = parseInt(_v('cp-price-' + rid), 10);
+          var mdn      = parseInt(_v('cp-mdn-' + rid), 10);
+          var cat      = _v('cp-cat-' + rid);
+          var cname    = _v('cp-cname-' + rid);
+          var crcount  = parseInt(_v('cp-crcount-' + rid), 10);
+          var cbsr     = parseInt(_v('cp-cbsr-' + rid), 10);
+          var notes    = _v('cp-notes-' + rid);
+          var payload  = {{ analyst_notes: notes || '', competitors: [] }};
+          if (!isNaN(bsr))     payload['brand_bsr'] = bsr;
+          if (!isNaN(rcount))  payload['brand_review_count'] = rcount;
+          if (!isNaN(rating))  payload['brand_review_rating'] = rating;
+          if (!isNaN(price))   payload['brand_price_cents'] = price;
+          if (!isNaN(mdn))     payload['category_median_price_cents'] = mdn;
+          if (cat)             payload['category_name'] = cat;
+          if (cname)           payload['top_competitor_name'] = cname;
+          if (!isNaN(crcount)) payload['top_competitor_review_count'] = crcount;
+          if (!isNaN(cbsr))    payload['top_competitor_bsr'] = cbsr;
+          if (btn) {{ btn.textContent = 'Saving…'; btn.disabled = true; }}
+          fetch('/admin/executive/brand-analysis/' + rid + '/competitive', {{
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify(payload)
+          }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+            if (btn) {{ btn.textContent = 'Update grade'; btn.disabled = false; }}
+            if (!data.ok) return;
+            // Update the badge in Zone H header
+            var badge = btn.previousElementSibling;
+            if (badge && data.comp_grade) {{
+              var colors = {{'A':'#2E7D5B','B':'#3F8F6E','C':'#B8860B','D':'#C2663B','F':'#8B4C42'}};
+              badge.style.color = colors[data.comp_grade] || '#64748b';
+              badge.textContent = data.comp_grade + ' ' + (data.comp_score_100 || 0) + '/100';
+            }}
+            if (btn) {{
+              var orig = btn.style.background;
+              btn.style.background = 'rgba(34,197,94,.2)';
+              btn.textContent = 'Saved ✓';
+              setTimeout(function() {{ btn.style.background = orig; btn.textContent = 'Update grade'; }}, 1200);
             }}
           }}).catch(function() {{
             if (btn) {{ btn.textContent = 'Error — retry'; btn.disabled = false; }}

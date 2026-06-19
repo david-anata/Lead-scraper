@@ -137,7 +137,7 @@ def _completeness_meter(report: BrandReport) -> str:
 def _exec_summary(report: BrandReport) -> str:
     bullets = "".join(f"<li>{_e(s)}</li>" for s in report.stands_out)
     return f"""
-    <section class="card">
+    <section id="summary" class="card">
       <h2>Executive Summary</h2>
       <p class="lead">{_e(report.executive_summary)}</p>
       {f'<ul class="stands-out">{bullets}</ul>' if bullets else ""}
@@ -167,7 +167,7 @@ def _charts_section(report: BrandReport) -> str:
         if has_monthly else ""
     )
     return f"""
-    <section class="card">
+    <section id="charts" class="card">
       <h2>The numbers at a glance</h2>
       <div class="chart-grid">
         <div class="chart-card"><h3>Financial overview{' (YoY)' if report.has_yoy else ''}</h3><canvas id="yoyChart"></canvas></div>
@@ -218,7 +218,7 @@ def _valuation_section(report: BrandReport) -> str:
     body_rows = "".join(f"<tr><td>{_e(a)}</td><td>{_e(b)}</td><td class='num'>{_e(c)}</td></tr>" for a, b, c in rows)
     caveats = "".join(f"<li>{_e(c)}</li>" for c in v.caveats)
     return f"""
-    <section class="card valuation">
+    <section id="valuation" class="card valuation">
       <h2>Indicative valuation</h2>
       <div class="val-headline">
         <span class="val-band">{_e(v.headline())}</span>
@@ -250,7 +250,7 @@ def _yoy_table(report: BrandReport) -> str:
     for label, c, p in rows:
         body += f"<tr><td>{_e(label)}</td><td class='num'>{_e(c)}</td>" + (f"<td class='num'>{_e(p)}</td>" if report.has_yoy else "") + "</tr>"
     return f"""
-    <section class="card">
+    <section id="financials" class="card">
       <h2>Financial overview</h2>
       <table class="data-table"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>
     </section>"""
@@ -307,7 +307,7 @@ def _brand_social(report: BrandReport) -> str:
                  f"<td class='reason'>{_e(d.get('reason'))}</td></tr>")
     caveats = "".join(f"<li>{_e(c)}</li>" for c in bs.get("caveats", []))
     return f"""
-    <section class="card">
+    <section id="social" class="card">
       <h2>Social &amp; DTC Opportunity <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— channel expansion upside (separate from financial grade)</span></h2>
       <div class="val-headline">
         <span class="grade-badge" style="background:{fill};width:54px;height:54px;font-size:30px;border-radius:14px">{_e(letter)}</span>
@@ -366,7 +366,7 @@ def _ascend_growth_playbook(report: BrandReport) -> str:
         effort = ("High", "#8B4C42", "Significant integration work — multiple existing channels to migrate and critical flags to resolve.")
 
     return f"""
-    <section class="card">
+    <section id="playbook" class="card">
       <h2>Ascend Growth Playbook <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— integration &amp; value-creation roadmap</span></h2>
 
       <h3 style="margin:0 0 10px">Integration Timeline</h3>
@@ -468,10 +468,233 @@ def _scorecard(report: BrandReport) -> str:
                  f"<td style='color:{_GRADE_FILL.get(letter, '#2B3644')};font-weight:800'>{_e(letter)}</td>"
                  f"<td class='reason'>{_e(reason)}</td></tr>")
     return f"""
-    <section class="card">
+    <section id="scorecard-legacy" class="card">
       <h2>Weighted scorecard</h2>
       <table class="data-table"><thead><tr><th>Dimension</th><th class="num">Weight</th><th>Grade</th><th>Reasoning</th></tr></thead>
       <tbody>{rows}</tbody></table>
+    </section>"""
+
+
+def _flag_sev(f) -> str:
+    return getattr(f, "severity", None) if not isinstance(f, dict) else f.get("severity", "")
+
+
+def _flag_title(f) -> str:
+    return getattr(f, "title", "") if not isinstance(f, dict) else f.get("title", "")
+
+
+def _flag_detail(f) -> str:
+    return getattr(f, "detail", "") if not isinstance(f, dict) else f.get("detail", "")
+
+
+def _hard_disqualifier_banner(report: BrandReport) -> str:
+    """Red banner listing Critical-severity flags right under the cover.
+    Signals immediate pass criteria before the analyst reads any further."""
+    criticals = [f for f in report.red_flags if _flag_sev(f) == "Critical"]
+    if not criticals:
+        return ""
+
+    def _item(f) -> str:
+        title = _e(_flag_title(f))
+        detail = _flag_detail(f)
+        detail_html = (
+            '<span style="color:rgba(255,255,255,.75);font-size:13px"> &mdash; ' + _e(detail) + "</span>"
+            if detail else ""
+        )
+        return f'<li style="margin:4px 0"><strong>{title}</strong>{detail_html}</li>'
+
+    items = "".join(_item(f) for f in criticals)
+    return f"""
+    <section id="disqualifiers" style="background:#7B2D2D;color:#fff;border-radius:16px;padding:20px 24px;margin-bottom:18px;border-left:6px solid #C0392B">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+        <span style="font-size:24px;flex-shrink:0">⛔</span>
+        <div>
+          <div style="font-family:Montserrat;font-weight:800;font-size:16px">{len(criticals)} Hard Disqualifier{"s" if len(criticals)>1 else ""} — Review Before Proceeding</div>
+          <div style="font-size:13px;color:rgba(255,255,255,.75);margin-top:2px">These criteria are Ascend minimums. Any one of them is sufficient to pass on this acquisition.</div>
+        </div>
+      </div>
+      <ul style="margin:0;padding-left:20px;font-size:14px">{items}</ul>
+    </section>"""
+
+
+def _section_nav(report: BrandReport) -> str:
+    """Sticky horizontal mini-nav bar linking to each major section."""
+    has_flags = bool(report.red_flags)
+    has_social = bool((report.brand_social or {}).get("dimensions"))
+    has_comp = bool((report.brand_competitive or {}).get("dimensions"))
+    links = [
+        ("#summary", "Summary"),
+        ("#flags", "Red Flags") if has_flags else None,
+        ("#scorecard", "Scorecard"),
+        ("#charts", "Charts"),
+        ("#financials", "Financials"),
+        ("#competitive", "Competitive") if has_comp else None,
+        ("#social", "Social &amp; DTC") if has_social else None,
+        ("#playbook", "Playbook"),
+        ("#valuation", "Valuation"),
+    ]
+    items = "".join(
+        f'<a href="{href}" style="text-decoration:none;color:rgba(43,54,68,.7);font-family:Montserrat;font-weight:700;'
+        f'font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:6px 12px;border-radius:20px;'
+        f'white-space:nowrap;transition:background .15s" '
+        f'onmouseover="this.style.background=\'rgba(133,187,218,.18)\'" '
+        f'onmouseout="this.style.background=\'transparent\'">{label}</a>'
+        for href, label in (lnk for lnk in links if lnk is not None)
+    )
+    return f"""
+    <nav style="position:sticky;top:0;z-index:100;background:rgba(249,247,243,.95);backdrop-filter:blur(8px);
+      border-bottom:1px solid rgba(43,54,68,.08);margin:0 -20px 18px;padding:8px 20px;
+      display:flex;align-items:center;gap:4px;overflow-x:auto">
+      {items}
+    </nav>"""
+
+
+def _competitive_section(report: BrandReport) -> str:
+    """Competitive position grade — third A–F track."""
+    bc = report.brand_competitive or {}
+    if not bc or not bc.get("dimensions"):
+        return ""
+    letter = bc.get("letter", "F")
+    fill = _GRADE_FILL.get(letter, "#2B3644")
+    rows = ""
+    for d in bc.get("dimensions", []):
+        assessed = d.get("assessed", True)
+        dl = d.get("letter", "")
+        shown = dl if assessed else "n/a"
+        color = _GRADE_FILL.get(dl, "#7a8694") if assessed else "#7a8694"
+        rows += (f"<tr><td>{_e(d.get('label'))}</td><td class='num'>{int(d.get('weight',0)*100)}%</td>"
+                 f"<td style='color:{color};font-weight:800'>{_e(shown)}</td>"
+                 f"<td class='reason'>{_e(d.get('reason'))}</td></tr>")
+
+    # Competitor comparison table
+    comp_table = ""
+    competitors = bc.get("competitors") or []
+    if competitors:
+        def _fmt_reviews(c):
+            return f"{int(c.get('reviews', 0)):,}" if c.get("reviews") else "—"
+
+        def _fmt_price(c):
+            return "${:.2f}".format(c.get("price_cents", 0) / 100) if c.get("price_cents") else "—"
+
+        comp_rows = "".join(
+            f"<tr><td>{_e(c.get('name', ''))}</td>"
+            f"<td class='num'>{_e(str(c.get('bsr') or '—'))}</td>"
+            f"<td class='num'>{_e(_fmt_reviews(c))}</td>"
+            f"<td class='num'>{_e(_fmt_price(c))}</td></tr>"
+            for c in competitors
+        )
+        comp_table = f"""
+        <h3 style="margin:14px 0 8px">Known competitors</h3>
+        <table class="data-table" style="font-size:13px">
+          <thead><tr><th>Name</th><th class="num">BSR</th><th class="num">Reviews</th><th class="num">Price</th></tr></thead>
+          <tbody>{comp_rows}</tbody>
+        </table>"""
+
+    notes = bc.get("analyst_notes") or ""
+    notes_block = f'<p style="margin:12px 0 0;font-size:13px;color:rgba(43,54,68,.65)"><strong>Analyst notes:</strong> {_e(notes)}</p>' if notes else ""
+
+    return f"""
+    <section id="competitive" class="card">
+      <h2>Competitive Position <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— Amazon shelf presence (separate track)</span></h2>
+      <div class="val-headline">
+        <span class="grade-badge" style="background:{fill};width:54px;height:54px;font-size:30px;border-radius:14px">{_e(letter)}</span>
+        <span class="val-band" style="font-size:22px">{bc.get('score_100',0)}/100</span>
+        <span class="val-basis">{_e(bc.get('confidence','Low'))} confidence · {bc.get('assessed_weight_pct',0)}% of signals supplied</span>
+      </div>
+      <table class="data-table" style="margin-top:8px"><thead><tr><th>Dimension</th><th class="num">Weight</th><th>Grade</th><th>Signal</th></tr></thead>
+      <tbody>{rows}</tbody></table>
+      {comp_table}
+      {notes_block}
+    </section>"""
+
+
+def _scorecard_visual(report: BrandReport) -> str:
+    """Redesigned scorecard: one row per dimension with grade badge, weight bar,
+    and reason — easier to scan than a dense table."""
+    rows = ""
+    for d in report.scorecard.dimensions:
+        letter = getattr(d, "letter", "")
+        label = getattr(d, "label", "")
+        weight = getattr(d, "weight", 0)
+        reason = getattr(d, "reason", "")
+        assessed = getattr(d, "assessed", True)
+        fill = _GRADE_FILL.get(letter, "#7a8694") if assessed else "#b0b8c1"
+        shown_letter = letter if assessed else "NA"
+        weight_pct = int(weight * 100)
+        rows += f"""
+        <div style="display:grid;grid-template-columns:52px 1fr;gap:14px;align-items:start;
+            padding:12px 0;border-bottom:1px solid rgba(43,54,68,.07)">
+          <div style="text-align:center">
+            <div style="width:46px;height:46px;border-radius:12px;background:{fill};color:#fff;
+                font-family:Montserrat;font-weight:900;font-size:22px;
+                display:flex;align-items:center;justify-content:center">{_e(shown_letter)}</div>
+            <div style="font-size:10px;color:rgba(43,54,68,.4);margin-top:3px">{weight_pct}%</div>
+          </div>
+          <div>
+            <div style="font-weight:700;font-size:14px;color:#2B3644;margin-bottom:3px">{_e(label)}</div>
+            <div style="font-size:13px;color:rgba(43,54,68,.6);line-height:1.45">{_e(reason)}</div>
+          </div>
+        </div>"""
+    return f"""
+    <section id="scorecard" class="card">
+      <h2>Weighted Scorecard <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— {report.scorecard.score_100}/100 composite</span></h2>
+      <div>{rows}</div>
+    </section>"""
+
+
+def _red_flags_visual(report: BrandReport) -> str:
+    """Redesigned red flags with severity tiers and visual weight."""
+    if not report.red_flags:
+        return """
+        <section id="flags" class="card" style="border-left:4px solid #2E7D5B">
+          <h2>Red Flags</h2>
+          <p style="color:#2E7D5B;font-weight:600;margin:0">No material red flags from the supplied data.</p>
+        </section>"""
+
+    by_sev: dict[str, list] = {"Critical": [], "High": [], "Medium": []}
+    for f in report.red_flags:
+        sev = _flag_sev(f) or "Medium"
+        by_sev.setdefault(sev, []).append(f)
+
+    _SEV_CFG = {
+        "Critical": ("#7B2D2D", "#C0392B", "⛔"),
+        "High":     ("#5C3310", "#C2663B", "⚠️"),
+        "Medium":   ("#4A3800", "#B8860B", "ℹ"),
+    }
+    sections = ""
+    for sev, flags in by_sev.items():
+        if not flags:
+            continue
+        bg, border, icon = _SEV_CFG[sev]
+        items = ""
+        for f in flags:
+            title = _flag_title(f)
+            detail = _flag_detail(f)
+            detail_html = (
+                "<div style='font-size:13px;color:rgba(43,54,68,.6);margin-top:3px'>" + _e(detail) + "</div>"
+                if detail else ""
+            )
+            items += (
+                "<div style='padding:10px 0;border-bottom:1px solid rgba(43,54,68,.07)'>"
+                f"<div style='font-weight:700;font-size:14px;color:#2B3644'>{_e(title)}</div>"
+                f"{detail_html}"
+                "</div>"
+            )
+        sections += f"""
+        <div style="margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:16px">{icon}</span>
+            <span style="font-family:Montserrat;font-weight:800;font-size:12px;text-transform:uppercase;
+              letter-spacing:.06em;color:{_SEV_COLOR.get(sev,'#666')}">{sev}</span>
+            <span style="font-size:11px;color:rgba(43,54,68,.4)">{len(flags)} flag{"s" if len(flags)>1 else ""}</span>
+          </div>
+          <div style="padding-left:28px">{items}</div>
+        </div>"""
+
+    return f"""
+    <section id="flags" class="card" style="border-left:4px solid {_SEV_COLOR.get('Critical','#8B4C42')}">
+      <h2>Red Flags</h2>
+      {sections}
     </section>"""
 
 
@@ -516,19 +739,21 @@ def _data_gaps(report: BrandReport) -> str:
 def render_share_page(report: BrandReport, *, public: bool = True) -> str:
     data = _chart_data(report)
     sections = "\n".join([
+        _section_nav(report),
         _ribbon(report),
         _completeness_meter(report),
         _exec_summary(report),
         _context_callout(report),
-        _charts_section(report),
         _thesis_risks(report),
+        _red_flags_visual(report),
+        _scorecard_visual(report),
+        _charts_section(report),
+        _yoy_table(report),
+        _benchmarks(report),
+        _competitive_section(report),
         _brand_social(report),
         _ascend_growth_playbook(report),
         _valuation_section(report),
-        _yoy_table(report),
-        _benchmarks(report),
-        _red_flags(report),
-        _scorecard(report),
         _data_gaps(report),
         _provenance(report),
     ])
@@ -550,6 +775,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
 <body>
 <main class="page">
   {_cover(report)}
+  {_hard_disqualifier_banner(report)}
   {sections}
   {confidential}
   <footer class="foot">Generated by the Anata agent · Brand Analysis · {_e(report.prepared_date)}</footer>
