@@ -127,7 +127,14 @@ def update_report(report_id: str, report: BrandReport, *,
         row.confidence = report.confidence
         row.period_current = report.period_current_label[:64]
         row.period_prior = report.period_prior_label[:64]
-        row.report_json = report.to_dict()
+        new_json = report.to_dict()
+        # Carry forward analyst-entered competitive signals and grade — these are
+        # set via PATCH /competitive and must survive a re-run of the financial analysis.
+        old_json = row.report_json or {}
+        for key in ("comp_signals", "brand_competitive"):
+            if old_json.get(key):
+                new_json.setdefault(key, old_json[key])
+        row.report_json = new_json
         row.brand_website = report.brand_website[:512]
         row.context_notes = report.context_notes
         if report_html:

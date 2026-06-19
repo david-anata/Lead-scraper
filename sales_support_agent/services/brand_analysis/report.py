@@ -50,7 +50,9 @@ def build_report(
     overrides = overrides or {}
     _apply_overrides(intake.current, overrides, intake.account_mappings)
 
-    scored = scoring_mod.score(intake.current, intake.prior, category=category)
+    scored = scoring_mod.score(intake.current, intake.prior, category=category,
+                              email_list_size=email_list_size or 0,
+                              social_signals=social_signals)
     current = scored["current"]
     prior = scored["prior"]
     growth = scored["growth_bps"]

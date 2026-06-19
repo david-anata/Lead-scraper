@@ -82,8 +82,8 @@ class IntakeMetricsTests(unittest.TestCase):
         # Pin the headline grade for this fixture (financial track only — brand
         # moved to the separate Brand & Social track, so 7 weighted dimensions).
         self.assertEqual(self.report.scorecard.letter, "C")
-        self.assertEqual(self.report.scorecard.score_100, 77)
-        self.assertEqual(len(self.report.scorecard.dimensions), 7)
+        self.assertEqual(self.report.scorecard.score_100, 70)
+        self.assertEqual(len(self.report.scorecard.dimensions), 8)
 
     def test_dimension_grades(self) -> None:
         by_key = {d.key: d for d in self.report.scorecard.dimensions}

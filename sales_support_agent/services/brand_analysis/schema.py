@@ -70,13 +70,14 @@ NOT_ASSESSED = "NA"
 # folded into this grade, so the headline number stays hard-numbers-only.
 # Reweighted to sum 1.00 after moving "brand" to its own track.
 DIMENSIONS = (
-    ("revenue", "Revenue trajectory & growth", 0.26),
-    ("profitability", "Profitability & net margin", 0.16),
-    ("marketing", "Marketing efficiency (MER)", 0.16),
-    ("acquisition", "Product quality & repeat customers", 0.13),
-    ("media", "Channel expansion runway", 0.11),
-    ("contribution", "Contribution / unit economics", 0.10),
-    ("balance", "Balance sheet & earnings quality", 0.08),
+    ("revenue",       "Revenue trajectory & growth",         0.23),
+    ("profitability", "Profitability & net margin",           0.14),
+    ("marketing",     "Marketing efficiency (MER)",           0.14),
+    ("acquisition",   "Product quality & repeat customers",   0.13),
+    ("media",         "Channel expansion runway",             0.11),
+    ("contribution",  "Contribution / unit economics",        0.09),
+    ("balance",       "Balance sheet & earnings quality",     0.08),
+    ("dtc_assets",    "DTC & email asset value",              0.08),
 )
 DIMENSION_LABELS = {k: label for k, label, _ in DIMENSIONS}
 DIMENSION_WEIGHTS = {k: w for k, _, w in DIMENSIONS}

@@ -532,6 +532,7 @@ def _section_nav(report: BrandReport) -> str:
         ("#social", "Social &amp; DTC") if has_social else None,
         ("#playbook", "Playbook"),
         ("#valuation", "Valuation"),
+        ("#distressed-offer", "Distressed Offer") if report.scorecard.letter in ("D", "F") else None,
     ]
     items = "".join(
         f'<a href="{href}" style="text-decoration:none;color:rgba(43,54,68,.7);font-family:Montserrat;font-weight:700;'
@@ -698,6 +699,81 @@ def _red_flags_visual(report: BrandReport) -> str:
     </section>"""
 
 
+def _distressed_offer(report: BrandReport) -> str:
+    """Distressed/turnaround acquisition evaluation — shown only for D/F grade brands.
+    Shows what price Ascend would offer after applying a turnaround discount to the
+    standard valuation, and what would need to be fixed post-acquisition."""
+    letter = report.scorecard.letter
+    if letter not in ("D", "F"):
+        return ""
+
+    v = ValuationRange.from_dict(report.valuation)
+    score = report.scorecard.score_100
+
+    # Turnaround haircut: F = 35–50% of normal EV, D = 55–70%
+    if letter == "F":
+        low_pct, high_pct = 0.35, 0.50
+        tier_label = "Deep Turnaround"
+        tier_color = "#8B4C42"
+        tier_note = "Significant operational and financial remediation required before Ascend can deploy its playbook."
+    else:  # D
+        low_pct, high_pct = 0.55, 0.70
+        tier_label = "Turnaround Acquisition"
+        tier_color = "#C2663B"
+        tier_note = "Brand has structural weaknesses but is not a write-off — Ascend would require a meaningful discount."
+
+    # Compute distressed range from the normal EV
+    ev_low = v.ev_low_cents
+    ev_high = v.ev_high_cents
+    if ev_low and ev_high:
+        distressed_lo = fmt_money(int(ev_low * low_pct))
+        distressed_hi = fmt_money(int(ev_high * high_pct))
+        price_html = f"""
+        <div class="val-headline" style="margin-bottom:10px">
+          <span class="val-band" style="font-size:24px;color:{tier_color}">{distressed_lo} – {distressed_hi}</span>
+          <span class="val-basis">indicative distressed offer · {int(low_pct*100)}–{int(high_pct*100)}% of standard range</span>
+        </div>
+        <table class="data-table" style="font-size:13px;margin-bottom:0">
+          <tbody>
+            <tr><td>Standard indicative EV</td><td class="num">{fmt_money(ev_low)} – {fmt_money(ev_high)}</td></tr>
+            <tr><td>Turnaround discount applied</td><td class="num" style="color:{tier_color}">{int((1-high_pct)*100)}–{int((1-low_pct)*100)}%</td></tr>
+            <tr><td>Distressed offer range</td><td class="num" style="color:{tier_color};font-weight:700">{distressed_lo} – {distressed_hi}</td></tr>
+          </tbody>
+        </table>"""
+    else:
+        price_html = '<p class="muted">Insufficient financial data to size a distressed range.</p>'
+
+    # What needs to change for a viable acquisition
+    crit_flags = [f for f in report.red_flags
+                  if _flag_sev(f) == "Critical"]
+    high_flags = [f for f in report.red_flags
+                  if _flag_sev(f) == "High"]
+
+    fix_items = ""
+    for f in (crit_flags + high_flags)[:6]:
+        title = _e(_flag_title(f))
+        fix_items += f'<li style="margin:4px 0">{title}</li>'
+    fix_section = (
+        f'<ul style="margin:8px 0 0;padding-left:18px;font-size:13px">{fix_items}</ul>'
+        if fix_items else ""
+    )
+
+    return f"""
+    <section id="distressed-offer" class="card" style="border-left:4px solid {tier_color}">
+      <h2>{tier_label} <span style="font-size:13px;font-weight:600;color:rgba(43,54,68,.5)">— offer framework for grade {letter} brands</span></h2>
+      <div style="background:rgba(139,76,66,0.06);border-radius:12px;padding:16px 18px;margin-bottom:14px">
+        <div style="font-weight:700;font-size:13px;color:{tier_color};margin-bottom:4px">{_e(tier_label)}</div>
+        <div style="font-size:13px;color:rgba(43,54,68,.7)">{_e(tier_note)}</div>
+      </div>
+      {price_html}
+      {"<h3 style='margin:14px 0 6px'>Issues that must be remediated or priced in</h3>" + fix_section if fix_section else ""}
+      <p style="font-size:12px;color:rgba(43,54,68,.4);margin:12px 0 0">
+        Ascend would proceed only if seller accepts the distressed range AND provides representations
+        on the critical flags above. LOI should include price adjustment clauses tied to trailing revenue verification.
+      </p>
+    </section>"""
+
+
 def _provenance(report: BrandReport) -> str:
     if not report.account_mappings and not report.unmapped_accounts:
         return ""
@@ -754,6 +830,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
         _brand_social(report),
         _ascend_growth_playbook(report),
         _valuation_section(report),
+        _distressed_offer(report),
         _data_gaps(report),
         _provenance(report),
     ])

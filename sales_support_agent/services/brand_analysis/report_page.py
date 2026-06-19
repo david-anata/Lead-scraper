@@ -1048,8 +1048,17 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .ep-list li {{ margin:3px 0; }}
         .flag-row {{ padding:5px 0;border-bottom:1px solid var(--border); }}
         .flag-row:last-child {{ border-bottom:none; }}
-        table.pipeline {{ table-layout:auto;width:100%; }}
+        table.pipeline {{ table-layout:auto;width:100%;min-width:1200px; }}
         table.pipeline td, table.pipeline th {{ vertical-align:middle; }}
+        table.pipeline td:nth-child(1) {{ min-width:120px; }}
+        table.pipeline td:nth-child(2) {{ min-width:130px; }}
+        table.pipeline td:nth-child(3) {{ width:80px; }}
+        table.pipeline td:nth-child(4) {{ width:90px; }}
+        table.pipeline td:nth-child(5), table.pipeline td:nth-child(6) {{ width:90px; }}
+        table.pipeline td:nth-child(7), table.pipeline td:nth-child(8), table.pipeline td:nth-child(9) {{ width:80px; }}
+        table.pipeline td:nth-child(10) {{ width:80px; }}
+        table.pipeline td:nth-child(11) {{ width:80px; }}
+        table.pipeline td:nth-child(12) {{ width:70px; }}
         @media(max-width:900px){{
           .ep-grid{{grid-template-columns:1fr;}}
           .ep-two-col{{grid-template-columns:1fr;}}
@@ -1124,6 +1133,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         <span id="row-count">{total} brand{'' if total == 1 else 's'}</span>
       </div>
 
+      <div style="overflow-x:auto">
       <table class="pipeline">
         <thead>
           <tr>
@@ -1144,6 +1154,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         </thead>
         <tbody>{rows_html}</tbody>
       </table>
+      </div>
 
       <details class="legend-box">
         <summary>Table Guide &amp; Grade Key</summary>

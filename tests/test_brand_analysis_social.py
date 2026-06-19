@@ -14,7 +14,7 @@ class TwoTrackSplitTests(unittest.TestCase):
     def test_financial_track_excludes_brand_and_sums_to_one(self) -> None:
         keys = [k for k, _, _ in DIMENSIONS]
         self.assertNotIn("brand", keys)
-        self.assertEqual(len(keys), 7)
+        self.assertEqual(len(keys), 8)
         self.assertAlmostEqual(sum(w for _, _, w in DIMENSIONS), 1.0, places=3)
 
     def test_brand_social_dims_sum_to_one(self) -> None:

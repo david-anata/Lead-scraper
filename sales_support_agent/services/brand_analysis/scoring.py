@@ -276,8 +276,40 @@ def _grade_brand(cur: Metrics, period: PeriodFinancials) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _grade_dtc_assets(email_list_size: int, social_signals: dict) -> tuple[str, str]:
+    """Grade the EXISTING DTC & social asset base — how much monetizable audience
+    Ascend inherits on Day 1. Distinct from the social opportunity track (which grades
+    build runway). A large existing list = immediate revenue lever = acquisition premium."""
+    ss = social_signals or {}
+    total_followers = sum(
+        int(ss.get(k, 0) or 0)
+        for k in ("instagram_followers", "tiktok_followers", "facebook_followers",
+                  "youtube_subscribers", "twitter_followers")
+    )
+    if email_list_size == 0 and total_followers == 0:
+        return NOT_ASSESSED, "Email list size and social audience not provided — cannot assess DTC asset value."
+    # Email list is most directly monetizable
+    if email_list_size >= 100_000:
+        return "A", f"Email list of {email_list_size:,} subscribers — high-value DTC asset Ascend can deploy immediately."
+    if email_list_size >= 30_000:
+        return "B", f"Email list of {email_list_size:,} — solid owned audience with immediate activation potential."
+    if email_list_size >= 5_000:
+        return "C", f"Email list of {email_list_size:,} — early-stage DTC asset; meaningful but limited immediate impact."
+    if email_list_size > 0:
+        return "D", f"Email list of {email_list_size:,} — small list; minimal immediate DTC leverage."
+    # No email list — grade on social followers
+    if total_followers >= 100_000:
+        return "A", f"~{total_followers:,} total social followers — large transferable audience asset."
+    if total_followers >= 20_000:
+        return "B", f"~{total_followers:,} social followers — meaningful community Ascend can monetize."
+    if total_followers >= 2_000:
+        return "C", f"~{total_followers:,} social followers — nascent audience asset."
+    return "D", f"~{total_followers:,} social followers — very small audience; minimal current asset value."
+
+
 def build_scorecard(current: Metrics, prior: Optional[Metrics], period: PeriodFinancials,
-                    growth_bps: Optional[int], bm: Benchmarks) -> Scorecard:
+                    growth_bps: Optional[int], bm: Benchmarks, *,
+                    email_list_size: int = 0, social_signals: Optional[dict] = None) -> Scorecard:
     prior = prior or Metrics()
     graders = {
         "revenue": lambda: _grade_revenue(current, prior, growth_bps, bm),
@@ -288,6 +320,7 @@ def build_scorecard(current: Metrics, prior: Optional[Metrics], period: PeriodFi
         "contribution": lambda: _grade_margin_like(current.contribution_margin_bps, *bm.contribution_margin_bps, prior.contribution_margin_bps, "Contribution margin"),
         "balance": lambda: _grade_balance(period, current, bm),
         "brand": lambda: _grade_brand(current, period),
+        "dtc_assets": lambda: _grade_dtc_assets(email_list_size, social_signals or {}),
     }
     dims: list[DimensionGrade] = []
     weighted_points = 0.0
@@ -422,14 +455,17 @@ def build_benchmarks(current: Metrics, bm: Benchmarks, growth_bps: Optional[int]
 
 
 def score(current_period: PeriodFinancials, prior_period: Optional[PeriodFinancials], *,
-          category: str = "dtc", social_signals: Optional[dict] = None) -> dict:
+          category: str = "dtc", social_signals: Optional[dict] = None,
+          email_list_size: int = 0) -> dict:
     """Run the full deterministic pass. Returns the pieces the report assembler
     needs (metrics, scorecard, red flags, benchmarks, yoy growth)."""
     bm = benchmarks_for(category)
     current = derive_metrics(current_period)
     prior = derive_metrics(prior_period) if prior_period is not None else None
     growth = yoy_growth_bps(current, prior)
-    scorecard = build_scorecard(current, prior, current_period, growth, bm)
+    scorecard = build_scorecard(current, prior, current_period, growth, bm,
+                                email_list_size=email_list_size or 0,
+                                social_signals=social_signals)
     red_flags = build_red_flags(current, current_period, growth, bm, social_signals=social_signals)
     benchmarks = build_benchmarks(current, bm, growth)
     return {

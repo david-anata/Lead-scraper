@@ -51,7 +51,7 @@ class PenalizeUnknownsTests(unittest.TestCase):
         prior = PeriodFinancials(net_revenue_cents=80_000_00, cogs_cents=29_000_00,
                                  reported_gross_profit_cents=51_000_00, marketing_total_cents=22_000_00,
                                  net_earnings_cents=8_000_00)
-        sc = scoring.score(cur, prior, category="dtc")["scorecard"]
+        sc = scoring.score(cur, prior, category="dtc", email_list_size=75_000)["scorecard"]
         self.assertTrue(all(d.assessed for d in sc.dimensions))
         self.assertIn(sc.letter, ("A", "B"))
 
