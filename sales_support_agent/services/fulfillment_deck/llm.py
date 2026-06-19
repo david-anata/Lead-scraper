@@ -289,9 +289,9 @@ def extract_prospect_profile(
                 meta.output_tokens = message.usage.output_tokens
             else:
                 meta.warnings.append("LLM returned unparseable output — used basic text parsing instead.")
-        except Exception:  # noqa: BLE001 — extraction must never crash the pipeline
+        except Exception as exc:  # noqa: BLE001 — extraction must never crash the pipeline
             logger.warning("[fulfillment_deck] extraction LLM call failed; using fallback parser", exc_info=True)
-            meta.warnings.append("LLM extraction failed — used basic text parsing instead.")
+            meta.warnings.append(f"LLM extraction failed ({exc.__class__.__name__}: {exc}) — used basic text parsing instead.")
 
     if profile is None:
         profile = _fallback_profile(context)
