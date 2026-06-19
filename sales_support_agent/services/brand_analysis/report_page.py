@@ -544,7 +544,7 @@ def _expand_panel(row: dict) -> str:
             Update grade
           </button>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Email / SMS list</div>
             <input id="soc-email-{rid_g}" type="number" min="0" step="100" value="{s_email}" placeholder="0" {_inp}>
@@ -560,7 +560,7 @@ def _expand_panel(row: dict) -> str:
               value="{_esc(str(int(s_signals['review_count']) if s_signals.get('review_count') else ''))}" placeholder="500" {_inp}>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px">
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:8px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Instagram URL</div>
             <input id="soc-ig-url-{rid_g}" type="url" value="{_soc_url('instagram')}" placeholder="instagram.com/brand" {_inp}>
@@ -578,7 +578,7 @@ def _expand_panel(row: dict) -> str:
             <input id="soc-tt-fol-{rid_g}" type="number" min="0" value="{_soc_fol('tiktok_followers')}" placeholder="0" {_inp}>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px">
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:8px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Facebook URL</div>
             <input id="soc-fb-url-{rid_g}" type="url" value="{_soc_url('facebook')}" placeholder="facebook.com/brand" {_inp}>
@@ -596,7 +596,7 @@ def _expand_panel(row: dict) -> str:
             <input id="soc-yt-sub-{rid_g}" type="number" min="0" value="{_soc_fol('youtube_subscribers')}" placeholder="0" {_inp}>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Days since last post</div>
             <input id="soc-recency-{rid_g}" type="number" min="0"
@@ -656,7 +656,7 @@ def _expand_panel(row: dict) -> str:
     zone_f = f"""
       <div class="ep-zone" style="grid-column:1/-1">
         <div class="ep-zone-title">Deal Info</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:12px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Contact name</div>
             <input class="deal-cname" data-rid="{rid}" type="text"
@@ -682,7 +682,7 @@ def _expand_panel(row: dict) -> str:
             placeholder="e.g. legal entity differs from brand; related-party loan is owner financing; Q1 actuals pending."
             style="{_ta}">{ctx_notes_val}</textarea>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
           <div>
             <div class="ep-sub" style="margin-bottom:6px">
               Deal notes
@@ -742,7 +742,7 @@ def _expand_panel(row: dict) -> str:
             </button>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:10px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Brand BSR rank</div>
             <input id="cp-bsr-{rid_h}" type="number" min="1" value="{_cv('brand_bsr')}" placeholder="e.g. 342" {_inp}>
@@ -756,7 +756,7 @@ def _expand_panel(row: dict) -> str:
             <input id="cp-rating-{rid_h}" type="number" min="1" max="5" step="0.1" value="{_cf('brand_review_rating')}" placeholder="4.5" {_inp}>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px">
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:10px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Brand price ($)</div>
             <input id="cp-price-{rid_h}" type="number" min="0" step="0.01" value="{_esc(str(cs.get('brand_price_cents', '') or ''))}" placeholder="e.g. 2999 (cents)" {_inp}>
@@ -770,7 +770,7 @@ def _expand_panel(row: dict) -> str:
             <input id="cp-cat-{rid_h}" type="text" value="{_esc(cs.get('category_name',''))}" placeholder="e.g. Vitamin C Supplements" {_inp}>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:8px">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:8px">
           <div>
             <div class="ep-sub" style="margin-bottom:4px">Top competitor name</div>
             <input id="cp-cname-{rid_h}" type="text" value="{_esc(cs.get('top_competitor_name',''))}" placeholder="Brand / ASIN name" {_inp}>
@@ -1122,7 +1122,8 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .expand-panel * {{ box-sizing:border-box; }}
         .ep-grid {{ display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;min-width:0; }}
         .ep-zone {{ background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:0;overflow:hidden; }}
-        .ep-zone > div {{ min-width:0; }}
+        .ep-zone div {{ min-width:0; }}
+        .ep-zone input,.ep-zone select,.ep-zone textarea {{ min-width:0; }}
         .ep-zone-title {{ font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
           text-transform:uppercase;letter-spacing:0.06em;color:var(--dark-blue);margin-bottom:10px; }}
         .ep-table {{ width:100%;font-size:12.5px;margin:0;border-collapse:collapse;table-layout:fixed; }}
@@ -1133,7 +1134,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .ep-table col.col-reason {{ width:54%; }}
         .ep-sub {{ font-size:11px;font-weight:700;font-family:"Montserrat",sans-serif;
           text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px; }}
-        .ep-two-col {{ display:grid;grid-template-columns:1fr 1fr;gap:12px; }}
+        .ep-two-col {{ display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px; }}
         .ep-list {{ margin:0;padding-left:16px;font-size:12.5px; }}
         .ep-list li {{ margin:3px 0; }}
         .flag-row {{ padding:5px 0;border-bottom:1px solid var(--border); }}
