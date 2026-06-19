@@ -1636,6 +1636,12 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         }}
 
         // ── Row expand ────────────────────────────────────────────────────────
+        var _pipelineWrapper = document.querySelector('table.pipeline').parentElement;
+        function _sizePanel(panel) {{
+          if (!panel || !_pipelineWrapper) return;
+          panel.style.width = _pipelineWrapper.clientWidth + 'px';
+          panel.style.minWidth = '0';
+        }}
         document.querySelector('tbody').addEventListener('click', function(e) {{
           if (e.target.closest('.dot-wrap,.stage-select,.sg-wrap,.ms-wrap,.deal-note,.deal-price,input,button,select')) return;
           var row = e.target.closest('tr.data-row');
@@ -1644,7 +1650,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           if (!expRow) return;
           var open = expRow.style.display !== 'none';
           document.querySelectorAll('tr.expand-row').forEach(function(r) {{ r.style.display = 'none'; }});
-          if (!open) expRow.style.display = 'table-row';
+          if (!open) {{ expRow.style.display = 'table-row'; _sizePanel(expRow.querySelector('.expand-panel')); }}
         }});
 
         // ── Three-dot menu ────────────────────────────────────────────────────
