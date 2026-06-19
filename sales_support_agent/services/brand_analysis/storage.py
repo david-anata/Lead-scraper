@@ -508,3 +508,60 @@ def delete_report(report_id: str) -> bool:
         except Exception:  # noqa: BLE001
             pass
     return True
+
+
+def create_placeholder_entry(
+    brand_name: str,
+    ask_price_cents: Optional[int] = None,
+    notes: str = "",
+    brand_website: str = "",
+    category: str = "",
+    revenue_cents: Optional[int] = None,
+) -> Optional[str]:
+    """Create a lightweight pipeline placeholder (no analysis) for a discovered deal.
+
+    Returns the new report_id, or None if a duplicate listing URL is already in the
+    pipeline (dedup check against the notes field).
+    """
+    import re as _re
+
+    if notes:
+        url_m = _re.search(r"URL: (https?://\S+)", notes)
+        if url_m:
+            dup_url = url_m.group(1).rstrip("|").strip()
+            with _session() as s:
+                from sqlalchemy import select as _select
+                rows = s.execute(_select(ReportRow.id, ReportRow.notes)).fetchall()
+                for existing_id, existing_notes in rows:
+                    if existing_notes and dup_url in existing_notes:
+                        logger.info("[storage] dedup: skipping %s (already in %s)",
+                                    dup_url[:60], existing_id[:8])
+                        return None
+
+    rid = _new_id()
+    rj: dict = {}
+    if revenue_cents:
+        rj["revenue_cents_hint"] = revenue_cents
+    with _session() as s:
+        s.add(ReportRow(
+            id=rid,
+            label=brand_name[:255],
+            brand=brand_name[:255],
+            category=(category or "amazon_fba")[:128],
+            status="pending",
+            grade="",
+            score_100=0,
+            confidence="",
+            period_current="",
+            period_prior="",
+            report_json=rj,
+            slug=_slugify(brand_name),
+            share_token=secrets.token_urlsafe(18),
+            report_html="",
+            brand_website=(brand_website or "")[:512],
+            context_notes="",
+            stage="new",
+            notes=(notes or "")[:2000],
+            ask_price_cents=ask_price_cents,
+        ))
+    return rid

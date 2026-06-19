@@ -11,6 +11,7 @@ scorecard, data gaps, verdict.
 from __future__ import annotations
 
 import html
+import json
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -538,11 +539,18 @@ def _expand_panel(row: dict) -> str:
       <div class="ep-zone" style="grid-column:1/-1">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
           <div class="ep-zone-title" style="margin:0">Social Metrics</div>
-          <button onclick="saveSocial('{rid_g}',this)"
-            style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid var(--dark-blue);
-            background:rgba(133,187,218,.12);color:var(--dark-blue);cursor:pointer;font-family:inherit">
-            Update grade
-          </button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <button onclick="autoFillZone('{rid_g}','social',this)"
+              style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid #B8860B;
+              background:rgba(184,134,11,.08);color:#B8860B;cursor:pointer;font-family:inherit">
+              Auto-fill ↓
+            </button>
+            <button onclick="saveSocial('{rid_g}',this)"
+              style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid var(--dark-blue);
+              background:rgba(133,187,218,.12);color:var(--dark-blue);cursor:pointer;font-family:inherit">
+              Update grade
+            </button>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px">
           <div>
@@ -733,8 +741,13 @@ def _expand_panel(row: dict) -> str:
       <div class="ep-zone" style="grid-column:1/-1">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
           <div class="ep-zone-title" style="margin:0">Competitive Signals</div>
-          <div style="display:flex;align-items:center;gap:12px">
+          <div style="display:flex;align-items:center;gap:8px">
             {comp_badge}
+            <button onclick="autoFillZone('{rid_h}','competitive',this)"
+              style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid #B8860B;
+              background:rgba(184,134,11,.08);color:#B8860B;cursor:pointer;font-family:inherit">
+              Auto-fill ↓
+            </button>
             <button onclick="saveCompetitive('{rid_h}',this)"
               style="font-size:12px;padding:4px 14px;border-radius:20px;border:1px solid var(--dark-blue);
               background:rgba(133,187,218,.12);color:var(--dark-blue);cursor:pointer;font-family:inherit">
@@ -1549,6 +1562,61 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           }});
         }}
 
+        // ── Auto-fill Zone G / Zone H from enrich endpoint ───────────────────
+        function autoFillZone(rid, zone, btn) {{
+          if (btn) {{ btn.textContent = 'Fetching…'; btn.disabled = true; }}
+          fetch('/admin/executive/brand-analysis/' + rid + '/enrich')
+            .then(function(r) {{ return r.json(); }})
+            .then(function(d) {{
+              if (btn) {{ btn.textContent = 'Auto-fill ↓'; btn.disabled = false; }}
+              var filled = 0;
+              function _fill(id, val) {{
+                var el = document.getElementById(id);
+                if (el && !el.value && val != null) {{
+                  el.value = val;
+                  el.style.outline = '2px solid #B8860B';
+                  el.title = 'Auto-filled ✦';
+                  setTimeout(function() {{ el.style.outline = ''; }}, 3000);
+                  filled++;
+                }}
+              }}
+              if (zone === 'social') {{
+                _fill('soc-ig-url-' + rid, d.instagram_url);
+                _fill('soc-ig-fol-' + rid, d.ig_followers);
+                _fill('soc-tt-url-' + rid, d.tiktok_url);
+                _fill('soc-tt-fol-' + rid, d.tt_followers);
+                _fill('soc-fb-url-' + rid, d.facebook_url);
+                _fill('soc-fb-fol-' + rid, d.fb_followers);
+                _fill('soc-yt-url-' + rid, d.youtube_url);
+                _fill('soc-yt-sub-' + rid, d.yt_subscribers);
+                _fill('soc-rating-' + rid, d.review_rating);
+                _fill('soc-rcount-' + rid, d.review_count);
+              }} else if (zone === 'competitive') {{
+                _fill('cp-bsr-'    + rid, d.bsr_rank);
+                _fill('cp-rcount-' + rid, d.review_count);
+                _fill('cp-rating-' + rid, d.review_rating);
+                _fill('cp-price-'  + rid, d.brand_price_cents);
+                _fill('cp-cat-'    + rid, d.category_name);
+                _fill('cp-cname-'  + rid, d.top_competitor_name);
+                _fill('cp-crcount-'+ rid, d.competitor_reviews);
+                _fill('cp-cbsr-'   + rid, d.competitor_bsr);
+              }}
+              if (btn && filled > 0) {{
+                btn.style.background = 'rgba(184,134,11,.18)';
+                btn.textContent = filled + ' fields filled ✦';
+                setTimeout(function() {{
+                  btn.style.background = '';
+                  btn.textContent = 'Auto-fill ↓';
+                }}, 2500);
+              }} else if (btn) {{
+                btn.textContent = 'Nothing new found';
+                setTimeout(function() {{ btn.textContent = 'Auto-fill ↓'; }}, 1800);
+              }}
+            }}).catch(function() {{
+              if (btn) {{ btn.textContent = 'Error'; btn.disabled = false; }}
+            }});
+        }}
+
         // ── Deal Info save ────────────────────────────────────────────────────
         function saveContact(el) {{
           var rid = el.dataset.rid;
@@ -1839,6 +1907,45 @@ def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
           <a class="btn btn--ghost" href="/admin/executive/brand-analysis/{rid}">← Back to report</a>
         </div>
       </form>
+      <script>
+      (function() {{
+        var rid = {json.dumps(rid)};
+        var BASE = '/admin/executive/brand-analysis/';
+        document.addEventListener('DOMContentLoaded', function() {{
+          fetch(BASE + rid + '/enrich')
+            .then(function(r) {{ return r.json(); }})
+            .then(function(d) {{
+              var filled = 0;
+              function _fill(name, val) {{
+                var el = document.querySelector('[name="' + name + '"]');
+                if (el && !el.value && val != null && String(val).trim()) {{
+                  el.value = String(val).trim();
+                  el.style.outline = '2px solid #B8860B';
+                  el.title = 'Auto-filled by enrich ✦';
+                  setTimeout(function() {{ el.style.outline = ''; }}, 3000);
+                  filled++;
+                }}
+              }}
+              // Build social_urls string from discovered handles
+              var urls = [];
+              if (d.instagram_url) urls.push(d.instagram_url);
+              if (d.tiktok_url) urls.push(d.tiktok_url);
+              if (d.facebook_url) urls.push(d.facebook_url);
+              if (d.youtube_url) urls.push(d.youtube_url);
+              if (urls.length) _fill('social_urls', urls.join(' '));
+              _fill('review_rating', d.review_rating);
+              _fill('review_count', d.review_count);
+              if (filled > 0) {{
+                var socialSummary = document.querySelector('details.social-fields > summary');
+                if (socialSummary) {{
+                  socialSummary.insertAdjacentHTML('beforeend',
+                    ' <span style="color:#B8860B;font-size:12px;font-weight:600">· ' + filled + ' fields auto-filled ✦</span>');
+                }}
+              }}
+            }}).catch(function() {{ /* silent */ }});
+        }});
+      }})();
+      </script>
       {_version_history(versions)}
     """
     return _doc("Edit — Brand Analysis", body, user=user)
@@ -2179,3 +2286,128 @@ def _scorecard_table(r: BrandReport) -> str:
       </table>
       <p class="muted">Weighted composite (A=4…F=0, rebased to 100): <strong>{r.scorecard.score_100}/100 → {_esc(r.scorecard.letter)}</strong>.</p>
     """
+
+
+# ---------------------------------------------------------------------------
+# Deal Discovery page
+# ---------------------------------------------------------------------------
+
+
+def render_discover_page(
+    *,
+    user: dict,
+    results: Optional[list] = None,
+    params: Optional[dict] = None,
+    flash: str = "",
+) -> str:
+    params = params or {}
+    source = params.get("source", "bizbuysell")
+    min_rev = params.get("min_revenue", "1000000")
+    max_price = params.get("max_price", "20000000")
+
+    flash_html = ""
+    if flash:
+        flash_html = f'<div style="padding:10px 14px;background:rgba(133,187,218,.15);border-radius:8px;margin-bottom:16px;font-size:13.5px">{_esc(flash)}</div>'
+
+    # Results table
+    results_html = ""
+    if results is not None:
+        total = len(results)
+        qualified_count = sum(1 for r in results if r.get("qualified"))
+        results_html = f"""
+          <div style="margin-top:24px">
+            <div style="font-size:14px;font-weight:700;margin-bottom:12px;color:#2B3644">
+              Found {qualified_count} qualified out of {total} listings
+            </div>"""
+        if results:
+            rows_html = ""
+            for item in results:
+                score = item.get("score", 0)
+                qualified = item.get("qualified", False)
+                row_color = "#e8f5e9" if score >= 70 else ("#fff8e1" if score >= 40 else "#fff3f3")
+                badge_color = "#2E7D5B" if score >= 70 else ("#B8860B" if score >= 40 else "#8B4C42")
+                gaps = "; ".join((item.get("gaps") or [])[:3])
+                price_str = f"${(item.get('_asking_price_cents') or 0)/100:,.0f}" if item.get("_asking_price_cents") else "—"
+                rev_str = f"${(item.get('_revenue_cents') or 0)/100:,.0f}" if item.get("_revenue_cents") else "—"
+                listing_url = _esc(item.get("listing_url") or "#")
+                name = _esc(item.get("name") or "Unknown")
+                add_btn = ""
+                if qualified:
+                    gaps_enc = _esc("; ".join(item.get("gaps") or []))
+                    ask_cents = item.get("_asking_price_cents") or ""
+                    rev_hint = item.get("_revenue_cents") or ""
+                    add_btn = (
+                        '<form method="POST" action="/admin/executive/brand-analysis/discover/add" style="display:inline">'
+                        f'<input type="hidden" name="name" value="{name}">'
+                        f'<input type="hidden" name="listing_url" value="{listing_url}">'
+                        f'<input type="hidden" name="asking_price_cents" value="{ask_cents}">'
+                        f'<input type="hidden" name="revenue_cents" value="{rev_hint}">'
+                        f'<input type="hidden" name="score" value="{score}">'
+                        f'<input type="hidden" name="gaps" value="{gaps_enc}">'
+                        '<button type="submit" style="font-size:12px;padding:4px 12px;border-radius:16px;'
+                        'border:1px solid #2E7D5B;background:rgba(46,125,91,.1);color:#2E7D5B;cursor:pointer;font-family:inherit">'
+                        "Add to Pipeline"
+                        "</button></form>"
+                    )
+                rows_html += (
+                    f'<tr style="background:{row_color}">'
+                    f'<td><a href="{listing_url}" target="_blank" style="font-weight:600;color:#2B3644">{name}</a></td>'
+                    f'<td class="num">{_esc(rev_str)}</td>'
+                    f'<td class="num">{_esc(price_str)}</td>'
+                    f'<td class="num"><span style="font-family:Montserrat;font-weight:800;color:{badge_color}">{score}/100</span></td>'
+                    f'<td style="font-size:12px;color:rgba(43,54,68,.65)">{_esc(gaps)}</td>'
+                    f"<td>{add_btn}</td>"
+                    "</tr>"
+                )
+            results_html += f"""
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr style="background:rgba(43,54,68,.06)">
+                  <th style="text-align:left;padding:8px 10px">Name</th>
+                  <th style="text-align:right;padding:8px 10px">Revenue</th>
+                  <th style="text-align:right;padding:8px 10px">Ask Price</th>
+                  <th style="text-align:right;padding:8px 10px">Score</th>
+                  <th style="text-align:left;padding:8px 10px">Gaps</th>
+                  <th style="padding:8px 10px"></th>
+                </tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+            </table>"""
+        else:
+            results_html += '<p style="color:rgba(43,54,68,.5);font-size:13.5px">No FBA listings found matching the criteria.</p>'
+        results_html += "</div>"
+
+    body = f"""
+      <span class="eyebrow">Executive · Brand Analysis</span>
+      <h1>Deal Discovery</h1>
+      <p class="muted">Scan BizBuySell and Flippa for Amazon FBA acquisitions and qualify them against Ascend's criteria.</p>
+      <a class="btn btn--ghost" href="/admin/executive/brand-analysis/pipeline">← Pipeline</a>
+
+      {flash_html}
+
+      <div style="background:rgba(43,54,68,.04);border-radius:12px;padding:20px;margin-top:20px">
+        <form method="POST" action="/admin/executive/brand-analysis/discover/run" style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end">
+          <div class="field" style="min-width:160px">
+            <label for="source">Source</label>
+            <select id="source" name="source" style="width:100%">
+              <option value="bizbuysell" {"selected" if source == "bizbuysell" else ""}>BizBuySell</option>
+              <option value="flippa"     {"selected" if source == "flippa" else ""}>Flippa</option>
+            </select>
+          </div>
+          <div class="field" style="min-width:160px">
+            <label for="min_revenue">Min Annual Revenue ($)</label>
+            <input id="min_revenue" name="min_revenue" type="number" min="0" step="100000" value="{_esc(min_rev)}" placeholder="1000000">
+          </div>
+          <div class="field" style="min-width:160px">
+            <label for="max_price">Max Asking Price ($)</label>
+            <input id="max_price" name="max_price" type="number" min="0" step="500000" value="{_esc(max_price)}" placeholder="20000000">
+          </div>
+          <div>
+            <button class="btn" type="submit">Find Deals</button>
+          </div>
+        </form>
+      </div>
+
+      {results_html}
+    """
+    return _doc("Deal Discovery — Brand Analysis", body, user=user)

@@ -353,9 +353,16 @@ def _ascend_growth_playbook(report: BrandReport) -> str:
     hi_str = fmt_money(int(rev_cents * 0.15)) if rev_cents else "—"
     uplift_str = f"{lo_str} – {hi_str}/yr" if rev_cents else "—"
 
-    # Exit range: Y5 revenue ≈ current × 2.5; EBITDA at 40%; exit at 5–6.5×
-    exit_lo = fmt_money(int(rev_cents * 2.5 * 0.40 * 5.0)) if rev_cents else "—"
-    exit_hi = fmt_money(int(rev_cents * 2.5 * 0.40 * 6.5)) if rev_cents else "—"
+    # Exit range: Y5 revenue ≈ current × 2.5; use SDE if available, else net earnings, else 40% est.
+    earnings_base = (cur.sde_cents or cur.net_earnings_cents or int(rev_cents * 0.40)) if rev_cents else 0
+    if cur.sde_cents:
+        earnings_basis_label = "Based on reported SDE"
+    elif cur.net_earnings_cents:
+        earnings_basis_label = "Based on net earnings"
+    else:
+        earnings_basis_label = "Estimated at 40% EBITDA"
+    exit_lo = fmt_money(int(earnings_base * 2.5 * 5.0)) if rev_cents else "—"
+    exit_hi = fmt_money(int(earnings_base * 2.5 * 6.5)) if rev_cents else "—"
     exit_range = f"{exit_lo} – {exit_hi}" if rev_cents else "—"
 
     # Social & DTC build plan from brand_social dimensions
@@ -454,6 +461,56 @@ def _ascend_growth_playbook(report: BrandReport) -> str:
         </div>
       </div>
 
+      <h3 style="margin:0 0 10px">Year 1 Channel Launch Budget (Indicative)</h3>
+      <table class="data-table" style="font-size:13px;margin-bottom:22px">
+        <thead>
+          <tr>
+            <th>Channel</th>
+            <th class="num">Target Revenue (Y1)</th>
+            <th class="num">Est. Ad Spend</th>
+            <th class="num">Start</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Amazon PPC</strong></td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.55))) if rev_cents else "—"}</td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.55 * 0.12))) if rev_cents else "—"}</td>
+            <td class="num"><strong>Day 1</strong></td>
+            <td>Target TACoS ≤12% (reduce from ~18–22%)</td>
+          </tr>
+          <tr>
+            <td><strong>TikTok Shop</strong></td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.25))) if rev_cents else "—"}</td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.25 * 0.20))) if rev_cents else "—"}</td>
+            <td class="num">Month 3</td>
+            <td>Content creation + paid ads; ~20% blended</td>
+          </tr>
+          <tr>
+            <td><strong>DTC (Shopify)</strong></td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.15))) if rev_cents else "—"}</td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.15 * 0.25))) if rev_cents else "—"}</td>
+            <td class="num">Month 6</td>
+            <td>Meta/Google + email/SMS flows; ~25% CAC</td>
+          </tr>
+          <tr>
+            <td><strong>Walmart</strong></td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.05))) if rev_cents else "—"}</td>
+            <td class="num">{_e(fmt_money(int(rev_cents * 0.05 * 0.05))) if rev_cents else "—"}</td>
+            <td class="num">Month 6</td>
+            <td>Listing fees + Promoted Listings; ~5%</td>
+          </tr>
+          <tr style="border-top:2px solid rgba(43,54,68,.15);font-weight:700">
+            <td>Total</td>
+            <td class="num">{_e(fmt_money(rev_cents)) if rev_cents else "—"}</td>
+            <td class="num">{_e(fmt_money(int(rev_cents * (0.55*0.12 + 0.25*0.20 + 0.15*0.25 + 0.05*0.05)))) if rev_cents else "—"}</td>
+            <td class="num"></td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:22px">
         <div>
           <h3 style="margin:0 0 10px">Social &amp; DTC Build Plan</h3>
@@ -464,7 +521,7 @@ def _ascend_growth_playbook(report: BrandReport) -> str:
           <h3 style="margin:0 0 10px">Exit Positioning</h3>
           <p style="font-size:13px;margin:0 0 6px"><strong>Target exit:</strong> Year 3–5 at 5–6.5× EBITDA</p>
           <p style="font-size:13px;margin:0 0 6px"><strong>Est. exit value range:</strong> <strong style="color:#2E7D5B">{_e(exit_range)}</strong></p>
-          <p style="font-size:12px;color:rgba(43,54,68,.45);margin:0">Based on current revenue × 2.5 (Y5 growth) × 40% EBITDA × 5–6.5× multiple.</p>
+          <p style="font-size:12px;color:rgba(43,54,68,.45);margin:0">{_e(earnings_basis_label)} × 2.5 (Y5 growth multiple) × 5–6.5× exit.</p>
         </div>
       </div>
 

@@ -32,6 +32,7 @@ from sales_support_agent.services.brand_analysis.report import build_report
 from sales_support_agent.services.brand_analysis.report_page import (
     render_admin_view,
     render_brand_analysis_page,
+    render_discover_page,
     render_edit_page,
     render_pipeline_page,
     _STAGE_META,
@@ -429,6 +430,116 @@ def update_competitive(report_id: str, body: _CompetitiveBody) -> dict:
         "comp_score_100": result.get("score_100") or 0,
         "comp_confidence": result.get("confidence") or "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Auto-enrich endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{report_id}/enrich")
+def enrich(report_id: str) -> dict:
+    """Fetch missing social + competitive data for a report. Returns partial
+    dict — keys only present when data was actually found. Never 500s."""
+    row = storage.get_report_row(report_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    rep = storage.get_report(report_id)
+    brand_name = (row.get("brand") or "")
+    brand_website = (row.get("brand_website") or "")
+    existing_handles = dict(getattr(rep, "social_handles", None) or {}) if rep else {}
+    try:
+        from sales_support_agent.services.brand_analysis.enrich import auto_enrich
+        result = auto_enrich(
+            brand_name=brand_name,
+            brand_website=brand_website,
+            existing_handles=existing_handles,
+        )
+    except Exception as exc:
+        logger.exception("[brand_analysis] enrich failed for %s", report_id[:8])
+        result = {"_errors": [str(exc)[:120]]}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Deal Discovery
+# ---------------------------------------------------------------------------
+
+
+@router.get("/discover", response_class=HTMLResponse)
+def discover(request: Request) -> HTMLResponse:
+    return HTMLResponse(render_discover_page(
+        user=get_session_user_from_request(request),
+    ))
+
+
+@router.post("/discover/run", response_class=HTMLResponse)
+async def discover_run(request: Request) -> HTMLResponse:
+    form = await request.form()
+    source = str(form.get("source") or "bizbuysell")
+    min_rev_usd = int(float(str(form.get("min_revenue") or "1000000").replace(",", "") or 1000000))
+    max_price_usd = int(float(str(form.get("max_price") or "20000000").replace(",", "") or 20000000))
+    params = {"source": source, "min_revenue": str(min_rev_usd), "max_price": str(max_price_usd)}
+    try:
+        from sales_support_agent.services.brand_analysis.deal_discovery import (
+            scrape_listings, qualify_listing,
+        )
+        listings = scrape_listings(
+            source,
+            min_revenue_cents=min_rev_usd * 100,
+            max_price_cents=max_price_usd * 100,
+        )
+        results = []
+        for listing in listings[:30]:  # cap to avoid runaway cost
+            q = qualify_listing(listing)
+            results.append({**listing, **q})
+        results.sort(key=lambda r: r.get("score", 0), reverse=True)
+        flash = ""
+    except Exception as exc:
+        logger.exception("[brand_analysis] discover_run failed")
+        results = []
+        flash = f"Discovery failed: {str(exc)[:120]}"
+    return HTMLResponse(render_discover_page(
+        user=get_session_user_from_request(request),
+        results=results,
+        params=params,
+        flash=flash,
+    ))
+
+
+@router.post("/discover/add")
+async def discover_add(request: Request) -> RedirectResponse:
+    form = await request.form()
+    name = str(form.get("name") or "Unknown Brand")
+    listing_url = str(form.get("listing_url") or "")
+    asking_price_cents = _opt_int(form.get("asking_price_cents"))
+    revenue_cents = _opt_int(form.get("revenue_cents"))
+    score = str(form.get("score") or "")
+    gaps = str(form.get("gaps") or "")
+    notes = f"URL: {listing_url} | Score: {score}/100" + (f" | Gaps: {gaps}" if gaps else "")
+    try:
+        from sales_support_agent.services.brand_analysis.deal_discovery import (
+            create_pipeline_entry, qualify_listing,
+        )
+        listing = {
+            "name": name,
+            "listing_url": listing_url,
+            "_asking_price_cents": asking_price_cents,
+            "_revenue_cents": revenue_cents,
+            "_source": "manual",
+        }
+        qualified = {"qualified": True, "score": int(score) if score.isdigit() else 50, "gaps": gaps.split("; ") if gaps else []}
+        report_id = create_pipeline_entry(listing, qualified)
+        if report_id:
+            msg = quote_plus(f"Added '{name}' to pipeline.")
+            return RedirectResponse(f"{_BASE}/pipeline?msg={msg}", status_code=303)
+        else:
+            msg = quote_plus(f"'{name}' is already in the pipeline (duplicate URL).")
+            return RedirectResponse(f"{_BASE}/discover?msg={msg}", status_code=303)
+    except Exception as exc:
+        logger.exception("[brand_analysis] discover_add failed")
+        msg = quote_plus(f"Failed to add: {str(exc)[:100]}")
+        return RedirectResponse(f"{_BASE}/discover?msg={msg}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
