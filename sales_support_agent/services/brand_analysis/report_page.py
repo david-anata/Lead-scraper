@@ -599,12 +599,15 @@ def _expand_panel(row: dict) -> str:
     # Zone F — Deal Info (contact + notes + ask price)
     rid = _esc(row.get("id") or "")
     notes_val = html.escape(row.get("notes") or "", quote=True)
+    ctx_notes_val = html.escape(row.get("context_notes") or "", quote=True)
     ask_raw = row.get("ask_price_cents")
     ask_dollars = f"{ask_raw / 100:.0f}" if ask_raw else ""
     contact_name_val  = _esc(row.get("contact_name") or "")
     contact_email_val = _esc(row.get("contact_email") or "")
     _fi = ("style='width:100%;height:32px;padding:0 8px;border:1px solid var(--border);"
            "border-radius:6px;font-size:12.5px;font-family:inherit;color:var(--text)'")
+    _ta = ("width:100%;min-height:72px;resize:vertical;border:1px solid var(--border);"
+           "border-radius:8px;padding:8px 10px;font-size:12.5px;font-family:inherit;color:var(--text)")
     zone_f = f"""
       <div class="ep-zone" style="grid-column:1/-1">
         <div class="ep-zone-title">Deal Info</div>
@@ -622,13 +625,28 @@ def _expand_panel(row: dict) -> str:
               placeholder="email@example.com" {_fi}>
           </div>
         </div>
+        <div style="margin-bottom:12px">
+          <div class="ep-sub" style="margin-bottom:4px">
+            Analyst context
+            <span style="font-weight:400;color:rgba(43,54,68,.5);font-size:11px;margin-left:6px">
+              — fed into the report on next rerun
+            </span>
+          </div>
+          <textarea class="deal-ctx" data-rid="{rid}"
+            onblur="saveContextNotes(this)"
+            placeholder="e.g. legal entity differs from brand; related-party loan is owner financing; Q1 actuals pending."
+            style="{_ta}">{ctx_notes_val}</textarea>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <div>
-            <div class="ep-sub" style="margin-bottom:6px">Analyst Notes</div>
+            <div class="ep-sub" style="margin-bottom:6px">
+              Deal notes
+              <span style="font-weight:400;color:rgba(43,54,68,.5);font-size:11px;margin-left:6px">— internal, not in report</span>
+            </div>
             <textarea class="deal-note" data-rid="{rid}"
               onblur="saveNote(this)"
-              placeholder="Add notes about this deal…"
-              style="width:100%;min-height:72px;resize:vertical;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12.5px;font-family:inherit;color:var(--text)">{notes_val}</textarea>
+              placeholder="Internal deal notes, next steps, red flags to track…"
+              style="{_ta}">{notes_val}</textarea>
           </div>
           <div>
             <div class="ep-sub" style="margin-bottom:6px">Ask Price</div>
@@ -1021,9 +1039,9 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
         .dot-btn {{ background:none;border:none;font-size:20px;cursor:pointer;color:var(--dark-blue);
           padding:2px 6px;border-radius:6px;line-height:1; }}
         .dot-btn:hover {{ background:rgba(43,54,68,0.08); }}
-        .dot-menu {{ display:none;position:absolute;right:0;top:100%;background:#fff;
+        .dot-menu {{ display:none;position:fixed;background:#fff;
           border:1px solid var(--border);border-radius:10px;
-          box-shadow:0 4px 16px rgba(43,54,68,0.14);min-width:170px;z-index:400;overflow:hidden; }}
+          box-shadow:0 4px 16px rgba(43,54,68,0.14);min-width:170px;z-index:9000;overflow:hidden; }}
         .dot-item {{ display:block;padding:9px 14px;font-size:13px;color:var(--dark-blue);
           text-decoration:none;cursor:pointer;white-space:nowrap; }}
         .dot-item:hover {{ background:rgba(133,187,218,0.12); }}
@@ -1508,6 +1526,17 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           }});
         }}
 
+        function saveContextNotes(el) {{
+          var rid = el.dataset.rid;
+          fetch('/admin/executive/brand-analysis/' + rid + '/context-notes', {{
+            method: 'PATCH',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{context_notes: el.value}})
+          }}).then(function(r) {{
+            if (r.ok) {{ el.style.outline = '2px solid #22c55e'; setTimeout(function() {{ el.style.outline = ''; }}, 700); }}
+          }});
+        }}
+
         function savePrice(el) {{
           var rid = el.dataset.rid;
           var dollars = parseFloat(el.value);
@@ -1551,7 +1580,15 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           var menu = btn.nextElementSibling;
           var isOpen = menu.style.display === 'block';
           document.querySelectorAll('.dot-menu').forEach(function(m) {{ m.style.display = 'none'; }});
-          if (!isOpen) menu.style.display = 'block';
+          if (!isOpen) {{
+            var r = btn.getBoundingClientRect();
+            menu.style.display = 'block';
+            // position below button, right-aligned; flip up if it would overflow viewport
+            var menuH = menu.offsetHeight;
+            var top = (r.bottom + menuH > window.innerHeight) ? r.top - menuH : r.bottom + 4;
+            menu.style.top  = top + 'px';
+            menu.style.left = (r.right - menu.offsetWidth) + 'px';
+          }}
         }}
         document.addEventListener('click', function() {{
           document.querySelectorAll('.dot-menu,.ms-panel').forEach(function(m) {{ m.style.display = 'none'; }});

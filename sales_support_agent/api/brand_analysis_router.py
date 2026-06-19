@@ -383,6 +383,18 @@ def update_deal(report_id: str, body: _DealBody) -> dict:
     return {"ok": True}
 
 
+class _ContextNotesBody(_BaseModel):
+    context_notes: str
+
+
+@router.patch("/{report_id}/context-notes")
+def update_context_notes(report_id: str, body: _ContextNotesBody) -> dict:
+    ok = storage.set_context_notes(report_id, body.context_notes)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"ok": True}
+
+
 class _CompetitiveBody(_BaseModel):
     brand_bsr: Optional[int] = None
     brand_review_count: Optional[int] = None

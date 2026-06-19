@@ -445,6 +445,18 @@ def set_notes(report_id: str, notes: str) -> bool:
         return True
 
 
+def set_context_notes(report_id: str, context_notes: str) -> bool:
+    """Persist analyst context notes (fed into LLM on rerun). Returns False if not found."""
+    from datetime import timezone
+    with _session() as s:
+        row = s.get(ReportRow, report_id)
+        if row is None:
+            return False
+        row.context_notes = context_notes
+        row.updated_at = datetime.now(timezone.utc)
+        return True
+
+
 def set_ask_price(report_id: str, cents: Optional[int]) -> bool:
     """Persist proposed ask price in cents. Returns False if not found."""
     from datetime import timezone
