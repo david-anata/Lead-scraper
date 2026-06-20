@@ -348,7 +348,7 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
         if profile_dict and pitched and any(v for v in costs.values() if v):
             profile = ProspectProfile.from_dict(profile_dict)
             margin = compute_margin(pitched, costs, profile)
-            return JSONResponse({"ok": True, "margin": margin, "pitched": pitched})
+            return JSONResponse({"ok": True, "margin": margin, "pitched": pitched, "actual_monthly": margin.get("actual_monthly")})
     return JSONResponse({"ok": True})
 
 

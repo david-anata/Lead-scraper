@@ -323,8 +323,14 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
 
         actual_cell = _fmt_usd(None)
         if costs and any(v for v in costs.values() if v):
-            # Show we have cost data (detail in expand panel)
-            actual_cell = '<span class="muted">entered ↓</span>'
+            try:
+                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+                profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
+                mg2 = compute_margin(float(pitched or 0), costs, profile_obj)
+                actual_cell = _fmt_usd(mg2["actual_monthly"])
+            except Exception:
+                actual_cell = '<span class="muted">entered ↓</span>'
 
         actions = []
         if status == "draft":
@@ -433,7 +439,7 @@ def render_fulfillment_sales_page(
           <button class="btn" type="submit">Generate rate sheet</button>
         </form>
         <h2>Pipeline</h2>
-        <p class="muted" style="margin:-6px 0 12px">Click any row to enter fulfillment costs and track margin. Stage auto-saves on change.</p>
+        <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {table}
       </div>
     </main>
@@ -463,10 +469,11 @@ def render_fulfillment_sales_page(
         body: JSON.stringify(costs)
       }}).then(r => r.json()).then(data => {{
         btn.textContent = 'Saved ✓';
+        var fmt = v => '$' + Math.abs(v).toLocaleString('en-US', {{maximumFractionDigits:0}});
         if (data.margin) {{
           var mg = data.margin;
           var sign = mg.monthly_margin >= 0 ? 'pos' : 'neg';
-          var fmt = v => '$' + Math.abs(v).toLocaleString('en-US', {{maximumFractionDigits:0}});
+          // Update expand panel margin card
           var card = document.getElementById('margin-' + runId);
           if (card) card.innerHTML =
             '<div class="big big--' + sign + '">' + (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) +
@@ -476,6 +483,25 @@ def render_fulfillment_sales_page(
             '<div class="margin-line"><span>Storage actual</span><span>−' + fmt(mg.actual_storage) + '</span></div>' +
             '<div class="margin-line"><span>Tech fee actual</span><span>−' + fmt(mg.actual_tech_fee) + '</span></div>' +
             '<div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>' + (mg.annual_margin < 0 ? '−' : '') + fmt(mg.annual_margin) + '</span></div>';
+          // Update table row cells (actual cost + margin columns)
+          var expandRow = document.getElementById('expand-' + runId);
+          var prospectRow = expandRow ? expandRow.previousElementSibling : null;
+          if (prospectRow) {{
+            var tds = prospectRow.querySelectorAll('td');
+            if (tds[4] && data.actual_monthly != null) tds[4].textContent = fmt(data.actual_monthly);
+            if (tds[5]) {{
+              var sc = mg.monthly_margin >= 0 ? '#15803d' : '#b91c1c';
+              tds[5].innerHTML = '<span style="color:' + sc + ';font-weight:700">' +
+                (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) + '</span>' +
+                '<div class="muted">' + mg.margin_pct + '%</div>';
+            }}
+            // Auto-advance stage to Costs Received if still at an early stage
+            var stageSelect = prospectRow.querySelector('select');
+            if (stageSelect && (stageSelect.value === 'intake' || stageSelect.value === 'pending_fulfillment')) {{
+              stageSelect.value = 'costs_received';
+              pipelineStage(stageSelect, runId);
+            }}
+          }}
         }}
         setTimeout(() => btn.textContent = 'Save costs', 2000);
       }}).catch(() => {{ btn.textContent = 'Error — retry'; }});
