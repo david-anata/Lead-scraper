@@ -130,10 +130,10 @@ def _grade_social_oppty(social_handles: dict, signals: dict) -> tuple[str, str, 
 
     # Aggregate known follower counts for audience sizing
     _FOLLOWER_KEYS = {
-        "instagram": "ig_followers",
-        "tiktok":    "tt_followers",
-        "facebook":  "fb_followers",
-        "youtube":   "yt_subscribers",
+        "instagram": "instagram_followers",
+        "tiktok":    "tiktok_followers",
+        "facebook":  "facebook_followers",
+        "youtube":   "youtube_subscribers",
     }
 
     def _fmt(n: int) -> str:
