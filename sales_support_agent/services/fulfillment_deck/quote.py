@@ -475,3 +475,59 @@ def build_fulfillment_quote(
         # One-time fees: listed transparently, never in the monthly total.
         "one_time": [dict(fee) for fee in ONE_TIME_FEES],
     }
+
+
+# ---------------------------------------------------------------------------
+# Pipeline margin helpers (two-sided pricing: what we pitch vs. actual cost)
+# ---------------------------------------------------------------------------
+
+
+def estimate_pallets_mo(profile: ProspectProfile) -> float:
+    """Estimate pallets stored per month from the prospect profile.
+
+    Uses the same units-per-pallet logic as the quote engine so numbers
+    are consistent across the quote and the pipeline margin view.
+    """
+    total_units = sum((p.monthly_units or 0) for p in profile.products)
+    if not total_units and profile.monthly_order_volume:
+        total_units = profile.monthly_order_volume
+    if not total_units:
+        return 0.0
+    upp = _units_per_pallet(profile)
+    return round(total_units / upp, 2) if upp else 0.0
+
+
+def compute_margin(
+    pitched_monthly: float,
+    actual_costs: dict,
+    profile: ProspectProfile,
+) -> dict:
+    """Compute monthly margin: pitched monthly total minus actual warehouse cost.
+
+    actual_costs keys: pick_pack_per_order, storage_per_pallet_mo,
+    monthly_tech_fee (receiving is irregular — excluded from monthly).
+    Returns a dict with the breakdown plus margin_pct and annual_margin.
+    """
+    pick_pack = float(actual_costs.get("pick_pack_per_order") or 0)
+    storage = float(actual_costs.get("storage_per_pallet_mo") or 0)
+    tech_fee = float(actual_costs.get("monthly_tech_fee") or 0)
+    orders = profile.monthly_order_volume or 0
+    pallets = estimate_pallets_mo(profile)
+    actual_pp = round(pick_pack * orders, 2)
+    actual_st = round(storage * pallets, 2)
+    actual_monthly = round(actual_pp + actual_st + tech_fee, 2)
+    monthly_margin = round(pitched_monthly - actual_monthly, 2)
+    margin_pct = (
+        round(monthly_margin / pitched_monthly * 100, 1) if pitched_monthly > 0 else 0.0
+    )
+    return {
+        "actual_pick_pack": actual_pp,
+        "actual_storage": actual_st,
+        "actual_tech_fee": round(tech_fee, 2),
+        "actual_monthly": actual_monthly,
+        "monthly_margin": monthly_margin,
+        "annual_margin": round(monthly_margin * 12, 2),
+        "margin_pct": margin_pct,
+        "orders": orders,
+        "pallets_mo": pallets,
+    }

@@ -139,7 +139,7 @@ def get_run(run_id: int) -> Optional[AutomationRun]:
 
 
 def list_runs(limit: int = 100) -> list[dict]:
-    """Slim rows for the History table, newest first."""
+    """Slim rows for the pipeline table, newest first."""
     with _session() as s:
         rows = (
             s.execute(
@@ -154,6 +154,16 @@ def list_runs(limit: int = 100) -> list[dict]:
         out: list[dict] = []
         for r in rows:
             summary = dict(r.summary_json or {})
+            prospect_profile = dict(summary.get("prospect_profile") or {})
+            fulfillment_quote = dict(summary.get("fulfillment_quote") or {})
+            pitched_monthly = float(fulfillment_quote.get("monthly_total") or 0) or None
+            monthly_order_volume = None
+            vol_raw = prospect_profile.get("monthly_order_volume")
+            if vol_raw is not None:
+                try:
+                    monthly_order_volume = int(vol_raw)
+                except (TypeError, ValueError):
+                    pass
             out.append(
                 {
                     "id": int(r.id),
@@ -170,9 +180,31 @@ def list_runs(limit: int = 100) -> list[dict]:
                     "view_path": str(summary.get("view_path") or ""),
                     "warnings": list(summary.get("warnings") or []),
                     "error": str(summary.get("error") or ""),
+                    # Pipeline fields
+                    "pipeline_stage": str(summary.get("pipeline_stage") or "intake"),
+                    "pipeline_notes": str(summary.get("pipeline_notes") or ""),
+                    "fulfillment_actual_costs": dict(
+                        summary.get("fulfillment_actual_costs") or {}
+                    ),
+                    "monthly_order_volume": monthly_order_volume,
+                    "pitched_monthly": pitched_monthly,
+                    # Raw profile stored for the expand panel brief + margin calc
+                    "prospect_profile": prospect_profile,
                 }
             )
         return out
+
+
+def update_stage(run_id: int, stage: str) -> bool:
+    return update_summary(run_id, {"pipeline_stage": stage})
+
+
+def update_costs(run_id: int, costs: dict) -> bool:
+    return update_summary(run_id, {"fulfillment_actual_costs": costs})
+
+
+def update_notes(run_id: int, notes: str) -> bool:
+    return update_summary(run_id, {"pipeline_notes": notes})
 
 
 def delete_run(run_id: int) -> bool:

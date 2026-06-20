@@ -14,6 +14,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
+from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
 from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ADDRESS,
     ANATA_HQ_ZIP,
@@ -80,6 +81,48 @@ _STYLES = """
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
       @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+      /* Pipeline table */
+      .prospect-row { cursor: pointer; }
+      .prospect-row:hover td { background: rgba(133,187,218,0.07); }
+      .stage-select {
+        appearance: none; -webkit-appearance: none; border: none; border-radius: 999px;
+        padding: 3px 10px; font-size: 11px; font-weight: 700;
+        font-family: "Montserrat", sans-serif; letter-spacing: 0.03em; cursor: pointer;
+      }
+      .stage--intake        { background: #e2e8f0; color: #475569; }
+      .stage--pending_fulfillment { background: #e0f2fe; color: #0369a1; }
+      .stage--costs_received { background: #ede9fe; color: #6d28d9; }
+      .stage--published     { background: #fef3c7; color: #b45309; }
+      .stage--won           { background: #dcfce7; color: #15803d; }
+      .stage--lost          { background: #f1f5f9; color: #94a3b8; }
+      .expand-row td { padding: 0; border-bottom: 2px solid var(--border); }
+      .expand-panel {
+        padding: 18px 22px 22px; background: rgba(133,187,218,0.06);
+        display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+      }
+      .expand-panel h3 { font-family: "Montserrat", sans-serif; font-size: 12px;
+        font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+        color: rgba(43,54,68,0.55); margin: 0 0 10px; }
+      .cost-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+      .cost-grid label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 2px; }
+      .cost-grid input { width: 100%; min-height: 34px; padding: 0 10px;
+        border-radius: 8px; border: 1px solid var(--border); font-size: 13px; }
+      .margin-card { background: #fff; border: 1px solid var(--border); border-radius: 12px;
+        padding: 12px 16px; margin-top: 10px; font-size: 13px; }
+      .margin-card .big { font-size: 22px; font-weight: 800;
+        font-family: "Montserrat", sans-serif; }
+      .margin-card .big--pos { color: #15803d; }
+      .margin-card .big--neg { color: #b91c1c; }
+      .margin-line { display: flex; justify-content: space-between;
+        padding: 3px 0; border-bottom: 1px solid rgba(43,54,68,0.07); font-size: 12px; }
+      .margin-line:last-child { border: none; }
+      .expand-notes { width: 100%; min-height: 70px; padding: 8px 10px;
+        border-radius: 8px; border: 1px solid var(--border); font-size: 13px;
+        font-family: inherit; resize: vertical; }
+      @media (max-width: 900px) {
+        .expand-panel { grid-template-columns: 1fr; }
+        .grid2 { grid-template-columns: 1fr; }
+      }
 """
 
 
@@ -95,49 +138,225 @@ def _fmt_duration(seconds: int) -> str:
     return f"{hours}h {minutes:02d}m"
 
 
+_STAGE_LABELS = {
+    "intake": "Intake",
+    "pending_fulfillment": "Sent to Fulfillment",
+    "costs_received": "Costs Received",
+    "published": "Published",
+    "won": "Won",
+    "lost": "Lost",
+}
+
+_STAGE_OPTIONS = "".join(
+    f'<option value="{k}">{v}</option>' for k, v in _STAGE_LABELS.items()
+)
+
+
+def _stage_select(run_id: int, current: str) -> str:
+    options = "".join(
+        f'<option value="{k}" {"selected" if k == current else ""}>{v}</option>'
+        for k, v in _STAGE_LABELS.items()
+    )
+    return (
+        f'<select class="stage-select stage--{_esc(current)}" '
+        f'onclick="event.stopPropagation()" '
+        f'onchange="pipelineStage(this,{run_id})">{options}</select>'
+    )
+
+
+def _fmt_usd(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"${float(value):,.0f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _build_brief(run: dict) -> str:
+    """Plain-text fulfillment brief for clipboard copy."""
+    profile = run.get("prospect_profile") or {}
+    name = run.get("prospect") or run.get("design_title") or f"Run {run.get('id')}"
+    origin = run.get("origin_zip") or "—"
+    vol = run.get("monthly_order_volume")
+    vol_str = f"{vol:,} orders/mo" if vol else "—"
+    products = profile.get("products") or []
+    prod_lines = []
+    for p in products[:6]:
+        pname = p.get("name") or "Product"
+        l_, w_, h_, wt = (
+            p.get("length_in"), p.get("width_in"),
+            p.get("height_in"), p.get("weight_lb"),
+        )
+        units = p.get("monthly_units")
+        dims = f"{l_}×{w_}×{h_}in" if None not in (l_, w_, h_) else "dims unknown"
+        weight = f"{wt}lb" if wt else ""
+        u_str = f" × {units:,} units/mo" if units else ""
+        prod_lines.append(f"  {pname} ({dims}{', ' + weight if weight else ''}{u_str})")
+    products_str = "\n".join(prod_lines) if prod_lines else "  (no products)"
+    fragile = any(p.get("fragile") for p in products)
+    cat = (products[0].get("product_category") or "unknown") if products else "unknown"
+    return (
+        f"Prospect: {name} | Origin ZIP: {origin} | Volume: {vol_str}\n"
+        f"Products:\n{products_str}\n"
+        f"Category: {cat} | Fragile: {'yes' if fragile else 'no'}"
+    )
+
+
+def _expand_panel(run: dict) -> str:
+    """Collapsible expand panel for cost entry, margin, notes, brief."""
+    run_id = int(run.get("id") or 0)
+    costs = run.get("fulfillment_actual_costs") or {}
+    notes = _esc(run.get("pipeline_notes") or "")
+    pitched = run.get("pitched_monthly")
+
+    def _cv(key: str) -> str:
+        v = costs.get(key)
+        return f"{v:g}" if v is not None else ""
+
+    # Pre-compute margin if costs are present
+    margin_html = ""
+    if costs and pitched and any(v for v in costs.values() if v):
+        try:
+            from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+            from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+            profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
+            mg = compute_margin(float(pitched), costs, profile_obj)
+            sign = "pos" if mg["monthly_margin"] >= 0 else "neg"
+            margin_html = f"""
+            <div class="margin-card" id="margin-{run_id}">
+              <div class="big big--{sign}">{_fmt_usd(mg['monthly_margin'])}<span style="font-size:14px;font-weight:400">/mo ({mg['margin_pct']}%)</span></div>
+              <div class="margin-line"><span>Pitched monthly</span><span>{_fmt_usd(pitched)}</span></div>
+              <div class="margin-line"><span>Pick &amp; pack actual</span><span>−{_fmt_usd(mg['actual_pick_pack'])}</span></div>
+              <div class="margin-line"><span>Storage actual</span><span>−{_fmt_usd(mg['actual_storage'])}</span></div>
+              <div class="margin-line"><span>Tech fee actual</span><span>−{_fmt_usd(mg['actual_tech_fee'])}</span></div>
+              <div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>{_fmt_usd(mg['annual_margin'])}</span></div>
+            </div>"""
+        except Exception:
+            margin_html = f'<div class="margin-card" id="margin-{run_id}"></div>'
+    else:
+        margin_html = f'<div class="margin-card" id="margin-{run_id}" style="color:rgba(43,54,68,0.45);font-size:12px">Enter actual costs above to see margin.</div>'
+
+    brief_text = html.escape(_build_brief(run), quote=True)
+
+    return f"""
+    <div class="expand-panel">
+      <div>
+        <h3>Fulfillment Team Costs</h3>
+        <div class="cost-grid">
+          <div><label>Pick &amp; pack ($/order)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['dtc_base_per_order']:.2f}"
+              id="pp-{run_id}" value="{_cv('pick_pack_per_order')}"></div>
+          <div><label>Storage ($/pallet/mo)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:.2f}"
+              id="st-{run_id}" value="{_cv('storage_per_pallet_mo')}"></div>
+          <div><label>Receiving ($/pallet)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_per_pallet']:.2f}"
+              id="rc-{run_id}" value="{_cv('receiving_per_pallet')}"></div>
+          <div><label>Tech fee ($/mo)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['monthly_tech_fee']:.2f}"
+              id="tf-{run_id}" value="{_cv('monthly_tech_fee')}"></div>
+        </div>
+        <button class="btn btn--ghost" style="margin-top:10px" type="button"
+          onclick="pipelineCosts(this,{run_id})">Save costs</button>
+        {margin_html}
+      </div>
+      <div>
+        <h3>Internal Notes</h3>
+        <textarea class="expand-notes" placeholder="Call notes, deal context, next steps…"
+          oninput="pipelineNotesDebounce(this,{run_id})">{notes}</textarea>
+        <h3 style="margin-top:14px">Fulfillment Brief</h3>
+        <p class="muted" style="margin:0 0 6px">Copy and share with the warehouse team for costing.</p>
+        <button class="btn btn--ghost" type="button"
+          onclick="navigator.clipboard.writeText('{brief_text}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+      </div>
+    </div>"""
+
+
 def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
     rows = []
     for run in runs:
         run_id = int(run.get("id") or 0)
-        started = str(run.get("started_at") or "")[:16].replace("T", " ")
+        started = str(run.get("started_at") or "")[:10]
         prospect = _esc(run.get("prospect") or run.get("design_title") or f"Run {run_id}")
         status = str(run.get("status") or "")
         view_path = str(run.get("view_path") or "")
         published = bool(run.get("published")) and status == "completed"
         review_path = f"/admin/fulfillment/sales/runs/{run_id}/review"
+        stage = str(run.get("pipeline_stage") or "intake")
+        vol = run.get("monthly_order_volume")
+        pitched = run.get("pitched_monthly")
+        costs = run.get("fulfillment_actual_costs") or {}
+
+        # Rates source pill (small, inside prospect cell)
         if status == "failed":
-            source_pill = '<span class="pill pill--failed">Failed</span>'
+            source_pill = '<span class="pill pill--failed" style="font-size:10px">Failed</span>'
         elif status == "draft":
-            source_pill = '<span class="pill pill--draft">Draft</span>'
+            source_pill = '<span class="pill pill--draft" style="font-size:10px">Draft</span>'
         elif str(run.get("rates_source")) == RATE_SOURCE_WMS:
-            source_pill = '<span class="pill pill--live">Live rates</span>'
+            source_pill = '<span class="pill pill--live" style="font-size:10px">Live</span>'
         else:
-            source_pill = '<span class="pill pill--sample">Sample rates</span>'
+            source_pill = '<span class="pill pill--sample" style="font-size:10px">Sample</span>'
+
+        # Engagement
         stats = engagement.get(run_id) or {}
         ext = int(stats.get("external_sessions") or 0)
-        total_secs = int(stats.get("total_seconds") or 0)
-        views = f"{ext} visit{'s' if ext != 1 else ''} · {_fmt_duration(total_secs)}" if ext else "—"
-        sections = len(run.get("sections_included") or [])
+        views_str = f"{ext}v" if ext else "—"
+
+        # Margin column
+        if costs and pitched and any(v for v in costs.values() if v):
+            try:
+                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+                profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
+                mg = compute_margin(float(pitched), costs, profile_obj)
+                sign_color = "#15803d" if mg["monthly_margin"] >= 0 else "#b91c1c"
+                margin_cell = (
+                    f'<span style="color:{sign_color};font-weight:700">'
+                    f'{_fmt_usd(mg["monthly_margin"])}</span>'
+                    f'<div class="muted">{mg["margin_pct"]}%</div>'
+                )
+            except Exception:
+                margin_cell = "—"
+        else:
+            margin_cell = '<span class="muted">—</span>'
+
+        actual_cell = _fmt_usd(None)
+        if costs and any(v for v in costs.values() if v):
+            # Show we have cost data (detail in expand panel)
+            actual_cell = '<span class="muted">entered ↓</span>'
+
         actions = []
         if status == "draft":
-            actions.append(f'<a class="btn btn--ghost" href="{review_path}">Review</a>')
+            actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Review</a>')
         elif view_path and published:
-            actions.append(f'<a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>')
+            actions.append(f'<a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Open</a>')
             actions.append(
-                f'<button class="btn btn--ghost" type="button" '
-                f"onclick=\"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Copy link</button>"
+                f'<button class="btn btn--ghost" type="button" onclick="event.stopPropagation();'
+                f"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Share</button>"
             )
-            actions.append(f'<a class="btn btn--ghost" href="{review_path}">Review / edit</a>')
+            actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Edit</a>')
         actions.append(
             f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/delete" '
-            f"style=\"display:inline\" onsubmit=\"return confirm('Delete this rate sheet? The public link will stop working.');\">"
+            f'style="display:inline" onclick="event.stopPropagation()" '
+            f"onsubmit=\"return confirm('Delete this rate sheet? The public link will stop working.');\">"
             f'<button class="btn btn--danger" type="submit">Delete</button></form>'
         )
+
+        vol_str = f"{vol:,}" if vol else "—"
         rows.append(
-            f"<tr><td>{_esc(started)}</td><td><strong>{prospect}</strong>"
-            f"<div class='muted'>{sections} sections</div></td>"
-            f"<td>{_esc(run.get('origin_zip') or '')}</td><td>{source_pill}</td>"
-            f"<td>{_esc(views)}</td><td><div class='row-actions'>{''.join(actions)}</div></td></tr>"
+            f'<tr class="prospect-row" onclick="toggleExpand(event,\'expand-{run_id}\')">'
+            f"<td><strong>{prospect}</strong> {source_pill}"
+            f"<div class='muted'>{started}</div></td>"
+            f"<td>{_stage_select(run_id, stage)}</td>"
+            f"<td>{vol_str}</td>"
+            f"<td>{_fmt_usd(pitched)}</td>"
+            f"<td>{actual_cell}</td>"
+            f"<td>{margin_cell}</td>"
+            f"<td>{views_str}</td>"
+            f"<td><div class='row-actions'>{''.join(actions)}</div></td></tr>"
+            f'<tr class="expand-row" id="expand-{run_id}" style="display:none">'
+            f'<td colspan="8">{_expand_panel(run)}</td></tr>'
         )
     return "".join(rows)
 
@@ -156,8 +375,11 @@ def render_fulfillment_sales_page(
         else ""
     )
     table = (
-        "<table><thead><tr><th>Created</th><th>Prospect</th><th>Origin</th><th>Rates</th>"
-        "<th>Engagement</th><th>Actions</th></tr></thead>"
+        "<table><thead><tr>"
+        "<th>Prospect</th><th>Stage</th><th>Vol/mo</th>"
+        "<th>Pitched $/mo</th><th>Actual cost</th><th>Margin</th>"
+        "<th>Views</th><th>Actions</th>"
+        "</tr></thead>"
         f"<tbody>{_history_rows(runs, engagement)}</tbody></table>"
         if runs
         else '<p class="empty">No rate sheets generated yet — the first one will appear here with its shareable link.</p>'
@@ -210,10 +432,65 @@ def render_fulfillment_sales_page(
           </div>
           <button class="btn" type="submit">Generate rate sheet</button>
         </form>
-        <h2>History</h2>
+        <h2>Pipeline</h2>
+        <p class="muted" style="margin:-6px 0 12px">Click any row to enter fulfillment costs and track margin. Stage auto-saves on change.</p>
         {table}
       </div>
     </main>
+    <script>
+    function toggleExpand(e, id) {{
+      if (e.target.closest('select,button,a,form,input')) return;
+      var row = document.getElementById(id);
+      if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+    }}
+    function pipelineStage(sel, runId) {{
+      sel.className = 'stage-select stage--' + sel.value;
+      fetch('/admin/fulfillment/sales/runs/' + runId + '/stage', {{
+        method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{stage: sel.value}})
+      }});
+    }}
+    function pipelineCosts(btn, runId) {{
+      var costs = {{
+        pick_pack_per_order:  parseFloat(document.getElementById('pp-'+runId).value) || null,
+        storage_per_pallet_mo: parseFloat(document.getElementById('st-'+runId).value) || null,
+        receiving_per_pallet: parseFloat(document.getElementById('rc-'+runId).value) || null,
+        monthly_tech_fee:     parseFloat(document.getElementById('tf-'+runId).value) || null,
+      }};
+      btn.textContent = 'Saving…';
+      fetch('/admin/fulfillment/sales/runs/' + runId + '/costs', {{
+        method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify(costs)
+      }}).then(r => r.json()).then(data => {{
+        btn.textContent = 'Saved ✓';
+        if (data.margin) {{
+          var mg = data.margin;
+          var sign = mg.monthly_margin >= 0 ? 'pos' : 'neg';
+          var fmt = v => '$' + Math.abs(v).toLocaleString('en-US', {{maximumFractionDigits:0}});
+          var card = document.getElementById('margin-' + runId);
+          if (card) card.innerHTML =
+            '<div class="big big--' + sign + '">' + (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) +
+            '/mo (' + mg.margin_pct + '%)</div>' +
+            '<div class="margin-line"><span>Pitched monthly</span><span>' + fmt(data.pitched) + '</span></div>' +
+            '<div class="margin-line"><span>Pick &amp; pack actual</span><span>−' + fmt(mg.actual_pick_pack) + '</span></div>' +
+            '<div class="margin-line"><span>Storage actual</span><span>−' + fmt(mg.actual_storage) + '</span></div>' +
+            '<div class="margin-line"><span>Tech fee actual</span><span>−' + fmt(mg.actual_tech_fee) + '</span></div>' +
+            '<div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>' + (mg.annual_margin < 0 ? '−' : '') + fmt(mg.annual_margin) + '</span></div>';
+        }}
+        setTimeout(() => btn.textContent = 'Save costs', 2000);
+      }}).catch(() => {{ btn.textContent = 'Error — retry'; }});
+    }}
+    var _noteTimers = {{}};
+    function pipelineNotesDebounce(el, runId) {{
+      clearTimeout(_noteTimers[runId]);
+      _noteTimers[runId] = setTimeout(() => {{
+        fetch('/admin/fulfillment/sales/runs/' + runId + '/notes', {{
+          method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{notes: el.value}})
+        }});
+      }}, 900);
+    }}
+    </script>
   </body>
 </html>"""
 

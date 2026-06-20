@@ -292,6 +292,79 @@ def delete_run(run_id: int) -> RedirectResponse:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline: stage / costs / notes PATCH endpoints (JSON, no page reload)
+# ---------------------------------------------------------------------------
+
+_VALID_STAGES = {"intake", "pending_fulfillment", "costs_received", "published", "won", "lost"}
+
+
+@admin_router.patch("/runs/{run_id}/stage")
+async def patch_stage(run_id: int, request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": "invalid JSON"})
+    stage = str(body.get("stage") or "").strip()
+    if stage not in _VALID_STAGES:
+        return JSONResponse(status_code=400, content={"error": f"unknown stage: {stage}"})
+    if not storage.update_stage(run_id, stage):
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return JSONResponse({"ok": True})
+
+
+@admin_router.patch("/runs/{run_id}/costs")
+async def patch_costs(run_id: int, request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": "invalid JSON"})
+
+    def _f(key: str):
+        v = body.get(key)
+        if v in (None, ""):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    costs = {
+        "pick_pack_per_order": _f("pick_pack_per_order"),
+        "storage_per_pallet_mo": _f("storage_per_pallet_mo"),
+        "receiving_per_pallet": _f("receiving_per_pallet"),
+        "monthly_tech_fee": _f("monthly_tech_fee"),
+    }
+    if not storage.update_costs(run_id, costs):
+        return JSONResponse(status_code=404, content={"error": "not found"})
+
+    # Return computed margin so the UI can update without a reload.
+    run = storage.get_run(run_id)
+    if run is not None:
+        from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+        from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+        summary = dict(run.summary_json or {})
+        profile_dict = summary.get("prospect_profile") or {}
+        pitched = float((summary.get("fulfillment_quote") or {}).get("monthly_total") or 0)
+        if profile_dict and pitched and any(v for v in costs.values() if v):
+            profile = ProspectProfile.from_dict(profile_dict)
+            margin = compute_margin(pitched, costs, profile)
+            return JSONResponse({"ok": True, "margin": margin, "pitched": pitched})
+    return JSONResponse({"ok": True})
+
+
+@admin_router.patch("/runs/{run_id}/notes")
+async def patch_notes(run_id: int, request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": "invalid JSON"})
+    notes = str(body.get("notes") or "")[:2000]
+    if not storage.update_notes(run_id, notes):
+        return JSONResponse(status_code=404, content={"error": "not found"})
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Public hosted view + engagement heartbeat (token-gated, no session)
 # ---------------------------------------------------------------------------
 
