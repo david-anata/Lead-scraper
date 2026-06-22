@@ -701,6 +701,28 @@ def render_rate_sheet_review_page(
     # happens here, before publish.
     assortment_html = _assortment_hint(profile)
 
+    # Fulfillment brief — shown on review page so the rep can send it to the
+    # warehouse team right away, before or after publishing the rate sheet.
+    review_brief_run = {
+        "id": run_id,
+        "prospect": summary.get("prospect") or summary.get("design_title"),
+        "origin_zip": summary.get("origin_zip"),
+        "monthly_order_volume": profile.get("monthly_order_volume"),
+        "prospect_profile": profile,
+    }
+    review_brief_text = _build_brief(review_brief_run)
+    review_brief_json = json.dumps(review_brief_text)
+    brief_block = f"""
+    <div class="flash" style="background:rgba(133,187,218,0.08);border-color:rgba(133,187,218,0.4);margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px">
+        <strong>Fulfillment Brief</strong>
+        <button class="btn btn--ghost" type="button" style="flex-shrink:0"
+          onclick="navigator.clipboard.writeText({review_brief_json});this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+      </div>
+      <pre style="margin:0;font-family:inherit;font-size:12.5px;white-space:pre-wrap;color:rgba(43,54,68,0.75);line-height:1.55">{_esc(review_brief_text)}</pre>
+      <p class="muted" style="margin:8px 0 0;font-size:12px">Share with the warehouse team to get a cost quote — paste into email or Slack.</p>
+    </div>"""
+
     monthly_volume = profile.get("monthly_order_volume")
     current_cost = profile.get("current_cost_per_parcel_usd")
     volume_basis = str(profile.get("volume_basis") or "").strip()
@@ -748,6 +770,7 @@ def render_rate_sheet_review_page(
         {publish_block}
         {warnings_html}
         {assortment_html}
+        {brief_block}
         <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>
 
         <h2>Prospect details</h2>
