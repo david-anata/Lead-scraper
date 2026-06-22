@@ -146,46 +146,76 @@ def _goals_fields(goals: Optional[Goals]) -> str:
       </div>"""
 
 
-# (name, ext, where-text, why, deep-link URL)
+# (priority, name, ext, where-path, why-one-liner, deep-link URL)
+# Priority tiers drive the badge + sort order: required → recommended → optional.
 _DOWNLOAD_GUIDE_ROWS = [
-    ("Ads performance reports", ".csv", "Ads Console → <strong>Reports</strong> → run the <strong>Search term</strong>, <strong>Advertised product</strong> &amp; <strong>Targeting</strong> templates → export CSV",
-     "<strong>Core.</strong> Drives the whole burn list + ACoS/TACoS. The Search term report powers negatives &amp; keyword harvest; Advertised product gives the spend totals. Drop all of them in.",
-     "https://advertising.amazon.com/reports"),
-    ("Business Report — Sales &amp; Traffic", ".csv", "<strong>Seller Central</strong> → Reports → Business Reports → <strong>By ASIN → Detail Page Sales and Traffic By Child Item</strong>",
-     "<strong>Core.</strong> Per child-ASIN sessions, units, conversion, total sales → TACoS + gap-to-goal. Use the Child Item one (not By Date / By Parent).",
-     "https://sellercentral.amazon.com/business-reports"),
-    ("Targeting report (for bid changes)", ".csv", "Ads Console → Reports → <strong>Targeting</strong> template (Sponsored Products) → export CSV",
-     "Unlocks <strong>bid-change rows</strong> in the apply sheet (retune existing keyword bids) — carries the Keyword IDs the negatives/harvests don't.",
-     "https://advertising.amazon.com/reports"),
-    ("Ads bulk-operations file", ".xlsx", "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet (<strong>custom date range</strong>) → Download",
-     "Adds <strong>bid-change rows</strong> to the apply sheet (raise/lower existing keyword bids) — it carries the Keyword IDs the reports don't. Brand-scoped &amp; cross-brand-safe. Its own area — not the Reports page.",
-     "https://advertising.amazon.com/bulk-operations"),
-    ("Per-ASIN COGS", ".csv / .xlsx", "Your own file — <strong>ASIN, COGS</strong> (optionally FBA Fee, Referral Fee) — or a margins sheet keyed by product name (auto-matched to ASINs).",
-     "Makes it <strong>profit-true</strong>: real break-even ACoS per SKU instead of an ACoS proxy. Persists across runs — upload once.",
-     ""),
-    ("Brand Analytics — Search Query Performance", ".csv", "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
-     "Optional — market-share context.",
-     "https://sellercentral.amazon.com/brand-analytics"),
-    ("DSP performance", ".csv", "Amazon DSP console → Reports (name the file with “DSP”)",
-     "Optional — campaign-level; lands as manual tasks.",
-     "https://advertising.amazon.com/dsp"),
+    ("required", "Ads performance reports", ".csv",
+     "Ads Console → Reports → <strong>Search term</strong> + <strong>Advertised product</strong> templates",
+     "Drives the burn list — negatives, harvests, ACoS/TACoS.", "https://advertising.amazon.com/reports"),
+    ("required", "Business Report", ".csv",
+     "Seller Central → Business Reports → <strong>By ASIN · Detail Page Sales &amp; Traffic By Child Item</strong>",
+     "Per-ASIN sales + conversion → TACoS &amp; gap-to-goal.", "https://sellercentral.amazon.com/business-reports"),
+    ("recommended", "Bulk-operations file", ".xlsx",
+     "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet",
+     "Unlocks the ⬇ Bids &amp; ⬇ Additions apply sheets (carries the IDs).", "https://advertising.amazon.com/bulk-operations"),
+    ("recommended", "Per-ASIN COGS", ".csv",
+     "Your own <strong>ASIN, COGS</strong> file (or a margins sheet by product name)",
+     "Profit-true break-even ACoS per SKU. Upload once.", ""),
+    ("optional", "Targeting report", ".csv",
+     "Ads Console → Reports → <strong>Targeting</strong> template (SP)",
+     "Bid changes when you don't have the bulk file.", "https://advertising.amazon.com/reports"),
+    ("optional", "Brand Analytics (SQP)", ".csv",
+     "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
+     "Market-share context.", "https://sellercentral.amazon.com/brand-analytics"),
+    ("optional", "DSP performance", ".csv",
+     "Amazon DSP → Reports (name the file “DSP”)",
+     "Campaign-level; lands as manual tasks.", "https://advertising.amazon.com/dsp"),
 ]
+
+_DL_GUIDE_STYLES = """
+<style>
+  .dl-tip { margin: 8px 0 14px; font-size: 13px; color: rgba(43,54,68,0.72); line-height: 1.5; }
+  .dl-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .dl-item { display: grid; grid-template-columns: 104px minmax(0,1fr) auto; gap: 12px; align-items: center;
+    padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--white); }
+  .dl-item:hover { background: #fafbfc; }
+  .dl-prio { justify-self: start; font-family: "Montserrat",sans-serif; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.03em; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+  .dl-prio.required { background: var(--dark-blue); color: #fff; }
+  .dl-prio.recommended { background: var(--light-blue); color: var(--dark-blue); }
+  .dl-prio.optional { background: #eef2f5; color: rgba(43,54,68,0.6); }
+  .dl-name { font-weight: 600; font-size: 14px; }
+  .dl-name .pill { font-size: 10px; margin-left: 2px; }
+  .dl-why { font-size: 12.5px; color: rgba(43,54,68,0.7); margin-top: 1px; }
+  .dl-where { font-size: 12px; color: rgba(43,54,68,0.55); margin-top: 3px; line-height: 1.45; }
+  @media (max-width: 720px) {
+    .dl-item { grid-template-columns: 1fr; gap: 4px; }
+    .dl-open { justify-self: start; margin-top: 4px; }
+  }
+</style>
+"""
 
 
 def _download_guide() -> str:
     def _link(url):
-        return (f' <a class="golink" href="{url}" target="_blank" rel="noopener">Open ↗</a>') if url else ""
-    rows = "".join(
-        f"<tr><td><strong>{name}</strong> <span class='pill'>{ext}</span></td>"
-        f"<td>{where}{_link(url)}</td><td class='empty'>{why}</td></tr>"
-        for name, ext, where, why, url in _DOWNLOAD_GUIDE_ROWS
+        return (f'<a class="golink" href="{url}" target="_blank" rel="noopener">Open ↗</a>') if url else ""
+    items = "".join(
+        f'<li class="dl-item">'
+        f'<span class="dl-prio {prio}">{prio}</span>'
+        f'<div><div class="dl-name">{name} <span class="pill">{ext}</span></div>'
+        f'<div class="dl-why">{why}</div>'
+        f'<div class="dl-where">{where}</div></div>'
+        f'<div class="dl-open">{_link(url)}</div>'
+        f'</li>'
+        for prio, name, ext, where, why, url in _DOWNLOAD_GUIDE_ROWS
     )
     return f"""
     <details class="guide">
-      <summary>📥 What to download from Amazon (exact paths + links)</summary>
-      <p class="empty" style="margin:10px 0;">Use the <strong>same trailing date window</strong> for every report (e.g. last 30 or 60 days)
-      and <strong>end it yesterday, not today</strong> — today's data is incomplete and skews ACoS. Click <strong>Open ↗</strong> to jump straight to each report, then drop the files in the box above; the tool detects each.</p>
-      <table class="burn"><thead><tr><th>Report</th><th>Where to get it</th><th>Why</th></tr></thead><tbody>{rows}</tbody></table>
+      <summary>📥 What to download from Amazon</summary>
+      {_DL_GUIDE_STYLES}
+      <p class="dl-tip">Use the <strong>same trailing window</strong> for every file (e.g. last 30 days) and
+      <strong>end it yesterday</strong> — today's data is incomplete. Drop them all in the box above; the tool detects each.</p>
+      <ul class="dl-list">{items}</ul>
     </details>
     """
 
