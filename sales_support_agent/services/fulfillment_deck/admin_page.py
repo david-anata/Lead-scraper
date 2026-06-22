@@ -7,6 +7,7 @@ so it reads as a sibling tool.
 from __future__ import annotations
 
 import html
+from datetime import datetime
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -337,7 +338,11 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
     rows = []
     for run in runs:
         run_id = int(run.get("id") or 0)
-        started = str(run.get("started_at") or "")[:10]
+        started_raw = str(run.get("started_at") or "")[:10]
+        try:
+            started = datetime.strptime(started_raw, "%Y-%m-%d").strftime("%b %-d")
+        except ValueError:
+            started = started_raw
         prospect = _esc(run.get("prospect") or run.get("design_title") or f"Run {run_id}")
         status = str(run.get("status") or "")
         view_path = str(run.get("view_path") or "")
@@ -363,34 +368,25 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         ext = int(stats.get("external_sessions") or 0)
         views_str = f"{ext}v" if ext else "—"
 
-        # Margin column
-        if costs and pitched and any(v for v in costs.values() if v):
-            try:
-                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
-                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
-                profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
-                mg = compute_margin(float(pitched), costs, profile_obj)
-                sign_color = "#15803d" if mg["monthly_margin"] >= 0 else "#b91c1c"
-                margin_cell = (
-                    f'<span style="color:{sign_color};font-weight:700">'
-                    f'{_fmt_usd(mg["monthly_margin"])}</span>'
-                    f'<div class="muted">{mg["margin_pct"]}%</div>'
-                )
-            except Exception:
-                margin_cell = "—"
-        else:
-            margin_cell = '<span class="muted">—</span>'
-
-        actual_cell = _fmt_usd(None)
+        # Margin + actual cost columns (single compute_margin call per row)
+        actual_cell = '<span class="muted">—</span>'
+        margin_cell = '<span class="muted">—</span>'
         if costs and any(v for v in costs.values() if v):
             try:
                 from sales_support_agent.services.fulfillment_deck.quote import compute_margin
                 from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
                 profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
-                mg2 = compute_margin(float(pitched or 0), costs, profile_obj)
-                actual_cell = _fmt_usd(mg2["actual_monthly"])
+                mg = compute_margin(float(pitched or 0), costs, profile_obj)
+                actual_cell = _fmt_usd(mg["actual_monthly"])
+                if pitched:
+                    sign_color = "#15803d" if mg["monthly_margin"] >= 0 else "#b91c1c"
+                    margin_cell = (
+                        f'<span style="color:{sign_color};font-weight:700">'
+                        f'{_fmt_usd(mg["monthly_margin"])}</span>'
+                        f'<div class="muted">{mg["margin_pct"]}%</div>'
+                    )
             except Exception:
-                actual_cell = '<span class="muted">entered ↓</span>'
+                actual_cell = "—"
 
         actions = []
         if status == "draft":
@@ -515,6 +511,9 @@ def render_fulfillment_sales_page(
       fetch('/admin/fulfillment/sales/runs/' + runId + '/stage', {{
         method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{stage: sel.value}})
+      }}).then(() => {{
+        sel.style.outline = '2px solid #15803d';
+        setTimeout(() => sel.style.outline = '', 1400);
       }});
     }}
     function pipelineCosts(btn, runId) {{
@@ -570,10 +569,14 @@ def render_fulfillment_sales_page(
     var _noteTimers = {{}};
     function pipelineNotesDebounce(el, runId) {{
       clearTimeout(_noteTimers[runId]);
+      el.style.borderColor = '';
       _noteTimers[runId] = setTimeout(() => {{
         fetch('/admin/fulfillment/sales/runs/' + runId + '/notes', {{
           method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
           body: JSON.stringify({{notes: el.value}})
+        }}).then(() => {{
+          el.style.borderColor = '#15803d';
+          setTimeout(() => el.style.borderColor = '', 1400);
         }});
       }}, 900);
     }}
