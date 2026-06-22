@@ -13,6 +13,7 @@ structural / external-channel issues as manual tasks.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from sales_support_agent.services.advertising.schema import (
@@ -176,7 +177,10 @@ def build_recommendations(
     target_acos = goals.effective_acos_bps(thr)
 
     recs: list[Recommendation] = []
-    recs += _rule_wasted_spend_negatives(ad_rows, thr)
+    # Brand's own category vocabulary (from product titles) — protects core terms
+    # from being auto-negated; they're surfaced for review instead.
+    vocab = _brand_vocabulary(sales_rows)
+    recs += _rule_wasted_spend_negatives(ad_rows, thr, vocab)
     recs += _rule_bid_to_target(ad_rows, target_acos, thr)
 
     # A proven search term can be either harvested as an exact keyword into its
@@ -294,28 +298,77 @@ def _bulk_ok(ad_type: str) -> bool:
     return ad_type in BULK_SUPPORTED
 
 
-def _rule_wasted_spend_negatives(ad_rows: list[AdRow], thr: Thresholds) -> list[Recommendation]:
-    """Search terms / keywords burning spend with no orders -> add as negatives."""
+_NEG_STOPWORDS = {
+    "with", "your", "this", "that", "from", "more", "best", "and", "the", "for", "men", "women",
+    "daily", "day", "days", "supply", "count", "pack", "formula", "support", "supplement",
+    "supplements", "natural", "plus", "extra", "maximum", "strength", "servings", "serving",
+    "single", "made", "free", "premium", "advanced", "complex", "kit", "bundle", "pack",
+}
+
+
+def _brand_vocabulary(sales_rows: list[SalesRow]) -> set:
+    """Content words from the brand's OWN product titles — the category vocabulary
+    used to tell a relevant query (don't auto-negate) from an off-target one."""
+    vocab: set = set()
+    for s in sales_rows or []:
+        for tok in re.findall(r"[a-z0-9]+", (s.title or "").lower()):
+            if len(tok) >= 4 and tok not in _NEG_STOPWORDS:
+                vocab.add(tok)
+    return vocab
+
+
+def _is_category_relevant(text: str, vocab: set) -> bool:
+    """True when a search term shares a meaningful word with the brand's catalog —
+    i.e. it's in your category, so it's a bid/relevance call, not a blanket negate."""
+    if not vocab:
+        return False
+    toks = [t for t in re.findall(r"[a-z0-9]+", (text or "").lower())
+            if len(t) >= 4 and t not in _NEG_STOPWORDS]
+    return any(t in vocab for t in toks)
+
+
+def _rule_wasted_spend_negatives(ad_rows: list[AdRow], thr: Thresholds,
+                                 vocab: Optional[set] = None) -> list[Recommendation]:
+    """Off-target search terms burning real spend with no orders -> negatives.
+
+    Two guards keep this from killing good keywords:
+      • Evidence bar — needs ≥negative_min_clicks AND ≥wasted_spend_cents with 0
+        orders (not a few dollars of noise).
+      • Relevance — a term in the brand's own category (shares catalog vocabulary)
+        is NEVER auto-negated; it's surfaced for review (bid-down vs negate is a
+        judgment call). Only clearly off-target terms become apply-ready negatives.
+    """
+    vocab = vocab or set()
     out: list[Recommendation] = []
     for r in ad_rows:
         if r.entity_level not in ("search_term", "keyword", "target"):
             continue
-        if r.orders > 0 or r.spend_cents < thr.wasted_spend_cents:
+        if r.orders > 0 or r.clicks < thr.negative_min_clicks or r.spend_cents < thr.wasted_spend_cents:
             continue
-        bulk = _bulk_ok(r.ad_type) and r.entity_level in ("search_term", "keyword")
+        relevant = r.entity_level != "target" and _is_category_relevant(r.entity_text, vocab)
+        bulk = (not relevant) and _bulk_ok(r.ad_type) and r.entity_level in ("search_term", "keyword")
         rec = Recommendation(
             category=CAT_NEGATIVE,
             ad_type=r.ad_type,
-            severity=SEV_HIGH if r.spend_cents >= thr.wasted_spend_cents * 3 else SEV_MEDIUM,
-            title=f"Negate '{r.entity_text}' — {fmt_money(r.spend_cents)} spent, 0 orders",
-            detail=(
-                f"{r.clicks} clicks, {r.impressions} impressions, no conversions in "
-                f"campaign '{r.campaign_name}'."
+            severity=SEV_HIGH if (not relevant and r.spend_cents >= thr.wasted_spend_cents * 3) else SEV_MEDIUM,
+            title=(
+                f"Review '{r.entity_text}' — {fmt_money(r.spend_cents)} / {r.clicks} clicks, 0 orders"
+                if relevant else
+                f"Negate '{r.entity_text}' — {fmt_money(r.spend_cents)} spent, 0 orders"
             ),
-            rationale="Spend with zero orders is pure waste; a negative exact match stops the bleed.",
+            detail=(
+                f"{r.clicks} clicks, {r.impressions} impressions, no conversions in '{r.campaign_name}'. "
+                + ("Core category term — bid-down or negate by hand, not auto-applied."
+                   if relevant else "Off-target query; a negative exact stops the bleed.")
+            ),
+            rationale=(
+                "One of your category terms — flagged for review, not auto-negated; it may just need a lower bid."
+                if relevant else
+                "Spend with zero orders on an off-target query is pure waste; a negative exact stops the bleed."
+            ),
             entity_ref=f"{r.campaign_name} › {r.ad_group_name} › {r.entity_text}",
             current_value=fmt_money(r.spend_cents),
-            proposed_value="negative exact",
+            proposed_value=("review — bid-down or negate?" if relevant else "negative exact"),
             projected_impact={"spend_saved_cents": r.spend_cents},
             bulk_row={
                 "action": "create_negative",
