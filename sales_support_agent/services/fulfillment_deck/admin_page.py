@@ -7,6 +7,7 @@ so it reads as a sibling tool.
 from __future__ import annotations
 
 import html
+import json
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -81,6 +82,16 @@ _STYLES = """
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
       @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+      /* Pipeline summary bar */
+      .pipeline-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
+      .pipeline-stat { background: #fff; border: 1px solid var(--border); border-radius: 12px;
+        padding: 12px 16px; flex: 1; min-width: 130px; }
+      .pipeline-stat__val { font-family: "Montserrat", sans-serif; font-weight: 800;
+        font-size: 20px; color: var(--dark-blue); line-height: 1.1; }
+      .pipeline-stat__label { font-size: 10px; font-weight: 700; font-family: "Montserrat", sans-serif;
+        letter-spacing: 0.07em; text-transform: uppercase; color: rgba(43,54,68,0.5); margin-top: 3px; }
+      .pipeline-stat__sub { font-size: 11px; color: rgba(43,54,68,0.5); margin-top: 2px; }
+      .pipeline-stat--won .pipeline-stat__val { color: #15803d; }
       /* Pipeline table */
       .prospect-row { cursor: pointer; }
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
@@ -237,7 +248,7 @@ def _expand_panel(run: dict) -> str:
     else:
         margin_html = f'<div class="margin-card" id="margin-{run_id}" style="color:rgba(43,54,68,0.45);font-size:12px">Enter actual costs above to see margin.</div>'
 
-    brief_text = html.escape(_build_brief(run), quote=True)
+    brief_json = json.dumps(_build_brief(run))
 
     return f"""
     <div class="expand-panel">
@@ -250,8 +261,8 @@ def _expand_panel(run: dict) -> str:
           <div><label>Storage ($/pallet/mo)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:.2f}"
               id="st-{run_id}" value="{_cv('storage_per_pallet_mo')}"></div>
-          <div><label>Receiving ($/pallet)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_per_pallet']:.2f}"
+          <div><label>Receiving ($/item) <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
+            <input type="number" step="0.01" min="0" placeholder="0.10"
               id="rc-{run_id}" value="{_cv('receiving_per_pallet')}"></div>
           <div><label>Tech fee ($/mo)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['monthly_tech_fee']:.2f}"
@@ -268,9 +279,58 @@ def _expand_panel(run: dict) -> str:
         <h3 style="margin-top:14px">Fulfillment Brief</h3>
         <p class="muted" style="margin:0 0 6px">Copy and share with the warehouse team for costing.</p>
         <button class="btn btn--ghost" type="button"
-          onclick="navigator.clipboard.writeText('{brief_text}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+          onclick="navigator.clipboard.writeText({brief_json});this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
       </div>
     </div>"""
+
+
+def _pipeline_stats(runs: list[dict]) -> str:
+    """Four-stat summary bar above the pipeline table."""
+    active = [r for r in runs if r.get("pipeline_stage") not in ("won", "lost")]
+    won = [r for r in runs if r.get("pipeline_stage") == "won"]
+
+    pitched_active = sum(float(r.get("pitched_monthly") or 0) for r in active)
+    pitched_won = sum(float(r.get("pitched_monthly") or 0) for r in won)
+
+    margin_active = 0.0
+    margin_runs = 0
+    for r in active:
+        costs = r.get("fulfillment_actual_costs") or {}
+        pitched = r.get("pitched_monthly")
+        if costs and pitched and any(v for v in costs.values() if v):
+            try:
+                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+                mg = compute_margin(float(pitched), costs, ProspectProfile.from_dict(r.get("prospect_profile") or {}))
+                margin_active += mg["monthly_margin"]
+                margin_runs += 1
+            except Exception:
+                pass
+
+    def _stat(label: str, val: str, sub: str = "", extra_cls: str = "") -> str:
+        sub_html = f'<div class="pipeline-stat__sub">{_esc(sub)}</div>' if sub else ""
+        return (
+            f'<div class="pipeline-stat {extra_cls}">'
+            f'<div class="pipeline-stat__val">{val}</div>'
+            f'<div class="pipeline-stat__label">{_esc(label)}</div>'
+            f'{sub_html}</div>'
+        )
+
+    active_str = str(len(active))
+    pipeline_str = f"${pitched_active:,.0f}<span style='font-size:13px;font-weight:400'>/mo</span>" if pitched_active else "—"
+    margin_str = f"${margin_active:,.0f}<span style='font-size:13px;font-weight:400'>/mo</span>" if margin_active else "—"
+    margin_sub = f"{margin_runs} of {len(active)} with costs" if active else ""
+    won_str = str(len(won)) if won else "—"
+    won_sub = f"${pitched_won:,.0f}/mo booked" if won and pitched_won else ("no wins yet" if not won else "")
+
+    return (
+        f'<div class="pipeline-stats">'
+        f'{_stat("Active prospects", active_str)}'
+        f'{_stat("Pitched pipeline", pipeline_str, f"${pitched_active * 12:,.0f}/yr potential" if pitched_active else "")}'
+        f'{_stat("Monthly margin", margin_str, margin_sub)}'
+        f'{_stat("Won", won_str, won_sub, "pipeline-stat--won" if won else "")}'
+        f'</div>'
+    )
 
 
 def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
@@ -440,6 +500,7 @@ def render_fulfillment_sales_page(
         </form>
         <h2>Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
+        {_pipeline_stats(runs) if runs else ""}
         {table}
       </div>
     </main>
