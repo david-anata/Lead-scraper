@@ -205,3 +205,31 @@ def test_hubspot_domain_strip():
     domain_raw = "https://www.example.com/path"
     stripped = domain_raw.lstrip("https://").lstrip("http://").split("/")[0]
     assert stripped == "www.example.com"
+
+
+# ---------------------------------------------------------------------------
+# Rate overrides persistence
+# ---------------------------------------------------------------------------
+
+from sales_support_agent.services.fulfillment_deck import storage as _stor
+
+
+def test_rate_overrides_persisted(isolated_db):
+    """rate_overrides + rate_card_note stored in summary_json are retrievable."""
+    run_id = _make_run({"prospect": "RatesCo"})
+    overrides = {"dtc_base_per_order": 1.80, "monthly_minimum": 600.0}
+    _stor.update_summary(run_id, {"rate_overrides": overrides, "rate_card_note": "Valid until Aug 1"})
+    run = _stor.get_run(run_id)
+    assert run is not None
+    s = dict(run.summary_json or {})
+    assert s["rate_overrides"]["dtc_base_per_order"] == pytest.approx(1.80)
+    assert s["rate_card_note"] == "Valid until Aug 1"
+
+
+def test_rate_overrides_cleared(isolated_db):
+    """Empty dict clears overrides without error."""
+    run_id = _make_run({"prospect": "ClearCo"})
+    _stor.update_summary(run_id, {"rate_overrides": {"monthly_tech_fee": 50.0}})
+    _stor.update_summary(run_id, {"rate_overrides": {}})
+    run = _stor.get_run(run_id)
+    assert dict((run.summary_json or {}).get("rate_overrides") or {}) == {}

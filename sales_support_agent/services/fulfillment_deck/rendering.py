@@ -740,13 +740,18 @@ def _render_quote_section(
     </section>"""
 
 
-def _render_fee_schedule_section(sec: str = "05") -> str:
+def _render_fee_schedule_section(
+    sec: str = "05",
+    rate_overrides: Optional[dict] = None,
+    rate_card_note: str = "",
+) -> str:
     """Complete fee schedule — every rate, all in one place.
 
     Always rendered so prospects can answer any question without a back-and-forth:
     kitting, returns, B2B/wholesale, Shopify integration costs, monthly minimum.
+    rate_overrides merges onto BASELINE_RATES — per-prospect adjustments win.
     """
-    br = BASELINE_RATES
+    br = {**BASELINE_RATES, **(rate_overrides or {})}
     def _row(label: str, rate: str, note: str = "") -> str:
         note_html = f'<span class="ql-note">{html.escape(note)}</span>' if note else ""
         return (
@@ -826,6 +831,7 @@ def _render_fee_schedule_section(sec: str = "05") -> str:
         is the most likely driver of your monthly cost. At higher volumes, per-unit
         and per-order fees dominate.
       </div>
+      {f'<p class="fs-note">{html.escape(rate_card_note)}</p>' if rate_card_note.strip() else ""}
     </section>"""
 
 
@@ -1226,6 +1232,8 @@ def render_rate_sheet_html(
     blend_method: str = "",
     avg_transit_days: Optional[float] = None,
     quote: Optional[dict] = None,
+    rate_overrides: Optional[dict] = None,
+    rate_card_note: str = "",
 ) -> str:
     monogram = load_brand_asset(settings, "assets/monogram.png")
     # Anata Shipping OS brand mark (the arrow logo David supplied).
@@ -1259,7 +1267,8 @@ def render_rate_sheet_html(
         _add("The monthly math", lambda sec: _render_monthly_math_section(
             profile, matrix, narrative, savings, blended_rate, blend_method, sec))
     # Full rate card: every fee answered deterministically before the estimate.
-    _add("Full rate card", lambda sec: _render_fee_schedule_section(sec))
+    _add("Full rate card", lambda sec: _render_fee_schedule_section(
+        sec, rate_overrides or {}, rate_card_note or ""))
     # The estimated invoice sits immediately AFTER the rate card and BEFORE the partner closer.
     _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
     if flags.about_anata:
@@ -1672,6 +1681,11 @@ def render_rate_sheet_html(
       margin-top: 20px; padding: 12px 16px; border-radius: 10px;
       background: rgba(133,187,218,0.10); border: 1px solid rgba(133,187,218,0.35);
       font-size: 13px; line-height: 1.55;
+    }}
+    .fs-note {{
+      margin-top: 14px; padding: 10px 14px; border-radius: 8px;
+      background: rgba(238,233,220,0.6); border: 1px solid var(--anata-line);
+      font-size: 13px; font-weight: 500; line-height: 1.55;
     }}
     @media (max-width: 640px) {{ .fs-grid {{ grid-template-columns: 1fr; }} }}
     @media print {{ .fs-grid {{ grid-template-columns: 1fr; gap: 14px; }} }}

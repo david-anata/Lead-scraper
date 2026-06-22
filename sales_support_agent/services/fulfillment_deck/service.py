@@ -316,6 +316,8 @@ def _assemble(
     warnings: list[str],
     view_path: str = "",
     quote_margin_override: Optional[float] = None,
+    rate_overrides: Optional[dict] = None,
+    rate_card_note: str = "",
 ) -> dict:
     """Shared back half: rates -> savings -> quote -> narrative -> HTML.
 
@@ -351,6 +353,8 @@ def _assemble(
         blend_method=blend_method,
         avg_transit_days=avg_transit,
         quote=fulfillment_quote,
+        rate_overrides=rate_overrides or {},
+        rate_card_note=rate_card_note or "",
     )
     return {
         "design_title": f"{profile.display_name} × Anata Rate Sheet",
@@ -476,6 +480,8 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
         settings=settings, profile=profile, origin=origin, warnings=[],
         view_path=str(summary.get("view_path") or ""),
         quote_margin_override=_opt_margin(summary.get("quote_margin_override")),
+        rate_overrides=dict(summary.get("rate_overrides") or {}),
+        rate_card_note=str(summary.get("rate_card_note") or ""),
     )
     storage.update_summary(run_id, patch)
     summary.update(patch)
@@ -608,6 +614,10 @@ def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict
     if "quote_margin_override" in edits:
         # None clears the override (back to automatic category margins).
         patch["quote_margin_override"] = _opt_margin(edits.get("quote_margin_override"))
+    if "rate_overrides" in edits:
+        patch["rate_overrides"] = dict(edits["rate_overrides"] or {})
+    if "rate_card_note" in edits:
+        patch["rate_card_note"] = str(edits.get("rate_card_note") or "").strip()
     storage.update_summary(run_id, patch)
 
     return rerender_rate_sheet(run_id, settings=settings)

@@ -215,6 +215,17 @@ def update_run(
     product_units: list[str] = Form(default=[]),
     product_estimated: list[str] = Form(default=[]),
     product_remove: list[str] = Form(default=[]),
+    rate_receiving: str = Form(default=""),
+    rate_storage: str = Form(default=""),
+    rate_pick_pack: str = Form(default=""),
+    rate_additional_item: str = Form(default=""),
+    rate_kitting: str = Form(default=""),
+    rate_labeling: str = Form(default=""),
+    rate_wholesale: str = Form(default=""),
+    rate_returns: str = Form(default=""),
+    rate_tech_fee: str = Form(default=""),
+    rate_minimum: str = Form(default=""),
+    rate_card_note: str = Form(default=""),
 ) -> RedirectResponse:
     removed = {str(idx).strip() for idx in product_remove or []}
 
@@ -246,6 +257,20 @@ def update_run(
             }
         )
 
+    _rate_fields = {
+        "receiving_per_pallet": rate_receiving,
+        "storage_short_per_pallet_mo": rate_storage,
+        "dtc_base_per_order": rate_pick_pack,
+        "dtc_additional_item": rate_additional_item,
+        "kitting_per_unit": rate_kitting,
+        "labeling_per_unit": rate_labeling,
+        "wholesale_per_unit": rate_wholesale,
+        "returns_per_unit": rate_returns,
+        "monthly_tech_fee": rate_tech_fee,
+        "monthly_minimum": rate_minimum,
+    }
+    rate_overrides = {k: v for k, raw in _rate_fields.items() if (v := _opt_float(raw)) is not None}
+
     edits = {
         "brand": (brand or "").strip(),
         "origin_zip": (origin_zip or "").strip(),
@@ -256,6 +281,8 @@ def update_run(
         "destinations_note": (destinations_note or "").strip(),
         "current_costs_note": (current_costs_note or "").strip(),
         "products": products,
+        "rate_overrides": rate_overrides,
+        "rate_card_note": (rate_card_note or "").strip(),
     }
     try:
         apply_profile_edits(run_id, edits, settings=load_settings())

@@ -743,6 +743,16 @@ def render_rate_sheet_review_page(
     )
     margin_override = summary.get("quote_margin_override")
     margin_value = "" if margin_override is None else f"{margin_override:g}"
+
+    from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
+    _ro = dict(summary.get("rate_overrides") or {})
+
+    def _rval(key: str) -> str:
+        v = _ro.get(key)
+        return f"{v:g}" if v is not None else ""
+
+    rate_card_note_val = _esc(str(summary.get("rate_card_note") or ""))
+
     status_label = "Published" if published else "Draft — not publicly visible yet"
     status_pill_cls = "pill--live" if published else "pill--draft"
 
@@ -815,6 +825,60 @@ def render_rate_sheet_review_page(
                 <span class="hint">Blank = automatic by product category. e.g. 12 quotes everything at baseline × 1.12.</span>
               </div>
             </div>
+          </div>
+
+          <h2>Fee Card Adjustments</h2>
+          <p class="muted" style="margin-bottom:12px">Override any baseline rate for this prospect's deck only. Leave blank to use the standard rate shown in parentheses.</p>
+          <div class="edit-grid">
+            <div class="edit-col">
+              <div class="field">
+                <label for="rate_receiving">Receiving / pallet (baseline ${BASELINE_RATES['receiving_per_pallet']:g})</label>
+                <input type="number" id="rate_receiving" name="rate_receiving" step="0.01" min="0" value="{_rval('receiving_per_pallet')}" placeholder="{BASELINE_RATES['receiving_per_pallet']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_storage">Storage / pallet/mo (baseline ${BASELINE_RATES['storage_short_per_pallet_mo']:g})</label>
+                <input type="number" id="rate_storage" name="rate_storage" step="0.01" min="0" value="{_rval('storage_short_per_pallet_mo')}" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_pick_pack">DTC pick &amp; pack / order (baseline ${BASELINE_RATES['dtc_base_per_order']:g})</label>
+                <input type="number" id="rate_pick_pack" name="rate_pick_pack" step="0.01" min="0" value="{_rval('dtc_base_per_order')}" placeholder="{BASELINE_RATES['dtc_base_per_order']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_additional_item">DTC additional item (baseline ${BASELINE_RATES['dtc_additional_item']:g})</label>
+                <input type="number" id="rate_additional_item" name="rate_additional_item" step="0.01" min="0" value="{_rval('dtc_additional_item')}" placeholder="{BASELINE_RATES['dtc_additional_item']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_kitting">Kitting / unit (baseline ${BASELINE_RATES['kitting_per_unit']:g})</label>
+                <input type="number" id="rate_kitting" name="rate_kitting" step="0.01" min="0" value="{_rval('kitting_per_unit')}" placeholder="{BASELINE_RATES['kitting_per_unit']:g}">
+              </div>
+            </div>
+            <div class="edit-col">
+              <div class="field">
+                <label for="rate_labeling">Labeling / unit (baseline ${BASELINE_RATES['labeling_per_unit']:g})</label>
+                <input type="number" id="rate_labeling" name="rate_labeling" step="0.01" min="0" value="{_rval('labeling_per_unit')}" placeholder="{BASELINE_RATES['labeling_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_wholesale">Wholesale / unit (baseline ${BASELINE_RATES['wholesale_per_unit']:g})</label>
+                <input type="number" id="rate_wholesale" name="rate_wholesale" step="0.01" min="0" value="{_rval('wholesale_per_unit')}" placeholder="{BASELINE_RATES['wholesale_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_returns">Returns / unit (baseline ${BASELINE_RATES['returns_per_unit']:g})</label>
+                <input type="number" id="rate_returns" name="rate_returns" step="0.01" min="0" value="{_rval('returns_per_unit')}" placeholder="{BASELINE_RATES['returns_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_tech_fee">Monthly tech fee (baseline ${BASELINE_RATES['monthly_tech_fee']:g})</label>
+                <input type="number" id="rate_tech_fee" name="rate_tech_fee" step="0.01" min="0" value="{_rval('monthly_tech_fee')}" placeholder="{BASELINE_RATES['monthly_tech_fee']:g}">
+              </div>
+              <div class="field">
+                <label for="rate_minimum">Monthly minimum (baseline ${BASELINE_RATES['monthly_minimum']:g})</label>
+                <input type="number" id="rate_minimum" name="rate_minimum" step="1" min="0" value="{_rval('monthly_minimum')}" placeholder="{BASELINE_RATES['monthly_minimum']:g}">
+              </div>
+            </div>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label for="rate_card_note">Rate card note (shown at bottom of Full Rate Card section)</label>
+            <textarea id="rate_card_note" name="rate_card_note" rows="2" style="width:100%;resize:vertical">{rate_card_note_val}</textarea>
+            <span class="hint">Use to call out specials, volume commitments, expiry dates, etc.</span>
           </div>
 
           <h2>Products</h2>
