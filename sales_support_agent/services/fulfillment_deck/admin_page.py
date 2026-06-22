@@ -7,7 +7,6 @@ so it reads as a sibling tool.
 from __future__ import annotations
 
 import html
-import json
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -248,7 +247,7 @@ def _expand_panel(run: dict) -> str:
     else:
         margin_html = f'<div class="margin-card" id="margin-{run_id}" style="color:rgba(43,54,68,0.45);font-size:12px">Enter actual costs above to see margin.</div>'
 
-    brief_json = json.dumps(_build_brief(run))
+    brief_attr = html.escape(_build_brief(run), quote=True)
 
     return f"""
     <div class="expand-panel">
@@ -279,7 +278,8 @@ def _expand_panel(run: dict) -> str:
         <h3 style="margin-top:14px">Fulfillment Brief</h3>
         <p class="muted" style="margin:0 0 6px">Copy and share with the warehouse team for costing.</p>
         <button class="btn btn--ghost" type="button"
-          onclick="navigator.clipboard.writeText({brief_json});this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+          data-brief="{brief_attr}"
+          onclick="navigator.clipboard.writeText(this.dataset.brief);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
       </div>
     </div>"""
 
@@ -711,13 +711,14 @@ def render_rate_sheet_review_page(
         "prospect_profile": profile,
     }
     review_brief_text = _build_brief(review_brief_run)
-    review_brief_json = json.dumps(review_brief_text)
+    review_brief_attr = html.escape(review_brief_text, quote=True)
     brief_block = f"""
     <div class="flash" style="background:rgba(133,187,218,0.08);border-color:rgba(133,187,218,0.4);margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px">
         <strong>Fulfillment Brief</strong>
         <button class="btn btn--ghost" type="button" style="flex-shrink:0"
-          onclick="navigator.clipboard.writeText({review_brief_json});this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+          data-brief="{review_brief_attr}"
+          onclick="navigator.clipboard.writeText(this.dataset.brief);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
       </div>
       <pre style="margin:0;font-family:inherit;font-size:12.5px;white-space:pre-wrap;color:rgba(43,54,68,0.75);line-height:1.55">{_esc(review_brief_text)}</pre>
       <p class="muted" style="margin:8px 0 0;font-size:12px">Share with the warehouse team to get a cost quote — paste into email or Slack.</p>
