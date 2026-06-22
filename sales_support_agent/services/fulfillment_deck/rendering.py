@@ -26,7 +26,7 @@ from sales_support_agent.services.deck.brand_assets import (
     load_brand_favicon_link,
     load_brand_stylesheet,
 )
-from sales_support_agent.services.fulfillment_deck.quote import WHOLESALE_RE
+from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES, WHOLESALE_RE
 from sales_support_agent.services.fulfillment_deck.schema import (
     RATE_SOURCE_MOCK,
     NarrativeBlock,
@@ -740,6 +740,95 @@ def _render_quote_section(
     </section>"""
 
 
+def _render_fee_schedule_section(sec: str = "05") -> str:
+    """Complete fee schedule — every rate, all in one place.
+
+    Always rendered so prospects can answer any question without a back-and-forth:
+    kitting, returns, B2B/wholesale, Shopify integration costs, monthly minimum.
+    """
+    br = BASELINE_RATES
+    def _row(label: str, rate: str, note: str = "") -> str:
+        note_html = f'<span class="ql-note">{html.escape(note)}</span>' if note else ""
+        return (
+            f"<tr><td>{html.escape(label)}{note_html}</td>"
+            f'<td class="ql-qty">{html.escape(rate)}</td></tr>'
+        )
+
+    inbound = "".join([
+        _row("Receiving", f"${br['receiving_per_pallet']:.2f} / pallet"),
+        _row("Kit assembly", f"${br['kitting_per_unit']:.2f} / unit",
+             "open-box, assemble, re-box; quote after scoping call"),
+        _row("Labeling / barcode prep", f"${br['labeling_per_unit']:.2f} / unit"),
+    ])
+    outbound_dtc = "".join([
+        _row("Pick & pack — DTC", f"${br['dtc_base_per_order']:.2f} / order base"),
+        _row("Additional items (2nd+ per order)",
+             f"${br['dtc_additional_item']:.2f} / item",
+             "added to base rate"),
+        _row("Special handling — fragile",
+             f"${br['special_handling_per_unit']:.2f} / unit"),
+    ])
+    outbound_b2b = "".join([
+        _row("Wholesale / clinic case pick",
+             f"${br['wholesale_per_unit']:.2f} / unit",
+             "B2B orders: dental clinics, retail accounts, etc."),
+        _row("Pallet / freight order minimum",
+             f"${br['pallet_order_min']:.2f} / pallet-order minimum"),
+    ])
+    storage_returns = "".join([
+        _row("Storage (short-term)",
+             f"${br['storage_short_per_pallet_mo']:.2f} / pallet / month"),
+        _row("Returns processing",
+             f"${br['returns_per_unit']:.2f} / unit",
+             "inspect, restock, or quarantine"),
+        _row("Packaging materials",
+             "at cost + 10%",
+             "mailers, boxes, void fill — billed through"),
+    ])
+    platform = "".join([
+        _row("Platform & tech (monthly flat)",
+             f"${br['monthly_tech_fee']:.2f} / month"),
+        _row("Shopify integration", "included — no setup fee, no per-transaction fee"),
+        _row("Amazon Seller Central", "included"),
+        _row("Custom EDI / API", "contact us"),
+    ])
+
+    table = lambda title, rows: (
+        f'<div class="fs-group">'
+        f'<h4 class="fs-group-title">{title}</h4>'
+        f'<table class="data-table quote-table fs-table">'
+        f"<tbody>{rows}</tbody></table></div>"
+    )
+
+    return f"""
+    <section class="slide" id="sec-{sec}" data-key="fee-schedule" data-screen-label="{sec} Full rate card">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Full rate card</p>
+          <h2 class="slide-title">Every fee — no surprises</h2>
+        </div>
+        <p class="caption">These are Anata's contract baseline rates. Volume discounts and adjustments are confirmed in your scoping call.</p>
+      </header>
+      <div class="fs-grid">
+        <div class="fs-col">
+          {table("Inbound", inbound)}
+          {table("Storage &amp; returns", storage_returns)}
+        </div>
+        <div class="fs-col">
+          {table("Outbound — Direct-to-Consumer", outbound_dtc)}
+          {table("Outbound — B2B / Wholesale", outbound_b2b)}
+          {table("Platform &amp; integrations", platform)}
+        </div>
+      </div>
+      <div class="fs-minimum">
+        <strong>Monthly minimum: ${br['monthly_minimum']:,.0f}</strong>
+        — applies to all accounts. At low volumes (&lt;200 orders/month), this floor
+        is the most likely driver of your monthly cost. At higher volumes, per-unit
+        and per-order fees dominate.
+      </div>
+    </section>"""
+
+
 def _render_partner_section(
     shipping_os_icon: str = "", fulfillment_icon: str = "", sec: str = "05"
 ) -> str:
@@ -1169,7 +1258,9 @@ def render_rate_sheet_html(
     if flags.volume_economics or savings:
         _add("The monthly math", lambda sec: _render_monthly_math_section(
             profile, matrix, narrative, savings, blended_rate, blend_method, sec))
-    # The estimated invoice sits immediately BEFORE the partner closer.
+    # Full rate card: every fee answered deterministically before the estimate.
+    _add("Full rate card", lambda sec: _render_fee_schedule_section(sec))
+    # The estimated invoice sits immediately AFTER the rate card and BEFORE the partner closer.
     _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
     if flags.about_anata:
         _add("Partner with Anata", lambda sec: _render_partner_section(
@@ -1560,6 +1651,30 @@ def render_rate_sheet_html(
       background: linear-gradient(90deg, rgba(238,233,220,0.55), rgba(133,187,218,0.18));
       font-size: 12.5px; font-weight: 600; color: var(--anata-ink);
     }}
+
+    /* Fee schedule section */
+    .fs-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }}
+    .fs-col {{ display: flex; flex-direction: column; gap: 20px; }}
+    .fs-group {{ }}
+    .fs-group-title {{
+      font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--anata-muted);
+      margin: 0 0 6px; padding-bottom: 5px;
+      border-bottom: 1px solid var(--anata-line);
+    }}
+    .fs-table {{ width: 100%; border-collapse: collapse; }}
+    .fs-table td {{ padding: 5px 4px; font-size: 13px; vertical-align: top; }}
+    .fs-table td:last-child {{
+      text-align: right; font-variant-numeric: tabular-nums;
+      white-space: nowrap; color: var(--anata-ink); font-weight: 600;
+    }}
+    .fs-minimum {{
+      margin-top: 20px; padding: 12px 16px; border-radius: 10px;
+      background: rgba(133,187,218,0.10); border: 1px solid rgba(133,187,218,0.35);
+      font-size: 13px; line-height: 1.55;
+    }}
+    @media (max-width: 640px) {{ .fs-grid {{ grid-template-columns: 1fr; }} }}
+    @media print {{ .fs-grid {{ grid-template-columns: 1fr; gap: 14px; }} }}
 
     /* v4: trust stamp under the live-rate table. */
     .trust-stamp {{
