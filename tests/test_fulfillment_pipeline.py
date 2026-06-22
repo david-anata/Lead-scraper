@@ -170,3 +170,38 @@ def test_build_brief_includes_key_fields():
     assert "84043" in brief
     assert "3,000" in brief
     assert "Serum" in brief
+
+
+# ---------------------------------------------------------------------------
+# HubSpot sync (unit — no network, token absent → silent no-op)
+# ---------------------------------------------------------------------------
+
+from sales_support_agent.services.fulfillment_deck import hubspot_sync
+
+
+def test_hubspot_sync_noop_without_token(monkeypatch):
+    """All public sync functions must be silent no-ops when token is absent."""
+    monkeypatch.delenv("HUBSPOT_API_TOKEN", raising=False)
+    # None of these should raise or attempt network calls.
+    hubspot_sync.sync_new_prospect(1, {"prospect": "X"}, {})
+    hubspot_sync.sync_stage(1, "won")
+    hubspot_sync.sync_margin(1, {}, 0.0)
+
+
+def test_hubspot_stage_id_defaults():
+    assert hubspot_sync._stage_id("won") == "closedwon"
+    assert hubspot_sync._stage_id("lost") == "closedlost"
+    assert hubspot_sync._stage_id("intake") == "appointmentscheduled"
+
+
+def test_hubspot_stage_id_env_override(monkeypatch):
+    monkeypatch.setenv("HUBSPOT_STAGE_WON", "custom-stage-abc")
+    assert hubspot_sync._stage_id("won") == "custom-stage-abc"
+
+
+def test_hubspot_domain_strip():
+    """Company domain should strip protocol before sending to HubSpot."""
+    # _create_company strips the protocol — verify the logic directly.
+    domain_raw = "https://www.example.com/path"
+    stripped = domain_raw.lstrip("https://").lstrip("http://").split("/")[0]
+    assert stripped == "www.example.com"

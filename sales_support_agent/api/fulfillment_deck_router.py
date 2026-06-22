@@ -122,6 +122,14 @@ async def generate(
 
     # Land on the review page — the sheet stays a draft until published there.
     review_path = result.get("review_path") or f"{_BASE}/runs/{result['run_id']}/review"
+    try:
+        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_new_prospect as _hs_new
+        _run = storage.get_run(result["run_id"])
+        if _run is not None:
+            _summary = dict(_run.summary_json or {})
+            _hs_new(result["run_id"], _summary, dict(_summary.get("prospect_profile") or {}))
+    except Exception:
+        logger.exception("[fulfillment_deck] hubspot sync_new failed")
     return RedirectResponse(review_path, status_code=303)
 
 
@@ -309,6 +317,8 @@ async def patch_stage(run_id: int, request: Request) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": f"unknown stage: {stage}"})
     if not storage.update_stage(run_id, stage):
         return JSONResponse(status_code=404, content={"error": "not found"})
+    from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_stage as _hs_stage
+    _hs_stage(run_id, stage)
     return JSONResponse({"ok": True})
 
 
@@ -348,6 +358,8 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
         if profile_dict and pitched and any(v for v in costs.values() if v):
             profile = ProspectProfile.from_dict(profile_dict)
             margin = compute_margin(pitched, costs, profile)
+            from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
+            _hs_margin(run_id, margin, pitched)
             return JSONResponse({"ok": True, "margin": margin, "pitched": pitched, "actual_monthly": margin.get("actual_monthly")})
     return JSONResponse({"ok": True})
 
