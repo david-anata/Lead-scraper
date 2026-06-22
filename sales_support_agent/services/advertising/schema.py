@@ -69,8 +69,12 @@ class Thresholds:
     # more keywords optimized; safe because bid-to-target SIZES each move to the
     # data (a thin-data keyword gets a small move, not a wild one).
     min_clicks_significant: int = 5
-    # Spend (cents) with zero orders that flags a wasted-spend negative.
-    wasted_spend_cents: int = 1500  # $15 with no sales
+    # A wasted-spend negative needs a REAL no-convert signal — meaningful clicks
+    # AND spend with zero orders — so a head term that merely needs a bid tweak
+    # isn't auto-killed. (Spend-only at $15 was far too trigger-happy for a big
+    # brand; it negated core category terms.)
+    wasted_spend_cents: int = 2500       # $25 with no sales
+    negative_min_clicks: int = 15        # …and this many clicks, still 0 orders
     # ACoS this many bps over target -> bid-down. (default +50% of target)
     bid_down_over_target_ratio: float = 1.5
     # ACoS this far under target with volume -> bid-up opportunity.
