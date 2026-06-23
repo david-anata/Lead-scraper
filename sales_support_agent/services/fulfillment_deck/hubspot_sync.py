@@ -348,8 +348,31 @@ def _do_sync_quote(run_id: int) -> None:
         return
     summary = dict(run.summary_json or {})
     deal_id = str(summary.get("hubspot_deal_id") or "") or None
+
+    # If no deal yet (run pre-dates HubSpot wiring), create one now then re-read.
     if not deal_id:
-        logger.warning("[hubspot] no deal for run %d, cannot create quote", run_id)
+        prospect_profile = dict(summary.get("prospect_profile") or {})
+        prospect = str(summary.get("prospect") or f"Run {run_id}")
+        website = str(prospect_profile.get("website") or "")
+        stage = str(summary.get("pipeline_stage") or "intake")
+        pitched = float((summary.get("fulfillment_quote") or {}).get("monthly_total") or 0)
+        from sales_support_agent.services.fulfillment_deck.admin_page import _build_brief
+        brief = _build_brief({
+            "id": run_id,
+            "prospect": prospect,
+            "origin_zip": summary.get("origin_zip"),
+            "monthly_order_volume": prospect_profile.get("monthly_order_volume"),
+            "prospect_profile": prospect_profile,
+        })
+        _do_sync_new(run_id, prospect, website, stage, round(pitched * 12, 2), brief)
+        run = storage.get_run(run_id)
+        if run is None:
+            return
+        summary = dict(run.summary_json or {})
+        deal_id = str(summary.get("hubspot_deal_id") or "") or None
+
+    if not deal_id:
+        logger.warning("[hubspot] could not obtain deal for run %d, skipping quote", run_id)
         return
 
     fq = dict(summary.get("fulfillment_quote") or {})
