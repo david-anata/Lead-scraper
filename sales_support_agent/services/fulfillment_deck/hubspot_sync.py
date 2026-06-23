@@ -232,8 +232,10 @@ def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list)
     props: dict = {
         "hs_title": f"{prospect} — 3PL Fulfillment Agreement",
         "hs_expiration_date": expiry,
-        "hs_status": "APPROVAL_NOT_NEEDED",
+        # E-sign quotes must start as DRAFT; publish from HubSpot UI to send.
+        "hs_status": "DRAFT",
         "hs_esign_enabled": "true",
+        "hs_template_type": "DEFAULT",
         "hs_currency": "USD",
         "hs_language": "en-us",
         "hs_locale": "en-US",
