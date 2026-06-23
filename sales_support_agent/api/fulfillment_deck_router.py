@@ -317,6 +317,14 @@ def publish_run(run_id: int) -> RedirectResponse:
         _hs_quote(run_id)
     except Exception:
         logger.exception("[fulfillment_deck] hubspot sync_quote failed")
+    if view_path:
+        try:
+            from sales_support_agent.services.sales.asset_linker import try_link_rate_sheet
+            with Session(get_engine()) as _s:
+                try_link_rate_sheet(_s, brand_name=prospect, run_id=run_id, url=view_path)
+                _s.commit()
+        except Exception:
+            logger.exception("[fulfillment_deck] auto deal asset link failed")
     return RedirectResponse(
         f"{_BASE}?msg="
         + quote_plus(f"Published — rate sheet for {prospect} is live at {view_path}. Use Open or Copy link in History."),
