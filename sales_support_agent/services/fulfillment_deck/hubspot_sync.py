@@ -235,7 +235,7 @@ def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list)
         # E-sign quotes must start as DRAFT; publish from HubSpot UI to send.
         "hs_status": "DRAFT",
         "hs_esign_enabled": "true",
-        "hs_template_type": "DEFAULT",
+        "hs_template_type": "QUOTE",
         "hs_currency": "USD",
         "hs_language": "en-us",
         "hs_locale": "en-US",
