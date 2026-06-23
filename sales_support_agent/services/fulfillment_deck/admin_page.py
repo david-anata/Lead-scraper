@@ -346,6 +346,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         prospect = _esc(run.get("prospect") or run.get("design_title") or f"Run {run_id}")
         status = str(run.get("status") or "")
         view_path = str(run.get("view_path") or "")
+        hs_quote_url = str(run.get("hubspot_quote_url") or "")
         published = bool(run.get("published")) and status == "completed"
         review_path = f"/admin/fulfillment/sales/runs/{run_id}/review"
         stage = str(run.get("pipeline_stage") or "intake")
@@ -397,6 +398,8 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 f'<button class="btn btn--ghost" type="button" onclick="event.stopPropagation();'
                 f"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Share</button>"
             )
+            if hs_quote_url:
+                actions.append(f'<a class="btn btn--ghost" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()" title="Open e-signature quote in HubSpot">Quote ✍</a>')
             actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Edit</a>')
         actions.append(
             f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/delete" '
@@ -683,6 +686,12 @@ def render_rate_sheet_review_page(
         )
 
     view_path = str(summary.get("view_path") or "")
+    hs_quote_url = str(summary.get("hubspot_quote_url") or "")
+    hs_quote_btn = (
+        f'<a class="btn" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" '
+        f'style="background:#ff7a59;border-color:#ff7a59;color:#fff">Open HubSpot Quote ✍</a>'
+        if hs_quote_url else ""
+    )
     if published and view_path:
         publish_block = f"""
         <div class="flash"><strong>Published.</strong> Shareable link:
@@ -690,6 +699,7 @@ def render_rate_sheet_review_page(
           <button class="btn btn--ghost" type="button"
             onclick="navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';">Copy link</button>
           <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
+          {hs_quote_btn}
         </div>"""
         publish_button = '<button class="btn" type="submit">Re-publish</button>'
     else:

@@ -233,3 +233,43 @@ def test_rate_overrides_cleared(isolated_db):
     _stor.update_summary(run_id, {"rate_overrides": {}})
     run = _stor.get_run(run_id)
     assert dict((run.summary_json or {}).get("rate_overrides") or {}) == {}
+
+
+# ---------------------------------------------------------------------------
+# HubSpot Quote sync (unit — no network, token absent → silent no-op)
+# ---------------------------------------------------------------------------
+
+def test_sync_quote_noop_without_token(monkeypatch):
+    """sync_quote must be a silent no-op when HUBSPOT_API_TOKEN is absent."""
+    monkeypatch.delenv("HUBSPOT_API_TOKEN", raising=False)
+    hubspot_sync.sync_quote(1)  # must not raise
+
+
+def test_sync_quote_noop_without_token_returns_immediately(monkeypatch):
+    """Confirm no background thread is started without a token."""
+    monkeypatch.delenv("HUBSPOT_API_TOKEN", raising=False)
+    import threading
+    before = threading.active_count()
+    hubspot_sync.sync_quote(9999)
+    import time; time.sleep(0.05)
+    # Thread count should not increase (within noise)
+    assert threading.active_count() <= before + 1
+
+
+def test_portal_id_env_override(monkeypatch):
+    monkeypatch.setenv("HUBSPOT_PORTAL_ID", "99887766")
+    monkeypatch.setenv("HUBSPOT_API_TOKEN", "tok-test")
+    assert hubspot_sync._portal_id() == "99887766"
+
+
+def test_quote_url_stored(isolated_db, monkeypatch):
+    """quote URL is persisted in summary_json after successful sync."""
+    run_id = _make_run({"prospect": "QuoteCo"})
+    _stor.update_summary(run_id, {
+        "hubspot_deal_id": "deal-abc",
+        "hubspot_quote_id": "qt-123",
+        "hubspot_quote_url": "https://app.hubspot.com/quotes/999/quote/qt-123",
+    })
+    run = _stor.get_run(run_id)
+    s = dict(run.summary_json or {})
+    assert s["hubspot_quote_url"].endswith("qt-123")

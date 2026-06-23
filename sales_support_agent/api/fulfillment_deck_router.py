@@ -312,6 +312,11 @@ def publish_run(run_id: int) -> RedirectResponse:
     summary = dict(run.summary_json or {}) if run is not None else {}
     view_path = str(summary.get("view_path") or "")
     prospect = str(summary.get("prospect") or "prospect")
+    try:
+        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
+        _hs_quote(run_id)
+    except Exception:
+        logger.exception("[fulfillment_deck] hubspot sync_quote failed")
     return RedirectResponse(
         f"{_BASE}?msg="
         + quote_plus(f"Published — rate sheet for {prospect} is live at {view_path}. Use Open or Copy link in History."),

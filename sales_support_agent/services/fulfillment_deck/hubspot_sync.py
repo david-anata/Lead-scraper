@@ -29,9 +29,11 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://api.hubapi.com"
 
-# HubSpot association type IDs (v3 API)
+# HubSpot association type IDs (v3 API, HubSpot-defined)
 _ASSOC_DEAL_TO_COMPANY = "5"
 _ASSOC_NOTE_TO_DEAL = "214"
+_ASSOC_QUOTE_TO_DEAL = "64"
+_ASSOC_LINE_ITEM_TO_QUOTE = "67"
 
 # Our stage → HubSpot default stage ID + configurable override env var
 _STAGE_DEFAULTS = {
@@ -187,6 +189,85 @@ def _add_note(deal_id: str, body: str) -> bool:
         return False
 
 
+def _portal_id() -> Optional[str]:
+    pid = os.environ.get("HUBSPOT_PORTAL_ID", "").strip()
+    if pid:
+        return pid
+    try:
+        r = requests.get(
+            f"{_BASE}/account-info/v3/details",
+            headers=_headers(),
+            timeout=10,
+        )
+        return str(r.json().get("portalId") or "")
+    except Exception:
+        logger.exception("[hubspot] failed to fetch portal ID")
+        return None
+
+
+def _create_line_item(label: str, qty: float, price: float, total: float, unit: str = "") -> Optional[str]:
+    props: dict = {
+        "name": label,
+        "quantity": str(round(qty, 4)),
+        "price": str(round(price, 4)),
+        "amount": str(round(total, 2)),
+        "recurringbillingfrequency": "monthly",
+    }
+    if unit:
+        props["description"] = f"per {unit}"
+    try:
+        r = requests.post(
+            f"{_BASE}/crm/v3/objects/line_items",
+            headers=_headers(),
+            json={"properties": props},
+            timeout=10,
+        )
+        return r.json().get("id")
+    except Exception:
+        logger.exception("[hubspot] create_line_item failed for %r", label)
+        return None
+
+
+def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list) -> Optional[str]:
+    props: dict = {
+        "hs_title": f"{prospect} — 3PL Fulfillment Agreement",
+        "hs_expiration_date": expiry,
+        "hs_status": "APPROVAL_NOT_NEEDED",
+        "hs_esign_enabled": "true",
+        "hs_currency": "USD",
+        "hs_language": "en-us",
+        "hs_locale": "en-US",
+    }
+    try:
+        r = requests.post(
+            f"{_BASE}/crm/v3/objects/quotes",
+            headers=_headers(),
+            json={"properties": props},
+            timeout=10,
+        )
+        quote_id = r.json().get("id")
+        if not quote_id:
+            logger.warning("[hubspot] quote creation returned no ID: %s", r.text[:300])
+            return None
+        # Associate with deal
+        requests.put(
+            f"{_BASE}/crm/v3/objects/quotes/{quote_id}/associations/deals/{deal_id}/{_ASSOC_QUOTE_TO_DEAL}",
+            headers=_headers(),
+            timeout=10,
+        )
+        # Associate each line item
+        for li_id in line_item_ids:
+            requests.put(
+                f"{_BASE}/crm/v3/objects/line_items/{li_id}/associations/quotes/{quote_id}/{_ASSOC_LINE_ITEM_TO_QUOTE}",
+                headers=_headers(),
+                timeout=10,
+            )
+        return quote_id
+    except Exception:
+        logger.exception("[hubspot] create_quote failed for %r", prospect)
+        return None
+
+
 def _get_deal_id(run_id: int) -> Optional[str]:
     from sales_support_agent.services.fulfillment_deck import storage
     run = storage.get_run(run_id)
@@ -257,6 +338,63 @@ def sync_stage(run_id: int, stage: str) -> None:
         logger.info("[hubspot] stage → %s for run %d deal %s", stage, run_id, deal_id)
 
     _bg(_do)
+
+
+def _do_sync_quote(run_id: int) -> None:
+    import datetime as _dt
+    from sales_support_agent.services.fulfillment_deck import storage
+    run = storage.get_run(run_id)
+    if run is None:
+        return
+    summary = dict(run.summary_json or {})
+    deal_id = str(summary.get("hubspot_deal_id") or "") or None
+    if not deal_id:
+        logger.warning("[hubspot] no deal for run %d, cannot create quote", run_id)
+        return
+
+    fq = dict(summary.get("fulfillment_quote") or {})
+    monthly_total = float(fq.get("monthly_total") or 0)
+    if not monthly_total:
+        logger.warning("[hubspot] no monthly total for run %d, skipping quote", run_id)
+        return
+
+    # Create one HubSpot line item per fulfillment quote line
+    line_item_ids: list[str] = []
+    for line in (fq.get("lines") or []):
+        label = str(line.get("label") or "Service")
+        qty = float(line.get("qty") or 1)
+        monthly = float(line.get("monthly") or 0)
+        rate = float(line.get("rate") or 0) or (monthly / qty if qty else monthly)
+        unit = str(line.get("unit") or "")
+        li_id = _create_line_item(label, qty, rate, monthly, unit)
+        if li_id:
+            line_item_ids.append(li_id)
+
+    prospect = str(summary.get("prospect") or f"Run {run_id}")
+    expiry_days = int(os.environ.get("HUBSPOT_QUOTE_EXPIRY_DAYS", "30"))
+    expiry = (_dt.datetime.utcnow() + _dt.timedelta(days=expiry_days)).strftime("%Y-%m-%d")
+
+    quote_id = _create_quote(prospect, expiry, deal_id, line_item_ids)
+    if not quote_id:
+        return
+
+    portal_id = _portal_id() or ""
+    quote_url = (
+        f"https://app.hubspot.com/quotes/{portal_id}/quote/{quote_id}"
+        if portal_id else ""
+    )
+    storage.update_summary(run_id, {
+        "hubspot_quote_id": quote_id,
+        "hubspot_quote_url": quote_url,
+    })
+    logger.info("[hubspot] quote %s for run %d url=%s", quote_id, run_id, quote_url)
+
+
+def sync_quote(run_id: int) -> None:
+    """Call after a rate sheet is published. Creates a HubSpot Quote with e-signature enabled."""
+    if not _token():
+        return
+    _bg(_do_sync_quote, run_id)
 
 
 def sync_margin(run_id: int, margin: dict, pitched: float) -> None:

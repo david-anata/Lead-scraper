@@ -190,6 +190,8 @@ def list_runs(limit: int = 100) -> list[dict]:
                     "pitched_monthly": pitched_monthly,
                     # Raw profile stored for the expand panel brief + margin calc
                     "prospect_profile": prospect_profile,
+                    # HubSpot integration
+                    "hubspot_quote_url": str(summary.get("hubspot_quote_url") or ""),
                 }
             )
         return out
