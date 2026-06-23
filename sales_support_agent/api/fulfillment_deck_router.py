@@ -324,6 +324,28 @@ def publish_run(run_id: int) -> RedirectResponse:
     )
 
 
+@admin_router.post("/runs/{run_id}/quote")
+def create_quote(run_id: int) -> RedirectResponse:
+    """Trigger HubSpot quote creation (or re-creation) for an already-published run."""
+    run = storage.get_run(run_id)
+    if run is None or run.status != "completed":
+        return RedirectResponse(
+            f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not yet published."),
+            status_code=303,
+        )
+    try:
+        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
+        _hs_quote(run_id)
+        msg = "Creating HubSpot quote — refresh in a few seconds to see the Quote button."
+    except Exception:
+        logger.exception("[fulfillment_deck] hubspot create_quote failed")
+        msg = "Quote creation failed — check that HUBSPOT_API_TOKEN is set in Render."
+    return RedirectResponse(
+        f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus(msg),
+        status_code=303,
+    )
+
+
 @admin_router.post("/runs/{run_id}/delete")
 def delete_run(run_id: int) -> RedirectResponse:
     deleted = storage.delete_run(run_id)
