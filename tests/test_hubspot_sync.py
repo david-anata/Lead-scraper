@@ -53,11 +53,12 @@ def _deal(did, name, amount, stage, closedate, owner="42"):
 
 
 class FakeHubSpotClient:
-    """Minimal stand-in matching the read surface sync_hubspot_sales uses."""
+    """Minimal stand-in matching the read + write surface sync_hubspot_sales uses."""
 
     is_configured = True
 
     def __init__(self):
+        self.updates: list[tuple[str, dict]] = []  # recorded write calls
         self.deals = [
             _deal("1", "Acme Q3", "12000.50", "presentationscheduled", "2026-07-01"),
             _deal("2", "Globex", "5000", "qualifiedtobuy", "2026-06-15"),
@@ -91,6 +92,9 @@ class FakeHubSpotClient:
             {"id": "l1", "properties": {"name": "Pick & Pack", "quantity": "2",
                                         "price": "100.00", "amount": "200.00"}}
         ]
+
+    def update_deal(self, deal_id: str, properties: dict) -> None:
+        self.updates.append((deal_id, properties))
 
     def batch_read(self, object_type, ids, *, properties):
         if object_type == "companies":
@@ -179,6 +183,83 @@ class HubSpotSyncTests(unittest.TestCase):
             result = sync_hubspot_sales(session, Unconfigured(), self._settings())
         self.assertFalse(result.as_dict()["ok"])
         self.assertTrue(result.errors)
+
+
+class TestAutoSyncAmount(unittest.TestCase):
+    """High-confidence amount sync: deal at $0 + line items → auto-update HubSpot."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sf = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        init_database(cls.sf)
+
+    def setUp(self):
+        with session_scope(self.sf) as s:
+            for model in (HubSpotDeal, HubSpotCompany, HubSpotContact,
+                          HubSpotLineItem, HubSpotDealContact):
+                for row in s.query(model).all():
+                    s.delete(row)
+                s.flush()
+
+    def _client_with_zero_amount(self):
+        """Fake client with one open deal at $0 and a line item totalling $500."""
+        client = FakeHubSpotClient()
+        client.deals = [_deal("z1", "ZeroAmountCo", "0", "appointmentscheduled", "2026-09-01")]
+        client.assoc = {
+            ("z1", "companies"): [],
+            ("z1", "contacts"): [],
+            ("z1", "line_items"): ["lz1"],
+        }
+        client.get_line_items = lambda ids: [
+            {"id": "lz1", "properties": {"name": "Service", "quantity": "1",
+                                         "price": "500.00", "amount": "500.00"}}
+        ]
+        return client
+
+    def test_zero_amount_deal_gets_updated(self):
+        client = self._client_with_zero_amount()
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        # Client should have received one update_deal call.
+        self.assertEqual(len(client.updates), 1)
+        deal_id, props = client.updates[0]
+        self.assertEqual(deal_id, "z1")
+        self.assertIn("amount", props)
+        self.assertAlmostEqual(float(props["amount"]), 500.0)
+
+        # Local mirror should reflect the updated amount.
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "z1")
+            self.assertEqual(d.amount_cents, 50_000)
+
+        self.assertEqual(result.auto_amount_synced, 1)
+
+    def test_nonzero_amount_deal_not_updated(self):
+        client = FakeHubSpotClient()
+        # Default deals have non-zero amounts.
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+        self.assertEqual(client.updates, [])
+
+    def test_closed_deal_not_updated(self):
+        """Closed deal at $0 must never be auto-updated."""
+        client = FakeHubSpotClient()
+        client.deals = [_deal("c1", "ClosedCo", "0", "closedwon", "2025-01-01")]
+        client.deals[0]["properties"]["hs_is_closed"] = "true"
+        client.deals[0]["properties"]["hs_is_closed_won"] = "true"
+        client.assoc = {
+            ("c1", "companies"): [],
+            ("c1", "contacts"): [],
+            ("c1", "line_items"): ["lc1"],
+        }
+        client.get_line_items = lambda ids: [
+            {"id": "lc1", "properties": {"name": "S", "quantity": "1",
+                                         "price": "300.00", "amount": "300.00"}}
+        ]
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+        self.assertEqual(client.updates, [])
 
 
 if __name__ == "__main__":

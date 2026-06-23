@@ -44,6 +44,7 @@ class HubSpotSyncResult:
     companies: int = 0
     contacts: int = 0
     line_items: int = 0
+    auto_amount_synced: int = 0
     errors: list[str] = field(default_factory=list)
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -54,6 +55,7 @@ class HubSpotSyncResult:
             "companies": self.companies,
             "contacts": self.contacts,
             "line_items": self.line_items,
+            "auto_amount_synced": self.auto_amount_synced,
             "errors": list(self.errors),
             "started_at": self.started_at,
             "completed_at": self.completed_at,
@@ -216,6 +218,37 @@ def _upsert_line_item(session: Session, obj: dict[str, Any], deal_id: str) -> No
     session.add(row)
 
 
+def _maybe_sync_amount(
+    session: Session,
+    client: HubSpotClient,
+    deal_id: str,
+    result: HubSpotSyncResult,
+) -> None:
+    """High-confidence auto-fix: set deal amount from line items when it's $0."""
+    from sqlalchemy import func as sa_func, select as sa_select
+
+    deal = session.get(HubSpotDeal, deal_id)
+    if deal is None or deal.is_closed or (deal.amount_cents or 0) > 0:
+        return
+
+    li_total = session.execute(
+        sa_select(sa_func.sum(HubSpotLineItem.amount_cents))
+        .where(HubSpotLineItem.hubspot_deal_id == deal_id)
+    ).scalar() or 0
+
+    if li_total <= 0:
+        return
+
+    amount_str = str(round(li_total / 100, 2))
+    try:
+        client.update_deal(deal_id, {"amount": amount_str})
+        deal.amount_cents = int(li_total)
+        logger.info("[hubspot_sync] auto-synced amount for deal %s → $%s", deal_id, amount_str)
+        result.auto_amount_synced = getattr(result, "auto_amount_synced", 0) + 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[hubspot_sync] auto-sync amount failed for deal %s: %s", deal_id, exc)
+
+
 def _replace_deal_contacts(session: Session, deal_id: str, contact_ids: list[str]) -> None:
     existing = session.scalars(
         select(HubSpotDealContact).where(HubSpotDealContact.hubspot_deal_id == deal_id)
@@ -305,7 +338,10 @@ def sync_hubspot_sales(
                     _upsert_line_item(session, li, deal_id)
                     result.line_items += 1
 
+            # High-confidence auto-fix: deal amount is $0 but line items exist.
+            # This is unambiguous — write back without waiting for rep approval.
             session.flush()
+            _maybe_sync_amount(session, client, deal_id, result)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[hubspot_sync] deal iteration failed")
         result.errors.append(f"deal sync: {exc}")
