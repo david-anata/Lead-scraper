@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.main import app
-from sales_support_agent.models.database import get_engine
+from sales_support_agent.models.database import create_session_factory, get_engine, init_database
 from sales_support_agent.models.entities import DeckVisitSession
 from sales_support_agent.services.access import store
 from sales_support_agent.services.admin_auth import create_user_session_token
@@ -40,6 +40,12 @@ def _cookie_for(email: str, name: str = "User", role: str = "member"):
 class FulfillmentDeckRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        # Other test files (e.g. test_clickup_sync's ":memory:" factories) reassign
+        # the module-level database.engine global. Re-pin it to this suite's DB so
+        # routes that write through get_engine() don't hit a stale/readonly engine
+        # when we run inside the full suite rather than in isolation.
+        factory = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        init_database(factory)
         cls.client = TestClient(app)
         cookie_name, token = _cookie_for("david@anatainc.com", "David")  # seeded superadmin
         cls.client.cookies.set(cookie_name, token)
@@ -177,7 +183,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.client.post(f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False)
         page = self.client.get(_BASE).text
         self.assertIn(f'href="{run["view_path"]}?viewer=internal"', page)
-        self.assertIn("Review / edit", page)
+        # Published rows expose the review link as an "Edit" action (drafts show "Review").
+        self.assertIn(f'href="{_BASE}/runs/{run["id"]}/review"', page)
+        self.assertIn(">Edit</a>", page)
 
     def test_update_route_round_trip(self) -> None:
         run = self._generate()

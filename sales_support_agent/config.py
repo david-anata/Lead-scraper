@@ -171,6 +171,13 @@ class Settings:
     amazon_sp_api_aws_session_token: str
     clickup_ap_list_id: str = "901104880724"
     clickup_ar_list_id: str = "901113065688"
+    # HubSpot — the sales system source of truth (replacing ClickUp for sales).
+    # Private-app token; same env var the legacy fulfillment hubspot_sync used.
+    hubspot_api_token: str = ""
+    hubspot_base_url: str = "https://api.hubapi.com"
+    hubspot_request_timeout_seconds: int = 30
+    hubspot_sales_pipeline_id: str = ""  # optional: restrict deal sync to one pipeline
+    hubspot_portal_id: str = ""  # for "Open in HubSpot" deep links (app.hubspot.com/contacts/{portal}/...)
     # QuickBooks Online (QBO) — AR invoice sync
     qbo_client_id: str = ""
     qbo_client_secret: str = ""
@@ -421,6 +428,11 @@ def load_settings() -> Settings:
         clickup_api_token=(os.getenv("CLICKUP_API_TOKEN") or os.getenv("CLICKUP_API_KEY") or "").strip(),
         clickup_base_url=(os.getenv("CLICKUP_BASE_URL", "https://api.clickup.com/api/v2").strip() or "https://api.clickup.com/api/v2"),
         clickup_list_id=os.getenv("CLICKUP_LIST_ID", "").strip(),
+        hubspot_api_token=os.getenv("HUBSPOT_API_TOKEN", "").strip(),
+        hubspot_base_url=(os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com").strip() or "https://api.hubapi.com"),
+        hubspot_request_timeout_seconds=int((os.getenv("HUBSPOT_REQUEST_TIMEOUT_SECONDS", "30") or "30").strip()),
+        hubspot_sales_pipeline_id=os.getenv("HUBSPOT_SALES_PIPELINE_ID", "").strip(),
+        hubspot_portal_id=os.getenv("HUBSPOT_PORTAL_ID", "").strip(),
         clickup_request_timeout_seconds=int((os.getenv("CLICKUP_REQUEST_TIMEOUT_SECONDS", "30") or "30").strip()),
         clickup_discovery_sample_size=int((os.getenv("CLICKUP_DISCOVERY_SAMPLE_SIZE", "10") or "10").strip()),
         stale_lead_scan_max_tasks=int((os.getenv("STALE_LEAD_SCAN_MAX_TASKS", "50") or "50").strip()),

@@ -151,6 +151,10 @@ app.include_router(_settings_router_)
 from sales_support_agent.api.hr_router import router as _hr_router  # noqa: E402
 app.include_router(_hr_router)
 
+# Sales Priorities — HubSpot-backed deal board (/admin/sales/*).
+from sales_support_agent.api.sales_router import router as _sales_router  # noqa: E402
+app.include_router(_sales_router)
+
 # Google OAuth start + callback — /admin/auth/google and /admin/auth/callback.
 # The login page's "Sign in with Google" button and the invite-accept flow both
 # bounce here; without this router those paths 404 on the root app. The router

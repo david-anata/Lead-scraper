@@ -46,6 +46,7 @@ class _NavSection:
 _NAV_SECTIONS = [
     _NavSection("sales", "Sales Priorities", "sales", [
         _NavSubpage("sales.priorities", "Sales Priorities", "/admin", "sales"),
+        _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.decks", "Generate sales deck", "/admin/sales-decks", "sales_decks"),
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [

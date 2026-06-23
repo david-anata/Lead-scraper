@@ -207,6 +207,9 @@ class CommunicationEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     clickup_task_id: Mapped[str] = mapped_column(String(64), index=True)
+    # HubSpot deal this event belongs to (sales source of truth). Nullable for
+    # back-compat with legacy ClickUp-keyed rows until ClickUp is retired.
+    hubspot_deal_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     external_event_key: Mapped[str] = mapped_column(String(255), default="", index=True)
     source: Mapped[str] = mapped_column(String(64), default="manual")
@@ -227,6 +230,8 @@ class MailboxSignal(Base):
     external_thread_id: Mapped[str] = mapped_column(String(255), default="", index=True)
     dedupe_key: Mapped[str] = mapped_column(String(255), default="", index=True)
     matched_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    # HubSpot deal this inbound signal was matched to (sales source of truth).
+    matched_deal_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     sender_name: Mapped[str] = mapped_column(String(255), default="")
     sender_email: Mapped[str] = mapped_column(String(255), default="", index=True)
     sender_domain: Mapped[str] = mapped_column(String(255), default="", index=True)
@@ -838,3 +843,115 @@ class AppAccessRequest(Base):
 
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# HubSpot sales mirror tables (read mirror first; HubSpot stays canonical).
+# Money is stored in integer cents. These replace the ClickUp-shaped
+# LeadMirror as the sales source of truth. Sync cursors live in kv_store.
+# ---------------------------------------------------------------------------
+class HubSpotCompany(Base):
+    __tablename__ = "hubspot_companies"
+
+    hubspot_company_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(512), default="", index=True)
+    domain: Mapped[str] = mapped_column(String(255), default="", index=True)
+    industry: Mapped[str] = mapped_column(String(255), default="")
+    city: Mapped[str] = mapped_column(String(128), default="")
+    state: Mapped[str] = mapped_column(String(128), default="")
+    raw_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class HubSpotContact(Base):
+    __tablename__ = "hubspot_contacts"
+
+    hubspot_contact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hubspot_company_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    first_name: Mapped[str] = mapped_column(String(255), default="")
+    last_name: Mapped[str] = mapped_column(String(255), default="")
+    email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    phone: Mapped[str] = mapped_column(String(128), default="")
+    job_title: Mapped[str] = mapped_column(String(255), default="")
+    raw_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class HubSpotDeal(Base):
+    __tablename__ = "hubspot_deals"
+
+    hubspot_deal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    deal_name: Mapped[str] = mapped_column(String(512), default="", index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    deal_stage: Mapped[str] = mapped_column(String(128), default="", index=True)
+    # Human-readable stage label resolved from the HubSpot pipeline (raw
+    # deal_stage is an internal id like "qualifiedtobuy").
+    deal_stage_label: Mapped[str] = mapped_column(String(255), default="")
+    pipeline: Mapped[str] = mapped_column(String(128), default="", index=True)
+    close_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    owner_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    owner_email: Mapped[str] = mapped_column(String(255), default="")
+    hubspot_company_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    is_closed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_won: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # Accountability/managed fields mirrored from LeadMirror so the staleness
+    # engine can repoint onto HubSpot deals without losing its inputs.
+    last_meaningful_touch_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_outbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_inbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    follow_up_state: Mapped[str] = mapped_column(String(64), default="")
+    communication_summary: Mapped[str] = mapped_column(Text, default="")
+    recommended_next_action: Mapped[str] = mapped_column(Text, default="")
+    raw_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class HubSpotLineItem(Base):
+    __tablename__ = "hubspot_line_items"
+
+    hubspot_line_item_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hubspot_deal_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    name: Mapped[str] = mapped_column(String(512), default="")
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    unit_price_cents: Mapped[int] = mapped_column(Integer, default=0)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    raw_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class HubSpotDealContact(Base):
+    """Deal <-> contact link mirror (a deal can have many contacts)."""
+
+    __tablename__ = "hubspot_deal_contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hubspot_deal_id: Mapped[str] = mapped_column(String(64), index=True)
+    hubspot_contact_id: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(64), default="")
+
+    __table_args__ = (
+        Index("ix_hs_deal_contact_unique", "hubspot_deal_id", "hubspot_contact_id", unique=True),
+    )
+
+
+class SalesDealAsset(Base):
+    """Links a HubSpot deal to a closing-tool run (deck / rate sheet / ads
+    audit) so the deal board/detail can render the three CTAs as deep links."""
+
+    __tablename__ = "sales_deal_assets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hubspot_deal_id: Mapped[str] = mapped_column(String(64), index=True)
+    asset_type: Mapped[str] = mapped_column(String(32), index=True)  # deck|rate_sheet|ads_audit
+    run_id: Mapped[str] = mapped_column(String(64), default="")
+    url: Mapped[str] = mapped_column(String(1024), default="")
+    label: Mapped[str] = mapped_column(String(255), default="")
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_sales_deal_asset_unique", "hubspot_deal_id", "asset_type", "run_id", unique=True),
+    )

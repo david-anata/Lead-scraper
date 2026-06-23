@@ -143,6 +143,13 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         },
         "communication_events": {
             "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
+            "hubspot_deal_id": "ALTER TABLE communication_events ADD COLUMN hubspot_deal_id VARCHAR(64) DEFAULT ''",
+        },
+        "mailbox_signals": {
+            "matched_deal_id": "ALTER TABLE mailbox_signals ADD COLUMN matched_deal_id VARCHAR(64) DEFAULT ''",
+        },
+        "hubspot_deals": {
+            "deal_stage_label": "ALTER TABLE hubspot_deals ADD COLUMN deal_stage_label VARCHAR(255) DEFAULT ''",
         },
         "brand_analysis_reports": {
             "slug": "ALTER TABLE brand_analysis_reports ADD COLUMN slug VARCHAR(96) NOT NULL DEFAULT ''",
@@ -801,6 +808,126 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 updated_at TEXT NOT NULL DEFAULT ''
             )
         """))
+
+    # HubSpot sales mirror tables (read mirror; HubSpot stays canonical) +
+    # additive columns generalizing comms off ClickUp. Fresh DBs get the
+    # tables via create_all; existing Postgres needs explicit DDL here.
+    with engine.begin() as connection:
+        connection.execute(text("""
+            ALTER TABLE communication_events
+            ADD COLUMN IF NOT EXISTS hubspot_deal_id VARCHAR(64) NOT NULL DEFAULT ''
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_comm_events_hs_deal ON communication_events (hubspot_deal_id)"))
+        connection.execute(text("""
+            ALTER TABLE mailbox_signals
+            ADD COLUMN IF NOT EXISTS matched_deal_id VARCHAR(64) NOT NULL DEFAULT ''
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_mailbox_signals_matched_deal ON mailbox_signals (matched_deal_id)"))
+
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_companies (
+                hubspot_company_id VARCHAR(64)  PRIMARY KEY,
+                name               VARCHAR(512) NOT NULL DEFAULT '',
+                domain             VARCHAR(255) NOT NULL DEFAULT '',
+                industry           VARCHAR(255) NOT NULL DEFAULT '',
+                city               VARCHAR(128) NOT NULL DEFAULT '',
+                state              VARCHAR(128) NOT NULL DEFAULT '',
+                raw_properties     JSON         NOT NULL DEFAULT '{}',
+                last_sync_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_companies_name ON hubspot_companies (name)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_companies_domain ON hubspot_companies (domain)"))
+
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_contacts (
+                hubspot_contact_id VARCHAR(64)  PRIMARY KEY,
+                hubspot_company_id VARCHAR(64)  NOT NULL DEFAULT '',
+                first_name         VARCHAR(255) NOT NULL DEFAULT '',
+                last_name          VARCHAR(255) NOT NULL DEFAULT '',
+                email              VARCHAR(255) NOT NULL DEFAULT '',
+                phone              VARCHAR(128) NOT NULL DEFAULT '',
+                job_title          VARCHAR(255) NOT NULL DEFAULT '',
+                raw_properties     JSON         NOT NULL DEFAULT '{}',
+                last_sync_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_contacts_email ON hubspot_contacts (email)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_contacts_company ON hubspot_contacts (hubspot_company_id)"))
+
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_deals (
+                hubspot_deal_id          VARCHAR(64)  PRIMARY KEY,
+                deal_name                VARCHAR(512) NOT NULL DEFAULT '',
+                amount_cents             INTEGER      NOT NULL DEFAULT 0,
+                deal_stage               VARCHAR(128) NOT NULL DEFAULT '',
+                deal_stage_label         VARCHAR(255) NOT NULL DEFAULT '',
+                pipeline                 VARCHAR(128) NOT NULL DEFAULT '',
+                close_date               TIMESTAMPTZ  NULL,
+                owner_id                 VARCHAR(64)  NOT NULL DEFAULT '',
+                owner_email              VARCHAR(255) NOT NULL DEFAULT '',
+                hubspot_company_id       VARCHAR(64)  NOT NULL DEFAULT '',
+                is_closed                BOOLEAN      NOT NULL DEFAULT FALSE,
+                is_won                   BOOLEAN      NOT NULL DEFAULT FALSE,
+                created_at               TIMESTAMPTZ  NULL,
+                updated_at               TIMESTAMPTZ  NULL,
+                description              TEXT         NOT NULL DEFAULT '',
+                last_meaningful_touch_at TIMESTAMPTZ  NULL,
+                last_outbound_at         TIMESTAMPTZ  NULL,
+                last_inbound_at          TIMESTAMPTZ  NULL,
+                next_follow_up_at        TIMESTAMPTZ  NULL,
+                follow_up_state          VARCHAR(64)  NOT NULL DEFAULT '',
+                communication_summary    TEXT         NOT NULL DEFAULT '',
+                recommended_next_action  TEXT         NOT NULL DEFAULT '',
+                raw_properties           JSON         NOT NULL DEFAULT '{}',
+                last_sync_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_close_date ON hubspot_deals (close_date)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_stage ON hubspot_deals (deal_stage)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_owner ON hubspot_deals (owner_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_company ON hubspot_deals (hubspot_company_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_is_closed ON hubspot_deals (is_closed)"))
+
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_line_items (
+                hubspot_line_item_id VARCHAR(64)  PRIMARY KEY,
+                hubspot_deal_id      VARCHAR(64)  NOT NULL DEFAULT '',
+                name                 VARCHAR(512) NOT NULL DEFAULT '',
+                quantity             INTEGER      NOT NULL DEFAULT 0,
+                unit_price_cents     INTEGER      NOT NULL DEFAULT 0,
+                amount_cents         INTEGER      NOT NULL DEFAULT 0,
+                raw_properties       JSON         NOT NULL DEFAULT '{}',
+                last_sync_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_line_items_deal ON hubspot_line_items (hubspot_deal_id)"))
+
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_deal_contacts (
+                id                 SERIAL      PRIMARY KEY,
+                hubspot_deal_id    VARCHAR(64) NOT NULL,
+                hubspot_contact_id VARCHAR(64) NOT NULL,
+                role               VARCHAR(64) NOT NULL DEFAULT ''
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deal_contacts_deal ON hubspot_deal_contacts (hubspot_deal_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deal_contacts_contact ON hubspot_deal_contacts (hubspot_contact_id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_hs_deal_contact_unique ON hubspot_deal_contacts (hubspot_deal_id, hubspot_contact_id)"))
+
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS sales_deal_assets (
+                id              SERIAL       PRIMARY KEY,
+                hubspot_deal_id VARCHAR(64)  NOT NULL,
+                asset_type      VARCHAR(32)  NOT NULL,
+                run_id          VARCHAR(64)  NOT NULL DEFAULT '',
+                url             VARCHAR(1024) NOT NULL DEFAULT '',
+                label           VARCHAR(255) NOT NULL DEFAULT '',
+                linked_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_sales_deal_assets_deal ON sales_deal_assets (hubspot_deal_id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_sales_deal_asset_unique ON sales_deal_assets (hubspot_deal_id, asset_type, run_id)"))
 
 
 # Canonical column order for cash_events upsert

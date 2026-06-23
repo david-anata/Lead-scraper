@@ -7,17 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sales_support_agent.config import (
-    ACTIVE_FOLLOW_UP_STATUSES,
-    DEFAULT_STATUS_POLICIES,
-    INACTIVE_STATUSES,
-    ManagedFieldSettings,
-    Settings,
-    build_normalized_status_policies,
-    normalize_status_key,
-)
+from sales_support_agent import config
+from sales_support_agent.config import Settings
 
 try:
+    from sales_support_agent.models import database as database_module
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import CommunicationEvent
     from sales_support_agent.models.schemas import CommunicationEventRequest
@@ -68,52 +62,22 @@ class _FakeSlackClient:
 
 
 def _build_settings(database_path: Path) -> Settings:
-    return Settings(
-        app_name="sales-support-agent",
-        clickup_api_token="token",
-        clickup_base_url="https://api.clickup.com/api/v2",
-        clickup_list_id="list-123",
-        clickup_request_timeout_seconds=30,
-        clickup_discovery_sample_size=10,
-        stale_lead_scan_max_tasks=5,
-        stale_lead_scan_sync_max_tasks=7,
-        stale_lead_slack_digest_enabled=True,
-        stale_lead_slack_digest_mention_channel=True,
-        stale_lead_slack_digest_max_items=20,
-        stale_lead_immediate_alert_urgencies=("overdue",),
-        daily_digest_enabled=True,
-        daily_digest_email_to=("team@example.com",),
-        daily_digest_email_cc=(),
-        daily_digest_subject_prefix="[SDR Support]",
-        daily_digest_max_items=20,
-        slack_bot_token="slack-token",
-        slack_channel_id="channel-123",
-        slack_assignee_map={},
-        slack_immediate_event_types=("inbound_reply_received", "meeting_notes_missing"),
-        gmail_api_base_url="https://gmail.googleapis.com/gmail/v1",
-        gmail_oauth_token_url="https://oauth2.googleapis.com/token",
-        gmail_access_token="",
-        gmail_client_id="",
-        gmail_client_secret="",
-        gmail_refresh_token="",
-        gmail_user_id="me",
-        gmail_poll_query="newer_than:2d",
-        gmail_poll_max_messages=25,
-        gmail_source_domains=("fulfil.com",),
-        sales_agent_db_url=f"sqlite:///{database_path}",
-        internal_api_key="internal-key",
-        discovery_snapshot_path=Path("runtime/clickup_schema_snapshot.json"),
-        use_due_date_for_follow_up=False,
-        openai_api_key="",
-        openai_model="gpt-4o-mini",
-        instantly_webhook_secret="",
-        instantly_webhook_secret_header="X-Instantly-Webhook-Secret",
-        instantly_webhook_allowed_event_types=("reply_received",),
-        active_statuses=tuple(normalize_status_key(status) for status in ACTIVE_FOLLOW_UP_STATUSES),
-        inactive_statuses=tuple(normalize_status_key(status) for status in INACTIVE_STATUSES),
-        managed_fields=ManagedFieldSettings(),
-        status_policies=build_normalized_status_policies(DEFAULT_STATUS_POLICIES),
-    )
+    """Build a complete Settings via load_settings() with a patched environment.
+
+    The Settings dataclass has many required fields; rather than enumerate every
+    one here (and drift as it grows), patch the env vars this test relies on and
+    let load_settings() fill the rest with its defaults.
+    """
+    env = {
+        "CLICKUP_API_TOKEN": "token",
+        "CLICKUP_LIST_ID": "list-123",
+        "SLACK_BOT_TOKEN": "slack-token",
+        "SLACK_CHANNEL_ID": "channel-123",
+        "SALES_AGENT_DB_URL": f"sqlite:///{database_path}",
+        "SALES_AGENT_INTERNAL_API_KEY": "internal-key",
+    }
+    with patch.dict("os.environ", env, clear=False):
+        return config.load_settings()
 
 
 @unittest.skipUnless(SQLALCHEMY_AVAILABLE, "sqlalchemy is required for communication tests")
@@ -122,10 +86,18 @@ class CommunicationServiceTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.database_path = Path(self.tempdir.name) / "sales-support-agent.sqlite3"
         self.settings = _build_settings(self.database_path)
+        # create_session_factory reassigns the module-level `database.engine`
+        # global. Remember the prior engine so tearDown can restore it — otherwise
+        # we leave it pointing at our temp DB, which we then delete, breaking any
+        # later test that writes through get_engine() ("readonly database").
+        self._prev_engine = database_module.engine
         self.session_factory = create_session_factory(self.settings.sales_agent_db_url)
         init_database(self.session_factory)
 
     def tearDown(self) -> None:
+        if database_module.engine is not None:
+            database_module.engine.dispose()
+        database_module.engine = self._prev_engine
         self.tempdir.cleanup()
 
     def test_duplicate_payload_signature_skips_comment_and_slack(self) -> None:
