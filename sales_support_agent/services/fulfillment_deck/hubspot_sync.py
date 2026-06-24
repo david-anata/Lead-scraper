@@ -189,20 +189,33 @@ def _add_note(deal_id: str, body: str) -> bool:
         return False
 
 
-def _portal_id() -> Optional[str]:
-    pid = os.environ.get("HUBSPOT_PORTAL_ID", "").strip()
-    if pid:
-        return pid
+def _account_info() -> dict:
+    """Fetch portal ID and UI domain from HubSpot account-info API."""
     try:
         r = requests.get(
             f"{_BASE}/account-info/v3/details",
             headers=_headers(),
             timeout=10,
         )
-        return str(r.json().get("portalId") or "")
+        return r.json()
     except Exception:
-        logger.exception("[hubspot] failed to fetch portal ID")
-        return None
+        logger.exception("[hubspot] failed to fetch account info")
+        return {}
+
+
+def _portal_id() -> Optional[str]:
+    pid = os.environ.get("HUBSPOT_PORTAL_ID", "").strip()
+    if pid:
+        return pid
+    return str(_account_info().get("portalId") or "") or None
+
+
+def _hub_domain() -> str:
+    """Return the correct HubSpot UI domain for this account (e.g. app-na2.hubspot.com)."""
+    override = os.environ.get("HUBSPOT_UI_DOMAIN", "").strip()
+    if override:
+        return override
+    return str(_account_info().get("uiDomain") or "app.hubspot.com")
 
 
 def _create_line_item(label: str, qty: float, price: float, total: float, unit: str = "") -> Optional[str]:
@@ -211,7 +224,6 @@ def _create_line_item(label: str, qty: float, price: float, total: float, unit: 
         "quantity": str(round(qty, 4)),
         "price": str(round(price, 4)),
         "amount": str(round(total, 2)),
-        "recurringbillingfrequency": "monthly",
     }
     if unit:
         props["description"] = f"per {unit}"
@@ -222,46 +234,53 @@ def _create_line_item(label: str, qty: float, price: float, total: float, unit: 
             json={"properties": props},
             timeout=10,
         )
-        return r.json().get("id")
+        lid = r.json().get("id")
+        if not lid:
+            logger.warning("[hubspot] line_item creation failed: %s", r.text[:200])
+        return lid
     except Exception:
         logger.exception("[hubspot] create_line_item failed for %r", label)
         return None
 
 
 def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list) -> Optional[str]:
-    props: dict = {
-        "hs_title": f"{prospect} — 3PL Fulfillment Agreement",
-        "hs_expiration_date": expiry,
-        # E-sign quotes must start as DRAFT; publish from HubSpot UI to send.
-        "hs_status": "DRAFT",
-        "hs_esign_enabled": "true",
-        "hs_template_type": "QUOTE",
-        "hs_currency": "USD",
-        "hs_language": "en-us",
-        "hs_locale": "en-US",
+    # Include deal association directly in the creation payload — avoids
+    # separate PUT calls and removes dependency on v3 association typeId guesses.
+    payload: dict = {
+        "properties": {
+            "hs_title": f"{prospect} — 3PL Fulfillment Agreement",
+            "hs_expiration_date": expiry,
+            "hs_status": "DRAFT",
+            "hs_esign_enabled": "true",
+            "hs_template_type": "QUOTE",
+            "hs_currency": "USD",
+            "hs_language": "en-us",
+            "hs_locale": "en-US",
+        },
+        "associations": [
+            {
+                "to": {"id": deal_id},
+                "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 64}],
+            }
+        ],
     }
     try:
         r = requests.post(
             f"{_BASE}/crm/v3/objects/quotes",
             headers=_headers(),
-            json={"properties": props},
+            json=payload,
             timeout=10,
         )
         quote_id = r.json().get("id")
         if not quote_id:
-            logger.warning("[hubspot] quote creation returned no ID: %s", r.text[:300])
+            logger.warning("[hubspot] quote creation returned no ID: %s", r.text[:500])
             return None
-        # Associate with deal
-        requests.put(
-            f"{_BASE}/crm/v3/objects/quotes/{quote_id}/associations/deals/{deal_id}/{_ASSOC_QUOTE_TO_DEAL}",
-            headers=_headers(),
-            timeout=10,
-        )
-        # Associate each line item
+        # Associate line items via v4 API (explicit category avoids numeric typeId ambiguity)
         for li_id in line_item_ids:
             requests.put(
-                f"{_BASE}/crm/v3/objects/line_items/{li_id}/associations/quotes/{quote_id}/{_ASSOC_LINE_ITEM_TO_QUOTE}",
+                f"{_BASE}/crm/v4/objects/line_items/{li_id}/associations/quotes/{quote_id}",
                 headers=_headers(),
+                json=[{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 67}],
                 timeout=10,
             )
         return quote_id
@@ -404,8 +423,9 @@ def _do_sync_quote(run_id: int) -> None:
         return
 
     portal_id = _portal_id() or ""
+    hub_domain = _hub_domain()
     quote_url = (
-        f"https://app.hubspot.com/quotes/{portal_id}/quote/{quote_id}"
+        f"https://{hub_domain}/quotes/{portal_id}/quote/{quote_id}"
         if portal_id else ""
     )
     storage.update_summary(run_id, {
