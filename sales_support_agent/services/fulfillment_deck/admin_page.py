@@ -97,8 +97,10 @@ _STYLES = """
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
       .stage-select {
         appearance: none; -webkit-appearance: none; border: none; border-radius: 999px;
-        padding: 3px 10px; font-size: 11px; font-weight: 700;
+        padding: 3px 22px 3px 10px; font-size: 11px; font-weight: 700;
         font-family: "Montserrat", sans-serif; letter-spacing: 0.03em; cursor: pointer;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23475569' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 6px center; background-size: 9px;
       }
       .stage--intake        { background: #e2e8f0; color: #475569; }
       .stage--pending_fulfillment { background: #e0f2fe; color: #0369a1; }
@@ -399,12 +401,12 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 f"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Share</button>"
             )
             if hs_quote_url:
-                actions.append(f'<a class="btn btn--ghost" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()" title="Open e-signature quote in HubSpot">Quote ✍</a>')
+                actions.append(f'<a class="btn btn--ghost" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()" title="Open e-signature quote in HubSpot" style="color:#FF7A59;border-color:rgba(255,122,89,0.4)">Open Quote ✍</a>')
             else:
                 actions.append(
                     f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/quote" '
                     f'style="display:inline" onclick="event.stopPropagation()">'
-                    f'<button class="btn btn--ghost" type="submit" title="Create HubSpot e-signature quote">Quote ✍</button></form>'
+                    f'<button class="btn btn--ghost" type="submit" title="Create HubSpot e-signature quote">Create Quote ✍</button></form>'
                 )
             actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Edit</a>')
         actions.append(
@@ -686,8 +688,9 @@ def render_rate_sheet_review_page(
     warnings_html = ""
     if warnings:
         items = "".join(f"<li>{_esc(w)}</li>" for w in warnings[:12])
+        warn_label = "Published — notes:" if published else "Check before publishing:"
         warnings_html = (
-            f'<div class="flash flash--warn"><strong>Check before publishing:</strong>'
+            f'<div class="flash flash--warn"><strong>{warn_label}</strong>'
             f'<ul style="margin:6px 0 0;padding-left:18px">{items}</ul></div>'
         )
 
