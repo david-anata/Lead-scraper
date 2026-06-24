@@ -97,12 +97,16 @@ _STYLES = """
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
       .row-chevron { display: inline-block; color: rgba(43,54,68,0.35); font-size: 13px;
         margin-right: 5px; transition: transform 0.15s; line-height: 1; vertical-align: middle; }
+      .stage-select-wrap { position: relative; display: inline-block; }
+      .stage-select-wrap::after {
+        content: '▾'; position: absolute; right: 7px; top: 50%;
+        transform: translateY(-50%); pointer-events: none;
+        font-size: 9px; color: rgba(43,54,68,0.45); line-height: 1;
+      }
       .stage-select {
         appearance: none; -webkit-appearance: none; border: none; border-radius: 999px;
-        padding: 3px 22px 3px 10px; font-size: 11px; font-weight: 700;
+        padding: 3px 20px 3px 10px; font-size: 11px; font-weight: 700;
         font-family: "Montserrat", sans-serif; letter-spacing: 0.03em; cursor: pointer;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23475569' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-        background-repeat: no-repeat; background-position: right 6px center; background-size: 9px;
       }
       .stage--intake        { background: #e2e8f0; color: #475569; }
       .stage--pending_fulfillment { background: #e0f2fe; color: #0369a1; }
@@ -173,9 +177,11 @@ def _stage_select(run_id: int, current: str) -> str:
         for k, v in _STAGE_LABELS.items()
     )
     return (
+        f'<div class="stage-select-wrap">'
         f'<select class="stage-select stage--{_esc(current)}" '
         f'onclick="event.stopPropagation()" '
         f'onchange="pipelineStage(this,{run_id})">{options}</select>'
+        f'</div>'
     )
 
 
