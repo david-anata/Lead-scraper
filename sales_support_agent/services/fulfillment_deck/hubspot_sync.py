@@ -33,7 +33,7 @@ _BASE = "https://api.hubapi.com"
 _ASSOC_DEAL_TO_COMPANY = "5"
 _ASSOC_NOTE_TO_DEAL = "214"
 _ASSOC_QUOTE_TO_DEAL = "64"
-_ASSOC_LINE_ITEM_TO_QUOTE = "67"
+_ASSOC_LINE_ITEM_TO_QUOTE = "68"
 
 # Our stage → HubSpot default stage ID + configurable override env var
 _STAGE_DEFAULTS = {
@@ -276,12 +276,14 @@ def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list)
             return None
         # Associate line items via v4 API (explicit category avoids numeric typeId ambiguity)
         for li_id in line_item_ids:
-            requests.put(
+            ar = requests.put(
                 f"{_BASE}/crm/v4/objects/line_items/{li_id}/associations/quotes/{quote_id}",
                 headers=_headers(),
-                json=[{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 67}],
+                json=[{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": int(_ASSOC_LINE_ITEM_TO_QUOTE)}],
                 timeout=10,
             )
+            if ar.status_code >= 300:
+                logger.warning("[hubspot] line_item→quote assoc failed li=%s q=%s: %s", li_id, quote_id, ar.text[:200])
         return quote_id
     except Exception:
         logger.exception("[hubspot] create_quote failed for %r", prospect)
