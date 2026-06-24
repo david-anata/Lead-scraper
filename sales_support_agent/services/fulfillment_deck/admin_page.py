@@ -77,6 +77,7 @@ _STYLES = """
       .pill--sample { background: #fff4d9; color: #7a5b14; border: 1px solid #d2a94b; }
       .pill--failed { background: rgba(139,76,66,0.16); color: #8b4c42; }
       .pill--draft { background: rgba(43,54,68,0.10); color: rgba(43,54,68,0.65); }
+      .pill--running { background: rgba(14,165,233,0.12); color: #0369a1; border: 1px solid rgba(14,165,233,0.3); }
       .pill--estimated { background: #fff4d9; color: #7a5b14; border: 1px solid #d2a94b; }
       .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
@@ -365,7 +366,9 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         costs = run.get("fulfillment_actual_costs") or {}
 
         # Rates source pill (small, inside prospect cell)
-        if status == "failed":
+        if status == "running":
+            source_pill = '<span class="pill pill--running" style="font-size:10px">Generating…</span>'
+        elif status == "failed":
             source_pill = '<span class="pill pill--failed" style="font-size:10px">Failed</span>'
         elif status == "draft":
             source_pill = '<span class="pill pill--draft" style="font-size:10px">Draft</span>'
@@ -400,7 +403,9 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 actual_cell = "—"
 
         actions = []
-        if status == "draft":
+        if status == "running":
+            pass  # just Delete below — page auto-refreshes
+        elif status == "draft":
             actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Review</a>')
         elif view_path and published:
             actions.append(f'<a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Open</a>')
@@ -455,6 +460,7 @@ def render_fulfillment_sales_page(
         if flash
         else ""
     )
+    has_running = any(r.get("status") == "running" for r in runs)
     table = (
         "<table><thead><tr>"
         "<th>Prospect</th><th>Stage</th><th>Vol/mo</th>"
@@ -603,6 +609,7 @@ def render_fulfillment_sales_page(
         }});
       }}, 900);
     }}
+    {'if (true) { setTimeout(() => location.reload(), 8000); }' if has_running else ''}
     </script>
   </body>
 </html>"""
