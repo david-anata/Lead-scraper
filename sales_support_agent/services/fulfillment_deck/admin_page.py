@@ -95,6 +95,8 @@ _STYLES = """
       /* Pipeline table */
       .prospect-row { cursor: pointer; }
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
+      .row-chevron { display: inline-block; color: rgba(43,54,68,0.35); font-size: 13px;
+        margin-right: 5px; transition: transform 0.15s; line-height: 1; vertical-align: middle; }
       .stage-select {
         appearance: none; -webkit-appearance: none; border: none; border-radius: 999px;
         padding: 3px 22px 3px 10px; font-size: 11px; font-weight: 700;
@@ -419,7 +421,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         vol_str = f"{vol:,}" if vol else "—"
         rows.append(
             f'<tr class="prospect-row" onclick="toggleExpand(event,\'expand-{run_id}\')">'
-            f"<td><strong>{prospect}</strong> {source_pill}"
+            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong> {source_pill}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
             f"<td>{vol_str}</td>"
@@ -515,7 +517,11 @@ def render_fulfillment_sales_page(
     function toggleExpand(e, id) {{
       if (e.target.closest('select,button,a,form,input')) return;
       var row = document.getElementById(id);
-      if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+      if (!row) return;
+      var open = row.style.display === 'none';
+      row.style.display = open ? '' : 'none';
+      var chev = row.previousElementSibling && row.previousElementSibling.querySelector('.row-chevron');
+      if (chev) chev.style.transform = open ? 'rotate(90deg)' : '';
     }}
     function pipelineStage(sel, runId) {{
       sel.className = 'stage-select stage--' + sel.value;
