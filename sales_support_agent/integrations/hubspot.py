@@ -293,6 +293,42 @@ class HubSpotClient:
             json_body={"properties": properties},
         )
 
+    def create_contact(self, properties: dict[str, str]) -> dict[str, Any]:
+        """Create a new contact in HubSpot. Returns the created contact object."""
+        return self._request(
+            "POST",
+            "/crm/v3/objects/contacts",
+            json_body={"properties": properties},
+        )
+
+    def create_company(self, properties: dict[str, str]) -> dict[str, Any]:
+        """Create a new company in HubSpot. Returns the created company object."""
+        return self._request(
+            "POST",
+            "/crm/v3/objects/companies",
+            json_body={"properties": properties},
+        )
+
+    def create_association(
+        self,
+        from_type: str,
+        from_id: str,
+        to_type: str,
+        to_id: str,
+        *,
+        association_type_id: int,
+    ) -> dict[str, Any]:
+        """Associate two CRM objects (CRM v4 associations PUT).
+
+        Common HUBSPOT_DEFINED typeIds: contact→deal=4, deal→contact=3,
+        company→deal=341, deal→company=342.
+        """
+        return self._request(
+            "PUT",
+            f"/crm/v4/associations/{from_type}/{from_id}/{to_type}/{to_id}",
+            json_body=[{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": association_type_id}],
+        )
+
     def log_email_engagement(
         self,
         *,

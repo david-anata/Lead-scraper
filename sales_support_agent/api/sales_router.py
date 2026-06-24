@@ -17,13 +17,19 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.models.database import session_scope
-from sales_support_agent.models.entities import HubSpotDeal, HubSpotLineItem, MailboxSignal
+from sales_support_agent.models.entities import (
+    HubSpotContact,
+    HubSpotDeal,
+    HubSpotDealContact,
+    HubSpotLineItem,
+    MailboxSignal,
+)
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
 from sales_support_agent.services.hubspot_sync.trigger import (
     hubspot_sync_status,
     start_hubspot_sync,
 )
-from sales_support_agent.services.sales.actions import compute_pending_actions
+from sales_support_agent.services.sales.actions import ContactInfo, compute_pending_actions
 from sales_support_agent.services.sales.deal_board import (
     build_deal_board,
     render_deal_board_page,
@@ -178,7 +184,22 @@ def approve_action(
             select(func.sum(HubSpotLineItem.amount_cents))
             .where(HubSpotLineItem.hubspot_deal_id == deal_id)
         ).scalar() or 0
-        actions = compute_pending_actions(deal, signals, line_item_total_cents=int(li_total))
+        contact_link_ids = [
+            r.hubspot_contact_id for r in session.scalars(
+                select(HubSpotDealContact).where(HubSpotDealContact.hubspot_deal_id == deal_id)
+            ).all()
+        ]
+        contacts = []
+        for cid in contact_link_ids:
+            c = session.get(HubSpotContact, cid)
+            if c:
+                contacts.append(ContactInfo(contact_id=cid, email=c.email or ""))
+        actions = compute_pending_actions(
+            deal, signals,
+            line_item_total_cents=int(li_total),
+            contacts=contacts,
+            portal_id=settings.hubspot_portal_id or "",
+        )
 
     action = next((a for a in actions if a.action_id == action_id), None)
     if action is None or action.action_type == "note" or not action.properties:

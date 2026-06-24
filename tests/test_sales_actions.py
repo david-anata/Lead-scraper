@@ -29,7 +29,7 @@ from sales_support_agent.main import app  # noqa: E402
 from sales_support_agent.models.database import session_scope  # noqa: E402
 from sales_support_agent.models.entities import HubSpotDeal, HubSpotLineItem  # noqa: E402
 from sales_support_agent.services.admin_auth import create_user_session_token  # noqa: E402
-from sales_support_agent.services.sales.actions import compute_pending_actions  # noqa: E402
+from sales_support_agent.services.sales.actions import ContactInfo, compute_pending_actions  # noqa: E402
 
 
 def _cookie_for(email: str, name: str = "User", role: str = "member"):
@@ -100,6 +100,73 @@ class TestComputePendingActions(unittest.TestCase):
         deal = self._deal(amount_cents=0)
         actions = compute_pending_actions(deal, [], line_item_total_cents=0)
         self.assertFalse(any("sync_amount" in a.action_id for a in actions))
+
+    # Phase 2 — new action types
+
+    def test_missing_close_date_returns_set_close_date(self):
+        deal = self._deal(close_date=None)
+        actions = compute_pending_actions(
+            deal, [], as_of=datetime(2026, 6, 24, tzinfo=timezone.utc)
+        )
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:set_close_date", ids)
+        action = next(a for a in actions if a.action_id == "d1:set_close_date")
+        self.assertEqual(action.confidence, "mid")
+        self.assertIn("closedate", action.properties)
+
+    def test_existing_close_date_no_set_action(self):
+        deal = self._deal(close_date=datetime(2026, 9, 1, tzinfo=timezone.utc))
+        actions = compute_pending_actions(
+            deal, [], as_of=datetime(2026, 6, 24, tzinfo=timezone.utc)
+        )
+        self.assertFalse(any("set_close_date" in a.action_id for a in actions))
+
+    def test_empty_contacts_list_returns_no_contacts_nudge(self):
+        deal = self._deal()
+        actions = compute_pending_actions(deal, [], contacts=[])
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:no_contacts", ids)
+        action = next(a for a in actions if a.action_id == "d1:no_contacts")
+        self.assertEqual(action.confidence, "low")
+
+    def test_contacts_present_no_no_contacts_nudge(self):
+        deal = self._deal()
+        contacts = [ContactInfo(contact_id="c1", email="buyer@acme.com")]
+        actions = compute_pending_actions(deal, [], contacts=contacts)
+        self.assertFalse(any("no_contacts" in a.action_id for a in actions))
+
+    def test_no_company_returns_low_confidence_nudge(self):
+        deal = self._deal(hubspot_company_id="")
+        actions = compute_pending_actions(deal, [])
+        self.assertTrue(any("no_company" in a.action_id for a in actions))
+        action = next(a for a in actions if "no_company" in a.action_id)
+        self.assertEqual(action.confidence, "low")
+
+    def test_company_present_no_nudge(self):
+        deal = self._deal(hubspot_company_id="co99")
+        actions = compute_pending_actions(deal, [])
+        self.assertFalse(any("no_company" in a.action_id for a in actions))
+
+    def test_contact_missing_email_returns_nudge(self):
+        deal = self._deal(hubspot_company_id="co1")
+        contacts = [
+            ContactInfo(contact_id="c1", email=""),
+            ContactInfo(contact_id="c2", email="ok@acme.com"),
+        ]
+        actions = compute_pending_actions(deal, [], contacts=contacts)
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:contact_no_email_c1", ids)
+        self.assertFalse(any("contact_no_email_c2" in i for i in ids))
+
+    def test_link_url_set_when_portal_id_provided(self):
+        deal = self._deal()
+        contacts = [ContactInfo(contact_id="c1", email="")]
+        actions = compute_pending_actions(
+            deal, [], contacts=contacts, portal_id="12345"
+        )
+        action = next(a for a in actions if "contact_no_email_c1" in a.action_id)
+        self.assertIn("12345", action.link_url)
+        self.assertIn("c1", action.link_url)
 
 
 class TestApproveActionRoute(unittest.TestCase):

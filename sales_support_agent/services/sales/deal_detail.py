@@ -34,7 +34,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav_styles,
 )
 from sales_support_agent.services.sales import hubspot_links
-from sales_support_agent.services.sales.actions import SalesAction, compute_pending_actions
+from sales_support_agent.services.sales.actions import ContactInfo, SalesAction, compute_pending_actions
 
 
 def _esc(value: object) -> str:
@@ -57,6 +57,12 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _owner_display(email: str) -> str:
+    if not email:
+        return "—"
+    return email.split("@")[0].replace(".", " ").replace("_", " ").title()
 
 
 # Asset-type → friendly label for the three closing-tool CTAs.
@@ -270,8 +276,16 @@ def build_deal_detail(
         select(MailboxSignal).where(MailboxSignal.matched_deal_id == deal_id)
     ).all())
     li_total = sum(li.amount_cents or 0 for li in detail.line_items)
+    contact_infos = [
+        ContactInfo(contact_id=c.contact_id, email=c.email or "", hubspot_url=c.hubspot_url)
+        for c in detail.contacts
+    ]
     detail.pending_actions = compute_pending_actions(
-        deal, signals, line_item_total_cents=li_total, as_of=as_of
+        deal, signals,
+        line_item_total_cents=li_total,
+        contacts=contact_infos,
+        portal_id=portal or "",
+        as_of=as_of,
     )
 
     return detail
@@ -293,10 +307,17 @@ def _contacts_html(d: DealDetail) -> str:
         ) + "</p>"
     rows = ""
     for c in d.contacts:
-        meta = " · ".join(p for p in (c.title, c.email, c.phone) if p)
+        parts = []
+        if c.title:
+            parts.append(_esc(c.title))
+        if c.email:
+            parts.append(f'<a href="mailto:{_esc(c.email)}">{_esc(c.email)}</a>')
+        if c.phone:
+            parts.append(f'<a href="tel:{_esc(c.phone)}">{_esc(c.phone)}</a>')
+        meta = " · ".join(parts)
         rows += (
             f'<li><strong>{_esc(c.name)}</strong>'
-            f'<div class="muted">{_esc(meta)}</div>'
+            f'<div class="muted">{meta}</div>'
             f'<div>{_hs_link(c.hubspot_url, "View in HubSpot")}</div></li>'
         )
     return f"<ul class='records'>{rows}</ul>"
@@ -319,9 +340,11 @@ def _line_items_html(d: DealDetail) -> str:
         )
     total = sum(li.amount_cents for li in d.line_items)
     return (
-        "<table class='li'><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Amount</th></tr></thead>"
+        "<div class='li-wrap'><table class='li'>"
+        "<thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Amount</th></tr></thead>"
         f"<tbody>{rows}</tbody>"
-        f"<tfoot><tr><td colspan='3'>Total</td><td class='num'>{_fmt_money(total)}</td></tr></tfoot></table>"
+        f"<tfoot><tr><td colspan='3'>Total</td><td class='num'>{_fmt_money(total)}</td></tr></tfoot>"
+        "</table></div>"
     )
 
 
@@ -355,7 +378,10 @@ def _timeline_html(d: DealDetail) -> str:
             f'<div class="t-body"><strong>{_esc(e.title)}</strong>'
             f'<div class="muted">{_esc(e.detail)}</div></div></li>'
         )
-    return f"<ul class='timeline'>{items}</ul>"
+    footer = ""
+    if len(d.timeline) > 25:
+        footer = f'<p class="muted" style="margin-top:10px;font-size:12px">Showing most recent 25 of {len(d.timeline)} events.</p>'
+    return f"<ul class='timeline'>{items}</ul>{footer}"
 
 
 _STYLES = """
@@ -372,6 +398,7 @@ _STYLES = """
   .workspace { background:var(--white); border:1px solid var(--border);
     border-radius:20px; box-shadow:0 18px 40px var(--shadow); padding:24px 26px 28px; margin-bottom:18px; }
   .dealhead { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
+  .dealhead-actions { display:flex; flex-direction:column; gap:10px; align-items:flex-end; }
   h1 { font-family:"Montserrat",sans-serif; font-weight:800; font-size:24px; margin:0 0 6px; }
   .eyebrow { font-family:"Montserrat",sans-serif; font-weight:700; font-size:11px;
     letter-spacing:0.08em; text-transform:uppercase; color:rgba(43,54,68,0.55); margin:0 0 4px; }
@@ -395,6 +422,7 @@ _STYLES = """
   .check { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
   .check li { display:flex; align-items:center; gap:9px; font-size:13.5px; }
   .check .ok { color:#2f8f5b; } .check .no { color:#b23b3b; }
+  .li-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   table.li { width:100%; border-collapse:collapse; font-size:13px; }
   table.li th,table.li td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }
   table.li td.num,table.li th:nth-child(n+2){ text-align:right; }
@@ -407,17 +435,17 @@ _STYLES = """
     padding:14px; text-decoration:none; background:var(--white); }
   .cta:hover { border-color:rgba(43,54,68,0.28); box-shadow:0 8px 18px var(--shadow); }
   .cta-kind { font-family:"Montserrat",sans-serif; font-weight:700; font-size:13px; }
-  .cta-go { color:var(--light-blue); font-weight:700; font-size:12.5px; }
+  .cta-go { color:#4A8FAD; font-weight:700; font-size:12.5px; }
   .cta--empty { background:var(--light-brown); }
   .timeline { list-style:none; padding:0; margin:0; display:grid; gap:12px; }
   .timeline li { display:grid; grid-template-columns:88px 1fr; gap:10px; }
   .t-when { font-size:12px; color:rgba(43,54,68,0.55); }
-  .badge { font-size:11px; border-radius:8px; padding:2px 9px; font-weight:700; }
+  .badge { font-size:11px; border-radius:8px; padding:2px 9px; font-weight:700; vertical-align:middle; }
   .badge--won { background:rgba(47,143,91,0.15); color:#2f8f5b; }
   .badge--open { background:rgba(133,187,218,0.2); color:#2B3644; }
   .draft-btn { display:inline-block; font:inherit; font-weight:700; font-size:13px;
     background:var(--dark-blue); color:#fff; border:none; border-radius:12px;
-    padding:9px 18px; text-decoration:none; cursor:pointer; margin-top:14px; }
+    padding:9px 18px; text-decoration:none; cursor:pointer; }
   .draft-btn:hover { opacity:0.88; }
   .action-cards { display:grid; gap:10px; }
   .action-card { border:1px solid var(--border); border-radius:14px; padding:14px 16px;
@@ -436,6 +464,8 @@ _STYLES = """
   .low-summary { font-size:12.5px; color:rgba(43,54,68,0.55); cursor:pointer; list-style:none;
     padding:6px 0 0; user-select:none; }
   .low-summary::-webkit-details-marker { display:none; }
+  .low-summary::before { content:"▸"; margin-right:5px; display:inline-block; transition:transform 120ms ease; }
+  details[open] .low-summary::before { transform:rotate(90deg); }
   details[open] .low-summary { margin-bottom:10px; }
 """
 
@@ -461,24 +491,35 @@ def _pending_actions_html(d: DealDetail) -> str:
     if low:
         low_cards = ""
         for a in low:
+            fix_btn = ""
+            if a.link_url:
+                fix_btn = (
+                    f'<a href="{_esc(a.link_url)}" target="_blank" rel="noopener" '
+                    f'class="hs-link" style="font-size:12px;padding:5px 10px;white-space:nowrap">'
+                    f'Fix in HubSpot ↗</a>'
+                )
             low_cards += (
                 f'<div class="action-card action-card--low">'
                 f'<div class="action-info">'
                 f'<div class="action-label">{_esc(a.label)}</div>'
                 f'<div class="action-desc muted">{_esc(a.description)}</div>'
-                f'</div></div>'
+                f'</div>{fix_btn}</div>'
             )
         cards += (
             f'<details>'
-            f'<summary class="low-summary">▸ {len(low)} low-confidence suggestion{"s" if len(low) != 1 else ""}</summary>'
+            f'<summary class="low-summary">{len(low)} low-confidence suggestion{"s" if len(low) != 1 else ""}</summary>'
             f'{low_cards}'
             f'</details>'
         )
+    subtitle = (
+        "Mid-confidence writes are ready to push to HubSpot with one click."
+        if mid else
+        "Low-confidence suggestions — review and act manually in HubSpot."
+    )
     return (
         f'<div class="workspace">'
         f'<h2>Pending actions</h2>'
-        f'<p class="muted" style="margin-top:-6px;margin-bottom:12px">'
-        f'Mid-confidence writes are ready to push to HubSpot with one click.</p>'
+        f'<p class="muted" style="margin-top:-6px;margin-bottom:12px">{subtitle}</p>'
         f'<div class="action-cards">{cards}</div>'
         f'</div>'
     )
@@ -500,7 +541,7 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
         f'<div class="fact"><div class="l">Close date</div><div class="v">{_fmt_date(d.close_date)}'
         + (' · <span style="color:#b23b3b">overdue</span>' if d.overdue else "")
         + "</div></div>"
-        f'<div class="fact"><div class="l">Owner</div><div class="v">{_esc(d.owner_email or "—")}</div></div>'
+        f'<div class="fact"><div class="l">Owner</div><div class="v">{_esc(_owner_display(d.owner_email))}</div></div>'
         f'<div class="fact"><div class="l">Company</div><div class="v">'
         + (_hs_link(d.company_url, d.company_name) if d.company_name else "—")
         + "</div></div>"
@@ -516,7 +557,8 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
     for key, label in checklist_items:
         ok = key not in d.missing
         mark = '<span class="ok">✓</span>' if ok else '<span class="no">✗</span>'
-        checks += f"<li>{mark} {_esc(label)}</li>"
+        fix = "" if ok else " " + _hs_link(d.deal_url, "Fix in HubSpot")
+        checks += f"<li>{mark} {_esc(label)}{fix}</li>"
 
     nudge_cls = "nudge nudge--overdue" if d.overdue else "nudge"
 
@@ -553,11 +595,11 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
       <div class="workspace">
         <div class="dealhead">
           <div>
-            <p class="eyebrow">Sales Priorities — HubSpot companion {badge}</p>
-            <h1>{_esc(d.name or '(untitled deal)')}</h1>
+            <p class="eyebrow">Sales Priorities — HubSpot companion</p>
+            <h1>{_esc(d.name or '(untitled deal)')} {badge}</h1>
             <div class="facts">{facts}</div>
           </div>
-          <div>{open_in_hs}</div>
+          <div class="dealhead-actions">{open_in_hs}{draft_btn}</div>
         </div>
       </div>
 
@@ -566,7 +608,6 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
           <div class="l">Next action</div>
           <div class="a">{_esc(d.next_action)}</div>
         </div>
-        {draft_btn}
         <h2>Deal readiness</h2>
         <ul class="check">{checks}</ul>
       </div>
@@ -586,7 +627,7 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
 
       <div class="workspace">
         <h2>Closing tools</h2>
-        <p class="muted" style="margin-top:-6px">The three things a rep sends to close — link a run to surface it here.</p>
+        <p class="muted" style="margin-top:-6px">The three assets a rep sends to close — generate in <a href="/admin/fulfillment/sales">Fulfillment</a> or <a href="/admin/sales-decks">Sales Decks</a>, then link to this deal.</p>
         {_assets_html(d)}
       </div>
 
