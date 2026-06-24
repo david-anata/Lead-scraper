@@ -252,10 +252,9 @@ def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list)
             "hs_expiration_date": expiry,
             "hs_status": "DRAFT",
             "hs_esign_enabled": "true",
-            "hs_template_type": "QUOTE",
+            "hs_template_type": "CUSTOMIZABLE_QUOTE_TEMPLATE",
             "hs_currency": "USD",
-            "hs_language": "en-us",
-            "hs_locale": "en-US",
+            "hs_language": "en",
         },
         "associations": [
             {
