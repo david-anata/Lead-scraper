@@ -145,6 +145,27 @@ class TestTryLinkRateSheet(unittest.TestCase):
             )
         self.assertEqual(asset.url, "/rate-sheets/acme/77/v2")
 
+    def test_short_brand_not_a_word_in_deal_does_not_false_match(self):
+        # 'ace' normalizes to 'ace'; 'Space Corp' normalizes to 'space' (corp stripped).
+        # Word-set matching: {'ace'} is not a subset of {'space'} → no match.
+        # This is a regression test for the bare-substring false-positive.
+        with session_scope(self.factory) as s:
+            s.add(HubSpotDeal(
+                hubspot_deal_id="deal9", deal_name="Space Corp",
+                deal_stage="appointmentscheduled", amount_cents=0,
+                is_closed=False,
+            ))
+            s.commit()
+        try:
+            result = self._link("Ace", run_id=88)
+            self.assertIsNone(result)
+        finally:
+            with session_scope(self.factory) as s:
+                d = s.get(HubSpotDeal, "deal9")
+                if d:
+                    s.delete(d)
+                s.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

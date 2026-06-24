@@ -89,7 +89,7 @@ class TestComputePendingActions(unittest.TestCase):
         action = next(a for a in actions if a.action_id == "d1:sync_amount")
         self.assertEqual(action.confidence, "mid")
         self.assertIn("amount", action.properties)
-        self.assertEqual(action.properties["amount"], "5000.0")
+        self.assertEqual(action.properties["amount"], "5000.00")
 
     def test_nonzero_amount_no_sync_action(self):
         deal = self._deal(amount_cents=100_000)

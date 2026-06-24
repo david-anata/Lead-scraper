@@ -60,7 +60,7 @@ def compute_pending_actions(
 
     # Mid: deal amount is $0 but line items have a real total → sync it
     if (deal.amount_cents or 0) <= 0 and line_item_total_cents > 0:
-        amount_str = str(round(line_item_total_cents / 100, 2))
+        amount_str = f"{line_item_total_cents / 100:.2f}"
         actions.append(SalesAction(
             action_id=f"{deal.hubspot_deal_id}:sync_amount",
             action_type="update_deal",

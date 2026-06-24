@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
@@ -189,7 +191,7 @@ def approve_action(
             client.update_contact(action.hubspot_object_id, action.properties)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[sales] action approve failed for %s", action_id)
-        msg = str(exc)[:120].replace(" ", "+")
+        msg = quote(str(exc)[:120], safe="")
         return RedirectResponse(
             url=f"/admin/sales/deals/{deal_id}?error={msg}", status_code=303
         )

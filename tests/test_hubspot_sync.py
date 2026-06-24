@@ -185,6 +185,51 @@ class HubSpotSyncTests(unittest.TestCase):
         self.assertTrue(result.errors)
 
 
+class TestContactLinkPreservation(unittest.TestCase):
+    """Regression: transient contacts fetch error must not wipe existing links."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sf = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        init_database(cls.sf)
+
+    def setUp(self):
+        with session_scope(self.sf) as s:
+            for model in (HubSpotDeal, HubSpotCompany, HubSpotContact,
+                          HubSpotLineItem, HubSpotDealContact):
+                for row in s.query(model).all():
+                    s.delete(row)
+
+    def _settings(self):
+        return SimpleNamespace(hubspot_sales_pipeline_id="")
+
+    def test_contact_fetch_error_does_not_wipe_links(self):
+        client = FakeHubSpotClient()
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+        with session_scope(self.sf) as s:
+            links_before = {lnk.hubspot_contact_id for lnk in
+                            s.query(HubSpotDealContact).filter_by(hubspot_deal_id="1").all()}
+        self.assertEqual(links_before, {"p1", "p2"})
+
+        original_assoc = client.list_associations
+
+        def _flaky(from_type, from_id, to_type):
+            if from_id == "1" and to_type == "contacts":
+                raise RuntimeError("transient network error")
+            return original_assoc(from_type, from_id, to_type)
+
+        client.list_associations = _flaky
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            links_after = {lnk.hubspot_contact_id for lnk in
+                           s.query(HubSpotDealContact).filter_by(hubspot_deal_id="1").all()}
+        self.assertEqual(links_after, {"p1", "p2"})
+        self.assertTrue(any("contacts" in e for e in result.errors))
+
+
 class TestAutoSyncAmount(unittest.TestCase):
     """High-confidence amount sync: deal at $0 + line items → auto-update HubSpot."""
 

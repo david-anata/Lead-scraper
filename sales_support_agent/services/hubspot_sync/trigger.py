@@ -36,6 +36,8 @@ def _ensure_state(app) -> None:
         app.state.hubspot_sync_future = None
     if getattr(app.state, "hubspot_sync_last_result", None) is None:
         app.state.hubspot_sync_last_result = {}
+    if getattr(app.state, "hubspot_sync_pending_resync", None) is None:
+        app.state.hubspot_sync_pending_resync = False
 
 
 def _run_sync(app) -> dict[str, Any]:
@@ -58,11 +60,24 @@ def _run_sync(app) -> dict[str, Any]:
         kv_set_json(SYNC_STATE_KEY, payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[hubspot_sync] failed to persist sync state: %s", exc)
+    # If a forced re-sync was queued while we were running (e.g. after an action
+    # approval), start another pass now that we're done.
+    with app.state.hubspot_sync_lock:
+        if app.state.hubspot_sync_pending_resync:
+            app.state.hubspot_sync_pending_resync = False
+            app.state.hubspot_sync_future = app.state.hubspot_sync_executor.submit(
+                _run_sync, app
+            )
     return payload
 
 
 def start_hubspot_sync(app, *, force: bool = False) -> dict[str, Any]:
-    """Kick off a background sync if one isn't already running. Returns status."""
+    """Kick off a background sync if one isn't already running.
+
+    force=True: if a sync is already in progress, queue a follow-up pass so the
+    caller's changes (e.g. after an action approval) are guaranteed to land in the
+    mirror even if the current run started before those changes.
+    """
     _ensure_state(app)
     if not HubSpotClient(app.state.settings).is_configured:
         return {"status": "unconfigured", "running": False,
@@ -70,6 +85,10 @@ def start_hubspot_sync(app, *, force: bool = False) -> dict[str, Any]:
     with app.state.hubspot_sync_lock:
         current: Future | None = app.state.hubspot_sync_future
         if isinstance(current, Future) and not current.done():
+            if force:
+                app.state.hubspot_sync_pending_resync = True
+                return {"status": "queued", "running": True,
+                        "message": "Sync in progress; a follow-up sync is queued."}
             return {"status": "running", "running": True,
                     "message": "HubSpot sync already in progress."}
         app.state.hubspot_sync_future = app.state.hubspot_sync_executor.submit(_run_sync, app)

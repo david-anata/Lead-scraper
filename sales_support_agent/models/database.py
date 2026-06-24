@@ -143,13 +143,14 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         },
         "communication_events": {
             "external_event_key": "ALTER TABLE communication_events ADD COLUMN external_event_key VARCHAR(255) DEFAULT ''",
-            "hubspot_deal_id": "ALTER TABLE communication_events ADD COLUMN hubspot_deal_id VARCHAR(64) DEFAULT ''",
+            "hubspot_deal_id": "ALTER TABLE communication_events ADD COLUMN hubspot_deal_id VARCHAR(64) DEFAULT NULL",
         },
         "mailbox_signals": {
             "matched_deal_id": "ALTER TABLE mailbox_signals ADD COLUMN matched_deal_id VARCHAR(64) DEFAULT ''",
         },
         "hubspot_deals": {
             "deal_stage_label": "ALTER TABLE hubspot_deals ADD COLUMN deal_stage_label VARCHAR(255) DEFAULT ''",
+            "is_won": "ALTER TABLE hubspot_deals ADD COLUMN is_won BOOLEAN DEFAULT 0",
         },
         "brand_analysis_reports": {
             "slug": "ALTER TABLE brand_analysis_reports ADD COLUMN slug VARCHAR(96) NOT NULL DEFAULT ''",

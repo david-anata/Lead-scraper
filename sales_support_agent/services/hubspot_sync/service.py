@@ -239,7 +239,7 @@ def _maybe_sync_amount(
     if li_total <= 0:
         return
 
-    amount_str = str(round(li_total / 100, 2))
+    amount_str = f"{li_total / 100:.2f}"
     try:
         client.update_deal(deal_id, {"amount": amount_str})
         deal.amount_cents = int(li_total)
@@ -320,13 +320,16 @@ def sync_hubspot_sales(
             )
             result.deals += 1
 
+            contacts_ok = True
             try:
                 deal_contacts = client.list_associations("deals", deal_id, "contacts")
             except Exception as exc:  # noqa: BLE001
+                contacts_ok = False
                 deal_contacts = []
                 result.errors.append(f"deal {deal_id} contacts: {exc}")
             contact_ids.update(deal_contacts)
-            _replace_deal_contacts(session, deal_id, deal_contacts)
+            if contacts_ok:
+                _replace_deal_contacts(session, deal_id, deal_contacts)
 
             try:
                 li_ids = client.list_associations("deals", deal_id, "line_items")

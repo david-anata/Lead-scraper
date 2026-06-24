@@ -39,7 +39,10 @@ def _matches(brand: str, deal_name: str, company_name: str) -> bool:
     nc = _normalize(company_name)
     if not nb:
         return False
-    return nb in nd or nd.startswith(nb) or (nc and nb == nc)
+    nb_words = set(nb.split())
+    nd_words = set(nd.split())
+    nc_words = set(nc.split()) if nc else set()
+    return nb_words.issubset(nd_words) or nb_words.issubset(nc_words)
 
 
 def try_link_rate_sheet(
