@@ -918,6 +918,7 @@ def render_rate_sheet_review_page(
           <p class="muted">Rows tagged <span class="pill pill--estimated">estimated</span> had dimensions guessed from the product type — confirm or correct them before sending. Editing a dimension clears the tag. Tick Remove to drop a product; fill the empty row to add one.</p>
           <div class="review-actions">
             <button class="btn" type="submit">Save &amp; re-render</button>
+            <span class="muted" style="font-size:12px">Saving does not affect the public link.</span>
           </div>
         </form>
         <form method="post" action="{base}/runs/{run_id}/publish" style="margin-top:10px">
