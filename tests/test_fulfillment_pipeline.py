@@ -273,3 +273,36 @@ def test_quote_url_stored(isolated_db, monkeypatch):
     run = _stor.get_run(run_id)
     s = dict(run.summary_json or {})
     assert s["hubspot_quote_url"].endswith("qt-123")
+
+
+def test_sync_quote_with_owner_email_noop(monkeypatch):
+    """sync_quote with owner_email is still a no-op when token is absent."""
+    monkeypatch.delenv("HUBSPOT_API_TOKEN", raising=False)
+    hubspot_sync.sync_quote(1, owner_email="david@anatainc.com")  # must not raise
+
+
+def test_lookup_owner_id_empty_email():
+    """_lookup_owner_id returns None immediately for empty email — no network call."""
+    assert hubspot_sync._lookup_owner_id("") is None
+    assert hubspot_sync._lookup_owner_id(None) is None  # type: ignore[arg-type]
+
+
+def test_lookup_owner_id_network_error(monkeypatch):
+    """_lookup_owner_id returns None silently on network exception."""
+    import requests as _req
+
+    def _boom(*a, **kw):
+        raise ConnectionError("no network")
+
+    monkeypatch.setattr(_req, "get", _boom)
+    assert hubspot_sync._lookup_owner_id("rep@example.com") is None
+
+
+def test_unit_label_mapping():
+    """_unit_label normalises common unit strings for quote line items."""
+    assert hubspot_sync._unit_label("orders") == "order"
+    assert hubspot_sync._unit_label("pallets") == "pallet"
+    assert hubspot_sync._unit_label("pallet/mo") == "pallet/month"
+    assert hubspot_sync._unit_label("flat") == "month"
+    assert hubspot_sync._unit_label("units") == "unit"
+    assert hubspot_sync._unit_label("unknown") == "unknown"  # passthrough
