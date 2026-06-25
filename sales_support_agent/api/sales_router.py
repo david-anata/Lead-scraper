@@ -38,10 +38,13 @@ from sales_support_agent.services.sales.deal_detail import (
     build_deal_detail,
     render_deal_detail_page,
 )
+from sales_support_agent.integrations.gmail import GmailClient
+from sales_support_agent.services.sales.email_send import send_followup_email
 from sales_support_agent.services.sales.followup_draft import (
     _HOOK_ORDER,
     build_followup_draft,
     render_draft_followup_page,
+    render_send_preview_page,
 )
 
 from sqlalchemy import func, select
@@ -138,6 +141,7 @@ def deal_detail(
     request: Request,
     deal_id: str,
     actioned: str = "",
+    sent: str = "",
     error: str = "",
 ) -> Response:
     settings = request.app.state.settings
@@ -145,6 +149,8 @@ def deal_detail(
     flash_ok = True
     if actioned:
         flash = "Done — action pushed to HubSpot. The board will refresh on next load."
+    elif sent:
+        flash = "Email sent and logged to HubSpot. Timeline will update on next sync."
     elif error:
         flash = f"Could not apply: {error}"
         flash_ok = False
@@ -250,6 +256,8 @@ def draft_followup(request: Request, deal_id: str) -> Response:
         recent_subject=recent_subject,
         contact_emails=contact_emails,
     )
+    draft.gmail_configured = GmailClient(settings).is_configured()
+
     html = render_draft_followup_page(
         draft,
         deal_id=deal_id,
@@ -257,3 +265,92 @@ def draft_followup(request: Request, deal_id: str) -> Response:
         user=get_current_user(request),
     )
     return HTMLResponse(html)
+
+
+@router.post("/deals/{deal_id}/send-followup")
+def send_followup(
+    request: Request,
+    deal_id: str,
+    subject: str = Form(...),
+    body: str = Form(...),
+    to_emails: str = Form(""),
+    confirmed: str = Form(""),
+) -> Response:
+    """Two-step send: first POST shows preview; second POST (confirmed=1) sends."""
+    settings = request.app.state.agent_settings
+    gmail_client = GmailClient(settings)
+
+    if not gmail_client.is_configured():
+        return RedirectResponse(
+            url=f"/admin/sales/deals/{deal_id}/draft-followup?error=Gmail+not+configured",
+            status_code=303,
+        )
+
+    if not confirmed:
+        # Step 1: show the confirmation preview page.
+        with session_scope(request.app.state.session_factory) as session:
+            deal = session.get(HubSpotDeal, deal_id)
+            deal_name = deal.deal_name if deal else deal_id
+
+        from_email = ""
+        try:
+            profile = gmail_client.get_profile()
+            from_email = str(profile.get("emailAddress") or "").strip()
+        except Exception:
+            logger.warning("[sales] could not fetch Gmail profile for send preview")
+
+        return HTMLResponse(
+            render_send_preview_page(
+                deal_id=deal_id,
+                deal_name=deal_name,
+                subject=subject,
+                body=body,
+                to_emails=to_emails,
+                from_email=from_email,
+                user=get_current_user(request),
+            )
+        )
+
+    # Step 2: confirmed — execute the send.
+    to_list = [e.strip() for e in to_emails.split(",") if e.strip()]
+    if not to_list:
+        return RedirectResponse(
+            url=f"/admin/sales/deals/{deal_id}/draft-followup?error=No+recipients",
+            status_code=303,
+        )
+
+    hubspot_client = HubSpotClient(settings)
+    with session_scope(request.app.state.session_factory) as session:
+        deal = session.get(HubSpotDeal, deal_id)
+        if deal is None:
+            return RedirectResponse(url="/admin/sales/deals", status_code=303)
+        contact_ids = [
+            r.hubspot_contact_id for r in session.scalars(
+                select(HubSpotDealContact).where(HubSpotDealContact.hubspot_deal_id == deal_id)
+            ).all()
+        ]
+
+    result = send_followup_email(
+        gmail_client=gmail_client,
+        hubspot_client=hubspot_client,
+        deal_id=deal_id,
+        contact_ids=contact_ids,
+        to_emails=to_list,
+        subject=subject,
+        body_text=body,
+    )
+
+    if not result.ok:
+        msg = quote(result.error[:120], safe="")
+        return RedirectResponse(
+            url=f"/admin/sales/deals/{deal_id}?error={msg}", status_code=303
+        )
+
+    try:
+        start_hubspot_sync(request.app, force=True)
+    except Exception:
+        logger.warning("[sales] post-send sync failed to start")
+
+    return RedirectResponse(
+        url=f"/admin/sales/deals/{deal_id}?sent=1", status_code=303
+    )

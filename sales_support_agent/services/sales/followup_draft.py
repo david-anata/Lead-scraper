@@ -73,6 +73,7 @@ class DraftEmail:
     hooks_pending: list[str] = field(default_factory=list)
     model: str = "template"
     contact_emails: list[str] = field(default_factory=list)
+    gmail_configured: bool = False
 
 
 def _parse_json(text: str) -> Optional[dict]:
@@ -232,6 +233,7 @@ def render_draft_followup_page(
     nav = render_agent_nav("sales", sales_section="sales_deals", user=user)
 
     to_emails = ", ".join(draft.contact_emails) if draft.contact_emails else ""
+    to_emails_csv = ",".join(draft.contact_emails)
     mailto = (
         f"mailto:{_esc(to_emails)}"
         f"?subject={urllib.parse.quote(draft.subject, safe='')}"
@@ -279,6 +281,8 @@ def render_draft_followup_page(
   .btn--primary{{background:var(--dark-blue);color:#fff;}}
   .btn--outline{{background:var(--white);border:1px solid var(--border);color:var(--dark-blue);}}
   .btn--outline:hover{{border-color:rgba(43,54,68,0.28);}}
+  .btn--send{{background:#2f8f5b;color:#fff;}}
+  .btn--send:hover{{opacity:0.88;}}
   .hooks{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}}
   .hook{{font-size:11.5px;border-radius:8px;padding:3px 10px;font-weight:600;}}
   .hook--pending{{background:#fff4d9;border:1px solid #d2a94b;color:#7a5a12;}}
@@ -316,26 +320,28 @@ def render_draft_followup_page(
 
         {"<div class='field-label'>Deal materials</div><p class='note' style='margin:-4px 0 8px'>Referenced in this draft</p><div class='hooks'>" + hook_tags + "</div>" if hook_tags else ""}
 
-        <div class="field-label">Subject</div>
-        <input type="text" class="field-val" id="subj" value="{subject_escaped}">
+        <form method="post" action="/admin/sales/deals/{_esc(deal_id)}/send-followup" id="send-form">
+          <input type="hidden" name="to_emails" value="{_esc(to_emails_csv)}">
 
-        {("<div class='field-label'>To</div><div class='field-val'>" + _esc(to_emails) + "</div>") if to_emails else ("<div class='field-label'>To</div><p class='empty' style='margin:0 0 16px'>No contacts on this deal — <a href='/admin/sales/deals/" + _esc(deal_id) + "'>add a contact in HubSpot</a> to enable this field and the mail shortcut.</p>")}
+          <div class="field-label">Subject</div>
+          <input type="text" name="subject" class="field-val" id="subj" value="{subject_escaped}">
 
-        <div class="field-label">Body</div>
-        <textarea class="draft" id="body">{body_escaped}</textarea>
+          {("<div class='field-label'>To</div><div class='field-val'>" + _esc(to_emails) + "</div>") if to_emails else ("<div class='field-label'>To</div><p class='empty' style='margin:0 0 16px'>No contacts on this deal — <a href='/admin/sales/deals/" + _esc(deal_id) + "'>add a contact in HubSpot</a> to enable this field and the mail shortcut.</p>")}
 
-        <div class="actions">
-          <button class="btn btn--primary" onclick="copyDraft()">Copy email</button>
-          {"<a class='btn btn--outline' href='" + _esc(mailto) + "'>Open in email →</a>" if to_emails else ""}
-          <a class="btn btn--outline" id="regen-btn" href="/admin/sales/deals/{_esc(deal_id)}/draft-followup">Regenerate →</a>
-        </div>
-        <p style="margin-top:10px;font-size:13px">
+          <div class="field-label">Body</div>
+          <textarea name="body" class="draft" id="body">{body_escaped}</textarea>
+
+          <div class="actions">
+            <button class="btn btn--primary" type="button" onclick="copyDraft()">Copy email</button>
+            {"<a class='btn btn--outline' href='" + _esc(mailto) + "'>Open in email →</a>" if to_emails else ""}
+            {"<button class='btn btn--send' type='submit'>Send via Anata →</button>" if draft.gmail_configured and to_emails else ""}
+          </div>
+        </form>
+        <p style="margin-top:10px;font-size:13px;display:flex;gap:16px;align-items:center">
+          <a class="btn btn--outline" id="regen-btn" href="/admin/sales/deals/{_esc(deal_id)}/draft-followup" style="font-size:12.5px;padding:7px 14px">Regenerate →</a>
           <a href="/admin/sales/deals/{_esc(deal_id)}" style="color:rgba(43,54,68,0.6);text-decoration:none">← Back to deal</a>
         </p>
-        <p class="note">
-          To log this email to HubSpot, send it then use "Log a call / email" in the HubSpot deal record.
-          Full email send + auto-log is coming in a later phase.
-        </p>
+        {"" if draft.gmail_configured else "<p class='note'>To send, connect Gmail via the GMAIL_* environment variables (see David for setup). For now, copy the email above or use <b>Open in email</b>.</p>"}
       </div>
     </main>
 
@@ -360,6 +366,143 @@ def render_draft_followup_page(
         alert('Copy failed — please select the text manually.');
       }});
     }}
+    // Update the mailto link when subject/body are edited.
+    (function() {{
+      const subjEl = document.getElementById('subj');
+      const bodyEl = document.getElementById('body');
+      const mailtoLink = document.querySelector('a[href^="mailto:"]');
+      if (!mailtoLink) return;
+      function updateMailto() {{
+        const base = mailtoLink.href.split('?')[0];
+        mailtoLink.href = base + '?subject=' + encodeURIComponent(subjEl.value) + '&body=' + encodeURIComponent(bodyEl.value);
+      }}
+      subjEl.addEventListener('input', updateMailto);
+      bodyEl.addEventListener('input', updateMailto);
+    }})();
     </script>
+  </body>
+</html>"""
+
+
+def render_send_preview_page(
+    *,
+    deal_id: str,
+    deal_name: str,
+    subject: str,
+    body: str,
+    to_emails: str,
+    from_email: str,
+    user: dict | None = None,
+) -> str:
+    """Confirmation page shown before the email is actually sent.
+
+    The rep sees exactly what will go out; clicking "Confirm & Send" is the
+    irreversible step. Cancelling returns them to the draft page.
+    """
+    import html as _html
+
+    def _esc(v: object) -> str:
+        return _html.escape(str(v or ""))
+
+    from sales_support_agent.services.admin_nav import (
+        render_agent_favicon_links,
+        render_agent_nav,
+        render_agent_nav_styles,
+    )
+
+    nav_styles = render_agent_nav_styles()
+    nav = render_agent_nav("sales", sales_section="sales_deals", user=user)
+    from_display = from_email or "your connected Gmail account"
+    body_escaped = _esc(body)
+    subject_escaped = _esc(subject)
+
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>agent | Confirm Send — {subject_escaped}</title>
+    {render_agent_favicon_links()}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {{--dark-blue:#2B3644;--light-blue:#85BBDA;--light-brown:#F9F7F3;
+        --white:#FFF;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);}}
+      *{{box-sizing:border-box;}}
+      body{{margin:0;background:var(--light-brown);color:var(--dark-blue);
+        font-family:"Inter","Segoe UI",sans-serif;}}
+      a{{color:var(--dark-blue);}}
+      {nav_styles}
+      .shell{{max-width:820px;margin:0 auto;padding:24px 18px 64px;}}
+      .crumbs{{font-size:12.5px;margin:0 0 12px;}}
+      .crumbs a{{color:rgba(43,54,68,0.6);text-decoration:none;}}
+      .workspace{{background:var(--white);border:1px solid var(--border);
+        border-radius:20px;box-shadow:0 18px 40px var(--shadow);padding:24px 26px 28px;}}
+      h1{{font-family:"Montserrat",sans-serif;font-weight:800;font-size:22px;margin:0 0 4px;}}
+      .eyebrow{{font-family:"Montserrat",sans-serif;font-weight:700;font-size:11px;
+        letter-spacing:0.08em;text-transform:uppercase;color:rgba(43,54,68,0.55);margin:0 0 4px;}}
+      .meta-grid{{display:grid;grid-template-columns:72px 1fr;gap:6px 12px;
+        font-size:13.5px;margin:18px 0;align-items:baseline;}}
+      .meta-label{{font-weight:700;color:rgba(43,54,68,0.6);font-size:12px;text-transform:uppercase;
+        letter-spacing:0.04em;padding-top:2px;}}
+      .body-preview{{background:var(--light-brown);border:1px solid var(--border);
+        border-radius:12px;padding:14px 16px;font-size:13.5px;white-space:pre-wrap;
+        line-height:1.6;max-height:280px;overflow-y:auto;}}
+      .warn{{background:rgba(255,183,0,0.1);border:1px solid rgba(255,183,0,0.4);
+        border-radius:10px;padding:11px 14px;font-size:13px;margin:16px 0;}}
+      .actions{{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;align-items:center;}}
+      .btn{{font:inherit;font-weight:700;font-size:13.5px;border-radius:12px;
+        padding:10px 20px;cursor:pointer;text-decoration:none;display:inline-block;border:none;}}
+      .btn--send{{background:#2f8f5b;color:#fff;}}
+      .btn--send:hover{{opacity:0.88;}}
+      .btn--outline{{background:var(--white);border:1px solid var(--border);color:var(--dark-blue);}}
+    </style>
+  </head>
+  <body>
+    {nav}
+    <main class="shell">
+      <div class="crumbs">
+        <a href="/admin/sales/deals">← Deal Board</a>
+        &nbsp;/&nbsp;
+        <a href="/admin/sales/deals/{_esc(deal_id)}">{_esc(deal_name)}</a>
+        &nbsp;/&nbsp;
+        <a href="/admin/sales/deals/{_esc(deal_id)}/draft-followup">Draft follow-up</a>
+      </div>
+
+      <div class="workspace">
+        <p class="eyebrow">Sales Priorities — Confirm send</p>
+        <h1>Review before sending</h1>
+        <p style="font-size:13.5px;color:rgba(43,54,68,0.7);margin:4px 0 0">
+          This email will be sent immediately and cannot be recalled. Check the details below.
+        </p>
+
+        <div class="meta-grid">
+          <span class="meta-label">From</span>
+          <span>{_esc(from_display)}</span>
+          <span class="meta-label">To</span>
+          <span>{_esc(to_emails or "—")}</span>
+          <span class="meta-label">Subject</span>
+          <span><strong>{subject_escaped}</strong></span>
+        </div>
+
+        <div class="body-preview">{body_escaped}</div>
+
+        <div class="warn">
+          Once sent, this email is delivered to the recipient. HubSpot will be updated
+          automatically — check the deal timeline after the next sync.
+        </div>
+
+        <div class="actions">
+          <form method="post" action="/admin/sales/deals/{_esc(deal_id)}/send-followup" style="margin:0">
+            <input type="hidden" name="subject" value="{subject_escaped}">
+            <input type="hidden" name="body" value="{_esc(body)}">
+            <input type="hidden" name="to_emails" value="{_esc(to_emails)}">
+            <input type="hidden" name="confirmed" value="1">
+            <button class="btn btn--send" type="submit">Confirm &amp; Send →</button>
+          </form>
+          <a class="btn btn--outline" href="/admin/sales/deals/{_esc(deal_id)}/draft-followup">← Edit draft</a>
+        </div>
+      </div>
+    </main>
   </body>
 </html>"""
