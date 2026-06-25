@@ -312,6 +312,26 @@ def test_unit_label_mapping():
 # CSV export (logic, not HTTP layer — require_tool closures can't be overridden)
 # ---------------------------------------------------------------------------
 
+def test_first_view_notify_noop_without_resend(isolated_db, monkeypatch):
+    """_do_notify_first_view is a silent no-op when RESEND_API_KEY is absent."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    from sales_support_agent.api.fulfillment_deck_router import _do_notify_first_view
+    run_id = _make_run({"prospect": "NotifyCo"})
+    _do_notify_first_view(run_id)  # must not raise
+
+
+def test_first_view_notify_noop_without_owner_email(isolated_db, monkeypatch):
+    """No email sent when owner_email is absent from summary_json."""
+    monkeypatch.setenv("RESEND_API_KEY", "test-key")
+    import requests as _req
+    calls = []
+    monkeypatch.setattr(_req, "post", lambda *a, **kw: calls.append(True))
+    from sales_support_agent.api.fulfillment_deck_router import _do_notify_first_view
+    run_id = _make_run({"prospect": "NoemailCo"})  # no owner_email
+    _do_notify_first_view(run_id)
+    assert not calls
+
+
 def test_csv_export_logic(isolated_db):
     """CSV generation produces correct headers and data rows."""
     import csv, io

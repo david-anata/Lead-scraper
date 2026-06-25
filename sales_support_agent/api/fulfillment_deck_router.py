@@ -318,6 +318,12 @@ def publish_run(run_id: int, request: Request) -> RedirectResponse:
         _hs_quote(run_id, owner_email=_owner_email)
     except Exception:
         logger.exception("[fulfillment_deck] hubspot sync_quote failed")
+    # Store the publishing rep's email for first-view notifications.
+    if _owner_email:
+        try:
+            storage.update_summary(run_id, {"owner_email": _owner_email})
+        except Exception:
+            logger.exception("[fulfillment_deck] owner_email store failed")
     # Auto-advance pipeline stage to "published" (unless already won/lost).
     stage_now = str(summary.get("pipeline_stage") or "intake")
     if stage_now not in ("won", "lost", "published"):
@@ -499,6 +505,56 @@ def export_pipeline_csv() -> HTMLResponse:
 
 
 # ---------------------------------------------------------------------------
+# First-view notification (background — non-blocking)
+# ---------------------------------------------------------------------------
+
+
+def _notify_first_view(run_id: int) -> None:
+    """Send a Resend email to the rep when a prospect opens their rate sheet for the first time."""
+    import threading
+    threading.Thread(target=_do_notify_first_view, args=(run_id,), daemon=True).start()
+
+
+def _do_notify_first_view(run_id: int) -> None:
+    import os, requests as _req
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    if not resend_key:
+        return
+    run = storage.get_run(run_id)
+    if run is None:
+        return
+    summary = dict(run.summary_json or {})
+    owner_email = str(summary.get("owner_email") or "").strip()
+    if not owner_email:
+        return
+    prospect = str(summary.get("prospect") or f"Run {run_id}")
+    view_path = str(summary.get("view_path") or "")
+    rate_sheet_url = f"https://agent.anatainc.com{view_path}" if view_path else "https://agent.anatainc.com/admin/fulfillment/sales"
+    pipeline_url = f"https://agent.anatainc.com/admin/fulfillment/sales"
+    try:
+        _req.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+            json={
+                "from": "Anata Agent <agent@anatainc.com>",
+                "to": [owner_email],
+                "subject": f"🔔 {prospect} just opened your rate sheet",
+                "html": (
+                    f"<p>Hi,</p>"
+                    f"<p><strong>{prospect}</strong> just viewed their Anata fulfillment rate sheet for the first time.</p>"
+                    f"<p><a href='{rate_sheet_url}?viewer=internal'>Open the rate sheet →</a></p>"
+                    f"<p><a href='{pipeline_url}'>View pipeline →</a></p>"
+                    f"<p style='color:#888;font-size:12px'>You're receiving this because you published this rate sheet. — Anata Agent</p>"
+                ),
+            },
+            timeout=8,
+        )
+        logger.info("[fulfillment_deck] first-view notification sent to %s for run %d", owner_email, run_id)
+    except Exception:
+        logger.exception("[fulfillment_deck] first-view notification failed for run %d", run_id)
+
+
+# ---------------------------------------------------------------------------
 # Public hosted view + engagement heartbeat (token-gated, no session)
 # ---------------------------------------------------------------------------
 
@@ -639,6 +695,15 @@ async def rate_sheet_heartbeat(request: Request, slug: str, run_id: int, token: 
             geo = extract_visitor_geo(request)
             referrer_url = str(payload.get("referrer") or request.headers.get("referer") or "")
             ref_host, ref_cat = categorize_referrer(referrer_url)
+            is_first_external = (
+                not is_internal
+                and session.execute(
+                    select(DeckVisitSession).where(
+                        DeckVisitSession.run_id == run_id,
+                        DeckVisitSession.is_internal == False,  # noqa: E712
+                    )
+                ).first() is None
+            )
             existing = DeckVisitSession(
                 run_id=run_id,
                 visitor_token=visitor_token,
@@ -659,6 +724,8 @@ async def rate_sheet_heartbeat(request: Request, slug: str, run_id: int, token: 
             )
             session.add(existing)
             session.flush()
+            if is_first_external:
+                _notify_first_view(run_id)
         else:
             existing.last_heartbeat_at = now
             if client_total_seconds > existing.total_seconds:
