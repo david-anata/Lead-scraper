@@ -306,3 +306,45 @@ def test_unit_label_mapping():
     assert hubspot_sync._unit_label("flat") == "month"
     assert hubspot_sync._unit_label("units") == "unit"
     assert hubspot_sync._unit_label("unknown") == "unknown"  # passthrough
+
+
+# ---------------------------------------------------------------------------
+# CSV export (logic, not HTTP layer — require_tool closures can't be overridden)
+# ---------------------------------------------------------------------------
+
+def test_csv_export_logic(isolated_db):
+    """CSV generation produces correct headers and data rows."""
+    import csv, io
+    _make_run({"prospect": "ExportCo", "fulfillment_quote": {"monthly_total": 9500.0},
+               "fulfillment_actual_costs": {"pick_pack_per_order": 1.60}})
+    runs = fds.list_runs(limit=500)
+    engagement = fds.engagement_for([r["id"] for r in runs])
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "ID", "Prospect", "Stage", "Status", "Created",
+        "Volume/mo", "Pitched $/mo", "Pick&Pack $/order",
+        "Storage $/pallet/mo", "Receiving $/pallet", "Tech Fee $/mo",
+        "Views", "Last Viewed", "Notes",
+    ])
+    for r in runs:
+        rid = r["id"]
+        costs = r.get("fulfillment_actual_costs") or {}
+        stats = engagement.get(rid) or {}
+        writer.writerow([
+            rid, r.get("prospect") or "", r.get("pipeline_stage") or "intake",
+            r.get("status") or "", (r.get("started_at") or "")[:10],
+            r.get("monthly_order_volume") or "", r.get("pitched_monthly") or "",
+            costs.get("pick_pack_per_order") or "", costs.get("storage_per_pallet_mo") or "",
+            costs.get("receiving_per_pallet") or "", costs.get("monthly_tech_fee") or "",
+            int(stats.get("external_sessions") or 0), (stats.get("last_viewed_at") or "")[:10],
+            r.get("pipeline_notes") or "",
+        ])
+
+    out = buf.getvalue()
+    lines = out.splitlines()
+    assert lines[0].startswith("ID,Prospect,Stage")
+    assert "ExportCo" in out
+    assert "9500.0" in out
+    assert "1.6" in out

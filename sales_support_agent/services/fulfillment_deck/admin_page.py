@@ -381,7 +381,23 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         # Engagement
         stats = engagement.get(run_id) or {}
         ext = int(stats.get("external_sessions") or 0)
-        views_str = f"{ext}v" if ext else "—"
+        last_viewed = stats.get("last_viewed_at") or ""
+        if ext and last_viewed:
+            try:
+                lv_date = datetime.fromisoformat(last_viewed[:10]).date()
+                today = datetime.utcnow().date()
+                days = (today - lv_date).days
+                ago = "today" if days == 0 else ("yesterday" if days == 1 else f"{days}d ago")
+                views_str = (
+                    f'<span title="{ext} prospect session{"s" if ext != 1 else ""}, last {ago}">'
+                    f'{ext}v <span class="muted" style="font-size:11px">{ago}</span></span>'
+                )
+            except Exception:
+                views_str = f"{ext}v"
+        elif ext:
+            views_str = f"{ext}v"
+        else:
+            views_str = "—"
 
         # Margin + actual cost columns (single compute_margin call per row)
         actual_cell = '<span class="muted">—</span>'
@@ -523,7 +539,7 @@ def render_fulfillment_sales_page(
         <h2>Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
-        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select></div>' if runs else ""}
+        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a></div>' if runs else ""}
         {table}
       </div>
     </main>

@@ -441,6 +441,57 @@ async def patch_notes(run_id: int, request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline CSV export
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get("/export.csv")
+def export_pipeline_csv() -> HTMLResponse:
+    """Download all pipeline runs as a CSV file for Excel/Sheets."""
+    import csv
+    import io
+
+    runs = storage.list_runs(limit=500)
+    engagement = storage.engagement_for([r["id"] for r in runs])
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "ID", "Prospect", "Stage", "Status", "Created",
+        "Volume/mo", "Pitched $/mo", "Pick&Pack $/order",
+        "Storage $/pallet/mo", "Receiving $/pallet", "Tech Fee $/mo",
+        "Views", "Last Viewed", "Notes",
+    ])
+    for r in runs:
+        rid = r["id"]
+        costs = r.get("fulfillment_actual_costs") or {}
+        stats = engagement.get(rid) or {}
+        writer.writerow([
+            rid,
+            r.get("prospect") or "",
+            r.get("pipeline_stage") or "intake",
+            r.get("status") or "",
+            (r.get("started_at") or "")[:10],
+            r.get("monthly_order_volume") or "",
+            r.get("pitched_monthly") or "",
+            costs.get("pick_pack_per_order") or "",
+            costs.get("storage_per_pallet_mo") or "",
+            costs.get("receiving_per_pallet") or "",
+            costs.get("monthly_tech_fee") or "",
+            int(stats.get("external_sessions") or 0),
+            (stats.get("last_viewed_at") or "")[:10],
+            r.get("pipeline_notes") or "",
+        ])
+
+    from fastapi.responses import Response
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="fulfillment-pipeline.csv"'},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public hosted view + engagement heartbeat (token-gated, no session)
 # ---------------------------------------------------------------------------
 
