@@ -395,6 +395,21 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         pitched = run.get("pitched_monthly")
         costs = run.get("fulfillment_actual_costs") or {}
 
+        # Stale indicator (actionable follow-up cue)
+        _stale_badge = ""
+        try:
+            _today = datetime.utcnow().date()
+            _age_src = published_raw if published_raw else started_raw
+            _age_days = (_today - datetime.strptime(_age_src, "%Y-%m-%d").date()).days if _age_src else 0
+            _ext_views = int((engagement.get(run_id) or {}).get("external_sessions") or 0)
+            if stage == "intake" and _age_days > 7 and published:
+                # Sheet was published but stage wasn't advanced (old records pre-auto-advance)
+                _stale_badge = '<span title="Rate sheet sent but stage is still Intake — update stage" style="margin-left:4px;font-size:10px;color:#b45309;vertical-align:middle">⚠</span>'
+            elif stage == "published" and _ext_views == 0 and _age_days > 5:
+                _stale_badge = '<span title="Prospect hasn\'t opened the rate sheet yet" style="margin-left:4px;font-size:10px;color:#b45309;vertical-align:middle">⚠</span>'
+        except Exception:
+            pass
+
         # Rates source pill (small, inside prospect cell)
         if status == "running":
             source_pill = '<span class="pill pill--running" style="font-size:10px">Generating…</span>'
@@ -483,7 +498,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         )
         rows.append(
             f'<tr class="prospect-row" onclick="toggleExpand(event,\'expand-{run_id}\')">'
-            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot} {source_pill}"
+            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot}{_stale_badge} {source_pill}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
             f"<td>{vol_str}</td>"
