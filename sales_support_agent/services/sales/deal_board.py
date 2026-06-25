@@ -46,8 +46,10 @@ class DealRow:
     company_name: str
     line_item_count: int
     contact_count: int
+    last_inbound_at: Optional[datetime] = None
     missing: list[str] = field(default_factory=list)
     bucket: str = "later"
+    is_stale: bool = False
 
     @property
     def is_complete(self) -> bool:
@@ -105,6 +107,7 @@ def build_deal_board(
     *,
     as_of: datetime | None = None,
     owner_filter: str | None = None,
+    stale_days: int = 14,
 ) -> DealBoard:
     """Assemble the open-deal board, sorted by close date soonest-first."""
     as_of = as_of or datetime.now(timezone.utc)
@@ -133,6 +136,7 @@ def build_deal_board(
         q = q.where(HubSpotDeal.owner_email == owner_filter)
     deals = session.scalars(q).all()
 
+    stale_cutoff = as_of - timedelta(days=stale_days)
     rows: list[DealRow] = []
     for d in deals:
         row = DealRow(
@@ -146,9 +150,15 @@ def build_deal_board(
             company_name=company_names.get(d.hubspot_company_id, ""),
             line_item_count=int(li_counts.get(d.hubspot_deal_id, 0)),
             contact_count=int(contact_counts.get(d.hubspot_deal_id, 0)),
+            last_inbound_at=d.last_inbound_at,
         )
         row.missing = _completeness(row, as_of=as_of)
         row.bucket = _bucket(row, as_of=as_of)
+        # Stale = no inbound reply from prospect in > stale_days.
+        li = d.last_inbound_at
+        if li is not None and li.tzinfo is None:
+            li = li.replace(tzinfo=timezone.utc)
+        row.is_stale = (li is None or li < stale_cutoff)
         rows.append(row)
 
     # Soonest close date first; deals with no close date sink to the bottom.
@@ -212,10 +222,11 @@ def _row_html(r: DealRow, *, as_of: datetime, portal_id: str = "") -> str:
         date_cell = f'<span class="overdue">{date_cell} · overdue</span>'
 
     name = _esc(r.name or "(untitled deal)")
+    stale_badge = ' <span class="stale-badge" title="No inbound reply in 14+ days">⚠</span>' if r.is_stale else ""
     company = f'<div class="muted">{_esc(r.company_name)}</div>' if r.company_name else ""
     return (
         "<tr>"
-        f'<td class="deal"><a href="/admin/sales/deals/{_esc(r.deal_id)}">{name}</a>{company}</td>'
+        f'<td class="deal"><a href="/admin/sales/deals/{_esc(r.deal_id)}">{name}</a>{stale_badge}{company}</td>'
         f"<td>{_esc(r.stage_label or r.stage or '—')}</td>"
         f'<td class="num">{_fmt_money(r.amount_cents)}</td>'
         f"<td>{date_cell}</td>"
@@ -265,6 +276,7 @@ _STYLES = """
     border-radius:10px; padding:7px 14px; cursor:pointer; color:var(--dark-blue); }
   .cleanup-link { font-size:13px; font-weight:600; color:#2f8f5b; text-decoration:none; }
   .cleanup-link:hover { text-decoration:underline; }
+  .stale-badge { font-size:13px; color:#b23b3b; margin-left:4px; cursor:default; }
   .stat--warn .n { color:#b23b3b; }
   .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .filter-tabs { display:flex; gap:8px; margin:0 0 16px; }

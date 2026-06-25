@@ -42,24 +42,28 @@ class StaleLeadJob:
         run = self.audit.start_run("stale_lead_scan", trigger="manual", metadata={"dry_run": dry_run, "as_of_date": effective_date.isoformat()})
         sync_summary: dict[str, int | str] = {"synced_tasks": 0}
         sync_failed = False
-        try:
-            sync_summary = ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(
-                include_closed=True,
-                max_tasks=sync_limit,
-            )
-        except Exception as exc:
-            sync_failed = True
-            logger.exception("stale lead sync refresh failed")
-            self.audit.record_action(
-                run_id=run.id,
-                clickup_task_id="",
-                system="sales_support_agent",
-                action_type="stale_lead_sync_failed",
-                success=False,
-                error_message=str(exc),
-                before={"sync_limit": sync_limit},
-                after={},
-            )
+        if self.settings.disable_clickup_sales_sync:
+            logger.info("stale_leads: ClickUp sales sync disabled via DISABLE_CLICKUP_SALES_SYNC")
+            sync_summary = {"synced_tasks": 0}
+        else:
+            try:
+                sync_summary = ClickUpSyncService(self.settings, self.clickup_client, self.session).sync_list(
+                    include_closed=True,
+                    max_tasks=sync_limit,
+                )
+            except Exception as exc:
+                sync_failed = True
+                logger.exception("stale lead sync refresh failed")
+                self.audit.record_action(
+                    run_id=run.id,
+                    clickup_task_id="",
+                    system="sales_support_agent",
+                    action_type="stale_lead_sync_failed",
+                    success=False,
+                    error_message=str(exc),
+                    before={"sync_limit": sync_limit},
+                    after={},
+                )
         query = (
             select(LeadMirror)
             .where(LeadMirror.list_id == self.settings.clickup_list_id)

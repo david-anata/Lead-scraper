@@ -117,7 +117,11 @@ def deal_board(request: Request, my: bool = False) -> HTMLResponse:
     user = get_current_user(request)
     owner_filter = user.get("email") if (my and user) else None
     with session_scope(request.app.state.session_factory) as session:
-        board = build_deal_board(session, owner_filter=owner_filter)
+        board = build_deal_board(
+            session,
+            owner_filter=owner_filter,
+            stale_days=settings.stale_deal_days,
+        )
     return HTMLResponse(
         render_deal_board_page(
             board,

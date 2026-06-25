@@ -178,6 +178,10 @@ class Settings:
     hubspot_request_timeout_seconds: int = 30
     hubspot_sales_pipeline_id: str = ""  # optional: restrict deal sync to one pipeline
     hubspot_portal_id: str = ""  # for "Open in HubSpot" deep links (app.hubspot.com/contacts/{portal}/...)
+    # Phase 6b: HubSpot-native staleness + ClickUp retirement gate
+    stale_deal_days: int = 14                      # days without inbound signal → stale
+    stale_deal_slack_digest_enabled: bool = False  # send Slack digest of stale deals
+    disable_clickup_sales_sync: bool = False       # stop ClickUp sync for the sales list
     # QuickBooks Online (QBO) — AR invoice sync
     qbo_client_id: str = ""
     qbo_client_secret: str = ""
@@ -433,6 +437,9 @@ def load_settings() -> Settings:
         hubspot_request_timeout_seconds=int((os.getenv("HUBSPOT_REQUEST_TIMEOUT_SECONDS", "30") or "30").strip()),
         hubspot_sales_pipeline_id=os.getenv("HUBSPOT_SALES_PIPELINE_ID", "").strip(),
         hubspot_portal_id=os.getenv("HUBSPOT_PORTAL_ID", "").strip(),
+        stale_deal_days=int((os.getenv("STALE_DEAL_DAYS", "14") or "14").strip()),
+        stale_deal_slack_digest_enabled=_parse_bool(os.getenv("STALE_DEAL_SLACK_DIGEST_ENABLED", "false"), default=False),
+        disable_clickup_sales_sync=_parse_bool(os.getenv("DISABLE_CLICKUP_SALES_SYNC", "false"), default=False),
         clickup_request_timeout_seconds=int((os.getenv("CLICKUP_REQUEST_TIMEOUT_SECONDS", "30") or "30").strip()),
         clickup_discovery_sample_size=int((os.getenv("CLICKUP_DISCOVERY_SAMPLE_SIZE", "10") or "10").strip()),
         stale_lead_scan_max_tasks=int((os.getenv("STALE_LEAD_SCAN_MAX_TASKS", "50") or "50").strip()),

@@ -176,6 +176,20 @@ class GmailMailboxSyncJob:
                                 "[mailbox_sync] HubSpot deal match failed for %s",
                                 normalized.sender_email,
                             )
+                    if not dry_run and signal.matched_deal_id:
+                        # Phase 6b: keep last_inbound_at on the deal in sync so the
+                        # staleness engine doesn't need an extra MailboxSignal join.
+                        try:
+                            from sales_support_agent.models.entities import HubSpotDeal
+                            deal_row = self.session.get(HubSpotDeal, signal.matched_deal_id)
+                            if deal_row and signal.received_at:
+                                received = signal.received_at
+                                if deal_row.last_inbound_at is None or received > deal_row.last_inbound_at:
+                                    deal_row.last_inbound_at = received
+                                if deal_row.last_meaningful_touch_at is None or received > deal_row.last_meaningful_touch_at:
+                                    deal_row.last_meaningful_touch_at = received
+                        except Exception:
+                            logger.debug("[mailbox_sync] Phase 6b last_inbound_at update failed")
                     if not dry_run:
                         self.session.add(signal)
                         self.session.flush()
