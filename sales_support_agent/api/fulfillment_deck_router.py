@@ -302,7 +302,7 @@ def update_run(
 
 
 @admin_router.post("/runs/{run_id}/publish")
-def publish_run(run_id: int) -> RedirectResponse:
+def publish_run(run_id: int, request: Request) -> RedirectResponse:
     if not storage.publish_run(run_id):
         return RedirectResponse(
             f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not publishable."),
@@ -312,9 +312,10 @@ def publish_run(run_id: int) -> RedirectResponse:
     summary = dict(run.summary_json or {}) if run is not None else {}
     view_path = str(summary.get("view_path") or "")
     prospect = str(summary.get("prospect") or "")
+    _owner_email = str((get_current_user(request) or {}).get("email") or "")
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
-        _hs_quote(run_id)
+        _hs_quote(run_id, owner_email=_owner_email)
     except Exception:
         logger.exception("[fulfillment_deck] hubspot sync_quote failed")
     if view_path:
@@ -333,7 +334,7 @@ def publish_run(run_id: int) -> RedirectResponse:
 
 
 @admin_router.post("/runs/{run_id}/quote")
-def create_quote(run_id: int) -> RedirectResponse:
+def create_quote(run_id: int, request: Request) -> RedirectResponse:
     """Trigger HubSpot quote creation (or re-creation) for an already-published run."""
     run = storage.get_run(run_id)
     if run is None or run.status != "completed":
@@ -341,9 +342,10 @@ def create_quote(run_id: int) -> RedirectResponse:
             f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not yet published."),
             status_code=303,
         )
+    _owner_email = str((get_current_user(request) or {}).get("email") or "")
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
-        _hs_quote(run_id)
+        _hs_quote(run_id, owner_email=_owner_email)
         msg = "Creating HubSpot quote — refresh in a few seconds to see the Quote button."
     except Exception:
         logger.exception("[fulfillment_deck] hubspot create_quote failed")

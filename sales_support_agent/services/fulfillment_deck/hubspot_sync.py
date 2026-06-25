@@ -210,12 +210,44 @@ def _portal_id() -> Optional[str]:
     return str(_account_info().get("portalId") or "") or None
 
 
+def _lookup_owner_id(email: str) -> Optional[str]:
+    """Return the HubSpot owner ID for the given email, or None."""
+    if not email:
+        return None
+    try:
+        r = requests.get(
+            f"{_BASE}/crm/v3/owners",
+            headers=_headers(),
+            params={"email": email, "limit": 1},
+            timeout=10,
+        )
+        results = r.json().get("results") or []
+        return str(results[0]["id"]) if results else None
+    except Exception:
+        logger.exception("[hubspot] owner lookup failed for %r", email)
+        return None
+
+
 def _hub_domain() -> str:
     """Return the correct HubSpot UI domain for this account (e.g. app-na2.hubspot.com)."""
     override = os.environ.get("HUBSPOT_UI_DOMAIN", "").strip()
     if override:
         return override
     return str(_account_info().get("uiDomain") or "app.hubspot.com")
+
+
+# Normalise plural unit strings to readable "per X" descriptions
+_UNIT_MAP: dict[str, str] = {
+    "orders": "order",
+    "pallets": "pallet",
+    "pallet/mo": "pallet/month",
+    "flat": "month",
+    "units": "unit",
+}
+
+
+def _unit_label(unit: str) -> str:
+    return _UNIT_MAP.get(unit.strip(), unit.strip())
 
 
 def _create_line_item(label: str, qty: float, price: float, total: float, unit: str = "") -> Optional[str]:
@@ -243,19 +275,31 @@ def _create_line_item(label: str, qty: float, price: float, total: float, unit: 
         return None
 
 
-def _create_quote(prospect: str, expiry: str, deal_id: str, line_item_ids: list) -> Optional[str]:
+def _create_quote(
+    prospect: str,
+    expiry: str,
+    deal_id: str,
+    line_item_ids: list,
+    owner_id: Optional[str] = None,
+) -> Optional[str]:
+    template_type = os.environ.get("HUBSPOT_QUOTE_TEMPLATE_TYPE", "DEFAULT_QUOTE_TEMPLATE").strip()
+    props: dict = {
+        "hs_title": f"{prospect} — 3PL Fulfillment Agreement",
+        "hs_expiration_date": expiry,
+        "hs_status": "DRAFT",
+        "hs_esign_enabled": "true",
+        "hs_template_type": template_type,
+        "hs_currency": "USD",
+        "hs_language": "en",
+        "hs_sender_company_name": "Anata",
+        "hs_sender_company_domain": "anatainc.com",
+    }
+    if owner_id:
+        props["hubspot_owner_id"] = owner_id
     # Include deal association directly in the creation payload — avoids
     # separate PUT calls and removes dependency on v3 association typeId guesses.
     payload: dict = {
-        "properties": {
-            "hs_title": f"{prospect} — 3PL Fulfillment Agreement",
-            "hs_expiration_date": expiry,
-            "hs_status": "DRAFT",
-            "hs_esign_enabled": "true",
-            "hs_template_type": "CUSTOMIZABLE_QUOTE_TEMPLATE",
-            "hs_currency": "USD",
-            "hs_language": "en",
-        },
+        "properties": props,
         "associations": [
             {
                 "to": {"id": deal_id},
@@ -362,7 +406,7 @@ def sync_stage(run_id: int, stage: str) -> None:
     _bg(_do)
 
 
-def _do_sync_quote(run_id: int) -> None:
+def _do_sync_quote(run_id: int, owner_email: str = "") -> None:
     import datetime as _dt
     from sales_support_agent.services.fulfillment_deck import storage
     run = storage.get_run(run_id)
@@ -403,15 +447,23 @@ def _do_sync_quote(run_id: int) -> None:
         logger.warning("[hubspot] no monthly total for run %d, skipping quote", run_id)
         return
 
-    # Create one HubSpot line item per fulfillment quote line
+    # Resolve the HubSpot owner ID from the logged-in rep's email.
+    owner_id = _lookup_owner_id(owner_email) if owner_email else None
+
+    # Build rate-card line items (qty=1, price=rate) — not volume-computed totals.
+    # Skip carrier shipping and packaging lines (too variable; out-of-scope for rate card).
     line_item_ids: list[str] = []
+    _SKIP_KEYS = {"shipping", "packaging"}
     for line in (fq.get("lines") or []):
+        key = str(line.get("key") or "")
+        if not key or key in _SKIP_KEYS:
+            continue
+        rate = float(line.get("rate") or 0)
+        if not rate:
+            continue
         label = str(line.get("label") or "Service")
-        qty = float(line.get("qty") or 1)
-        monthly = float(line.get("monthly") or 0)
-        rate = float(line.get("rate") or 0) or (monthly / qty if qty else monthly)
-        unit = str(line.get("unit") or "")
-        li_id = _create_line_item(label, qty, rate, monthly, unit)
+        unit = _unit_label(str(line.get("unit") or ""))
+        li_id = _create_line_item(label, 1, rate, rate, unit)
         if li_id:
             line_item_ids.append(li_id)
 
@@ -419,7 +471,7 @@ def _do_sync_quote(run_id: int) -> None:
     expiry_days = int(os.environ.get("HUBSPOT_QUOTE_EXPIRY_DAYS", "30"))
     expiry = (_dt.datetime.utcnow() + _dt.timedelta(days=expiry_days)).strftime("%Y-%m-%d")
 
-    quote_id = _create_quote(prospect, expiry, deal_id, line_item_ids)
+    quote_id = _create_quote(prospect, expiry, deal_id, line_item_ids, owner_id=owner_id)
     if not quote_id:
         return
 
@@ -436,11 +488,11 @@ def _do_sync_quote(run_id: int) -> None:
     logger.info("[hubspot] quote %s for run %d url=%s", quote_id, run_id, quote_url)
 
 
-def sync_quote(run_id: int) -> None:
+def sync_quote(run_id: int, owner_email: str = "") -> None:
     """Call after a rate sheet is published. Creates a HubSpot Quote with e-signature enabled."""
     if not _token():
         return
-    _bg(_do_sync_quote, run_id)
+    _bg(_do_sync_quote, run_id, owner_email)
 
 
 def sync_margin(run_id: int, margin: dict, pitched: float) -> None:
