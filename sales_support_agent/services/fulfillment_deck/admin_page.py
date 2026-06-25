@@ -450,9 +450,14 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         )
 
         vol_str = f"{vol:,}" if vol else "—"
+        notes_dot = (
+            '<span title="Has internal notes" style="margin-left:4px;font-size:10px;'
+            'opacity:0.5;vertical-align:middle">●</span>'
+            if str(run.get("pipeline_notes") or "").strip() else ""
+        )
         rows.append(
             f'<tr class="prospect-row" onclick="toggleExpand(event,\'expand-{run_id}\')">'
-            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong> {source_pill}"
+            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot} {source_pill}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
             f"<td>{vol_str}</td>"
@@ -761,14 +766,37 @@ def render_rate_sheet_review_page(
         f'<form method="post" action="{base}/runs/{run_id}/quote" style="display:inline">'
         f'<button class="btn" type="submit" style="background:#ff7a59;border-color:#ff7a59;color:#fff">Create HubSpot Quote ✍</button></form>'
     )
+    prospect_name = str(summary.get("prospect") or summary.get("design_title") or "your brand")
     if published and view_path:
+        _full_link_js = f"window.location.origin+'{_esc(view_path)}'"
+        _subj_attr = html.escape(f"Anata 3PL — {prospect_name} Fulfillment Rate Sheet", quote=True)
+        # Build the email body as a JS expression so the link is injected client-side.
+        # Using string concatenation so no template literal escaping needed inside onclick.
+        _copy_email_js = html.escape(
+            "var l=window.location.origin+'" + _esc(view_path) + "';"
+            "var s='Subject: Anata 3PL \\u2014 " + prospect_name.replace("'", "\\'") + " Fulfillment Rate Sheet';"
+            "var b='Hi,\\n\\nI wanted to share a customized fulfillment rate sheet from Anata "
+            "\\u2014 it includes pricing tailored to your order volume and product specs."
+            "\\n\\nView your rate sheet here: '+l+'\\n\\nHappy to walk through it on a quick call "
+            "whenever works for you.\\n\\nBest,';"
+            "navigator.clipboard.writeText(s+'\\n\\n'+b);"
+            "this.textContent='Email copied!';setTimeout(()=>this.textContent='Copy email',2000);",
+            quote=True,
+        )
         publish_block = f"""
-        <div class="flash"><strong>Published.</strong> Shareable link:
-          <code id="public-link" style="font-size:12px">{_esc(view_path)}</code>
-          <button class="btn btn--ghost" type="button"
-            onclick="navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';">Copy link</button>
-          <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
-          {hs_quote_btn if hs_quote_url else hs_create_quote_btn}
+        <div class="flash">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+            <strong>Published.</strong>
+            <code style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{_esc(view_path)}</code>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn--ghost" type="button"
+              onclick="navigator.clipboard.writeText({_full_link_js});this.textContent='Copied!';">Copy link</button>
+            <button class="btn btn--ghost" type="button"
+              onclick="{_copy_email_js}">Copy email</button>
+            <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
+            {hs_quote_btn if hs_quote_url else hs_create_quote_btn}
+          </div>
         </div>"""
         publish_button = '<button class="btn" type="submit">Re-publish</button>'
     else:
@@ -856,7 +884,7 @@ def render_rate_sheet_review_page(
     {render_agent_nav("fulfillment", website_ops_section="fulfillment_sales", user=user)}
     <main class="shell">
       <div class="workspace">
-        <p class="eyebrow">Fulfillment — Sales · Review</p>
+        <p class="eyebrow"><a href="{base}" style="color:inherit;text-decoration:none;opacity:0.7">← Pipeline</a> · Review</p>
         <h1>{_esc(summary.get('prospect') or 'Rate sheet')} <span style="color:var(--light-blue)">rate sheet</span>.</h1>
         <p class="intro">{'Rate sheet is live — edit fields below and re-publish to update. Shareable link stays the same.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
         {flash_html}
