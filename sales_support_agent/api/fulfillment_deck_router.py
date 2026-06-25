@@ -529,7 +529,7 @@ def _do_notify_first_view(run_id: int) -> None:
         return
     prospect = str(summary.get("prospect") or f"Run {run_id}")
     view_path = str(summary.get("view_path") or "")
-    rate_sheet_url = f"https://agent.anatainc.com{view_path}" if view_path else "https://agent.anatainc.com/admin/fulfillment/sales"
+    rate_sheet_url = f"https://agent.anatainc.com{view_path}?viewer=internal" if view_path else "https://agent.anatainc.com/admin/fulfillment/sales"
     pipeline_url = f"https://agent.anatainc.com/admin/fulfillment/sales"
     try:
         _req.post(
