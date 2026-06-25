@@ -594,6 +594,15 @@ def render_fulfillment_sales_page(
       </div>
     </main>
     <script>
+    // Generate form loading state — AI call takes 30-60s; give the rep feedback.
+    (function() {{
+      var form = document.querySelector('form[action$="/generate"]');
+      if (!form) return;
+      form.addEventListener('submit', function() {{
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) {{ btn.textContent = 'Generating… this takes ~30 sec'; btn.disabled = true; }}
+      }});
+    }})();
     function toggleExpand(e, id) {{
       if (e.target.closest('select,button,a,form,input')) return;
       var row = document.getElementById(id);
