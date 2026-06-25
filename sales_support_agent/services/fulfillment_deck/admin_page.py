@@ -261,10 +261,27 @@ def _expand_panel(run: dict) -> str:
         margin_html = f'<div class="margin-card" id="margin-{run_id}" style="color:rgba(43,54,68,0.45);font-size:12px">Enter actual costs above to see margin.</div>'
 
     brief_attr = html.escape(_build_brief(run), quote=True)
+    _view_path = _esc(str(run.get("view_path") or ""))
+    _hs_url = _esc(str(run.get("hubspot_quote_url") or ""))
+    _quick_links = ""
+    if _view_path:
+        _quick_links = (
+            f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">'
+            f'<button class="btn btn--ghost" type="button" style="font-size:12px" '
+            f"onclick=\"navigator.clipboard.writeText(window.location.origin+'{_view_path}');"
+            f"this.textContent='Copied!';setTimeout(()=>this.textContent='Copy link',1800)\">Copy link</button>"
+            f'<a class="btn btn--ghost" href="/admin/fulfillment/sales/runs/{run_id}/review" '
+            f'onclick="event.stopPropagation()" style="font-size:12px">Edit rate sheet →</a>'
+            + (f'<a class="btn btn--ghost" href="{_hs_url}" target="_blank" rel="noreferrer" '
+               f'onclick="event.stopPropagation()" style="font-size:12px;color:#FF7A59">HubSpot Quote ✍</a>'
+               if _hs_url else "")
+            + '</div>'
+        )
 
     return f"""
     <div class="expand-panel">
       <div>
+        {_quick_links}
         <h3>Fulfillment Team Costs</h3>
         <div class="cost-grid">
           <div><label>Pick &amp; pack ($/order)</label>
