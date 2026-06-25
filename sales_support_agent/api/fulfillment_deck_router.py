@@ -327,8 +327,8 @@ def publish_run(run_id: int, request: Request) -> RedirectResponse:
         except Exception:
             logger.exception("[fulfillment_deck] auto deal asset link failed")
     return RedirectResponse(
-        f"{_BASE}?msg="
-        + quote_plus(f"Published — rate sheet for {prospect} is live at {view_path}. Use Open or Copy link in History."),
+        f"{_BASE}/runs/{run_id}/review?msg="
+        + quote_plus("Published — rate sheet is live. Use the link above to copy or share."),
         status_code=303,
     )
 

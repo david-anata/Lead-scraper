@@ -822,7 +822,7 @@ def render_rate_sheet_review_page(
       <div class="workspace">
         <p class="eyebrow">Fulfillment — Sales · Review</p>
         <h1>{_esc(summary.get('prospect') or 'Rate sheet')} <span style="color:var(--light-blue)">rate sheet</span>.</h1>
-        <p class="intro">Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link. <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
+        <p class="intro">{'Rate sheet is live — edit fields below and re-publish to update. Shareable link stays the same.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
         {flash_html}
         {publish_block}
         {warnings_html}
