@@ -790,11 +790,18 @@ def startup() -> None:
     app.state.website_ops_run_futures = {}
     validate_settings_on_startup(settings)
     _cf_db_url = os.getenv("SALES_AGENT_DB_URL", "").strip()
-    if _cf_db_url:
-        from sales_support_agent.models.database import create_session_factory, init_database, init_cashflow_db
-        _sf = create_session_factory(_cf_db_url)
-        init_database(_sf)
-        init_cashflow_db(_cf_db_url)
+    from sales_support_agent.models.database import create_session_factory, init_database, init_cashflow_db
+    if not _cf_db_url:
+        # Fall back to the same SQLite default that sales_support_agent/main.py uses
+        # so the session factory is always available on app.state.
+        from pathlib import Path as _Path
+        _runtime = _Path("runtime")
+        _runtime.mkdir(parents=True, exist_ok=True)
+        _cf_db_url = f"sqlite:///{_runtime / 'sales_support_agent.sqlite3'}"
+    _sf = create_session_factory(_cf_db_url)
+    init_database(_sf)
+    init_cashflow_db(_cf_db_url)
+    app.state.session_factory = _sf  # required by sales_router and cashflow_router
     # Store AdminDashboardSettings so cashflow auth_deps can always find
     # admin_cookie_name even when agent_settings fails to load.
     app.state.admin_dashboard_settings = load_admin_dashboard_settings()
