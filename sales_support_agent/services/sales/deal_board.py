@@ -263,6 +263,8 @@ _STYLES = """
     color:rgba(43,54,68,0.6); flex-wrap:wrap; }
   .syncbar button { font:inherit; font-weight:600; border:1px solid var(--border); background:var(--white);
     border-radius:10px; padding:7px 14px; cursor:pointer; color:var(--dark-blue); }
+  .cleanup-link { font-size:13px; font-weight:600; color:#2f8f5b; text-decoration:none; }
+  .cleanup-link:hover { text-decoration:underline; }
   .stat--warn .n { color:#b23b3b; }
   .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .filter-tabs { display:flex; gap:8px; margin:0 0 16px; }
@@ -394,6 +396,7 @@ def render_deal_board_page(
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
             <button type="submit" onclick="this.textContent='Syncing…';this.disabled=true">Sync now</button>
           </form>
+          <a href="/admin/sales/deals/cleanup" class="cleanup-link">Run cleanup →</a>
           {last_synced_html}
           <span id="sync-note">{sync_note}</span>
         </div>

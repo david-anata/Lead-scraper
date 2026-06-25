@@ -39,6 +39,10 @@ from sales_support_agent.services.sales.deal_detail import (
     render_deal_detail_page,
 )
 from sales_support_agent.integrations.gmail import GmailClient
+from sales_support_agent.services.sales.deal_batch import (
+    build_batch_cleanup,
+    render_batch_cleanup_page,
+)
 from sales_support_agent.services.sales.email_send import send_followup_email
 from sales_support_agent.services.sales.followup_draft import (
     _HOOK_ORDER,
@@ -48,6 +52,7 @@ from sales_support_agent.services.sales.followup_draft import (
 )
 
 from sqlalchemy import func, select
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +140,74 @@ def sync_status(request: Request) -> JSONResponse:
     return JSONResponse(hubspot_sync_status(request.app))
 
 
-# Defined after the static /deals/sync* paths so {deal_id} can't shadow them.
+@router.get("/deals/cleanup", response_class=HTMLResponse)
+def batch_cleanup(
+    request: Request,
+    applied: int = 0,
+    failed: int = 0,
+    error: str = "",
+) -> HTMLResponse:
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        rows = build_batch_cleanup(session, portal_id=settings.hubspot_portal_id or "")
+    return HTMLResponse(render_batch_cleanup_page(
+        rows,
+        user=get_current_user(request),
+        applied=applied,
+        failed=failed,
+        error=error,
+    ))
+
+
+@router.post("/deals/cleanup")
+def batch_cleanup_apply(
+    request: Request,
+    action_ids: List[str] = Form(default=[]),
+) -> RedirectResponse:
+    """Apply a batch of selected mid-confidence actions to HubSpot."""
+    settings = request.app.state.agent_settings
+    client = HubSpotClient(settings)
+    if not client.is_configured:
+        return RedirectResponse(
+            url="/admin/sales/deals/cleanup?error=HubSpot+token+not+configured",
+            status_code=303,
+        )
+    if not action_ids:
+        return RedirectResponse(url="/admin/sales/deals/cleanup", status_code=303)
+
+    action_id_set = set(action_ids)
+    with session_scope(request.app.state.session_factory) as session:
+        rows = build_batch_cleanup(session, portal_id=settings.hubspot_portal_id or "")
+
+    matched_rows = [r for r in rows if r.action.action_id in action_id_set]
+    applied = failed = 0
+    for row in matched_rows:
+        a = row.action
+        if not a.properties:
+            continue
+        try:
+            if a.hubspot_object_type == "deals":
+                client.update_deal(a.hubspot_object_id, a.properties)
+            elif a.hubspot_object_type == "contacts":
+                client.update_contact(a.hubspot_object_id, a.properties)
+            applied += 1
+        except Exception:
+            logger.exception("[sales] batch cleanup action failed: %s", a.action_id)
+            failed += 1
+
+    if applied:
+        try:
+            start_hubspot_sync(request.app, force=True)
+        except Exception:
+            logger.warning("[sales] post-cleanup sync failed to start")
+
+    return RedirectResponse(
+        url=f"/admin/sales/deals/cleanup?applied={applied}&failed={failed}",
+        status_code=303,
+    )
+
+
+# Defined after the static /deals/* paths so {deal_id} can't shadow them.
 @router.get("/deals/{deal_id}", response_class=HTMLResponse)
 def deal_detail(
     request: Request,

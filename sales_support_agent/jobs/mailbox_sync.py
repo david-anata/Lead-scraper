@@ -180,7 +180,7 @@ class GmailMailboxSyncJob:
                         self.session.add(signal)
                         self.session.flush()
                         if lead is not None and normalized.classification in {"reply_received", "pricing_or_offer_request", "meeting_action_needed"}:
-                            communication_service.process_event(
+                            comm_result = communication_service.process_event(
                                 CommunicationEventRequest(
                                     task_id=lead.clickup_task_id,
                                     event_type="inbound_reply_received",
@@ -204,6 +204,15 @@ class GmailMailboxSyncJob:
                                     },
                                 )
                             )
+                            # Phase 6a: tag the CommunicationEvent with the matched deal.
+                            if signal.matched_deal_id and comm_result.get("event_id"):
+                                try:
+                                    from sales_support_agent.models.entities import CommunicationEvent
+                                    ev = self.session.get(CommunicationEvent, comm_result["event_id"])
+                                    if ev and not ev.hubspot_deal_id:
+                                        ev.hubspot_deal_id = signal.matched_deal_id
+                                except Exception:
+                                    logger.debug("[mailbox_sync] Phase 6a deal tag failed")
                             matched += 1
                             account_matched += 1
                         elif lead is None:
