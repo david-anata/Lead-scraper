@@ -547,6 +547,79 @@ def health(request: Request) -> ApiMessage:
     )
 
 
+@router.get("/admin/sales/diag")
+def sales_diag(request: Request) -> JSONResponse:
+    """Deep diagnostic for the Sales Deal Board. No sales.deals tool required —
+    only an active admin session. Returns a JSON report of every component."""
+    import traceback
+    from sqlalchemy import inspect as sa_inspect, text as sa_text
+
+    report: dict = {}
+
+    # 1. Auth state
+    try:
+        from sales_support_agent.services.auth_deps import get_session_user_from_request, get_current_user
+        identity = get_session_user_from_request(request)
+        user = get_current_user(request) if identity else None
+        report["auth"] = {
+            "identity": bool(identity),
+            "email": (identity or {}).get("email", ""),
+            "is_superadmin": (user or {}).get("is_superadmin", False),
+        }
+    except Exception:
+        report["auth"] = {"error": traceback.format_exc()}
+
+    # 2. app.state attributes
+    try:
+        state = request.app.state
+        report["state"] = {
+            "has_settings": hasattr(state, "settings"),
+            "has_agent_settings": hasattr(state, "agent_settings"),
+            "has_session_factory": hasattr(state, "session_factory"),
+        }
+        if hasattr(state, "settings"):
+            s = state.settings
+            report["state"]["stale_deal_days"] = getattr(s, "stale_deal_days", "MISSING")
+            report["state"]["hubspot_token_set"] = bool(getattr(s, "hubspot_api_token", ""))
+            report["state"]["hubspot_portal_id"] = getattr(s, "hubspot_portal_id", "MISSING")
+            report["state"]["db_url_prefix"] = str(getattr(s, "sales_agent_db_url", ""))[:30]
+    except Exception:
+        report["state"] = {"error": traceback.format_exc()}
+
+    # 3. DB connection + table existence
+    try:
+        from sales_support_agent.models.database import session_scope
+        sf = request.app.state.session_factory
+        engine = sf.kw.get("bind")
+        report["db"] = {
+            "dialect": engine.dialect.name if engine else "no engine",
+            "url_prefix": str(engine.url)[:40] if engine else "",
+        }
+        insp = sa_inspect(engine)
+        tables = set(insp.get_table_names())
+        for t in ("hubspot_deals", "lead_mirrors", "hubspot_contacts", "hubspot_line_items", "hubspot_deal_contacts"):
+            report["db"][f"table_{t}"] = t in tables
+        if "hubspot_deals" in tables:
+            cols = {c["name"] for c in insp.get_columns("hubspot_deals")}
+            for col in ("last_inbound_at", "last_meaningful_touch_at", "deal_stage_label", "is_won"):
+                report["db"][f"col_hubspot_deals.{col}"] = col in cols
+    except Exception:
+        report["db"] = {"error": traceback.format_exc()}
+
+    # 4. build_deal_board dry run
+    try:
+        from sales_support_agent.models.database import session_scope
+        from sales_support_agent.services.sales.deal_board import build_deal_board
+        from datetime import datetime, timezone
+        with session_scope(request.app.state.session_factory) as session:
+            board = build_deal_board(session, stale_days=14)
+        report["deal_board"] = {"ok": True, "total_open": board.total_open, "rows": len(board.rows)}
+    except Exception:
+        report["deal_board"] = {"ok": False, "error": traceback.format_exc()}
+
+    return JSONResponse(report)
+
+
 @router.get("/admin/login", response_class=HTMLResponse)
 def admin_login_page(request: Request) -> HTMLResponse:
     _require_admin_enabled(request)

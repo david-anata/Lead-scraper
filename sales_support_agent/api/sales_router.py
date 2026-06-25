@@ -107,30 +107,40 @@ router = APIRouter(
 
 @router.get("/deals", response_class=HTMLResponse)
 def deal_board(request: Request, my: bool = False) -> HTMLResponse:
-    # Kick a background refresh on load (non-blocking); render from the mirror.
+    import traceback
     try:
-        start_hubspot_sync(request.app, force=False)
-    except Exception:  # noqa: BLE001 — a sync hiccup must not break the page
-        logger.exception("[sales] failed to start hubspot sync")
-    status = hubspot_sync_status(request.app)
-    settings = request.app.state.settings
-    user = get_current_user(request)
-    owner_filter = user.get("email") if (my and user) else None
-    with session_scope(request.app.state.session_factory) as session:
-        board = build_deal_board(
-            session,
-            owner_filter=owner_filter,
-            stale_days=settings.stale_deal_days,
+        # Kick a background refresh on load (non-blocking); render from the mirror.
+        try:
+            start_hubspot_sync(request.app, force=False)
+        except Exception:  # noqa: BLE001 — a sync hiccup must not break the page
+            logger.exception("[sales] failed to start hubspot sync")
+        status = hubspot_sync_status(request.app)
+        settings = request.app.state.settings
+        user = get_current_user(request)
+        owner_filter = user.get("email") if (my and user) else None
+        with session_scope(request.app.state.session_factory) as session:
+            board = build_deal_board(
+                session,
+                owner_filter=owner_filter,
+                stale_days=settings.stale_deal_days,
+            )
+        return HTMLResponse(
+            render_deal_board_page(
+                board,
+                user=user,
+                sync_status=status,
+                show_my=my,
+                portal_id=settings.hubspot_portal_id or "",
+            )
         )
-    return HTMLResponse(
-        render_deal_board_page(
-            board,
-            user=user,
-            sync_status=status,
-            show_my=my,
-            portal_id=settings.hubspot_portal_id or "",
+    except Exception as _exc:  # noqa: BLE001
+        _tb = traceback.format_exc()
+        logger.exception("[sales] deal_board route error")
+        return HTMLResponse(
+            f"<pre style='font-family:monospace;padding:2rem;white-space:pre-wrap'>"
+            f"Deal Board Error — check Render logs for full context.\n\n{_tb}</pre>",
+            status_code=500,
         )
-    )
 
 
 @router.post("/deals/sync")
