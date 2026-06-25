@@ -523,6 +523,7 @@ def render_fulfillment_sales_page(
         <h2>Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
+        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select></div>' if runs else ""}
         {table}
       </div>
     </main>
@@ -611,6 +612,22 @@ def render_fulfillment_sales_page(
       }}, 900);
     }}
     {'if (true) { setTimeout(() => location.reload(), 8000); }' if has_running else ''}
+    function filterPipeline() {{
+      var q = (document.getElementById('pipe-search') || {{}}).value || '';
+      var stage = (document.getElementById('pipe-stage') || {{}}).value || '';
+      q = q.toLowerCase().trim();
+      var tbody = document.querySelector('table tbody');
+      if (!tbody) return;
+      var rows = tbody.querySelectorAll('tr.prospect-row');
+      rows.forEach(function(row) {{
+        var expRow = document.getElementById(row.getAttribute('onclick').match(/'([^']+)'/)?.[1] || '');
+        var name = (row.querySelector('td strong') || {{}}).textContent || '';
+        var stageVal = (row.querySelector('select') || {{}}).value || '';
+        var show = (!q || name.toLowerCase().includes(q)) && (!stage || stageVal === stage);
+        row.style.display = show ? '' : 'none';
+        if (expRow) expRow.style.display = 'none'; // collapse on filter
+      }});
+    }}
     </script>
   </body>
 </html>"""

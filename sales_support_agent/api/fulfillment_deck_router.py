@@ -345,7 +345,7 @@ def create_quote(run_id: int, request: Request) -> RedirectResponse:
     _owner_email = str((get_current_user(request) or {}).get("email") or "")
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
-        _hs_quote(run_id, owner_email=_owner_email)
+        _hs_quote(run_id, owner_email=_owner_email, force=True)
         msg = "Creating HubSpot quote — refresh in a few seconds to see the Quote button."
     except Exception:
         logger.exception("[fulfillment_deck] hubspot create_quote failed")

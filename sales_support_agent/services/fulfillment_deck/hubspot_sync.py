@@ -406,13 +406,19 @@ def sync_stage(run_id: int, stage: str) -> None:
     _bg(_do)
 
 
-def _do_sync_quote(run_id: int, owner_email: str = "") -> None:
+def _do_sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> None:
     import datetime as _dt
     from sales_support_agent.services.fulfillment_deck import storage
     run = storage.get_run(run_id)
     if run is None:
         return
     summary = dict(run.summary_json or {})
+
+    # Skip if a quote already exists and this is not a forced re-creation (e.g. on re-publish).
+    if not force and str(summary.get("hubspot_quote_id") or ""):
+        logger.debug("[hubspot] quote already exists for run %d, skipping (use force=True to re-create)", run_id)
+        return
+
     deal_id = str(summary.get("hubspot_deal_id") or "") or None
 
     # If no deal yet (run pre-dates HubSpot wiring), create one now then re-read.
@@ -488,11 +494,15 @@ def _do_sync_quote(run_id: int, owner_email: str = "") -> None:
     logger.info("[hubspot] quote %s for run %d url=%s", quote_id, run_id, quote_url)
 
 
-def sync_quote(run_id: int, owner_email: str = "") -> None:
-    """Call after a rate sheet is published. Creates a HubSpot Quote with e-signature enabled."""
+def sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> None:
+    """Call after a rate sheet is published. Creates a HubSpot Quote with e-signature enabled.
+
+    Pass force=True to re-create even when a quote already exists (e.g. from
+    an explicit "Create Quote" button click — not from a background re-publish).
+    """
     if not _token():
         return
-    _bg(_do_sync_quote, run_id, owner_email)
+    _bg(_do_sync_quote, run_id, owner_email, force)
 
 
 def sync_margin(run_id: int, margin: dict, pitched: float) -> None:
