@@ -190,7 +190,8 @@ def _fmt_usd(value) -> str:
     if value is None:
         return "—"
     try:
-        return f"${float(value):,.0f}"
+        v = float(value)
+        return f"−${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
     except (TypeError, ValueError):
         return "—"
 
@@ -272,8 +273,8 @@ def _expand_panel(run: dict) -> str:
           <div><label>Storage ($/pallet/mo)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:.2f}"
               id="st-{run_id}" value="{_cv('storage_per_pallet_mo')}"></div>
-          <div><label>Receiving ($/item) <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
-            <input type="number" step="0.01" min="0" placeholder="0.10"
+          <div><label>Receiving ($/pallet) <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_per_pallet']:.2f}"
               id="rc-{run_id}" value="{_cv('receiving_per_pallet')}"></div>
           <div><label>Tech fee ($/mo)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['monthly_tech_fee']:.2f}"
@@ -593,7 +594,7 @@ def render_fulfillment_sales_page(
           }}
         }}
         setTimeout(() => btn.textContent = 'Save costs', 2000);
-      }}).catch(() => {{ btn.textContent = 'Error — retry'; }});
+      }}).catch(() => {{ btn.textContent = 'Error — retry'; setTimeout(() => btn.textContent = 'Save costs', 3500); }});
     }}
     var _noteTimers = {{}};
     function pipelineNotesDebounce(el, runId) {{
