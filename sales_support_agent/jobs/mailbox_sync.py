@@ -160,6 +160,22 @@ class GmailMailboxSyncJob:
                         account_key=account_key,
                         account_label=account_label,
                     )
+                    # Phase 3: cross-reference sender with HubSpot deal contacts.
+                    if normalized.sender_email:
+                        try:
+                            from sales_support_agent.services.sales.deal_matcher import (
+                                match_deal_by_email,
+                            )
+                            hs_deal_id = match_deal_by_email(
+                                self.session, normalized.sender_email
+                            )
+                            if hs_deal_id:
+                                signal.matched_deal_id = hs_deal_id
+                        except Exception:
+                            logger.warning(
+                                "[mailbox_sync] HubSpot deal match failed for %s",
+                                normalized.sender_email,
+                            )
                     if not dry_run:
                         self.session.add(signal)
                         self.session.flush()

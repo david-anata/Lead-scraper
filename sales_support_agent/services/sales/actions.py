@@ -149,22 +149,51 @@ def compute_pending_actions(
                 link_url=hs_url,
             ))
 
-    # Low: recent inbound reply → remind rep to move stage (stage IDs are pipeline-specific,
-    # so we surface a nudge rather than auto-writing)
+    # Recent inbound reply → propose stage move (mid) or nudge (low).
     cutoff = as_of - timedelta(days=14)
     inbound = [s for s in recent_signals if _aware(s.received_at) > cutoff]
     if inbound:
         latest = max(inbound, key=lambda s: s.received_at)
         late_stages = {"contractsent", "closedwon", "closedlost"}
         if deal.deal_stage not in late_stages:
-            actions.append(SalesAction(
-                action_id=f"{deal.hubspot_deal_id}:replied_note",
-                action_type="note",
-                confidence="low",
-                label=f"Prospect replied {latest.received_at.strftime('%b %-d')} — update stage?",
-                description=(latest.subject or "(no subject)")[:100],
-                hubspot_object_type="deals",
-                hubspot_object_id=deal.hubspot_deal_id,
-            ))
+            next_stage = _try_get_next_stage(
+                getattr(deal, "pipeline", "") or "",
+                deal.deal_stage or "",
+            )
+            if next_stage:
+                next_id, next_label = next_stage
+                actions.append(SalesAction(
+                    action_id=f"{deal.hubspot_deal_id}:stage_move",
+                    action_type="update_deal",
+                    confidence="mid",
+                    label=f"Move stage → {next_label}",
+                    description=(
+                        f"Prospect replied {latest.received_at.strftime('%b %-d')}. "
+                        f"Move deal to '{next_label}' to reflect progress."
+                    ),
+                    hubspot_object_type="deals",
+                    hubspot_object_id=deal.hubspot_deal_id,
+                    properties={"dealstage": next_id},
+                ))
+            else:
+                actions.append(SalesAction(
+                    action_id=f"{deal.hubspot_deal_id}:replied_note",
+                    action_type="note",
+                    confidence="low",
+                    label=f"Prospect replied {latest.received_at.strftime('%b %-d')} — update stage?",
+                    description=(latest.subject or "(no subject)")[:100],
+                    hubspot_object_type="deals",
+                    hubspot_object_id=deal.hubspot_deal_id,
+                    link_url=_deal_url(),
+                ))
 
     return actions
+
+
+def _try_get_next_stage(pipeline_id: str, stage_id: str):
+    """Wrapper around pipeline.get_next_stage that swallows all errors."""
+    try:
+        from sales_support_agent.services.sales.pipeline import get_next_stage
+        return get_next_stage(pipeline_id, stage_id)
+    except Exception:
+        return None

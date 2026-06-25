@@ -294,6 +294,12 @@ def sync_hubspot_sales(
     except Exception as exc:  # noqa: BLE001 — labels are non-critical
         logger.warning("[hubspot_sync] pipeline labels fetch failed: %s", exc)
 
+    # Cache ordered stage list for stage-move proposals (best-effort, separate call).
+    try:
+        _cache_pipeline_stage_order(client)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[hubspot_sync] pipeline stage order cache failed: %s", exc)
+
     company_ids: set[str] = set()
     contact_ids: set[str] = set()
 
@@ -368,6 +374,29 @@ def sync_hubspot_sales(
 
     result.completed_at = datetime.now(timezone.utc).isoformat()
     return result
+
+
+def _cache_pipeline_stage_order(client: HubSpotClient) -> None:
+    """Cache ordered pipeline stages to KV for stage-move proposals."""
+    from sales_support_agent.models.database import kv_set_json
+
+    raw_pipelines = client.list_deal_pipelines()
+    pipeline_stage_order: dict[str, list[dict]] = {}
+    for pipeline in raw_pipelines:
+        pid = str(pipeline.get("id") or "").strip()
+        if not pid:
+            continue
+        stages_sorted = sorted(
+            pipeline.get("stages", []) or [],
+            key=lambda s: int(s.get("displayOrder") or 9999),
+        )
+        pipeline_stage_order[pid] = [
+            {"id": str(s.get("id") or "").strip(), "label": str(s.get("label") or "").strip()}
+            for s in stages_sorted
+            if str(s.get("id") or "").strip()
+        ]
+    if pipeline_stage_order:
+        kv_set_json("hubspot:pipeline_stages", pipeline_stage_order)
 
 
 def _company_props():

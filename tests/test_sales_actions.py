@@ -10,7 +10,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import PropertyMock, patch
+from unittest.mock import PropertyMock, patch, MagicMock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -167,6 +167,86 @@ class TestComputePendingActions(unittest.TestCase):
         action = next(a for a in actions if "contact_no_email_c1" in a.action_id)
         self.assertIn("12345", action.link_url)
         self.assertIn("c1", action.link_url)
+
+    # Phase 3 — stage_move
+
+    def test_stage_move_mid_confidence_when_pipeline_data_available(self):
+        deal = self._deal(
+            deal_stage="stage_1",
+            pipeline="pipeline_a",
+        )
+        pipeline_data = {
+            "pipeline_a": [
+                {"id": "stage_1", "label": "Qualified"},
+                {"id": "stage_2", "label": "Presentation Scheduled"},
+            ]
+        }
+        from sales_support_agent.models.entities import MailboxSignal
+        signal = MagicMock(spec=MailboxSignal)
+        signal.received_at = datetime(2026, 6, 23, tzinfo=timezone.utc)
+        signal.subject = "Re: your proposal"
+
+        with patch(
+            "sales_support_agent.services.sales.actions._try_get_next_stage",
+            return_value=("stage_2", "Presentation Scheduled"),
+        ):
+            actions = compute_pending_actions(
+                deal,
+                [signal],
+                as_of=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            )
+
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:stage_move", ids)
+        action = next(a for a in actions if a.action_id == "d1:stage_move")
+        self.assertEqual(action.confidence, "mid")
+        self.assertEqual(action.action_type, "update_deal")
+        self.assertEqual(action.properties["dealstage"], "stage_2")
+        self.assertIn("Presentation Scheduled", action.label)
+        self.assertFalse(any(a.action_id == "d1:replied_note" for a in actions))
+
+    def test_replied_note_fallback_when_no_pipeline_data(self):
+        deal = self._deal(deal_stage="stage_1", pipeline="pipeline_a")
+        from sales_support_agent.models.entities import MailboxSignal
+        signal = MagicMock(spec=MailboxSignal)
+        signal.received_at = datetime(2026, 6, 23, tzinfo=timezone.utc)
+        signal.subject = "Interested"
+
+        with patch(
+            "sales_support_agent.services.sales.actions._try_get_next_stage",
+            return_value=None,
+        ):
+            actions = compute_pending_actions(
+                deal,
+                [signal],
+                as_of=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            )
+
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:replied_note", ids)
+        self.assertFalse(any(a.action_id == "d1:stage_move" for a in actions))
+        replied = next(a for a in actions if a.action_id == "d1:replied_note")
+        self.assertEqual(replied.confidence, "low")
+
+    def test_late_stage_deal_no_stage_move(self):
+        deal = self._deal(deal_stage="contractsent", pipeline="pipeline_a")
+        from sales_support_agent.models.entities import MailboxSignal
+        signal = MagicMock(spec=MailboxSignal)
+        signal.received_at = datetime(2026, 6, 23, tzinfo=timezone.utc)
+        signal.subject = "Signed"
+
+        with patch(
+            "sales_support_agent.services.sales.actions._try_get_next_stage",
+            return_value=("closedwon", "Closed Won"),
+        ):
+            actions = compute_pending_actions(
+                deal,
+                [signal],
+                as_of=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            )
+
+        self.assertFalse(any("stage_move" in a.action_id for a in actions))
+        self.assertFalse(any("replied_note" in a.action_id for a in actions))
 
 
 class TestApproveActionRoute(unittest.TestCase):
