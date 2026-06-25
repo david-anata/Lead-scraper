@@ -41,7 +41,7 @@ def _ensure_state(app) -> None:
 
 
 def _run_sync(app) -> dict[str, Any]:
-    settings = app.state.settings
+    settings = getattr(app.state, "agent_settings", None) or app.state.settings
     client = HubSpotClient(settings)
     try:
         with session_scope(app.state.session_factory) as session:
@@ -79,7 +79,8 @@ def start_hubspot_sync(app, *, force: bool = False) -> dict[str, Any]:
     mirror even if the current run started before those changes.
     """
     _ensure_state(app)
-    if not HubSpotClient(app.state.settings).is_configured:
+    _settings = getattr(app.state, "agent_settings", None) or app.state.settings
+    if not HubSpotClient(_settings).is_configured:
         return {"status": "unconfigured", "running": False,
                 "message": "HUBSPOT_API_TOKEN is not set."}
     with app.state.hubspot_sync_lock:

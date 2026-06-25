@@ -105,6 +105,17 @@ router = APIRouter(
 )
 
 
+def _sales_settings(request: Request):
+    """Return agent settings (has HubSpot/sales fields) regardless of entrypoint.
+
+    Under sales_support_agent.main:app both app.state.settings and
+    app.state.agent_settings are the agent settings. Under main:app only
+    app.state.agent_settings is correct — app.state.settings is the root
+    settings which lacks stale_deal_days, hubspot_portal_id, etc.
+    """
+    return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+
+
 @router.get("/deals", response_class=HTMLResponse)
 def deal_board(request: Request, my: bool = False) -> HTMLResponse:
     import traceback
@@ -115,7 +126,7 @@ def deal_board(request: Request, my: bool = False) -> HTMLResponse:
         except Exception:  # noqa: BLE001 — a sync hiccup must not break the page
             logger.exception("[sales] failed to start hubspot sync")
         status = hubspot_sync_status(request.app)
-        settings = request.app.state.settings
+        settings = _sales_settings(request)
         user = get_current_user(request)
         owner_filter = user.get("email") if (my and user) else None
         with session_scope(request.app.state.session_factory) as session:
@@ -161,7 +172,7 @@ def batch_cleanup(
     failed: int = 0,
     error: str = "",
 ) -> HTMLResponse:
-    settings = request.app.state.settings
+    settings = _sales_settings(request)
     with session_scope(request.app.state.session_factory) as session:
         rows = build_batch_cleanup(session, portal_id=settings.hubspot_portal_id or "")
     return HTMLResponse(render_batch_cleanup_page(
@@ -230,7 +241,7 @@ def deal_detail(
     sent: str = "",
     error: str = "",
 ) -> Response:
-    settings = request.app.state.settings
+    settings = _sales_settings(request)
     flash = ""
     flash_ok = True
     if actioned:
@@ -319,7 +330,7 @@ def approve_action(
 
 @router.get("/deals/{deal_id}/draft-followup", response_class=HTMLResponse)
 def draft_followup(request: Request, deal_id: str) -> Response:
-    settings = request.app.state.settings
+    settings = _sales_settings(request)
     with session_scope(request.app.state.session_factory) as session:
         detail = build_deal_detail(session, deal_id, settings=settings)
         if detail is None:
