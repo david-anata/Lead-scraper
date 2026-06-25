@@ -112,8 +112,21 @@ def _sales_settings(request: Request):
     app.state.agent_settings are the agent settings. Under main:app only
     app.state.agent_settings is correct — app.state.settings is the root
     settings which lacks stale_deal_days, hubspot_portal_id, etc.
+
+    If agent_settings is None or is the root Settings (no stale_deal_days),
+    we load directly from the environment and cache the result so the next
+    request is fast. This is safe to call on every request.
     """
-    return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+    s = getattr(request.app.state, "agent_settings", None)
+    if s is not None and hasattr(s, "stale_deal_days"):
+        return s
+    # agent_settings is None (startup exception) or root Settings.
+    # Load the agent settings directly and cache so startup failures don't
+    # silently serve the wrong settings object on every request.
+    from sales_support_agent.config import load_settings as _load_agent_settings
+    s = _load_agent_settings()
+    request.app.state.agent_settings = s
+    return s
 
 
 @router.get("/deals", response_class=HTMLResponse)
