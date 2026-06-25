@@ -496,8 +496,9 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
             'opacity:0.5;vertical-align:middle">●</span>'
             if str(run.get("pipeline_notes") or "").strip() else ""
         )
+        row_idx = len(rows)
         rows.append(
-            f'<tr class="prospect-row" onclick="toggleExpand(event,\'expand-{run_id}\')">'
+            f'<tr class="prospect-row" data-order="{row_idx}" onclick="toggleExpand(event,\'expand-{run_id}\')">'
             f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot}{_stale_badge} {source_pill}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
@@ -588,7 +589,7 @@ def render_fulfillment_sales_page(
         <h2>Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
-        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a></div>' if runs else ""}
+        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><select id="pipe-sort" onchange="sortPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">Sort: Newest</option><option value="volume">Sort: Volume ↓</option><option value="pitched">Sort: Pitched $ ↓</option><option value="margin">Sort: Margin ↓</option><option value="views">Sort: Views ↓</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a></div>' if runs else ""}
         {table}
       </div>
     </main>
@@ -692,6 +693,43 @@ def render_fulfillment_sales_page(
         row.style.display = show ? '' : 'none';
         if (expRow) expRow.style.display = 'none'; // collapse on filter
       }});
+    }}
+    function sortPipeline() {{
+      var key = (document.getElementById('pipe-sort') || {{}}).value || '';
+      var tbody = document.querySelector('table tbody');
+      if (!tbody) return;
+      // Collect prospect+expand row pairs
+      var allRows = [...tbody.querySelectorAll('tr')];
+      var pairs = [];
+      for (var i = 0; i < allRows.length; i += 2) {{
+        if (allRows[i] && allRows[i+1]) pairs.push([allRows[i], allRows[i+1]]);
+      }}
+      if (!key) {{
+        // Restore server-side order (by data-order attr added at render time)
+        pairs.sort((a, b) => parseInt(a[0].dataset.order||0) - parseInt(b[0].dataset.order||0));
+      }} else {{
+        function getVal(row) {{
+          var tds = row.querySelectorAll('td');
+          var txt = function(i) {{ return ((tds[i] || {{}}).textContent || '').trim(); }};
+          if (key === 'volume') return parseInt(txt(2).replace(/[^0-9]/g,'')) || 0;
+          if (key === 'pitched') return parseFloat(txt(3).replace(/[^0-9.]/g,'')) || 0;
+          if (key === 'margin') {{
+            var s = txt(5); var n = parseFloat(s.replace(/[^0-9.]/g,'')) || 0;
+            return s.includes('−') ? -n : n;
+          }}
+          if (key === 'views') return parseInt(txt(6)) || 0;
+          return 0;
+        }}
+        pairs.sort((a, b) => getVal(b[0]) - getVal(a[0]));
+      }}
+      pairs.forEach(function(pair, idx) {{
+        pair[0].dataset.order = pair[0].dataset.order || idx;
+        tbody.appendChild(pair[0]);
+        pair[1].style.display = 'none';
+        tbody.appendChild(pair[1]);
+      }});
+      // Re-apply filter after sort
+      filterPipeline();
     }}
     </script>
   </body>
