@@ -362,9 +362,16 @@ def _do_sync_new(run_id: int, prospect: str, website: str, stage: str, annual: f
     deal_id = _find_deal(deal_name) or _create_deal(deal_name, annual, stage, company_id or "", brief)
 
     if deal_id:
+        hub_domain = os.environ.get("HUBSPOT_DOMAIN", "app-na2.hubspot.com").strip()
+        portal_id = _portal_id() or ""
+        deal_url = (
+            f"https://{hub_domain}/contacts/{portal_id}/deal/{deal_id}"
+            if portal_id else ""
+        )
         storage.update_summary(run_id, {
             "hubspot_deal_id": deal_id,
             "hubspot_company_id": company_id,
+            "hubspot_deal_url": deal_url,
         })
         logger.info("[hubspot] synced run %d → deal %s company %s", run_id, deal_id, company_id)
     else:

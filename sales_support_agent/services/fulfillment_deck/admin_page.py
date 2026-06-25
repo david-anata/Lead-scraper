@@ -262,21 +262,30 @@ def _expand_panel(run: dict) -> str:
 
     brief_attr = html.escape(_build_brief(run), quote=True)
     _view_path = _esc(str(run.get("view_path") or ""))
-    _hs_url = _esc(str(run.get("hubspot_quote_url") or ""))
+    _hs_quote_url = _esc(str(run.get("hubspot_quote_url") or ""))
+    _hs_deal_url = _esc(str(run.get("hubspot_deal_url") or ""))
     _quick_links = ""
-    if _view_path:
-        _quick_links = (
-            f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">'
-            f'<button class="btn btn--ghost" type="button" style="font-size:12px" '
-            f"onclick=\"navigator.clipboard.writeText(window.location.origin+'{_view_path}');"
-            f"this.textContent='Copied!';setTimeout(()=>this.textContent='Copy link',1800)\">Copy link</button>"
-            f'<a class="btn btn--ghost" href="/admin/fulfillment/sales/runs/{run_id}/review" '
-            f'onclick="event.stopPropagation()" style="font-size:12px">Edit rate sheet →</a>'
-            + (f'<a class="btn btn--ghost" href="{_hs_url}" target="_blank" rel="noreferrer" '
-               f'onclick="event.stopPropagation()" style="font-size:12px;color:#FF7A59">HubSpot Quote ✍</a>'
-               if _hs_url else "")
-            + '</div>'
-        )
+    if _view_path or _hs_deal_url:
+        _btns = []
+        if _view_path:
+            _btns.append(
+                f'<button class="btn btn--ghost" type="button" style="font-size:12px" '
+                f"onclick=\"navigator.clipboard.writeText(window.location.origin+'{_view_path}');"
+                f"this.textContent='Copied!';setTimeout(()=>this.textContent='Copy link',1800)\">Copy link</button>"
+                f'<a class="btn btn--ghost" href="/admin/fulfillment/sales/runs/{run_id}/review" '
+                f'onclick="event.stopPropagation()" style="font-size:12px">Edit rate sheet →</a>'
+            )
+        if _hs_deal_url:
+            _btns.append(
+                f'<a class="btn btn--ghost" href="{_hs_deal_url}" target="_blank" rel="noreferrer" '
+                f'onclick="event.stopPropagation()" style="font-size:12px;color:#FF7A59">HubSpot Deal</a>'
+            )
+        if _hs_quote_url:
+            _btns.append(
+                f'<a class="btn btn--ghost" href="{_hs_quote_url}" target="_blank" rel="noreferrer" '
+                f'onclick="event.stopPropagation()" style="font-size:12px;color:#FF7A59">HubSpot Quote ✍</a>'
+            )
+        _quick_links = f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">{"".join(_btns)}</div>'
 
     return f"""
     <div class="expand-panel">
