@@ -40,8 +40,19 @@ def _ensure_state(app) -> None:
         app.state.hubspot_sync_pending_resync = False
 
 
+def _get_agent_settings(app):
+    """Return agent settings regardless of entrypoint, loading from env if needed."""
+    s = getattr(app.state, "agent_settings", None)
+    if s is not None and hasattr(s, "hubspot_api_token"):
+        return s
+    from sales_support_agent.config import load_settings as _load
+    s = _load()
+    app.state.agent_settings = s
+    return s
+
+
 def _run_sync(app) -> dict[str, Any]:
-    settings = getattr(app.state, "agent_settings", None) or app.state.settings
+    settings = _get_agent_settings(app)
     client = HubSpotClient(settings)
     try:
         with session_scope(app.state.session_factory) as session:
@@ -79,7 +90,11 @@ def start_hubspot_sync(app, *, force: bool = False) -> dict[str, Any]:
     mirror even if the current run started before those changes.
     """
     _ensure_state(app)
-    _settings = getattr(app.state, "agent_settings", None) or app.state.settings
+    try:
+        _settings = _get_agent_settings(app)
+    except Exception:
+        return {"status": "unconfigured", "running": False,
+                "message": "Could not load agent settings."}
     if not HubSpotClient(_settings).is_configured:
         return {"status": "unconfigured", "running": False,
                 "message": "HUBSPOT_API_TOKEN is not set."}
