@@ -151,6 +151,16 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         "hubspot_deals": {
             "deal_stage_label": "ALTER TABLE hubspot_deals ADD COLUMN deal_stage_label VARCHAR(255) DEFAULT ''",
             "is_won": "ALTER TABLE hubspot_deals ADD COLUMN is_won BOOLEAN DEFAULT 0",
+            "created_at": "ALTER TABLE hubspot_deals ADD COLUMN created_at DATETIME",
+            "updated_at": "ALTER TABLE hubspot_deals ADD COLUMN updated_at DATETIME",
+            "description": "ALTER TABLE hubspot_deals ADD COLUMN description TEXT DEFAULT ''",
+            "last_meaningful_touch_at": "ALTER TABLE hubspot_deals ADD COLUMN last_meaningful_touch_at DATETIME",
+            "last_outbound_at": "ALTER TABLE hubspot_deals ADD COLUMN last_outbound_at DATETIME",
+            "last_inbound_at": "ALTER TABLE hubspot_deals ADD COLUMN last_inbound_at DATETIME",
+            "next_follow_up_at": "ALTER TABLE hubspot_deals ADD COLUMN next_follow_up_at DATETIME",
+            "follow_up_state": "ALTER TABLE hubspot_deals ADD COLUMN follow_up_state VARCHAR(64) DEFAULT ''",
+            "communication_summary": "ALTER TABLE hubspot_deals ADD COLUMN communication_summary TEXT DEFAULT ''",
+            "recommended_next_action": "ALTER TABLE hubspot_deals ADD COLUMN recommended_next_action TEXT DEFAULT ''",
         },
         "brand_analysis_reports": {
             "slug": "ALTER TABLE brand_analysis_reports ADD COLUMN slug VARCHAR(96) NOT NULL DEFAULT ''",
@@ -889,6 +899,22 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_owner ON hubspot_deals (owner_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_company ON hubspot_deals (hubspot_company_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hs_deals_is_closed ON hubspot_deals (is_closed)"))
+        # Phase 6b staleness / accountability fields — added after the initial
+        # hubspot_deals table shipped. ADD COLUMN IF NOT EXISTS is a no-op on
+        # columns that already exist from a fresh CREATE TABLE.
+        connection.execute(text("""
+            ALTER TABLE hubspot_deals
+                ADD COLUMN IF NOT EXISTS created_at               TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS updated_at               TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS description              TEXT        NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS last_meaningful_touch_at TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS last_outbound_at         TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS last_inbound_at          TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS next_follow_up_at        TIMESTAMPTZ NULL,
+                ADD COLUMN IF NOT EXISTS follow_up_state          VARCHAR(64) NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS communication_summary    TEXT        NOT NULL DEFAULT '',
+                ADD COLUMN IF NOT EXISTS recommended_next_action  TEXT        NOT NULL DEFAULT ''
+        """))
 
         connection.execute(text("""
             CREATE TABLE IF NOT EXISTS hubspot_line_items (
