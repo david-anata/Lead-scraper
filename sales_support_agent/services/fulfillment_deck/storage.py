@@ -192,6 +192,7 @@ def list_runs(limit: int = 100) -> list[dict]:
                     "prospect_profile": prospect_profile,
                     # HubSpot integration
                     "hubspot_quote_url": str(summary.get("hubspot_quote_url") or ""),
+                    "published_at": str(summary.get("published_at") or ""),
                 }
             )
         return out

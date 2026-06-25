@@ -318,6 +318,13 @@ def publish_run(run_id: int, request: Request) -> RedirectResponse:
         _hs_quote(run_id, owner_email=_owner_email)
     except Exception:
         logger.exception("[fulfillment_deck] hubspot sync_quote failed")
+    # Auto-advance pipeline stage to "published" (unless already won/lost).
+    stage_now = str(summary.get("pipeline_stage") or "intake")
+    if stage_now not in ("won", "lost", "published"):
+        try:
+            storage.update_stage(run_id, "published")
+        except Exception:
+            logger.exception("[fulfillment_deck] auto stage advance failed")
     if view_path:
         try:
             from sales_support_agent.services.sales.asset_linker import try_link_rate_sheet

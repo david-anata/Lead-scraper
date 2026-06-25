@@ -351,8 +351,11 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
     for run in runs:
         run_id = int(run.get("id") or 0)
         started_raw = str(run.get("started_at") or "")[:10]
+        published_raw = str(run.get("published_at") or "")[:10]
         try:
-            started = datetime.strptime(started_raw, "%Y-%m-%d").strftime("%b %-d")
+            _date_src = published_raw if published_raw else started_raw
+            _date_lbl = "sent" if published_raw else "created"
+            started = f"{_date_lbl} {datetime.strptime(_date_src, '%Y-%m-%d').strftime('%b %-d')}"
         except ValueError:
             started = started_raw
         prospect = _esc(run.get("prospect") or run.get("design_title") or f"Run {run_id}")
