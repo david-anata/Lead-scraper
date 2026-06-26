@@ -689,6 +689,7 @@ def render_fulfillment_sales_page(
       }}).then(() => {{
         sel.style.outline = '2px solid #15803d';
         setTimeout(() => sel.style.outline = '', 1400);
+        filterPipeline(); // re-apply stage filter so changed rows move correctly
         // When advancing to "Sent to Fulfillment", auto-copy the brief so the rep can paste immediately.
         if (sel.value === 'pending_fulfillment') {{
           var expandRow = document.getElementById('expand-' + runId);
