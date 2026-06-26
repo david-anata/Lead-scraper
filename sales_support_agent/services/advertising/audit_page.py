@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import date, timedelta
 from typing import Optional
 
 from sales_support_agent.services.admin_nav import (
@@ -23,6 +24,12 @@ from sales_support_agent.services.advertising.schema import (
 
 def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value))
+
+
+def _week_label() -> str:
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    return f"Week of {monday.strftime('%b %-d')}"
 
 
 def _page(title: str, body: str, *, user: Optional[dict]) -> str:
@@ -299,7 +306,7 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
         <input id="adv-brand" type="text" name="brand" placeholder="e.g. Zantrex — leave blank for full account">
         <span class="hint">Type the client brand to scope the whole audit + plan to its campaigns &amp; ASINs.</span>
       </div>
-      <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="Week of Jun 2"></div>
+      <div class="field" style="max-width:320px;"><label>Run label (optional)</label><input type="text" name="label" placeholder="{_week_label()}"></div>
       <div class="card" style="margin:6px 0 0;background:#fafbfc;">
         <h2 style="font-size:15px;">Goals <small>— targets the plan measures against (saved &amp; applied on run)</small></h2>
         {_goals_fields(goals)}
