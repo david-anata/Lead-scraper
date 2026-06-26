@@ -35,7 +35,7 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("advertising.audit", "Advertising Audit", "Advertising", ("/admin/advertising",)),
     Tool("executive.summary", "Executive Summary", "Executive", ("/admin/executive",), exact=True),
     Tool("executive.brand_analysis", "Brand Analysis", "Executive", ("/admin/executive/brand-analysis",)),
-    Tool("fulfillment.rate_sheets", "Fulfillment Sales Deck", "Fulfillment", ("/admin/fulfillment/sales",)),
+    Tool("fulfillment.rate_sheets", "Fulfillment Prospects", "Fulfillment", ("/admin/fulfillment/sales",)),
     Tool("fulfillment.dashboard", "CS Dashboard", "Fulfillment", ("/admin/fulfillment/cs",), exact=True),
     Tool("fulfillment.reports", "CS Reports", "Fulfillment", ("/admin/fulfillment/cs/reports",)),
     # HR — employees/time/reports under hr.access; the sensitive money + config

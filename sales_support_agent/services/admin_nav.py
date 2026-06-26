@@ -66,7 +66,7 @@ _NAV_SECTIONS = [
         _NavSubpage("executive.brand_analysis", "Brand Analysis", "/admin/executive/brand-analysis", "brand_analysis"),
     ]),
     _NavSection("fulfillment", "Fulfillment", "fulfillment", [
-        _NavSubpage("fulfillment.rate_sheets", "Sales Deck", "/admin/fulfillment/sales", "fulfillment_sales"),
+        _NavSubpage("fulfillment.rate_sheets", "Prospects", "/admin/fulfillment/sales", "fulfillment_sales"),
         _NavSubpage("fulfillment.dashboard", "CS Dashboard", "/admin/fulfillment/cs/", "fulfillment_dashboard"),
         _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
         _NavSubpage("fulfillment.reports", "Latest", "/admin/fulfillment/cs/reports/latest", "fulfillment_latest"),
