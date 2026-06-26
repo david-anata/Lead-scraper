@@ -7,8 +7,11 @@ circular dependencies.  overview.py re-exports everything defined here.
 from __future__ import annotations
 
 import html as _html
+from contextvars import ContextVar
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Optional
+
+_finance_nav_user: ContextVar[Optional[dict]] = ContextVar("_finance_nav_user", default=None)
 
 from sales_support_agent.services.cashflow.engine import EventDTO
 
@@ -218,7 +221,7 @@ function editName(wrapId, currentVal, fieldName) {
     {inline_edit_js}
   </head>
   <body>
-    {render_agent_nav(active="finance")}
+    {render_agent_nav(active="finance", user=_finance_nav_user.get())}
     <div class="finance-subnav-bar">
       <div class="finance-subnav-inner">
         {_finance_subnav(active_section)}

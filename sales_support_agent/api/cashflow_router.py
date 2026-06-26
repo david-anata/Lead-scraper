@@ -43,7 +43,12 @@ from sales_support_agent.services.cashflow.upload_page import (
     render_upload_page,
     render_upload_result,
 )
-from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.auth_deps import get_current_user, require_tool
+from sales_support_agent.services.cashflow.cashflow_helpers import _finance_nav_user
+
+
+async def _set_finance_nav_user(request: Request) -> None:
+    _finance_nav_user.set(get_current_user(request))
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_transactions
@@ -52,7 +57,7 @@ from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_tr
 router = APIRouter(
     prefix="/admin/finances",
     tags=["finance"],
-    dependencies=[Depends(require_tool("finance"))],
+    dependencies=[Depends(require_tool("finance")), Depends(_set_finance_nav_user)],
 )
 
 
