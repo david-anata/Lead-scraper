@@ -542,7 +542,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         )
         row_idx = len(rows)
         rows.append(
-            f'<tr class="prospect-row" data-order="{row_idx}" data-stage="{_esc(stage)}" data-run="{run_id}" onclick="toggleExpand(event,\'expand-{run_id}\')">'
+            f'<tr class="prospect-row" data-order="{row_idx}" data-stage="{_esc(stage)}" data-run="{run_id}" data-expand="expand-{run_id}" onclick="toggleExpand(event,\'expand-{run_id}\')">'
             f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot}{_stale_badge} {source_pill}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
@@ -865,7 +865,7 @@ def render_fulfillment_sales_page(
       var rows = tbody.querySelectorAll('tr.prospect-row');
       var shown = 0;
       rows.forEach(function(row) {{
-        var expRow = document.getElementById(row.getAttribute('onclick').match(/'([^']+)'/)?.[1] || '');
+        var expRow = document.getElementById(row.getAttribute('data-expand') || '');
         var name = (row.querySelector('td strong') || {{}}).textContent || '';
         var stageVal = (row.querySelector('select') || {{}}).value || '';
         var show = (!q || name.toLowerCase().includes(q)) && (!stage || stageVal === stage);

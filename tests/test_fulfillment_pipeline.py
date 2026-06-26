@@ -385,3 +385,78 @@ def test_csv_export_logic(isolated_db):
     assert "ExportCo" in out
     assert "9500.0" in out
     assert "1.6" in out
+
+
+# ---------------------------------------------------------------------------
+# Rendered HTML sanity: no JS string-literal newline bug
+# ---------------------------------------------------------------------------
+
+def _js_has_bare_newline_in_string(script: str) -> list[str]:
+    """Scan JS for single-quoted string literals that contain a bare newline.
+
+    Uses a simple state machine (handles \\ escapes). Ignores // line comments
+    and double-quoted strings (the bug only occurs in single-quoted literals).
+    Returns a list of offending substrings (empty = clean).
+    """
+    offenses = []
+    i = 0
+    n = len(script)
+    while i < n:
+        c = script[i]
+        # Skip // line comments to avoid false positives from ' in comments.
+        if c == '/' and i + 1 < n and script[i + 1] == '/':
+            while i < n and script[i] != '\n':
+                i += 1
+            continue
+        # Skip double-quoted strings.
+        if c == '"':
+            i += 1
+            while i < n and script[i] != '"':
+                if script[i] == '\\':
+                    i += 1  # skip escape
+                i += 1
+            i += 1
+            continue
+        # Single-quoted string: scan for unescaped close-quote or bare newline.
+        if c == "'":
+            start = i
+            i += 1
+            while i < n and script[i] != "'":
+                if script[i] == '\\':
+                    i += 2  # skip escape sequence
+                    continue
+                if script[i] == '\n':
+                    offenses.append(repr(script[start:min(i + 20, n)]))
+                    break
+                i += 1
+            # Advance past closing quote.
+            if i < n and script[i] == "'":
+                i += 1
+            continue
+        i += 1
+    return offenses
+
+
+def test_pipeline_page_no_js_string_newlines(isolated_db):
+    """JS string literals in the pipeline page must not contain bare newlines.
+
+    The specific bug this guards against: Python f-string '\\n' (one char,
+    actual LF) embedded inside a JS single-quoted literal causes a SyntaxError
+    that silently kills the entire <script> block.
+    """
+    from sales_support_agent.services.fulfillment_deck.admin_page import (
+        render_fulfillment_sales_page,
+    )
+    _make_run({"prospect": "RenderCo", "fulfillment_quote": {"monthly_total": 5000.0}})
+    runs = fds.list_runs()
+    html = render_fulfillment_sales_page(runs, {})
+    script_start = html.find("<script>")
+    script_end = html.find("</script>", script_start)
+    assert script_start != -1, "no <script> block found"
+    script = html[script_start:script_end]
+    offenses = _js_has_bare_newline_in_string(script)
+    assert not offenses, (
+        f"Bare newline inside JS single-quoted string literal (SyntaxError). "
+        f"Offending snippets: {offenses[:3]}. "
+        f"Fix: use '\\\\n' in Python f-string instead of '\\n'."
+    )
