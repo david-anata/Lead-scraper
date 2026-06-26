@@ -758,6 +758,30 @@ def render_fulfillment_sales_page(
       }}, 900);
     }}
     {'if (true) { setTimeout(() => location.reload(), 8000); }' if has_running else ''}
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {{
+      // Escape: close any open expand panel
+      if (e.key === 'Escape') {{
+        document.querySelectorAll('tr.expand-row').forEach(function(row) {{
+          if (row.style.display !== 'none') {{
+            row.style.display = 'none';
+            var chev = row.previousElementSibling && row.previousElementSibling.querySelector('.row-chevron');
+            if (chev) chev.style.transform = '';
+          }}
+        }});
+      }}
+    }});
+    // Ctrl/Cmd+Enter in the generate textarea submits the form
+    (function() {{
+      var ta = document.getElementById('notes');
+      if (!ta) return;
+      ta.addEventListener('keydown', function(e) {{
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+          var form = ta.closest('form');
+          if (form) form.submit();
+        }}
+      }});
+    }})();
     function filterPipeline() {{
       var q = (document.getElementById('pipe-search') || {{}}).value || '';
       var stageEl = document.getElementById('pipe-stage');
