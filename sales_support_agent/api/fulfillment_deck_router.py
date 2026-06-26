@@ -441,6 +441,57 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@admin_router.post("/runs/{run_id}/send-brief")
+def send_brief_email(run_id: int, request: Request) -> JSONResponse:
+    """Email the fulfillment brief to the warehouse team via Resend."""
+    import os, requests as _req
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    warehouse_email = os.environ.get("FULFILLMENT_TEAM_EMAIL", "").strip()
+    if not resend_key:
+        return JSONResponse({"ok": False, "error": "RESEND_API_KEY not configured"})
+    if not warehouse_email:
+        return JSONResponse({"ok": False, "error": "FULFILLMENT_TEAM_EMAIL not configured"})
+    run = storage.get_run(run_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "not found"})
+    summary = dict(run.summary_json or {})
+    from sales_support_agent.services.fulfillment_deck.admin_page import _build_brief
+    brief_run = {
+        "id": run_id,
+        "prospect": summary.get("prospect") or summary.get("design_title"),
+        "origin_zip": summary.get("origin_zip"),
+        "monthly_order_volume": (summary.get("prospect_profile") or {}).get("monthly_order_volume"),
+        "prospect_profile": summary.get("prospect_profile") or {},
+    }
+    brief_text = _build_brief(brief_run)
+    prospect = str(summary.get("prospect") or f"Run {run_id}")
+    sender_email = str((get_current_user(request) or {}).get("email") or "agent@anatainc.com")
+    try:
+        resp = _req.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+            json={
+                "from": "Anata Agent <agent@anatainc.com>",
+                "to": [warehouse_email],
+                "reply_to": sender_email,
+                "subject": f"Fulfillment Brief — {prospect}",
+                "text": brief_text + f"\n\n—\nSent from Anata Agent · Fulfillment Sales Pipeline",
+            },
+            timeout=8,
+        )
+        if resp.status_code >= 400:
+            logger.error("[fulfillment_deck] send-brief Resend error %d: %s", resp.status_code, resp.text[:200])
+            return JSONResponse({"ok": False, "error": "Email service error — check logs"})
+        # Auto-advance stage to pending_fulfillment if still at intake.
+        stage = str(summary.get("pipeline_stage") or "intake")
+        if stage == "intake":
+            storage.update_stage(run_id, "pending_fulfillment")
+        return JSONResponse({"ok": True})
+    except Exception:
+        logger.exception("[fulfillment_deck] send-brief failed for run %d", run_id)
+        return JSONResponse({"ok": False, "error": "Failed to send — check logs"})
+
+
 @admin_router.patch("/runs/{run_id}/notes")
 async def patch_notes(run_id: int, request: Request) -> JSONResponse:
     try:

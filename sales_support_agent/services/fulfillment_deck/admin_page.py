@@ -316,9 +316,13 @@ def _expand_panel(run: dict) -> str:
           oninput="pipelineNotesDebounce(this,{run_id})">{notes}</textarea>
         <h3 style="margin-top:14px">Fulfillment Brief</h3>
         <p class="muted" style="margin:0 0 6px">Copy and share with the warehouse team for costing.</p>
-        <button class="btn btn--ghost" type="button"
-          data-brief="{brief_attr}"
-          onclick="navigator.clipboard.writeText(this.dataset.brief);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn--ghost" type="button"
+            data-brief="{brief_attr}"
+            onclick="navigator.clipboard.writeText(this.dataset.brief);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+          <button class="btn btn--ghost" type="button" style="font-size:12px"
+            onclick="sendBriefEmail(this,{run_id})">Send to warehouse →</button>
+        </div>
       </div>
     </div>"""
 
@@ -699,6 +703,15 @@ def render_fulfillment_sales_page(
         }}
         setTimeout(() => btn.textContent = 'Save costs', 2000);
       }}).catch(() => {{ btn.textContent = 'Error — retry'; setTimeout(() => btn.textContent = 'Save costs', 3500); }});
+    }}
+    function sendBriefEmail(btn, runId) {{
+      btn.textContent = 'Sending…'; btn.disabled = true;
+      fetch('/admin/fulfillment/sales/runs/' + runId + '/send-brief', {{method: 'POST'}})
+        .then(r => r.json()).then(d => {{
+          btn.textContent = d.ok ? 'Sent ✓' : (d.error || 'Error');
+          btn.disabled = false;
+          setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 3000);
+        }}).catch(() => {{ btn.textContent = 'Error'; btn.disabled = false; }});
     }}
     var _noteTimers = {{}};
     function pipelineNotesDebounce(el, runId) {{
