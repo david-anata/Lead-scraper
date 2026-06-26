@@ -911,7 +911,7 @@ def render_fulfillment_sales_page(
           if (key === 'volume') return parseInt(txt(2).replace(/[^0-9]/g,'')) || 0;
           if (key === 'pitched') return parseFloat(txt(3).replace(/[^0-9.]/g,'')) || 0;
           if (key === 'margin') {{
-            var s = txt(5).split('\n')[0]; // first line only — skip the "%" sub-label
+            var s = txt(5).split('\\n')[0]; // first line only — skip the "%" sub-label
             var n = parseFloat(s.replace(/[^0-9.]/g,'')) || 0;
             return s.includes('−') ? -n : n;
           }}
