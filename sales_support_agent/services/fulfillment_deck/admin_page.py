@@ -96,6 +96,13 @@ _STYLES = """
       /* Pipeline table */
       .prospect-row { cursor: pointer; }
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
+      .prospect-row td:first-child { border-left: 3px solid transparent; padding-left: 9px; transition: border-color 0.15s; }
+      .prospect-row[data-stage="intake"] td:first-child { border-left-color: #94a3b8; }
+      .prospect-row[data-stage="pending_fulfillment"] td:first-child { border-left-color: #38bdf8; }
+      .prospect-row[data-stage="costs_received"] td:first-child { border-left-color: #a78bfa; }
+      .prospect-row[data-stage="published"] td:first-child { border-left-color: #fbbf24; }
+      .prospect-row[data-stage="won"] td:first-child { border-left-color: #4ade80; }
+      .prospect-row[data-stage="lost"] td:first-child { border-left-color: #e2e8f0; }
       .row-chevron { display: inline-block; color: rgba(43,54,68,0.35); font-size: 13px;
         margin-right: 5px; transition: transform 0.15s; line-height: 1; vertical-align: middle; }
       .stage-select-wrap { position: relative; display: inline-block; }
@@ -314,6 +321,14 @@ def _expand_panel(run: dict) -> str:
         <h3>Internal Notes</h3>
         <textarea class="expand-notes" placeholder="Call notes, deal context, next steps…"
           oninput="pipelineNotesDebounce(this,{run_id})">{notes}</textarea>
+        <div style="display:flex;gap:6px;margin-top:10px">
+          <button class="btn" type="button"
+            style="background:#15803d;min-height:34px;font-size:12px;padding:0 14px"
+            onclick="quickStage(this,'won',{run_id})">Mark as Won ✓</button>
+          <button class="btn btn--ghost" type="button"
+            style="color:#94a3b8;border-color:#e2e8f0;font-size:12px"
+            onclick="quickStage(this,'lost',{run_id})">Archive / Lost</button>
+        </div>
         <h3 style="margin-top:14px">Fulfillment Brief</h3>
         <p class="muted" style="margin:0 0 6px">Copy and share with the warehouse team for costing.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -502,7 +517,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         )
         row_idx = len(rows)
         rows.append(
-            f'<tr class="prospect-row" data-order="{row_idx}" onclick="toggleExpand(event,\'expand-{run_id}\')">'
+            f'<tr class="prospect-row" data-order="{row_idx}" data-stage="{_esc(stage)}" data-run="{run_id}" onclick="toggleExpand(event,\'expand-{run_id}\')">'
             f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot}{_stale_badge} {source_pill}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
@@ -633,9 +648,24 @@ def render_fulfillment_sales_page(
       row.style.display = open ? '' : 'none';
       var chev = row.previousElementSibling && row.previousElementSibling.querySelector('.row-chevron');
       if (chev) chev.style.transform = open ? 'rotate(90deg)' : '';
+      if (open) setTimeout(() => row.scrollIntoView({{behavior: 'smooth', block: 'nearest'}}), 40);
+    }}
+    function quickStage(btn, stage, runId) {{
+      var prospectRow = document.querySelector('tr.prospect-row[data-run="' + runId + '"]');
+      var sel = prospectRow && prospectRow.querySelector('select');
+      if (sel) {{ sel.value = stage; pipelineStage(sel, runId); }}
+      var expandRow = document.getElementById('expand-' + runId);
+      if (expandRow) {{
+        expandRow.style.display = 'none';
+        var chev = prospectRow && prospectRow.querySelector('.row-chevron');
+        if (chev) chev.style.transform = '';
+      }}
     }}
     function pipelineStage(sel, runId) {{
       sel.className = 'stage-select stage--' + sel.value;
+      // Update left-border stage color immediately
+      var pRow = document.querySelector('tr.prospect-row[data-run="' + runId + '"]');
+      if (pRow) pRow.dataset.stage = sel.value;
       fetch('/admin/fulfillment/sales/runs/' + runId + '/stage', {{
         method: 'PATCH', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{stage: sel.value}})
@@ -764,7 +794,8 @@ def render_fulfillment_sales_page(
           if (key === 'volume') return parseInt(txt(2).replace(/[^0-9]/g,'')) || 0;
           if (key === 'pitched') return parseFloat(txt(3).replace(/[^0-9.]/g,'')) || 0;
           if (key === 'margin') {{
-            var s = txt(5); var n = parseFloat(s.replace(/[^0-9.]/g,'')) || 0;
+            var s = txt(5).split('\n')[0]; // first line only — skip the "%" sub-label
+            var n = parseFloat(s.replace(/[^0-9.]/g,'')) || 0;
             return s.includes('−') ? -n : n;
           }}
           if (key === 'views') return parseInt(txt(6)) || 0;
