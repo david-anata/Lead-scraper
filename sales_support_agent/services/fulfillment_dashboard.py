@@ -512,6 +512,19 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
       .empty {{
         color: rgba(43, 54, 68, 0.72);
       }}
+      .breadcrumb {{
+        font-size: 14px;
+        margin-bottom: 18px;
+        color: rgba(43, 54, 68, 0.60);
+      }}
+      .breadcrumb a {{
+        color: rgba(43, 54, 68, 0.60);
+        text-decoration: none;
+      }}
+      .breadcrumb a:hover {{
+        color: var(--dark-blue);
+        text-decoration: underline;
+      }}
       @media (max-width: 980px) {{
         .page-header, .layout-two, .metrics {{
           grid-template-columns: 1fr;
@@ -566,7 +579,7 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
             f"<p class=\"report-meta\">Status: {html.escape(status)}</p>"
             f"<p><a href=\"/admin/fulfillment/cs/reports/latest\">Open latest report</a></p>"
             if isinstance(report, dict)
-            else '<p>No fulfillment review report has been generated yet.</p>'
+            else '<p>No fulfillment review report has been generated yet.</p><p class="report-meta">Reports populate automatically after the CS review pipeline runs.</p>'
         )
         + "</section>"
         + '<aside class="panel"><h3>Report library</h3>'
@@ -607,13 +620,16 @@ def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry], *, us
         </article>
         """
         for entry in entries
-    ) or '<p class="empty">No support-review reports found yet.</p>'
-    body = f'<section class="panel"><h2>Report library</h2><div class="report-list">{cards}</div></section>'
+    ) or '<p class="empty">No support-review reports found yet. Reports appear here automatically after each CS review pipeline run.</p>'
+    body = (
+        '<p class="breadcrumb"><a href="/admin/fulfillment/cs/">← CS Dashboard</a></p>'
+        + f'<section class="panel"><h2>Report library</h2><div class="report-list">{cards}</div></section>'
+    )
     return _page_shell(
         title="agent | Fulfillment CS Reports",
         eyebrow="Fulfillment — Customer Service",
         heading='Support <span class="highlight">Reports</span>.',
-        intro="Timestamped, read-only fulfillment support artifacts rendered from prepared report files.",
+        intro="All timestamped fulfillment CS reviews, available to browse or download.",
         body=body,
         active_subnav="fulfillment_reports",
         user=user,
@@ -657,12 +673,14 @@ def render_fulfillment_report_detail_page(report: dict[str, Any], *, user: dict 
         + _candidate_cards(report.get("candidates", []) if isinstance(report.get("candidates", []), list) else [])
         + "</div></section>"
     )
+    _report_title = str(report.get("title", DEFAULT_TITLE))
+    _generated_at = str(report.get("generated_at", ""))
     return _page_shell(
-        title=f"agent | {str(report.get('title', DEFAULT_TITLE))}",
+        title=f"agent | {_report_title}",
         eyebrow="Fulfillment — Customer Service",
-        heading='Report <span class="highlight">Detail</span>.',
-        intro=f"Generated at {str(report.get('generated_at', 'unknown'))}.",
-        body=body,
+        heading=f'<span class="highlight">CS</span> Review.',
+        intro=f"{_report_title}" + (f" — generated {_generated_at}" if _generated_at else ""),
+        body='<p class="breadcrumb"><a href="/admin/fulfillment/cs/reports/">← All reports</a></p>' + body,
         active_subnav="fulfillment_reports",
         user=user,
     )
