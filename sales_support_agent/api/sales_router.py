@@ -217,18 +217,26 @@ def batch_cleanup_apply(
     with session_scope(request.app.state.session_factory) as session:
         rows = build_batch_cleanup(session, portal_id=settings.hubspot_portal_id or "")
 
-    matched_rows = [r for r in rows if r.action.action_id in action_id_set]
+    # Flatten all actions across all deal rows and match by action_id.
+    all_actions = [a for row in rows for a in row.actions]
+    matched = [a for a in all_actions if a.action_id in action_id_set]
+
     applied = failed = 0
-    for row in matched_rows:
-        a = row.action
-        if not a.properties:
+    for a in matched:
+        # Flags have no writeable content — skip silently (shouldn't be submitted).
+        if a.action_type == "flag":
             continue
         try:
-            if a.hubspot_object_type == "deals":
+            if a.action_type == "create_note":
+                if a.note_body:
+                    client.create_note(deal_id=a.hubspot_object_id, body=a.note_body)
+                    applied += 1
+            elif a.action_type == "update_deal" and a.properties:
                 client.update_deal(a.hubspot_object_id, a.properties)
-            elif a.hubspot_object_type == "contacts":
+                applied += 1
+            elif a.action_type == "update_contact" and a.properties:
                 client.update_contact(a.hubspot_object_id, a.properties)
-            applied += 1
+                applied += 1
         except Exception:
             logger.exception("[sales] batch cleanup action failed: %s", a.action_id)
             failed += 1
@@ -318,13 +326,15 @@ def approve_action(
         )
 
     action = next((a for a in actions if a.action_id == action_id), None)
-    if action is None or action.action_type == "note" or not action.properties:
+    if action is None or action.action_type == "flag":
         return RedirectResponse(url=f"/admin/sales/deals/{deal_id}", status_code=303)
 
     try:
-        if action.hubspot_object_type == "deals":
+        if action.action_type == "create_note" and action.note_body:
+            client.create_note(deal_id=action.hubspot_object_id, body=action.note_body)
+        elif action.hubspot_object_type == "deals" and action.properties:
             client.update_deal(action.hubspot_object_id, action.properties)
-        elif action.hubspot_object_type == "contacts":
+        elif action.hubspot_object_type == "contacts" and action.properties:
             client.update_contact(action.hubspot_object_id, action.properties)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[sales] action approve failed for %s", action_id)

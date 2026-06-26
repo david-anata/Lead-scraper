@@ -369,3 +369,30 @@ class HubSpotClient:
         if associations:
             body["associations"] = associations
         return self._request("POST", "/crm/v3/objects/emails", json_body=body)
+
+    def create_note(
+        self,
+        *,
+        deal_id: str,
+        body: str,
+        timestamp_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a CRM note associated with a deal (POST /crm/v3/objects/notes).
+
+        Association typeId 214 = note → deal (HUBSPOT_DEFINED).
+        """
+        import time as _time
+        return self._request(
+            "POST",
+            "/crm/v3/objects/notes",
+            json_body={
+                "properties": {
+                    "hs_note_body": body,
+                    "hs_timestamp": str(timestamp_ms or int(_time.time() * 1000)),
+                },
+                "associations": [{
+                    "to": {"id": deal_id},
+                    "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 214}],
+                }],
+            },
+        )

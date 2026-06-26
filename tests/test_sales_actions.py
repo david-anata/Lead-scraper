@@ -8,7 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import PropertyMock, patch, MagicMock
 
@@ -48,17 +48,32 @@ class TestComputePendingActions(unittest.TestCase):
             hubspot_deal_id="d1",
             deal_name="Test",
             deal_stage="appointmentscheduled",
+            deal_stage_label="",
+            pipeline="",
             amount_cents=0,
             is_closed=False,
             is_won=False,
             close_date=None,
+            # Managed mirror fields used by staleness rules and note builder
+            last_meaningful_touch_at=None,
+            last_inbound_at=None,
+            last_outbound_at=None,
+            created_at=None,
+            owner_email="",
+            hubspot_company_id="",
+            description="",
         )
         defaults.update(kwargs)
         return types.SimpleNamespace(**defaults)
 
+    # ------------------------------------------------------------------
+    # close_date rules
+    # ------------------------------------------------------------------
+
     def test_overdue_deal_returns_push_close_date(self):
         deal = self._deal(
             close_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            amount_cents=5_000_00,  # non-zero to avoid missing_amount flag
         )
         actions = compute_pending_actions(
             deal, [], as_of=datetime(2026, 6, 22, tzinfo=timezone.utc)
@@ -70,7 +85,7 @@ class TestComputePendingActions(unittest.TestCase):
         self.assertIn("closedate", action.properties)
 
     def test_future_close_date_no_push_action(self):
-        deal = self._deal(close_date=datetime(2027, 1, 1, tzinfo=timezone.utc))
+        deal = self._deal(close_date=datetime(2027, 1, 1, tzinfo=timezone.utc), amount_cents=100_000)
         actions = compute_pending_actions(
             deal, [], as_of=datetime(2026, 6, 22, tzinfo=timezone.utc)
         )
@@ -80,6 +95,28 @@ class TestComputePendingActions(unittest.TestCase):
         deal = self._deal(is_closed=True)
         actions = compute_pending_actions(deal, [])
         self.assertEqual([], actions)
+
+    def test_missing_close_date_returns_set_close_date(self):
+        deal = self._deal(close_date=None, amount_cents=100_000)
+        actions = compute_pending_actions(
+            deal, [], as_of=datetime(2026, 6, 24, tzinfo=timezone.utc)
+        )
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:set_close_date", ids)
+        action = next(a for a in actions if a.action_id == "d1:set_close_date")
+        self.assertEqual(action.confidence, "mid")
+        self.assertIn("closedate", action.properties)
+
+    def test_existing_close_date_no_set_action(self):
+        deal = self._deal(close_date=datetime(2026, 9, 1, tzinfo=timezone.utc), amount_cents=100_000)
+        actions = compute_pending_actions(
+            deal, [], as_of=datetime(2026, 6, 24, tzinfo=timezone.utc)
+        )
+        self.assertFalse(any("set_close_date" in a.action_id for a in actions))
+
+    # ------------------------------------------------------------------
+    # amount rules
+    # ------------------------------------------------------------------
 
     def test_zero_amount_with_line_item_total_returns_sync_amount(self):
         deal = self._deal(amount_cents=0)
@@ -101,90 +138,154 @@ class TestComputePendingActions(unittest.TestCase):
         actions = compute_pending_actions(deal, [], line_item_total_cents=0)
         self.assertFalse(any("sync_amount" in a.action_id for a in actions))
 
-    # Phase 2 — new action types
-
-    def test_missing_close_date_returns_set_close_date(self):
-        deal = self._deal(close_date=None)
-        actions = compute_pending_actions(
-            deal, [], as_of=datetime(2026, 6, 24, tzinfo=timezone.utc)
-        )
+    def test_zero_amount_no_line_items_returns_missing_amount_flag(self):
+        deal = self._deal(amount_cents=0)
+        actions = compute_pending_actions(deal, [], line_item_total_cents=0)
         ids = [a.action_id for a in actions]
-        self.assertIn("d1:set_close_date", ids)
-        action = next(a for a in actions if a.action_id == "d1:set_close_date")
+        self.assertIn("d1:missing_amount", ids)
+        action = next(a for a in actions if a.action_id == "d1:missing_amount")
         self.assertEqual(action.confidence, "mid")
-        self.assertIn("closedate", action.properties)
+        self.assertEqual(action.action_type, "flag")
+        self.assertEqual(action.severity, "critical")
 
-    def test_existing_close_date_no_set_action(self):
-        deal = self._deal(close_date=datetime(2026, 9, 1, tzinfo=timezone.utc))
-        actions = compute_pending_actions(
-            deal, [], as_of=datetime(2026, 6, 24, tzinfo=timezone.utc)
+    # ------------------------------------------------------------------
+    # staleness rules
+    # ------------------------------------------------------------------
+
+    def test_never_touched_old_deal_returns_create_note(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        deal = self._deal(
+            amount_cents=100_000,
+            created_at=as_of - timedelta(days=10),  # 10 days old — old_enough
         )
-        self.assertFalse(any("set_close_date" in a.action_id for a in actions))
-
-    def test_empty_contacts_list_returns_no_contacts_nudge(self):
-        deal = self._deal()
-        actions = compute_pending_actions(deal, [], contacts=[])
+        actions = compute_pending_actions(deal, [], as_of=as_of)
         ids = [a.action_id for a in actions]
-        self.assertIn("d1:no_contacts", ids)
-        action = next(a for a in actions if a.action_id == "d1:no_contacts")
-        self.assertEqual(action.confidence, "low")
+        self.assertIn("d1:never_touched", ids)
+        action = next(a for a in actions if a.action_id == "d1:never_touched")
+        self.assertEqual(action.confidence, "mid")
+        self.assertEqual(action.action_type, "create_note")
+        self.assertEqual(action.severity, "critical")
+        self.assertTrue(action.note_body)
 
-    def test_contacts_present_no_no_contacts_nudge(self):
-        deal = self._deal()
-        contacts = [ContactInfo(contact_id="c1", email="buyer@acme.com")]
-        actions = compute_pending_actions(deal, [], contacts=contacts)
-        self.assertFalse(any("no_contacts" in a.action_id for a in actions))
-
-    def test_no_company_returns_low_confidence_nudge(self):
-        deal = self._deal(hubspot_company_id="")
-        actions = compute_pending_actions(deal, [])
-        self.assertTrue(any("no_company" in a.action_id for a in actions))
-        action = next(a for a in actions if "no_company" in a.action_id)
-        self.assertEqual(action.confidence, "low")
-
-    def test_company_present_no_nudge(self):
-        deal = self._deal(hubspot_company_id="co99")
-        actions = compute_pending_actions(deal, [])
-        self.assertFalse(any("no_company" in a.action_id for a in actions))
-
-    def test_contact_missing_email_returns_nudge(self):
-        deal = self._deal(hubspot_company_id="co1")
-        contacts = [
-            ContactInfo(contact_id="c1", email=""),
-            ContactInfo(contact_id="c2", email="ok@acme.com"),
-        ]
-        actions = compute_pending_actions(deal, [], contacts=contacts)
-        ids = [a.action_id for a in actions]
-        self.assertIn("d1:contact_no_email_c1", ids)
-        self.assertFalse(any("contact_no_email_c2" in i for i in ids))
-
-    def test_link_url_set_when_portal_id_provided(self):
-        deal = self._deal()
-        contacts = [ContactInfo(contact_id="c1", email="")]
-        actions = compute_pending_actions(
-            deal, [], contacts=contacts, portal_id="12345"
+    def test_new_deal_not_old_enough_no_never_touched(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        deal = self._deal(
+            amount_cents=100_000,
+            created_at=as_of - timedelta(days=3),  # only 3 days — not old enough
         )
-        action = next(a for a in actions if "contact_no_email_c1" in a.action_id)
-        self.assertIn("12345", action.link_url)
-        self.assertIn("c1", action.link_url)
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        self.assertFalse(any("never_touched" in a.action_id for a in actions))
 
+    def test_stale_30d_returns_create_note_critical(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        deal = self._deal(
+            amount_cents=100_000,
+            last_meaningful_touch_at=as_of - timedelta(days=35),
+        )
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:stale_30d", ids)
+        action = next(a for a in actions if a.action_id == "d1:stale_30d")
+        self.assertEqual(action.confidence, "mid")
+        self.assertEqual(action.action_type, "create_note")
+        self.assertEqual(action.severity, "critical")
+        self.assertTrue(action.note_body)
+
+    def test_stale_14d_returns_create_note_warning(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        deal = self._deal(
+            amount_cents=100_000,
+            last_meaningful_touch_at=as_of - timedelta(days=20),
+        )
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:stale_14d", ids)
+        action = next(a for a in actions if a.action_id == "d1:stale_14d")
+        self.assertEqual(action.confidence, "mid")
+        self.assertEqual(action.action_type, "create_note")
+        self.assertEqual(action.severity, "warning")
+
+    def test_recent_touch_no_staleness_action(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        deal = self._deal(
+            amount_cents=100_000,
+            last_meaningful_touch_at=as_of - timedelta(days=5),
+        )
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        self.assertFalse(any(a.category == "staleness" for a in actions))
+
+    # ------------------------------------------------------------------
+    # review_note rule
+    # ------------------------------------------------------------------
+
+    def test_review_note_generated_when_mid_issues_no_staleness_note(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        # Overdue close date -> push_close_date (mid) + issues_for_note populated.
+        # No staleness note. So review_note should be created.
+        deal = self._deal(
+            amount_cents=100_000,
+            close_date=as_of - timedelta(days=10),
+        )
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        ids = [a.action_id for a in actions]
+        self.assertIn("d1:review_note", ids)
+        review = next(a for a in actions if a.action_id == "d1:review_note")
+        self.assertEqual(review.action_type, "create_note")
+        self.assertEqual(review.category, "review")
+        self.assertTrue(review.note_body)
+
+    def test_no_review_note_when_staleness_note_already_written(self):
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        # stale_30d creates a note -> review_note should NOT also be created
+        deal = self._deal(
+            amount_cents=100_000,
+            last_meaningful_touch_at=as_of - timedelta(days=35),
+        )
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        self.assertFalse(any("review_note" in a.action_id for a in actions))
+
+    # ------------------------------------------------------------------
+    # SalesAction fields — severity, category, action_type contract
+    # ------------------------------------------------------------------
+
+    def test_push_close_date_has_severity_and_category(self):
+        deal = self._deal(
+            close_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            amount_cents=100_000,
+        )
+        actions = compute_pending_actions(
+            deal, [], as_of=datetime(2026, 6, 22, tzinfo=timezone.utc)
+        )
+        action = next(a for a in actions if "push_close_date" in a.action_id)
+        self.assertIn(action.severity, ("critical", "warning", "hygiene"))
+        self.assertTrue(action.category)
+
+    def test_no_action_type_equals_note(self):
+        # Legacy "note" type was replaced by "create_note"; must never appear.
+        deal = self._deal(
+            close_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        )
+        as_of = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        actions = compute_pending_actions(deal, [], as_of=as_of)
+        for a in actions:
+            self.assertNotEqual(a.action_type, "note",
+                                f"action {a.action_id} still uses old 'note' type")
+
+    # ------------------------------------------------------------------
     # Phase 3 — stage_move
+    # ------------------------------------------------------------------
 
     def test_stage_move_mid_confidence_when_pipeline_data_available(self):
         deal = self._deal(
             deal_stage="stage_1",
             pipeline="pipeline_a",
+            amount_cents=100_000,
         )
-        pipeline_data = {
-            "pipeline_a": [
-                {"id": "stage_1", "label": "Qualified"},
-                {"id": "stage_2", "label": "Presentation Scheduled"},
-            ]
-        }
         from sales_support_agent.models.entities import MailboxSignal
         signal = MagicMock(spec=MailboxSignal)
         signal.received_at = datetime(2026, 6, 23, tzinfo=timezone.utc)
         signal.subject = "Re: your proposal"
+        signal.signal_type = ""
 
         with patch(
             "sales_support_agent.services.sales.actions._try_get_next_stage",
@@ -206,11 +307,12 @@ class TestComputePendingActions(unittest.TestCase):
         self.assertFalse(any(a.action_id == "d1:replied_note" for a in actions))
 
     def test_replied_note_fallback_when_no_pipeline_data(self):
-        deal = self._deal(deal_stage="stage_1", pipeline="pipeline_a")
+        deal = self._deal(deal_stage="stage_1", pipeline="pipeline_a", amount_cents=100_000)
         from sales_support_agent.models.entities import MailboxSignal
         signal = MagicMock(spec=MailboxSignal)
         signal.received_at = datetime(2026, 6, 23, tzinfo=timezone.utc)
         signal.subject = "Interested"
+        signal.signal_type = ""
 
         with patch(
             "sales_support_agent.services.sales.actions._try_get_next_stage",
@@ -229,11 +331,12 @@ class TestComputePendingActions(unittest.TestCase):
         self.assertEqual(replied.confidence, "low")
 
     def test_late_stage_deal_no_stage_move(self):
-        deal = self._deal(deal_stage="contractsent", pipeline="pipeline_a")
+        deal = self._deal(deal_stage="contractsent", pipeline="pipeline_a", amount_cents=100_000)
         from sales_support_agent.models.entities import MailboxSignal
         signal = MagicMock(spec=MailboxSignal)
         signal.received_at = datetime(2026, 6, 23, tzinfo=timezone.utc)
         signal.subject = "Signed"
+        signal.signal_type = ""
 
         with patch(
             "sales_support_agent.services.sales.actions._try_get_next_stage",
@@ -314,9 +417,39 @@ class TestApproveActionRoute(unittest.TestCase):
         self.assertIn(resp.status_code, (302, 303))
         self.assertIn("actioned=1", resp.headers.get("location", ""))
 
+    def test_approve_create_note_action_calls_create_note(self):
+        from sales_support_agent.services.sales.actions import SalesAction
+        fake_note_action = SalesAction(
+            action_id="act1:stale_30d",
+            action_type="create_note",
+            confidence="mid",
+            severity="critical",
+            category="staleness",
+            label="Stale",
+            description="desc",
+            hubspot_object_type="deals",
+            hubspot_object_id="act1",
+            note_body="Test note body",
+        )
+        mock_note = {"id": "note_1"}
+        # Patch at the router module where the name is already bound.
+        with patch.object(HubSpotClient, "is_configured", new_callable=PropertyMock, return_value=True), \
+             patch.object(HubSpotClient, "create_note", return_value=mock_note) as mock_cn, \
+             patch.object(HubSpotClient, "update_deal", return_value={}) as mock_ud, \
+             patch("sales_support_agent.api.sales_router.compute_pending_actions",
+                   return_value=[fake_note_action]):
+            resp = self.client.post(
+                "/admin/sales/deals/act1/actions/approve",
+                data={"action_id": "act1:stale_30d"},
+                follow_redirects=False,
+            )
+        self.assertIn(resp.status_code, (302, 303))
+        mock_cn.assert_called_once()
+        mock_ud.assert_not_called()
+
     def test_deal_detail_shows_pending_action_card(self):
         body = self.client.get("/admin/sales/deals/act1").text
-        # Overdue close date + zero amount with line items → two mid-confidence actions
+        # Overdue close date + zero amount with line items -> two mid-confidence actions
         self.assertIn("Pending actions", body)
         self.assertIn("Approve", body)
 

@@ -54,7 +54,7 @@ class TestBuildBatchCleanup(unittest.TestCase):
                 s.delete(r)
             for r in s.query(HubSpotContact).all():
                 s.delete(r)
-            # Deal with overdue close date + zero amount but line items → 2 mid actions
+            # Deal with overdue close date + zero amount but line items -> 2 mid actions
             s.add(HubSpotDeal(
                 hubspot_deal_id="bc_d1",
                 deal_name="Batch Deal A",
@@ -79,7 +79,7 @@ class TestBuildBatchCleanup(unittest.TestCase):
                 amount_cents=100_000,
                 is_closed=True,
             ))
-            # Open deal, all clean — no close date missing (has future one), no line items mismatch
+            # Open deal, amount set, future close date — no mid actions expected
             s.add(HubSpotDeal(
                 hubspot_deal_id="bc_d3",
                 deal_name="Clean Deal",
@@ -93,12 +93,20 @@ class TestBuildBatchCleanup(unittest.TestCase):
         with session_scope(app.state.session_factory) as s:
             return build_batch_cleanup(s, portal_id="999")
 
-    def test_returns_mid_confidence_actions_only(self):
+    def test_rows_have_actions_list(self):
         rows = self._get_rows()
         self.assertTrue(len(rows) > 0)
         for r in rows:
-            self.assertEqual(r.action.confidence, "mid")
-            self.assertNotEqual(r.action.action_type, "note")
+            self.assertIsInstance(r.actions, list)
+            self.assertTrue(len(r.actions) > 0)
+
+    def test_no_action_type_is_note(self):
+        # Legacy "note" type must never appear — it was renamed to "create_note".
+        rows = self._get_rows()
+        for r in rows:
+            for a in r.actions:
+                self.assertNotEqual(a.action_type, "note",
+                                    f"action {a.action_id} uses old 'note' type")
 
     def test_closed_deal_excluded(self):
         rows = self._get_rows()
@@ -108,22 +116,53 @@ class TestBuildBatchCleanup(unittest.TestCase):
     def test_deal_a_has_push_close_date_and_sync_amount(self):
         rows = self._get_rows()
         d1_rows = [r for r in rows if r.deal_id == "bc_d1"]
-        action_ids = [r.action.action_id for r in d1_rows]
+        self.assertEqual(len(d1_rows), 1)
+        action_ids = [a.action_id for a in d1_rows[0].actions]
         self.assertIn("bc_d1:push_close_date", action_ids)
         self.assertIn("bc_d1:sync_amount", action_ids)
 
     def test_clean_deal_has_no_mid_actions(self):
+        # bc_d3 has amount + future close date — no mid-confidence actions.
+        # It may still have low-confidence hygiene flags (no contacts, no company),
+        # so we check for absence of mid actions rather than absence from rows.
         rows = self._get_rows()
         d3_rows = [r for r in rows if r.deal_id == "bc_d3"]
-        self.assertEqual(d3_rows, [])
+        for r in d3_rows:
+            mid_actions = [a for a in r.actions if a.confidence == "mid"]
+            self.assertEqual(mid_actions, [],
+                             f"bc_d3 should have no mid-confidence actions, got {[a.action_id for a in mid_actions]}")
 
     def test_rows_have_required_fields(self):
         rows = self._get_rows()
         for r in rows:
             self.assertTrue(r.deal_id)
             self.assertTrue(r.deal_name)
-            self.assertTrue(r.action.action_id)
-            self.assertTrue(r.action.properties)
+            self.assertIsInstance(r.actions, list)
+            # Each action must have core fields
+            for a in r.actions:
+                self.assertTrue(a.action_id)
+                self.assertIn(a.confidence, ("mid", "low"))
+                self.assertIn(a.severity, ("critical", "warning", "hygiene"))
+                self.assertTrue(a.category)
+
+    def test_deal_row_has_stage_label_not_raw_id(self):
+        # Stage badge must be the human-readable label (or "Unknown stage"),
+        # never a raw portal numeric ID.
+        rows = self._get_rows()
+        d1_rows = [r for r in rows if r.deal_id == "bc_d1"]
+        self.assertEqual(len(d1_rows), 1)
+        stage = d1_rows[0].deal_stage_label
+        # Should not look like a pure numeric HubSpot portal ID
+        self.assertFalse(stage.isdigit(),
+                         f"deal_stage_label looks like a raw ID: {stage!r}")
+
+    def test_deal_row_has_context_fields(self):
+        rows = self._get_rows()
+        d1_rows = [r for r in rows if r.deal_id == "bc_d1"]
+        self.assertEqual(len(d1_rows), 1)
+        r = d1_rows[0]
+        self.assertIsNotNone(r.amount_cents)
+        self.assertIsInstance(r.contact_count, int)
 
 
 class TestBatchCleanupRoutes(unittest.TestCase):
@@ -143,6 +182,12 @@ class TestBatchCleanupRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         # bc_d1 has mid-confidence actions from setUpClass seed
         self.assertIn("Batch Deal A", resp.text)
+
+    def test_get_cleanup_page_shows_summary_bar(self):
+        resp = self.client.get("/admin/sales/deals/cleanup")
+        self.assertEqual(resp.status_code, 200)
+        # Summary bar must appear with severity counts
+        self.assertIn("critical", resp.text)
 
     def test_get_with_applied_shows_flash(self):
         resp = self.client.get("/admin/sales/deals/cleanup?applied=3&failed=0")
@@ -178,7 +223,7 @@ class TestBatchCleanupRoutes(unittest.TestCase):
         loc = resp.headers.get("location", "")
         self.assertIn("cleanup", loc)
 
-    def test_post_applies_selected_actions_and_redirects_with_applied_count(self):
+    def test_post_applies_selected_update_deal_action(self):
         mock_update = {"id": "bc_d1", "properties": {}}
         with patch.object(HubSpotClient, "is_configured", new_callable=PropertyMock, return_value=True), \
              patch.object(HubSpotClient, "update_deal", return_value=mock_update):
@@ -188,6 +233,48 @@ class TestBatchCleanupRoutes(unittest.TestCase):
                 follow_redirects=False,
             )
         self.assertIn(resp.status_code, (302, 303))
+        loc = resp.headers.get("location", "")
+        self.assertIn("applied=1", loc)
+
+    def test_post_applies_create_note_action(self):
+        from sales_support_agent.services.sales.actions import SalesAction
+        from sales_support_agent.services.sales.deal_batch import BatchCleanupRow
+        mock_note = {"id": "note_1"}
+        fake_row = BatchCleanupRow(
+            deal_id="bc_d1",
+            deal_name="Batch Deal A",
+            deal_stage_label="Appointment",
+            amount_cents=0,
+            owner_email="",
+            last_touch_at=None,
+            contact_count=0,
+            actions=[SalesAction(
+                action_id="bc_d1:stale_30d",
+                action_type="create_note",
+                confidence="mid",
+                severity="critical",
+                category="staleness",
+                label="Stale",
+                description="desc",
+                hubspot_object_type="deals",
+                hubspot_object_id="bc_d1",
+                note_body="Test note body",
+            )],
+        )
+        # Patch at the router module where the name is already bound.
+        with patch.object(HubSpotClient, "is_configured", new_callable=PropertyMock, return_value=True), \
+             patch.object(HubSpotClient, "create_note", return_value=mock_note) as mock_cn, \
+             patch.object(HubSpotClient, "update_deal", return_value={}) as mock_ud, \
+             patch("sales_support_agent.api.sales_router.build_batch_cleanup",
+                   return_value=[fake_row]):
+            resp = self.client.post(
+                "/admin/sales/deals/cleanup",
+                data={"action_ids": ["bc_d1:stale_30d"]},
+                follow_redirects=False,
+            )
+        self.assertIn(resp.status_code, (302, 303))
+        mock_cn.assert_called_once()
+        mock_ud.assert_not_called()
         loc = resp.headers.get("location", "")
         self.assertIn("applied=1", loc)
 
@@ -202,6 +289,47 @@ class TestBatchCleanupRoutes(unittest.TestCase):
         self.assertIn(resp.status_code, (302, 303))
         loc = resp.headers.get("location", "")
         self.assertIn("failed=1", loc)
+
+    def test_flag_action_type_not_applied(self):
+        # Flag actions (missing_amount, no_contacts, etc.) should be skipped
+        # even when their action_id is submitted — no HubSpot write must occur.
+        from sales_support_agent.services.sales.actions import SalesAction
+        from sales_support_agent.services.sales.deal_batch import BatchCleanupRow
+        fake_flag = BatchCleanupRow(
+            deal_id="bc_d1",
+            deal_name="Batch Deal A",
+            deal_stage_label="Appointment",
+            amount_cents=0,
+            owner_email="",
+            last_touch_at=None,
+            contact_count=0,
+            actions=[SalesAction(
+                action_id="bc_d1:missing_amount",
+                action_type="flag",
+                confidence="mid",
+                severity="critical",
+                category="amount",
+                label="No amount",
+                description="desc",
+                hubspot_object_type="deals",
+                hubspot_object_id="bc_d1",
+            )],
+        )
+        with patch.object(HubSpotClient, "is_configured", new_callable=PropertyMock, return_value=True), \
+             patch.object(HubSpotClient, "update_deal", return_value={}) as mock_ud, \
+             patch.object(HubSpotClient, "create_note", return_value={}) as mock_cn, \
+             patch("sales_support_agent.api.sales_router.build_batch_cleanup",
+                   return_value=[fake_flag]):
+            resp = self.client.post(
+                "/admin/sales/deals/cleanup",
+                data={"action_ids": ["bc_d1:missing_amount"]},
+                follow_redirects=False,
+            )
+        mock_ud.assert_not_called()
+        mock_cn.assert_not_called()
+        # applied=0 since flag was skipped
+        loc = resp.headers.get("location", "")
+        self.assertIn("applied=0", loc)
 
     def test_deal_board_has_cleanup_link(self):
         resp = self.client.get("/admin/sales/deals")
