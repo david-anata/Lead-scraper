@@ -119,7 +119,7 @@ def _flash(flash: Optional[str]) -> str:
 def render_hr_dashboard(stats: dict, *, user, flash=None) -> str:
     body = f"""
     {_flash(flash)}
-    <h1 class="hr-h1">HR Dashboard</h1>
+    <h1 class="hr-h1">HR Dashboard.</h1>
     <p class="hr-sub">People, time, and payroll for Anata — all in one place.</p>
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{stats.get('active_employees',0)}</div><div class="l">Active employees</div></div>

@@ -195,7 +195,7 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
     )
     body = f"""
       <span class="eyebrow">Executive · Brand Analysis</span>
-      <h1>Brand Analysis</h1>
+      <h1>Brand Analysis<span style="color:var(--light-blue)">.</span></h1>
       <p class="muted">Drop a brand's financial file dump — P&amp;L, Balance Sheet, Trial Balance, GL, prior-year — and get a graded executive acquisition report. .xlsx, .xls, .csv and .pdf are accepted.</p>
       {flash_html}
       <div style="display:flex;align-items:center;gap:12px;background:#f0f4ff;border:1px solid #c7d7f8;border-radius:8px;padding:12px 16px;margin-bottom:18px">
