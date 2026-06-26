@@ -355,6 +355,7 @@ def _expand_panel(run: dict) -> str:
           <button class="btn btn--ghost" type="button" style="font-size:12px"
             onclick="sendBriefEmail(this,{run_id})">Send to warehouse →</button>
         </div>
+        <span id="send-err-{run_id}" style="font-size:11px;color:#b91c1c;display:none;margin-top:4px;display:none"></span>
       </div>
     </div>"""
 
@@ -823,15 +824,17 @@ def render_fulfillment_sales_page(
       btn.textContent = 'Sending…'; btn.disabled = true;
       fetch('/admin/fulfillment/sales/runs/' + runId + '/send-brief', {{method: 'POST'}})
         .then(r => r.json()).then(d => {{
+          btn.disabled = false;
           if (d.ok) {{
             btn.textContent = 'Sent ✓';
+            setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 3000);
           }} else {{
-            var errMsg = (d.error || '').includes('FULFILLMENT_TEAM_EMAIL') ? 'Not configured — set FULFILLMENT_TEAM_EMAIL in Render' : (d.error || 'Error sending');
-            btn.textContent = errMsg;
+            btn.textContent = 'Send to warehouse →';
+            var errMsg = (d.error || '').includes('FULFILLMENT_TEAM_EMAIL') ? 'Email not configured — set FULFILLMENT_TEAM_EMAIL in Render' : (d.error || 'Error sending');
+            var errEl = document.getElementById('send-err-' + runId);
+            if (errEl) {{ errEl.textContent = errMsg; errEl.style.display = 'block'; setTimeout(() => {{ errEl.style.display = 'none'; }}, 8000); }}
           }}
-          btn.disabled = false;
-          setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 5000);
-        }}).catch(() => {{ btn.textContent = 'Error — try again'; btn.disabled = false; }});
+        }}).catch(() => {{ btn.textContent = 'Error — try again'; btn.disabled = false; setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 3000); }});
     }}
     var _noteTimers = {{}};
     function pipelineNotesDebounce(el, runId) {{
