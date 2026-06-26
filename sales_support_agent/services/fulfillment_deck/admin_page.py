@@ -395,8 +395,14 @@ def _pipeline_stats(runs: list[dict]) -> str:
     pipeline_str = f"${pitched_active:,.0f}<span style='font-size:13px;font-weight:400'>/mo</span>" if pitched_active else "—"
     margin_str = f"${margin_active:,.0f}<span style='font-size:13px;font-weight:400'>/mo</span>" if margin_active else "—"
     margin_sub = f"{margin_runs} of {len(active)} with costs" if active else ""
+    won_pct = round(len(won) / len(runs) * 100) if runs else 0
     won_str = str(len(won)) if won else "—"
-    won_sub = f"${pitched_won:,.0f}/mo booked" if won and pitched_won else ("no wins yet" if not won else "")
+    won_sub_parts = []
+    if won and pitched_won:
+        won_sub_parts.append(f"${pitched_won:,.0f}/mo booked")
+    if runs:
+        won_sub_parts.append(f"{won_pct}% conversion")
+    won_sub = " · ".join(won_sub_parts) if won_sub_parts else "no wins yet"
 
     return (
         f'<div class="pipeline-stats">'
