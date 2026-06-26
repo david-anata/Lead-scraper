@@ -228,7 +228,7 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
         <div class="grid2">
           <div class="field">
             <label for="brand_website">Brand website (optional — pulls logo &amp; product imagery)</label>
-            <input id="brand_website" name="brand_website" placeholder="luxmery.com">
+            <input id="brand_website" name="brand_website" placeholder="yourbrand.com">
           </div>
           <div class="field"></div>
         </div>
@@ -1892,7 +1892,7 @@ def render_edit_page(row: dict, report: Optional[BrandReport] = None, *,
         <div class="grid2">
           <div class="field">
             <label for="brand_website">Brand website (for logo &amp; product imagery)</label>
-            <input id="brand_website" name="brand_website" placeholder="luxmery.com" value="{_esc(row.get("brand_website") or "")}">
+            <input id="brand_website" name="brand_website" placeholder="yourbrand.com" value="{_esc(row.get("brand_website") or "")}">
           </div>
           <div class="field"></div>
         </div>
