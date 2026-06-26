@@ -1590,7 +1590,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
       </main>
       {_dashboard_auto_run_script(run_state)}
     """
-    return _page_shell("Agent Website Ops", body)
+    return _page_shell("agent | Website Ops", body)
 
 
 def render_queue_page(settings: Settings, *, flash_message: str = "", status_filter: str = "", user: dict | None = None) -> str:
@@ -1626,7 +1626,7 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
         </section>
       </main>
     """
-    return _page_shell("Agent Website Ops Queue", body)
+    return _page_shell("agent | Website Ops — Queue", body)
 
 
 def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_message: str = "", user: dict | None = None) -> str:
@@ -1702,7 +1702,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
         </section>
       </main>
     """
-    return _page_shell("Agent Website Ops Feedback", body)
+    return _page_shell("agent | Website Ops — Feedback", body)
 
 
 def render_reports_page(settings: Settings, *, user: dict | None = None) -> str:
@@ -1720,7 +1720,7 @@ def render_reports_page(settings: Settings, *, user: dict | None = None) -> str:
         </section>
       </main>
     """
-    return _page_shell("Agent Website Ops Reports", body)
+    return _page_shell("agent | Website Ops — Reports", body)
 
 
 def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict | None = None) -> str:

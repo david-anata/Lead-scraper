@@ -617,7 +617,7 @@ def render_fulfillment_sales_page(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>agent | Fulfillment Sales Deck</title>
+    <title>agent | Fulfillment Prospects</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -628,8 +628,8 @@ def render_fulfillment_sales_page(
     <main class="shell">
       <div class="workspace">
         <p class="eyebrow">Fulfillment — Sales</p>
-        <h1>Rate <span style="color:var(--light-blue)">Sheets</span>.</h1>
-        <p class="intro">Paste whatever you know about the prospect — call notes, an email thread, a spreadsheet of products — and the system extracts their profile, quotes carrier rates per zone for each product size, and builds a hosted, printable rate sheet you can send as a link.</p>
+        <h1>Fulfillment <span style="color:var(--light-blue)">Prospects</span>.</h1>
+        <p class="intro">Manage your fulfillment prospect pipeline. Paste what you know about a new prospect and the system builds a hosted rate sheet — then track each deal through quoting, cost entry, and close below.</p>
         {flash_html}
         <form method="post" action="/admin/fulfillment/sales/generate" enctype="multipart/form-data">
           <div class="field">

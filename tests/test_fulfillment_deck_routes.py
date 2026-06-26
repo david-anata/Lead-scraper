@@ -171,7 +171,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
             f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False
         )
         self.assertEqual(response.status_code, 303)
-        self.assertIn("rate-sheets", response.headers["location"])
+        self.assertIn("/review", response.headers["location"])
 
     def test_history_shows_draft_pill_then_open_after_publish(self) -> None:
         run = self._generate()
