@@ -490,6 +490,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         # Margin + actual cost columns (single compute_margin call per row)
         actual_cell = '<span class="muted">—</span>'
         margin_cell = '<span class="muted">—</span>'
+        _raw_margin: float = 0.0
         if costs and any(v for v in costs.values() if v):
             try:
                 from sales_support_agent.services.fulfillment_deck.quote import compute_margin
@@ -498,10 +499,11 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 mg = compute_margin(float(pitched or 0), costs, profile_obj)
                 actual_cell = _fmt_usd(mg["actual_monthly"])
                 if pitched:
-                    sign_color = "#15803d" if mg["monthly_margin"] >= 0 else "#b91c1c"
+                    _raw_margin = float(mg["monthly_margin"])
+                    sign_color = "#15803d" if _raw_margin >= 0 else "#b91c1c"
                     margin_cell = (
                         f'<span style="color:{sign_color};font-weight:700">'
-                        f'{_fmt_usd(mg["monthly_margin"])}</span>'
+                        f'{_fmt_usd(_raw_margin)}</span>'
                         f'<div class="muted">{mg["margin_pct"]}%</div>'
                     )
             except Exception:
@@ -549,7 +551,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
             f"<td>{vol_str}</td>"
             f"<td>{_fmt_usd(pitched)}</td>"
             f"<td>{actual_cell}</td>"
-            f"<td>{margin_cell}</td>"
+            f'<td data-margin="{_raw_margin}">{margin_cell}</td>'
             f"<td>{views_str}</td>"
             f"<td><div class='row-actions'>{''.join(actions)}</div></td></tr>"
             f'<tr class="expand-row" id="expand-{run_id}" style="display:none">'
@@ -733,7 +735,7 @@ def render_fulfillment_sales_page(
       }}).then(() => {{
         sel.style.outline = '2px solid #15803d';
         setTimeout(() => sel.style.outline = '', 1400);
-        filterPipeline(); // re-apply stage filter so changed rows move correctly
+        filterPipeline(); refreshStatsBar(); // re-apply filter and update active-margin stat
         // When advancing to "Sent to Fulfillment", auto-copy the brief so the rep can paste immediately.
         if (sel.value === 'pending_fulfillment') {{
           var expandRow = document.getElementById('expand-' + runId);
@@ -911,9 +913,7 @@ def render_fulfillment_sales_page(
           if (key === 'volume') return parseInt(txt(2).replace(/[^0-9]/g,'')) || 0;
           if (key === 'pitched') return parseFloat(txt(3).replace(/[^0-9.]/g,'')) || 0;
           if (key === 'margin') {{
-            var s = txt(5).split('\\n')[0]; // first line only — skip the "%" sub-label
-            var n = parseFloat(s.replace(/[^0-9.]/g,'')) || 0;
-            return s.includes('−') ? -n : n;
+            return parseFloat((tds[5] || {{}}).dataset.margin || 0) || 0;
           }}
           if (key === 'views') return parseInt(txt(6)) || 0;
           return 0;
