@@ -84,6 +84,14 @@ _STYLES = """
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
       .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
       @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .edit-grid { grid-template-columns: 1fr; } }
+      /* On narrow screens keep only Prospect, Stage, Margin, Actions */
+      @media (max-width: 640px) {
+        table th:nth-child(3), table td:nth-child(3),
+        table th:nth-child(4), table td:nth-child(4),
+        table th:nth-child(5), table td:nth-child(5),
+        table th:nth-child(7), table td:nth-child(7) { display: none; }
+        .row-actions { flex-direction: column; }
+      }
       /* Pipeline summary bar */
       .pipeline-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
       .pipeline-stat { background: #fff; border: 1px solid var(--border); border-radius: 12px;
