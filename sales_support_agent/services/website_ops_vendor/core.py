@@ -947,8 +947,8 @@ def render_daily_report_html(report: Mapping[str, Any]) -> str:
     <div class="panel">
       <h2>Analytics Status</h2>
       <div class="grid">
-        <div><strong>Search Console</strong><br>{esc(report.get('analytics_status', {}).get('search_console', False))}</div>
-        <div><strong>GA4</strong><br>{esc(report.get('analytics_status', {}).get('ga4', False))}</div>
+        <div><strong>Search Console</strong><br>{"Connected" if report.get('analytics_status', {}).get('search_console') else "Not connected"}</div>
+        <div><strong>GA4</strong><br>{"Connected" if report.get('analytics_status', {}).get('ga4') else "Not connected"}</div>
       </div>
       <ul>{analytics_notes if analytics_notes else '<li>No analytics warnings.</li>'}</ul>
     </div>
