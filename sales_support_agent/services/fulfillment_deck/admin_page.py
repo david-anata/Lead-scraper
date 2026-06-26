@@ -447,10 +447,14 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
             _age_days = (_today - datetime.strptime(_age_src, "%Y-%m-%d").date()).days if _age_src else 0
             _ext_views = int((engagement.get(run_id) or {}).get("external_sessions") or 0)
             if stage == "intake" and _age_days > 7 and published:
-                # Sheet was published but stage wasn't advanced (old records pre-auto-advance)
+                # Sheet was published but stage wasn't advanced — one-click advance to pending_fulfillment
                 _stale_badge = (
                     f'<div style="font-size:11px;color:#b45309;margin-top:3px;font-weight:500">'
-                    f'⚠ Sent {_age_days}d ago — advance stage</div>'
+                    f'⚠ Sent {_age_days}d ago &nbsp;'
+                    f'<button type="button" onclick="event.stopPropagation();quickStage(this,\'pending_fulfillment\',{run_id})" '
+                    f'style="font-size:10px;padding:1px 7px;border-radius:999px;border:1px solid #b45309;'
+                    f'background:transparent;color:#b45309;cursor:pointer;font-weight:600">→ Mark as Sent</button>'
+                    f'</div>'
                 )
             elif stage == "published" and _ext_views == 0 and _age_days > 5:
                 _stale_badge = (
