@@ -402,7 +402,9 @@ def _pipeline_stats(runs: list[dict]) -> str:
         f'<div class="pipeline-stats">'
         f'{_stat("Active prospects", active_str)}'
         f'{_stat("Pitched pipeline", pipeline_str, f"${pitched_active * 12:,.0f}/yr potential" if pitched_active else "")}'
-        f'{_stat("Monthly margin", margin_str, margin_sub)}'
+        f'<div class="pipeline-stat" id="stat-margin"><div class="pipeline-stat__val">{margin_str}</div>'
+        f'<div class="pipeline-stat__label">Monthly margin</div>'
+        f'<div class="pipeline-stat__sub">{_esc(margin_sub)}</div></div>'
         f'{_stat("Won", won_str, won_sub, "pipeline-stat--won" if won else "")}'
         f'</div>'
     )
@@ -564,6 +566,22 @@ def render_fulfillment_sales_page(
         else ""
     )
     has_running = any(r.get("status") == "running" for r in runs)
+    # Embed per-run margin data for live stats-bar update
+    import json as _json
+    _margin_seed: dict = {}
+    for _r in runs:
+        _costs = _r.get("fulfillment_actual_costs") or {}
+        _pitched = _r.get("pitched_monthly")
+        _stage = _r.get("pipeline_stage") or "intake"
+        if _costs and _pitched and any(v for v in _costs.values() if v):
+            try:
+                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+                _mg = compute_margin(float(_pitched), _costs, ProspectProfile.from_dict(_r.get("prospect_profile") or {}))
+                _margin_seed[str(_r["id"])] = {"m": _mg["monthly_margin"], "s": _stage}
+            except Exception:
+                pass
+    _margin_json = _json.dumps(_margin_seed)
     table = (
         "<table><thead><tr>"
         "<th>Prospect</th><th>Stage</th><th>Vol/mo</th>"
@@ -632,6 +650,26 @@ def render_fulfillment_sales_page(
       </div>
     </main>
     <script>
+    // Per-run margin data for live stats-bar refresh
+    var _marginData = {_margin_json};
+    function refreshStatsBar() {{
+      var terminal = new Set(['won','lost']);
+      var total = 0, count = 0;
+      for (var id in _marginData) {{
+        var d = _marginData[id];
+        var pRow = document.querySelector('tr.prospect-row[data-run="' + id + '"]');
+        var stage = (pRow && pRow.dataset && pRow.dataset.stage) || d.s;
+        if (!terminal.has(stage)) {{ total += (d.m || 0); count++; }}
+      }}
+      var el = document.getElementById('stat-margin');
+      if (!el) return;
+      var valEl = el.querySelector('.pipeline-stat__val');
+      if (valEl && count > 0) {{
+        var sign = total < 0 ? '−' : '';
+        valEl.innerHTML = sign + '$' + Math.round(Math.abs(total)).toLocaleString('en-US') +
+          '<span style="font-size:13px;font-weight:400">/mo</span>';
+      }}
+    }}
     // Generate form: loading state + duplicate brand warning.
     (function() {{
       var form = document.querySelector('form[action$="/generate"]');
@@ -756,6 +794,8 @@ def render_fulfillment_sales_page(
             }}
           }}
         }}
+        // Update live stats bar with new margin
+        if (data.margin) {{ _marginData[String(runId)] = {{m: data.margin.monthly_margin, s: 'costs_received'}}; refreshStatsBar(); }}
         setTimeout(() => btn.textContent = 'Save costs', 2000);
       }}).catch(() => {{ btn.textContent = 'Error — retry'; setTimeout(() => btn.textContent = 'Save costs', 3500); }});
     }}
