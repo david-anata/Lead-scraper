@@ -280,7 +280,7 @@ def _expand_panel(run: dict) -> str:
                 f"onclick=\"navigator.clipboard.writeText(window.location.origin+'{_view_path}');"
                 f"this.textContent='Copied!';setTimeout(()=>this.textContent='Copy link',1800)\">Copy link</button>"
                 f'<a class="btn btn--ghost" href="/admin/fulfillment/sales/runs/{run_id}/review" '
-                f'onclick="event.stopPropagation()" style="font-size:12px">Edit rate sheet →</a>'
+                f'target="_blank" rel="noreferrer" onclick="event.stopPropagation()" style="font-size:12px">Edit rate sheet →</a>'
             )
         if _hs_deal_url:
             _btns.append(
@@ -486,7 +486,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         if status == "running":
             pass  # just Delete below — page auto-refreshes
         elif status == "draft":
-            actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Review</a>')
+            actions.append(f'<a class="btn btn--ghost" href="{review_path}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Review</a>')
         elif view_path and published:
             actions.append(f'<a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Open</a>')
             actions.append(
@@ -501,7 +501,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                     f'style="display:inline" onclick="event.stopPropagation()">'
                     f'<button class="btn btn--ghost" type="submit" title="Create HubSpot e-signature quote">Create Quote ✍</button></form>'
                 )
-            actions.append(f'<a class="btn btn--ghost" href="{review_path}" onclick="event.stopPropagation()">Edit</a>')
+            actions.append(f'<a class="btn btn--ghost" href="{review_path}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Edit</a>')
         actions.append(
             f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/delete" '
             f'style="display:inline" onclick="event.stopPropagation()" '
@@ -610,7 +610,7 @@ def render_fulfillment_sales_page(
         <h2 id="pipeline">Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
-        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><select id="pipe-sort" onchange="sortPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">Sort: Newest</option><option value="volume">Sort: Volume ↓</option><option value="pitched">Sort: Pitched $ ↓</option><option value="margin">Sort: Margin ↓</option><option value="views">Sort: Views ↓</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a></div>' if runs else ""}
+        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><select id="pipe-sort" onchange="sortPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">Sort: Newest</option><option value="volume">Sort: Volume ↓</option><option value="pitched">Sort: Pitched $ ↓</option><option value="margin">Sort: Margin ↓</option><option value="views">Sort: Views ↓</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a><span id="pipe-count" class="muted" style="font-size:12px;white-space:nowrap;opacity:.5">' + str(len(runs)) + ' prospect' + ("s" if len(runs) != 1 else "") + '</span></div>' if runs else ""}
         {table}
       </div>
     </main>
@@ -760,11 +760,15 @@ def render_fulfillment_sales_page(
     {'if (true) { setTimeout(() => location.reload(), 8000); }' if has_running else ''}
     function filterPipeline() {{
       var q = (document.getElementById('pipe-search') || {{}}).value || '';
-      var stage = (document.getElementById('pipe-stage') || {{}}).value || '';
+      var stageEl = document.getElementById('pipe-stage');
+      var stage = (stageEl || {{}}).value || '';
       q = q.toLowerCase().trim();
+      // Persist stage selection across page loads
+      try {{ if (stage) localStorage.setItem('fsp_stage', stage); else localStorage.removeItem('fsp_stage'); }} catch(e) {{}}
       var tbody = document.querySelector('table tbody');
       if (!tbody) return;
       var rows = tbody.querySelectorAll('tr.prospect-row');
+      var shown = 0;
       rows.forEach(function(row) {{
         var expRow = document.getElementById(row.getAttribute('onclick').match(/'([^']+)'/)?.[1] || '');
         var name = (row.querySelector('td strong') || {{}}).textContent || '';
@@ -772,8 +776,26 @@ def render_fulfillment_sales_page(
         var show = (!q || name.toLowerCase().includes(q)) && (!stage || stageVal === stage);
         row.style.display = show ? '' : 'none';
         if (expRow) expRow.style.display = 'none'; // collapse on filter
+        if (show) shown++;
       }});
+      // Update count indicator
+      var countEl = document.getElementById('pipe-count');
+      if (countEl) {{
+        var total = rows.length;
+        countEl.textContent = (shown < total) ? shown + ' of ' + total : total + ' prospect' + (total !== 1 ? 's' : '');
+        countEl.style.opacity = shown < total ? '1' : '0.5';
+      }}
     }}
+    // Restore persisted stage filter on load
+    (function() {{
+      try {{
+        var saved = localStorage.getItem('fsp_stage');
+        if (saved) {{
+          var stageEl = document.getElementById('pipe-stage');
+          if (stageEl) {{ stageEl.value = saved; filterPipeline(); }}
+        }}
+      }} catch(e) {{}}
+    }})();
     function sortPipeline() {{
       var key = (document.getElementById('pipe-sort') || {{}}).value || '';
       var tbody = document.querySelector('table tbody');
