@@ -793,6 +793,7 @@ def render_fulfillment_sales_page(
               tds[5].innerHTML = '<span style="color:' + sc + ';font-weight:700">' +
                 (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) + '</span>' +
                 '<div class="muted">' + mg.margin_pct + '%</div>';
+              tds[5].dataset.margin = String(mg.monthly_margin);
             }}
             // Auto-advance stage to Costs Received if still at an early stage
             var stageSelect = prospectRow.querySelector('select');
@@ -811,10 +812,15 @@ def render_fulfillment_sales_page(
       btn.textContent = 'Sending…'; btn.disabled = true;
       fetch('/admin/fulfillment/sales/runs/' + runId + '/send-brief', {{method: 'POST'}})
         .then(r => r.json()).then(d => {{
-          btn.textContent = d.ok ? 'Sent ✓' : (d.error || 'Error');
+          if (d.ok) {{
+            btn.textContent = 'Sent ✓';
+          }} else {{
+            var errMsg = (d.error || '').includes('FULFILLMENT_TEAM_EMAIL') ? 'Not configured — set FULFILLMENT_TEAM_EMAIL in Render' : (d.error || 'Error sending');
+            btn.textContent = errMsg;
+          }}
           btn.disabled = false;
-          setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 3000);
-        }}).catch(() => {{ btn.textContent = 'Error'; btn.disabled = false; }});
+          setTimeout(() => {{ btn.textContent = 'Send to warehouse →'; }}, 5000);
+        }}).catch(() => {{ btn.textContent = 'Error — try again'; btn.disabled = false; }});
     }}
     var _noteTimers = {{}};
     function pipelineNotesDebounce(el, runId) {{
