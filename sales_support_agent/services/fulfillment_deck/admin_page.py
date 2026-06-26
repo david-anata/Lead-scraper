@@ -638,6 +638,16 @@ def render_fulfillment_sales_page(
       }}).then(() => {{
         sel.style.outline = '2px solid #15803d';
         setTimeout(() => sel.style.outline = '', 1400);
+        // When advancing to "Sent to Fulfillment", auto-copy the brief so the rep can paste immediately.
+        if (sel.value === 'pending_fulfillment') {{
+          var expandRow = document.getElementById('expand-' + runId);
+          var briefBtn = expandRow && expandRow.querySelector('button[data-brief]');
+          if (briefBtn) {{
+            navigator.clipboard.writeText(briefBtn.dataset.brief).catch(() => {{}});
+            briefBtn.textContent = 'Brief copied! ✓';
+            setTimeout(() => briefBtn.textContent = 'Copy brief', 2500);
+          }}
+        }}
       }});
     }}
     function pipelineCosts(btn, runId) {{
