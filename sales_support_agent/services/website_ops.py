@@ -1398,6 +1398,13 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     return injected
 
 
+_MD_STRIP = re.compile(r"[`*_~]|^\s*-\s*", re.MULTILINE)
+
+
+def _strip_md(text: str) -> str:
+    return _MD_STRIP.sub("", str(text)).strip()
+
+
 def _report_cards(entries: list[dict[str, Any]]) -> str:
     if not entries:
         return "<div class='list-card'><p class='muted'>No reports yet.</p></div>"
@@ -1408,7 +1415,7 @@ def _report_cards(entries: list[dict[str, Any]]) -> str:
             <article class="list-card">
               <p class="eyebrow">{html.escape(entry.get('mode', '').title())} · {html.escape(entry.get('date', '') or entry.get('modified', ''))}</p>
               <h3><a href="/admin/website-ops/reports/{html.escape(entry['mode'], quote=True)}/{html.escape(entry['slug'], quote=True)}">{html.escape(entry['title'])}</a></h3>
-              <p class="muted">{html.escape(entry.get('excerpt', '') or 'No summary available.')}</p>
+              <p class="muted">{html.escape(_strip_md(entry.get('excerpt', '') or 'No summary available.'))}</p>
             </article>
             """
         )
@@ -1605,7 +1612,14 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
           <p class="eyebrow">Website Ops queue</p>
           <h1>Review <span style="color:var(--accent)">and approve</span>.</h1>
           {_mvp_mode_banner()}
-          <p class="lead">Showing: {html.escape(queue_title)} items. Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
+          <p class="lead">Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
+          <div class="button-row" style="margin-top:8px">
+            <a href="/admin/website-ops/queue" class="{'btn' if not normalized_filter else 'btn btn--ghost'}" style="font-size:13px">Active</a>
+            <a href="/admin/website-ops/queue?status=approved" class="{'btn' if normalized_filter == 'approved' else 'btn btn--ghost'}" style="font-size:13px">Approved</a>
+            <a href="/admin/website-ops/queue?status=done" class="{'btn' if normalized_filter == 'done' else 'btn btn--ghost'}" style="font-size:13px">Done</a>
+            <a href="/admin/website-ops/queue?status=error" class="{'btn' if normalized_filter == 'error' else 'btn btn--ghost'}" style="font-size:13px">Error</a>
+            <a href="/admin/website-ops/queue?status=rejected" class="{'btn' if normalized_filter == 'rejected' else 'btn btn--ghost'}" style="font-size:13px">Rejected</a>
+          </div>
         </section>
         <section class="card stack">
           {_feedback_cards(entries, with_actions=True)}
@@ -1729,7 +1743,8 @@ def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict |
     if html_path.exists():
         rendered = _inject_admin_nav_into_report_html(html_path.read_text(), active="reports", user=user)
         banner = _mvp_mode_banner() if MVP_MODE_ACTIVE else ""
-        return rendered.replace('<div class="admin-report-shell">', f'<div class="admin-report-shell">{banner}{debug_panel}', 1)
+        breadcrumb = '<p class="breadcrumb" style="font-size:14px;margin-bottom:18px;color:rgba(43,54,68,0.60)"><a href="/admin/website-ops/reports" style="color:rgba(43,54,68,0.60);text-decoration:none">← All reports</a></p>'
+        return rendered.replace('<div class="admin-report-shell">', f'<div class="admin-report-shell">{breadcrumb}{banner}{debug_panel}', 1)
     markdown_path = entry["path"]
     return _page_shell(
         entry["title"],
