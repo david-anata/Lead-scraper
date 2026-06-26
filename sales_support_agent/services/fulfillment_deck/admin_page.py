@@ -657,7 +657,8 @@ def render_fulfillment_sales_page(
               </div>
             </div>
           </div>
-          <button class="btn" type="submit">Generate rate sheet</button>
+          <button class="btn" type="submit" id="generate-btn"
+            onclick="setTimeout(()=>{{this.textContent='Building… (this takes ~20s)';this.disabled=true;}},10)">Generate rate sheet</button>
           {'<a href="#pipeline" class="muted" style="margin-left:12px;font-size:13px;text-decoration:none;opacity:.65">↓ or jump to pipeline</a>' if runs else ''}
         </form>
         <h2 id="pipeline">Pipeline</h2>
