@@ -279,7 +279,7 @@ def _candidate_cards(candidates: list[dict[str, Any]]) -> str:
     return "".join(cards)
 
 
-def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str, active_subnav: str) -> str:
+def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str, active_subnav: str, user: dict | None = None) -> str:
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -520,7 +520,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
     </style>
   </head>
   <body>
-    {render_agent_nav("fulfillment", website_ops_section=active_subnav)}
+    {render_agent_nav("fulfillment", website_ops_section=active_subnav, user=user)}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">
@@ -537,7 +537,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
 </html>"""
 
 
-def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: list[FulfillmentReportEntry]) -> str:
+def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: list[FulfillmentReportEntry], *, user: dict | None = None) -> str:
     summary = _summary(report)
     action_counts = _normalized_counts(summary.get("action_counts", {}), ACTION_STATE_ORDER)
     lifecycle_counts = _normalized_counts(summary.get("lifecycle_counts", {}), LIFECYCLE_STATE_ORDER)
@@ -592,10 +592,11 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
         intro="Artifact-driven visibility into fulfillment support candidates, state, and escalation needs.",
         body=body,
         active_subnav="fulfillment_dashboard",
+        user=user,
     )
 
 
-def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry]) -> str:
+def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry], *, user: dict | None = None) -> str:
     cards = "".join(
         f"""
         <article class="report-card">
@@ -615,10 +616,11 @@ def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry]) -> st
         intro="Timestamped, read-only fulfillment support artifacts rendered from prepared report files.",
         body=body,
         active_subnav="fulfillment_reports",
+        user=user,
     )
 
 
-def render_fulfillment_report_detail_page(report: dict[str, Any]) -> str:
+def render_fulfillment_report_detail_page(report: dict[str, Any], *, user: dict | None = None) -> str:
     summary = _summary(report)
     action_counts = _normalized_counts(summary.get("action_counts", report.get("action_counts", {})), ACTION_STATE_ORDER)
     lifecycle_counts = _normalized_counts(summary.get("lifecycle_counts", report.get("lifecycle_counts", {})), LIFECYCLE_STATE_ORDER)
@@ -662,6 +664,7 @@ def render_fulfillment_report_detail_page(report: dict[str, Any]) -> str:
         intro=f"Generated at {str(report.get('generated_at', 'unknown'))}.",
         body=body,
         active_subnav="fulfillment_reports",
+        user=user,
     )
 
 

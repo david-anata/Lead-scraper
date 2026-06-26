@@ -3945,7 +3945,8 @@ def admin_fulfillment_cs_dashboard(request: Request) -> Response:
     settings = load_fulfillment_cs_settings()
     latest_report = load_latest_fulfillment_report(settings.fulfillment_cs_reports_dir)
     entries = fulfillment_report_entries(settings.fulfillment_cs_reports_dir)
-    return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries))
+    from sales_support_agent.services.auth_deps import get_current_user
+    return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries, user=get_current_user(request)))
 
 
 @app.get("/admin/fulfillment/cs/reports", response_class=HTMLResponse)
@@ -3968,7 +3969,8 @@ def admin_fulfillment_cs_reports(request: Request) -> Response:
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
     settings = load_fulfillment_cs_settings()
-    return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(settings.fulfillment_cs_reports_dir)))
+    from sales_support_agent.services.auth_deps import get_current_user
+    return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(settings.fulfillment_cs_reports_dir), user=get_current_user(request)))
 
 
 @app.get("/admin/fulfillment/cs/reports/latest")
@@ -4030,7 +4032,8 @@ def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Re
     report = load_fulfillment_report_by_slug(load_fulfillment_cs_settings().fulfillment_cs_reports_dir, report_slug)
     if report is None:
         return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found."), status_code=404)
-    return HTMLResponse(render_fulfillment_report_detail_page(report))
+    from sales_support_agent.services.auth_deps import get_current_user
+    return HTMLResponse(render_fulfillment_report_detail_page(report, user=get_current_user(request)))
 
 
 def _website_ops_run_status(request: Request, *, mode: str = "daily") -> dict[str, Any]:
