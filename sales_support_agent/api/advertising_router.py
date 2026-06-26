@@ -182,6 +182,20 @@ def clients_save(
     )
 
 
+@router.post("/clients/{client_id}/archive")
+def clients_archive(client_id: str) -> RedirectResponse:
+    if not storage.get_client(client_id):
+        return RedirectResponse(
+            "/admin/advertising/clients?msg=Client+not+found.", status_code=303
+        )
+    client = storage.get_client(client_id)
+    name = (client or {}).get("name") or "Client"
+    storage.archive_client(client_id)
+    return RedirectResponse(
+        f"/admin/advertising/clients?msg={quote_plus(f'{name} archived.')}", status_code=303
+    )
+
+
 # ---------------------------------------------------------------------------
 # Goals
 # ---------------------------------------------------------------------------

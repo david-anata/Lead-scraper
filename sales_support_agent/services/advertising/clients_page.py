@@ -52,7 +52,16 @@ def _client_block(client: dict) -> str:
             <h2 style="font-size:15px;">Goals <small>— targets every audit for this client measures against</small></h2>
             {_goals_fields(goals)}
           </div>
-          <div><button class="btn" type="submit">Save client</button></div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <button class="btn" type="submit">Save client</button>
+          </div>
+        </form>
+        <form method="post" action="/admin/advertising/clients/{_esc(cid)}/archive"
+              onsubmit="return confirm('Archive {_esc(name)}? It disappears from this list — run history is kept.')">
+          <button class="btn btn--ghost" type="submit"
+                  style="font-size:13px;color:#b94040;border-color:rgba(185,64,64,0.4);margin-top:8px">
+            Archive client
+          </button>
         </form>
         <div style="margin-top:18px;">
           <h2 style="font-family:'Montserrat',sans-serif;font-size:15px;margin:0 0 10px;">Run history</h2>

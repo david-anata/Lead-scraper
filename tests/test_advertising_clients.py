@@ -184,6 +184,34 @@ class ClientHttpTest(_Base):
         self.assertIn("adv-client", resp.text)
         self.assertIn("Alpha", resp.text)
 
+    def test_archive_client_via_http(self):
+        cid = self.storage.create_client("ToRemove")
+        client = self._client()
+        resp = client.post(
+            f"/admin/advertising/clients/{cid}/archive",
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertNotIn(cid, [c["id"] for c in self.storage.list_clients()])
+        # Archived clients are still retrievable with include_archived=True.
+        self.assertIn(cid, [c["id"] for c in self.storage.list_clients(include_archived=True)])
+
+    def test_archive_unknown_client_redirects_gracefully(self):
+        client = self._client()
+        resp = client.post(
+            "/admin/advertising/clients/no-such-id/archive",
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("not+found", resp.headers.get("location", "").lower())
+
+    def test_clients_page_has_archive_button(self):
+        self.storage.create_client("Beta")
+        client = self._client()
+        resp = client.get("/admin/advertising/clients")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("archive", resp.text.lower())
+
 
 class BrandMismatchGateTest(_Base):
     """Phase B — block/confirm before running when the uploaded files' detected
