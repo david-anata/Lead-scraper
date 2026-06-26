@@ -4162,7 +4162,7 @@ def admin_website_ops(request: Request) -> Response:
             _start_website_ops_run(request, mode="daily", force=False, trigger="visit")
         except Exception:
             logger.exception("[WebsiteOps] auto daily sweep on page load failed")
-    return HTMLResponse(render_website_ops_dashboard_page(load_website_ops_settings()))
+    return HTMLResponse(render_website_ops_dashboard_page(load_website_ops_settings(), user=_current_nav_user(request)))
 
 
 @app.get("/admin/website-ops/queue", response_class=HTMLResponse)
@@ -4173,7 +4173,7 @@ def admin_website_ops_queue(request: Request, status: str = "") -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_website_ops_queue_page(load_website_ops_settings(), status_filter=status))
+    return HTMLResponse(render_website_ops_queue_page(load_website_ops_settings(), status_filter=status, user=_current_nav_user(request)))
 
 
 @app.get("/admin/website-ops/reports", response_class=HTMLResponse)
@@ -4184,7 +4184,7 @@ def admin_website_ops_reports(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_website_ops_reports_page(load_website_ops_settings()))
+    return HTMLResponse(render_website_ops_reports_page(load_website_ops_settings(), user=_current_nav_user(request)))
 
 
 @app.get("/admin/website-ops/reports/latest")
@@ -4210,7 +4210,7 @@ def admin_website_ops_report_detail(request: Request, mode: str, slug: str) -> R
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_website_ops_report_page(load_website_ops_settings(), mode, slug))
+    return HTMLResponse(render_website_ops_report_page(load_website_ops_settings(), mode, slug, user=_current_nav_user(request)))
 
 
 @app.get("/admin/website-ops/feedback/{feedback_id}", response_class=HTMLResponse)
@@ -4221,7 +4221,7 @@ def admin_website_ops_feedback_detail(request: Request, feedback_id: str) -> Res
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
-    return HTMLResponse(render_website_ops_feedback_detail_page(load_website_ops_settings(), feedback_id))
+    return HTMLResponse(render_website_ops_feedback_detail_page(load_website_ops_settings(), feedback_id, user=_current_nav_user(request)))
 
 
 @app.post("/admin/api/run-lead-build", response_model=None)
