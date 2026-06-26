@@ -1038,7 +1038,16 @@ def render_rate_sheet_review_page(
 
     flash_html = f'<div class="flash">{_esc(flash)}</div>' if flash else ""
 
-    warnings = [str(w) for w in (summary.get("warnings") or []) if str(w).strip()]
+    def _sanitize_warning(w: str) -> str:
+        # Collapse raw LLM API exceptions into a one-liner — never show request IDs
+        # or credit-balance details to the admin.
+        if "LLM extraction failed" in w:
+            suffix = "used basic text parsing instead" if "basic text" in w else "extraction fell back to basic parser"
+            return f"Product details extracted with fallback parser ({suffix}) — review fields below."
+        # Truncate any other internal exception messages
+        return w[:200] + ("…" if len(w) > 200 else "")
+
+    warnings = [_sanitize_warning(str(w)) for w in (summary.get("warnings") or []) if str(w).strip()]
     warnings_html = ""
     if warnings:
         items = "".join(f"<li>{_esc(w)}</li>" for w in warnings[:12])
@@ -1283,6 +1292,7 @@ def render_rate_sheet_review_page(
           </div>
 
           <h2>Products</h2>
+          {'<div class="flash flash--warn" style="margin-bottom:12px"><strong>No products on file.</strong> Fill in at least one product row below (name + dimensions + units/mo) so the rate sheet shows accurate savings estimates, then save &amp; re-publish.</div>' if not products else ''}
           <table class="products-table">
             <thead><tr><th>Name</th><th>L (in)</th><th>W (in)</th><th>H (in)</th><th>Weight (lb)</th><th>Units / mo</th><th>Remove</th></tr></thead>
             <tbody>{rows}</tbody>
