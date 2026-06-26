@@ -20,7 +20,7 @@ def _add_client_form() -> str:
     return f"""
     <form class="grid" method="post" action="/admin/advertising/clients/new">
       <div class="row">
-        <div class="field"><label>Client name</label><input type="text" name="name" placeholder="e.g. Zantrex" required></div>
+        <div class="field"><label>Client name</label><input type="text" name="name" placeholder="e.g. Acme Brand" required></div>
       </div>
       <div class="field"><label>Objectives <span class="hint">— free-text strategy notes (optional)</span></label>
         <textarea name="objectives" rows="2" placeholder="What success looks like for this client — growth vs. profit, key brands, constraints…"
