@@ -954,10 +954,11 @@ def render_fulfillment_sales_page(
 </html>"""
 
 
-def _num_input(name: str, value: object, *, width: str = "76px", step: str = "any") -> str:
+def _num_input(name: str, value: object, *, width: str = "76px", step: str = "any", placeholder: str = "") -> str:
     val = "" if value is None else f"{value:g}" if isinstance(value, float) else str(value)
+    ph = f' placeholder="{_esc(placeholder)}"' if placeholder else ""
     return (
-        f'<input type="number" name="{name}" value="{_esc(val)}" step="{step}" min="0" '
+        f'<input type="number" name="{name}" value="{_esc(val)}" step="{step}" min="0"{ph} '
         f'style="width:{width};min-height:32px;padding:0 8px;border-radius:8px;'
         f'border:1px solid var(--border);font-size:13px">'
     )
@@ -983,7 +984,7 @@ def _product_row(index: int, product: dict, *, template: bool = False) -> str:
         f"<td>{_num_input('product_width', product.get('width_in'))}</td>"
         f"<td>{_num_input('product_height', product.get('height_in'))}</td>"
         f"<td>{_num_input('product_weight', product.get('weight_lb'))}</td>"
-        f"<td>{_num_input('product_units', product.get('monthly_units'), width='90px', step='1')}</td>"
+        f"<td>{_num_input('product_units', product.get('monthly_units'), width='90px', step='1', placeholder='—')}</td>"
         f"<td style='text-align:center'>{remove_cell}</td>"
         f"</tr>"
     )
@@ -1298,7 +1299,7 @@ def render_rate_sheet_review_page(
           <h2>Products</h2>
           {'<div class="flash flash--warn" style="margin-bottom:12px"><strong>No products on file.</strong> Fill in at least one product row below (name + dimensions + units/mo) so the rate sheet shows accurate savings estimates, then save &amp; re-publish.</div>' if not products else ''}
           <table class="products-table">
-            <thead><tr><th>Name</th><th>L (in)</th><th>W (in)</th><th>H (in)</th><th>Weight (lb)</th><th>Units / mo</th><th>Remove</th></tr></thead>
+            <thead><tr><th>Name</th><th>L (in)</th><th>W (in)</th><th>H (in)</th><th>Weight (lb)</th><th>Units / mo <span style="font-weight:400;font-size:11px;opacity:0.55">(opt.)</span></th><th>Remove</th></tr></thead>
             <tbody>{rows}</tbody>
           </table>
           <p class="muted">Rows tagged <span class="pill pill--estimated">estimated</span> had dimensions guessed from the product type — confirm or correct them before sending. Editing a dimension clears the tag. Tick Remove to drop a product; fill the empty row to add one.</p>
