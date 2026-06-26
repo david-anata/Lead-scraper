@@ -575,7 +575,8 @@ def render_fulfillment_sales_page(
               </div>
               <div class="field">
                 <label for="brand">Brand name <span class="hint">— optional override</span></label>
-                <input type="text" id="brand" name="brand" placeholder="Auto-detected from notes">
+                <input type="text" id="brand" name="brand" placeholder="Auto-detected from notes" list="existing-brands" autocomplete="off">
+                <datalist id="existing-brands">{''.join(f'<option value="{_esc(r["prospect"])}"/>' for r in runs if r.get("prospect"))}</datalist>
               </div>
               <div class="field">
                 <label for="origin_zip">Ship-from ZIP</label>
@@ -585,8 +586,9 @@ def render_fulfillment_sales_page(
             </div>
           </div>
           <button class="btn" type="submit">Generate rate sheet</button>
+          {'<a href="#pipeline" class="muted" style="margin-left:12px;font-size:13px;text-decoration:none;opacity:.65">↓ or jump to pipeline</a>' if runs else ''}
         </form>
-        <h2>Pipeline</h2>
+        <h2 id="pipeline">Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
         {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><select id="pipe-sort" onchange="sortPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">Sort: Newest</option><option value="volume">Sort: Volume ↓</option><option value="pitched">Sort: Pitched $ ↓</option><option value="margin">Sort: Margin ↓</option><option value="views">Sort: Views ↓</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a></div>' if runs else ""}
@@ -594,10 +596,26 @@ def render_fulfillment_sales_page(
       </div>
     </main>
     <script>
-    // Generate form loading state — AI call takes 30-60s; give the rep feedback.
+    // Generate form: loading state + duplicate brand warning.
     (function() {{
       var form = document.querySelector('form[action$="/generate"]');
       if (!form) return;
+      var brandInput = form.querySelector('#brand');
+      var existingBrands = [...document.querySelectorAll('#existing-brands option')].map(o => o.value.toLowerCase());
+      if (brandInput && existingBrands.length) {{
+        brandInput.addEventListener('input', function() {{
+          var warn = document.getElementById('brand-dup-warn');
+          if (this.value && existingBrands.includes(this.value.toLowerCase())) {{
+            if (!warn) {{
+              warn = document.createElement('span');
+              warn.id = 'brand-dup-warn';
+              warn.style.cssText = 'color:#b45309;font-size:12px;margin-left:6px';
+              warn.textContent = '⚠ Rate sheet already exists — generating a new one will add to pipeline';
+              this.parentNode.appendChild(warn);
+            }}
+          }} else if (warn) warn.remove();
+        }});
+      }}
       form.addEventListener('submit', function() {{
         var btn = form.querySelector('button[type="submit"]');
         if (btn) {{ btn.textContent = 'Generating… this takes ~30 sec'; btn.disabled = true; }}
