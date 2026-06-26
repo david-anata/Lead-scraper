@@ -71,6 +71,9 @@ public_router = APIRouter(tags=["fulfillment-rate-sheets-public"])
 @admin_router.get("", response_class=HTMLResponse)
 def landing(request: Request, msg: str = "", kind: str = "") -> HTMLResponse:
     runs = storage.list_runs()
+    # Won/Lost sink to bottom so active deals stay at the top
+    _terminal = {"won", "lost"}
+    runs = sorted(runs, key=lambda r: 1 if r.get("pipeline_stage") in _terminal else 0)
     engagement = storage.engagement_for([r["id"] for r in runs])
     return HTMLResponse(
         render_fulfillment_sales_page(
