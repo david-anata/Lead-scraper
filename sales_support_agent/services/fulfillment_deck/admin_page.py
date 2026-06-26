@@ -448,9 +448,15 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
             _ext_views = int((engagement.get(run_id) or {}).get("external_sessions") or 0)
             if stage == "intake" and _age_days > 7 and published:
                 # Sheet was published but stage wasn't advanced (old records pre-auto-advance)
-                _stale_badge = '<span title="Rate sheet sent but stage is still Intake — update stage" style="margin-left:4px;font-size:10px;color:#b45309;vertical-align:middle">⚠</span>'
+                _stale_badge = (
+                    f'<div style="font-size:11px;color:#b45309;margin-top:3px;font-weight:500">'
+                    f'⚠ Sent {_age_days}d ago — advance stage</div>'
+                )
             elif stage == "published" and _ext_views == 0 and _age_days > 5:
-                _stale_badge = '<span title="Prospect hasn\'t opened the rate sheet yet" style="margin-left:4px;font-size:10px;color:#b45309;vertical-align:middle">⚠</span>'
+                _stale_badge = (
+                    f'<div style="font-size:11px;color:#b45309;margin-top:3px;font-weight:500">'
+                    f'⚠ Unopened after {_age_days}d — follow up</div>'
+                )
         except Exception:
             pass
 
