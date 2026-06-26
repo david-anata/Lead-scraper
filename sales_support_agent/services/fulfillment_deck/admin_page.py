@@ -580,7 +580,7 @@ def render_fulfillment_sales_page(
               <div class="field">
                 <label for="brand">Brand name <span class="hint">— optional override</span></label>
                 <input type="text" id="brand" name="brand" placeholder="Auto-detected from notes" list="existing-brands" autocomplete="off">
-                <datalist id="existing-brands">{''.join(f'<option value="{_esc(r["prospect"])}"/>' for r in runs if r.get("prospect"))}</datalist>
+                <datalist id="existing-brands">{''.join(f'<option value="{_esc(r["prospect"])}" label="{_esc(r["prospect"])} ({r.get("pipeline_stage","intake").replace("_"," ")})"/>' for r in runs if r.get("prospect"))}</datalist>
               </div>
               <div class="field">
                 <label for="origin_zip">Ship-from ZIP</label>
