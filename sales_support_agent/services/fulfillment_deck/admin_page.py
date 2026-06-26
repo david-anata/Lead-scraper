@@ -254,6 +254,13 @@ def _expand_panel(run: dict) -> str:
             profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
             mg = compute_margin(float(pitched), costs, profile_obj)
             sign = "pos" if mg["monthly_margin"] >= 0 else "neg"
+            _rec_pp = float(costs.get("receiving_per_pallet") or 0)
+            _rec_pallets = int(mg.get("pallets_mo") or 0)
+            _rec_line = (
+                f'<div class="margin-line" style="opacity:0.65"><span>Receiving one-time (~{_rec_pallets} pallets)</span>'
+                f'<span>−{_fmt_usd(_rec_pp * _rec_pallets)}</span></div>'
+                if _rec_pp and _rec_pallets else ""
+            )
             margin_html = f"""
             <div class="margin-card" id="margin-{run_id}">
               <div class="big big--{sign}">{_fmt_usd(mg['monthly_margin'])}<span style="font-size:14px;font-weight:400">/mo ({mg['margin_pct']}%)</span></div>
@@ -261,6 +268,7 @@ def _expand_panel(run: dict) -> str:
               <div class="margin-line"><span>Pick &amp; pack actual</span><span>−{_fmt_usd(mg['actual_pick_pack'])}</span></div>
               <div class="margin-line"><span>Storage actual</span><span>−{_fmt_usd(mg['actual_storage'])}</span></div>
               <div class="margin-line"><span>Tech fee actual</span><span>−{_fmt_usd(mg['actual_tech_fee'])}</span></div>
+              {_rec_line}
               <div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>{_fmt_usd(mg['annual_margin'])}</span></div>
             </div>"""
         except Exception:
@@ -704,14 +712,21 @@ def render_fulfillment_sales_page(
           var sign = mg.monthly_margin >= 0 ? 'pos' : 'neg';
           // Update expand panel margin card
           var card = document.getElementById('margin-' + runId);
-          if (card) card.innerHTML =
-            '<div class="big big--' + sign + '">' + (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) +
-            '/mo (' + mg.margin_pct + '%)</div>' +
-            '<div class="margin-line"><span>Pitched monthly</span><span>' + fmt(data.pitched) + '</span></div>' +
-            '<div class="margin-line"><span>Pick &amp; pack actual</span><span>−' + fmt(mg.actual_pick_pack) + '</span></div>' +
-            '<div class="margin-line"><span>Storage actual</span><span>−' + fmt(mg.actual_storage) + '</span></div>' +
-            '<div class="margin-line"><span>Tech fee actual</span><span>−' + fmt(mg.actual_tech_fee) + '</span></div>' +
-            '<div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>' + (mg.annual_margin < 0 ? '−' : '') + fmt(mg.annual_margin) + '</span></div>';
+          if (card) {{
+            var recLine = '';
+            if (data.receiving_one_time && data.pallets_mo) {{
+              recLine = '<div class="margin-line" style="opacity:0.65"><span>Receiving one-time (~' + data.pallets_mo + ' pallets)</span><span>−' + fmt(data.receiving_one_time) + '</span></div>';
+            }}
+            card.innerHTML =
+              '<div class="big big--' + sign + '">' + (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) +
+              '/mo (' + mg.margin_pct + '%)</div>' +
+              '<div class="margin-line"><span>Pitched monthly</span><span>' + fmt(data.pitched) + '</span></div>' +
+              '<div class="margin-line"><span>Pick &amp; pack actual</span><span>−' + fmt(mg.actual_pick_pack) + '</span></div>' +
+              '<div class="margin-line"><span>Storage actual</span><span>−' + fmt(mg.actual_storage) + '</span></div>' +
+              '<div class="margin-line"><span>Tech fee actual</span><span>−' + fmt(mg.actual_tech_fee) + '</span></div>' +
+              recLine +
+              '<div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>' + (mg.annual_margin < 0 ? '−' : '') + fmt(mg.annual_margin) + '</span></div>';
+          }}
           // Update table row cells (actual cost + margin columns)
           var expandRow = document.getElementById('expand-' + runId);
           var prospectRow = expandRow ? expandRow.previousElementSibling : null;

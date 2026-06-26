@@ -437,7 +437,17 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
             margin = compute_margin(pitched, costs, profile)
             from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
             _hs_margin(run_id, margin, pitched)
-            return JSONResponse({"ok": True, "margin": margin, "pitched": pitched, "actual_monthly": margin.get("actual_monthly")})
+            rec_pp = float(costs.get("receiving_per_pallet") or 0)
+            pallets_mo = int(margin.get("pallets_mo") or 0)
+            rec_total = round(rec_pp * pallets_mo, 2) if (rec_pp and pallets_mo) else None
+            return JSONResponse({
+                "ok": True,
+                "margin": margin,
+                "pitched": pitched,
+                "actual_monthly": margin.get("actual_monthly"),
+                "receiving_one_time": rec_total,
+                "pallets_mo": pallets_mo or None,
+            })
     return JSONResponse({"ok": True})
 
 
