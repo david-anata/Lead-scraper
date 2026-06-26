@@ -3874,7 +3874,7 @@ def admin_sales_decks(request: Request) -> Response:
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
     dashboard = fetch_remote_dashboard_data()
-    return HTMLResponse(render_sales_deck_page(dashboard))
+    return HTMLResponse(render_sales_deck_page(dashboard, user=_current_nav_user(request)))
 
 
 @app.get("/admin/executive", response_class=HTMLResponse)

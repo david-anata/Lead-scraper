@@ -4445,7 +4445,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
 </html>"""
 
 
-def render_sales_deck_page(data: DashboardData) -> str:
+def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) -> str:
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
     deck_ready_notice = (
         '<div class="notice warning">Deck generator is missing env vars: '
@@ -5475,7 +5475,7 @@ def render_sales_deck_page(data: DashboardData) -> str:
     </style>
   </head>
   <body>
-    {render_agent_nav("sales_decks", sales_section="sales_decks")}
+    {render_agent_nav("sales_decks", sales_section="sales_decks", user=user)}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">

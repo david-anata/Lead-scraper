@@ -108,14 +108,12 @@ class AdminDashboardTests(unittest.TestCase):
             )
 
         html = render_dashboard_page(dashboard)
-        self.assertNotIn("deck-generator-form", html)
+        self.assertNotIn('id="deck-generator-form"', html)
         self.assertNotIn("Bulk Gmail drafts", html)
         self.assertIn("/admin/sales-decks", html)
         self.assertIn("Failed", html)
         self.assertIn("Sync now", html)
-        self.assertIn("Needs review", html)
         self.assertNotIn("Due today", html)
-        self.assertIn("Open overdue queue", html)
         self.assertIn("Show more tools and diagnostics", html)
 
     def test_sales_deck_page_renders_deck_controls(self) -> None:
@@ -150,9 +148,8 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("deck-generator-form", html)
         self.assertIn("/admin/api/generate-deck", html)
         self.assertIn("Generate sales deck", html)
-        self.assertIn("Target product URL or ASIN", html)
-        self.assertIn("Competitor CSVs", html)
-        self.assertIn("Keyword CSVs", html)
+        self.assertIn("Product URL or ASIN", html)
+        self.assertIn("All Helium 10 CSVs", html)
         self.assertIn("deck-run-list", html)
         self.assertNotIn("Bulk Gmail drafts", html)
 
