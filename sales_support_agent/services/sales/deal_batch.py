@@ -6,6 +6,7 @@ POST /admin/sales/deals/cleanup  → bulk apply selected actions
 from __future__ import annotations
 
 import html
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -13,6 +14,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.models.entities import (
     HubSpotContact,
     HubSpotDeal,
@@ -25,6 +27,36 @@ from sales_support_agent.services.sales.actions import (
     SalesAction,
     compute_pending_actions,
 )
+
+logger = logging.getLogger(__name__)
+
+# Suppress duplicate Sales Director notes within this window.
+NOTE_COOLDOWN_DAYS = 7
+
+
+def note_applied_key(deal_id: str) -> str:
+    return f"sales:note_applied:{deal_id}"
+
+
+def record_note_applied(deal_id: str) -> None:
+    """Record that a Sales Director note was just written for this deal."""
+    kv_set_json(note_applied_key(deal_id), {
+        "applied_at": datetime.now(timezone.utc).isoformat()
+    })
+
+
+def _last_note_days_ago(deal_id: str) -> Optional[int]:
+    """Return how many days ago a note was applied, or None if no record."""
+    record = kv_get_json(note_applied_key(deal_id))
+    if not record or "applied_at" not in record:
+        return None
+    try:
+        applied = datetime.fromisoformat(record["applied_at"])
+        if not applied.tzinfo:
+            applied = applied.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - applied).days
+    except Exception:
+        return None
 
 
 def _esc(s: str) -> str:
@@ -62,6 +94,9 @@ class BatchCleanupRow:
     last_touch_at: Optional[datetime]
     contact_count: int
     actions: list[SalesAction] = field(default_factory=list)
+    # Set to the number of days since a note was last applied when note actions
+    # are suppressed by the cooldown window.
+    last_note_days_ago: Optional[int] = None
 
 
 def build_batch_cleanup(session: Session, *, portal_id: str = "") -> list[BatchCleanupRow]:
@@ -74,30 +109,46 @@ def build_batch_cleanup(session: Session, *, portal_id: str = "") -> list[BatchC
 
     rows: list[BatchCleanupRow] = []
     for deal in open_deals:
-        signals = list(session.scalars(
-            select(MailboxSignal).where(MailboxSignal.matched_deal_id == deal.hubspot_deal_id)
-        ).all())
-        li_total = session.execute(
-            select(func.sum(HubSpotLineItem.amount_cents))
-            .where(HubSpotLineItem.hubspot_deal_id == deal.hubspot_deal_id)
-        ).scalar() or 0
-        contact_link_ids = [r.hubspot_contact_id for r in session.scalars(
-            select(HubSpotDealContact).where(
-                HubSpotDealContact.hubspot_deal_id == deal.hubspot_deal_id
-            )
-        ).all()]
-        contacts: list[ContactInfo] = []
-        for cid in contact_link_ids:
-            c = session.get(HubSpotContact, cid)
-            if c:
-                contacts.append(ContactInfo(contact_id=cid, email=c.email or ""))
+        try:
+            signals = list(session.scalars(
+                select(MailboxSignal).where(MailboxSignal.matched_deal_id == deal.hubspot_deal_id)
+            ).all())
+            li_total = session.execute(
+                select(func.sum(HubSpotLineItem.amount_cents))
+                .where(HubSpotLineItem.hubspot_deal_id == deal.hubspot_deal_id)
+            ).scalar() or 0
+            contact_link_ids = [r.hubspot_contact_id for r in session.scalars(
+                select(HubSpotDealContact).where(
+                    HubSpotDealContact.hubspot_deal_id == deal.hubspot_deal_id
+                )
+            ).all()]
+            contacts: list[ContactInfo] = []
+            for cid in contact_link_ids:
+                c = session.get(HubSpotContact, cid)
+                if c:
+                    contacts.append(ContactInfo(contact_id=cid, email=c.email or ""))
 
-        all_actions = compute_pending_actions(
-            deal, signals,
-            line_item_total_cents=int(li_total),
-            contacts=contacts,
-            portal_id=portal_id,
-        )
+            all_actions = compute_pending_actions(
+                deal, signals,
+                line_item_total_cents=int(li_total),
+                contacts=contacts,
+                portal_id=portal_id,
+            )
+        except Exception:
+            logger.exception(
+                "[cleanup] skipping deal %s due to action-computation error",
+                deal.hubspot_deal_id,
+            )
+            continue
+
+        # Suppress create_note actions within the cooldown window to prevent
+        # duplicate Sales Director notes appearing in HubSpot.
+        # active_cooldown_days is non-None only when suppression is currently active.
+        _note_days = _last_note_days_ago(deal.hubspot_deal_id)
+        active_cooldown_days: Optional[int] = None
+        if _note_days is not None and _note_days < NOTE_COOLDOWN_DAYS:
+            all_actions = [a for a in all_actions if a.action_type != "create_note"]
+            active_cooldown_days = _note_days
 
         # Include mid-confidence actions (writeable or flag) and low-confidence
         # flags — everything gets shown so the user has a full picture.
@@ -120,6 +171,7 @@ def build_batch_cleanup(session: Session, *, portal_id: str = "") -> list[BatchC
             last_touch_at=deal.last_meaningful_touch_at,
             contact_count=len(contacts),
             actions=all_actions,
+            last_note_days_ago=active_cooldown_days,
         ))
 
     return rows
@@ -234,6 +286,16 @@ def render_batch_cleanup_page(
             amount_cls = "ctx-warn" if row.amount_cents <= 0 else "ctx-ok"
             touch_cls = "ctx-warn" if row.last_touch_at is None else "ctx-ok"
 
+            cooldown_html = ""
+            if row.last_note_days_ago is not None and row.last_note_days_ago < NOTE_COOLDOWN_DAYS:
+                remaining = NOTE_COOLDOWN_DAYS - row.last_note_days_ago
+                cooldown_html = (
+                    f'<div class="cooldown-notice">'
+                    f'ℹ Sales Director note logged {row.last_note_days_ago}d ago — '
+                    f'note actions suppressed for {remaining} more day{"s" if remaining != 1 else ""}.'
+                    f'</div>'
+                )
+
             deals_html += f"""
 <div class="deal-card" data-deal="{_esc(row.deal_id)}">
   <div class="deal-hdr">
@@ -250,6 +312,7 @@ def render_batch_cleanup_page(
       <span class="ctx-sep">·</span>
       <span>{contact_str}</span>
     </div>
+    {cooldown_html}
   </div>"""
 
             # Mid-confidence action rows
@@ -437,6 +500,9 @@ def render_batch_cleanup_page(
       .ctx-sep{{color:rgba(43,54,68,.25);}}
       .ctx-warn{{color:var(--red);font-weight:600;}}
       .ctx-ok{{color:rgba(43,54,68,.7);}}
+      .cooldown-notice{{font-size:11.5px;color:var(--blue);background:var(--hyg-bg);
+                        border:1px solid var(--hyg-border);border-radius:6px;
+                        padding:4px 10px;margin-top:6px;display:inline-block;}}
 
       /* Action rows */
       .action-row{{padding:10px 16px;border-bottom:1px solid rgba(43,54,68,.06);}}

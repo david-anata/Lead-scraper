@@ -41,6 +41,7 @@ from sales_support_agent.services.sales.deal_detail import (
 from sales_support_agent.integrations.gmail import GmailClient
 from sales_support_agent.services.sales.deal_batch import (
     build_batch_cleanup,
+    record_note_applied,
     render_batch_cleanup_page,
 )
 from sales_support_agent.services.sales.email_send import send_followup_email
@@ -230,6 +231,7 @@ def batch_cleanup_apply(
             if a.action_type == "create_note":
                 if a.note_body:
                     client.create_note(deal_id=a.hubspot_object_id, body=a.note_body)
+                    record_note_applied(a.hubspot_object_id)
                     applied += 1
             elif a.action_type == "update_deal" and a.properties:
                 client.update_deal(a.hubspot_object_id, a.properties)
@@ -332,6 +334,7 @@ def approve_action(
     try:
         if action.action_type == "create_note" and action.note_body:
             client.create_note(deal_id=action.hubspot_object_id, body=action.note_body)
+            record_note_applied(action.hubspot_object_id)
         elif action.hubspot_object_type == "deals" and action.properties:
             client.update_deal(action.hubspot_object_id, action.properties)
         elif action.hubspot_object_type == "contacts" and action.properties:

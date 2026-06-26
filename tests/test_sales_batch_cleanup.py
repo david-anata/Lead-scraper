@@ -32,7 +32,12 @@ from sales_support_agent.models.entities import (  # noqa: E402
     HubSpotLineItem,
 )
 from sales_support_agent.services.admin_auth import create_user_session_token  # noqa: E402
-from sales_support_agent.services.sales.deal_batch import build_batch_cleanup  # noqa: E402
+from sales_support_agent.services.sales.deal_batch import (  # noqa: E402
+    NOTE_COOLDOWN_DAYS,
+    build_batch_cleanup,
+    note_applied_key,
+    record_note_applied,
+)
 
 
 def _cookie_for(email: str) -> tuple[str, str]:
@@ -163,6 +168,91 @@ class TestBuildBatchCleanup(unittest.TestCase):
         r = d1_rows[0]
         self.assertIsNotNone(r.amount_cents)
         self.assertIsInstance(r.contact_count, int)
+
+    # ------------------------------------------------------------------
+    # Error isolation
+    # ------------------------------------------------------------------
+
+    def test_bad_deal_skipped_good_deal_still_appears(self):
+        # If compute_pending_actions raises for one deal, the rest still render.
+        from sales_support_agent.services.sales import deal_batch as _db_mod
+
+        call_count = [0]
+        real_compute = _db_mod.compute_pending_actions
+
+        def patched_compute(deal, signals, **kwargs):
+            call_count[0] += 1
+            if deal.hubspot_deal_id == "bc_d1" and call_count[0] == 1:
+                raise RuntimeError("simulated corrupt deal field")
+            return real_compute(deal, signals, **kwargs)
+
+        with patch.object(_db_mod, "compute_pending_actions", side_effect=patched_compute):
+            with session_scope(app.state.session_factory) as s:
+                rows = build_batch_cleanup(s, portal_id="999")
+
+        deal_ids = [r.deal_id for r in rows]
+        # bc_d1 errored and was skipped; bc_d2 is closed (no rows); bc_d3 may appear.
+        self.assertNotIn("bc_d1", deal_ids)
+        # No exception propagated to the caller — the method returned cleanly.
+
+    # ------------------------------------------------------------------
+    # Note cooldown
+    # ------------------------------------------------------------------
+
+    def _clear_cooldown(self, deal_id: str) -> None:
+        from sales_support_agent.models.database import kv_set
+        # Overwrite the KV entry with a timestamp far in the past (>7 days)
+        import json
+        from datetime import timedelta
+        old_time = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        kv_set(note_applied_key(deal_id), json.dumps({"applied_at": old_time}))
+
+    def test_note_actions_present_before_cooldown(self):
+        # Ensure any cooldown record is expired before this check.
+        self._clear_cooldown("bc_d1")
+        rows = self._get_rows()
+        d1_rows = [r for r in rows if r.deal_id == "bc_d1"]
+        if not d1_rows:
+            self.skipTest("bc_d1 not in rows (no actions)")
+        r = d1_rows[0]
+        # With an expired record, active_cooldown_days should be None (not suppressing).
+        self.assertIsNone(r.last_note_days_ago)
+        # bc_d1 has overdue close date + zero amount with line items → review_note expected.
+        note_actions = [a for a in r.actions if a.action_type == "create_note"]
+        self.assertTrue(len(note_actions) > 0,
+                        f"Expected create_note actions after cooldown cleared; got: "
+                        f"{[a.action_id for a in r.actions]}")
+
+    def test_note_actions_suppressed_after_record_note_applied(self):
+        record_note_applied("bc_d1")
+        try:
+            rows = self._get_rows()
+            d1_rows = [r for r in rows if r.deal_id == "bc_d1"]
+            if not d1_rows:
+                return  # deal may have been fully suppressed (only had note actions)
+            r = d1_rows[0]
+            note_actions = [a for a in r.actions if a.action_type == "create_note"]
+            self.assertEqual(note_actions, [],
+                             "create_note actions must be suppressed within cooldown")
+            # last_note_days_ago should be 0 (applied just now)
+            self.assertIsNotNone(r.last_note_days_ago)
+            self.assertLess(r.last_note_days_ago, NOTE_COOLDOWN_DAYS)
+        finally:
+            self._clear_cooldown("bc_d1")
+
+    def test_cooldown_indicator_appears_in_page_when_suppressed(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        cookie_name, token = _cookie_for("david@anatainc.com")
+        client.cookies.set(cookie_name, token)
+
+        record_note_applied("bc_d1")
+        try:
+            resp = client.get("/admin/sales/deals/cleanup")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("suppressed", resp.text)
+        finally:
+            self._clear_cooldown("bc_d1")
 
 
 class TestBatchCleanupRoutes(unittest.TestCase):
