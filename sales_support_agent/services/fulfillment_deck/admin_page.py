@@ -82,7 +82,8 @@ _STYLES = """
       .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
-      @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+      .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+      @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .edit-grid { grid-template-columns: 1fr; } }
       /* Pipeline summary bar */
       .pipeline-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
       .pipeline-stat { background: #fff; border: 1px solid var(--border); border-radius: 12px;
@@ -1208,7 +1209,7 @@ def render_rate_sheet_review_page(
         <form method="post" action="{base}/runs/{run_id}/publish" style="margin-top:10px">
           <div class="review-actions">
             {publish_button}
-            <a class="btn btn--ghost" href="{base}">Back to history</a>
+            <a class="btn btn--ghost" href="{base}">← Pipeline</a>
           </div>
         </form>
       </div>
