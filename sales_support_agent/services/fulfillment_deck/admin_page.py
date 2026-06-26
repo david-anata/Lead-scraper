@@ -1122,6 +1122,7 @@ def render_rate_sheet_review_page(
         {warnings_html}
         {assortment_html}
         {brief_block}
+        {'<form method="post" action="' + base + '/runs/' + str(run_id) + '/publish" style="margin-bottom:10px"><button class="btn" type="submit" style="width:100%">Publish — get shareable link</button></form>' if not published else ''}
         <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>
 
         <h2>Prospect details</h2>
