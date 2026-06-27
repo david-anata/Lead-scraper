@@ -44,6 +44,13 @@ DEAL_PROPERTIES: tuple[str, ...] = (
     "fulfillment",
     "shipping_os",
     "hs_next_step",
+    # Native HubSpot email/activity signals — used as fallback for touch timestamps
+    # when Gmail matching has not yet populated last_outbound_at / last_inbound_at.
+    "hs_email_last_send_date",
+    "hs_email_last_replied",
+    "notes_last_updated",
+    "hs_last_sales_activity_date",
+    "hs_sales_email_last_opened",
 )
 
 CONTACT_PROPERTIES: tuple[str, ...] = (

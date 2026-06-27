@@ -117,6 +117,17 @@ def _parse_dt(value: Any) -> Optional[datetime]:
             return None
 
 
+def _best_signal(timestamps: list[Optional[datetime]]) -> Optional[datetime]:
+    """Return the most recent non-None timestamp from a list."""
+    valids = [t for t in timestamps if t is not None]
+    return max(valids) if valids else None
+
+
+def _make_aware(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware (UTC if naive)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def _props(obj: dict[str, Any]) -> dict[str, Any]:
     return dict(obj.get("properties") or {})
 
@@ -168,6 +179,40 @@ def _upsert_deal(
     row.description = str(p.get("description") or "")
     row.raw_properties = p
     row.last_sync_at = datetime.now(timezone.utc)
+
+    # Native HubSpot email signals — used as fallbacks when Gmail matching hasn't
+    # populated these fields yet. Never overwrite a more-recent value set by the
+    # Gmail signal job.
+    native_outbound = _parse_dt(p.get("hs_email_last_send_date"))
+    native_inbound = _best_signal([
+        _parse_dt(p.get("hs_email_last_replied")),
+        _parse_dt(p.get("hs_sales_email_last_opened")),
+    ])
+    native_activity = _best_signal([
+        _parse_dt(p.get("hs_last_sales_activity_date")),
+        _parse_dt(p.get("notes_last_updated")),
+    ])
+
+    # Only backfill if the existing mirror value is None or the native value is more recent.
+    if native_outbound and (
+        row.last_outbound_at is None
+        or native_outbound > _make_aware(row.last_outbound_at)
+    ):
+        row.last_outbound_at = native_outbound
+    if native_inbound and (
+        row.last_inbound_at is None
+        or native_inbound > _make_aware(row.last_inbound_at)
+    ):
+        row.last_inbound_at = native_inbound
+
+    # last_meaningful_touch_at = best of native activity, outbound, inbound
+    native_touch = _best_signal([native_outbound, native_inbound, native_activity])
+    if native_touch and (
+        row.last_meaningful_touch_at is None
+        or native_touch > _make_aware(row.last_meaningful_touch_at)
+    ):
+        row.last_meaningful_touch_at = native_touch
+
     session.add(row)
 
 

@@ -426,5 +426,166 @@ class TestAutoFixCloseDate(unittest.TestCase):
         self.assertEqual(d["auto_close_dates_fixed"], 1)
 
 
+class TestEmailSignalEnhancement(unittest.TestCase):
+    """Native HubSpot email signals populate last_outbound_at / last_inbound_at /
+    last_meaningful_touch_at, and do not overwrite more-recent Gmail-set values."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sf = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        init_database(cls.sf)
+
+    def setUp(self):
+        with session_scope(self.sf) as s:
+            for model in (HubSpotDeal, HubSpotCompany, HubSpotContact,
+                          HubSpotLineItem, HubSpotDealContact):
+                for row in s.query(model).all():
+                    s.delete(row)
+                s.flush()
+
+    def _settings(self):
+        return SimpleNamespace(hubspot_sales_pipeline_id="")
+
+    @staticmethod
+    def _deal_with_email_signals(did, name, send_date=None, replied_date=None,
+                                  activity_date=None):
+        props = {
+            "dealname": name,
+            "amount": "1000",
+            "dealstage": "appointmentscheduled",
+            "pipeline": "default",
+            "closedate": "2026-09-01",
+            "hubspot_owner_id": "42",
+            "createdate": "2026-01-01T00:00:00Z",
+            "hs_lastmodifieddate": "2026-02-01T00:00:00Z",
+            "hs_is_closed": "false",
+            "hs_is_closed_won": "false",
+        }
+        if send_date is not None:
+            props["hs_email_last_send_date"] = send_date
+        if replied_date is not None:
+            props["hs_email_last_replied"] = replied_date
+        if activity_date is not None:
+            props["hs_last_sales_activity_date"] = activity_date
+        return {"id": did, "properties": props}
+
+    def _minimal_client(self, deal):
+        """Client returning a single deal, no associations."""
+        client = FakeHubSpotClient()
+        client.deals = [deal]
+        did = deal["id"]
+        client.assoc = {
+            (did, "companies"): [],
+            (did, "contacts"): [],
+            (did, "line_items"): [],
+        }
+        return client
+
+    def test_native_outbound_populates_last_outbound_at(self):
+        deal = self._deal_with_email_signals(
+            "e1", "OutboundCo", send_date="2026-05-10T10:00:00Z"
+        )
+        client = self._minimal_client(deal)
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e1")
+            self.assertIsNotNone(d.last_outbound_at)
+            self.assertEqual(d.last_outbound_at.strftime("%Y-%m-%d"), "2026-05-10")
+
+    def test_native_inbound_populates_last_inbound_at(self):
+        deal = self._deal_with_email_signals(
+            "e2", "InboundCo", replied_date="2026-05-15T08:00:00Z"
+        )
+        client = self._minimal_client(deal)
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e2")
+            self.assertIsNotNone(d.last_inbound_at)
+            self.assertEqual(d.last_inbound_at.strftime("%Y-%m-%d"), "2026-05-15")
+
+    def test_native_activity_populates_last_meaningful_touch(self):
+        deal = self._deal_with_email_signals(
+            "e3", "ActivityCo", activity_date="2026-05-20T12:00:00Z"
+        )
+        client = self._minimal_client(deal)
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e3")
+            self.assertIsNotNone(d.last_meaningful_touch_at)
+            self.assertEqual(d.last_meaningful_touch_at.strftime("%Y-%m-%d"), "2026-05-20")
+
+    def test_existing_outbound_not_overwritten_by_older_native(self):
+        """Mirror already has a more-recent last_outbound_at → native should NOT replace it."""
+        from datetime import timezone as _tz
+
+        deal = self._deal_with_email_signals(
+            "e4", "OldSignalCo", send_date="2026-04-01T10:00:00Z"
+        )
+        client = self._minimal_client(deal)
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        # Manually set a more-recent outbound on the mirror.
+        from datetime import datetime as _dt
+        newer_ts = _dt(2026, 6, 1, 0, 0, 0, tzinfo=_tz.utc)
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e4")
+            d.last_outbound_at = newer_ts
+
+        # Re-sync with the same (older) native signal — should not overwrite.
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e4")
+            self.assertEqual(d.last_outbound_at.strftime("%Y-%m-%d"), "2026-06-01")
+
+    def test_gmail_touch_takes_priority_if_more_recent(self):
+        """If mirror already has a more-recent touch_at (from Gmail), native does not overwrite."""
+        from datetime import datetime as _dt, timezone as _tz
+
+        deal = self._deal_with_email_signals(
+            "e5", "GmailPriorityCo",
+            send_date="2026-03-01T10:00:00Z",
+            activity_date="2026-03-05T10:00:00Z",
+        )
+        client = self._minimal_client(deal)
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        # Simulate Gmail signal job writing a more recent touch.
+        gmail_touch = _dt(2026, 6, 15, 0, 0, 0, tzinfo=_tz.utc)
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e5")
+            d.last_meaningful_touch_at = gmail_touch
+
+        # Re-sync — native signals (March) should not overwrite the June Gmail touch.
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e5")
+            self.assertEqual(d.last_meaningful_touch_at.strftime("%Y-%m-%d"), "2026-06-15")
+
+    def test_no_native_signals_leaves_fields_none(self):
+        """Deal with no email properties → signal fields stay None."""
+        deal = self._deal_with_email_signals("e6", "NoSignalCo")
+        client = self._minimal_client(deal)
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, self._settings())
+
+        with session_scope(self.sf) as s:
+            d = s.get(HubSpotDeal, "e6")
+            self.assertIsNone(d.last_outbound_at)
+            self.assertIsNone(d.last_inbound_at)
+            self.assertIsNone(d.last_meaningful_touch_at)
+
+
 if __name__ == "__main__":
     unittest.main()
