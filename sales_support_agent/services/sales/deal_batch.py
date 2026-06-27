@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import kv_get_json, kv_set_json
+from sales_support_agent.services.hubspot_sync.service import SYNC_STATE_KEY
 from sales_support_agent.models.entities import (
     HubSpotContact,
     HubSpotDeal,
@@ -254,8 +255,28 @@ def render_batch_cleanup_page(
     total_mid = total_critical + total_warning + total_hygiene
     deal_count = len(rows)
 
+    # Auto-fix banner — show what the last sync silently corrected
+    auto_fix_parts: list[str] = []
+    try:
+        last_sync = kv_get_json(SYNC_STATE_KEY) or {}
+        n_cd = int(last_sync.get("auto_close_dates_fixed") or 0)
+        n_amt = int(last_sync.get("auto_amount_synced") or 0)
+        if n_cd:
+            auto_fix_parts.append(f"{n_cd} close date{'s' if n_cd != 1 else ''} pushed")
+        if n_amt:
+            auto_fix_parts.append(f"{n_amt} amount{'s' if n_amt != 1 else ''} synced")
+    except Exception:
+        pass
+    auto_fix_html = ""
+    if auto_fix_parts:
+        auto_fix_html = (
+            '<div class="auto-fix-notice">'
+            '✓ Last sync auto-corrected: ' + " · ".join(auto_fix_parts) +
+            '</div>'
+        )
+
     summary_html = f"""
-<div class="summary-bar">
+{auto_fix_html}<div class="summary-bar">
   <div class="summary-counts">
     <span class="count-pill count-crit">{total_critical} critical</span>
     <span class="count-pill count-warn">{total_warning} warnings</span>
@@ -503,6 +524,9 @@ def render_batch_cleanup_page(
       .cooldown-notice{{font-size:11.5px;color:var(--blue);background:var(--hyg-bg);
                         border:1px solid var(--hyg-border);border-radius:6px;
                         padding:4px 10px;margin-top:6px;display:inline-block;}}
+      .auto-fix-notice{{font-size:12px;color:#1a6e3c;background:#edfaf3;
+                        border:1px solid #b2dfcc;border-radius:7px;
+                        padding:6px 14px;margin-bottom:10px;display:block;}}
 
       /* Action rows */
       .action-row{{padding:10px 16px;border-bottom:1px solid rgba(43,54,68,.06);}}

@@ -282,10 +282,11 @@ class TestAutoSyncAmount(unittest.TestCase):
 
     def test_nonzero_amount_deal_not_updated(self):
         client = FakeHubSpotClient()
-        # Default deals have non-zero amounts.
+        # Default deals have non-zero amounts — no amount update should be issued.
         with session_scope(self.sf) as session:
             sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
-        self.assertEqual(client.updates, [])
+        amt_updates = [(did, p) for did, p in client.updates if "amount" in p]
+        self.assertEqual(amt_updates, [])
 
     def test_closed_deal_not_updated(self):
         """Closed deal at $0 must never be auto-updated."""
@@ -305,6 +306,124 @@ class TestAutoSyncAmount(unittest.TestCase):
         with session_scope(self.sf) as session:
             sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
         self.assertEqual(client.updates, [])
+
+
+class TestAutoFixCloseDate(unittest.TestCase):
+    """Auto-fix close dates: overdue → pushed +30d, missing → set to +30d."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sf = create_session_factory(os.environ["SALES_AGENT_DB_URL"])
+        init_database(cls.sf)
+
+    def setUp(self):
+        with session_scope(self.sf) as s:
+            for model in (HubSpotDeal, HubSpotCompany, HubSpotContact,
+                          HubSpotLineItem, HubSpotDealContact):
+                for row in s.query(model).all():
+                    s.delete(row)
+                s.flush()
+
+    def _client(self, deals):
+        client = FakeHubSpotClient()
+        client.deals = deals
+        client.assoc = {(d["id"], k): [] for d in deals for k in ("companies", "contacts", "line_items")}
+        return client
+
+    def test_overdue_close_date_gets_pushed(self):
+        """Open deal with close_date 10 days in the past → pushed to today+30d."""
+        client = self._client([
+            _deal("od1", "OldCo", "5000", "qualifiedtobuy", "2026-01-01T00:00:00Z")
+        ])
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        # Should have auto-fixed the close date (one update_deal call with 'closedate').
+        cd_updates = [(did, p) for did, p in client.updates if "closedate" in p]
+        self.assertEqual(len(cd_updates), 1)
+        self.assertEqual(cd_updates[0][0], "od1")
+        self.assertEqual(result.auto_close_dates_fixed, 1)
+
+        # Mirror should reflect the new date (roughly today+30d).
+        with session_scope(self.sf) as s:
+            deal = s.get(HubSpotDeal, "od1")
+            self.assertIsNotNone(deal.close_date)
+            days_from_now = (deal.close_date.replace(tzinfo=None) -
+                             __import__("datetime").datetime.utcnow()).days
+            self.assertGreater(days_from_now, 25)
+
+    def test_missing_close_date_gets_set(self):
+        """Open deal with no close_date → set to today+30d."""
+        client = self._client([
+            _deal("nc1", "NoCo", "3000", "appointmentscheduled", None)
+        ])
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        cd_updates = [(did, p) for did, p in client.updates if "closedate" in p]
+        self.assertEqual(len(cd_updates), 1)
+        self.assertEqual(cd_updates[0][0], "nc1")
+        self.assertEqual(result.auto_close_dates_fixed, 1)
+
+    def test_future_close_date_not_touched(self):
+        """Open deal with a future close_date → no update."""
+        client = self._client([
+            _deal("fc1", "FutureCo", "5000", "qualifiedtobuy", "2026-12-31T00:00:00Z")
+        ])
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        cd_updates = [(did, p) for did, p in client.updates if "closedate" in p]
+        self.assertEqual(cd_updates, [])
+        self.assertEqual(result.auto_close_dates_fixed, 0)
+
+    def test_closed_deal_close_date_not_touched(self):
+        """Closed-won deal with past close_date → never modified."""
+        d = _deal("cw1", "WonCo", "10000", "closedwon", "2025-06-01T00:00:00Z")
+        d["properties"]["hs_is_closed"] = "true"
+        d["properties"]["hs_is_closed_won"] = "true"
+        client = self._client([d])
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        self.assertEqual(client.updates, [])
+        self.assertEqual(result.auto_close_dates_fixed, 0)
+
+    def test_grace_period_skips_barely_overdue_active_deal(self):
+        """≤3 days overdue + touched within 3 days → skip (rep is actively working it)."""
+        import datetime as _dt
+        # Close date was yesterday
+        yesterday = (_dt.datetime.utcnow() - _dt.timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+        # Last meaningful touch was also yesterday
+        d = _deal("gp1", "GraceCo", "7000", "qualifiedtobuy", yesterday)
+        client = self._client([d])
+
+        # Pre-seed the mirror with a recent last_meaningful_touch_at
+        with session_scope(self.sf) as session:
+            sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+            deal = session.get(HubSpotDeal, "gp1")
+            deal.last_meaningful_touch_at = _dt.datetime.utcnow() - _dt.timedelta(days=1)
+
+        client.updates.clear()
+
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        cd_updates = [(did, p) for did, p in client.updates if "closedate" in p]
+        self.assertEqual(cd_updates, [], "Grace period should prevent auto-push on active deals")
+        self.assertEqual(result.auto_close_dates_fixed, 0)
+
+    def test_auto_close_date_reported_in_result_dict(self):
+        """auto_close_dates_fixed is exposed in as_dict() for the sync banner."""
+        client = self._client([
+            _deal("ad1", "DictCo", "2000", "appointmentscheduled", "2026-01-01T00:00:00Z")
+        ])
+        with session_scope(self.sf) as session:
+            result = sync_hubspot_sales(session, client, SimpleNamespace(hubspot_sales_pipeline_id=""))
+
+        d = result.as_dict()
+        self.assertIn("auto_close_dates_fixed", d)
+        self.assertEqual(d["auto_close_dates_fixed"], 1)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ class HubSpotSyncResult:
     contacts: int = 0
     line_items: int = 0
     auto_amount_synced: int = 0
+    auto_close_dates_fixed: int = 0
     errors: list[str] = field(default_factory=list)
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -56,6 +57,7 @@ class HubSpotSyncResult:
             "contacts": self.contacts,
             "line_items": self.line_items,
             "auto_amount_synced": self.auto_amount_synced,
+            "auto_close_dates_fixed": self.auto_close_dates_fixed,
             "errors": list(self.errors),
             "started_at": self.started_at,
             "completed_at": self.completed_at,
@@ -244,9 +246,64 @@ def _maybe_sync_amount(
         client.update_deal(deal_id, {"amount": amount_str})
         deal.amount_cents = int(li_total)
         logger.info("[hubspot_sync] auto-synced amount for deal %s → $%s", deal_id, amount_str)
-        result.auto_amount_synced = getattr(result, "auto_amount_synced", 0) + 1
+        result.auto_amount_synced += 1
     except Exception as exc:  # noqa: BLE001
         logger.warning("[hubspot_sync] auto-sync amount failed for deal %s: %s", deal_id, exc)
+
+
+def _maybe_fix_close_date(
+    session: Session,
+    client: HubSpotClient,
+    deal_id: str,
+    as_of: datetime,
+    result: HubSpotSyncResult,
+) -> None:
+    """Auto-push past-due or missing close dates. Safe: deterministic, reversible.
+
+    HubSpot's closedate is the *expected* close date, not actual close. An open
+    deal with a past close_date is always data hygiene — the rep forgot to push it.
+    Grace period: ≤3 days overdue + touched within 3 days → skip (rep may be
+    actively negotiating a verbal commitment and hasn't updated the date yet).
+    """
+    from datetime import timedelta
+
+    deal = session.get(HubSpotDeal, deal_id)
+    if deal is None or deal.is_closed:
+        return
+
+    new_date = (as_of + timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+    new_ts = str(int(new_date.timestamp() * 1000))
+
+    if deal.close_date is None:
+        reason = "missing"
+    else:
+        close = deal.close_date if deal.close_date.tzinfo else deal.close_date.replace(tzinfo=timezone.utc)
+        overdue_days = (as_of - close).days
+        if overdue_days <= 0:
+            return  # Future or today — nothing to do
+
+        # Grace: barely overdue + rep is actively working it → let them update manually
+        if overdue_days <= 3 and deal.last_meaningful_touch_at is not None:
+            last_touch = (
+                deal.last_meaningful_touch_at
+                if deal.last_meaningful_touch_at.tzinfo
+                else deal.last_meaningful_touch_at.replace(tzinfo=timezone.utc)
+            )
+            if (as_of - last_touch).days <= 3:
+                return
+
+        reason = f"overdue {overdue_days}d"
+
+    try:
+        client.update_deal(deal_id, {"closedate": new_ts})
+        deal.close_date = new_date
+        logger.info(
+            "[hubspot_sync] auto-fixed close date for deal %s (%s) → %s",
+            deal_id, reason, new_date.strftime("%Y-%m-%d"),
+        )
+        result.auto_close_dates_fixed += 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[hubspot_sync] auto-fix close date failed for deal %s: %s", deal_id, exc)
 
 
 def _replace_deal_contacts(session: Session, deal_id: str, contact_ids: list[str]) -> None:
@@ -270,7 +327,8 @@ def sync_hubspot_sales(
     max_deals: int | None = None,
 ) -> HubSpotSyncResult:
     """Sync deals + their associated companies/contacts/line items into mirrors."""
-    result = HubSpotSyncResult(started_at=datetime.now(timezone.utc).isoformat())
+    as_of = datetime.now(timezone.utc)
+    result = HubSpotSyncResult(started_at=as_of.isoformat())
     if not client.is_configured:
         result.errors.append("HUBSPOT_API_TOKEN is not configured.")
         result.completed_at = datetime.now(timezone.utc).isoformat()
@@ -347,10 +405,11 @@ def sync_hubspot_sales(
                     _upsert_line_item(session, li, deal_id)
                     result.line_items += 1
 
-            # High-confidence auto-fix: deal amount is $0 but line items exist.
-            # This is unambiguous — write back without waiting for rep approval.
+            # High-confidence auto-fixes: deterministic data hygiene that never
+            # requires business judgment. Flush first so reads see the upserted row.
             session.flush()
             _maybe_sync_amount(session, client, deal_id, result)
+            _maybe_fix_close_date(session, client, deal_id, as_of, result)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[hubspot_sync] deal iteration failed")
         result.errors.append(f"deal sync: {exc}")
