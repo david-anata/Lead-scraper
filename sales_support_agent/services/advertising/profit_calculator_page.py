@@ -63,13 +63,13 @@ _APP_STYLES = """
   html,
   body {
     margin: 0;
-    background: #f3eee5;
+    background: transparent;
     color: #222222;
     font-family: "Roboto", sans-serif;
   }
 
   body {
-    padding: 18px;
+    padding: 0;
   }
 
   .apc-calculator {
@@ -83,14 +83,11 @@ _APP_STYLES = """
     --apc-radius: 18px;
     --apc-gap: 24px;
     color: var(--apc-text);
-    background:
-      radial-gradient(circle at top right, rgba(133, 187, 218, 0.34), transparent 34%),
-      radial-gradient(circle at top left, rgba(43, 54, 68, 0.06), transparent 24%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 243, 235, 0.98));
-    border: 1px solid rgba(217, 210, 195, 0.84);
-    border-radius: 28px;
-    padding: 24px;
-    box-shadow: 0 18px 44px rgba(17, 17, 17, 0.08);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
   }
 
   .apc-calculator,
@@ -590,12 +587,8 @@ _APP_STYLES = """
   }
 
   @media (max-width: 760px) {
-    body {
-      padding: 10px;
-    }
-
     .apc-calculator {
-      padding: 16px;
+      padding: 0;
     }
 
     .apc-header {
