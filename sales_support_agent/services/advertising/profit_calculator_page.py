@@ -859,7 +859,7 @@ _APP_SCRIPT = """
         if (input) delete input.dataset.userEdited;
       });
 
-      var item = await fetchJson(apiBase() + "/api/public/amazon/catalog/" + encodeURIComponent(asin));
+      var item = await fetchJson(apiBase() + "/catalog/" + encodeURIComponent(asin));
       if (field("category")) field("category").value = item.category_key || "everythingElse";
       if (field("price")) field("price").value = item.price || 0;
       if (field("length")) field("length").value = item.dimensions ? item.dimensions.length || 0 : 0;
@@ -900,7 +900,7 @@ _APP_SCRIPT = """
     }
 
     try {
-      var result = await fetchJson(apiBase() + "/api/public/amazon/profitability/estimate", {
+      var result = await fetchJson(apiBase() + "/profitability/estimate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload)

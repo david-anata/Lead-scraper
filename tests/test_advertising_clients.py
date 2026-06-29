@@ -129,6 +129,9 @@ class ClientPageRenderTest(_Base):
         self.assertIn('data-apc-root', html)
         self.assertIn('data-api-base="/api/public/amazon-profit-calculator"', html)
         self.assertIn('data-action="lookup"', html)
+        self.assertIn('/catalog/" + encodeURIComponent(asin)', html)
+        self.assertIn('"/profitability/estimate"', html)
+        self.assertNotIn('/api/public/amazon/catalog/', html)
 
     def test_bulk_profitability_host_page_embeds_isolated_runtime(self):
         from sales_support_agent.services.advertising.bulk_profitability_page import render_bulk_profitability_host_page
@@ -307,6 +310,34 @@ class ClientHttpTest(_Base):
         ar.requests.get = lambda *args, **kwargs: _Resp()
         try:
             client = self._client()
+            resp = client.get("/api/public/amazon-profit-calculator/catalog/B08N5WRWNW")
+        finally:
+            ar.requests.get = original_get
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["asin"], "B08N5WRWNW")
+
+    def test_profit_calculator_catalog_proxy_uses_agent_settings_fallback(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from types import SimpleNamespace
+        from sales_support_agent.api import advertising_router as ar
+
+        class _Resp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {"asin": "B08N5WRWNW", "title": "Agent Settings Fallback", "images": []}
+
+        original_get = ar.requests.get
+        ar.requests.get = lambda *args, **kwargs: _Resp()
+        try:
+            app = FastAPI()
+            app.include_router(ar.public_router)
+            app.state.settings = SimpleNamespace()
+            app.state.agent_settings = SimpleNamespace(amazon_profit_api_base_url="https://profit.test")
+            client = TestClient(app)
             resp = client.get("/api/public/amazon-profit-calculator/catalog/B08N5WRWNW")
         finally:
             ar.requests.get = original_get

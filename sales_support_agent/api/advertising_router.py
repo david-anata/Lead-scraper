@@ -97,7 +97,16 @@ async def _read_upload(f: Optional[UploadFile]) -> Optional[bytes]:
 
 
 def _profit_api_base_url(request: Request) -> str:
-    return (getattr(request.app.state.settings, "amazon_profit_api_base_url", "") or "").rstrip("/")
+    app_state = request.app.state
+    for settings_obj in (
+        getattr(app_state, "settings", None),
+        getattr(app_state, "agent_settings", None),
+        getattr(app_state, "admin_dashboard_settings", None),
+    ):
+        value = getattr(settings_obj, "amazon_profit_api_base_url", "") if settings_obj is not None else ""
+        if value:
+            return str(value).rstrip("/")
+    return ""
 
 
 def _profit_api_error(response: requests.Response) -> HTTPException:
