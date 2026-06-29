@@ -143,6 +143,12 @@ _APP_STYLES = """
     flex-wrap: wrap;
     gap: 10px;
     justify-content: flex-end;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.36);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px);
   }
 
   .apc-calculator button,
@@ -188,14 +194,15 @@ _APP_STYLES = """
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
     gap: var(--apc-gap);
+    align-items: start;
   }
 
   .apc-section {
     background: var(--apc-card);
-    border: 1px solid var(--apc-border);
-    border-radius: var(--apc-radius);
+    border: 1px solid rgba(217, 210, 195, 0.88);
+    border-radius: 22px;
     padding: 22px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.04);
+    box-shadow: 0 14px 34px rgba(17, 17, 17, 0.06);
   }
 
   .apc-section h2,
@@ -280,6 +287,7 @@ _APP_STYLES = """
     color: var(--apc-text);
     font-size: 16px;
     line-height: 1.2;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 
   .apc-field input[type="checkbox"] {
@@ -321,7 +329,7 @@ _APP_STYLES = """
     padding: 14px;
     border: 1px solid #ece7dc;
     border-radius: 14px;
-    background: #f9f7f2;
+    background: linear-gradient(180deg, #fcfbf8, #f7f3eb);
   }
 
   .apc-thumb {
@@ -448,7 +456,7 @@ _APP_STYLES = """
     padding: 14px;
     border: 1px solid #ece7dc;
     border-radius: 14px;
-    background: #fbfaf7;
+    background: linear-gradient(180deg, #fffdfa, #f8f4ed);
   }
 
   .apc-kpi strong {
@@ -607,6 +615,8 @@ _APP_STYLES = """
 
     .apc-actions {
       justify-content: start;
+      width: 100%;
+      border-radius: 20px;
     }
 
     .apc-helper-card {

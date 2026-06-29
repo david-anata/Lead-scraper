@@ -99,6 +99,12 @@ _APP_STYLES = """
     gap: 12px;
     flex-wrap: wrap;
     justify-content: flex-end;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.34);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px);
   }
 
   .abu-button {
@@ -113,7 +119,8 @@ _APP_STYLES = """
     min-height: 48px;
     padding: 12px 20px;
     text-transform: uppercase;
-    transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
+    transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 10px 22px rgba(43, 54, 68, 0.12);
   }
 
   .abu-button:hover,
@@ -127,6 +134,7 @@ _APP_STYLES = """
     background: transparent;
     border: 1px solid var(--abu-border);
     color: var(--abu-dark);
+    box-shadow: none;
   }
 
   .abu-button-secondary:hover,
@@ -154,7 +162,7 @@ _APP_STYLES = """
     border: 1px solid var(--abu-border);
     border-radius: 28px;
     padding: 18px;
-    box-shadow: 0 12px 28px rgba(43, 54, 68, 0.05);
+    box-shadow: 0 14px 32px rgba(43, 54, 68, 0.06);
   }
 
   .abu-panel {
@@ -169,7 +177,7 @@ _APP_STYLES = """
     min-width: 0;
     border: 1px solid rgba(43, 54, 68, 0.08);
     border-radius: 24px;
-    background: rgba(255,255,255,0.62);
+    background: linear-gradient(180deg, rgba(255,255,255,0.88), rgba(250, 248, 243, 0.78));
     padding: 18px;
     margin-bottom: 16px;
   }
@@ -261,6 +269,55 @@ _APP_STYLES = """
     transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
   }
 
+  .abu-field input[type="file"] {
+    display: none;
+  }
+
+  .abu-file-picker {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 56px;
+    padding: 10px 12px;
+    border: 1px solid rgba(43, 54, 68, 0.14);
+    border-bottom-width: 2px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.6);
+  }
+
+  .abu-file-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 10px 16px;
+    border-radius: 999px;
+    background: var(--abu-dark);
+    color: #fff;
+    border: 0;
+    cursor: pointer;
+    font-family: "Montserrat", sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: transform 0.2s ease, background 0.2s ease;
+  }
+
+  .abu-file-button:hover,
+  .abu-file-button:focus {
+    background: var(--abu-light);
+    transform: translateY(-1px);
+  }
+
+  .abu-file-name {
+    color: rgba(43, 54, 68, 0.7);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
   .abu-field textarea {
     min-height: 220px;
     resize: vertical;
@@ -315,7 +372,7 @@ _APP_STYLES = """
     padding: 14px 16px;
     border-radius: 18px;
     border: 1px solid rgba(43, 54, 68, 0.08);
-    background: rgba(255,255,255,0.78);
+    background: linear-gradient(180deg, rgba(255,255,255,0.92), rgba(247, 249, 252, 0.82));
   }
 
   .abu-kpi span {
@@ -406,6 +463,8 @@ _APP_STYLES = """
     .abu-grid-2,
     .abu-kpis { grid-template-columns: 1fr; }
     .abu-section-head { display: block; }
+    .abu-actions { width: 100%; border-radius: 20px; }
+    .abu-file-picker { align-items: stretch; flex-direction: column; }
     .abu-results-actions { justify-content: stretch; }
     .abu-results-actions .abu-button { width: 100%; }
   }
@@ -434,6 +493,14 @@ _APP_SCRIPT = """
   function text(name) {
     var input = field(name);
     return input ? input.value : "";
+  }
+
+  function syncFileName() {
+    var fileInput = field("asinFile");
+    var label = root.querySelector('[data-output="fileName"]');
+    if (!label) return;
+    var fileName = fileInput && fileInput.files && fileInput.files[0] ? fileInput.files[0].name : "No file selected";
+    label.textContent = fileName;
   }
 
   function setOutput(name, content) {
@@ -753,6 +820,7 @@ _APP_SCRIPT = """
     });
     var fileInput = field("asinFile");
     if (fileInput) fileInput.value = "";
+    syncFileName();
     csvRows = [];
     setOutput("asinCount", "0");
     setOutput("processedCount", "0");
@@ -774,6 +842,18 @@ _APP_SCRIPT = """
   root.querySelectorAll('[data-action="reset"]').forEach(function (button) {
     button.addEventListener("click", resetForm);
   });
+
+  root.querySelectorAll('[data-action="pickFile"]').forEach(function (button) {
+    button.addEventListener("click", function () {
+      var picker = field("asinFile");
+      if (picker) picker.click();
+    });
+  });
+
+  var fileInput = field("asinFile");
+  if (fileInput) {
+    fileInput.addEventListener("change", syncFileName);
+  }
 
   resetForm();
 })();
@@ -861,7 +941,11 @@ def render_bulk_profitability_app_page(*, api_base: str) -> str:
                 <div>
                   <div class="abu-field">
                     <label>Optional CSV / TXT Upload</label>
-                    <input type="file" accept=".csv,.txt" data-field="asinFile">
+                    <div class="abu-file-picker">
+                      <button class="abu-file-button" type="button" data-action="pickFile">Choose File</button>
+                      <span class="abu-file-name" data-output="fileName">No file selected</span>
+                      <input id="abu-asin-file" type="file" accept=".csv,.txt" data-field="asinFile">
+                    </div>
                   </div>
                   <div class="abu-field" style="margin-top: 14px;">
                     <label>Marketplace</label>
