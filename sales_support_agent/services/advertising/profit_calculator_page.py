@@ -145,6 +145,35 @@ _APP_STYLES = """
     justify-content: flex-end;
   }
 
+  .apc-calculator button {
+    appearance: none;
+    border: 0;
+    border-radius: 999px;
+    background: var(--apc-accent);
+    color: var(--apc-button-text);
+    min-height: 46px;
+    padding: 12px 18px;
+    font-family: "Montserrat", sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 10px 22px rgba(17, 17, 17, 0.12);
+  }
+
+  .apc-calculator button:hover,
+  .apc-calculator button:focus {
+    background: #85bbda;
+    color: #ffffff;
+    border-color: #85bbda;
+    opacity: 1;
+    transform: translateY(-1px);
+    outline: none;
+  }
+
   .apc-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
@@ -322,34 +351,15 @@ _APP_STYLES = """
   }
 
   .apc-section button {
-    appearance: none;
-    border: 0;
     border-radius: 12px;
-    background: var(--apc-accent);
-    color: var(--apc-button-text);
-    padding: 12px 16px;
-    font-family: "Montserrat", sans-serif;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, opacity 0.2s ease, border-color 0.2s ease;
-  }
-
-  .apc-section button:hover,
-  .apc-section button:focus {
-    background: #85bbda;
-    color: #ffffff;
-    border-color: #85bbda;
-    opacity: 1;
-    transform: translateY(-1px);
+    box-shadow: none;
   }
 
   .apc-button-secondary {
     background: transparent !important;
     color: var(--apc-accent) !important;
     border: 1px solid var(--apc-border) !important;
+    box-shadow: none !important;
   }
 
   .apc-button-secondary:hover,
