@@ -1492,6 +1492,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <p class="eyebrow">Website Ops</p>
             <h1>SEO <span style="color:var(--accent)">control tower</span>.</h1>
             <p class="lead">Review daily website reports, approve changes, and route safe live actions through the same internal agent dashboard your team already uses.</p>
+            <p class="muted"><strong>Live review marker:</strong> internal ops surfaces are now served from the agent app.</p>
             {_mvp_mode_banner()}
             <div class="button-row">
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
