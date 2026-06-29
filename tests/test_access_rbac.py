@@ -455,6 +455,20 @@ class RootAppGuardsTest(unittest.TestCase):
         self.assertIn("/admin/auth/callback", paths,
                       "root app must mount the Google OAuth callback route")
 
+    def test_both_entrypoints_mount_public_profit_calculator_routes(self) -> None:
+        import main as rootmain
+        import sales_support_agent.main as agentmain
+
+        expected = {
+            "/amazon-profit-calculator/runtime",
+            "/api/public/amazon-profit-calculator/catalog/{asin}",
+            "/api/public/amazon-profit-calculator/profitability/estimate",
+        }
+        root_paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
+        agent_paths = {r.path for r in agentmain.app.routes if hasattr(r, "path")}
+        self.assertTrue(expected.issubset(root_paths))
+        self.assertTrue(expected.issubset(agent_paths))
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class EmailSenderTests(unittest.TestCase):
@@ -752,6 +766,14 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn('href="/admin/website-ops/queue"', nav)
         # reports tool not held -> its pill must not appear.
         self.assertNotIn('href="/admin/website-ops/reports"', nav)
+
+    def test_superadmin_only_advertising_subpage_is_hidden_from_non_superadmins(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+        member_nav = render_agent_nav(permissions={"advertising.audit"})
+        self.assertNotIn('href="/admin/advertising/profit-calculator"', member_nav)
+
+        super_nav = render_agent_nav(is_superadmin=True)
+        self.assertIn('href="/admin/advertising/profit-calculator"', super_nav)
 
     def test_section_with_zero_accessible_pages_is_hidden(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav

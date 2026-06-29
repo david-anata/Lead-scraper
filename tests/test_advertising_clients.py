@@ -111,15 +111,37 @@ class ClientPageRenderTest(_Base):
         self.assertIn("__advClientGoals", html)
         self.assertIn("1000.00", html)  # display-ready prefill embedded
 
+    def test_profit_calculator_host_page_embeds_isolated_runtime(self):
+        from sales_support_agent.services.advertising.profit_calculator_page import render_profit_calculator_host_page
 
-def _make_test_client():
+        html = render_profit_calculator_host_page(
+            app_src="/amazon-profit-calculator/runtime",
+            user={"email": "x"},
+        )
+        self.assertIn("Profit Calculator", html)
+        self.assertIn('<iframe', html)
+        self.assertIn('/amazon-profit-calculator/runtime', html)
+
+    def test_profit_calculator_app_uses_local_proxy_base(self):
+        from sales_support_agent.services.advertising.profit_calculator_page import render_profit_calculator_app_page
+
+        html = render_profit_calculator_app_page(api_base="/api/public/amazon-profit-calculator")
+        self.assertIn('data-apc-root', html)
+        self.assertIn('data-api-base="/api/public/amazon-profit-calculator"', html)
+        self.assertIn('data-action="lookup"', html)
+
+
+def _make_test_client(*, is_superadmin: bool = True):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    from types import SimpleNamespace
     from sales_support_agent.api import advertising_router as ar
     app = FastAPI()
     app.include_router(ar.router)
+    app.include_router(ar.public_router)
+    app.state.settings = SimpleNamespace(amazon_profit_api_base_url="https://profit.test")
     app.dependency_overrides[ar.router.dependencies[0].dependency] = lambda: {
-        "email": "test@anatainc.com", "is_superadmin": True, "permissions": set(),
+        "email": "test@anatainc.com", "is_superadmin": is_superadmin, "permissions": {"advertising.audit"},
     }
     return TestClient(app)
 
@@ -211,6 +233,86 @@ class ClientHttpTest(_Base):
         resp = client.get("/admin/advertising/clients")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("archive", resp.text.lower())
+
+    def test_profit_calculator_page_renders(self):
+        client = self._client()
+        resp = client.get("/admin/advertising/profit-calculator")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Profit Calculator", resp.text)
+        self.assertIn("/amazon-profit-calculator/runtime", resp.text)
+
+    def test_profit_calculator_page_requires_superadmin(self):
+        client = _make_test_client(is_superadmin=False)
+        resp = client.get("/admin/advertising/profit-calculator")
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("Super-admin only", resp.text)
+
+    def test_profit_calculator_app_renders(self):
+        client = self._client()
+        resp = client.get("/amazon-profit-calculator/runtime")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Amazon profit calculator", resp.text)
+        self.assertIn('data-api-base="/api/public/amazon-profit-calculator"', resp.text)
+
+    def test_profit_calculator_catalog_proxy(self):
+        from sales_support_agent.api import advertising_router as ar
+
+        class _Resp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {"asin": "B08N5WRWNW", "title": "Sample", "images": []}
+
+        original_get = ar.requests.get
+        ar.requests.get = lambda *args, **kwargs: _Resp()
+        try:
+            client = self._client()
+            resp = client.get("/api/public/amazon-profit-calculator/catalog/B08N5WRWNW")
+        finally:
+            ar.requests.get = original_get
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["asin"], "B08N5WRWNW")
+
+    def test_profit_calculator_estimate_proxy(self):
+        from sales_support_agent.api import advertising_router as ar
+
+        class _Resp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {"net_profit": 12.34, "net_margin_pct": 18.2}
+
+        original_post = ar.requests.post
+        ar.requests.post = lambda *args, **kwargs: _Resp()
+        try:
+            client = self._client()
+            resp = client.post(
+                "/api/public/amazon-profit-calculator/profitability/estimate",
+                json={"price": 49.99},
+            )
+        finally:
+            ar.requests.post = original_post
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["net_profit"], 12.34)
+
+    def test_public_runtime_is_accessible_without_admin_auth(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from types import SimpleNamespace
+        from sales_support_agent.api import advertising_router as ar
+
+        app = FastAPI()
+        app.include_router(ar.public_router)
+        app.state.settings = SimpleNamespace(amazon_profit_api_base_url="https://profit.test")
+        client = TestClient(app)
+
+        resp = client.get("/amazon-profit-calculator/runtime")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Amazon profit calculator", resp.text)
 
 
 class BrandMismatchGateTest(_Base):

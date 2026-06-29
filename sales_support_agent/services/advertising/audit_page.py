@@ -32,7 +32,13 @@ def _week_label() -> str:
     return f"Week of {monday.strftime('%b %-d')}"
 
 
-def _page(title: str, body: str, *, user: Optional[dict]) -> str:
+def _page(
+    title: str,
+    body: str,
+    *,
+    user: Optional[dict],
+    advertising_section: str = "advertising_audit",
+) -> str:
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -121,7 +127,7 @@ def _page(title: str, body: str, *, user: Optional[dict]) -> str:
     </style>
   </head>
   <body>
-    {render_agent_nav("advertising", advertising_section="advertising_audit", user=user)}
+    {render_agent_nav("advertising", advertising_section=advertising_section, user=user)}
     <div class="shell">
       <div class="workspace">
         {body}

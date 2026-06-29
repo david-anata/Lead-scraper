@@ -103,4 +103,4 @@ def render_clients_page(
         details.client-acc .client-body {{ padding: 18px; }}
       </style>
     """
-    return _page("agent | Advertising Clients", body, user=user)
+    return _page("agent | Advertising Clients", body, user=user, advertising_section="advertising_clients")

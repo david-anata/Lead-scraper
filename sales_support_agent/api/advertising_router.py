@@ -13,8 +13,9 @@ import re
 from typing import Optional
 from urllib.parse import quote_plus
 
+import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.services.advertising import storage
 from sales_support_agent.services.advertising.audit import (
@@ -27,18 +28,29 @@ from sales_support_agent.services.advertising.audit_page import (
     render_brand_mismatch_page,
 )
 from sales_support_agent.services.advertising.clients_page import render_clients_page
+from sales_support_agent.services.advertising.profit_calculator_page import (
+    render_profit_calculator_app_page,
+    render_profit_calculator_host_page,
+)
 from sales_support_agent.services.advertising.intake import route_files
 from sales_support_agent.services.advertising.schema import ExternalCostRow, Goals
 from sales_support_agent.services.auth_deps import get_session_user_from_request, require_tool
+from sales_support_agent.services.access.pages import render_forbidden_page
 
 logger = logging.getLogger(__name__)
 
+_advertising_user = require_tool("advertising.audit")
 
 router = APIRouter(
     prefix="/admin/advertising",
     tags=["advertising"],
-    dependencies=[Depends(require_tool("advertising.audit"))],
+    dependencies=[Depends(_advertising_user)],
 )
+
+public_router = APIRouter(tags=["advertising-public"])
+
+_PUBLIC_CALCULATOR_PATH = "/amazon-profit-calculator/runtime"
+_PUBLIC_CALCULATOR_API_BASE = "/api/public/amazon-profit-calculator"
 
 
 def _dollars_to_cents(raw: str) -> Optional[int]:
@@ -76,6 +88,30 @@ async def _read_upload(f: Optional[UploadFile]) -> Optional[bytes]:
         data = await f.read()
         return data or None
     return None
+
+
+def _profit_api_base_url(request: Request) -> str:
+    return (getattr(request.app.state.settings, "amazon_profit_api_base_url", "") or "").rstrip("/")
+
+
+def _profit_api_error(response: requests.Response) -> HTTPException:
+    detail = f"Profit API request failed with status {response.status_code}."
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = str(payload.get("detail") or detail)
+    elif response.text:
+        detail = response.text.strip()[:400] or detail
+    return HTTPException(status_code=response.status_code or 502, detail=detail)
+
+
+def _calculator_embed_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "public, max-age=300",
+        "Content-Security-Policy": "default-src 'self' 'unsafe-inline' data: https:; img-src 'self' data: https:; media-src https: data:; frame-ancestors *;",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +171,60 @@ def clients_page(request: Request, msg: str = "") -> HTMLResponse:
         c["goals"] = storage.get_active_goals(client_id=c["id"])
         c["runs"] = [_with_files(r) for r in storage.list_runs(client_id=c["id"])]
     return HTMLResponse(render_clients_page(clients, user=user, flash=msg))
+
+
+@router.get("/profit-calculator", response_class=HTMLResponse)
+def profit_calculator_page(request: Request, user: dict = Depends(_advertising_user)) -> HTMLResponse:
+    if not user or not user.get("is_superadmin"):
+        return HTMLResponse(
+            render_forbidden_page(user=user, tool_label="Super-admin only"),
+            status_code=403,
+        )
+    html = render_profit_calculator_host_page(
+        app_src=_PUBLIC_CALCULATOR_PATH,
+        user=user,
+    )
+    return HTMLResponse(html)
+
+@public_router.get(_PUBLIC_CALCULATOR_PATH, response_class=HTMLResponse)
+def profit_calculator_app() -> HTMLResponse:
+    html = render_profit_calculator_app_page(api_base=_PUBLIC_CALCULATOR_API_BASE)
+    return HTMLResponse(html, headers=_calculator_embed_headers())
+
+
+@public_router.get(f"{_PUBLIC_CALCULATOR_API_BASE}/catalog/{{asin}}")
+def profit_calculator_catalog_proxy(asin: str, request: Request) -> JSONResponse:
+    normalized_asin = (asin or "").strip().upper()
+    if not normalized_asin:
+        raise HTTPException(status_code=400, detail="ASIN is required.")
+    upstream_base = _profit_api_base_url(request)
+    if not upstream_base:
+        raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
+    response = requests.get(
+        f"{upstream_base}/api/public/amazon/catalog/{normalized_asin}",
+        headers={"accept": "application/json"},
+        timeout=20,
+    )
+    if not response.ok:
+        raise _profit_api_error(response)
+    return JSONResponse(response.json())
+
+
+@public_router.post(f"{_PUBLIC_CALCULATOR_API_BASE}/profitability/estimate")
+async def profit_calculator_estimate_proxy(request: Request) -> JSONResponse:
+    upstream_base = _profit_api_base_url(request)
+    if not upstream_base:
+        raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
+    payload = await request.json()
+    response = requests.post(
+        f"{upstream_base}/api/public/amazon/profitability/estimate",
+        headers={"accept": "application/json", "content-type": "application/json"},
+        json=payload,
+        timeout=20,
+    )
+    if not response.ok:
+        raise _profit_api_error(response)
+    return JSONResponse(response.json())
 
 
 @router.post("/clients/new")

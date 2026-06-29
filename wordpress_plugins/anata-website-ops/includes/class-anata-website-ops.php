@@ -37,6 +37,7 @@ final class Anata_Website_Ops
         add_action('admin_post_anata_ops_restore_snapshot', [$this, 'handle_restore_snapshot']);
         add_filter('pre_get_document_title', [$this, 'filter_document_title'], 20);
         add_action('wp_head', [$this, 'render_seo_meta_tags'], 20);
+        add_shortcode('anata_profit_calculator', [$this, 'render_profit_calculator_shortcode']);
     }
 
     public function register_routes(): void
@@ -106,6 +107,8 @@ final class Anata_Website_Ops
             'shared_secret' => sanitize_text_field((string) ($input['shared_secret'] ?? '')),
             'allowed_post_types' => $allowed_post_types ?: $defaults['allowed_post_types'],
             'allowed_page_ids' => sanitize_text_field((string) ($input['allowed_page_ids'] ?? '')),
+            'profit_calculator_runtime_url' => esc_url_raw((string) ($input['profit_calculator_runtime_url'] ?? $defaults['profit_calculator_runtime_url'])),
+            'profit_calculator_iframe_min_height' => max(720, (int) ($input['profit_calculator_iframe_min_height'] ?? $defaults['profit_calculator_iframe_min_height'])),
         ];
     }
 
@@ -171,9 +174,27 @@ final class Anata_Website_Ops
                             <p class="description">Optional comma-separated allowlist. Leave blank to allow all IDs within the allowed post types.</p>
                         </td>
                     </tr>
+                    <tr>
+                        <th scope="row"><label for="anata-profit-calculator-runtime-url">Profit calculator runtime URL</label></th>
+                        <td>
+                            <input id="anata-profit-calculator-runtime-url" name="<?php echo esc_attr(self::OPTION_KEY); ?>[profit_calculator_runtime_url]" type="url" class="large-text" value="<?php echo esc_attr((string) ($settings['profit_calculator_runtime_url'] ?? '')); ?>">
+                            <p class="description">Public iframe runtime served by agent.anatainc.com. Default: <code>https://agent.anatainc.com/amazon-profit-calculator/runtime</code>.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="anata-profit-calculator-iframe-height">Profit calculator iframe min height</label></th>
+                        <td>
+                            <input id="anata-profit-calculator-iframe-height" name="<?php echo esc_attr(self::OPTION_KEY); ?>[profit_calculator_iframe_min_height]" type="number" min="720" step="1" class="small-text" value="<?php echo esc_attr((string) ($settings['profit_calculator_iframe_min_height'] ?? 1760)); ?>">
+                            <p class="description">Used by the <code>[anata_profit_calculator]</code> shortcode on <code>/amazon-profit-calculator</code>.</p>
+                        </td>
+                    </tr>
                 </table>
                 <?php submit_button('Save Website Ops Settings'); ?>
             </form>
+
+            <hr>
+            <h2>Amazon Profit Calculator shortcode</h2>
+            <p>Use <code>[anata_profit_calculator]</code> on the public <code>/amazon-profit-calculator</code> page to replace the old pasted HTML. Optional attributes: <code>src</code>, <code>min_height</code>, <code>title</code>.</p>
 
             <hr>
             <h2>Restore snapshot</h2>
@@ -388,7 +409,38 @@ final class Anata_Website_Ops
             'shared_secret' => '',
             'allowed_post_types' => ['page'],
             'allowed_page_ids' => '',
+            'profit_calculator_runtime_url' => 'https://agent.anatainc.com/amazon-profit-calculator/runtime',
+            'profit_calculator_iframe_min_height' => 1760,
         ];
+    }
+
+    public function render_profit_calculator_shortcode($atts = []): string
+    {
+        $settings = $this->settings();
+        $atts = shortcode_atts(
+            [
+                'src' => (string) ($settings['profit_calculator_runtime_url'] ?? ''),
+                'min_height' => (string) ($settings['profit_calculator_iframe_min_height'] ?? '1760'),
+                'title' => 'Amazon Profit Calculator',
+            ],
+            is_array($atts) ? $atts : [],
+            'anata_profit_calculator'
+        );
+
+        $src = esc_url((string) ($atts['src'] ?? ''));
+        if ($src === '') {
+            return '<p>Amazon Profit Calculator is not configured yet.</p>';
+        }
+
+        $min_height = max(720, (int) ($atts['min_height'] ?? 1760));
+        $title = sanitize_text_field((string) ($atts['title'] ?? 'Amazon Profit Calculator'));
+
+        return sprintf(
+            '<div class="anata-profit-calculator-embed" style="width:100%%;margin:0 auto;"><iframe src="%1$s" title="%2$s" loading="lazy" style="width:100%%;min-height:%3$dpx;border:0;display:block;background:#f3eee5;" referrerpolicy="strict-origin-when-cross-origin"></iframe></div>',
+            $src,
+            esc_attr($title),
+            $min_height
+        );
     }
 
     public function handle_restore_snapshot(): void

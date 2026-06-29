@@ -121,8 +121,9 @@ app.include_router(_cashflow_router)
 
 # Advertising > Audit — self-contained router serving /admin/advertising/* in
 # process (same pattern as the cashflow router above).
-from sales_support_agent.api.advertising_router import router as _advertising_router  # noqa: E402
+from sales_support_agent.api.advertising_router import public_router as _advertising_public_router, router as _advertising_router  # noqa: E402
 app.include_router(_advertising_router)
+app.include_router(_advertising_public_router)
 
 # Executive > Brand Analysis — self-contained router serving
 # /admin/executive/brand-analysis/* in process (same pattern as above).

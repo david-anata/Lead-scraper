@@ -24,13 +24,14 @@ from typing import Optional
 # primary link points at the FIRST reachable subpage (the access-safe fix).
 # ---------------------------------------------------------------------------
 class _NavSubpage:
-    __slots__ = ("tool_key", "label", "href", "active_key")
+    __slots__ = ("tool_key", "label", "href", "active_key", "superadmin_only")
 
-    def __init__(self, tool_key: str, label: str, href: str, active_key: str) -> None:
+    def __init__(self, tool_key: str, label: str, href: str, active_key: str, *, superadmin_only: bool = False) -> None:
         self.tool_key = tool_key
         self.label = label
         self.href = href
         self.active_key = active_key
+        self.superadmin_only = superadmin_only
 
 
 class _NavSection:
@@ -60,6 +61,7 @@ _NAV_SECTIONS = [
     _NavSection("advertising", "Advertising", "advertising", [
         _NavSubpage("advertising.audit", "Audit", "/admin/advertising/audit", "advertising_audit"),
         _NavSubpage("advertising.audit", "Clients", "/admin/advertising/clients", "advertising_clients"),
+        _NavSubpage("advertising.audit", "Profit Calculator", "/admin/advertising/profit-calculator", "advertising_profit_calculator", superadmin_only=True),
     ]),
     _NavSection("executive", "Executive", "executive", [
         _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
@@ -483,7 +485,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "sales"
     if active in {"finance", "finances"}:
         primary_active = "finance"
-    if active in {"advertising", "advertising_audit"}:
+    if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator"}:
         primary_active = "advertising"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"
@@ -507,7 +509,10 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
 
     nav_items: list = []
     for section in _NAV_SECTIONS:
-        accessible = [sp for sp in section.subpages if _can(sp.tool_key)]
+        accessible = [
+            sp for sp in section.subpages
+            if _can(sp.tool_key) and (is_superadmin or not sp.superadmin_only)
+        ]
         if not accessible:
             continue  # zero reachable pages — section is hidden (was _can_section)
 

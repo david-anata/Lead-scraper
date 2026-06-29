@@ -158,6 +158,7 @@ class Settings:
     deck_required_template_fields: tuple[str, ...]
     shared_brand_package_path: Path
     deck_public_base_url: str
+    amazon_profit_api_base_url: str
     shopify_request_timeout_seconds: int
     shopify_user_agent: str
     amazon_sp_api_base_url: str
@@ -574,6 +575,9 @@ def load_settings() -> Settings:
         ),
         deck_public_base_url=(
             os.getenv("DECK_PUBLIC_BASE_URL", "https://agent.anatainc.com").strip().rstrip("/")
+        ),
+        amazon_profit_api_base_url=(
+            os.getenv("AMAZON_PROFIT_API_BASE_URL", "https://amazon-sp-api-platform.onrender.com").strip().rstrip("/")
         ),
         shopify_request_timeout_seconds=int((os.getenv("SHOPIFY_REQUEST_TIMEOUT_SECONDS", "20") or "20").strip()),
         shopify_user_agent=(
