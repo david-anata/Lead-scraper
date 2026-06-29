@@ -69,7 +69,7 @@ _APP_STYLES = """
   }
 
   body {
-    padding: 0;
+    padding: clamp(20px, 2.4vw, 34px) clamp(18px, 3vw, 42px) clamp(28px, 3.5vw, 48px);
   }
 
   .apc-calculator {
@@ -86,6 +86,8 @@ _APP_STYLES = """
     background: transparent;
     border: 0;
     border-radius: 0;
+    max-width: 1240px;
+    margin: 0 auto;
     padding: 0;
     box-shadow: none;
   }
@@ -580,11 +582,7 @@ _APP_STYLES = """
     line-height: 1.5;
   }
 
-  @media (max-width: 1100px) {
-    .apc-grid {
-      grid-template-columns: 1fr;
-    }
-
+  @media (max-width: 1480px) {
     .apc-header {
       flex-direction: column;
       align-items: stretch;
@@ -601,6 +599,12 @@ _APP_STYLES = """
     }
   }
 
+  @media (max-width: 1280px) {
+    .apc-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
   @media (max-width: 920px) {
     .apc-compare-head,
     .apc-compare-row {
@@ -613,6 +617,10 @@ _APP_STYLES = """
   }
 
   @media (max-width: 760px) {
+    body {
+      padding: 14px 14px 24px;
+    }
+
     .apc-calculator {
       padding: 0;
     }
