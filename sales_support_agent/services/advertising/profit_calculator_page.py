@@ -584,16 +584,37 @@ _APP_STYLES = """
     .apc-grid {
       grid-template-columns: 1fr;
     }
+
+    .apc-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .apc-header-copy {
+      max-width: none;
+    }
+
+    .apc-actions {
+      width: 100%;
+      justify-content: flex-start;
+      border-radius: 20px;
+    }
+  }
+
+  @media (max-width: 920px) {
+    .apc-compare-head,
+    .apc-compare-row {
+      grid-template-columns: 1fr;
+    }
+
+    .apc-compare-delta {
+      justify-self: start;
+    }
   }
 
   @media (max-width: 760px) {
     .apc-calculator {
       padding: 0;
-    }
-
-    .apc-header {
-      flex-direction: column;
-      align-items: start;
     }
 
     .apc-row-2,
@@ -610,9 +631,12 @@ _APP_STYLES = """
     }
 
     .apc-actions {
-      justify-content: start;
+      padding: 10px;
+      gap: 8px;
+    }
+
+    .apc-actions > * {
       width: 100%;
-      border-radius: 20px;
     }
 
     .apc-helper-card {
