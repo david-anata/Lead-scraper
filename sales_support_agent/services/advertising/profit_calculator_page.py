@@ -83,11 +83,14 @@ _APP_STYLES = """
     --apc-radius: 18px;
     --apc-gap: 24px;
     color: var(--apc-text);
-    background: linear-gradient(180deg, rgba(133, 187, 218, 0.16), rgba(249, 247, 243, 0.94)), var(--apc-bg);
-    border: 1px solid var(--apc-border);
-    border-radius: 24px;
+    background:
+      radial-gradient(circle at top right, rgba(133, 187, 218, 0.34), transparent 34%),
+      radial-gradient(circle at top left, rgba(43, 54, 68, 0.06), transparent 24%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 243, 235, 0.98));
+    border: 1px solid rgba(217, 210, 195, 0.84);
+    border-radius: 28px;
     padding: 24px;
-    box-shadow: 0 18px 40px rgba(17, 17, 17, 0.08);
+    box-shadow: 0 18px 44px rgba(17, 17, 17, 0.08);
   }
 
   .apc-calculator,
@@ -133,7 +136,7 @@ _APP_STYLES = """
 
   .apc-header p {
     margin: 10px 0 0;
-    color: rgba(34, 34, 34, 0.78);
+    color: rgba(43, 54, 68, 0.86);
     font-size: 16px;
     line-height: 1.55;
   }
@@ -145,9 +148,9 @@ _APP_STYLES = """
     justify-content: flex-end;
     align-items: center;
     padding: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.36);
+    border: 1px solid rgba(43, 54, 68, 0.12);
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.58);
     backdrop-filter: blur(10px);
   }
 
@@ -156,7 +159,7 @@ _APP_STYLES = """
     appearance: none;
     border: 0;
     border-radius: 999px;
-    background: var(--apc-accent);
+    background: #2b3644;
     color: var(--apc-button-text);
     min-height: 46px;
     padding: 12px 18px;
@@ -168,7 +171,7 @@ _APP_STYLES = """
     text-transform: uppercase;
     cursor: pointer;
     transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease, opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-    box-shadow: 0 10px 22px rgba(17, 17, 17, 0.12);
+    box-shadow: 0 10px 22px rgba(43, 54, 68, 0.14);
   }
 
   .apc-calculator button:hover,
@@ -199,10 +202,10 @@ _APP_STYLES = """
 
   .apc-section {
     background: var(--apc-card);
-    border: 1px solid rgba(217, 210, 195, 0.88);
+    border: 1px solid rgba(217, 210, 195, 0.72);
     border-radius: 22px;
     padding: 22px;
-    box-shadow: 0 14px 34px rgba(17, 17, 17, 0.06);
+    box-shadow: 0 12px 30px rgba(17, 17, 17, 0.045);
   }
 
   .apc-section h2,
@@ -329,7 +332,7 @@ _APP_STYLES = """
     padding: 14px;
     border: 1px solid #ece7dc;
     border-radius: 14px;
-    background: linear-gradient(180deg, #fcfbf8, #f7f3eb);
+    background: linear-gradient(180deg, #fffefa, #f8f5ef);
   }
 
   .apc-thumb {
@@ -376,16 +379,16 @@ _APP_STYLES = """
   }
 
   .apc-button-secondary {
-    background: transparent !important;
-    color: var(--apc-accent) !important;
-    border: 1px solid var(--apc-border) !important;
-    box-shadow: none !important;
+    background: rgba(255, 255, 255, 0.86) !important;
+    color: #2b3644 !important;
+    border: 1px solid rgba(43, 54, 68, 0.12) !important;
+    box-shadow: 0 8px 20px rgba(43, 54, 68, 0.06) !important;
   }
 
   .apc-button-secondary:hover,
   .apc-button-secondary:focus {
-    background: rgba(133, 187, 218, 0.12) !important;
-    color: var(--apc-accent) !important;
+    background: rgba(133, 187, 218, 0.16) !important;
+    color: #2b3644 !important;
   }
 
   .apc-status {
@@ -420,7 +423,7 @@ _APP_STYLES = """
     padding: 16px 18px;
     border: 1px solid #ece7dc;
     border-radius: 16px;
-    background: linear-gradient(180deg, rgba(133, 187, 218, 0.10), rgba(255, 255, 255, 0.96));
+    background: linear-gradient(180deg, rgba(133, 187, 218, 0.12), rgba(255, 255, 255, 0.98));
   }
 
   .apc-helper-copy strong {
