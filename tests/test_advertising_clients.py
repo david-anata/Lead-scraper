@@ -130,6 +130,25 @@ class ClientPageRenderTest(_Base):
         self.assertIn('data-api-base="/api/public/amazon-profit-calculator"', html)
         self.assertIn('data-action="lookup"', html)
 
+    def test_bulk_profitability_host_page_embeds_isolated_runtime(self):
+        from sales_support_agent.services.advertising.bulk_profitability_page import render_bulk_profitability_host_page
+
+        html = render_bulk_profitability_host_page(
+            app_src="/amazon-bulk-profitability/runtime",
+            user={"email": "x"},
+        )
+        self.assertIn("Bulk Planner", html)
+        self.assertIn('<iframe', html)
+        self.assertIn('/amazon-bulk-profitability/runtime', html)
+
+    def test_bulk_profitability_app_uses_local_proxy_base(self):
+        from sales_support_agent.services.advertising.bulk_profitability_page import render_bulk_profitability_app_page
+
+        html = render_bulk_profitability_app_page(api_base="/api/public/amazon-bulk-profitability")
+        self.assertIn('data-amazon-bulk-upload', html)
+        self.assertIn('data-api-base="/api/public/amazon-bulk-profitability"', html)
+        self.assertIn('data-action="run"', html)
+
 
 def _make_test_client(*, is_superadmin: bool = True):
     from fastapi import FastAPI
@@ -254,6 +273,26 @@ class ClientHttpTest(_Base):
         self.assertIn("Amazon profit calculator", resp.text)
         self.assertIn('data-api-base="/api/public/amazon-profit-calculator"', resp.text)
 
+    def test_bulk_profitability_page_renders(self):
+        client = self._client()
+        resp = client.get("/admin/advertising/bulk-profitability")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Bulk Planner", resp.text)
+        self.assertIn("/amazon-bulk-profitability/runtime", resp.text)
+
+    def test_bulk_profitability_page_requires_superadmin(self):
+        client = _make_test_client(is_superadmin=False)
+        resp = client.get("/admin/advertising/bulk-profitability")
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("Super-admin only", resp.text)
+
+    def test_bulk_profitability_app_renders(self):
+        client = self._client()
+        resp = client.get("/amazon-bulk-profitability/runtime")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Bulk ASIN Profitability Upload", resp.text)
+        self.assertIn('data-api-base="/api/public/amazon-bulk-profitability"', resp.text)
+
     def test_profit_calculator_catalog_proxy(self):
         from sales_support_agent.api import advertising_router as ar
 
@@ -299,6 +338,51 @@ class ClientHttpTest(_Base):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["net_profit"], 12.34)
 
+    def test_bulk_profitability_catalog_proxy(self):
+        from sales_support_agent.api import advertising_router as ar
+
+        class _Resp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {"asin": "B08N5WRWNW", "title": "Sample Bulk", "images": []}
+
+        original_get = ar.requests.get
+        ar.requests.get = lambda *args, **kwargs: _Resp()
+        try:
+            client = self._client()
+            resp = client.get("/api/public/amazon-bulk-profitability/catalog/B08N5WRWNW")
+        finally:
+            ar.requests.get = original_get
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["asin"], "B08N5WRWNW")
+
+    def test_bulk_profitability_estimate_proxy(self):
+        from sales_support_agent.api import advertising_router as ar
+
+        class _Resp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {"net_profit": 22.15, "net_margin_pct": 25.4}
+
+        original_post = ar.requests.post
+        ar.requests.post = lambda *args, **kwargs: _Resp()
+        try:
+            client = self._client()
+            resp = client.post(
+                "/api/public/amazon-bulk-profitability/profitability/estimate",
+                json={"price": 39.99},
+            )
+        finally:
+            ar.requests.post = original_post
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["net_profit"], 22.15)
+
     def test_public_runtime_is_accessible_without_admin_auth(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -313,6 +397,21 @@ class ClientHttpTest(_Base):
         resp = client.get("/amazon-profit-calculator/runtime")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Amazon profit calculator", resp.text)
+
+    def test_bulk_public_runtime_is_accessible_without_admin_auth(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from types import SimpleNamespace
+        from sales_support_agent.api import advertising_router as ar
+
+        app = FastAPI()
+        app.include_router(ar.public_router)
+        app.state.settings = SimpleNamespace(amazon_profit_api_base_url="https://profit.test")
+        client = TestClient(app)
+
+        resp = client.get("/amazon-bulk-profitability/runtime")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Bulk ASIN Profitability Upload", resp.text)
 
 
 class BrandMismatchGateTest(_Base):

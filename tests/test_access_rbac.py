@@ -771,9 +771,11 @@ class NavAccessSafetyTests(unittest.TestCase):
         from sales_support_agent.services.admin_nav import render_agent_nav
         member_nav = render_agent_nav(permissions={"advertising.audit"})
         self.assertNotIn('href="/admin/advertising/profit-calculator"', member_nav)
+        self.assertNotIn('href="/admin/advertising/bulk-profitability"', member_nav)
 
         super_nav = render_agent_nav(is_superadmin=True)
         self.assertIn('href="/admin/advertising/profit-calculator"', super_nav)
+        self.assertIn('href="/admin/advertising/bulk-profitability"', super_nav)
 
     def test_section_with_zero_accessible_pages_is_hidden(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav

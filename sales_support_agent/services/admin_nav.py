@@ -62,6 +62,7 @@ _NAV_SECTIONS = [
         _NavSubpage("advertising.audit", "Audit", "/admin/advertising/audit", "advertising_audit"),
         _NavSubpage("advertising.audit", "Clients", "/admin/advertising/clients", "advertising_clients"),
         _NavSubpage("advertising.audit", "Profit Calculator", "/admin/advertising/profit-calculator", "advertising_profit_calculator", superadmin_only=True),
+        _NavSubpage("advertising.audit", "Bulk Planner", "/admin/advertising/bulk-profitability", "advertising_bulk_profitability", superadmin_only=True),
     ]),
     _NavSection("executive", "Executive", "executive", [
         _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
@@ -485,7 +486,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "sales"
     if active in {"finance", "finances"}:
         primary_active = "finance"
-    if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator"}:
+    if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"

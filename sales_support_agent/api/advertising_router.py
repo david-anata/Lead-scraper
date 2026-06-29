@@ -27,6 +27,10 @@ from sales_support_agent.services.advertising.audit_page import (
     render_audit_page,
     render_brand_mismatch_page,
 )
+from sales_support_agent.services.advertising.bulk_profitability_page import (
+    render_bulk_profitability_app_page,
+    render_bulk_profitability_host_page,
+)
 from sales_support_agent.services.advertising.clients_page import render_clients_page
 from sales_support_agent.services.advertising.profit_calculator_page import (
     render_profit_calculator_app_page,
@@ -51,6 +55,8 @@ public_router = APIRouter(tags=["advertising-public"])
 
 _PUBLIC_CALCULATOR_PATH = "/amazon-profit-calculator/runtime"
 _PUBLIC_CALCULATOR_API_BASE = "/api/public/amazon-profit-calculator"
+_PUBLIC_BULK_PROFITABILITY_PATH = "/amazon-bulk-profitability/runtime"
+_PUBLIC_BULK_PROFITABILITY_API_BASE = "/api/public/amazon-bulk-profitability"
 
 
 def _dollars_to_cents(raw: str) -> Optional[int]:
@@ -186,6 +192,21 @@ def profit_calculator_page(request: Request, user: dict = Depends(_advertising_u
     )
     return HTMLResponse(html)
 
+
+@router.get("/bulk-profitability", response_class=HTMLResponse)
+def bulk_profitability_page(request: Request, user: dict = Depends(_advertising_user)) -> HTMLResponse:
+    if not user or not user.get("is_superadmin"):
+        return HTMLResponse(
+            render_forbidden_page(user=user, tool_label="Super-admin only"),
+            status_code=403,
+        )
+    html = render_bulk_profitability_host_page(
+        app_src=_PUBLIC_BULK_PROFITABILITY_PATH,
+        user=user,
+    )
+    return HTMLResponse(html)
+
+
 @public_router.get(_PUBLIC_CALCULATOR_PATH, response_class=HTMLResponse)
 def profit_calculator_app() -> HTMLResponse:
     html = render_profit_calculator_app_page(api_base=_PUBLIC_CALCULATOR_API_BASE)
@@ -203,6 +224,47 @@ def profit_calculator_catalog_proxy(asin: str, request: Request) -> JSONResponse
     response = requests.get(
         f"{upstream_base}/api/public/amazon/catalog/{normalized_asin}",
         headers={"accept": "application/json"},
+        timeout=20,
+    )
+    if not response.ok:
+        raise _profit_api_error(response)
+    return JSONResponse(response.json())
+
+
+@public_router.get(_PUBLIC_BULK_PROFITABILITY_PATH, response_class=HTMLResponse)
+def bulk_profitability_app() -> HTMLResponse:
+    html = render_bulk_profitability_app_page(api_base=_PUBLIC_BULK_PROFITABILITY_API_BASE)
+    return HTMLResponse(html, headers=_calculator_embed_headers())
+
+
+@public_router.get(f"{_PUBLIC_BULK_PROFITABILITY_API_BASE}/catalog/{{asin}}")
+def bulk_profitability_catalog_proxy(asin: str, request: Request) -> JSONResponse:
+    normalized_asin = (asin or "").strip().upper()
+    if not normalized_asin:
+        raise HTTPException(status_code=400, detail="ASIN is required.")
+    upstream_base = _profit_api_base_url(request)
+    if not upstream_base:
+        raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
+    response = requests.get(
+        f"{upstream_base}/api/public/amazon/catalog/{normalized_asin}",
+        headers={"accept": "application/json"},
+        timeout=20,
+    )
+    if not response.ok:
+        raise _profit_api_error(response)
+    return JSONResponse(response.json())
+
+
+@public_router.post(f"{_PUBLIC_BULK_PROFITABILITY_API_BASE}/profitability/estimate")
+async def bulk_profitability_estimate_proxy(request: Request) -> JSONResponse:
+    upstream_base = _profit_api_base_url(request)
+    if not upstream_base:
+        raise HTTPException(status_code=503, detail="Profit API base URL is not configured.")
+    payload = await request.json()
+    response = requests.post(
+        f"{upstream_base}/api/public/amazon/profitability/estimate",
+        headers={"accept": "application/json", "content-type": "application/json"},
+        json=payload,
         timeout=20,
     )
     if not response.ok:
