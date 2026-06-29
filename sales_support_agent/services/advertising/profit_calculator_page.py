@@ -145,7 +145,8 @@ _APP_STYLES = """
     justify-content: flex-end;
   }
 
-  .apc-calculator button {
+  .apc-calculator button,
+  .apc-button-link {
     appearance: none;
     border: 0;
     border-radius: 999px;
@@ -165,13 +166,22 @@ _APP_STYLES = """
   }
 
   .apc-calculator button:hover,
-  .apc-calculator button:focus {
+  .apc-calculator button:focus,
+  .apc-button-link:hover,
+  .apc-button-link:focus {
     background: #85bbda;
     color: #ffffff;
     border-color: #85bbda;
     opacity: 1;
     transform: translateY(-1px);
     outline: none;
+  }
+
+  .apc-button-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
   }
 
   .apc-grid {
@@ -315,7 +325,9 @@ _APP_STYLES = """
   }
 
   .apc-thumb {
-    min-height: 140px;
+    width: min(100%, 220px);
+    aspect-ratio: 1 / 1;
+    justify-self: center;
     border-radius: 14px;
     background: #dfe8ef center / cover no-repeat;
   }
@@ -389,6 +401,35 @@ _APP_STYLES = """
     border-color: rgba(154, 90, 78, 0.36);
     background: rgba(154, 90, 78, 0.10);
     color: #8e4d42;
+  }
+
+  .apc-helper-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 14px;
+    padding: 16px 18px;
+    border: 1px solid #ece7dc;
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(133, 187, 218, 0.10), rgba(255, 255, 255, 0.96));
+  }
+
+  .apc-helper-copy strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--apc-accent);
+    font-family: "Montserrat", sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .apc-helper-copy p {
+    margin: 0;
+    color: var(--apc-muted);
+    font-size: 14px;
+    line-height: 1.45;
   }
 
   .apc-results-stack {
@@ -566,6 +607,11 @@ _APP_STYLES = """
 
     .apc-actions {
       justify-content: start;
+    }
+
+    .apc-helper-card {
+      flex-direction: column;
+      align-items: stretch;
     }
 
     .apc-compare-delta {
@@ -1044,7 +1090,7 @@ def render_profit_calculator_host_page(*, app_src: str, user: Optional[dict] = N
     )
 
 
-def render_profit_calculator_app_page(*, api_base: str) -> str:
+def render_profit_calculator_app_page(*, api_base: str, bulk_app_src: str = "/amazon-bulk-profitability/runtime") -> str:
     category_options = "".join(
         f'<option value="{_esc(key)}">{_esc(label)}</option>'
         for key, label in _CATEGORY_OPTIONS
@@ -1066,6 +1112,7 @@ def render_profit_calculator_app_page(*, api_base: str) -> str:
           <p>Auto-fill the product from an ASIN or model it manually. The calculator uses the backend profitability engine and keeps the interface isolated from the shared admin shell.</p>
         </div>
         <div class="apc-actions">
+          <a class="apc-button-link apc-button-secondary" href="{_esc(bulk_app_src)}" target="_blank" rel="noopener">Bulk Planner</a>
           <button class="apc-button-secondary" type="button" data-action="reset">Reset</button>
           <button type="button" data-action="pdf">Download PDF</button>
         </div>
@@ -1109,6 +1156,13 @@ def render_profit_calculator_app_page(*, api_base: str) -> str:
             </div>
 
             <div class="apc-status" data-output="apiStatus">Enter product details or use ASIN lookup to calculate.</div>
+            <div class="apc-helper-card">
+              <div class="apc-helper-copy">
+                <strong>Running multiple ASINs?</strong>
+                <p>Open the bulk planner to paste or upload a list of ASINs and export a CSV with profitability outputs.</p>
+              </div>
+              <a class="apc-button-link" href="{_esc(bulk_app_src)}" target="_blank" rel="noopener">Open Bulk Planner</a>
+            </div>
           </section>
 
           <section class="apc-section">

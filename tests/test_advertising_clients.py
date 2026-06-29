@@ -132,6 +132,8 @@ class ClientPageRenderTest(_Base):
         self.assertIn('/catalog/" + encodeURIComponent(asin)', html)
         self.assertIn('"/profitability/estimate"', html)
         self.assertNotIn('/api/public/amazon/catalog/', html)
+        self.assertIn('/amazon-bulk-profitability/runtime', html)
+        self.assertIn('Open Bulk Planner', html)
 
     def test_bulk_profitability_host_page_embeds_isolated_runtime(self):
         from sales_support_agent.services.advertising.bulk_profitability_page import render_bulk_profitability_host_page
