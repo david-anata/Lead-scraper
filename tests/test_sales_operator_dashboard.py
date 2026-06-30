@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
@@ -71,3 +72,61 @@ class SalesOperatorDashboardTests(unittest.TestCase):
         action_types = [action["type"] for action in result["deals"][0]["actions"]]
         self.assertIn("update_deal_service_type", action_types)
         self.assertIn("update_next_step", action_types)
+
+    def test_build_deal_intelligence_prioritizes_reply_due(self):
+        now = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)
+        intelligence = operator_dashboard._build_deal_intelligence(
+            deal={"id": "deal-1", "properties": {"dealname": "Acme Amazon", "hs_next_step": "Send follow-up"}},
+            stage={"label": "Proposal Sent"},
+            stage_status="open",
+            inference={"primary_offer": "amazon_marketing_service", "primary_offer_label": "Amazon Marketing Service"},
+            current_next_step="Send follow-up",
+            deal_row=SimpleNamespace(
+                last_inbound_at=now - timedelta(hours=2),
+                last_outbound_at=now - timedelta(days=2),
+                last_meaningful_touch_at=now - timedelta(hours=2),
+            ),
+            contacts=[SimpleNamespace(first_name="Taylor", last_name="Smith", email="taylor@example.com")],
+            assets=[],
+            events=[],
+            signals=[],
+            live_mailbox={"configured": True, "matched": True, "messages": []},
+            as_of=now,
+        )
+
+        self.assertEqual(intelligence["status"], "reply_due")
+        self.assertTrue(intelligence["shouldUpdateNextStep"])
+        self.assertIn("Reply to Taylor Smith today", intelligence["recommendedNextStep"])
+
+    def test_build_deal_intelligence_detects_new_asset_ready_to_share(self):
+        now = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)
+        intelligence = operator_dashboard._build_deal_intelligence(
+            deal={"id": "deal-1", "properties": {"dealname": "Acme Fulfillment", "hs_next_step": ""}},
+            stage={"label": "Qualified"},
+            stage_status="open",
+            inference={"primary_offer": "fulfillment", "primary_offer_label": "Fulfillment"},
+            current_next_step="",
+            deal_row=SimpleNamespace(
+                last_inbound_at=None,
+                last_outbound_at=now - timedelta(days=5),
+                last_meaningful_touch_at=now - timedelta(days=5),
+            ),
+            contacts=[],
+            assets=[
+                SimpleNamespace(
+                    asset_type="rate_sheet",
+                    label="Fulfillment Rate Sheet",
+                    url="https://example.com/rate-sheet",
+                    linked_at=now - timedelta(days=1),
+                )
+            ],
+            events=[],
+            signals=[],
+            live_mailbox={"configured": False, "matched": False, "messages": [], "error": ""},
+            as_of=now,
+        )
+
+        self.assertEqual(intelligence["status"], "asset_ready_to_share")
+        self.assertEqual(intelligence["assetState"]["status"], "ready_to_share")
+        self.assertTrue(intelligence["shouldUpdateNextStep"])
+        self.assertIn("Fulfillment Rate Sheet", intelligence["recommendedNextStep"])

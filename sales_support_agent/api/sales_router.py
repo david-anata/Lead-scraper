@@ -411,14 +411,14 @@ def _sales_settings(request: Request):
 @router.get("/", response_class=HTMLResponse)
 def sales_operator(request: Request) -> HTMLResponse:
     settings = _sales_settings(request)
-    snapshot = get_operator_snapshot(settings)
+    snapshot = get_operator_snapshot(settings, session_factory=request.app.state.session_factory)
     return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request)))
 
 
 @router.get("/snapshot")
 def sales_operator_snapshot(request: Request) -> JSONResponse:
     settings = _sales_settings(request)
-    snapshot = get_operator_snapshot(settings, force_refresh=True)
+    snapshot = get_operator_snapshot(settings, session_factory=request.app.state.session_factory, force_refresh=True)
     return JSONResponse({"ok": True, "snapshot": snapshot})
 
 
@@ -433,8 +433,17 @@ def sales_operator_writeback(
         parsed_limit = int(limit)
     except ValueError:
         parsed_limit = 10
-    result = run_writeback(settings, mode=("apply" if mode == "apply" else "preview"), limit=parsed_limit)
-    snapshot = get_operator_snapshot(settings, force_refresh=(mode == "apply"))
+    result = run_writeback(
+        settings,
+        session_factory=request.app.state.session_factory,
+        mode=("apply" if mode == "apply" else "preview"),
+        limit=parsed_limit,
+    )
+    snapshot = get_operator_snapshot(
+        settings,
+        session_factory=request.app.state.session_factory,
+        force_refresh=(mode == "apply"),
+    )
     message = "High-confidence sales write-back actions were applied." if mode == "apply" else "Sales write-back preview generated."
     return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request), writeback=result, status_message=message))
 

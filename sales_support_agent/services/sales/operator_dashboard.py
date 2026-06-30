@@ -6,8 +6,21 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from sqlalchemy import select
+
 from sales_support_agent.config import Settings
+from sales_support_agent.integrations.gmail import GmailClient
+from sales_support_agent.integrations.gmail_payloads import normalize_gmail_message
 from sales_support_agent.integrations.hubspot import DEAL_PROPERTIES, HubSpotClient
+from sales_support_agent.models.database import session_scope
+from sales_support_agent.models.entities import (
+    CommunicationEvent,
+    HubSpotContact,
+    HubSpotDeal,
+    HubSpotDealContact,
+    MailboxSignal,
+    SalesDealAsset,
+)
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
     render_agent_nav,
@@ -81,6 +94,8 @@ AUTONOMY_POLICY = {
 HIGH_CONFIDENCE_THRESHOLD = 0.85
 MEDIUM_CONFIDENCE_THRESHOLD = 0.65
 SNAPSHOT_TTL_SECONDS = 30
+LIVE_MAILBOX_LOOKBACK_DAYS = 120
+LIVE_MAILBOX_MAX_DEALS = 6
 
 _cached_snapshot: Optional[dict[str, Any]] = None
 _cached_snapshot_expires_at = 0.0
@@ -105,6 +120,40 @@ def _to_float(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _aware(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _latest_dt(*values: Optional[datetime]) -> Optional[datetime]:
+    present = [_aware(value) for value in values if value is not None]
+    return max(present) if present else None
+
+
+def _days_since(value: Optional[datetime], *, as_of: datetime) -> Optional[int]:
+    aware = _aware(value)
+    if aware is None:
+        return None
+    return max(int((as_of - aware).total_seconds() // 86400), 0)
+
+
+def _hours_since(value: Optional[datetime], *, as_of: datetime) -> Optional[int]:
+    aware = _aware(value)
+    if aware is None:
+        return None
+    return max(int((as_of - aware).total_seconds() // 3600), 0)
+
+
+def _compact_text(value: str, *, limit: int = 140) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 0)].rstrip() + "…"
 
 
 def _get_primary_pipeline(client: HubSpotClient, settings: Settings) -> dict[str, Any]:
@@ -304,7 +353,356 @@ def _list_deals(client: HubSpotClient, *, limit: Optional[int] = None) -> list[d
     return deals
 
 
-def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
+def _load_local_deal_context(session, deal_ids: list[str]) -> dict[str, Any]:
+    if not deal_ids:
+        return {
+            "dealRows": {},
+            "contactsByDeal": {},
+            "contactEmailsByDeal": {},
+            "assetsByDeal": {},
+            "eventsByDeal": {},
+            "signalsByDeal": {},
+        }
+
+    deal_rows = {
+        row.hubspot_deal_id: row
+        for row in session.scalars(
+            select(HubSpotDeal).where(HubSpotDeal.hubspot_deal_id.in_(deal_ids))
+        ).all()
+    }
+    links = list(
+        session.scalars(
+            select(HubSpotDealContact).where(HubSpotDealContact.hubspot_deal_id.in_(deal_ids))
+        ).all()
+    )
+    contact_ids = sorted({row.hubspot_contact_id for row in links if row.hubspot_contact_id})
+    contacts = {
+        row.hubspot_contact_id: row
+        for row in session.scalars(
+            select(HubSpotContact).where(HubSpotContact.hubspot_contact_id.in_(contact_ids))
+        ).all()
+    }
+    contacts_by_deal: dict[str, list[HubSpotContact]] = {deal_id: [] for deal_id in deal_ids}
+    for link in links:
+        contact = contacts.get(link.hubspot_contact_id)
+        if contact is not None:
+            contacts_by_deal.setdefault(link.hubspot_deal_id, []).append(contact)
+
+    assets_by_deal: dict[str, list[SalesDealAsset]] = {deal_id: [] for deal_id in deal_ids}
+    for asset in session.scalars(
+        select(SalesDealAsset)
+        .where(SalesDealAsset.hubspot_deal_id.in_(deal_ids))
+        .order_by(SalesDealAsset.linked_at.desc())
+    ).all():
+        assets_by_deal.setdefault(asset.hubspot_deal_id, []).append(asset)
+
+    events_by_deal: dict[str, list[CommunicationEvent]] = {deal_id: [] for deal_id in deal_ids}
+    for event in session.scalars(
+        select(CommunicationEvent)
+        .where(CommunicationEvent.hubspot_deal_id.in_(deal_ids))
+        .order_by(CommunicationEvent.occurred_at.desc())
+    ).all():
+        events_by_deal.setdefault(event.hubspot_deal_id, []).append(event)
+
+    signals_by_deal: dict[str, list[MailboxSignal]] = {deal_id: [] for deal_id in deal_ids}
+    for signal in session.scalars(
+        select(MailboxSignal)
+        .where(MailboxSignal.matched_deal_id.in_(deal_ids))
+        .order_by(MailboxSignal.received_at.desc())
+    ).all():
+        signals_by_deal.setdefault(signal.matched_deal_id, []).append(signal)
+
+    contact_emails_by_deal = {
+        deal_id: [
+            str(contact.email or "").strip().lower()
+            for contact in contacts_by_deal.get(deal_id, [])
+            if str(contact.email or "").strip()
+        ]
+        for deal_id in deal_ids
+    }
+    return {
+        "dealRows": deal_rows,
+        "contactsByDeal": contacts_by_deal,
+        "contactEmailsByDeal": contact_emails_by_deal,
+        "assetsByDeal": assets_by_deal,
+        "eventsByDeal": events_by_deal,
+        "signalsByDeal": signals_by_deal,
+    }
+
+
+def _build_live_mailbox_query(contact_emails: list[str]) -> str:
+    clauses: list[str] = []
+    for email in contact_emails[:3]:
+        clauses.append(f"from:{email}")
+        clauses.append(f"to:{email}")
+    if not clauses:
+        return ""
+    return f"newer_than:{LIVE_MAILBOX_LOOKBACK_DAYS}d ({' OR '.join(clauses)})"
+
+
+def _fetch_live_mailbox_state(settings: Settings, contact_emails_by_deal: dict[str, list[str]], *, max_deals: int) -> dict[str, dict[str, Any]]:
+    gmail_client = GmailClient(settings)
+    base = {
+        deal_id: {
+            "configured": gmail_client.is_configured(),
+            "matched": False,
+            "messages": [],
+            "error": "",
+        }
+        for deal_id in contact_emails_by_deal
+    }
+    if not gmail_client.is_configured():
+        return base
+
+    processed = 0
+    for deal_id, contact_emails in contact_emails_by_deal.items():
+        unique_emails = list(dict.fromkeys(email for email in contact_emails if email))
+        if not unique_emails or processed >= max_deals:
+            continue
+        query = _build_live_mailbox_query(unique_emails)
+        if not query:
+            continue
+        try:
+            refs = gmail_client.list_messages(query=query, max_results=2)
+            messages: list[dict[str, Any]] = []
+            for ref in refs[:2]:
+                message_id = str(ref.get("id") or "").strip()
+                if not message_id:
+                    continue
+                payload = gmail_client.get_message(message_id)
+                normalized = normalize_gmail_message(
+                    payload,
+                    configured_source_domains=gmail_client.source_domains,
+                    matched_task=True,
+                )
+                direction = "inbound" if normalized.sender_email in unique_emails else "outbound"
+                messages.append(
+                    {
+                        "messageId": normalized.external_message_id,
+                        "threadId": normalized.external_thread_id,
+                        "subject": normalized.subject,
+                        "snippet": normalized.snippet,
+                        "senderEmail": normalized.sender_email,
+                        "direction": direction,
+                        "classification": normalized.classification,
+                        "occurredAt": normalized.occurred_at.isoformat(),
+                    }
+                )
+            base[deal_id] = {
+                "configured": True,
+                "matched": bool(messages),
+                "messages": messages,
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001 - dashboard enrichment must never fail the page
+            base[deal_id] = {
+                "configured": True,
+                "matched": False,
+                "messages": [],
+                "error": _compact_text(str(exc), limit=160),
+            }
+        processed += 1
+    return base
+
+
+def _asset_label(asset: SalesDealAsset) -> str:
+    label = str(asset.label or "").strip()
+    if label:
+        return label
+    mapping = {
+        "deck": "Sales Deck",
+        "rate_sheet": "Fulfillment Rate Sheet",
+        "ads_audit": "Ads Audit",
+    }
+    return mapping.get(str(asset.asset_type or "").strip(), str(asset.asset_type or "Asset"))
+
+
+def _build_deal_intelligence(
+    *,
+    deal: dict[str, Any],
+    stage: Optional[dict[str, Any]],
+    stage_status: str,
+    inference: dict[str, Any],
+    current_next_step: str,
+    deal_row: Optional[HubSpotDeal],
+    contacts: list[HubSpotContact],
+    assets: list[SalesDealAsset],
+    events: list[CommunicationEvent],
+    signals: list[MailboxSignal],
+    live_mailbox: Optional[dict[str, Any]],
+    as_of: datetime,
+) -> dict[str, Any]:
+    outbound_events = [event for event in events if event.event_type in {"outbound_email_sent", "offer_sent"}]
+    latest_event = max(events, key=lambda item: _aware(item.occurred_at) or datetime.min.replace(tzinfo=timezone.utc)) if events else None
+    latest_signal = max(signals, key=lambda item: _aware(item.received_at) or datetime.min.replace(tzinfo=timezone.utc)) if signals else None
+    latest_asset = max(assets, key=lambda item: _aware(item.linked_at) or datetime.min.replace(tzinfo=timezone.utc)) if assets else None
+
+    live_messages = list((live_mailbox or {}).get("messages") or [])
+    live_inbound_times: list[datetime] = []
+    live_outbound_times: list[datetime] = []
+    for message in live_messages:
+        raw = str(message.get("occurredAt") or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if str(message.get("direction") or "") == "inbound":
+            live_inbound_times.append(_aware(parsed) or parsed)
+        else:
+            live_outbound_times.append(_aware(parsed) or parsed)
+
+    last_inbound = _latest_dt(
+        getattr(deal_row, "last_inbound_at", None),
+        latest_signal.received_at if latest_signal is not None else None,
+        max(live_inbound_times) if live_inbound_times else None,
+    )
+    last_outbound = _latest_dt(
+        getattr(deal_row, "last_outbound_at", None),
+        max((event.occurred_at for event in outbound_events), default=None),
+        max(live_outbound_times) if live_outbound_times else None,
+    )
+    last_touch = _latest_dt(
+        getattr(deal_row, "last_meaningful_touch_at", None),
+        last_inbound,
+        last_outbound,
+        latest_event.occurred_at if latest_event is not None else None,
+    )
+
+    contact_names = [
+        " ".join(part for part in [str(contact.first_name or "").strip(), str(contact.last_name or "").strip()] if part).strip()
+        or str(contact.email or "").strip()
+        for contact in contacts
+    ]
+    primary_contact = next((name for name in contact_names if name), "the prospect")
+    asset_labels = [_asset_label(asset) for asset in assets]
+    newest_asset_labels = ", ".join(asset_labels[:2]) if asset_labels else ""
+    latest_asset_at = _aware(latest_asset.linked_at) if latest_asset is not None else None
+
+    share_state = "none"
+    if latest_asset_at is not None and (last_outbound is None or latest_asset_at > last_outbound):
+        share_state = "ready_to_share"
+    elif latest_asset_at is not None and last_outbound is not None and last_outbound >= latest_asset_at:
+        share_state = "shared"
+
+    recommendation = build_suggested_next_step(stage, inference)
+    ai_status = "monitor"
+    reasons: list[str] = []
+    summary_bits: list[str] = []
+
+    inbound_hours = _hours_since(last_inbound, as_of=as_of)
+    outbound_days = _days_since(last_outbound, as_of=as_of)
+    asset_days = _days_since(latest_asset_at, as_of=as_of)
+
+    if last_inbound is not None and (last_outbound is None or last_inbound > last_outbound) and (inbound_hours is None or inbound_hours <= 120):
+        ai_status = "reply_due"
+        recommendation = {
+            "text": f"Reply to {primary_contact} today, capture the new information, and update the deal state from their latest response.",
+            "confidence": 0.98,
+        }
+        reasons.append("The latest inbound communication is newer than the latest outbound touch.")
+        if live_messages:
+            reasons.append("Live Gmail validation found a newer prospect-side message for this deal.")
+    elif latest_asset_at is not None and (last_outbound is None or latest_asset_at > last_outbound):
+        ai_status = "asset_ready_to_share"
+        package_text = newest_asset_labels or "proposal package"
+        recommendation = {
+            "text": f"Send the new {package_text} to the prospect and log the share in HubSpot.",
+            "confidence": 0.95,
+        }
+        reasons.append("A newer linked sales asset exists than the last recorded outbound touch.")
+    elif last_outbound is not None and (last_inbound is None or last_outbound > last_inbound) and (outbound_days or 0) >= 4 and stage_status in {"open", "nurture"}:
+        ai_status = "follow_up_due"
+        recommendation = {
+            "text": "Follow up on the last outreach, confirm whether the opportunity is still active, and capture the response in HubSpot.",
+            "confidence": 0.91,
+        }
+        reasons.append("The last outbound touch is older than four days and there is no newer reply.")
+        if share_state == "shared":
+            recommendation["text"] = "Follow up on the sent proposal package, confirm questions or objections, and lock the next commitment."
+            recommendation["confidence"] = 0.93
+            reasons.append("A proposal asset was already linked before the latest outbound touch.")
+
+    if share_state == "shared":
+        summary_bits.append("proposal package appears shared")
+    elif share_state == "ready_to_share":
+        summary_bits.append("fresh asset ready to share")
+    elif not assets:
+        summary_bits.append("no linked asset")
+
+    if last_inbound is not None:
+        summary_bits.append(f"last inbound {_fmt_relative(last_inbound.isoformat())}")
+    elif last_outbound is not None:
+        summary_bits.append(f"last outbound {_fmt_relative(last_outbound.isoformat())}")
+
+    if live_mailbox:
+        if live_mailbox.get("matched"):
+            summary_bits.append("live Gmail validated")
+        elif live_mailbox.get("error"):
+            summary_bits.append("live Gmail check failed")
+
+    current_lower = _normalize(current_next_step)
+    proposed_lower = _normalize(str(recommendation.get("text") or ""))
+    should_update_next_step = False
+    if proposed_lower and float(recommendation.get("confidence") or 0.0) >= HIGH_CONFIDENCE_THRESHOLD:
+        if not current_lower:
+            should_update_next_step = True
+        elif ai_status == "reply_due" and "reply" not in current_lower and "respond" not in current_lower:
+            should_update_next_step = True
+        elif ai_status == "asset_ready_to_share" and "send" not in current_lower and "share" not in current_lower:
+            should_update_next_step = True
+        elif ai_status == "follow_up_due" and "follow" not in current_lower:
+            should_update_next_step = True
+
+    stage_hint = ""
+    stage_hint_confidence = 0.0
+    normalized_stage_label = _normalize(str((stage or {}).get("label") or ""))
+    if share_state == "shared" and normalized_stage_label in {"qualified", "audit or deck in progress", "proposal ready"}:
+        stage_hint = "Proposal Sent"
+        stage_hint_confidence = 0.72
+    elif ai_status == "reply_due" and normalized_stage_label == "proposal sent":
+        stage_hint = "Negotiation"
+        stage_hint_confidence = 0.70
+
+    return {
+        "status": ai_status,
+        "recommendedNextStep": str(recommendation.get("text") or "").strip(),
+        "confidence": float(recommendation.get("confidence") or 0.0),
+        "reasons": reasons,
+        "summary": ", ".join(summary_bits),
+        "lastInboundAt": last_inbound.isoformat() if last_inbound else None,
+        "lastOutboundAt": last_outbound.isoformat() if last_outbound else None,
+        "lastTouchAt": last_touch.isoformat() if last_touch else None,
+        "mailboxSignalCount": len(signals),
+        "communicationEventCount": len(events),
+        "latestSignalSubject": str(getattr(latest_signal, "subject", "") or "").strip() or None,
+        "latestEventSummary": _compact_text(str(getattr(latest_event, "summary", "") or getattr(latest_event, "recommended_next_action", "") or "").strip(), limit=140) or None,
+        "assetState": {
+            "status": share_state,
+            "latestAssetType": str(getattr(latest_asset, "asset_type", "") or "").strip() or None,
+            "latestAssetLabel": _asset_label(latest_asset) if latest_asset is not None else None,
+            "latestLinkedAt": latest_asset_at.isoformat() if latest_asset_at else None,
+            "latestAssetAgeDays": asset_days,
+            "count": len(assets),
+            "links": [
+                {
+                    "type": str(asset.asset_type or "").strip(),
+                    "label": _asset_label(asset),
+                    "url": str(asset.url or "").strip(),
+                    "linkedAt": _aware(asset.linked_at).isoformat() if _aware(asset.linked_at) else None,
+                }
+                for asset in assets[:3]
+            ],
+        },
+        "liveMailbox": live_mailbox or {"configured": False, "matched": False, "messages": [], "error": ""},
+        "shouldUpdateNextStep": should_update_next_step,
+        "stageHint": stage_hint,
+        "stageHintConfidence": stage_hint_confidence,
+    }
+
+
+def build_operator_snapshot(settings: Settings, *, session_factory: Any | None = None) -> dict[str, Any]:
     client = HubSpotClient(settings)
     if not client.is_configured:
         raise RuntimeError("HubSpot token is not configured for this environment.")
@@ -314,6 +712,26 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
     recent_deals = _list_deals(client, limit=12)
     owner_map = {str(owner.get("id") or ""): _format_owner(owner) for owner in owners}
     stage_map = {str(stage.get("id") or ""): stage for stage in pipeline.get("stages", []) or []}
+    all_deal_ids = [str(deal.get("id") or "") for deal in all_deals if str(deal.get("id") or "").strip()]
+    recent_deal_ids = [str(deal.get("id") or "") for deal in recent_deals if str(deal.get("id") or "").strip()]
+
+    local_context = {
+        "dealRows": {},
+        "contactsByDeal": {},
+        "contactEmailsByDeal": {},
+        "assetsByDeal": {},
+        "eventsByDeal": {},
+        "signalsByDeal": {},
+    }
+    live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
+    if session_factory is not None and all_deal_ids:
+        with session_scope(session_factory) as session:
+            local_context = _load_local_deal_context(session, all_deal_ids)
+        live_mailbox_by_deal = _fetch_live_mailbox_state(
+            settings,
+            {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in recent_deal_ids},
+            max_deals=LIVE_MAILBOX_MAX_DEALS,
+        )
 
     company_ids = set()
     contact_ids = set()
@@ -334,9 +752,11 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
 
     open_deals = won_deals = lost_deals = nurture_deals = 0
     unclassified = missing_amount = missing_owner = missing_next = multi_offer = 0
+    reply_due = follow_up_due = asset_ready_to_share = live_mailbox_validated = stage_hint_candidates = 0
     open_amount = 0.0
     stage_rows: list[dict[str, Any]] = []
     stage_summary_map: dict[str, dict[str, Any]] = {}
+    as_of = datetime.now(timezone.utc)
     for stage in pipeline.get("stages", []) or []:
         row = {
             "id": str(stage.get("id") or ""),
@@ -350,12 +770,27 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
         stage_summary_map[row["id"]] = row
 
     for deal in all_deals:
+        deal_id = str(deal.get("id") or "")
         properties = deal.get("properties") or {}
         stage_id = str(properties.get("dealstage") or "")
         stage = stage_map.get(stage_id)
         summary = stage_summary_map.get(stage_id)
         amount = _to_float(properties.get("amount")) or 0.0
         inference = infer_offer(deal, None)
+        intelligence = _build_deal_intelligence(
+            deal=deal,
+            stage=stage,
+            stage_status=get_stage_status(stage) if stage else "open",
+            inference=inference,
+            current_next_step=str(properties.get("hs_next_step") or "").strip(),
+            deal_row=local_context["dealRows"].get(deal_id),
+            contacts=local_context["contactsByDeal"].get(deal_id, []),
+            assets=local_context["assetsByDeal"].get(deal_id, []),
+            events=local_context["eventsByDeal"].get(deal_id, []),
+            signals=local_context["signalsByDeal"].get(deal_id, []),
+            live_mailbox=live_mailbox_by_deal.get(deal_id),
+            as_of=as_of,
+        )
         if inference["primary_offer"] == "unknown":
             unclassified += 1
         if inference["signal_count"] > 1:
@@ -364,6 +799,16 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
             missing_amount += 1
         if not str(properties.get("hubspot_owner_id") or "").strip():
             missing_owner += 1
+        if intelligence["status"] == "reply_due":
+            reply_due += 1
+        if intelligence["status"] == "follow_up_due":
+            follow_up_due += 1
+        if intelligence["status"] == "asset_ready_to_share":
+            asset_ready_to_share += 1
+        if intelligence["liveMailbox"].get("matched"):
+            live_mailbox_validated += 1
+        if intelligence.get("stageHint"):
+            stage_hint_candidates += 1
         if not stage or not summary:
             continue
         status = get_stage_status(stage)
@@ -375,13 +820,15 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
             if not str(properties.get("hs_next_step") or "").strip():
                 missing_next += 1
                 summary["needsAttentionCount"] += 1
+            elif intelligence.get("shouldUpdateNextStep"):
+                summary["needsAttentionCount"] += 1
         elif status == "won":
             won_deals += 1
         elif status == "lost":
             lost_deals += 1
         elif status == "nurture":
             nurture_deals += 1
-            if not str(properties.get("hs_next_step") or "").strip():
+            if not str(properties.get("hs_next_step") or "").strip() or intelligence.get("shouldUpdateNextStep"):
                 summary["needsAttentionCount"] += 1
 
     recent_rows = []
@@ -394,6 +841,21 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
         inference = infer_offer(deal, company)
         amount = _to_float(properties.get("amount"))
         stage_status = get_stage_status(stage) if stage else "open"
+        local_contacts = local_context["contactsByDeal"].get(deal_id, [])
+        intelligence = _build_deal_intelligence(
+            deal=deal,
+            stage=stage,
+            stage_status=stage_status,
+            inference=inference,
+            current_next_step=str(properties.get("hs_next_step") or "").strip(),
+            deal_row=local_context["dealRows"].get(deal_id),
+            contacts=local_contacts,
+            assets=local_context["assetsByDeal"].get(deal_id, []),
+            events=local_context["eventsByDeal"].get(deal_id, []),
+            signals=local_context["signalsByDeal"].get(deal_id, []),
+            live_mailbox=live_mailbox_by_deal.get(deal_id),
+            as_of=as_of,
+        )
         missing_fields: list[str] = []
         if inference["primary_offer"] == "unknown":
             missing_fields.append("service classification")
@@ -421,11 +883,13 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
                 "stageStatus": stage_status,
                 "company": str(((company or {}).get("properties") or {}).get("name") or "No company"),
                 "contact": full_name or "No contact",
+                "contactCount": len(local_contacts),
                 "primaryOffer": inference["primary_offer_label"],
                 "overlay": inference.get("overlay"),
                 "updatedAt": str(deal.get("updatedAt") or ""),
                 "nextStep": str(properties.get("hs_next_step") or "").strip() or None,
                 "missingFields": missing_fields,
+                "intelligence": intelligence,
                 "url": (
                     f"https://app.hubspot.com/contacts/{settings.hubspot_portal_id}/record/0-3/{deal_id}"
                     if settings.hubspot_portal_id else ""
@@ -457,22 +921,27 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
             "dealsMissingOwner": missing_owner,
             "openDealsMissingNextStep": missing_next,
             "multiOfferCandidates": multi_offer,
+            "replyDueDeals": reply_due,
+            "followUpDueDeals": follow_up_due,
+            "assetsReadyToShare": asset_ready_to_share,
+            "liveMailboxValidatedDeals": live_mailbox_validated,
+            "stageHintCandidates": stage_hint_candidates,
         },
         "directives": {
             "happening": [
                 f"{open_deals} open opportunities are active in the live {pipeline.get('label') or 'HubSpot'} pipeline.",
-                f"{won_deals} won records and {lost_deals} lost records are shaping current sales history.",
+                f"{live_mailbox_validated} recent deals already have live Gmail-backed communication validation.",
                 f"{multi_offer} deals show multiple offer signals and are candidates for linked commercial records.",
             ],
             "broken": [
-                f"{unclassified} deals still lack a confident primary service or software classification.",
-                f"{missing_next} open deals do not have a next-step instruction.",
-                f"{missing_owner} deals are unassigned and {missing_amount} deals are missing amount data.",
+                f"{reply_due} deals need a reply now and {follow_up_due} need follow-up based on communication timing.",
+                f"{asset_ready_to_share} deals have a newer deck, rate sheet, or audit than the last outbound touch.",
+                f"{missing_owner} deals are unassigned, {missing_amount} are missing amount data, and {unclassified} remain unclassified.",
             ],
             "next": [
-                "Normalize live HubSpot stages into the audited shared operating model without losing current pipeline history.",
-                "Write service inference back into the deal model only when confidence is high enough to act safely.",
-                "Use the deal board and cleanup layers as the current human review path while deck and audit sync are connected.",
+                "Auto-update deal next steps only when the communication or asset evidence is strong enough to act safely.",
+                "Use live Gmail validation to confirm whether the latest motion is inbound, outbound, or waiting on a share.",
+                "Promote stage changes into the write-back layer after the communication-backed hints prove reliable in review.",
             ],
         },
         "schema": {
@@ -504,11 +973,11 @@ def build_operator_snapshot(settings: Settings) -> dict[str, Any]:
     }
 
 
-def get_operator_snapshot(settings: Settings, *, force_refresh: bool = False) -> dict[str, Any]:
+def get_operator_snapshot(settings: Settings, *, session_factory: Any | None = None, force_refresh: bool = False) -> dict[str, Any]:
     global _cached_snapshot, _cached_snapshot_expires_at
     if not force_refresh and _cached_snapshot and _cached_snapshot_expires_at > time.time():
         return _cached_snapshot
-    snapshot = build_operator_snapshot(settings)
+    snapshot = build_operator_snapshot(settings, session_factory=session_factory)
     _cached_snapshot = snapshot
     _cached_snapshot_expires_at = time.time() + SNAPSHOT_TTL_SECONDS
     return snapshot
@@ -520,11 +989,19 @@ def invalidate_operator_snapshot() -> None:
     _cached_snapshot_expires_at = 0.0
 
 
-def run_writeback(settings: Settings, *, mode: str = "preview", limit: int = 10, deal_ids: Optional[list[str]] = None) -> dict[str, Any]:
+def run_writeback(
+    settings: Settings,
+    *,
+    session_factory: Any | None = None,
+    mode: str = "preview",
+    limit: int = 10,
+    deal_ids: Optional[list[str]] = None,
+) -> dict[str, Any]:
     client = HubSpotClient(settings)
     pipeline = _get_primary_pipeline(client, settings)
     stage_map = {str(stage.get("id") or ""): stage for stage in pipeline.get("stages", []) or []}
     deals = client.batch_read("deals", deal_ids or [], properties=DEAL_PROPERTIES) if deal_ids else _list_deals(client, limit=100)
+    as_of = datetime.now(timezone.utc)
     if not deal_ids:
         filtered = []
         for deal in deals:
@@ -538,6 +1015,24 @@ def run_writeback(settings: Settings, *, mode: str = "preview", limit: int = 10,
             if needs_classification or needs_next_step:
                 filtered.append(deal)
         deals = filtered[: max(1, min(limit, 25))]
+    local_context = {
+        "dealRows": {},
+        "contactsByDeal": {},
+        "contactEmailsByDeal": {},
+        "assetsByDeal": {},
+        "eventsByDeal": {},
+        "signalsByDeal": {},
+    }
+    live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
+    candidate_deal_ids = [str(deal.get("id") or "") for deal in deals if str(deal.get("id") or "").strip()]
+    if session_factory is not None and candidate_deal_ids:
+        with session_scope(session_factory) as session:
+            local_context = _load_local_deal_context(session, candidate_deal_ids)
+        live_mailbox_by_deal = _fetch_live_mailbox_state(
+            settings,
+            {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in candidate_deal_ids},
+            max_deals=max(1, min(limit, LIVE_MAILBOX_MAX_DEALS)),
+        )
     results = []
     applied = deferred = note_count = task_count = 0
     for deal in deals:
@@ -551,18 +1046,44 @@ def run_writeback(settings: Settings, *, mode: str = "preview", limit: int = 10,
             company_rows = client.batch_read("companies", [company_ids[0]], properties=("name", "service_type"))
             company = company_rows[0] if company_rows else None
         inference = infer_offer(deal, company)
-        suggestion = build_suggested_next_step(stage, inference)
+        intelligence = _build_deal_intelligence(
+            deal=deal,
+            stage=stage,
+            stage_status=stage_status,
+            inference=inference,
+            current_next_step=str(properties.get("hs_next_step") or "").strip(),
+            deal_row=local_context["dealRows"].get(deal_id),
+            contacts=local_context["contactsByDeal"].get(deal_id, []),
+            assets=local_context["assetsByDeal"].get(deal_id, []),
+            events=local_context["eventsByDeal"].get(deal_id, []),
+            signals=local_context["signalsByDeal"].get(deal_id, []),
+            live_mailbox=live_mailbox_by_deal.get(deal_id),
+            as_of=as_of,
+        )
         actions = []
         high_conf = []
         if not str(properties.get("service_type") or "").strip() and inference.get("deal_service_type_value") and float(inference.get("confidence") or 0.0) >= HIGH_CONFIDENCE_THRESHOLD:
             high_conf.append({"type": "update_deal_service_type", "payload": {"service_type": inference["deal_service_type_value"]}, "reason": f"set deal service_type to {inference['deal_service_type_value']}", "confidence": inference["confidence"]})
-        if stage_status in {"open", "nurture"} and not str(properties.get("hs_next_step") or "").strip() and float(suggestion.get("confidence") or 0.0) >= HIGH_CONFIDENCE_THRESHOLD:
-            high_conf.append({"type": "update_next_step", "payload": {"hs_next_step": suggestion["text"]}, "reason": "set deterministic next step from current stage", "confidence": suggestion["confidence"]})
+        if stage_status in {"open", "nurture"} and intelligence.get("shouldUpdateNextStep"):
+            high_conf.append(
+                {
+                    "type": "update_next_step",
+                    "payload": {"hs_next_step": intelligence["recommendedNextStep"]},
+                    "reason": f"set next step from {intelligence['status'].replace('_', ' ')} evidence",
+                    "confidence": intelligence["confidence"],
+                }
+            )
         medium_reasons = []
         if not high_conf and not str(properties.get("service_type") or "").strip() and inference.get("deal_service_type_value"):
             medium_reasons.append(f"deal service_type likely should be {inference['deal_service_type_value']} but confidence is only {round(float(inference.get('confidence') or 0.0) * 100)}%")
-        if not high_conf and stage_status in {"open", "nurture"} and not str(properties.get("hs_next_step") or "").strip():
-            medium_reasons.append(f"next step suggestion exists but confidence is only {round(float(suggestion.get('confidence') or 0.0) * 100)}%")
+        if not high_conf and stage_status in {"open", "nurture"} and intelligence.get("recommendedNextStep"):
+            medium_reasons.append(
+                f"next step should likely move to '{intelligence['recommendedNextStep']}' from {intelligence['status'].replace('_', ' ')} evidence, but confidence is only {round(float(intelligence.get('confidence') or 0.0) * 100)}%"
+            )
+        if intelligence.get("stageHint"):
+            medium_reasons.append(
+                f"communication and asset signals imply the deal may belong in {intelligence['stageHint']}, but stage automation is still gated for review"
+            )
         if not high_conf and not medium_reasons:
             continue
         if mode == "apply" and high_conf:
@@ -605,7 +1126,13 @@ def run_writeback(settings: Settings, *, mode: str = "preview", limit: int = 10,
                 "stage": str((stage or {}).get("label") or properties.get("dealstage") or "Unknown stage"),
                 "stageStatus": stage_status,
                 "current": {"serviceType": str(properties.get("service_type") or "").strip() or None, "nextStep": str(properties.get("hs_next_step") or "").strip() or None},
-                "inference": {"primaryOffer": inference["primary_offer_label"], "confidence": inference["confidence"], "reasons": inference["reasons"], "targetDealServiceType": inference["deal_service_type_value"]},
+                "inference": {
+                    "primaryOffer": inference["primary_offer_label"],
+                    "confidence": inference["confidence"],
+                    "reasons": inference["reasons"],
+                    "targetDealServiceType": inference["deal_service_type_value"],
+                },
+                "intelligence": intelligence,
                 "actions": actions,
             }
         )
@@ -642,6 +1169,23 @@ def _fmt_relative(value: str) -> str:
         return value
 
 
+def _recent_contact_suffix(deal: dict[str, Any]) -> str:
+    count = int(deal.get("contactCount") or 0)
+    extra = max(count - 1, 0)
+    if extra <= 0:
+        return ""
+    return f" +{extra} more"
+
+
+def _recent_gmail_status(deal: dict[str, Any]) -> str:
+    mailbox = (deal.get("intelligence", {}).get("liveMailbox", {}) or {})
+    if mailbox.get("matched"):
+        return "validated"
+    if mailbox.get("error"):
+        return "error"
+    return "not validated"
+
+
 def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, Any]] = None, writeback: Optional[dict[str, Any]] = None, status_message: str = "") -> str:
     nav_styles = render_agent_nav_styles()
     nav = render_agent_nav("sales", sales_section="sales_operator", user=user)
@@ -664,9 +1208,12 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <article class="panel">
           <p class="eyebrow">{_esc(deal.get("primaryOffer"))}</p>
           <h3><a href="{_esc(deal.get("url"))}" target="_blank" rel="noreferrer">{_esc(deal.get("name"))}</a></h3>
-          <p class="muted">{_esc(deal.get("company"))} · {_esc(deal.get("contact"))}</p>
+          <p class="muted">{_esc(deal.get("company"))} · {_esc(deal.get("contact"))}{_esc(_recent_contact_suffix(deal))}</p>
           <p>{_fmt_money(deal.get("amount"))} · {_esc(deal.get("stage"))} · {_esc(deal.get("owner"))}</p>
           <p><strong>Next step:</strong> {_esc(deal.get("nextStep") or "No next step")}</p>
+          <p><strong>AI read:</strong> {_esc(deal.get("intelligence", {}).get("recommendedNextStep") or "No AI recommendation")}</p>
+          <p class="muted">{_esc(deal.get("intelligence", {}).get("summary") or "No communication summary yet.")}</p>
+          <p class="muted">Assets: {_esc((deal.get("intelligence", {}).get("assetState", {}) or {}).get("latestAssetLabel") or "No linked asset")} · Gmail: {_esc(_recent_gmail_status(deal))}</p>
           <p><strong>Missing:</strong> {_esc(", ".join(deal.get("missingFields") or []) or "No critical gaps detected.")}</p>
           <p class="muted">Updated {_fmt_relative(str(deal.get("updatedAt") or ""))}</p>
         </article>
@@ -683,6 +1230,8 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
               <p class="muted">{_esc(deal.get("companyName"))} · {_esc(deal.get("stage"))}</p>
               <p><strong>Current service type:</strong> {_esc(deal.get("current", {}).get("serviceType") or "Blank")}</p>
               <p><strong>Current next step:</strong> {_esc(deal.get("current", {}).get("nextStep") or "Blank")}</p>
+              <p><strong>AI recommendation:</strong> {_esc(deal.get("intelligence", {}).get("recommendedNextStep") or "None")}</p>
+              <p class="muted">{_esc(deal.get("intelligence", {}).get("summary") or "")}</p>
               <ul class="list">{"".join(f"<li>{_esc(action.get('type'))} · {_esc(action.get('status'))} · {_esc(action.get('reason'))}</li>" for action in deal.get("actions", [])) or "<li>No actions recorded.</li>"}</ul>
             </article>
             """
@@ -754,9 +1303,9 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <div class="stats">
           <div class="stat"><div class="n">{int(summary.get("openDeals") or 0)}</div><div class="l">Open deals</div></div>
           <div class="stat"><div class="n">{_fmt_money(summary.get("openAmount"))}</div><div class="l">Open value</div></div>
-          <div class="stat"><div class="n">{int(summary.get("unclassifiedDeals") or 0)}</div><div class="l">Unclassified</div></div>
-          <div class="stat"><div class="n">{int(summary.get("openDealsMissingNextStep") or 0)}</div><div class="l">Missing next step</div></div>
-          <div class="stat"><div class="n">{int(summary.get("multiOfferCandidates") or 0)}</div><div class="l">Multi-offer</div></div>
+          <div class="stat"><div class="n">{int(summary.get("replyDueDeals") or 0)}</div><div class="l">Reply due</div></div>
+          <div class="stat"><div class="n">{int(summary.get("assetsReadyToShare") or 0)}</div><div class="l">Assets ready</div></div>
+          <div class="stat"><div class="n">{int(summary.get("liveMailboxValidatedDeals") or 0)}</div><div class="l">Gmail validated</div></div>
         </div>
       </section>
       {status_html}
@@ -786,7 +1335,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
       </section>
       <section class="workspace section-gap">
         <h2>First write-back action layer</h2>
-        <p class="muted">Preview candidate actions first. Apply writes only high-confidence deal updates plus supporting notes and follow-up tasks.</p>
+        <p class="muted">Preview candidate actions first. Apply writes only when the service inference or communication-backed next step is high confidence, then support that with internal notes and follow-up tasks.</p>
         <form method="post" action="/admin/sales/writeback" class="inline-form">
           <label for="limit">Candidate limit</label>
           <input id="limit" name="limit" type="text" value="10">
