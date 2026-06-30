@@ -657,6 +657,11 @@ def admin_login_page(request: Request) -> HTMLResponse:
         unavailable_message = (
             "Login is not configured on this deployment. Add Google OAuth or a break-glass password in Render."
         )
+    elif not show_google_button and show_password_form:
+        unavailable_message = (
+            "Google sign-in is currently unavailable. Use the shared fallback "
+            "password only if you already have break-glass access."
+        )
     return HTMLResponse(
         render_login_page(
             error_message=unavailable_message,
