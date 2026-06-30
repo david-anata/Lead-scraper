@@ -199,3 +199,46 @@ class SalesOperatorDashboardTests(unittest.TestCase):
         self.assertEqual(intelligence["assetState"]["reviewState"], "stale_after_reply")
         self.assertTrue(intelligence["needsAssetRefreshReview"])
         self.assertIn("may need a refresh", " ".join(intelligence["reasons"]))
+
+    def test_build_proposed_actions_marks_send_updated_asset_ready(self):
+        actions = operator_dashboard._build_proposed_actions(
+            deal_name="Acme Fulfillment",
+            stage_status="open",
+            primary_offer="Fulfillment",
+            company_present=True,
+            contact_present=True,
+            contact_count=1,
+            missing_fields=[],
+            intelligence={
+                "status": "asset_ready_to_share",
+                "recommendedNextStep": "Send updated Fulfillment Rate Sheet",
+                "assetState": {
+                    "status": "ready_to_share",
+                    "latestAssetLabel": "Fulfillment Rate Sheet",
+                    "count": 1,
+                },
+            },
+        )
+
+        self.assertEqual(actions[0]["state"], "ready")
+        self.assertIn("Send updated Fulfillment Rate Sheet", actions[0]["title"])
+
+    def test_build_proposed_actions_blocks_deck_creation_when_context_missing(self):
+        actions = operator_dashboard._build_proposed_actions(
+            deal_name="Acme Amazon",
+            stage_status="open",
+            primary_offer="Unclassified",
+            company_present=False,
+            contact_present=False,
+            contact_count=0,
+            missing_fields=["company link", "contact link", "service classification"],
+            intelligence={
+                "status": "monitor",
+                "recommendedNextStep": "",
+                "assetState": {"status": "none", "latestAssetLabel": None, "count": 0},
+            },
+        )
+
+        self.assertEqual(actions[0]["state"], "blocked")
+        self.assertIn("Collect the missing info", actions[0]["title"])
+        self.assertIn("company link", actions[0]["blockedBy"])

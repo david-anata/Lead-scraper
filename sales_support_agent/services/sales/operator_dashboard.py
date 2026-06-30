@@ -96,6 +96,38 @@ MEDIUM_CONFIDENCE_THRESHOLD = 0.65
 SNAPSHOT_TTL_SECONDS = 30
 LIVE_MAILBOX_LOOKBACK_DAYS = 120
 LIVE_MAILBOX_MAX_DEALS = 6
+AUTOMATION_SCHEDULES = [
+    {
+        "name": "Shared inbox sync",
+        "cadence": "Every 15 minutes",
+        "purpose": "Pull fresh Gmail evidence, classify it, and match it to active HubSpot deals.",
+        "outputs": ["Mailbox signals", "reply-due detection", "inbox-ahead drift checks"],
+    },
+    {
+        "name": "Sales operator review",
+        "cadence": "Hourly",
+        "purpose": "Re-score active deals, refresh proposed actions, and queue high-confidence write-backs.",
+        "outputs": ["Reply queues", "asset-share queues", "deferred review tasks"],
+    },
+    {
+        "name": "Deck and audit readiness scan",
+        "cadence": "Daily at 8:00 AM",
+        "purpose": "Check whether each proposal-stage deal has enough information to create or refresh the right deck or audit.",
+        "outputs": ["Ready-to-create deck actions", "blocked-by-missing-info actions", "asset refresh review"],
+    },
+    {
+        "name": "Follow-up and nurture sweep",
+        "cadence": "Daily at 2:00 PM",
+        "purpose": "Catch stale outbound threads, missing next steps, and nurture deals that need the next touch.",
+        "outputs": ["Follow-up due queue", "internal review notes", "owner tasks"],
+    },
+    {
+        "name": "Morning digest",
+        "cadence": "Weekdays at 7:30 AM",
+        "purpose": "Summarize what changed overnight and what each operator should work first.",
+        "outputs": ["Operator digest", "reply priorities", "asset-send priorities"],
+    },
+]
 
 _cached_snapshot: Optional[dict[str, Any]] = None
 _cached_snapshot_expires_at = 0.0
@@ -1013,6 +1045,16 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
                     f"https://app.hubspot.com/contacts/{settings.hubspot_portal_id}/record/0-3/{deal_id}"
                     if settings.hubspot_portal_id else ""
                 ),
+                "proposedActions": _build_proposed_actions(
+                    deal_name=str(properties.get("dealname") or "").strip() or "Unnamed deal",
+                    stage_status=stage_status,
+                    primary_offer=inference["primary_offer_label"],
+                    company_present=bool(company),
+                    contact_present=bool(contact) or bool(local_contacts),
+                    contact_count=len(local_contacts),
+                    missing_fields=missing_fields,
+                    intelligence=intelligence,
+                ),
             }
         )
 
@@ -1088,6 +1130,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         },
         "objectDefinitions": OBJECT_DEFINITIONS,
         "autonomy": AUTONOMY_POLICY,
+        "automationSchedules": AUTOMATION_SCHEDULES,
         "stageDrift": {
             "targetOnly": [label for label in TARGET_STAGE_LABELS if _normalize(label) not in normalized_live],
             "liveOnly": [label for label in live_labels if _normalize(label) not in normalized_target],
@@ -1355,6 +1398,126 @@ def _render_queue_panel(title: str, items: list[dict[str, Any]], empty_text: str
     """
 
 
+def _render_schedule_panel(item: dict[str, Any]) -> str:
+    return f"""
+    <article class="panel">
+      <p class="eyebrow">{_esc(item.get('cadence'))}</p>
+      <h3>{_esc(item.get('name'))}</h3>
+      <p>{_esc(item.get('purpose'))}</p>
+      <p class="muted">Outputs: {_esc(', '.join(item.get('outputs') or []))}</p>
+    </article>
+    """
+
+
+def _has_sendable_asset(intelligence: dict[str, Any]) -> bool:
+    asset_state = intelligence.get("assetState", {}) or {}
+    return bool(asset_state.get("latestAssetLabel")) and str(asset_state.get("status") or "") in {"ready_to_share", "shared"}
+
+
+def _build_proposed_actions(
+    *,
+    deal_name: str,
+    stage_status: str,
+    primary_offer: str,
+    company_present: bool,
+    contact_present: bool,
+    contact_count: int,
+    missing_fields: list[str],
+    intelligence: dict[str, Any],
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    asset_state = intelligence.get("assetState", {}) or {}
+    asset_label = str(asset_state.get("latestAssetLabel") or "proposal package").strip()
+    has_sendable_asset = _has_sendable_asset(intelligence)
+    has_core_context = company_present and contact_present and primary_offer != "Unclassified"
+    blocked_fields = [field for field in missing_fields if field in {"company link", "contact link", "service classification"}]
+    ready_for_asset_creation = has_core_context and not blocked_fields
+
+    if intelligence.get("status") == "reply_due":
+        actions.append(
+            {
+                "title": "Reply to latest prospect message",
+                "state": "ready",
+                "reason": "A newer inbound prospect message exists than the latest outbound touch.",
+            }
+        )
+
+    if intelligence.get("status") == "asset_ready_to_share" and has_sendable_asset and contact_count > 0:
+        actions.append(
+            {
+                "title": f"Send updated {asset_label}",
+                "state": "ready",
+                "reason": "The latest linked asset is newer than the last outbound touch, so it is ready to sync and send.",
+            }
+        )
+
+    if intelligence.get("needsAssetRefreshReview"):
+        if ready_for_asset_creation:
+            actions.append(
+                {
+                    "title": f"Refresh {asset_label} before next send",
+                    "state": "ready",
+                    "reason": "The prospect replied after the latest asset was shared, so the package likely needs an updated version.",
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "title": "Refresh deck or audit after missing info is filled",
+                    "state": "blocked",
+                    "reason": "The asset likely needs a refresh, but core context is still missing.",
+                    "blockedBy": blocked_fields,
+                }
+            )
+
+    if not asset_state.get("count") and stage_status in {"open", "nurture"}:
+        if ready_for_asset_creation:
+            actions.append(
+                {
+                    "title": "Create the first deck or audit",
+                    "state": "ready",
+                    "reason": "The deal is active and has enough context to generate a sales asset and sync it back to HubSpot.",
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "title": "Collect the missing info before generating a deck",
+                    "state": "blocked",
+                    "reason": "The deal does not yet have the minimum context needed to generate and sync a deck cleanly.",
+                    "blockedBy": blocked_fields or missing_fields,
+                }
+            )
+
+    if intelligence.get("needsInboxSyncReview"):
+        actions.append(
+            {
+                "title": "Review live inbox drift and sync HubSpot context",
+                "state": "review",
+                "reason": "Live Gmail is ahead of the mirrored deal context, so the thread should be reviewed before further automation.",
+            }
+        )
+
+    if stage_status in {"open", "nurture"} and not str(intelligence.get("recommendedNextStep") or "").strip():
+        actions.append(
+            {
+                "title": "Define the next operator move",
+                "state": "review",
+                "reason": "This deal still needs a clear next commercial action.",
+            }
+        )
+
+    if not actions:
+        actions.append(
+            {
+                "title": f"Monitor {deal_name}",
+                "state": "monitor",
+                "reason": "No immediate operator action was inferred beyond continued monitoring.",
+            }
+        )
+    return actions[:4]
+
+
 def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, Any]] = None, writeback: Optional[dict[str, Any]] = None, status_message: str = "") -> str:
     nav_styles = render_agent_nav_styles()
     nav = render_agent_nav("sales", sales_section="sales_operator", user=user)
@@ -1362,6 +1525,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     summary = snapshot.get("summary", {})
     schema = snapshot.get("schema", {})
     queues = snapshot.get("operatorQueues", {}) or {}
+    automation_schedules = list(snapshot.get("automationSchedules") or [])
     stage_cards = "".join(
         f"""
         <article class="panel">
@@ -1384,6 +1548,9 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p><strong>AI read:</strong> {_esc(deal.get("intelligence", {}).get("recommendedNextStep") or "No AI recommendation")}</p>
           <p class="muted">{_esc(deal.get("intelligence", {}).get("summary") or "No communication summary yet.")}</p>
           <p class="muted">Assets: {_esc((deal.get("intelligence", {}).get("assetState", {}) or {}).get("latestAssetLabel") or "No linked asset")} · Asset state: {_esc(_recent_asset_status(deal))} · Gmail: {_esc(_recent_gmail_status(deal))}</p>
+          <div class="action-stack">
+            {"".join(f"<div class='action-row'><span class='action-state action-state--" + _esc(str(action.get('state') or 'review')).lower() + "'>" + _esc(_titleize_state(action.get('state') or 'review')) + "</span><div><p><strong>" + _esc(action.get('title')) + "</strong></p><p class='muted'>" + _esc(action.get('reason')) + (" · Blocked by: " + _esc(', '.join(action.get('blockedBy') or [])) if action.get('blockedBy') else "") + "</p></div></div>" for action in deal.get("proposedActions", [])) or "<p class='muted'>No proposed actions.</p>"}
+          </div>
           <p><strong>Missing:</strong> {_esc(", ".join(deal.get("missingFields") or []) or "No critical gaps detected.")}</p>
           <p class="muted">Updated {_fmt_relative(str(deal.get("updatedAt") or ""))}</p>
         </article>
@@ -1399,6 +1566,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
             _render_queue_panel("Refresh Asset Review", list(queues.get("assetRefreshReview") or []), "No latest-reply signals currently suggest the shared asset package is stale."),
         ]
     )
+    schedule_cards = "".join(_render_schedule_panel(item) for item in automation_schedules)
     writeback_markup = ""
     if writeback:
         writeback_cards = "".join(
@@ -1475,6 +1643,15 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
       .queue-item:first-child {{ padding-top:0; border-top:none; }}
       .queue-top {{ display:flex; align-items:center; justify-content:space-between; gap:8px; }}
       .queue-stage {{ display:inline-flex; padding:4px 8px; border-radius:999px; background:rgba(133,187,218,0.16); font-size:11px; font-weight:700; }}
+      .action-stack {{ display:grid; gap:10px; margin:12px 0; }}
+      .action-row {{ display:grid; grid-template-columns:auto 1fr; gap:10px; align-items:flex-start; padding:10px 0; border-top:1px solid rgba(43,54,68,0.08); }}
+      .action-row:first-child {{ border-top:none; padding-top:0; }}
+      .action-row p {{ margin-bottom:4px; }}
+      .action-state {{ display:inline-flex; padding:4px 8px; border-radius:999px; font-size:11px; font-weight:700; }}
+      .action-state--ready {{ background:rgba(46,125,91,0.14); color:#2e7d5b; }}
+      .action-state--review {{ background:rgba(194,102,59,0.14); color:#b85f36; }}
+      .action-state--blocked {{ background:rgba(139,76,66,0.14); color:#8b4c42; }}
+      .action-state--monitor {{ background:rgba(43,54,68,0.10); color:#2B3644; }}
     </style>
   </head>
   <body>
@@ -1517,6 +1694,11 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <h2>Operator queues</h2>
         <p class="muted">These queues turn deal, asset, and inbox evidence into the next operator motions without overhauling the page.</p>
         <div class="grid">{queue_cards}</div>
+      </section>
+      <section class="workspace section-gap">
+        <h2>Scheduled automations</h2>
+        <p class="muted">These are the clean scheduled jobs that should drive the operator layer instead of relying on manual refreshes.</p>
+        <div class="grid">{schedule_cards}</div>
       </section>
       <section class="workspace section-gap">
         <h2>Live pipeline and object model</h2>
