@@ -25,11 +25,37 @@ from sales_support_agent.main import app  # noqa: E402
 from sales_support_agent.models.database import session_scope  # noqa: E402
 from sales_support_agent.models.entities import HubSpotDeal, HubSpotDealContact  # noqa: E402
 from sales_support_agent.services.admin_auth import create_user_session_token  # noqa: E402
+from sales_support_agent.services.sales.deal_create import (  # noqa: E402
+    DealCreateOptions,
+    PipelineOption,
+    SelectOption,
+)
 
 
 def _cookie_for(email: str, name: str = "User", role: str = "member"):
     s = app.state.agent_settings
     return s.admin_cookie_name, create_user_session_token(s, email=email, name=name, role=role)
+
+
+def _fake_options() -> DealCreateOptions:
+    return DealCreateOptions(
+        pipelines=(
+            PipelineOption(
+                value="default",
+                label="Sales Pipeline",
+                detail="default",
+                stages=(
+                    SelectOption("appointmentscheduled", "Appointment Scheduled", "appointmentscheduled"),
+                    SelectOption("qualifiedtobuy", "Qualified To Buy", "qualifiedtobuy"),
+                ),
+            ),
+        ),
+        owners=(SelectOption("owner1", "David Narayan", "david@anatainc.com | owner1"),),
+        companies=(SelectOption("company1", "Anata", "anatainc.com | company1"),),
+        contacts=(SelectOption("contact1", "Maya Lee", "maya@anatainc.com | contact1"),),
+        service_lines=(SelectOption("fulfillment", "Fulfillment"), SelectOption("marketing", "Marketing")),
+        lead_sources=(SelectOption("agent", "Agent"), SelectOption("website", "Website")),
+    )
 
 
 class SalesDealCreateRouteTests(unittest.TestCase):
@@ -44,6 +70,11 @@ class SalesDealCreateRouteTests(unittest.TestCase):
         self._original_token = self.settings.hubspot_api_token
         self._original_portal = self.settings.hubspot_portal_id
         self._original_pipeline = self.settings.hubspot_sales_pipeline_id
+        self.options_patcher = patch(
+            "sales_support_agent.api.sales_router.load_deal_create_options",
+            return_value=_fake_options(),
+        )
+        self.options_patcher.start()
         with session_scope(app.state.session_factory) as session:
             for row in session.query(HubSpotDealContact).all():
                 session.delete(row)
@@ -54,6 +85,7 @@ class SalesDealCreateRouteTests(unittest.TestCase):
         object.__setattr__(self.settings, "hubspot_api_token", self._original_token)
         object.__setattr__(self.settings, "hubspot_portal_id", self._original_portal)
         object.__setattr__(self.settings, "hubspot_sales_pipeline_id", self._original_pipeline)
+        self.options_patcher.stop()
 
     def test_create_form_renders_before_dynamic_deal_route(self) -> None:
         resp = self.client.get("/admin/sales/deals/create")
@@ -61,6 +93,20 @@ class SalesDealCreateRouteTests(unittest.TestCase):
         self.assertIn('action="/admin/sales/deals/create"', resp.text)
         self.assertIn("Create HubSpot Deal", resp.text)
         self.assertNotIn("Deal not found", resp.text)
+
+    def test_create_form_uses_readable_dropdowns_for_hubspot_ids(self) -> None:
+        resp = self.client.get("/admin/sales/deals/create")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.text
+        self.assertIn('<select id="pipeline" name="pipeline"', body)
+        self.assertIn("Sales Pipeline - default", body)
+        self.assertIn("Appointment Scheduled - appointmentscheduled", body)
+        self.assertIn('<select id="hubspot_owner_id" name="hubspot_owner_id"', body)
+        self.assertIn("David Narayan - david@anatainc.com | owner1", body)
+        self.assertIn('<select id="company_id" name="company_id"', body)
+        self.assertIn("Anata - anatainc.com | company1", body)
+        self.assertIn('<select id="contact_id" name="contact_id"', body)
+        self.assertIn("Maya Lee - maya@anatainc.com | contact1", body)
 
     def test_create_validates_rules_before_hubspot_call(self) -> None:
         object.__setattr__(self.settings, "hubspot_api_token", "test-token")

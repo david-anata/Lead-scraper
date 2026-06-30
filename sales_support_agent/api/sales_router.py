@@ -8,6 +8,7 @@ Priorities page (kept) and the off-limits "Generate sales deck" feature.
 
 from __future__ import annotations
 
+import json
 import logging
 import html
 
@@ -41,7 +42,9 @@ from sales_support_agent.services.sales.deal_detail import (
 )
 from sales_support_agent.services.sales.deal_create import (
     SalesDealRulesError,
+    SelectOption,
     build_deal_associations,
+    load_deal_create_options,
     mirror_created_deal,
     normalize_deal_create_request,
     read_sales_rules,
@@ -132,6 +135,36 @@ async def _deal_create_payload(request: Request) -> dict[str, Any]:
     return {str(key): str(value) for key, value in form.items()}
 
 
+def _select_html(
+    *,
+    field_id: str,
+    name: str,
+    options: tuple[SelectOption, ...],
+    selected: str = "",
+    placeholder: str,
+    required: bool = True,
+) -> str:
+    selected = str(selected or "").strip()
+    seen_selected = False
+    required_attr = " required" if required else ""
+    rows = [f'<option value="">Select {placeholder}</option>']
+    for opt in options:
+        value = str(opt.value or "").strip()
+        if not value:
+            continue
+        label = str(opt.label or value).strip()
+        detail = str(opt.detail or "").strip()
+        text = label if not detail else f"{label} - {detail}"
+        selected_attr = ""
+        if selected and selected == value:
+            selected_attr = " selected"
+            seen_selected = True
+        rows.append(f'<option value="{_esc(value)}"{selected_attr}>{_esc(text)}</option>')
+    if selected and not seen_selected:
+        rows.append(f'<option value="{_esc(selected)}" selected>{_esc(selected)} - current value</option>')
+    return f'<select id="{_esc(field_id)}" name="{_esc(name)}"{required_attr}>{"".join(rows)}</select>'
+
+
 def _render_create_deal_page(
     request: Request,
     *,
@@ -157,14 +190,97 @@ def _render_create_deal_page(
     elif message:
         error_html = f'<div class="flash flash--warn">{_esc(message)}</div>'
 
-    def v(key: str) -> str:
-        return _esc(values.get(key, ""))
-
     settings = _sales_settings(request)
-    default_pipeline = v("pipeline") or _esc(settings.hubspot_sales_pipeline_id or "default")
-    default_stage = v("dealstage") or _esc("appointmentscheduled")
-    default_service = v("anata_service_line") or _esc("fulfillment")
-    default_source = v("anata_lead_source_detail") or _esc("agent")
+    rules_warning = ""
+    try:
+        rules = read_sales_rules()
+    except SalesDealRulesError as exc:
+        rules = {}
+        rules_warning = str(exc)
+    options = load_deal_create_options(settings, rules)
+    warning_html = ""
+    option_warnings = list(options.warnings)
+    if rules_warning:
+        option_warnings.insert(0, rules_warning)
+    if option_warnings:
+        warning_html = (
+            '<div class="flash flash--soft"><strong>Dropdowns are partial:</strong><ul>'
+            + "".join(f"<li>{_esc(item)}</li>" for item in option_warnings)
+            + "</ul></div>"
+        )
+
+    def raw(key: str) -> str:
+        return str(values.get(key, "") or "").strip()
+
+    def v(key: str) -> str:
+        return _esc(raw(key))
+
+    fallback_pipeline = settings.hubspot_sales_pipeline_id or "default"
+    selected_pipeline = raw("pipeline") or fallback_pipeline
+    if selected_pipeline == "default" and options.pipelines:
+        selected_pipeline = options.pipelines[0].value
+    first_pipeline = next((p for p in options.pipelines if p.value == selected_pipeline), None)
+    selected_stage = raw("dealstage") or ((first_pipeline.stages[0].value if first_pipeline and first_pipeline.stages else "") or "appointmentscheduled")
+    selected_service = raw("anata_service_line") or ("fulfillment" if any(o.value == "fulfillment" for o in options.service_lines) else (options.service_lines[0].value if options.service_lines else "fulfillment"))
+    selected_source = raw("anata_lead_source_detail") or ("agent" if any(o.value == "agent" for o in options.lead_sources) else (options.lead_sources[0].value if options.lead_sources else "agent"))
+
+    pipeline_select = _select_html(
+        field_id="pipeline",
+        name="pipeline",
+        options=tuple(options.pipelines),
+        selected=selected_pipeline,
+        placeholder="pipeline",
+    )
+    stage_select = _select_html(
+        field_id="dealstage",
+        name="dealstage",
+        options=first_pipeline.stages if first_pipeline else (),
+        selected=selected_stage,
+        placeholder="deal stage",
+    )
+    service_select = _select_html(
+        field_id="anata_service_line",
+        name="anata_service_line",
+        options=options.service_lines,
+        selected=selected_service,
+        placeholder="service line",
+    )
+    source_select = _select_html(
+        field_id="anata_lead_source_detail",
+        name="anata_lead_source_detail",
+        options=options.lead_sources,
+        selected=selected_source,
+        placeholder="lead source",
+    )
+    owner_select = _select_html(
+        field_id="hubspot_owner_id",
+        name="hubspot_owner_id",
+        options=options.owners,
+        selected=raw("hubspot_owner_id"),
+        placeholder="owner",
+    )
+    company_select = _select_html(
+        field_id="company_id",
+        name="company_id",
+        options=options.companies,
+        selected=raw("company_id") or raw("hubspot_company_id"),
+        placeholder="company",
+    )
+    contact_select = _select_html(
+        field_id="contact_id",
+        name="contact_id",
+        options=options.contacts,
+        selected=raw("contact_id") or raw("hubspot_contact_id"),
+        placeholder="contact",
+    )
+    pipeline_stage_data = {
+        pipeline.value: [
+            {"value": stage.value, "label": stage.label, "detail": stage.detail}
+            for stage in pipeline.stages
+        ]
+        for pipeline in options.pipelines
+    }
+    pipeline_stage_json = html.escape(json.dumps(pipeline_stage_data), quote=False)
     nav_styles = render_agent_nav_styles()
     return f"""<!doctype html>
 <html lang="en">
@@ -184,6 +300,8 @@ def _render_create_deal_page(
       label{{display:block;font-weight:700;font-size:12px;margin:13px 0 5px;}} input,select,textarea{{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font:inherit;color:var(--dark-blue);background:#fff;}}
       .grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;}} .btn{{border:1px solid var(--dark-blue);background:var(--dark-blue);color:#fff;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer;}} .btn--ghost{{background:#fff;color:var(--dark-blue);text-decoration:none;display:inline-block;}}
       .actions{{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap;}} .flash{{border:1px solid rgba(178,59,59,.25);background:#fff4f4;color:#8a2424;border-radius:12px;padding:12px 14px;margin:0 0 16px;font-size:13px;}} .flash ul{{margin:6px 0 0;padding-left:18px;}}
+      .flash--soft{{border-color:rgba(133,187,218,.45);background:rgba(133,187,218,.08);color:rgba(43,54,68,.78);}}
+      .hint{{display:block;color:rgba(43,54,68,.55);font-size:11.5px;margin-top:4px;line-height:1.35;}}
       @media(max-width:720px){{.grid{{grid-template-columns:1fr;}}}}
     </style>
   </head>
@@ -195,24 +313,25 @@ def _render_create_deal_page(
         <h1>Create Deal.</h1>
         <p class="intro">Creates a HubSpot deal only after validating required fields and company/contact associations from <code>config/hubspot_sales_rules.json</code>.</p>
         {error_html}
+        {warning_html}
         <form method="post" action="/admin/sales/deals/create">
           <label for="dealname">Deal name</label>
           <input id="dealname" name="dealname" value="{v('dealname')}" required>
           <div class="grid">
-            <div><label for="pipeline">Pipeline</label><input id="pipeline" name="pipeline" value="{default_pipeline}" required></div>
-            <div><label for="dealstage">Deal stage</label><input id="dealstage" name="dealstage" value="{default_stage}" required></div>
+            <div><label for="pipeline">Pipeline</label>{pipeline_select}<span class="hint">Loaded from HubSpot pipelines.</span></div>
+            <div><label for="dealstage">Deal stage</label>{stage_select}<span class="hint">Updates when the pipeline changes.</span></div>
           </div>
           <div class="grid">
-            <div><label for="anata_service_line">Service line</label><input id="anata_service_line" name="anata_service_line" value="{default_service}" required></div>
-            <div><label for="anata_lead_source_detail">Lead source detail</label><input id="anata_lead_source_detail" name="anata_lead_source_detail" value="{default_source}" required></div>
+            <div><label for="anata_service_line">Service line</label>{service_select}</div>
+            <div><label for="anata_lead_source_detail">Lead source detail</label>{source_select}</div>
           </div>
           <div class="grid">
-            <div><label for="hubspot_owner_id">HubSpot owner ID</label><input id="hubspot_owner_id" name="hubspot_owner_id" value="{v('hubspot_owner_id')}" required></div>
+            <div><label for="hubspot_owner_id">Owner</label>{owner_select}<span class="hint">Shows name/email, submits HubSpot owner ID.</span></div>
             <div><label for="amount">Amount</label><input id="amount" name="amount" value="{v('amount')}" inputmode="decimal"></div>
           </div>
           <div class="grid">
-            <div><label for="company_id">HubSpot company ID</label><input id="company_id" name="company_id" value="{v('company_id')}" required></div>
-            <div><label for="contact_id">HubSpot contact ID</label><input id="contact_id" name="contact_id" value="{v('contact_id')}" required></div>
+            <div><label for="company_id">Company</label>{company_select}<span class="hint">Shows company/domain, submits HubSpot company ID.</span></div>
+            <div><label for="contact_id">Contact</label>{contact_select}<span class="hint">Shows contact/email, submits HubSpot contact ID.</span></div>
           </div>
           <label for="closedate">Close date</label>
           <input id="closedate" name="closedate" value="{v('closedate')}" placeholder="YYYY-MM-DD">
@@ -223,6 +342,36 @@ def _render_create_deal_page(
         </form>
       </div>
     </main>
+    <script type="application/json" id="pipeline-stage-data">{pipeline_stage_json}</script>
+    <script>
+      (function(){{
+        var pipeline=document.getElementById('pipeline');
+        var stage=document.getElementById('dealstage');
+        var dataEl=document.getElementById('pipeline-stage-data');
+        if(!pipeline||!stage||!dataEl)return;
+        var data={{}};
+        try{{data=JSON.parse(dataEl.textContent||'{{}}');}}catch(e){{data={{}};}}
+        function renderStages(){{
+          var current=stage.value||stage.getAttribute('data-selected')||'';
+          var rows=data[pipeline.value]||[];
+          var html='<option value="">Select deal stage</option>';
+          var found=false;
+          rows.forEach(function(row){{
+            var text=row.label||row.value;
+            if(row.detail)text+=' - '+row.detail;
+            var selected=current&&current===row.value;
+            if(selected)found=true;
+            html+='<option value="'+String(row.value).replace(/"/g,'&quot;')+'"'+(selected?' selected':'')+'>'+text.replace(/</g,'&lt;')+'</option>';
+          }});
+          if(current&&!found)html+='<option value="'+String(current).replace(/"/g,'&quot;')+'" selected>'+String(current).replace(/</g,'&lt;')+' - current value</option>';
+          stage.innerHTML=html;
+          if(!stage.value&&rows[0])stage.value=rows[0].value;
+        }}
+        stage.setAttribute('data-selected', stage.value||'');
+        pipeline.addEventListener('change', function(){{stage.setAttribute('data-selected','');renderStages();}});
+        renderStages();
+      }})();
+    </script>
   </body>
 </html>"""
 

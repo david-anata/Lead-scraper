@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,8 +13,11 @@ from typing import Any, Mapping
 from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
+from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.models.entities import HubSpotDeal, HubSpotDealContact
 
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RULES_PATH = REPO_ROOT / "config" / "hubspot_sales_rules.json"
@@ -26,6 +30,29 @@ class SalesDealCreateRequest:
     properties: dict[str, str]
     company_id: str = ""
     contact_id: str = ""
+
+
+@dataclass(frozen=True)
+class SelectOption:
+    value: str
+    label: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class PipelineOption(SelectOption):
+    stages: tuple[SelectOption, ...] = ()
+
+
+@dataclass(frozen=True)
+class DealCreateOptions:
+    pipelines: tuple[PipelineOption, ...] = ()
+    owners: tuple[SelectOption, ...] = ()
+    companies: tuple[SelectOption, ...] = ()
+    contacts: tuple[SelectOption, ...] = ()
+    service_lines: tuple[SelectOption, ...] = ()
+    lead_sources: tuple[SelectOption, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 class SalesDealRulesError(RuntimeError):
@@ -90,6 +117,141 @@ def required_deal_associations(rules: Mapping[str, Any]) -> list[str]:
         if association and association not in required:
             required.append(association)
     return required
+
+
+def _option_limit() -> int:
+    try:
+        return max(20, min(int(_env("HUBSPOT_CREATE_DEAL_OPTION_LIMIT") or "500"), 1000))
+    except ValueError:
+        return 500
+
+
+def _owner_label(owner: Mapping[str, Any]) -> str:
+    first = str(owner.get("firstName") or "").strip()
+    last = str(owner.get("lastName") or "").strip()
+    email = str(owner.get("email") or "").strip()
+    name = " ".join(part for part in (first, last) if part).strip()
+    return name or email or str(owner.get("id") or "").strip()
+
+
+def _props(obj: Mapping[str, Any]) -> Mapping[str, Any]:
+    props = obj.get("properties", {})
+    return props if isinstance(props, Mapping) else {}
+
+
+def _company_label(obj: Mapping[str, Any]) -> SelectOption:
+    props = _props(obj)
+    cid = str(obj.get("id") or "").strip()
+    name = str(props.get("name") or "").strip() or f"Company {cid}"
+    domain = str(props.get("domain") or "").strip()
+    detail = f"{domain} | {cid}" if domain else cid
+    return SelectOption(value=cid, label=name, detail=detail)
+
+
+def _contact_label(obj: Mapping[str, Any]) -> SelectOption:
+    props = _props(obj)
+    cid = str(obj.get("id") or "").strip()
+    first = str(props.get("firstname") or "").strip()
+    last = str(props.get("lastname") or "").strip()
+    email = str(props.get("email") or "").strip()
+    company = str(props.get("company") or "").strip()
+    name = " ".join(part for part in (first, last) if part).strip() or email or f"Contact {cid}"
+    detail_parts = [part for part in (email, company, cid) if part]
+    return SelectOption(value=cid, label=name, detail=" | ".join(detail_parts))
+
+
+def _lead_source_options() -> tuple[SelectOption, ...]:
+    configured = [item.strip() for item in _env("HUBSPOT_LEAD_SOURCE_OPTIONS").split(",") if item.strip()]
+    values = configured or ["agent", "website", "referral", "outbound", "existing_customer", "partner"]
+    return tuple(SelectOption(value=value, label=value.replace("_", " ").title()) for value in values)
+
+
+def load_deal_create_options(
+    settings: Settings,
+    rules: Mapping[str, Any],
+    *,
+    client: HubSpotClient | None = None,
+) -> DealCreateOptions:
+    """Load readable dropdown values for the create-deal form.
+
+    HubSpot remains canonical for IDs. This returns best-effort options so a
+    temporary API issue does not make the form unavailable.
+    """
+    warnings: list[str] = []
+    service_lines = tuple(
+        SelectOption(value=str(item).strip(), label=str(item).strip().replace("_", " ").title())
+        for item in rules.get("service_lines", [])
+        if str(item).strip()
+    )
+    lead_sources = _lead_source_options()
+
+    client = client or HubSpotClient(settings)
+    if not client.is_configured:
+        warnings.append("HubSpot token is not configured, so live dropdown options could not be loaded.")
+        return DealCreateOptions(service_lines=service_lines, lead_sources=lead_sources, warnings=tuple(warnings))
+
+    pipelines: list[PipelineOption] = []
+    owners: list[SelectOption] = []
+    companies: list[SelectOption] = []
+    contacts: list[SelectOption] = []
+    limit = _option_limit()
+
+    try:
+        for pipeline in client.list_deal_pipelines():
+            pid = str(pipeline.get("id") or "").strip()
+            if not pid:
+                continue
+            stages = []
+            for stage in pipeline.get("stages", []) or []:
+                sid = str(stage.get("id") or "").strip()
+                if not sid:
+                    continue
+                stages.append(SelectOption(value=sid, label=str(stage.get("label") or sid), detail=sid))
+            pipelines.append(
+                PipelineOption(
+                    value=pid,
+                    label=str(pipeline.get("label") or pid),
+                    detail=pid,
+                    stages=tuple(stages),
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sales] failed to load HubSpot pipeline options: %s", exc)
+        warnings.append("HubSpot pipeline options could not be loaded.")
+
+    try:
+        for owner in client.list_owners():
+            oid = str(owner.get("id") or "").strip()
+            if oid:
+                email = str(owner.get("email") or "").strip()
+                owners.append(SelectOption(value=oid, label=_owner_label(owner), detail=f"{email} | {oid}" if email else oid))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sales] failed to load HubSpot owner options: %s", exc)
+        warnings.append("HubSpot owner options could not be loaded.")
+
+    try:
+        companies = [_company_label(obj) for obj in client.iter_companies(max_records=limit) if str(obj.get("id") or "").strip()]
+        companies.sort(key=lambda opt: opt.label.lower())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sales] failed to load HubSpot company options: %s", exc)
+        warnings.append("HubSpot company options could not be loaded.")
+
+    try:
+        contacts = [_contact_label(obj) for obj in client.iter_contacts(max_records=limit) if str(obj.get("id") or "").strip()]
+        contacts.sort(key=lambda opt: opt.label.lower())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[sales] failed to load HubSpot contact options: %s", exc)
+        warnings.append("HubSpot contact options could not be loaded.")
+
+    return DealCreateOptions(
+        pipelines=tuple(pipelines),
+        owners=tuple(owners),
+        companies=tuple(companies),
+        contacts=tuple(contacts),
+        service_lines=service_lines,
+        lead_sources=lead_sources,
+        warnings=tuple(warnings),
+    )
 
 
 def normalize_deal_create_request(
