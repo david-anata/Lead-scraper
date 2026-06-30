@@ -39,6 +39,11 @@ DEAL_PROPERTIES: tuple[str, ...] = (
     "hs_is_closed",
     "hs_is_closed_won",
     "description",
+    "service_type",
+    "agency",
+    "fulfillment",
+    "shipping_os",
+    "hs_next_step",
 )
 
 CONTACT_PROPERTIES: tuple[str, ...] = (
@@ -262,6 +267,17 @@ class HubSpotClient:
         payload = self._request("GET", "/crm/v3/pipelines/deals")
         return list(payload.get("results", []) or [])
 
+    def get_deal_pipeline(self, pipeline_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/crm/v3/pipelines/deals/{pipeline_id}")
+
+    def list_properties(self, object_type: str) -> list[dict[str, Any]]:
+        payload = self._request("GET", f"/crm/v3/properties/{object_type}")
+        return list(payload.get("results", []) or [])
+
+    def list_association_labels(self, from_type: str, to_type: str) -> list[dict[str, Any]]:
+        payload = self._request("GET", f"/crm/v4/associations/{from_type}/{to_type}/labels")
+        return list(payload.get("results", []) or [])
+
     def deal_stage_labels(self) -> dict[str, str]:
         """Flat map of stage_id -> human label across all deal pipelines."""
         labels: dict[str, str] = {}
@@ -405,6 +421,37 @@ class HubSpotClient:
                 "associations": [{
                     "to": {"id": deal_id},
                     "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 214}],
+                }],
+            },
+        )
+
+    def create_task(
+        self,
+        *,
+        deal_id: str,
+        subject: str,
+        body: str,
+        due_at_ms: int,
+        owner_id: str = "",
+    ) -> dict[str, Any]:
+        properties: dict[str, Any] = {
+            "hs_task_subject": subject,
+            "hs_task_body": body,
+            "hs_timestamp": str(due_at_ms),
+            "hs_task_status": "NOT_STARTED",
+            "hs_task_priority": "HIGH",
+            "hs_task_type": "TODO",
+        }
+        if owner_id.strip():
+            properties["hubspot_owner_id"] = owner_id.strip()
+        return self._request(
+            "POST",
+            "/crm/v3/objects/tasks",
+            json_body={
+                "properties": properties,
+                "associations": [{
+                    "to": {"id": deal_id},
+                    "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 216}],
                 }],
             },
         )

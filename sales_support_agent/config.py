@@ -196,6 +196,11 @@ class Settings:
     admin_default_role: str = "ops"
     rbac_enabled: bool = True
     rbac_superadmin_emails: tuple[str, ...] = ("david@anatainc.com",)
+    rbac_auto_provision_domain_tools: tuple[str, ...] = (
+        "website_ops.seo",
+        "website_ops.queue",
+        "website_ops.reports",
+    )
     active_statuses: tuple[str, ...] = field(default_factory=lambda: ACTIVE_FOLLOW_UP_STATUSES)
     inactive_statuses: tuple[str, ...] = field(default_factory=lambda: INACTIVE_STATUSES)
     managed_fields: ManagedFieldSettings = field(default_factory=ManagedFieldSettings)
@@ -623,6 +628,17 @@ def load_settings() -> Settings:
             for e in (os.getenv("RBAC_SUPERADMIN_EMAILS", "david@anatainc.com") or "").split(",")
             if e.strip()
         ) or ("david@anatainc.com",),
+        rbac_auto_provision_domain_tools=tuple(
+            key.strip()
+            for key in (
+                os.getenv(
+                    "RBAC_AUTO_PROVISION_DOMAIN_TOOLS",
+                    "website_ops.seo,website_ops.queue,website_ops.reports",
+                )
+                or ""
+            ).split(",")
+            if key.strip()
+        ),
         active_statuses=tuple(
             normalize_status_key(status)
             for status in ACTIVE_FOLLOW_UP_STATUSES

@@ -61,6 +61,11 @@ from sales_support_agent.services.sales.followup_draft import (
     render_draft_followup_page,
     render_send_preview_page,
 )
+from sales_support_agent.services.sales.operator_dashboard import (
+    get_operator_snapshot,
+    render_operator_page,
+    run_writeback,
+)
 
 from sqlalchemy import func, select
 from typing import Any, List
@@ -251,6 +256,38 @@ def _sales_settings(request: Request):
     s = _load_agent_settings()
     request.app.state.agent_settings = s
     return s
+
+
+@router.get("", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
+def sales_operator(request: Request) -> HTMLResponse:
+    settings = _sales_settings(request)
+    snapshot = get_operator_snapshot(settings)
+    return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request)))
+
+
+@router.get("/snapshot")
+def sales_operator_snapshot(request: Request) -> JSONResponse:
+    settings = _sales_settings(request)
+    snapshot = get_operator_snapshot(settings, force_refresh=True)
+    return JSONResponse({"ok": True, "snapshot": snapshot})
+
+
+@router.post("/writeback")
+def sales_operator_writeback(
+    request: Request,
+    mode: str = Form(default="preview"),
+    limit: str = Form(default="10"),
+) -> HTMLResponse:
+    settings = _sales_settings(request)
+    try:
+        parsed_limit = int(limit)
+    except ValueError:
+        parsed_limit = 10
+    result = run_writeback(settings, mode=("apply" if mode == "apply" else "preview"), limit=parsed_limit)
+    snapshot = get_operator_snapshot(settings, force_refresh=(mode == "apply"))
+    message = "High-confidence sales write-back actions were applied." if mode == "apply" else "Sales write-back preview generated."
+    return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request), writeback=result, status_message=message))
 
 
 @router.get("/deals/create", response_class=HTMLResponse)
