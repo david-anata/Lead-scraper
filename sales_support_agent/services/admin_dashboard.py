@@ -1596,7 +1596,7 @@ def _sync_banner_primary_copy(
 
 
 def render_login_page(*, error_message: str = "", show_google_button: bool = False,
-                      show_password_form: bool = True) -> str:
+                      show_password_form: bool = True, password_form_action: str = "/admin/login") -> str:
     error_html = (
         f'<div class="notice error">{html.escape(error_message)}</div>'
         if error_message
@@ -1621,7 +1621,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         else ""
     )
     password_form_html = (
-        """<form method="post" action="/admin/login">
+        f"""<form method="post" action="{html.escape(password_form_action, quote=True)}">
               <p class="fallback-note">Use the shared break-glass password for this workspace. New users must use Google sign-in when it is enabled.</p>
               <label for="password">Shared fallback password</label>
               <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter shared fallback password" required />

@@ -671,6 +671,31 @@ def admin_login_page(request: Request) -> HTMLResponse:
     )
 
 
+@router.get("/admin/break-glass", response_class=HTMLResponse)
+def admin_break_glass_page(request: Request) -> HTMLResponse:
+    _require_admin_enabled(request)
+    if _is_admin_authenticated(request):
+        return HTMLResponse("", status_code=302, headers={"Location": "/admin"})
+    settings = request.app.state.settings
+    if not password_login_enabled(settings):
+        return HTMLResponse(
+            render_login_page(
+                error_message="Fallback login is unavailable on this deployment.",
+                show_google_button=False,
+                show_password_form=False,
+            ),
+            status_code=503,
+        )
+    return HTMLResponse(
+        render_login_page(
+            error_message="Use the shared fallback password only. This page bypasses Google sign-in and browser-saved email autofill.",
+            show_google_button=False,
+            show_password_form=True,
+            password_form_action="/admin/break-glass",
+        )
+    )
+
+
 @router.post("/admin/login", response_class=HTMLResponse)
 async def admin_login_submit(request: Request) -> Response:
     _require_admin_enabled(request)
@@ -702,6 +727,11 @@ async def admin_login_submit(request: Request) -> Response:
         **_admin_cookie_options(request),
     )
     return response
+
+
+@router.post("/admin/break-glass", response_class=HTMLResponse)
+async def admin_break_glass_submit(request: Request) -> Response:
+    return await admin_login_submit(request)
 
 
 @router.get("/admin/logout")

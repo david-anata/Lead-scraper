@@ -81,6 +81,10 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("Shared fallback password", html)
         self.assertNotIn("Admin email", html)
 
+    def test_login_page_allows_custom_password_action(self) -> None:
+        html = render_login_page(password_form_action="/admin/break-glass")
+        self.assertIn('action="/admin/break-glass"', html)
+
     def test_dashboard_render_removes_gmail_drafts_and_deck_builder_from_admin(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
         init_database(session_factory)
