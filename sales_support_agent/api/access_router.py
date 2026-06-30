@@ -94,6 +94,19 @@ def _flash(request: Request) -> Optional[str]:
     return ok or err
 
 
+def _empty_inbox_summary(agent_settings) -> dict:
+    configured_accounts = list(getattr(agent_settings, "gmail_mailbox_accounts", ()) or ())
+    return {
+        "total_configured": len(configured_accounts),
+        "connected_count": 0,
+        "attention_count": 0,
+        "invalid_count": 0,
+        "configured_not_seen_count": len(configured_accounts),
+        "accounts": [],
+        "warning": "Inbox summary unavailable.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Users list
 # ---------------------------------------------------------------------------
@@ -397,8 +410,12 @@ async def settings_page(request: Request, current_user: dict = Depends(_guard)):
         "pending_requests": pending_requests,
     }
     agent_settings = getattr(request.app.state, "agent_settings", None)
-    with session_scope(request.app.state.session_factory) as session:
-        inbox_summary = build_inbox_connection_summary(session, agent_settings)
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            inbox_summary = build_inbox_connection_summary(session, agent_settings)
+    except Exception:  # noqa: BLE001 - settings page should degrade instead of 502ing
+        logger.exception("Failed to build inbox connection summary for /admin/settings")
+        inbox_summary = _empty_inbox_summary(agent_settings)
     return HTMLResponse(render_settings_page(
         current_user,
         team_counts=team_counts,
@@ -410,6 +427,10 @@ async def settings_page(request: Request, current_user: dict = Depends(_guard)):
 @_settings_router.get("/admin/settings/inboxes")
 async def settings_inboxes(request: Request, current_user: dict = Depends(_guard)) -> JSONResponse:
     agent_settings = getattr(request.app.state, "agent_settings", None)
-    with session_scope(request.app.state.session_factory) as session:
-        inbox_summary = build_inbox_connection_summary(session, agent_settings)
-    return JSONResponse({"ok": True, "summary": inbox_summary})
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            inbox_summary = build_inbox_connection_summary(session, agent_settings)
+        return JSONResponse({"ok": True, "summary": inbox_summary})
+    except Exception:  # noqa: BLE001 - endpoint should surface fallback summary, not 500
+        logger.exception("Failed to build inbox connection summary for /admin/settings/inboxes")
+        return JSONResponse({"ok": False, "summary": _empty_inbox_summary(agent_settings)})

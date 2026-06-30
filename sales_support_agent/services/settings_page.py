@@ -114,6 +114,9 @@ _STYLES = """
   .status-configured-not-seen { background:rgba(43,54,68,0.08); color:#586270; }
   .status-invalid { background:rgba(139,76,66,0.12); color:#8b4c42; }
   .muted-note { font-size:12px; color:rgba(43,54,68,0.42); margin:14px 0 0; }
+  .warning-note { margin:0 0 16px; padding:12px 14px; border-radius:14px;
+    background:rgba(194,102,59,0.10); border:1px solid rgba(194,102,59,0.18);
+    color:#8b4c42; font-size:12px; font-weight:600; }
   /* Placeholder */
   .placeholder-note { color:rgba(43,54,68,0.42); font-size:14px;
     font-style:italic; padding:8px 0; }
@@ -226,6 +229,7 @@ def render_settings_page(
     # ── 4. Connected inboxes card ──────────────────────────────────────────
     inboxes = inbox_summary or {}
     inbox_rows = list(inboxes.get("accounts", []) or [])
+    inbox_warning = str(inboxes.get("warning") or "").strip()
     inbox_items = ""
     for row in inbox_rows:
         source_domains = ", ".join(row.get("source_domains", []) or []) or "—"
@@ -253,6 +257,7 @@ def render_settings_page(
     inboxes_card = f"""
     <div class="settings-card settings-grid-wide">
       <div class="card-title"><span class="card-icon">&#128231;</span> Connected Inboxes</div>
+      {'<div class="warning-note">' + _esc(inbox_warning) + '</div>' if inbox_warning else ''}
       <div class="inbox-summary">
         <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("total_configured") or 0)}</div><div class="inbox-pill-label">Configured</div></div>
         <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("connected_count") or 0)}</div><div class="inbox-pill-label">Connected</div></div>

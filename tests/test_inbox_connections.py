@@ -67,6 +67,19 @@ class InboxConnectionsTests(unittest.TestCase):
             session.add(
                 MailboxSignal(
                     provider="gmail",
+                    sender_email="lead-three@example.com",
+                    subject="Updated proposal review",
+                    matched_deal_id="deal-3",
+                    received_at=self.as_of - timedelta(hours=1),
+                    raw_payload={
+                        "gmail_account_key": "david",
+                        "gmail_account_label": "David Narayan",
+                    },
+                )
+            )
+            session.add(
+                MailboxSignal(
+                    provider="gmail",
                     sender_email="lead-two@example.com",
                     subject="Old check-in",
                     matched_deal_id="deal-2",
@@ -90,8 +103,10 @@ class InboxConnectionsTests(unittest.TestCase):
 
         rows = {row["account_key"]: row for row in summary["accounts"]}
         self.assertEqual(rows["david"]["status"], "connected")
-        self.assertEqual(rows["david"]["matched_deal_count"], 1)
-        self.assertEqual(rows["david"]["last_sender_email"], "lead-one@example.com")
+        self.assertEqual(rows["david"]["message_count"], 2)
+        self.assertEqual(rows["david"]["matched_deal_count"], 2)
+        self.assertEqual(rows["david"]["last_sender_email"], "lead-three@example.com")
+        self.assertEqual(rows["david"]["last_subject"], "Updated proposal review")
         self.assertEqual(rows["alex"]["status"], "attention")
         self.assertEqual(rows["ops"]["status"], "invalid")
         self.assertEqual(rows["sam"]["status"], "configured_not_seen")
@@ -122,6 +137,27 @@ class InboxConnectionsTests(unittest.TestCase):
         self.assertIn("David Narayan", html)
         self.assertIn("Needs Attention", html)
         self.assertIn("/admin/settings/inboxes", html)
+
+    def test_render_settings_page_shows_inbox_warning_when_summary_falls_back(self):
+        html = render_settings_page(
+            {"name": "Admin User", "email": "admin@anatainc.com", "permissions": ("access.manage",)},
+            team_counts={"total_users": 1, "active_users": 1, "pending_invites": 0, "pending_requests": 0},
+            agent_settings=SimpleNamespace(
+                amazon_sp_api_marketplace_id="ATVPDKIKX0DER",
+                amazon_sp_api_region="us-east-1",
+                amazon_sp_api_base_url="https://sellingpartnerapi-na.amazon.com",
+                amazon_sp_api_lwa_client_id="client",
+                amazon_sp_api_refresh_token="refresh",
+                amazon_sp_api_aws_access_key_id="aws-key",
+                slack_bot_token="slack-token",
+                slack_channel_id="channel-1",
+                stale_lead_slack_digest_enabled=True,
+                stale_lead_slack_digest_max_items=20,
+            ),
+            inbox_summary={"warning": "Inbox summary unavailable."},
+        )
+
+        self.assertIn("Inbox summary unavailable.", html)
 
 
 if __name__ == "__main__":
