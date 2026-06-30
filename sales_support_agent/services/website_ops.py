@@ -594,10 +594,18 @@ def review_feedback_record(
     return WebsiteOpsActionResult(ok=True, message="Review saved.", record=record)
 
 
-def _execute_record(settings: Settings, config: website_ops.WebsiteOpsConfig, record: Mapping[str, Any]) -> dict[str, Any] | None:
+def _execute_record(
+    settings: Settings,
+    config: website_ops.WebsiteOpsConfig,
+    record: Mapping[str, Any],
+    *,
+    require_auto_executable: bool = True,
+) -> dict[str, Any] | None:
     if record.get("status") != "approved" or not record.get("action_type"):
         return None
-    if not _record_is_auto_executable(record):
+    if not _mvp_action_allowed(str(record.get("action_type", "")).strip()):
+        return None
+    if require_auto_executable and not _record_is_auto_executable(record):
         return None
     try:
         result = website_ops.execute_feedback_action(record, config=config)
@@ -620,6 +628,43 @@ def _execute_record(settings: Settings, config: website_ops.WebsiteOpsConfig, re
         },
     )
     return result
+
+
+def execute_approved_website_ops_actions(settings: Settings) -> WebsiteOpsActionResult:
+    if not settings.website_ops_execute_approved:
+        return WebsiteOpsActionResult(
+            ok=False,
+            message="Website Ops execution is disabled for this environment.",
+            report={"attempted": 0, "executed": 0, "skipped": 0},
+        )
+    config = _config(settings)
+    feedback_entries = _mvp_filter_feedback_records(load_feedback_records(settings))
+    candidates = [
+        record
+        for record in feedback_entries
+        if record.get("status") == "approved"
+        and str(record.get("action_type", "")).strip()
+        and _mvp_action_allowed(str(record.get("action_type", "")).strip())
+    ]
+    executed_actions: list[dict[str, Any]] = []
+    for record in candidates:
+        result = _execute_record(settings, config, record, require_auto_executable=False)
+        if result:
+            executed_actions.append(result)
+    attempted = len(candidates)
+    executed = len(executed_actions)
+    skipped = attempted - executed
+    if not attempted:
+        message = "No approved Website Ops actions are ready to execute."
+    elif skipped:
+        message = f"Executed {executed} approved action(s); {skipped} failed or were skipped."
+    else:
+        message = f"Executed {executed} approved Website Ops action(s)."
+    return WebsiteOpsActionResult(
+        ok=skipped == 0,
+        message=message,
+        report={"attempted": attempted, "executed": executed, "skipped": skipped, "executed_actions": executed_actions},
+    )
 
 
 def run_website_ops(settings: Settings, *, mode: str = "daily") -> WebsiteOpsActionResult:
@@ -1431,9 +1476,41 @@ def _report_cards(entries: list[dict[str, Any]]) -> str:
     return "".join(cards)
 
 
-def _feedback_cards(entries: list[dict[str, Any]], *, with_actions: bool = False) -> str:
+def _feedback_empty_state(status_filter: str = "") -> str:
+    if status_filter == "approved":
+        title = "No approved actions ready."
+        copy = "Approve an exact action from Needs review first, then execute the approved batch from this queue."
+    elif status_filter == "done":
+        title = "No completed actions yet."
+        copy = "Completed Website Ops changes will appear here after an approved action runs and verifies."
+    elif status_filter == "error":
+        title = "No failed actions."
+        copy = "Execution failures will appear here with the error that needs intervention."
+    elif status_filter == "rejected":
+        title = "No rejected actions."
+        copy = "Rejected recommendations will appear here for audit history."
+    else:
+        title = "No Website Ops records need review."
+        copy = "Generate current recommendations with a daily sweep, or submit the exact website issue you want reviewed."
+    return f"""
+    <div class="list-card empty-state">
+      <h3>{html.escape(title)}</h3>
+      <p class="muted">{html.escape(copy)}</p>
+      <div class="button-row">
+        <form class="inline" action="/admin/api/website-ops/run" method="post">
+          <input type="hidden" name="mode" value="daily">
+          <button type="submit">Run Daily Sweep</button>
+        </form>
+        <a class="text-link" href="/admin/website-ops#submit-issue">Submit issue</a>
+        <a class="text-link" href="/admin/website-ops/reports/latest">Open latest report</a>
+      </div>
+    </div>
+    """
+
+
+def _feedback_cards(entries: list[dict[str, Any]], *, with_actions: bool = False, empty_context: str = "") -> str:
     if not entries:
-        return "<div class='list-card'><p class='muted'>No feedback records yet.</p></div>"
+        return _feedback_empty_state(empty_context)
     cards = []
     for entry in entries:
         actions = ""
@@ -1509,7 +1586,7 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             </div>
             {auto_refresh_note}
           </div>
-          <div class="card stack">
+          <div id="submit-issue" class="card stack">
             <p class="eyebrow">Current scope</p>
             <div class="summary-grid">
               {_summary_chip("Monitored Pages", len(settings.website_ops_site_urls), tone="neutral")}
@@ -1628,10 +1705,13 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
             <a href="/admin/website-ops/queue?status=done" class="{'btn' if normalized_filter == 'done' else 'btn btn--ghost'}" style="font-size:13px">Completed</a>
             <a href="/admin/website-ops/queue?status=error" class="{'btn' if normalized_filter == 'error' else 'btn btn--ghost'}" style="font-size:13px">Failed</a>
             <a href="/admin/website-ops/queue?status=rejected" class="{'btn' if normalized_filter == 'rejected' else 'btn btn--ghost'}" style="font-size:13px">Rejected</a>
+            <form class="inline" action="/admin/api/website-ops/actions/execute-approved" method="post">
+              <button type="submit">Execute approved now</button>
+            </form>
           </div>
         </section>
         <section class="card stack">
-          {_feedback_cards(entries, with_actions=True)}
+          {_feedback_cards(entries, with_actions=True, empty_context=normalized_filter)}
         </section>
       </main>
     """

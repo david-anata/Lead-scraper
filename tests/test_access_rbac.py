@@ -130,6 +130,31 @@ class EnforcementTests(unittest.TestCase):
             self.client.cookies.clear()
         self.assertEqual(r.status_code, 403)
 
+    def test_website_ops_execute_approved_api_requires_queue_permission(self) -> None:
+        name, token = _cookie_for("enf_fin@anatainc.com")
+        self.client.cookies.set(name, token)
+        try:
+            r = self.client.post("/admin/api/website-ops/actions/execute-approved", follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 403)
+
+    def test_website_ops_execute_approved_api_allows_queue_user(self) -> None:
+        from unittest import mock
+
+        uid = store.upsert_user("website_executor@anatainc.com", "Website Executor")
+        store.set_user_permissions(uid, ["website_ops.queue"])
+        name, token = _cookie_for("website_executor@anatainc.com", "Website Executor")
+        self.client.cookies.set(name, token)
+        try:
+            with mock.patch("sales_support_agent.api.router.execute_approved_website_ops_actions") as execute:
+                r = self.client.post("/admin/api/website-ops/actions/execute-approved", follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers.get("location"), "/admin/website-ops/queue?status=approved")
+        execute.assert_called_once()
+
     def test_website_ops_feedback_api_stamps_reporter_from_session(self) -> None:
         from unittest import mock
 

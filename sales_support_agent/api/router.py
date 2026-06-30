@@ -86,6 +86,7 @@ from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
 from sales_support_agent.services.website_ops import (
+    execute_approved_website_ops_actions,
     get_feedback_record,
     latest_report_entry,
     render_dashboard_page as render_website_ops_dashboard_page,
@@ -990,6 +991,16 @@ def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -
         return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
     result = run_website_ops(request.app.state.settings, mode=normalized_mode)
     return RedirectResponse(url="/admin/website-ops", status_code=302)
+
+
+@router.post("/admin/api/website-ops/actions/execute-approved")
+def admin_website_ops_execute_approved(request: Request) -> Response:
+    _require_admin_enabled(request)
+    _, auth_response = _require_admin_tool(request, "website_ops.queue", json_response=True)
+    if auth_response is not None:
+        return auth_response
+    execute_approved_website_ops_actions(request.app.state.settings)
+    return RedirectResponse(url="/admin/website-ops/queue?status=approved", status_code=302)
 
 
 @router.post("/admin/api/website-ops/feedback")

@@ -18,12 +18,14 @@ from sales_support_agent.services import website_ops_vendor as website_ops
 from sales_support_agent.services.website_ops_autonomy import build_autonomy_overlay
 from sales_support_agent.services.website_ops_content import clean_generated_content
 from sales_support_agent.services.website_ops import (
+    execute_approved_website_ops_actions,
     get_website_ops_run_state,
     latest_report_entry,
     load_feedback_records,
     load_website_ops_run_state,
     render_dashboard_page,
     render_feedback_detail_page,
+    render_queue_page,
     review_feedback_record,
     run_website_ops,
     save_feedback_record,
@@ -81,6 +83,15 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertIn("action center", html)
             self.assertIn("/admin/api/website-ops/run", html)
             self.assertIn("/admin/api/website-ops/feedback", html)
+
+    def test_queue_empty_state_points_to_resolution_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            html = render_queue_page(settings)
+            self.assertIn("No Website Ops records need review.", html)
+            self.assertIn("/admin/api/website-ops/run", html)
+            self.assertIn("/admin/website-ops#submit-issue", html)
+            self.assertIn("/admin/api/website-ops/actions/execute-approved", html)
 
     def test_dashboard_render_uses_latest_report_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -251,6 +262,36 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == record["feedback_id"])
             self.assertEqual(updated["status"], "approved")
             self.assertEqual(updated.get("execution_error", ""), "")
+
+    def test_execute_approved_website_ops_actions_runs_approved_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir), execute_approved=True)
+            record = save_feedback_record(
+                settings,
+                {
+                    "summary": "Add fulfillment FAQ",
+                    "status": "approved",
+                    "action_type": "inject_faq_block",
+                    "action_value": json.dumps({"heading": "Fulfillment FAQ", "questions": []}),
+                    "page_url": "https://anatainc.com/services/fulfillment/",
+                },
+            )
+            with mock.patch.object(
+                website_ops,
+                "execute_feedback_action",
+                return_value={
+                    "feedback_id": record["feedback_id"],
+                    "action_type": "inject_faq_block",
+                    "executed_at": "2026-03-27T00:00:00Z",
+                    "verification_status": "verified",
+                },
+            ):
+                result = execute_approved_website_ops_actions(settings)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.report["executed"], 1)
+            updated = next(item for item in load_feedback_records(settings) if item["feedback_id"] == record["feedback_id"])
+            self.assertEqual(updated["status"], "done")
+            self.assertEqual(updated["execution_result"]["verification_status"], "verified")
 
     def test_run_website_ops_enriches_report_with_autonomy_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
