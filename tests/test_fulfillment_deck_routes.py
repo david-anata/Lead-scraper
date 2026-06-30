@@ -436,6 +436,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(implementation_fee["amount"], 1500.0)
         self.assertEqual(summary["fulfillment_actual_costs"]["pick_pack_per_order"], 0.80)
         self.assertEqual(summary["fulfillment_actual_costs"]["customer_service_monthly"], 0.0)
+        self.assertIn("negotiation_history", summary)
+        self.assertEqual(summary["negotiation_history"][-1]["event"], "Saved and re-rendered")
         pick_pack = next(line for line in summary["fulfillment_quote"]["lines"] if line.get("key") == "pick_pack")
         self.assertGreaterEqual(float(pick_pack["rate"]), 2.0)
 
@@ -445,6 +447,10 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn("Customer-facing monthly estimate", review.text)
         self.assertIn("Estimated monthly net margin", review.text)
         self.assertIn("Internal Fulfillment Costs", review.text)
+        self.assertIn('class="review-section"', review.text)
+        self.assertIn("Save &amp; re-render agent preview", review.text)
+        self.assertIn("Re-publish live sheet", review.text)
+        self.assertIn("Negotiation history", review.text)
         self.assertIn('name="actual_pick_pack_per_order"', review.text)
         self.assertIn("Fulfillment pick &amp; pack cost", review.text)
         self.assertIn("Customer fee: DTC pick &amp; pack / order", review.text)
@@ -461,6 +467,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
+        self.assertIn("marginable_revenue", response.json()["margin"])
         summary = dict(storage.get_run(run["id"]).summary_json)
         self.assertEqual(summary["fulfillment_actual_costs"]["pick_pack_per_order"], 0.0)
         self.assertEqual(summary["fulfillment_actual_costs"]["monthly_tech_fee"], 0.0)

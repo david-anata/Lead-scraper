@@ -57,8 +57,16 @@ _STYLES = """
       .field { display: grid; gap: 5px; margin: 12px 0; }
       .field label { font-family: "Montserrat", sans-serif; font-weight: 700; font-size: 12px; }
       .field .hint { font-size: 12px; color: rgba(43,54,68,0.55); font-weight: 400; }
-      .field input[type=text], .field input[type=url] { min-height: 40px; padding: 0 12px;
-        border-radius: 10px; border: 1px solid var(--border); font-size: 14px; }
+      .field input[type=text], .field input[type=url], .field input[type=number], .field input[type=search],
+      .field select {
+        width: 100%; min-height: 42px; padding: 0 12px;
+        border-radius: 10px; border: 1px solid var(--border);
+        background: #fff; color: var(--dark-blue); font-size: 14px; font-family: inherit;
+      }
+      .field input:focus, .field textarea:focus, .field select:focus {
+        outline: 2px solid rgba(133,187,218,0.38);
+        border-color: rgba(133,187,218,0.9);
+      }
       .field textarea { min-height: 150px; padding: 10px 12px; border-radius: 10px;
         border: 1px solid var(--border); font-size: 14px; font-family: inherit; resize: vertical; }
       .drop { border: 2px dashed rgba(133,187,218,0.7); border-radius: 16px; padding: 22px;
@@ -108,8 +116,36 @@ _STYLES = """
       .action-menu-item--danger { color: #8b4c42; }
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
+      .review-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin:0 0 14px; }
+      .review-sections { display:grid; gap:12px; margin-top:14px; }
+      .review-section {
+        border: 1px solid var(--border); border-radius: 14px; background: #fff;
+        box-shadow: 0 8px 18px rgba(43,54,68,0.04); overflow: clip;
+      }
+      .review-section > summary {
+        list-style: none; cursor: pointer; padding: 15px 16px;
+        display:flex; justify-content:space-between; gap:14px; align-items:center;
+        font-family: "Montserrat", sans-serif; font-weight:800; font-size:14px;
+      }
+      .review-section > summary::-webkit-details-marker { display:none; }
+      .review-section > summary::after { content:"▾"; color:rgba(43,54,68,0.45); font-size:12px; }
+      .review-section:not([open]) > summary::after { transform: rotate(-90deg); }
+      .review-section__sub { display:block; margin-top:3px; font-family:"Inter", sans-serif; font-weight:500; font-size:12px; color:rgba(43,54,68,0.55); }
+      .review-section__body { padding: 0 16px 16px; }
+      .form-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 4px 22px; }
+      .form-grid--wide { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
+      .history-bar {
+        margin-top: 18px; padding: 14px 16px; border: 1px solid var(--border);
+        border-radius: 14px; background: rgba(43,54,68,0.025);
+      }
+      .history-list { display: grid; gap: 8px; margin-top: 10px; }
+      .history-item { display: grid; gap: 2px; padding: 8px 0; border-top: 1px solid rgba(43,54,68,0.07); }
+      .history-item:first-child { border-top: 0; padding-top: 0; }
+      .history-item span { color: rgba(43,54,68,0.55); font-size: 12px; }
+      .history-item em { color: rgba(43,54,68,0.72); font-size: 12.5px; font-style: normal; }
       .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
       @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .edit-grid { grid-template-columns: 1fr; } }
+      @media (max-width: 900px) { .form-grid, .form-grid--wide { grid-template-columns: 1fr; } }
       /* On narrow screens keep only Prospect, Stage, Margin, Actions */
       @media (max-width: 640px) {
         table th:nth-child(3), table td:nth-child(3),
@@ -249,6 +285,20 @@ def _fmt_rate(value) -> str:
         return "—"
 
 
+def _pass_through_monthly_from_quote(quote: dict) -> float:
+    """Monthly revenue that should not be treated as profit."""
+    total = 0.0
+    for line in quote.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        if str(line.get("key") or "") == "shipping":
+            try:
+                total += float(line.get("monthly") or 0)
+            except (TypeError, ValueError):
+                pass
+    return round(total, 2)
+
+
 def _build_brief(run: dict) -> str:
     """Plain-text fulfillment brief for clipboard copy."""
     profile = run.get("prospect_profile") or {}
@@ -291,9 +341,16 @@ def _pricing_summary_html(summary: dict, profile: dict) -> str:
         try:
             from sales_support_agent.services.fulfillment_deck.quote import compute_margin
             from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
-            mg = compute_margin(customer_monthly, actual_costs, ProspectProfile.from_dict(profile or {}))
+            pass_through = _pass_through_monthly_from_quote(quote)
+            mg = compute_margin(customer_monthly, actual_costs, ProspectProfile.from_dict(profile or {}), pass_through)
             sign = "#15803d" if float(mg.get("monthly_margin") or 0) >= 0 else "#b91c1c"
+            pass_through_html = (
+                f"<div class=\"margin-line\"><span>Carrier/pass-through revenue</span><span>−{_fmt_usd(pass_through)}</span></div>"
+                if pass_through else ""
+            )
             cost_html = f"""
+              {pass_through_html}
+              <div class="margin-line"><span>Marginable monthly revenue</span><span>{_fmt_usd(mg.get('marginable_revenue'))}</span></div>
               <div class="margin-line"><span>Fulfillment monthly cost</span><span>−{_fmt_usd(mg.get('actual_monthly'))}</span></div>
               <div class="margin-line" style="font-weight:800;color:{sign}"><span>Estimated monthly net margin</span><span>{_fmt_usd(mg.get('monthly_margin'))} ({_esc(mg.get('margin_pct'))}%)</span></div>
               <div class="margin-line"><span>Estimated annual net margin</span><span>{_fmt_usd(mg.get('annual_margin'))}</span></div>
@@ -311,11 +368,41 @@ def _pricing_summary_html(summary: dict, profile: dict) -> str:
           <div class="muted" style="font-size:12px;line-height:1.5">
             <strong>Fee Card Adjustments</strong> are prices shown to the customer in the rate sheet and used for the monthly estimate.
             <br><strong>Fulfillment costs</strong> are internal warehouse costs from the pipeline.
-            <br><strong>Net margin</strong> = customer-facing monthly estimate minus internal fulfillment monthly cost.
+            <br><strong>Net margin</strong> = customer-facing monthly estimate minus carrier/pass-through revenue, then minus internal fulfillment monthly cost.
           </div>
         </div>
       </div>
     """
+
+
+def _history_bar_html(summary: dict) -> str:
+    history = [h for h in (summary.get("negotiation_history") or []) if isinstance(h, dict)]
+    if not history:
+        return """
+        <div class="flash" style="background:rgba(43,54,68,0.025);border-color:rgba(43,54,68,0.10);margin-top:18px">
+          <strong>Negotiation history</strong>
+          <p class="muted" style="margin:6px 0 0">No saved pricing changes yet. Future saves, re-publishes, and quote actions will appear here.</p>
+        </div>"""
+    items = []
+    for h in reversed(history[-8:]):
+        at = str(h.get("at") or "")
+        when = at[:16].replace("T", " ") if at else "unknown time"
+        user = str(h.get("user_email") or "").strip()
+        detail = str(h.get("detail") or "").strip()
+        meta = " · ".join(x for x in (when, user) if x)
+        items.append(
+            '<div class="history-item">'
+            f'<strong>{_esc(h.get("event") or "Updated")}</strong>'
+            f'<span>{_esc(meta)}</span>'
+            f'{f"<em>{_esc(detail)}</em>" if detail else ""}'
+            '</div>'
+        )
+    return (
+        '<div class="history-bar">'
+        '<strong>Negotiation history</strong>'
+        '<div class="history-list">' + "".join(items) + '</div>'
+        '</div>'
+    )
 
 
 def _expand_panel(run: dict) -> str:
@@ -336,7 +423,7 @@ def _expand_panel(run: dict) -> str:
             from sales_support_agent.services.fulfillment_deck.quote import compute_margin
             from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
             profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
-            mg = compute_margin(float(pitched), costs, profile_obj)
+            mg = compute_margin(float(pitched), costs, profile_obj, float(run.get("pass_through_monthly") or 0))
             sign = "pos" if mg["monthly_margin"] >= 0 else "neg"
             _rec_pp = float(costs.get("receiving_per_pallet") or 0)
             _rec_box = float(costs.get("receiving_precounted_box") or 0)
@@ -356,7 +443,9 @@ def _expand_panel(run: dict) -> str:
             margin_html = f"""
             <div class="margin-card" id="margin-{run_id}">
               <div class="big big--{sign}">{_fmt_usd(mg['monthly_margin'])}<span style="font-size:14px;font-weight:400">/mo ({mg['margin_pct']}%)</span></div>
-              <div class="margin-line"><span>Pitched monthly</span><span>{_fmt_usd(pitched)}</span></div>
+              <div class="margin-line"><span>Customer monthly estimate</span><span>{_fmt_usd(pitched)}</span></div>
+              <div class="margin-line"><span>Carrier/pass-through revenue</span><span>−{_fmt_usd(mg.get('pass_through_monthly'))}</span></div>
+              <div class="margin-line"><span>Marginable revenue</span><span>{_fmt_usd(mg.get('marginable_revenue'))}</span></div>
               <div class="margin-line"><span>Pick &amp; pack actual</span><span>−{_fmt_usd(mg['actual_pick_pack'])}</span></div>
               <div class="margin-line"><span>Storage actual</span><span>−{_fmt_usd(mg['actual_storage'])}</span></div>
               <div class="margin-line"><span>Tech fee actual</span><span>−{_fmt_usd(mg['actual_tech_fee'])}</span></div>
@@ -507,7 +596,12 @@ def _pipeline_stats(runs: list[dict]) -> str:
             try:
                 from sales_support_agent.services.fulfillment_deck.quote import compute_margin
                 from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
-                mg = compute_margin(float(pitched), costs, ProspectProfile.from_dict(r.get("prospect_profile") or {}))
+                mg = compute_margin(
+                    float(pitched),
+                    costs,
+                    ProspectProfile.from_dict(r.get("prospect_profile") or {}),
+                    float(r.get("pass_through_monthly") or 0),
+                )
                 margin_active += mg["monthly_margin"]
                 margin_runs += 1
             except Exception:
@@ -637,7 +731,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
                 from sales_support_agent.services.fulfillment_deck.quote import compute_margin
                 from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
                 profile_obj = ProspectProfile.from_dict(run.get("prospect_profile") or {})
-                mg = compute_margin(float(pitched or 0), costs, profile_obj)
+                mg = compute_margin(float(pitched or 0), costs, profile_obj, float(run.get("pass_through_monthly") or 0))
                 actual_cell = _fmt_usd(mg["actual_monthly"])
                 if pitched:
                     _raw_margin = float(mg["monthly_margin"])
@@ -734,7 +828,12 @@ def render_fulfillment_sales_page(
             try:
                 from sales_support_agent.services.fulfillment_deck.quote import compute_margin
                 from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
-                _mg = compute_margin(float(_pitched), _costs, ProspectProfile.from_dict(_r.get("prospect_profile") or {}))
+                _mg = compute_margin(
+                    float(_pitched),
+                    _costs,
+                    ProspectProfile.from_dict(_r.get("prospect_profile") or {}),
+                    float(_r.get("pass_through_monthly") or 0),
+                )
                 _margin_seed[str(_r["id"])] = {"m": _mg["monthly_margin"], "s": _stage}
             except Exception:
                 pass
@@ -983,7 +1082,9 @@ def render_fulfillment_sales_page(
             card.innerHTML =
               '<div class="big big--' + sign + '">' + (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) +
               '/mo (' + mg.margin_pct + '%)</div>' +
-              '<div class="margin-line"><span>Pitched monthly</span><span>' + fmt(data.pitched) + '</span></div>' +
+              '<div class="margin-line"><span>Customer monthly estimate</span><span>' + fmt(data.pitched) + '</span></div>' +
+              '<div class="margin-line"><span>Carrier/pass-through revenue</span><span>−' + fmt(mg.pass_through_monthly || 0) + '</span></div>' +
+              '<div class="margin-line"><span>Marginable revenue</span><span>' + fmt(mg.marginable_revenue || 0) + '</span></div>' +
               '<div class="margin-line"><span>Pick &amp; pack actual</span><span>−' + fmt(mg.actual_pick_pack) + '</span></div>' +
               '<div class="margin-line"><span>Storage actual</span><span>−' + fmt(mg.actual_storage) + '</span></div>' +
               '<div class="margin-line"><span>Tech fee actual</span><span>−' + fmt(mg.actual_tech_fee) + '</span></div>' +
@@ -1365,6 +1466,8 @@ def render_rate_sheet_review_page(
         )
 
     view_path = str(summary.get("view_path") or "")
+    hs_deal_id = str(summary.get("hubspot_deal_id") or "").strip()
+    hs_deal_url = str(summary.get("hubspot_deal_url") or "").strip()
     hs_quote_url = str(summary.get("hubspot_quote_url") or "")
     quote_guard_errors = validate_quote_readiness(summary, published=published)
     quote_guard_html = ""
@@ -1385,6 +1488,11 @@ def render_rate_sheet_review_page(
         if not quote_guard_errors else
         '<button class="btn" type="button" disabled style="background:#d4d4d4;border-color:#d4d4d4;color:#666;cursor:not-allowed">Create HubSpot Quote ✍</button>'
     )
+    hs_deal_chip = ""
+    if hs_deal_url:
+        hs_deal_chip = f'<a class="btn btn--ghost" href="{_esc(hs_deal_url)}" target="_blank" rel="noreferrer">Open HubSpot Deal</a>'
+    elif hs_deal_id:
+        hs_deal_chip = f'<span class="pill pill--live">HubSpot deal {_esc(hs_deal_id)}</span>'
     prospect_name = str(summary.get("prospect") or summary.get("design_title") or "your brand")
     if published and view_path:
         _full_link_js = f"window.location.origin+'{_esc(view_path)}'"
@@ -1414,10 +1522,12 @@ def render_rate_sheet_review_page(
             <button class="btn btn--ghost" type="button"
               onclick="{_copy_email_js}">Copy email</button>
             <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
+            {hs_deal_chip}
             {hs_quote_btn if hs_quote_url else hs_create_quote_btn}
           </div>
+          <p class="muted" style="margin:10px 0 0">Save &amp; re-render updates the agent preview and this public URL. Re-publish is the explicit action for refreshing the live shared sheet and HubSpot quote workflow.</p>
         </div>"""
-        publish_button = '<button class="btn" type="submit">Re-publish</button>'
+        publish_button = '<button class="btn" type="submit">Re-publish live sheet</button>'
     else:
         publish_block = ""
         publish_button = '<button class="btn" type="submit">Publish — get shareable link</button>'
@@ -1489,6 +1599,11 @@ def render_rate_sheet_review_page(
     from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
     _ro = dict(summary.get("rate_overrides") or {})
     _actual_costs = dict(summary.get("fulfillment_actual_costs") or {})
+    section_deal_status = "Deal attached" if hubspot_deal_id else "Select or create deal"
+    section_pricing_status = "Reviewed" if pricing_reviewed else "Needs review"
+    section_cost_status = "Costs entered" if any(v for v in _actual_costs.values() if v not in (None, "")) else "Add costs"
+    section_waiver_status = f"{len(waived_keys)} waived" if waived_keys else "No waivers"
+    section_product_status = f"{len(products)} product{'s' if len(products) != 1 else ''}"
     pricing_summary_html = _pricing_summary_html(summary, profile)
 
     def _rval(key: str) -> str:
@@ -1514,6 +1629,7 @@ def render_rate_sheet_review_page(
         return f"{float(v):g}" if v is not None else ""
 
     rate_card_note_val = _esc(str(summary.get("rate_card_note") or ""))
+    history_bar_html = _history_bar_html(summary)
 
     status_label = "Published" if published else "Draft — not publicly visible yet"
     status_pill_cls = "pill--live" if published else "pill--draft"
@@ -1550,7 +1666,12 @@ def render_rate_sheet_review_page(
         {brief_block}
         {'<form method="post" action="' + base + '/runs/' + str(run_id) + '/publish" style="margin-bottom:10px"><button class="btn" type="submit" style="width:100%">Publish — get shareable link</button></form>' if not published else ''}
         <form method="post" action="{base}/runs/{run_id}/update">
-          <h2>Deal &amp; Quote Readiness</h2>
+          <div class="review-sections">
+          <details class="review-section" open>
+            <summary>
+              <span>Deal &amp; Quote Readiness <span class="review-section__sub">{_esc(section_deal_status)} · {_esc(section_pricing_status)}</span></span>
+            </summary>
+            <div class="review-section__body">
           <div class="grid2">
             <div>
               {deal_picker_html}
@@ -1567,10 +1688,16 @@ def render_rate_sheet_review_page(
               </div>
             </div>
           </div>
+            </div>
+          </details>
         <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>
 
-        <h2>Prospect details</h2>
-          <div class="grid2">
+          <details class="review-section">
+            <summary>
+              <span>Prospect Details <span class="review-section__sub">{_esc(profile.get('brand') or summary.get('prospect') or 'Brand details')} · {monthly_volume or 'no'} orders/mo</span></span>
+            </summary>
+            <div class="review-section__body">
+          <div class="form-grid">
             <div>
               <div class="field">
                 <label for="brand">Brand</label>
@@ -1607,8 +1734,14 @@ def render_rate_sheet_review_page(
               </div>
             </div>
           </div>
+            </div>
+          </details>
 
-          <h2>Internal Fulfillment Costs</h2>
+          <details class="review-section" open>
+            <summary>
+              <span>Internal Fulfillment Costs <span class="review-section__sub">{_esc(section_cost_status)} · used for net margin only</span></span>
+            </summary>
+            <div class="review-section__body">
           <p class="muted" style="margin-bottom:12px">Internal warehouse costs used for gross-to-net margin. These are not shown to the prospect. Saving this page now saves these costs too.</p>
           <input type="hidden" name="actual_costs_form" value="1">
           <div class="edit-grid">
@@ -1696,7 +1829,14 @@ def render_rate_sheet_review_page(
             </div>
           </div>
 
-          <h2>Fee Card Adjustments</h2>
+            </div>
+          </details>
+
+          <details class="review-section" open>
+            <summary>
+              <span>Fee Card Adjustments <span class="review-section__sub">Customer-facing prices · affects Calculate My Estimate after save/re-publish</span></span>
+            </summary>
+            <div class="review-section__body">
           {pricing_summary_html}
           <p class="muted" style="margin-bottom:12px">Customer-facing fees shown in the public rate sheet. Leave blank to use the baseline customer fee in parentheses; enter a value to override what the prospect sees and what the monthly estimate uses.</p>
           <div class="edit-grid">
@@ -1765,7 +1905,14 @@ def render_rate_sheet_review_page(
             <span class="hint">Use to call out specials, volume commitments, expiry dates, etc.</span>
           </div>
 
-          <h2>Sales Pricing &amp; Waivers</h2>
+            </div>
+          </details>
+
+          <details class="review-section">
+            <summary>
+              <span>Sales Pricing &amp; Waivers <span class="review-section__sub">{_esc(section_waiver_status)} · reasons required before quote creation</span></span>
+            </summary>
+            <div class="review-section__body">
           <p class="muted" style="margin-bottom:12px">Sales can waive or override any fee. Waivers are allowed, but quote creation requires a reason so the deal stays auditable.</p>
           <div class="grid2">
             <div class="field">
@@ -1786,24 +1933,36 @@ def render_rate_sheet_review_page(
             </div>
           </div>
 
-          <h2>Products</h2>
+            </div>
+          </details>
+
+          <details class="review-section">
+            <summary>
+              <span>Products <span class="review-section__sub">{_esc(section_product_status)} · dimensions drive pallets, storage, and packaging</span></span>
+            </summary>
+            <div class="review-section__body">
           {'<div class="flash flash--warn" style="margin-bottom:12px"><strong>No products on file.</strong> Fill in at least one product row below (name + dimensions + units/mo) so the rate sheet shows accurate savings estimates, then save &amp; re-publish.</div>' if not products else ''}
           <table class="products-table">
             <thead><tr><th>Name</th><th>L (in)</th><th>W (in)</th><th>H (in)</th><th>Weight (lb)</th><th>Units / mo <span style="font-weight:400;font-size:11px;opacity:0.55">(opt.)</span></th><th>Remove</th></tr></thead>
             <tbody>{rows}</tbody>
           </table>
           <p class="muted">Rows tagged <span class="pill pill--estimated">estimated</span> had dimensions guessed from the product type — confirm or correct them before sending. Editing a dimension clears the tag. Tick Remove to drop a product; fill the empty row to add one.</p>
+            </div>
+          </details>
+          </div>
           <div class="review-actions">
-            <button class="btn" type="submit">Save &amp; re-render</button>
-            <span class="muted" style="font-size:12px">Saving does not affect the public link.</span>
+            <button class="btn" type="submit">Save &amp; re-render agent preview</button>
+            <span class="muted" style="font-size:12px">Saves changes and rebuilds the agent/public preview. Use Re-publish below when the prospect-facing sheet should be refreshed.</span>
           </div>
         </form>
         <form method="post" action="{base}/runs/{run_id}/publish" style="margin-top:10px">
           <div class="review-actions">
             {publish_button}
             <a class="btn btn--ghost" href="{base}">← Pipeline</a>
+            <span class="muted" style="font-size:12px">Re-publish refreshes the prospect-facing rate sheet and can re-run the HubSpot quote workflow when quote guards pass.</span>
           </div>
         </form>
+        {history_bar_html}
       </div>
     </main>
     <script>

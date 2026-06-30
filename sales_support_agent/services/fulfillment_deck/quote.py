@@ -548,13 +548,18 @@ def compute_margin(
     pitched_monthly: float,
     actual_costs: dict,
     profile: ProspectProfile,
+    pass_through_monthly: float = 0.0,
 ) -> dict:
-    """Compute monthly margin: pitched monthly total minus actual warehouse cost.
+    """Compute monthly margin after pass-through revenue and warehouse cost.
 
-    actual_costs may include core rates plus optional service rates. Receiving
-    is returned as a one-time estimate and excluded from monthly margin.
-    Returns a dict with the breakdown plus margin_pct and annual_margin.
+    ``pitched_monthly`` is the customer-facing monthly estimate. Carrier /
+    shipping pass-through is revenue shown to the prospect but not profit that
+    Anata earns, so it is excluded before subtracting fulfillment costs.
+    Receiving is returned as a one-time estimate and excluded from monthly
+    margin. Returns a dict with the breakdown plus margin_pct and annual_margin.
     """
+    pass_through_monthly = max(float(pass_through_monthly or 0), 0.0)
+    marginable_revenue = max(round(float(pitched_monthly or 0) - pass_through_monthly, 2), 0.0)
     pick_pack = float(actual_costs.get("pick_pack_per_order") or 0)
     additional_item = float(actual_costs.get("pick_pack_additional_item") or 0)
     storage = float(actual_costs.get("storage_per_pallet_mo") or 0)
@@ -594,11 +599,14 @@ def compute_margin(
         2,
     )
     actual_monthly = round(actual_pp + actual_st + tech_fee + optional_monthly, 2)
-    monthly_margin = round(pitched_monthly - actual_monthly, 2)
+    monthly_margin = round(marginable_revenue - actual_monthly, 2)
     margin_pct = (
-        round(monthly_margin / pitched_monthly * 100, 1) if pitched_monthly > 0 else 0.0
+        round(monthly_margin / marginable_revenue * 100, 1) if marginable_revenue > 0 else 0.0
     )
     return {
+        "pitched_monthly": round(float(pitched_monthly or 0), 2),
+        "pass_through_monthly": round(pass_through_monthly, 2),
+        "marginable_revenue": marginable_revenue,
         "actual_pick_pack": actual_pp,
         "actual_storage": actual_st,
         "actual_storage_pallet": pallet_storage,

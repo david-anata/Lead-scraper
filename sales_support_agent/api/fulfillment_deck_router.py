@@ -286,6 +286,7 @@ def _opt_float(value: str):
 @admin_router.post("/runs/{run_id}/update")
 def update_run(
     run_id: int,
+    request: Request,
     brand: str = Form(default=""),
     origin_zip: str = Form(default=""),
     monthly_order_volume: str = Form(default=""),
@@ -456,6 +457,42 @@ def update_run(
         result = apply_profile_edits(run_id, edits, settings=settings)
         if actual_costs_form == "1":
             storage.update_costs(run_id, actual_costs)
+            try:
+                from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+                from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+                from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
+
+                updated = storage.get_run(run_id)
+                updated_summary = dict(updated.summary_json or {}) if updated is not None else dict(result or {})
+                quote = dict(updated_summary.get("fulfillment_quote") or {})
+                pitched = float(quote.get("monthly_total") or 0)
+                pass_through = 0.0
+                for line in quote.get("lines") or []:
+                    if isinstance(line, dict) and str(line.get("key") or "") == "shipping":
+                        try:
+                            pass_through += float(line.get("monthly") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                profile_obj = ProspectProfile.from_dict(updated_summary.get("prospect_profile") or {})
+                if pitched and any(v for v in actual_costs.values() if v):
+                    margin = compute_margin(pitched, actual_costs, profile_obj, pass_through)
+                    _hs_margin(run_id, margin, pitched)
+            except Exception:
+                logger.exception("[fulfillment_deck] review cost margin sync failed")
+        _user_email = str((get_current_user(request) or {}).get("email") or "")
+        _parts = []
+        if hubspot_deal_id:
+            _parts.append(f"deal {hubspot_deal_id}")
+        if rate_overrides:
+            _parts.append(f"{len(rate_overrides)} customer fee override{'s' if len(rate_overrides) != 1 else ''}")
+        if actual_costs_form == "1":
+            _parts.append("internal costs")
+        storage.append_history(
+            run_id,
+            "Saved and re-rendered",
+            ", ".join(_parts) or "profile updated",
+            user_email=_user_email,
+        )
         if hubspot_deal_id:
             try:
                 from sqlalchemy.orm import Session
@@ -515,6 +552,10 @@ def publish_run(run_id: int, request: Request) -> RedirectResponse:
             storage.update_summary(run_id, {"owner_email": _owner_email})
         except Exception:
             logger.exception("[fulfillment_deck] owner_email store failed")
+    try:
+        storage.append_history(run_id, "Re-published", "Public rate sheet refreshed", user_email=_owner_email)
+    except Exception:
+        logger.exception("[fulfillment_deck] publish history append failed")
     # Auto-advance pipeline stage to "published" (unless already won/lost).
     stage_now = str(summary.get("pipeline_stage") or "intake")
     if stage_now not in ("won", "lost", "published"):
@@ -572,6 +613,7 @@ def create_quote(run_id: int, request: Request) -> RedirectResponse:
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
         _hs_quote(run_id, owner_email=_owner_email, force=True)
+        storage.append_history(run_id, "HubSpot quote requested", "Quote creation/sync started", user_email=_owner_email)
         msg = "Creating HubSpot quote — refresh in a few seconds to see the Quote button."
     except Exception:
         logger.exception("[fulfillment_deck] hubspot create_quote failed")
@@ -659,10 +701,18 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
         from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
         summary = dict(run.summary_json or {})
         profile_dict = summary.get("prospect_profile") or {}
-        pitched = float((summary.get("fulfillment_quote") or {}).get("monthly_total") or 0)
+        quote = dict(summary.get("fulfillment_quote") or {})
+        pitched = float(quote.get("monthly_total") or 0)
         if profile_dict and pitched and any(v for v in costs.values() if v):
             profile = ProspectProfile.from_dict(profile_dict)
-            margin = compute_margin(pitched, costs, profile)
+            pass_through = 0.0
+            for line in quote.get("lines") or []:
+                if isinstance(line, dict) and str(line.get("key") or "") == "shipping":
+                    try:
+                        pass_through += float(line.get("monthly") or 0)
+                    except (TypeError, ValueError):
+                        pass
+            margin = compute_margin(pitched, costs, profile, pass_through)
             from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
             _hs_margin(run_id, margin, pitched)
             rec_pp = float(costs.get("receiving_per_pallet") or 0)

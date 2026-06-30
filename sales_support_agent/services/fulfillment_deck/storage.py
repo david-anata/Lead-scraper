@@ -157,6 +157,15 @@ def list_runs(limit: int = 100) -> list[dict]:
             prospect_profile = dict(summary.get("prospect_profile") or {})
             fulfillment_quote = dict(summary.get("fulfillment_quote") or {})
             pitched_monthly = float(fulfillment_quote.get("monthly_total") or 0) or None
+            pass_through_monthly = 0.0
+            for line in fulfillment_quote.get("lines") or []:
+                if not isinstance(line, dict):
+                    continue
+                if str(line.get("key") or "") == "shipping":
+                    try:
+                        pass_through_monthly += float(line.get("monthly") or 0)
+                    except (TypeError, ValueError):
+                        pass
             monthly_order_volume = None
             vol_raw = prospect_profile.get("monthly_order_volume")
             if vol_raw is not None:
@@ -188,6 +197,7 @@ def list_runs(limit: int = 100) -> list[dict]:
                     ),
                     "monthly_order_volume": monthly_order_volume,
                     "pitched_monthly": pitched_monthly,
+                    "pass_through_monthly": round(pass_through_monthly, 2),
                     # Raw profile stored for the expand panel brief + margin calc
                     "prospect_profile": prospect_profile,
                     # HubSpot integration
@@ -209,6 +219,23 @@ def update_costs(run_id: int, costs: dict) -> bool:
 
 def update_notes(run_id: int, notes: str) -> bool:
     return update_summary(run_id, {"pipeline_notes": notes})
+
+
+def append_history(run_id: int, event: str, detail: str = "", *, user_email: str = "") -> bool:
+    """Append a compact operator-visible history event to summary_json."""
+    run = get_run(run_id)
+    if run is None:
+        return False
+    summary = dict(run.summary_json or {})
+    history = list(summary.get("negotiation_history") or [])
+    history.append({
+        "at": datetime.now(timezone.utc).isoformat(),
+        "event": str(event or "Updated").strip()[:80],
+        "detail": str(detail or "").strip()[:220],
+        "user_email": str(user_email or "").strip()[:120],
+    })
+    summary["negotiation_history"] = history[-25:]
+    return update_summary(run_id, summary)
 
 
 def delete_run(run_id: int) -> bool:

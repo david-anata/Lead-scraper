@@ -74,6 +74,21 @@ def test_compute_margin_empty_costs():
     assert mg["monthly_margin"] == pytest.approx(2000.0)
 
 
+def test_compute_margin_excludes_pass_through_revenue():
+    profile = _profile(orders=1000)
+    mg = compute_margin(
+        10_000.0,
+        {"pick_pack_per_order": 1.0},
+        profile,
+        pass_through_monthly=7_000.0,
+    )
+    assert mg["pass_through_monthly"] == pytest.approx(7_000.0)
+    assert mg["marginable_revenue"] == pytest.approx(3_000.0)
+    assert mg["actual_monthly"] == pytest.approx(1_000.0)
+    assert mg["monthly_margin"] == pytest.approx(2_000.0)
+    assert mg["margin_pct"] == pytest.approx(66.7)
+
+
 # ---------------------------------------------------------------------------
 # Storage helpers (in-memory SQLite)
 # ---------------------------------------------------------------------------

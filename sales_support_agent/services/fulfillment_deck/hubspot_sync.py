@@ -547,6 +547,8 @@ def sync_margin(run_id: int, margin: dict, pitched: float) -> None:
         note = (
             f"Fulfillment cost analysis:\n"
             f"  Pitched: ${pitched:,.0f}/mo\n"
+            f"  Carrier/pass-through revenue: −${margin.get('pass_through_monthly', 0):,.0f}/mo\n"
+            f"  Marginable revenue: ${margin.get('marginable_revenue', 0):,.0f}/mo\n"
             f"  Pick & pack actual: −${margin.get('actual_pick_pack', 0):,.0f}\n"
             f"  Storage actual: −${margin.get('actual_storage', 0):,.0f}\n"
             f"  Tech fee actual: −${margin.get('actual_tech_fee', 0):,.0f}\n"
