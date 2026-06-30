@@ -54,6 +54,7 @@ from sales_support_agent.services.admin_auth import (
     create_admin_session_token,
     create_signed_state_token,
     get_session_user,
+    password_login_enabled,
     read_signed_state_token,
     validate_admin_session_token,
     verify_admin_password,
@@ -649,21 +650,50 @@ def admin_login_page(request: Request) -> HTMLResponse:
     if _is_admin_authenticated(request):
         return HTMLResponse("", status_code=302, headers={"Location": "/admin"})
     settings = request.app.state.settings
-    return HTMLResponse(render_login_page(show_google_button=google_oauth_enabled(settings)))
+    show_google_button = google_oauth_enabled(settings)
+    show_password_form = password_login_enabled(settings)
+    unavailable_message = ""
+    if not show_google_button and not show_password_form:
+        unavailable_message = (
+            "Login is not configured on this deployment. Add Google OAuth or a break-glass password in Render."
+        )
+    return HTMLResponse(
+        render_login_page(
+            error_message=unavailable_message,
+            show_google_button=show_google_button,
+            show_password_form=show_password_form,
+        )
+    )
 
 
 @router.post("/admin/login", response_class=HTMLResponse)
 async def admin_login_submit(request: Request) -> Response:
     _require_admin_enabled(request)
+    settings = request.app.state.settings
+    if not password_login_enabled(settings):
+        return HTMLResponse(
+            render_login_page(
+                error_message="Fallback login is unavailable on this deployment.",
+                show_google_button=google_oauth_enabled(settings),
+                show_password_form=False,
+            ),
+            status_code=503,
+        )
     body = (await request.body()).decode("utf-8")
     password = parse_qs(body).get("password", [""])[0]
-    if not verify_admin_password(request.app.state.settings, password):
-        settings = request.app.state.settings
-        return HTMLResponse(render_login_page(error_message="Incorrect password.", show_google_button=google_oauth_enabled(settings)), status_code=401)
+    if not verify_admin_password(settings, password):
+        return HTMLResponse(
+            render_login_page(
+                error_message="Incorrect shared fallback password.",
+                show_google_button=google_oauth_enabled(settings),
+                show_password_form=True,
+            ),
+            status_code=401,
+        )
 
     response = RedirectResponse(url="/admin", status_code=302)
     response.set_cookie(
-        value=create_admin_session_token(request.app.state.settings),
+        value=create_admin_session_token(settings),
         **_admin_cookie_options(request),
     )
     return response

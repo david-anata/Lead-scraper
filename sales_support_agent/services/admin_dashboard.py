@@ -1622,11 +1622,9 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
     )
     password_form_html = (
         """<form method="post" action="/admin/login">
-              <p class="fallback-note">This password is for existing break-glass admin access. New users must use Google sign-in above to request access.</p>
-              <label for="email">Admin email</label>
-              <input id="email" name="email" type="email" autocomplete="email" placeholder="admin@anatainc.com" required />
-              <label for="password">Password</label>
-              <input id="password" name="password" type="password" autocomplete="current-password" required />
+              <p class="fallback-note">Use the shared break-glass password for this workspace. New users must use Google sign-in when it is enabled.</p>
+              <label for="password">Shared fallback password</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter shared fallback password" required />
               <button type="submit">Continue with fallback</button>
             </form>"""
         if show_password_form

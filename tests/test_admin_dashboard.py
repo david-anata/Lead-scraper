@@ -78,6 +78,8 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn('rel="icon"', html)
         self.assertIn('rel="apple-touch-icon"', html)
         self.assertIn("data:image/png;base64,", html)
+        self.assertIn("Shared fallback password", html)
+        self.assertNotIn("Admin email", html)
 
     def test_dashboard_render_removes_gmail_drafts_and_deck_builder_from_admin(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")
