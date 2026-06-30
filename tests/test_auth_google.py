@@ -30,6 +30,7 @@ def _make_settings(
     allowed_domain: str = "example.com",
     role_map: dict | None = None,
     default_role: str = "ops",
+    rbac_enabled: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         admin_session_secret=secret,
@@ -40,6 +41,7 @@ def _make_settings(
         google_oauth_allowed_domain=allowed_domain,
         admin_role_map=role_map or {},
         admin_default_role=default_role,
+        rbac_enabled=rbac_enabled,
     )
 
 

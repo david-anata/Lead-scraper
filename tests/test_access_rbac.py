@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 import uuid
+from types import SimpleNamespace
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/rbac_test.db")
 
@@ -764,6 +765,53 @@ class GoogleSessionMintTests(unittest.TestCase):
             user["permissions"],
             {"website_ops.seo", "website_ops.queue", "website_ops.reports"},
         )
+
+    def test_unprovisioned_google_login_creates_request_and_redirects_to_pending(self) -> None:
+        from sales_support_agent.api import auth_router
+
+        settings = SimpleNamespace(
+            admin_session_secret="pending-secret",
+            admin_cookie_name="pending_session",
+            admin_session_ttl_hours=24,
+            google_oauth_allowed_domain="anatainc.com",
+            rbac_auto_provision_domain_tools=(),
+            rbac_superadmin_emails=(),
+            admin_role_map={},
+            admin_default_role="ops",
+        )
+        email = f"pending-review-{uuid.uuid4().hex}@anatainc.com"
+
+        class _URL:
+            def __str__(self): return "https://agent.anatainc.com/"
+
+        class _Req:
+            cookies = {}
+            base_url = _URL()
+            app = type("A", (), {"state": type("St", (), {"settings": settings})()})()
+
+        resp = auth_router._rbac_login(_Req(), settings, email, "Pending Reviewer")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers["location"], "/admin/pending")
+        cookies = [value.decode() for key, value in resp.raw_headers if key.decode().lower() == "set-cookie"]
+        self.assertTrue(any(cookie.startswith(settings.admin_cookie_name + "=") for cookie in cookies))
+        pending = store.get_pending_access_request_for_email(email)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["email"], email)
+
+    def test_pending_page_rehydrates_existing_request_from_session(self) -> None:
+        email = f"pending-page-{uuid.uuid4().hex}@anatainc.com"
+        store.create_access_request(email, "Pending Page")
+        client = TestClient(app)
+        name, token = _cookie_for(email, "Pending Page")
+        client.cookies.set(name, token)
+        try:
+            resp = client.get("/admin/pending", follow_redirects=False)
+        finally:
+            client.cookies.clear()
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Access requested", resp.text)
+        self.assertIn(email, resp.text)
+        self.assertIn("Request received", resp.text)
 
     def test_existing_allowed_domain_user_gets_website_ops_review_tools(self) -> None:
         from sales_support_agent.api import auth_router

@@ -508,15 +508,23 @@ def _standalone_page(title: str, icon: str, heading: str, body_html: str) -> str
 </body></html>"""
 
 
-def render_access_pending_page(email: str) -> str:
+def render_access_pending_page(email: str, *, request_record: Optional[dict] = None) -> str:
+    requested_at = ""
+    if request_record:
+        requested_at = str(request_record.get("requested_at") or "")[:19].replace("T", " ")
+    requested_line = (
+        f"<br><br><strong>Request received:</strong> {_esc(requested_at)} UTC"
+        if requested_at
+        else ""
+    )
     body = f"""
       <p class="muted">
-        Your sign-in was received for <strong>{_esc(email)}</strong>, but your account
-        hasn't been set up yet.<br><br>
-        An administrator has been notified and will approve your access shortly.
-        Try signing in again once you've been approved.
+        Your Google sign-in was received for <strong>{_esc(email)}</strong>, but
+        your account has not been approved yet.{requested_line}<br><br>
+        Your request is visible to admins under <strong>People</strong>. Once an
+        admin approves you and enables app areas, sign in with Google again.
       </p>
-      <a class="btn" href="/admin/login" style="margin-top:22px">Back to sign-in</a>
+      <a class="btn" href="/admin/auth/google" style="margin-top:22px">Check with Google</a>
     """
     return _standalone_page("Access pending", "⏳", "Access requested", body)
 

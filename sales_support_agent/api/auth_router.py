@@ -163,7 +163,7 @@ def _external_login_allowed(request: Request, email: str) -> bool:
         return False
 
 
-def _mint_session(request: Request, settings, email: str, name: str) -> RedirectResponse:
+def _mint_session(request: Request, settings, email: str, name: str, *, redirect_to: str = "/admin") -> RedirectResponse:
     """Mint a session cookie and redirect to /admin.
 
     The cookie MUST be signed with the host app's session settings (see
@@ -175,10 +175,33 @@ def _mint_session(request: Request, settings, email: str, name: str) -> Redirect
     except Exception:  # noqa: BLE001 — role label is non-critical; never block login
         role = "member"
     token = create_user_session_token(sess, email=email, name=name, role=role)
-    response = RedirectResponse("/admin", status_code=302)
+    response = RedirectResponse(redirect_to, status_code=302)
     response.delete_cookie(_OAUTH_STATE_COOKIE, path="/")
     response.set_cookie(value=token, **_cookie_opts(request))
     return response
+
+
+@router.get("/admin/pending", response_class=HTMLResponse)
+def access_pending(request: Request) -> Response:
+    from sales_support_agent.services.access import store as _store
+    from sales_support_agent.services.access.pages import render_access_pending_page
+    from sales_support_agent.services.auth_deps import get_session_user_from_request
+
+    identity = get_session_user_from_request(request)
+    if not identity:
+        return RedirectResponse("/admin/login", status_code=302)
+
+    email = (identity.get("email") or "").strip().lower()
+    name = (identity.get("name") or email).strip()
+    user = _store.get_user_by_email(email)
+    if user and (user.get("is_superadmin") or user.get("permissions")):
+        return RedirectResponse("/admin", status_code=302)
+
+    pending = _store.get_pending_access_request_for_email(email)
+    if not pending:
+        request_id = _store.create_access_request(email, name)
+        pending = _store.get_access_request(request_id)
+    return HTMLResponse(render_access_pending_page(email, request_record=pending), status_code=200)
 
 
 def _rbac_login(request: Request, settings, email: str, name: str, picture: str = ""):
@@ -189,7 +212,6 @@ def _rbac_login(request: Request, settings, email: str, name: str, picture: str 
     from fastapi.responses import HTMLResponse as _HTML
     from sales_support_agent.services.access import store as _store
     from sales_support_agent.services.access.pages import (
-        render_access_pending_page,
         render_suspended_page,
     )
 
@@ -242,4 +264,4 @@ def _rbac_login(request: Request, settings, email: str, name: str, picture: str 
 
     # 5. Unprovisioned — create an access request and show the pending page.
     _store.create_access_request(email, name)
-    return _HTML(render_access_pending_page(email), status_code=200)
+    return _mint_session(request, settings, email, name, redirect_to="/admin/pending")

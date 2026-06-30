@@ -330,6 +330,46 @@ def create_access_request(email: str, name: str = "") -> str:
         return rid
 
 
+def get_access_request(request_id: str) -> Optional[dict]:
+    with _session() as s:
+        row = s.get(AppAccessRequest, request_id)
+        if not row:
+            return None
+        return {
+            "id": row.id,
+            "email": row.email,
+            "name": row.name,
+            "status": row.status,
+            "requested_at": row.requested_at.isoformat() if row.requested_at else None,
+            "decided_by": row.decided_by or "",
+            "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        }
+
+
+def get_pending_access_request_for_email(email: str) -> Optional[dict]:
+    email = _norm_email(email)
+    if not email:
+        return None
+    with _session() as s:
+        row = (
+            s.query(AppAccessRequest)
+            .filter(AppAccessRequest.email == email, AppAccessRequest.status == "pending")
+            .order_by(AppAccessRequest.requested_at.desc())
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "id": row.id,
+            "email": row.email,
+            "name": row.name,
+            "status": row.status,
+            "requested_at": row.requested_at.isoformat() if row.requested_at else None,
+            "decided_by": row.decided_by or "",
+            "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        }
+
+
 def list_access_requests(status: str = "pending") -> list:
     with _session() as s:
         rows = (s.query(AppAccessRequest).filter(AppAccessRequest.status == status)
