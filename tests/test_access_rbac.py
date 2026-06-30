@@ -182,6 +182,10 @@ class EnforcementTests(unittest.TestCase):
         # QBO OAuth + login must not be redirected to login *by the RBAC gate*.
         r = self.client.get("/admin/login", follow_redirects=False)
         self.assertNotEqual(r.headers.get("location"), "/admin/login")
+        self.assertTrue(
+            "Google sign-in is currently unavailable" in r.text
+            or "Login is not configured on this deployment" in r.text
+        )
 
     def test_cs_only_user_fulfillment_root_redirects_to_cs(self) -> None:
         # A CS-only user (fulfillment.dashboard) hitting /admin/fulfillment must be

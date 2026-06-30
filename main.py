@@ -3810,6 +3810,11 @@ def admin_login_page(request: Request) -> Response:
     _err = _oauth_errors.get(request.query_params.get("error", ""), "")
     if not (_show_google or _show_password):
         _err = "No sign-in method is configured. Set GOOGLE_OAUTH_CLIENT_ID/SECRET or ADMIN_DASHBOARD_PASSWORD."
+    elif not _err and not _show_google and _show_password:
+        _err = (
+            "Google sign-in is currently unavailable. Use the shared fallback "
+            "password only if you already have break-glass access."
+        )
     return HTMLResponse(render_login_page(show_google_button=_show_google,
                                           show_password_form=_show_password,
                                           error_message=_err))
