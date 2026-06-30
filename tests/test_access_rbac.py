@@ -120,6 +120,59 @@ class EnforcementTests(unittest.TestCase):
         r_no = self._get("/admin/advertising/audit", "enf_fin@anatainc.com")
         self.assertEqual(r_no.status_code, 403)
 
+    def test_website_ops_run_api_requires_seo_permission(self) -> None:
+        name, token = _cookie_for("enf_fin@anatainc.com")
+        self.client.cookies.set(name, token)
+        try:
+            r = self.client.post("/admin/api/website-ops/run", data={"mode": "daily"}, follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 403)
+
+    def test_website_ops_feedback_api_stamps_reporter_from_session(self) -> None:
+        from unittest import mock
+
+        uid = store.upsert_user("website_queue@anatainc.com", "Website Queue")
+        store.set_user_permissions(uid, ["website_ops.queue"])
+        name, token = _cookie_for("website_queue@anatainc.com", "Website Queue")
+        self.client.cookies.set(name, token)
+        try:
+            with mock.patch(
+                "sales_support_agent.api.router.save_feedback_record",
+                return_value={"feedback_id": "feedback-123"},
+            ) as save_feedback:
+                r = self.client.post(
+                    "/admin/api/website-ops/feedback",
+                    data={"summary": "Check hero copy"},
+                    follow_redirects=False,
+                )
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 302)
+        payload = save_feedback.call_args.args[1]
+        self.assertEqual(payload["reporter_email"], "website_queue@anatainc.com")
+        self.assertEqual(payload["reporter_name"], "Website Queue")
+
+    def test_website_ops_review_api_passes_reviewer_identity(self) -> None:
+        from unittest import mock
+
+        uid = store.upsert_user("website_reviewer@anatainc.com", "Website Reviewer")
+        store.set_user_permissions(uid, ["website_ops.queue"])
+        name, token = _cookie_for("website_reviewer@anatainc.com", "Website Reviewer")
+        result = type("Result", (), {"ok": True, "record": {"feedback_id": "feedback-123"}, "message": "Review saved."})()
+        self.client.cookies.set(name, token)
+        try:
+            with mock.patch("sales_support_agent.api.router.review_feedback_record", return_value=result) as review:
+                r = self.client.post(
+                    "/admin/api/website-ops/feedback/feedback-123/review",
+                    data={"status": "approved"},
+                    follow_redirects=False,
+                )
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(review.call_args.kwargs["reviewer"]["email"], "website_reviewer@anatainc.com")
+
     def test_unprovisioned_user_denied(self) -> None:
         r = self._get("/admin/executive/brand-analysis", "stranger@anatainc.com")
         self.assertEqual(r.status_code, 403)

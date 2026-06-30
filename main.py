@@ -3766,6 +3766,24 @@ def _current_nav_user(request: Request) -> Optional[dict]:
         return None
 
 
+def _require_admin_tool(request: Request, tool_key: str, *, json_response: bool = False) -> tuple[Optional[dict], Optional[Response]]:
+    """Imperative RBAC guard for admin handlers that cannot use FastAPI deps."""
+    try:
+        from sales_support_agent.services.auth_deps import require_tool_inline
+        user, response = require_tool_inline(request, tool_key)
+    except Exception:
+        logger.exception("[AdminAuth] tool guard failed for %s", tool_key)
+        return None, JSONResponse(status_code=401, content={"detail": "Admin login required."}) if json_response else RedirectResponse(url="/admin/login", status_code=302)
+    if response is None:
+        return user, None
+    if json_response:
+        status = getattr(response, "status_code", 403)
+        if status in {301, 302, 303, 307, 308}:
+            return None, JSONResponse(status_code=401, content={"detail": "Admin login required."})
+        return None, JSONResponse(status_code=status, content={"detail": "Access denied."})
+    return None, response
+
+
 @app.get("/admin/login", response_class=HTMLResponse)
 def admin_login_page(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
@@ -4338,9 +4356,9 @@ async def admin_website_ops_run(request: Request, mode: str = Form(default="dail
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
         raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
-    token = request.cookies.get(admin_settings.admin_cookie_name, "")
-    if not validate_admin_session_token(admin_settings, token):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    _, auth_response = _require_admin_tool(request, "website_ops.seo", json_response=True)
+    if auth_response is not None:
+        return auth_response
 
     normalized_mode = (mode or "daily").strip().lower()
     if normalized_mode not in {"daily", "weekly", "monthly"}:
@@ -4354,9 +4372,9 @@ def admin_website_ops_status(request: Request, mode: str = "daily") -> JSONRespo
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
         raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
-    token = request.cookies.get(admin_settings.admin_cookie_name, "")
-    if not validate_admin_session_token(admin_settings, token):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    _, auth_response = _require_admin_tool(request, "website_ops.seo", json_response=True)
+    if auth_response is not None:
+        return auth_response
 
     normalized_mode = (mode or "daily").strip().lower()
     if normalized_mode not in {"daily", "weekly", "monthly"}:
@@ -4381,9 +4399,9 @@ async def admin_website_ops_feedback_submit(
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
         raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
-    token = request.cookies.get(admin_settings.admin_cookie_name, "")
-    if not validate_admin_session_token(admin_settings, token):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    user, auth_response = _require_admin_tool(request, "website_ops.queue", json_response=True)
+    if auth_response is not None:
+        return auth_response
 
     record = save_website_ops_feedback_record(
         load_website_ops_settings(),
@@ -4396,8 +4414,8 @@ async def admin_website_ops_feedback_submit(
             "details": details,
             "desired_outcome": desired_outcome,
             "recommended_fix": recommended_fix,
-            "reporter_name": reporter_name,
-            "reporter_email": reporter_email,
+            "reporter_name": reporter_name or str((user or {}).get("name") or ""),
+            "reporter_email": reporter_email or str((user or {}).get("email") or ""),
         },
     )
     return RedirectResponse(url=f"/admin/website-ops/feedback/{record['feedback_id']}", status_code=302)
@@ -4417,9 +4435,9 @@ async def admin_website_ops_feedback_review(
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
         raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
-    token = request.cookies.get(admin_settings.admin_cookie_name, "")
-    if not validate_admin_session_token(admin_settings, token):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    user, auth_response = _require_admin_tool(request, "website_ops.queue", json_response=True)
+    if auth_response is not None:
+        return auth_response
 
     result = review_website_ops_feedback_record(
         load_website_ops_settings(),
@@ -4432,6 +4450,7 @@ async def admin_website_ops_feedback_review(
             "action_value": action_value,
             "target_post_id": target_post_id,
         },
+        reviewer=user,
     )
     if not result.ok and not result.record:
         return JSONResponse(status_code=404, content={"detail": result.message})

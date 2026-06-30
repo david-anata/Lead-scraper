@@ -41,12 +41,23 @@ class MainFulfillmentCSTests(unittest.TestCase):
         website_ops = ModuleType("sales_support_agent.services.website_ops")
         website_ops.get_website_ops_run_state = lambda settings, mode="daily": {"status": "idle", "mode": mode}
         website_ops.latest_report_entry = lambda settings: None
-        website_ops.render_dashboard_page = lambda settings: "<html>website ops dashboard</html>"
-        website_ops.render_feedback_detail_page = lambda settings, feedback_id: "<html>feedback</html>"
-        website_ops.render_queue_page = lambda settings, status_filter="": "<html>queue</html>"
-        website_ops.render_report_page = lambda settings, mode, slug: "<html>report</html>"
-        website_ops.render_reports_page = lambda settings: "<html>reports</html>"
-        website_ops.review_feedback_record = lambda settings, feedback_id, payload: {"ok": True, "feedback_id": feedback_id}
+        website_ops.render_dashboard_page = lambda settings, **kwargs: "<html>website ops dashboard</html>"
+        website_ops.render_feedback_detail_page = lambda settings, feedback_id, **kwargs: "<html>feedback</html>"
+        website_ops.render_queue_page = lambda settings, status_filter="", **kwargs: "<html>queue</html>"
+        website_ops.render_report_page = lambda settings, mode, slug, **kwargs: "<html>report</html>"
+        website_ops.render_reports_page = lambda settings, **kwargs: "<html>reports</html>"
+
+        def _review_feedback_record(settings, feedback_id, payload, **kwargs):
+            website_ops.last_review_call = {
+                "feedback_id": feedback_id,
+                "payload": payload,
+                "reviewer": kwargs.get("reviewer"),
+            }
+            return type("Result", (), {"ok": True, "record": {"feedback_id": feedback_id}, "message": "Review saved."})()
+
+        website_ops.last_review_call = None
+        website_ops.review_feedback_record = _review_feedback_record
+        self._website_ops_stub = website_ops
         website_ops.run_website_ops = lambda settings, mode="daily": None
         website_ops.save_feedback_record = lambda settings, payload: payload
         website_ops.website_ops_run_is_due = lambda settings, mode="daily": False

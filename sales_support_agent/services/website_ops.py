@@ -545,14 +545,23 @@ def _autofill_review_updates(existing: Mapping[str, Any], payload: dict[str, Any
     return updates
 
 
-def review_feedback_record(settings: Settings, feedback_id: str, payload: dict[str, Any]) -> WebsiteOpsActionResult:
+def review_feedback_record(
+    settings: Settings,
+    feedback_id: str,
+    payload: dict[str, Any],
+    *,
+    reviewer: Mapping[str, Any] | None = None,
+) -> WebsiteOpsActionResult:
     existing = get_feedback_record(settings, feedback_id)
     if not existing:
         return WebsiteOpsActionResult(ok=False, message="Feedback record not found.")
     payload = _autofill_review_updates(existing, payload)
+    reviewer_label = str(payload.get("reviewer_name", "")).strip()
+    if not reviewer_label and reviewer:
+        reviewer_label = str(reviewer.get("email") or reviewer.get("name") or "").strip()
     updates = {
         "status": _feedback_status(str(payload.get("status", ""))),
-        "reviewer_name": str(payload.get("reviewer_name", "")).strip(),
+        "reviewer_name": reviewer_label,
         "review_notes": str(payload.get("review_notes", "")).strip(),
         "action_type": str(payload.get("action_type", "")).strip(),
         "action_value": str(payload.get("action_value", "")).strip(),
@@ -1492,7 +1501,6 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
             <p class="eyebrow">Website Ops</p>
             <h1>SEO <span style="color:var(--accent)">control tower</span>.</h1>
             <p class="lead">Review daily website reports, approve changes, and route safe live actions through the same internal agent dashboard your team already uses.</p>
-            <p class="muted"><strong>Live review marker:</strong> internal ops surfaces are now served from the agent app.</p>
             {_mvp_mode_banner()}
             <div class="button-row">
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>

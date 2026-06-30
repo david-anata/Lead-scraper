@@ -97,7 +97,13 @@ from sales_support_agent.services.website_ops import (
     save_feedback_record,
 )
 from sales_support_agent.config import is_active_pipeline_status, normalize_status_key
-from sales_support_agent.services.auth_deps import get_current_user, get_session_user_from_request, has_tool, is_authenticated
+from sales_support_agent.services.auth_deps import (
+    get_current_user,
+    get_session_user_from_request,
+    has_tool,
+    is_authenticated,
+    require_tool_inline,
+)
 
 
 router = APIRouter()
@@ -175,6 +181,23 @@ def _get_request_user(request: Request) -> Optional[dict]:
         return get_current_user(request)
     except Exception:
         return get_session_user_from_request(request)
+
+
+def _require_admin_tool(request: Request, tool_key: str, *, json_response: bool = False) -> tuple[Optional[dict], Optional[Response]]:
+    try:
+        user, response = require_tool_inline(request, tool_key)
+    except Exception:  # noqa: BLE001
+        logger.exception("[AdminAuth] tool guard failed for %s", tool_key)
+        fallback = JSONResponse(status_code=401, content={"detail": "Admin login required."}) if json_response else RedirectResponse(url="/admin/login", status_code=302)
+        return None, fallback
+    if response is None:
+        return user, None
+    if json_response:
+        status = getattr(response, "status_code", 403)
+        if status in {301, 302, 303, 307, 308}:
+            return None, JSONResponse(status_code=401, content={"detail": "Admin login required."})
+        return None, JSONResponse(status_code=status, content={"detail": "Access denied."})
+    return None, response
 
 
 def _admin_cookie_options(request: Request) -> dict[str, object]:
@@ -894,8 +917,9 @@ def admin_dashboard_data(
 @router.post("/admin/api/website-ops/run")
 def admin_website_ops_run(request: Request, mode: str = Form(default="daily")) -> Response:
     _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    _, auth_response = _require_admin_tool(request, "website_ops.seo", json_response=True)
+    if auth_response is not None:
+        return auth_response
     normalized_mode = (mode or "daily").strip().lower()
     if normalized_mode not in {"daily", "weekly", "monthly"}:
         return JSONResponse(status_code=400, content={"detail": "Unsupported run mode."})
@@ -918,8 +942,9 @@ def admin_website_ops_feedback_submit(
     reporter_email: str = Form(default=""),
 ) -> Response:
     _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    user, auth_response = _require_admin_tool(request, "website_ops.queue", json_response=True)
+    if auth_response is not None:
+        return auth_response
     record = save_feedback_record(
         request.app.state.settings,
         {
@@ -931,8 +956,8 @@ def admin_website_ops_feedback_submit(
             "details": details,
             "desired_outcome": desired_outcome,
             "recommended_fix": recommended_fix,
-            "reporter_name": reporter_name,
-            "reporter_email": reporter_email,
+            "reporter_name": reporter_name or str((user or {}).get("name") or ""),
+            "reporter_email": reporter_email or str((user or {}).get("email") or ""),
         },
     )
     return RedirectResponse(url=f"/admin/website-ops/feedback/{record['feedback_id']}", status_code=302)
@@ -950,8 +975,9 @@ def admin_website_ops_feedback_review(
     target_post_id: str = Form(default=""),
 ) -> Response:
     _require_admin_enabled(request)
-    if not _is_admin_authenticated(request):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    user, auth_response = _require_admin_tool(request, "website_ops.queue", json_response=True)
+    if auth_response is not None:
+        return auth_response
     result = review_feedback_record(
         request.app.state.settings,
         feedback_id,
@@ -963,6 +989,7 @@ def admin_website_ops_feedback_review(
             "action_value": action_value,
             "target_post_id": target_post_id,
         },
+        reviewer=user,
     )
     if not result.ok and not result.record:
         return JSONResponse(status_code=404, content={"detail": result.message})
