@@ -712,6 +712,30 @@ class GoogleSessionMintTests(unittest.TestCase):
             {"website_ops.seo", "website_ops.queue", "website_ops.reports"},
         )
 
+    def test_existing_allowed_domain_user_gets_website_ops_review_tools(self) -> None:
+        from sales_support_agent.api import auth_router
+
+        settings = _settings()
+        email = f"existing-review-{uuid.uuid4().hex}@anatainc.com"
+        uid = store.upsert_user(email, "Existing Reviewer")
+        store.set_user_permissions(uid, ["finance"])
+
+        class _URL:
+            def __str__(self): return "https://agent.anatainc.com/"
+
+        class _Req:
+            cookies = {}
+            base_url = _URL()
+            app = type("A", (), {"state": type("St", (), {"agent_settings": settings})()})()
+
+        resp = auth_router._rbac_login(_Req(), settings, email, "Existing Reviewer")
+        self.assertEqual(resp.status_code, 302)
+        user = store.get_user_by_email(email)
+        self.assertEqual(
+            user["permissions"],
+            {"finance", "website_ops.seo", "website_ops.queue", "website_ops.reports"},
+        )
+
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class NavAccessSafetyTests(unittest.TestCase):

@@ -213,11 +213,20 @@ def _rbac_login(request: Request, settings, email: str, name: str, picture: str 
             resp.delete_cookie("pending_invite", path="/")
             return resp
 
+    allowed_domain = (getattr(settings, "google_oauth_allowed_domain", "") or "").strip().lower()
+    default_tools = tuple(getattr(settings, "rbac_auto_provision_domain_tools", ()) or ())
+    should_grant_default_tools = bool(allowed_domain and email.endswith(f"@{allowed_domain}") and default_tools)
+
     # 3. Existing provisioned user.
     existing = _store.get_user_by_email(email)
     if existing:
         if existing.get("status") == "suspended":
             return _HTML(render_suspended_page(email), status_code=403)
+        if should_grant_default_tools and not existing.get("is_superadmin"):
+            _store.set_user_permissions(
+                existing["id"],
+                sorted(set(existing.get("permissions") or set()).union(default_tools)),
+            )
         if picture:
             _store.upsert_user(email, name, picture_url=picture)
         _store.record_login(email)
@@ -225,9 +234,7 @@ def _rbac_login(request: Request, settings, email: str, name: str, picture: str 
 
     # 4. Allowed-domain reviewer — provision narrow default tools so internal
     # users are not blocked on a manual DB grant before they can review work.
-    allowed_domain = (getattr(settings, "google_oauth_allowed_domain", "") or "").strip().lower()
-    default_tools = tuple(getattr(settings, "rbac_auto_provision_domain_tools", ()) or ())
-    if allowed_domain and email.endswith(f"@{allowed_domain}") and default_tools:
+    if should_grant_default_tools:
         uid = _store.upsert_user(email, name, status="active", picture_url=picture)
         _store.set_user_permissions(uid, default_tools)
         _store.record_login(email)
