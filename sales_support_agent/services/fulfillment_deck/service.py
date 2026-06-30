@@ -618,6 +618,8 @@ def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict
         patch["rate_overrides"] = dict(edits["rate_overrides"] or {})
     if "rate_card_note" in edits:
         patch["rate_card_note"] = str(edits.get("rate_card_note") or "").strip()
+    if "sales_pricing" in edits:
+        patch["sales_pricing"] = dict(edits.get("sales_pricing") or {})
     storage.update_summary(run_id, patch)
 
     return rerender_rate_sheet(run_id, settings=settings)

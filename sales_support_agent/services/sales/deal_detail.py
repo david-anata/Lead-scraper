@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.config import Settings
 from sales_support_agent.models.entities import (
+    AutomationRun,
     CommunicationEvent,
+    DeckVisitSession,
     HubSpotCompany,
     HubSpotContact,
     HubSpotDeal,
@@ -98,6 +100,10 @@ class AssetView:
     label: str
     url: str
     cta_label: str
+    run_id: str = ""
+    quote_url: str = ""
+    published: bool = False
+    external_views: int = 0
 
 
 @dataclass
@@ -130,6 +136,12 @@ class DealDetail:
     next_action: str = ""
     overdue: bool = False
     pending_actions: list[SalesAction] = field(default_factory=list)
+    last_inbound_at: Optional[datetime] = None
+    last_outbound_at: Optional[datetime] = None
+    last_touch_at: Optional[datetime] = None
+    communication_summary: str = ""
+    recommended_next_action: str = ""
+    quote_url: str = ""
 
 
 def _next_action(d: DealDetail, *, as_of: datetime) -> str:
@@ -148,6 +160,13 @@ def _next_action(d: DealDetail, *, as_of: datetime) -> str:
         return "No close date — set one in HubSpot so this deal can be prioritized."
     if not d.assets:
         return "Link a sales deck, rate sheet, or ads audit so you have something to send."
+    rate_sheet = next((a for a in d.assets if a.asset_type == "rate_sheet"), None)
+    if rate_sheet and rate_sheet.quote_url and not d.last_outbound_at:
+        return "Quote is ready — send it to the prospect and schedule a review call."
+    if rate_sheet and not d.last_outbound_at:
+        return "Fulfillment deck is ready — send it to the prospect and log the follow-up."
+    if d.last_inbound_at and (not d.last_outbound_at or _aware(d.last_inbound_at) > _aware(d.last_outbound_at)):
+        return "Prospect replied after our last outbound — answer the inbound message."
     return "Looks ready — send a follow-up to keep it moving toward close."
 
 
@@ -179,6 +198,11 @@ def build_deal_detail(
         is_won=deal.is_won,
         deal_url=hubspot_links.deal_url(portal, deal.hubspot_deal_id),
         company_url=hubspot_links.company_url(portal, deal.hubspot_company_id) if company else "",
+        last_inbound_at=deal.last_inbound_at,
+        last_outbound_at=deal.last_outbound_at,
+        last_touch_at=deal.last_meaningful_touch_at,
+        communication_summary=deal.communication_summary,
+        recommended_next_action=deal.recommended_next_action,
     )
 
     # Contacts (via the link mirror).
@@ -226,14 +250,36 @@ def build_deal_detail(
         a = by_type.get(t)
         if a is None:
             continue
+        quote_url = ""
+        published = False
+        external_views = 0
+        if t == "rate_sheet" and a.run_id:
+            try:
+                run = session.get(AutomationRun, int(a.run_id))
+                if run is not None:
+                    summary = dict(run.summary_json or {})
+                    quote_url = str(summary.get("hubspot_quote_url") or "")
+                    published = run.status == "completed" or bool(summary.get("published_at"))
+                    sessions = session.scalars(
+                        select(DeckVisitSession).where(DeckVisitSession.run_id == int(a.run_id))
+                    ).all()
+                    external_views = sum(1 for s in sessions if not s.is_internal)
+            except Exception:
+                quote_url = ""
         detail.assets.append(
             AssetView(
                 asset_type=t,
                 label=a.label or _ASSET_LABELS.get(t, t),
                 url=a.url,
                 cta_label=f"Open {_ASSET_LABELS.get(t, t)}",
+                run_id=a.run_id,
+                quote_url=quote_url,
+                published=published,
+                external_views=external_views,
             )
         )
+        if quote_url and not detail.quote_url:
+            detail.quote_url = quote_url
 
     # Comms timeline (logged events + matched inbound mail), newest first.
     for ev in session.scalars(
@@ -352,10 +398,21 @@ def _assets_html(d: DealDetail) -> str:
     cards = ""
     have = {a.asset_type for a in d.assets}
     for a in d.assets:
+        status = ""
+        if a.asset_type == "rate_sheet":
+            bits = []
+            bits.append("published" if a.published else "draft")
+            if a.external_views:
+                bits.append(f"{a.external_views} prospect view{'s' if a.external_views != 1 else ''}")
+            if a.quote_url:
+                bits.append("quote ready")
+            status = f'<span class="muted">{" · ".join(bits)}</span>'
+        quote_link = '<span class="cta-go">HubSpot Quote ready</span>' if a.quote_url else ""
         cards += (
             f'<a class="cta" href="{_esc(a.url)}" target="_blank" rel="noopener">'
             f'<span class="cta-kind">{_esc(a.label)}</span>'
-            f'<span class="cta-go">{_esc(a.cta_label)} →</span></a>'
+            f'{status}'
+            f'<span class="cta-go">{_esc(a.cta_label)} →</span>{quote_link}</a>'
         )
     for t in _ASSET_ORDER:
         if t in have:
@@ -365,6 +422,21 @@ def _assets_html(d: DealDetail) -> str:
             f'<span class="muted">Not linked yet</span></div>'
         )
     return f'<div class="ctas">{cards}</div>'
+
+
+def _fulfillment_workflow_html(d: DealDetail) -> str:
+    rate_sheet = next((a for a in d.assets if a.asset_type == "rate_sheet"), None)
+    deck_url = f"/admin/fulfillment/sales?hubspot_deal_id={_esc(d.deal_id)}"
+    items = []
+    if rate_sheet:
+        items.append(f'<a class="draft-btn" href="{_esc(rate_sheet.url)}" target="_blank" rel="noopener">Open fulfillment deck →</a>')
+        if rate_sheet.run_id:
+            items.append(f'<a class="hs-link" href="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/review">Edit deck</a>')
+            items.append(f'<form method="post" action="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/quote" style="margin:0"><button class="approve-btn" type="submit">Create quote</button></form>')
+    else:
+        items.append(f'<a class="draft-btn" href="{deck_url}">Create fulfillment deck →</a>')
+    items.append(f'<a class="hs-link" href="{deck_url}">Attach / create from HubSpot context</a>')
+    return '<div class="workflow-actions">' + "".join(items) + "</div>"
 
 
 def _timeline_html(d: DealDetail) -> str:
@@ -447,6 +519,7 @@ _STYLES = """
     background:var(--dark-blue); color:#fff; border:none; border-radius:12px;
     padding:9px 18px; text-decoration:none; cursor:pointer; }
   .draft-btn:hover { opacity:0.88; }
+  .workflow-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px; }
   .action-cards { display:grid; gap:10px; }
   .action-card { border:1px solid var(--border); border-radius:14px; padding:14px 16px;
     display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; }
@@ -595,7 +668,7 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
       <div class="workspace">
         <div class="dealhead">
           <div>
-            <p class="eyebrow">Sales Priorities — HubSpot companion</p>
+            <p class="eyebrow">Sales — HubSpot companion</p>
             <h1>{_esc(d.name or '(untitled deal)')} {badge}</h1>
             <div class="facts">{facts}</div>
           </div>
@@ -608,6 +681,13 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
           <div class="l">Next action</div>
           <div class="a">{_esc(d.next_action)}</div>
         </div>
+        {_fulfillment_workflow_html(d)}
+        <div class="facts" style="margin-top:16px">
+          <div class="fact"><div class="l">Last inbound</div><div class="v">{_fmt_date(d.last_inbound_at)}</div></div>
+          <div class="fact"><div class="l">Last outbound</div><div class="v">{_fmt_date(d.last_outbound_at)}</div></div>
+          <div class="fact"><div class="l">Last touch</div><div class="v">{_fmt_date(d.last_touch_at)}</div></div>
+        </div>
+        {('<div class="nudge" style="margin-top:14px"><div class="l">Conversation context</div><div class="a">' + _esc(d.communication_summary) + '</div></div>') if d.communication_summary else ''}
         <h2>Deal readiness</h2>
         <ul class="check">{checks}</ul>
       </div>

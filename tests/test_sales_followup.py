@@ -99,6 +99,14 @@ class TestBuildFollowupDraft(unittest.TestCase):
         draft = self._build(contact_emails=["sarah@acme.com"])
         self.assertIn("sarah@acme.com", draft.contact_emails)
 
+    def test_fallback_includes_rate_sheet_link_when_available(self):
+        draft = self._build(
+            hooks_sent=["rate_sheet"],
+            hooks_pending=[],
+            asset_links=[{"type": "rate_sheet", "label": "Fulfillment Rate Sheet", "url": "https://agent.anatainc.com/rate-sheets/acme/1/tok"}],
+        )
+        self.assertIn("https://agent.anatainc.com/rate-sheets/acme/1/tok", draft.body)
+
 
 class TestDraftFollowupRoute(unittest.TestCase):
     @classmethod
@@ -169,6 +177,10 @@ class TestDraftFollowupRoute(unittest.TestCase):
     def test_draft_page_has_copy_button(self):
         body = self.client.get("/admin/sales/deals/draft_deal/draft-followup").text
         self.assertIn("Copy email", body)
+
+    def test_draft_page_body_includes_linked_rate_sheet_url(self):
+        body = self.client.get("/admin/sales/deals/draft_deal/draft-followup").text
+        self.assertIn("/rate-sheets/fc/r1/tok", body)
 
 
 if __name__ == "__main__":

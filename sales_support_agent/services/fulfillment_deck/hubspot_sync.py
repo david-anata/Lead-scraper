@@ -361,6 +361,13 @@ def _bg(fn, *args, **kwargs) -> None:
 def _do_sync_new(run_id: int, prospect: str, website: str, stage: str, annual: float, brief: str) -> None:
     from sales_support_agent.services.fulfillment_deck import storage
 
+    run = storage.get_run(run_id)
+    existing_summary = dict(run.summary_json or {}) if run is not None else {}
+    existing_deal_id = str(existing_summary.get("hubspot_deal_id") or "").strip()
+    if existing_deal_id:
+        logger.info("[hubspot] run %d already linked to deal %s; skipping new deal create", run_id, existing_deal_id)
+        return
+
     company_id = _find_company(prospect) or _create_company(prospect, website)
     deal_name = f"{prospect} — 3PL Fulfillment"
     deal_id = _find_deal(deal_name) or _create_deal(deal_name, annual, stage, company_id or "", brief)
@@ -424,6 +431,15 @@ def _do_sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> N
     if run is None:
         return
     summary = dict(run.summary_json or {})
+    try:
+        from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
+        errors = validate_quote_readiness(summary, published=(run.status == "completed"))
+        if errors:
+            logger.warning("[hubspot] quote blocked for run %d: %s", run_id, "; ".join(errors))
+            return
+    except Exception:
+        logger.exception("[hubspot] quote readiness validation failed for run %d", run_id)
+        return
 
     # Skip if a quote already exists and this is not a forced re-creation (e.g. on re-publish).
     if not force and str(summary.get("hubspot_quote_id") or ""):

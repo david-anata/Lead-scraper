@@ -3,7 +3,7 @@
 Phase 0: a read-only deal board sorted top-down by close date, plus an
 on-request background sync that refreshes the local HubSpot mirror. Tool-gated
 by `sales.deals`. Lives under /admin/sales/* alongside the existing Sales
-Priorities page (kept) and the off-limits "Generate sales deck" feature.
+Priority Queue page (kept) and the gated Sales Assets feature.
 """
 
 from __future__ import annotations
@@ -309,7 +309,7 @@ def _render_create_deal_page(
     {render_agent_nav("sales", sales_section="sales_deals", user=get_current_user(request))}
     <main class="shell">
       <div class="workspace">
-        <p style="font-family:Montserrat,sans-serif;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.55);margin:0 0 4px">Sales Priorities — HubSpot</p>
+        <p style="font-family:Montserrat,sans-serif;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.55);margin:0 0 4px">Sales — HubSpot</p>
         <h1>Create Deal.</h1>
         <p class="intro">Creates a HubSpot deal only after validating required fields and company/contact associations from <code>config/hubspot_sales_rules.json</code>.</p>
         {error_html}
@@ -787,6 +787,34 @@ def draft_followup(request: Request, deal_id: str) -> Response:
     contact_first = detail.contacts[0].name.split()[0] if detail.contacts else ""
     contact_emails = [c.email for c in detail.contacts if c.email]
     recent_subject = detail.timeline[0].title if detail.timeline else ""
+    base_url = str(request.base_url).rstrip("/")
+    asset_links = []
+    for a in detail.assets:
+        url = a.url or ""
+        if url.startswith("/"):
+            url = base_url + url
+        if url:
+            asset_links.append({"type": a.asset_type, "label": a.label, "url": url})
+        if a.quote_url:
+            asset_links.append({"type": "quote", "label": "HubSpot Quote", "url": a.quote_url})
+    last_contact_at = ""
+    last_contact_type = ""
+    for label, value in (
+        ("inbound", detail.last_inbound_at),
+        ("outbound", detail.last_outbound_at),
+        ("touch", detail.last_touch_at),
+    ):
+        if value and (not last_contact_at or value.isoformat() > last_contact_at):
+            last_contact_at = value.isoformat()
+            last_contact_type = label
+    mailbox_snippets = [
+        f"{entry.title}: {entry.detail}" for entry in detail.timeline if entry.kind == "inbound_email"
+    ][:5]
+    pending_actions = [a.label for a in detail.pending_actions[:6]]
+    prospect_activity = ""
+    rate_sheet = next((a for a in detail.assets if a.asset_type == "rate_sheet"), None)
+    if rate_sheet:
+        prospect_activity = f"Fulfillment deck linked; {rate_sheet.external_views} prospect views."
 
     draft = build_followup_draft(
         company_name=detail.company_name,
@@ -798,6 +826,14 @@ def draft_followup(request: Request, deal_id: str) -> Response:
         hooks_pending=hooks_pending,
         recent_subject=recent_subject,
         contact_emails=contact_emails,
+        last_contact_at=last_contact_at,
+        last_contact_type=last_contact_type,
+        conversation_summary=detail.communication_summary,
+        recommended_next_action=detail.recommended_next_action or detail.next_action,
+        asset_links=asset_links,
+        recent_mailbox_snippets=mailbox_snippets,
+        pending_actions=pending_actions,
+        prospect_activity=prospect_activity,
     )
     draft.gmail_configured = GmailClient(settings).is_configured()
 
@@ -888,6 +924,15 @@ def send_followup(
         return RedirectResponse(
             url=f"/admin/sales/deals/{deal_id}?error={msg}", status_code=303
         )
+
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            deal = session.get(HubSpotDeal, deal_id)
+            if deal is not None and result.sent_at is not None:
+                deal.last_outbound_at = result.sent_at
+                deal.last_meaningful_touch_at = result.sent_at
+    except Exception:
+        logger.warning("[sales] failed to update local outbound touch for %s", deal_id)
 
     try:
         start_hubspot_sync(request.app, force=True)

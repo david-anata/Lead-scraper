@@ -57,9 +57,11 @@ _SYSTEM = (
     "2) If hooks were already sent: follow up on them, offer to walk through on a call. "
     "3) If hooks were NOT yet sent: pitch the lead hook (first in the not-yet-sent list) "
     "   as a concrete deliverable ready for them. "
-    "4) Close with a simple ask: 20-minute call this week. "
-    "5) Sound like a human — no 'I hope this email finds you well'. "
-    "6) Sign off with the rep's first name only. "
+    "4) If a fulfillment deck/rate sheet/quote URL is present and the next step is to send or follow up on it, include the URL plainly. "
+    "5) Use last-contact and conversation context to choose the next step; do not ignore an unanswered inbound question. "
+    "6) Close with a simple ask: 20-minute call this week. "
+    "7) Sound like a human — no 'I hope this email finds you well'. "
+    "8) Sign off with the rep's first name only. "
     "Never invent numbers. Never use markdown in the body. "
     "No JSON outside the response object."
 )
@@ -98,18 +100,29 @@ def _fallback_draft(
     owner_first_name: str,
     hooks_sent: list[str],
     hooks_pending: list[str],
+    asset_links: list[dict] | None = None,
+    recommended_next_action: str = "",
 ) -> str:
     """Template body — never blank, never raises."""
     greeting = f"Hi {contact_first_name}," if contact_first_name else "Hi there,"
     sign = owner_first_name or "The Anata Team"
     company = company_name or "your brand"
 
+    links = asset_links or []
+    lead_link = next((l for l in links if l.get("url") and l.get("type") in {"rate_sheet", "deck", "quote"}), None)
+    link_line = ""
+    if lead_link:
+        link_label = lead_link.get("label") or HOOK_LABELS.get(str(lead_link.get("type") or ""), "deck")
+        link_line = f"\n\nHere is the {link_label}: {lead_link.get('url')}"
+
     if hooks_sent and not hooks_pending:
         sent_labels = " and ".join(HOOK_LABELS.get(h, h) for h in hooks_sent[:2])
+        context = f" {recommended_next_action.strip()}" if recommended_next_action else ""
         return (
             f"{greeting}\n\n"
             f"Wanted to follow up on the {sent_labels} we put together for {company}. "
-            "Happy to walk through the key findings on a quick call — usually 20 minutes.\n\n"
+            f"Happy to walk through the key findings on a quick call — usually 20 minutes.{context}"
+            f"{link_line}\n\n"
             f"Would this week work?\n\n{sign}"
         )
 
@@ -119,7 +132,8 @@ def _fallback_draft(
         f"{greeting}\n\n"
         f"We put together a {lead_label} for {company} and I wanted to share it with you. "
         "It's specific to your situation — a 20-minute call is all it takes to walk through what we found "
-        "and where we can move the needle.\n\n"
+        "and where we can move the needle."
+        f"{link_line}\n\n"
         f"When's a good time this week?\n\n{sign}"
     )
 
@@ -149,6 +163,15 @@ def build_followup_draft(
     hooks_pending: list[str],
     recent_subject: str = "",
     contact_emails: list[str] | None = None,
+    last_contact_at: str = "",
+    last_contact_type: str = "",
+    conversation_summary: str = "",
+    recommended_next_action: str = "",
+    asset_links: list[dict] | None = None,
+    recent_mailbox_snippets: list[str] | None = None,
+    pending_actions: list[str] | None = None,
+    prospect_activity: str = "",
+    pricing_summary: str = "",
     api_key: Optional[str] = None,
     model: Optional[str] = None,
 ) -> DraftEmail:
@@ -166,6 +189,8 @@ def build_followup_draft(
         owner_first_name=owner_first,
         hooks_sent=hooks_sent,
         hooks_pending=hooks_pending,
+        asset_links=asset_links,
+        recommended_next_action=recommended_next_action,
     )
 
     if key:
@@ -177,6 +202,15 @@ def build_followup_draft(
             "hooks_already_sent": [HOOK_LABELS.get(h, h) for h in hooks_sent],
             "hooks_not_yet_sent": [HOOK_LABELS.get(h, h) for h in hooks_pending],
             "last_email_subject": recent_subject or None,
+            "last_contact_at": last_contact_at or None,
+            "last_contact_type": last_contact_type or None,
+            "conversation_summary": conversation_summary or None,
+            "recommended_next_action": recommended_next_action or None,
+            "asset_links": asset_links or [],
+            "recent_mailbox_snippets": recent_mailbox_snippets or [],
+            "pending_actions": pending_actions or [],
+            "prospect_activity": prospect_activity or None,
+            "pricing_summary": pricing_summary or None,
         }
         try:
             import anthropic
@@ -311,7 +345,7 @@ def render_draft_followup_page(
       </div>
 
       <div class="workspace">
-        <p class="eyebrow">Sales Priorities — Follow-up draft</p>
+        <p class="eyebrow">Sales — Follow-up draft</p>
         <h1>Draft email for <span style="color:var(--light-blue)">{_esc(deal_name)}</span></h1>
         <p style="font-size:13.5px;color:rgba(43,54,68,0.7);margin:4px 0 16px">
           AI-generated from deal context. Edit before sending.
@@ -470,7 +504,7 @@ def render_send_preview_page(
       </div>
 
       <div class="workspace">
-        <p class="eyebrow">Sales Priorities — Confirm send</p>
+        <p class="eyebrow">Sales — Confirm send</p>
         <h1>Review before sending</h1>
         <p style="font-size:13.5px;color:rgba(43,54,68,0.7);margin:4px 0 0">
           This email will be sent immediately and cannot be recalled. Check the details below.

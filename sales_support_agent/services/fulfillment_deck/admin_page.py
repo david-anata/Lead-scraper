@@ -15,6 +15,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
+from sales_support_agent.services.fulfillment_deck.pricing_rules import merge_fee_rows, validate_quote_readiness
 from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
 from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ADDRESS,
@@ -632,6 +633,7 @@ def render_fulfillment_sales_page(
     user: Optional[dict] = None,
     flash: str = "",
     flash_kind: str = "",
+    intake_context: object | None = None,
 ) -> str:
     flash_html = (
         f'<div class="flash{" flash--warn" if flash_kind == "warn" else ""}">{_esc(flash)}</div>'
@@ -655,6 +657,21 @@ def render_fulfillment_sales_page(
             except Exception:
                 pass
     _margin_json = _json.dumps(_margin_seed)
+    _ctx = intake_context
+    ctx_notes = _ctx.to_notes_block() if _ctx is not None and hasattr(_ctx, "to_notes_block") else ""
+    ctx_deal_id = str(getattr(_ctx, "deal_id", "") or "") if _ctx is not None else ""
+    ctx_company_id = str(getattr(_ctx, "company_id", "") or "") if _ctx is not None else ""
+    ctx_contact_ids = ",".join(getattr(_ctx, "contact_ids", []) or []) if _ctx is not None else ""
+    ctx_brand = str(getattr(_ctx, "company_name", "") or "") if _ctx is not None else ""
+    ctx_website = str(getattr(_ctx, "website_url", "") or "") if _ctx is not None else ""
+    ctx_banner = ""
+    if ctx_deal_id:
+        ctx_banner = (
+            '<div class="flash" style="background:rgba(133,187,218,0.10);border-color:rgba(133,187,218,0.45)">'
+            f'<strong>Creating from HubSpot deal:</strong> {_esc(getattr(_ctx, "deal_name", "") or ctx_deal_id)}'
+            f' · {_esc(ctx_brand or "company unknown")}'
+            '</div>'
+        )
     table = (
         "<table><thead><tr>"
         "<th>Prospect</th><th>Stage</th><th>Vol/mo</th>"
@@ -685,10 +702,14 @@ def render_fulfillment_sales_page(
         <h1>Fulfillment <span style="color:var(--light-blue)">Prospects</span>.</h1>
         <p class="intro">Manage your fulfillment prospect pipeline. Paste what you know about a new prospect and the system builds a hosted rate sheet — then track each deal through quoting, cost entry, and close below.</p>
         {flash_html}
+        {ctx_banner}
         <form method="post" action="/admin/fulfillment/sales/generate" enctype="multipart/form-data">
+          <input type="hidden" name="hubspot_deal_id" value="{_esc(ctx_deal_id)}">
+          <input type="hidden" name="hubspot_company_id" value="{_esc(ctx_company_id)}">
+          <input type="hidden" name="hubspot_contact_ids" value="{_esc(ctx_contact_ids)}">
           <div class="field">
             <label for="notes">Prospect notes <span class="hint">— free-form; anything goes (call notes, emails, product dims, volumes, current costs)</span></label>
-            <textarea id="notes" name="notes" placeholder="e.g. Spoke with Sarah at GlowCo — they sell two SKUs: a serum (4 x 4 x 6 in, 1.2 lb) and a kit (10 x 8 x 4 in, 2.5 lb). ~3,000 orders/mo, mostly West Coast, paying about $9.80/parcel with UPS today."></textarea>
+            <textarea id="notes" name="notes" placeholder="e.g. Spoke with Sarah at GlowCo — they sell two SKUs: a serum (4 x 4 x 6 in, 1.2 lb) and a kit (10 x 8 x 4 in, 2.5 lb). ~3,000 orders/mo, mostly West Coast, paying about $9.80/parcel with UPS today.">{_esc(ctx_notes)}</textarea>
           </div>
           <div class="grid2">
             <div class="field">
@@ -698,11 +719,11 @@ def render_fulfillment_sales_page(
             <div>
               <div class="field">
                 <label for="website_url">Website <span class="hint">— optional</span></label>
-                <input type="text" id="website_url" name="website_url" placeholder="prospect.com">
+                <input type="text" id="website_url" name="website_url" placeholder="prospect.com" value="{_esc(ctx_website)}">
               </div>
               <div class="field">
                 <label for="brand">Brand name <span class="hint">— optional override</span></label>
-                <input type="text" id="brand" name="brand" placeholder="Auto-detected from notes" list="existing-brands" autocomplete="off">
+                <input type="text" id="brand" name="brand" placeholder="Auto-detected from notes" list="existing-brands" autocomplete="off" value="{_esc(ctx_brand)}">
                 <datalist id="existing-brands">{''.join(f'<option value="{_esc(r["prospect"])}" label="{_esc(r["prospect"])} ({r.get("pipeline_stage","intake").replace("_"," ")})"/>' for r in runs if r.get("prospect"))}</datalist>
               </div>
               <div class="field">
@@ -1135,6 +1156,14 @@ def render_rate_sheet_review_page(
 
     view_path = str(summary.get("view_path") or "")
     hs_quote_url = str(summary.get("hubspot_quote_url") or "")
+    quote_guard_errors = validate_quote_readiness(summary, published=published)
+    quote_guard_html = ""
+    if quote_guard_errors:
+        quote_guard_html = (
+            '<div class="flash flash--warn"><strong>Quote blocked until:</strong><ul style="margin:6px 0 0;padding-left:18px">'
+            + "".join(f"<li>{_esc(item)}</li>" for item in quote_guard_errors)
+            + "</ul></div>"
+        )
     hs_quote_btn = (
         f'<a class="btn" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" '
         f'style="background:#ff7a59;border-color:#ff7a59;color:#fff">Open HubSpot Quote ✍</a>'
@@ -1143,6 +1172,8 @@ def render_rate_sheet_review_page(
     hs_create_quote_btn = (
         f'<form method="post" action="{base}/runs/{run_id}/quote" style="display:inline">'
         f'<button class="btn" type="submit" style="background:#ff7a59;border-color:#ff7a59;color:#fff">Create HubSpot Quote ✍</button></form>'
+        if not quote_guard_errors else
+        '<button class="btn" type="button" disabled style="background:#d4d4d4;border-color:#d4d4d4;color:#666;cursor:not-allowed">Create HubSpot Quote ✍</button>'
     )
     prospect_name = str(summary.get("prospect") or summary.get("design_title") or "your brand")
     if published and view_path:
@@ -1228,6 +1259,19 @@ def render_rate_sheet_review_page(
     )
     margin_override = summary.get("quote_margin_override")
     margin_value = "" if margin_override is None else f"{margin_override:g}"
+    sales_pricing = dict(summary.get("sales_pricing") or {})
+    fee_rows = merge_fee_rows(sales_pricing.get("fee_rows") or summary.get("pricing_fee_rows") or [])
+    waived_keys = {str(r.get("fee_key") or "") for r in fee_rows if r.get("waived")}
+    waiver_reason = _esc(str(sales_pricing.get("waiver_reason") or ""))
+    pricing_reviewed = bool(sales_pricing.get("reviewed"))
+    margin_approved = bool(sales_pricing.get("margin_approved"))
+    fee_checks = "".join(
+        '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;font-weight:600;margin:6px 0">'
+        f'<input type="checkbox" name="fee_waived" value="{_esc(str(row.get("fee_key") or ""))}" {"checked" if str(row.get("fee_key") or "") in waived_keys else ""} style="width:auto;margin-top:2px">'
+        f'<span>{_esc(row.get("label") or row.get("fee_key"))} <span class="muted">({_esc(row.get("unit") or "")})</span></span>'
+        '</label>'
+        for row in fee_rows
+    )
 
     from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
     _ro = dict(summary.get("rate_overrides") or {})
@@ -1268,6 +1312,7 @@ def render_rate_sheet_review_page(
         {flash_html}
         {publish_block}
         {warnings_html}
+        {quote_guard_html}
         {assortment_html}
         {brief_block}
         {'<form method="post" action="' + base + '/runs/' + str(run_id) + '/publish" style="margin-bottom:10px"><button class="btn" type="submit" style="width:100%">Publish — get shareable link</button></form>' if not published else ''}
@@ -1365,6 +1410,27 @@ def render_rate_sheet_review_page(
             <label for="rate_card_note">Rate card note (shown at bottom of Full Rate Card section)</label>
             <textarea id="rate_card_note" name="rate_card_note" rows="2" style="width:100%;resize:vertical">{rate_card_note_val}</textarea>
             <span class="hint">Use to call out specials, volume commitments, expiry dates, etc.</span>
+          </div>
+
+          <h2>Sales Pricing &amp; Waivers</h2>
+          <p class="muted" style="margin-bottom:12px">Sales can waive or override any fee. Waivers are allowed, but quote creation requires a reason so the deal stays auditable.</p>
+          <div class="grid2">
+            <div class="field">
+              <label>Waived fees</label>
+              <div style="border:1px solid var(--border);border-radius:12px;padding:10px 12px;background:#fff;max-height:220px;overflow:auto">{fee_checks}</div>
+            </div>
+            <div>
+              <div class="field">
+                <label for="waiver_reason">Waiver / pricing reason</label>
+                <textarea id="waiver_reason" name="waiver_reason" rows="4" style="width:100%;resize:vertical" placeholder="Required when any fee is waived.">{waiver_reason}</textarea>
+              </div>
+              <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:10px 0">
+                <input type="checkbox" name="sales_pricing_reviewed" value="1" {"checked" if pricing_reviewed else ""} style="width:auto"> Sales pricing reviewed
+              </label>
+              <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:10px 0">
+                <input type="checkbox" name="margin_approved" value="1" {"checked" if margin_approved else ""} style="width:auto"> Approve low-margin exception
+              </label>
+            </div>
           </div>
 
           <h2>Products</h2>

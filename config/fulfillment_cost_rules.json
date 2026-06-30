@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "minimum_margin_pct": 15,
+  "fees": [
+    {"fee_key": "receiving_precounted_box", "label": "Receiving - pre-counted box", "baseline_cost": 2.0, "unit": "box", "waivable": true},
+    {"fee_key": "receiving_count_per_item", "label": "Receiving - count per item", "baseline_cost": 0.15, "unit": "item", "waivable": true},
+    {"fee_key": "storage_short_per_pallet_mo", "label": "Storage - pallet", "baseline_cost": 30.0, "unit": "pallet/mo", "waivable": true},
+    {"fee_key": "storage_cubic_foot_mo", "label": "Storage - cubic foot", "baseline_cost": 0.45, "unit": "cu ft/mo", "waivable": true},
+    {"fee_key": "dtc_base_per_order", "label": "DTC / wholesale base order", "baseline_cost": 0.8, "unit": "order", "waivable": true},
+    {"fee_key": "dtc_additional_item", "label": "Additional item", "baseline_cost": 0.15, "unit": "item", "waivable": true},
+    {"fee_key": "pallet_order_per_pallet", "label": "Pallet orders", "baseline_cost": 20.0, "unit": "pallet", "waivable": true},
+    {"fee_key": "kitting_per_unit", "label": "Kitting", "baseline_cost": 0.15, "unit": "item", "waivable": true},
+    {"fee_key": "labeling_per_unit", "label": "Labeling", "baseline_cost": 0.15, "unit": "item", "waivable": true},
+    {"fee_key": "bagging_labeling_per_unit", "label": "Bagging and labeling", "baseline_cost": 0.25, "unit": "item", "waivable": true},
+    {"fee_key": "returns_receive_per_unit", "label": "Returns - receive and put away", "baseline_cost": 1.0, "unit": "return", "waivable": true},
+    {"fee_key": "returns_examination_per_unit", "label": "Returns - examination", "baseline_cost": 1.0, "unit": "return", "waivable": true},
+    {"fee_key": "returns_custom_steps_per_unit", "label": "Returns - custom steps", "baseline_cost": 2.0, "unit": "return", "waivable": true},
+    {"fee_key": "special_projects_per_hour", "label": "Special projects", "baseline_cost": 40.0, "unit": "hour", "waivable": true},
+    {"fee_key": "packaging_markup_pct", "label": "Packaging markup", "baseline_cost": 5.0, "unit": "percent", "waivable": true},
+    {"fee_key": "monthly_tech_fee", "label": "Monthly tech fee", "baseline_cost": 50.0, "unit": "month", "waivable": true},
+    {"fee_key": "customer_service_monthly", "label": "Customer service", "baseline_cost": 200.0, "unit": "month", "waivable": true}
+  ],
+  "volume_tiers": []
+}

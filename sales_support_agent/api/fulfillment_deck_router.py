@@ -38,6 +38,11 @@ from sales_support_agent.services.fulfillment_deck.admin_page import (
     render_fulfillment_sales_page,
     render_rate_sheet_review_page,
 )
+from sales_support_agent.services.fulfillment_deck.pricing_rules import (
+    default_fee_rows,
+    merge_fee_rows,
+    validate_quote_readiness,
+)
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
     apply_viewer_requote,
@@ -69,12 +74,22 @@ public_router = APIRouter(tags=["fulfillment-rate-sheets-public"])
 
 
 @admin_router.get("", response_class=HTMLResponse)
-def landing(request: Request, msg: str = "", kind: str = "") -> HTMLResponse:
+def landing(request: Request, msg: str = "", kind: str = "", hubspot_deal_id: str = "") -> HTMLResponse:
     runs = storage.list_runs()
     # Won/Lost sink to bottom so active deals stay at the top
     _terminal = {"won", "lost"}
     runs = sorted(runs, key=lambda r: 1 if r.get("pipeline_stage") in _terminal else 0)
     engagement = storage.engagement_for([r["id"] for r in runs])
+    intake_context = None
+    if (hubspot_deal_id or "").strip():
+        try:
+            from sales_support_agent.services.sales.fulfillment_intake_context import (
+                build_fulfillment_intake_context,
+            )
+            with Session(get_engine()) as session:
+                intake_context = build_fulfillment_intake_context(session, hubspot_deal_id.strip())
+        except Exception:
+            logger.exception("[fulfillment_deck] failed to build HubSpot intake context")
     return HTMLResponse(
         render_fulfillment_sales_page(
             runs,
@@ -82,6 +97,7 @@ def landing(request: Request, msg: str = "", kind: str = "") -> HTMLResponse:
             user=get_current_user(request),
             flash=msg,
             flash_kind=kind,
+            intake_context=intake_context,
         )
     )
 
@@ -93,6 +109,9 @@ async def generate(
     website_url: str = Form(default=""),
     brand: str = Form(default=""),
     origin_zip: str = Form(default=""),
+    hubspot_deal_id: str = Form(default=""),
+    hubspot_company_id: str = Form(default=""),
+    hubspot_contact_ids: str = Form(default=""),
 ) -> RedirectResponse:
     batch: list[tuple[str, bytes]] = []
     for f in files or []:
@@ -101,7 +120,40 @@ async def generate(
             if data:
                 batch.append((f.filename, data))
 
-    if not (notes or "").strip() and not batch and not (website_url or "").strip():
+    intake_notes = notes or ""
+    intake_context_payload: dict = {}
+    hubspot_deal_id = (hubspot_deal_id or "").strip()
+    if hubspot_deal_id:
+        try:
+            from sales_support_agent.services.sales.fulfillment_intake_context import (
+                build_fulfillment_intake_context,
+            )
+            with Session(get_engine()) as session:
+                ctx = build_fulfillment_intake_context(session, hubspot_deal_id)
+            ctx_block = ctx.to_notes_block()
+            if ctx_block and ctx_block not in intake_notes:
+                intake_notes = (ctx_block + "\n\n" + intake_notes).strip()
+            if not website_url and ctx.website_url:
+                website_url = ctx.website_url
+            if not brand and ctx.company_name:
+                brand = ctx.company_name
+            intake_context_payload = {
+                "hubspot_deal_id": ctx.deal_id,
+                "hubspot_company_id": ctx.company_id,
+                "hubspot_contact_ids": ctx.contact_ids,
+                "company_name": ctx.company_name,
+                "company_domain": ctx.company_domain,
+                "owner_email": ctx.owner_email,
+                "last_inbound": ctx.last_inbound,
+                "last_outbound": ctx.last_outbound,
+                "last_touch": ctx.last_touch,
+                "communication_summary": ctx.communication_summary,
+                "recommended_next_action": ctx.recommended_next_action,
+            }
+        except Exception:
+            logger.exception("[fulfillment_deck] failed to enrich generate intake from HubSpot")
+
+    if not (intake_notes or "").strip() and not batch and not (website_url or "").strip():
         return RedirectResponse(
             f"{_BASE}?kind=warn&msg=" + quote_plus("Add some notes, a file, or a website URL first — the rate sheet is built from whatever you provide."),
             status_code=303,
@@ -110,7 +162,7 @@ async def generate(
     try:
         result = generate_rate_sheet(
             settings=load_settings(),
-            notes=notes or "",
+            notes=intake_notes or "",
             files=batch,
             website_url=(website_url or "").strip(),
             origin_zip=(origin_zip or "").strip(),
@@ -125,6 +177,37 @@ async def generate(
 
     # Land on the review page — the sheet stays a draft until published there.
     review_path = result.get("review_path") or f"{_BASE}/runs/{result['run_id']}/review"
+    if hubspot_deal_id:
+        try:
+            contact_ids = [c.strip() for c in (hubspot_contact_ids or "").split(",") if c.strip()]
+            patch = {
+                "hubspot_deal_id": hubspot_deal_id,
+                "hubspot_company_id": (hubspot_company_id or intake_context_payload.get("hubspot_company_id") or "").strip(),
+                "hubspot_contact_ids": contact_ids or intake_context_payload.get("hubspot_contact_ids") or [],
+                "hubspot_intake_context": intake_context_payload,
+                "sales_pricing": {
+                    "reviewed": False,
+                    "margin_approved": False,
+                    "waiver_reason": "",
+                    "fee_rows": default_fee_rows(),
+                },
+            }
+            storage.update_summary(result["run_id"], patch)
+            view_path = str(result.get("view_path") or "")
+            if view_path:
+                from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
+                with Session(get_engine()) as session:
+                    link_asset_to_deal(
+                        session,
+                        hubspot_deal_id=hubspot_deal_id,
+                        asset_type="rate_sheet",
+                        run_id=result["run_id"],
+                        url=view_path,
+                        label="Fulfillment Rate Sheet",
+                    )
+                    session.commit()
+        except Exception:
+            logger.exception("[fulfillment_deck] failed to persist HubSpot deal context")
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_new_prospect as _hs_new
         _run = storage.get_run(result["run_id"])
@@ -229,6 +312,10 @@ def update_run(
     rate_tech_fee: str = Form(default=""),
     rate_minimum: str = Form(default=""),
     rate_card_note: str = Form(default=""),
+    fee_waived: list[str] = Form(default=[]),
+    waiver_reason: str = Form(default=""),
+    sales_pricing_reviewed: str = Form(default=""),
+    margin_approved: str = Form(default=""),
 ) -> RedirectResponse:
     removed = {str(idx).strip() for idx in product_remove or []}
 
@@ -273,6 +360,19 @@ def update_run(
         "monthly_minimum": rate_minimum,
     }
     rate_overrides = {k: v for k, raw in _rate_fields.items() if (v := _opt_float(raw)) is not None}
+    waived = {str(k).strip() for k in (fee_waived or []) if str(k).strip()}
+    fee_rows = []
+    for row in merge_fee_rows([]):
+        row = dict(row)
+        key = str(row.get("fee_key") or "")
+        row["waived"] = key in waived
+        row["waiver_reason"] = (waiver_reason or "").strip() if row["waived"] else ""
+        if key in rate_overrides:
+            row["sales_override_price"] = rate_overrides[key]
+            row["customer_price"] = 0 if row["waived"] else rate_overrides[key]
+        elif row["waived"]:
+            row["customer_price"] = 0
+        fee_rows.append(row)
 
     edits = {
         "brand": (brand or "").strip(),
@@ -286,6 +386,12 @@ def update_run(
         "products": products,
         "rate_overrides": rate_overrides,
         "rate_card_note": (rate_card_note or "").strip(),
+        "sales_pricing": {
+            "reviewed": sales_pricing_reviewed == "1",
+            "margin_approved": margin_approved == "1",
+            "waiver_reason": (waiver_reason or "").strip(),
+            "fee_rows": fee_rows,
+        },
     }
     try:
         apply_profile_edits(run_id, edits, settings=load_settings())
@@ -318,7 +424,9 @@ def publish_run(run_id: int, request: Request) -> RedirectResponse:
     _owner_email = str((get_current_user(request) or {}).get("email") or "")
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_quote as _hs_quote
-        _hs_quote(run_id, owner_email=_owner_email)
+        quote_errors = validate_quote_readiness(summary, published=True)
+        if not quote_errors:
+            _hs_quote(run_id, owner_email=_owner_email)
     except Exception:
         logger.exception("[fulfillment_deck] hubspot sync_quote failed")
     # Store the publishing rep's email for first-view notifications.
@@ -336,15 +444,30 @@ def publish_run(run_id: int, request: Request) -> RedirectResponse:
             logger.exception("[fulfillment_deck] auto stage advance failed")
     if view_path:
         try:
-            from sales_support_agent.services.sales.asset_linker import try_link_rate_sheet
+            from sales_support_agent.services.sales.asset_linker import link_asset_to_deal, try_link_rate_sheet
             with Session(get_engine()) as _s:
-                try_link_rate_sheet(_s, brand_name=prospect, run_id=run_id, url=view_path)
+                explicit_deal = str(summary.get("hubspot_deal_id") or "").strip()
+                if explicit_deal:
+                    link_asset_to_deal(
+                        _s,
+                        hubspot_deal_id=explicit_deal,
+                        asset_type="rate_sheet",
+                        run_id=run_id,
+                        url=view_path,
+                        label="Fulfillment Rate Sheet",
+                    )
+                else:
+                    try_link_rate_sheet(_s, brand_name=prospect, run_id=run_id, url=view_path)
                 _s.commit()
         except Exception:
             logger.exception("[fulfillment_deck] auto deal asset link failed")
+    quote_errors = validate_quote_readiness({**summary, **(dict(storage.get_run(run_id).summary_json or {}) if storage.get_run(run_id) is not None else {})}, published=True)
+    msg = "Published — rate sheet is live. Use the link above to copy or share."
+    if quote_errors:
+        msg += " HubSpot quote not created yet: " + quote_errors[0]
     return RedirectResponse(
         f"{_BASE}/runs/{run_id}/review?msg="
-        + quote_plus("Published — rate sheet is live. Use the link above to copy or share."),
+        + quote_plus(msg),
         status_code=303,
     )
 
@@ -356,6 +479,13 @@ def create_quote(run_id: int, request: Request) -> RedirectResponse:
     if run is None or run.status != "completed":
         return RedirectResponse(
             f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found or not yet published."),
+            status_code=303,
+        )
+    summary = dict(run.summary_json or {})
+    quote_errors = validate_quote_readiness(summary, published=True)
+    if quote_errors:
+        return RedirectResponse(
+            f"{_BASE}/runs/{run_id}/review?msg=" + quote_plus("Quote blocked: " + quote_errors[0]),
             status_code=303,
         )
     _owner_email = str((get_current_user(request) or {}).get("email") or "")

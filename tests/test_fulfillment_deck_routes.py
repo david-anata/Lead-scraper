@@ -23,7 +23,14 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.main import app
 from sales_support_agent.models.database import create_session_factory, get_engine, init_database
-from sales_support_agent.models.entities import DeckVisitSession
+from sales_support_agent.models.entities import (
+    DeckVisitSession,
+    HubSpotCompany,
+    HubSpotContact,
+    HubSpotDeal,
+    HubSpotDealContact,
+    SalesDealAsset,
+)
 from sales_support_agent.services.access import store
 from sales_support_agent.services.admin_auth import create_user_session_token
 from sales_support_agent.services.fulfillment_deck import storage
@@ -117,6 +124,49 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
             response.headers["location"], f"{_BASE}/runs/{run['id']}/review"
         )
         self.assertEqual(run["status"], "draft")
+
+    def test_generate_from_hubspot_deal_links_rate_sheet_asset(self) -> None:
+        with Session(get_engine()) as s:
+            for model in (SalesDealAsset, HubSpotDealContact, HubSpotContact, HubSpotDeal, HubSpotCompany):
+                for row in s.query(model).all():
+                    if getattr(row, "hubspot_deal_id", "") in {"ctx_deal"} or getattr(row, "hubspot_company_id", "") in {"ctx_co"} or getattr(row, "hubspot_contact_id", "") in {"ctx_contact"}:
+                        s.delete(row)
+            s.flush()
+            s.add(HubSpotCompany(hubspot_company_id="ctx_co", name="Context Co", domain=""))
+            s.add(HubSpotDeal(
+                hubspot_deal_id="ctx_deal",
+                deal_name="Context Co - Fulfillment",
+                hubspot_company_id="ctx_co",
+                is_closed=False,
+            ))
+            s.add(HubSpotContact(hubspot_contact_id="ctx_contact", email="buyer@contextco.com"))
+            s.add(HubSpotDealContact(hubspot_deal_id="ctx_deal", hubspot_contact_id="ctx_contact"))
+            s.commit()
+
+        response = self.client.post(
+            f"{_BASE}/generate",
+            data={
+                "notes": "Needs 3PL pricing for 500 orders/mo.",
+                "origin_zip": "84043",
+                "hubspot_deal_id": "ctx_deal",
+                "hubspot_company_id": "ctx_co",
+                "hubspot_contact_ids": "ctx_contact",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        run = storage.list_runs()[0]
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(summary["hubspot_deal_id"], "ctx_deal")
+        self.assertIn("sales_pricing", summary)
+        with Session(get_engine()) as s:
+            asset = (
+                s.query(SalesDealAsset)
+                .filter_by(hubspot_deal_id="ctx_deal", asset_type="rate_sheet", run_id=str(run["id"]))
+                .first()
+            )
+            self.assertIsNotNone(asset)
+            self.assertEqual(asset.url, summary["view_path"])
 
     def test_review_page_renders_for_draft(self) -> None:
         run = self._generate()
