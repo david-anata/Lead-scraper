@@ -250,7 +250,7 @@ def _warning_block(warnings: list[str]) -> str:
 
 def _candidate_cards(candidates: list[dict[str, Any]]) -> str:
     if not candidates:
-        return '<p class="empty">No candidate support threads are available yet.</p>'
+        return '<p class="empty">No support threads are available yet.</p>'
     cards: list[str] = []
     for candidate in candidates:
         draft_reply = str(candidate.get("draft_reply", "")).strip()
@@ -565,7 +565,7 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
     body = (
         _warning_block(warnings)
         + '<section class="metrics">'
-        + _metric("Candidate threads", str(candidate_count), "Open candidate threads in the latest review snapshot.")
+        + _metric("Support threads", str(candidate_count), "Open support threads in the latest review snapshot.")
         + _metric("Unresolved", str(unresolved_count), "Lifecycle state is not resolved.")
         + _metric("Escalated", str(escalation_count), "Cases requiring explicit human follow-up.")
         + _metric("Ready to answer", str(action_counts.get("ready_to_answer", 0)), "Cases with enough evidence to answer directly.")
@@ -587,14 +587,14 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
         + '<p><a href="/admin/fulfillment/cs/reports/">Browse all reports</a></p>'
         + "</aside></section>"
         + '<section class="layout-two">'
-        + f'<section class="panel"><h2>Action recommendations</h2><div class="summary-list">{_count_rows(action_counts, ACTION_STATE_ORDER, empty_text="No action recommendations recorded yet.")}</div></section>'
-        + f'<section class="panel"><h2>Lifecycle states</h2><div class="summary-list">{_count_rows(lifecycle_counts, LIFECYCLE_STATE_ORDER, empty_text="No lifecycle states recorded yet.")}</div></section>'
+        + f'<section class="panel"><h2>Recommended CS actions</h2><div class="summary-list">{_count_rows(action_counts, ACTION_STATE_ORDER, empty_text="No action recommendations recorded yet.")}</div></section>'
+        + f'<section class="panel"><h2>Thread status</h2><div class="summary-list">{_count_rows(lifecycle_counts, LIFECYCLE_STATE_ORDER, empty_text="No lifecycle states recorded yet.")}</div></section>'
         + "</section>"
         + '<section class="layout-two">'
         + f'<section class="panel"><h2>Brands</h2><div class="summary-list">{_summary_rows(brand_counts[:6], label_key="brand", empty_text="No brand counts recorded yet.")}</div></section>'
         + f'<section class="panel"><h2>Accounts</h2><div class="summary-list">{_summary_rows(account_counts[:6], label_key="account_name", empty_text="No account counts recorded yet.")}</div></section>'
         + "</section>"
-        + '<section class="panel"><h2>Candidate preview</h2><div class="candidate-list">'
+        + '<section class="panel"><h2>Support thread preview</h2><div class="candidate-list">'
         + _candidate_cards(recent_candidates[:6] if isinstance(recent_candidates, list) else [])
         + "</div></section>"
     )
@@ -602,7 +602,7 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
         title="agent | Fulfillment CS",
         eyebrow="Fulfillment — Customer Service",
         heading='Fulfillment <span class="highlight">CS</span>.',
-        intro="Artifact-driven visibility into fulfillment support candidates, state, and escalation needs.",
+        intro="Review support threads that need an answer, escalation, or more evidence.",
         body=body,
         active_subnav="fulfillment_dashboard",
         user=user,
@@ -645,15 +645,15 @@ def render_fulfillment_report_detail_page(report: dict[str, Any], *, user: dict 
     body = (
         _warning_block(warnings)
         + '<section class="metrics">'
-        + _metric("Candidate threads", str(_int(summary.get("candidate_count", report.get("candidate_count", 0)), 0)), "Threads included in this report.")
+        + _metric("Support threads", str(_int(summary.get("candidate_count", report.get("candidate_count", 0)), 0)), "Threads included in this report.")
         + _metric("Unresolved", str(_int(summary.get("unresolved_count", 0), 0)), "Cases still open after this review pass.")
         + _metric("Escalated", str(_int(summary.get("escalation_count", 0), 0)), "Cases needing human escalation or review.")
         + _metric("Clarifying", str(action_counts.get("clarifying", 0)), "Cases missing the identifiers needed to answer safely.")
         + _metric("Ready to answer", str(action_counts.get("ready_to_answer", 0)), "Cases with enough verified evidence to respond.")
         + "</section>"
         + '<section class="layout-two">'
-        + f'<section class="panel"><h2>Action recommendations</h2><div class="summary-list">{_count_rows(action_counts, ACTION_STATE_ORDER, empty_text="No action recommendation counts recorded.")}</div></section>'
-        + f'<section class="panel"><h2>Lifecycle states</h2><div class="summary-list">{_count_rows(lifecycle_counts, LIFECYCLE_STATE_ORDER, empty_text="No lifecycle counts recorded.")}</div></section>'
+        + f'<section class="panel"><h2>Recommended CS actions</h2><div class="summary-list">{_count_rows(action_counts, ACTION_STATE_ORDER, empty_text="No action recommendation counts recorded.")}</div></section>'
+        + f'<section class="panel"><h2>Thread status</h2><div class="summary-list">{_count_rows(lifecycle_counts, LIFECYCLE_STATE_ORDER, empty_text="No lifecycle counts recorded.")}</div></section>'
         + "</section>"
         + '<section class="layout-two">'
         + f'<section class="panel"><h2>Brands</h2><div class="summary-list">{_summary_rows(summary.get("brand_counts", []) if isinstance(summary.get("brand_counts", []), list) else [], label_key="brand", empty_text="No brand counts recorded.")}</div></section>'
@@ -669,7 +669,7 @@ def render_fulfillment_report_detail_page(report: dict[str, Any], *, user: dict 
             else '<p class="empty">No escalations recorded in this report.</p>'
         )
         + "</div></section>"
-        + '<section class="panel"><h2>Candidate threads</h2><div class="candidate-list">'
+        + '<section class="panel"><h2>Support threads</h2><div class="candidate-list">'
         + _candidate_cards(report.get("candidates", []) if isinstance(report.get("candidates", []), list) else [])
         + "</div></section>"
     )

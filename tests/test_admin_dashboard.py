@@ -147,7 +147,7 @@ class AdminDashboardTests(unittest.TestCase):
         html = render_sales_deck_page(dashboard)
         self.assertIn("deck-generator-form", html)
         self.assertIn("/admin/api/generate-deck", html)
-        self.assertIn("Generate sales deck", html)
+        self.assertIn("Sales assets", html)
         self.assertIn("Product URL or ASIN", html)
         self.assertIn("All Helium 10 CSVs", html)
         self.assertIn("deck-run-list", html)

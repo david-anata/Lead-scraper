@@ -176,12 +176,15 @@ def render_forbidden_page(*, user: Optional[dict], tool_label: str) -> str:
     unprovisioned = (user or {}).get("status") == "unprovisioned"
     if unprovisioned:
         sub = (
-            "You're signed in, but an administrator hasn't granted you access to any "
-            "tools yet. They can set this up under People → Manage access."
+            "You're signed in, but no app areas are enabled for your account yet. "
+            "An administrator can turn them on under People -> Manage access."
         )
     else:
-        sub = (f"You don't have access to <strong>{_esc(tool_label)}</strong> yet. "
-               "Ask an administrator to grant it under People → Manage access.")
+        sub = (
+            "You're signed in, but this app area is not enabled for your account. "
+            f"Ask an administrator to turn on <strong>{_esc(tool_label)}</strong> "
+            "under People -> Manage access."
+        )
     body = f"""
       <div class="card">
         <div class="lock">🔒</div>

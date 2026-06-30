@@ -137,15 +137,15 @@ def render_recurring_page(*, flash: str = "") -> str:
 
     body = f"""
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-      <h1>Recurring Templates</h1>
+      <h1>Recurring rules</h1>
       <div class="action-row" style="margin:0">
-        <a href="/admin/finances/recurring/new" class="btn btn-primary">+ Add Template</a>
+        <a href="/admin/finances/recurring/new" class="btn btn-primary">+ Add recurring rule</a>
         <form method="post" action="/admin/finances/recurring/generate" style="display:inline">
-          <button type="submit" class="btn btn-secondary">Generate Upcoming</button>
+          <button type="submit" class="btn btn-secondary">Create upcoming events</button>
         </form>
       </div>
     </div>
-    <p class="page-sub">Manage recurring obligations — click "Generate Upcoming" to create events for the next 90 days</p>
+    <p class="page-sub">Manage recurring obligations and create planned events for the next 90 days.</p>
     <div class="card">
       <table>
         <thead>
@@ -157,7 +157,7 @@ def render_recurring_page(*, flash: str = "") -> str:
       </table>
     </div>"""
 
-    return _page_shell("Recurring Templates", "recurring", body, flash=flash)
+    return _page_shell("Recurring rules", "recurring", body, flash=flash)
 
 
 def render_recurring_new_page(*, flash: str = "") -> str:

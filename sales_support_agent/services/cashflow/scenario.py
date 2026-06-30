@@ -141,7 +141,7 @@ def render_scenario_page(
           </div>
         </div>
         <div class="action-row">
-          <button type="submit" class="btn btn-primary">Apply Adjustment</button>
+          <button type="submit" class="btn btn-primary">Preview scenario change</button>
           <a href="/admin/finances/scenario" class="btn btn-secondary">Reset</a>
         </div>
       </form>

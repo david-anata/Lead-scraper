@@ -9,19 +9,19 @@ from sales_support_agent.services.cashflow.overview import _page_shell
 
 def render_upload_page(*, result_html: str = "", flash: str = "") -> str:
     body = f"""
-    <h1>Upload Bank CSV</h1>
-    <p class="page-sub">Import bank transactions to match against planned obligations</p>
+    <h1>Upload bank actuals CSV</h1>
+    <p class="page-sub">Fallback import for bank transactions when live finance data is incomplete</p>
 
     <div class="card">
-      <h2>Upload File</h2>
+      <h2>Import transactions</h2>
       <form method="post" action="/admin/finances/upload" enctype="multipart/form-data">
         <div class="form-row">
           <div>
-            <label>CSV File</label>
+            <label>Bank transactions CSV</label>
             <input type="file" name="csv_file" accept=".csv" style="padding:6px 0">
           </div>
           <div>
-            <label>Merge Mode</label>
+            <label>How to merge</label>
             <select name="merge_mode">
               <option value="append">Append / merge by transaction ID</option>
               <option value="replace_range">Replace date range</option>
@@ -29,13 +29,13 @@ def render_upload_page(*, result_html: str = "", flash: str = "") -> str:
           </div>
         </div>
         <div class="action-row">
-          <button type="submit" class="btn btn-primary">Upload &amp; Process</button>
+          <button type="submit" class="btn btn-primary">Import bank actuals</button>
         </div>
       </form>
     </div>
 
     <div class="card" style="background:rgba(43,54,68,0.02)">
-      <h2>Expected CSV Format</h2>
+      <h2>Required CSV columns</h2>
       <p style="font-size:13px;color:#6b7a8d;margin:0">
         Export from your bank as a CSV. Required columns:
         <code>Transaction ID</code>, <code>Date</code>, <code>Description</code>,

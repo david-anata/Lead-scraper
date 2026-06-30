@@ -1616,17 +1616,18 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         else ""
     )
     divider_html = (
-        '<div class="login-divider"><span>or</span></div>'
+        '<div class="login-divider"><span>Admin fallback</span></div>'
         if (show_google_button and show_password_form)
         else ""
     )
     password_form_html = (
         """<form method="post" action="/admin/login">
-              <label for="email">Email</label>
-              <input id="email" name="email" type="email" autocomplete="email" placeholder="you@anatainc.com" required />
+              <p class="fallback-note">This password is for existing break-glass admin access. New users must use Google sign-in above to request access.</p>
+              <label for="email">Admin email</label>
+              <input id="email" name="email" type="email" autocomplete="email" placeholder="admin@anatainc.com" required />
               <label for="password">Password</label>
               <input id="password" name="password" type="password" autocomplete="current-password" required />
-              <button type="submit">GET STARTED</button>
+              <button type="submit">Continue with fallback</button>
             </form>"""
         if show_password_form
         else ""
@@ -1875,7 +1876,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
           <p>This dashboard keeps lead pulls, owner priorities, and sync controls in one place so the team can move quickly without digging through multiple tools.</p>
           <div class="login-card">
             <h2>Enter the dashboard.</h2>
-            <p>Sign in with your Anata Google account. New teammate? Signing in automatically files an access request for an admin to approve.</p>
+            <p>Use your Anata Google account to sign in. New teammate? Google sign-in files an access request for an admin to approve.</p>
             {error_html}
             {google_button_html}
             {divider_html}
@@ -5485,7 +5486,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
           </div>
           <div class="header-meta">
             <div class="page-copy">
-              Build the prospect deck outside the daily queue so Sales Priorities stays focused on owner action.
+              Build the prospect deck outside the daily queue so the sales workflow stays focused on owner action.
             </div>
             <div class="freshness-strip">
               <div class="freshness-pill">Updated <strong>{html.escape(latest_sync)}</strong></div>
@@ -5495,7 +5496,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
         </section>
 
         <section class="deck-page-card">
-          <h2>Generate sales deck</h2>
+          <h2>Sales assets</h2>
           <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
           {deck_ready_notice}
           <form class="lead-form intake-form" id="deck-generator-form">

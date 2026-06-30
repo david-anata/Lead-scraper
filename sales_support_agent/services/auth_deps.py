@@ -7,6 +7,9 @@ dependency used by every guard.
 """
 from __future__ import annotations
 
+import sys
+import os
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -24,18 +27,43 @@ def _all_auth_settings(request: Request) -> list:
     cookie (minted by main.py's AdminDashboardSettings) is always found even when
     ADMIN_DASHBOARD_SESSION_SECRET is not set in the environment.
     """
-    seen_secrets: set = set()
+    seen_settings: set = set()
     result = []
-    for attr in ("agent_settings", "admin_dashboard_settings", "settings"):
-        s = getattr(request.app.state, attr, None)
+    candidates = [getattr(request.app.state, attr, None) for attr in ("agent_settings", "admin_dashboard_settings", "settings")]
+
+    if getattr(request.app.state, "admin_dashboard_settings", None) is None:
+        root_main = sys.modules.get("main")
+        loader = getattr(root_main, "load_admin_dashboard_settings", None)
+        if callable(loader):
+            try:
+                candidates.append(loader())
+            except Exception:
+                pass
+        candidates.append(SimpleNamespace(
+            admin_username=os.getenv("ADMIN_DASHBOARD_USERNAME", "admin").strip() or "admin",
+            admin_session_secret=(
+                os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "").strip()
+                or os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip()
+                or "lead-scraper-admin-session-secret"
+            ),
+            admin_cookie_name=os.getenv("ADMIN_DASHBOARD_COOKIE_NAME", "lead_scraper_admin_session").strip() or "lead_scraper_admin_session",
+            admin_session_ttl_hours=int((os.getenv("ADMIN_DASHBOARD_SESSION_TTL_HOURS", "24") or "24").strip()),
+            rbac_enabled=True,
+        ))
+
+    for s in candidates:
         if s is None:
             continue
         if not (hasattr(s, "admin_cookie_name") and hasattr(s, "admin_session_secret")):
             continue
-        sec = getattr(s, "admin_session_secret", "")
-        if sec in seen_secrets:
-            continue  # same secret — no point trying twice
-        seen_secrets.add(sec)
+        key = (
+            getattr(s, "admin_cookie_name", ""),
+            getattr(s, "admin_session_secret", ""),
+            getattr(s, "admin_username", ""),
+        )
+        if key in seen_settings:
+            continue
+        seen_settings.add(key)
         result.append(s)
     return result
 

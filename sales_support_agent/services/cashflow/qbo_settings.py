@@ -69,7 +69,7 @@ def render_qbo_settings_page(*, flash: str = "") -> str:
           </form>
           <a href="/admin/finances/qbo/connect" class="btn btn-secondary">Re-authenticate</a>
           <form method="post" action="/admin/finances/sync-qbo" style="display:inline">
-            <button type="submit" class="btn btn-primary">Sync Invoices Now</button>
+            <button type="submit" class="btn btn-primary">Refresh open invoices</button>
           </form>
         </div>"""
     else:
@@ -105,7 +105,7 @@ QB_TOKEN_SECRET=&lt;random 32+ char string&gt;</pre>
           as a redirect URI for your app.</li>
         <li>Click <strong>Connect QuickBooks</strong> above — you'll be redirected to Intuit
           to authorise the connection.</li>
-        <li>Once connected, click <strong>Sync Invoices Now</strong> to pull open invoices
+        <li>Once connected, click <strong>Refresh open invoices</strong> to pull open invoices
           into the forecast immediately.</li>
       </ol>
     </div>"""
@@ -113,7 +113,7 @@ QB_TOKEN_SECRET=&lt;random 32+ char string&gt;</pre>
     # -- What gets synced ---------------------------------------------------------
     sync_info_html = """
     <div class="card" style="margin-top:0">
-      <h2>What Gets Synced</h2>
+      <h2>What QuickBooks adds to the forecast</h2>
       <table>
         <thead><tr><th>QBO Data</th><th>→ Finance OS</th><th>Notes</th></tr></thead>
         <tbody>

@@ -1255,7 +1255,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>agent | Sales Operator</title>
+    <title>agent | Sales Control Room</title>
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -1297,7 +1297,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     {nav}
     <main class="shell">
       <section class="workspace hero">
-        <p class="eyebrow">Sales Operator</p>
+        <p class="eyebrow">Sales Control Room</p>
         <h1>HubSpot visibility first. Autonomous action next.</h1>
         <p class="muted">HubSpot is the source of truth. This root sales page reads the live pipeline and property model, then exposes the first high-confidence write-back layer directly inside agent.anatainc.com.</p>
         <div class="stats">

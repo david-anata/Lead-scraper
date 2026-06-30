@@ -395,7 +395,7 @@ def render_deal_board_page(
     {render_agent_nav("sales", sales_section="sales_deals", user=user)}
     <main class="shell">
       <div class="workspace">
-        <p class="eyebrow">Sales Priorities — HubSpot</p>
+        <p class="eyebrow">Sales — HubSpot</p>
         <h1>Deal <span style="color:var(--light-blue)">Board</span>.</h1>
         <p class="intro">Every open HubSpot deal, sorted top-down by close date — soonest first. Each deal is checked for the essentials needed to close: an amount, line items (what we’re offering), contacts, and a close date.</p>
         <div class="stats">
@@ -412,7 +412,7 @@ def render_deal_board_page(
             <button type="submit" onclick="this.textContent='Syncing…';this.disabled=true">Sync now</button>
           </form>
           <a href="/admin/sales/deals/create" class="create-link">Create deal</a>
-          <a href="/admin/sales/deals/cleanup" class="cleanup-link">Run cleanup →</a>
+          <a href="/admin/sales/deals/cleanup" class="cleanup-link">Review HubSpot fixes -></a>
           {last_synced_html}
           <span id="sync-note">{sync_note}</span>
         </div>

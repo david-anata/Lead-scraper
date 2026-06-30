@@ -406,7 +406,7 @@ def build_growth_plan(
     reqs = []
     if not has_cogs:
         reqs.append((
-            "Per-ASIN COGS + FBA & referral fees",
+            "Unit costs by ASIN + FBA & referral fees",
             "Your own cost data: one row per ASIN with landed unit cost (COGS + FBA fee + referral fee + freight). Upload as a 2-column ASIN,COGS CSV (extra fee columns optional).",
             "The #1 gap. Enables TRUE break-even ACoS per product — guarantee (not estimate) each SKU stays profitable. Today ACoS/TACoS are proxies.",
             "P0", ""))

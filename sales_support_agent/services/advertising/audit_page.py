@@ -171,13 +171,13 @@ _DOWNLOAD_GUIDE_ROWS = [
     ("recommended", "Bulk-operations file", ".xlsx",
      "Ads Console → Sponsored ads → <strong>Bulk operations</strong> → Create spreadsheet",
      "Unlocks the ⬇ Bids &amp; ⬇ Additions apply sheets (carries the IDs).", "https://advertising.amazon.com/bulk-operations"),
-    ("recommended", "Per-ASIN COGS", ".csv",
+    ("recommended", "Unit costs by ASIN", ".csv",
      "Your own <strong>ASIN, COGS</strong> file (or a margins sheet by product name)",
      "Profit-true break-even ACoS per SKU. Upload once.", ""),
     ("optional", "Targeting report", ".csv",
      "Ads Console → Reports → <strong>Targeting</strong> template (SP)",
      "Bid changes when you don't have the bulk file.", "https://advertising.amazon.com/reports"),
-    ("optional", "Brand Analytics (SQP)", ".csv",
+    ("optional", "Search Query Performance (SQP)", ".csv",
      "Seller Central → Brands → <strong>Brand Analytics</strong> → Search Query Performance",
      "Market-share context.", "https://sellercentral.amazon.com/brand-analytics"),
     ("optional", "DSP performance", ".csv",
@@ -278,14 +278,14 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
     <form id="adv-run-form" class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
       {_client_select(clients or [])}
       <div class="dropzone">
-        <label for="adv-files"><strong>Drop all your Amazon exports here</strong><br>
-        <span class="empty">Bulk file, Search Term, Business Report, SQP, DSP — in any order. The tool detects what each file is.</span></label>
+        <label for="adv-files"><strong>Upload Amazon performance files</strong><br>
+        <span class="empty">Bulk Operations, Search Term, Business Report, Search Query Performance (SQP), and DSP files. The tool identifies each file automatically.</span></label>
         <input id="adv-files" type="file" name="files" accept=".csv,.xlsx" multiple>
         <div id="adv-filelist" class="filelist"></div>
       </div>
       {_download_guide()}
       <div class="card" style="margin:0;background:#fafbfc;">
-        <h2 style="font-size:15px;">External marketing spend <small>— off-Amazon channels for blended TACoS</small></h2>
+        <h2 style="font-size:15px;">Off-Amazon marketing spend <small>- added to blended TACoS</small></h2>
         <div id="ext-rows">
           <div class="row ext-row">
             <div class="field"><label>Channel</label><select name="ext_channel"><option value=""></option>{ext_channels}</select></div>
@@ -298,13 +298,13 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
       <details class="guide">
         <summary>Assign files individually instead (advanced)</summary>
         <div class="row" style="margin-top:12px;">
-          <div class="field"><label>Bulk-operations (XLSX)</label><input type="file" name="bulk_xlsx" accept=".xlsx"></div>
+          <div class="field"><label>Amazon bulk operations file (XLSX)</label><input type="file" name="bulk_xlsx" accept=".xlsx"></div>
           <div class="field"><label>Search Term (CSV)</label><input type="file" name="search_term_csv" accept=".csv"></div>
           <div class="field"><label>Business Report (CSV)</label><input type="file" name="business_report_csv" accept=".csv"></div>
-          <div class="field"><label>Brand Analytics SQP (CSV)</label><input type="file" name="sqp_csv" accept=".csv"></div>
+          <div class="field"><label>Search Query Performance (SQP) report (CSV)</label><input type="file" name="sqp_csv" accept=".csv"></div>
           <div class="field"><label>DSP (CSV)</label><input type="file" name="dsp_csv" accept=".csv"></div>
           <div class="field"><label>External costs (CSV)</label><input type="file" name="external_costs_csv" accept=".csv"></div>
-          <div class="field"><label>Per-ASIN COGS (CSV)</label><input type="file" name="cogs_csv" accept=".csv"></div>
+          <div class="field"><label>Unit costs by ASIN (COGS CSV)</label><input type="file" name="cogs_csv" accept=".csv"></div>
         </div>
       </details>
       <div class="field" style="max-width:420px;">
@@ -317,7 +317,7 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
         <h2 style="font-size:15px;">Goals <small>— targets the plan measures against (saved &amp; applied on run)</small></h2>
         {_goals_fields(goals)}
       </div>
-      <div><button class="btn" type="submit">Run audit &amp; build burn list</button></div>
+      <div><button class="btn" type="submit">Generate burn-list workbook</button></div>
     </form>
     <script>
     window.__advClientGoals = {prefill_json};
@@ -540,7 +540,7 @@ _FAQ = [
      "Use the “📥 What to download” links above to jump straight to each."),
     ("How do I run it?",
      "Drop all the files in the box (any order — it auto-detects each), type the <strong>brand</strong> to focus on, "
-     "set your <strong>Goals</strong>, and hit <strong>Run audit &amp; build burn list</strong>. The run appears in "
+     "set your <strong>Goals</strong>, and hit <strong>Generate burn-list workbook</strong>. The run appears in "
      "History with ⬇ Plan and ⬇ Apply-sheet downloads."),
     ("What are the two apply files — Bid changes vs Additions?",
      "The run produces <strong>two</strong> Amazon bulk files so a problem in one never blocks the other. "

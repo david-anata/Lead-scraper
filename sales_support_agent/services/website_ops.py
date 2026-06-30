@@ -233,12 +233,12 @@ def _feedback_status(value: str) -> str:
 
 def _feedback_status_label(value: str) -> str:
     labels = {
-        "new": "New",
-        "approved": "Approved",
-        "in-progress": "In Progress",
-        "done": "Done",
+        "new": "Needs review",
+        "approved": "Approved to run",
+        "in-progress": "Running",
+        "done": "Completed",
         "rejected": "Rejected",
-        "error": "Error",
+        "error": "Failed",
     }
     return labels.get(_feedback_status(value), _feedback_status(value).replace("-", " ").title())
 
@@ -1020,11 +1020,11 @@ def _action_queue_workflow_chip(status: str) -> str:
         "rejected": "neutral",
     }
     label_map = {
-        "new": "Awaiting review",
-        "approved": "Approved",
-        "in-progress": "In progress",
-        "done": "Done",
-        "error": "Error",
+        "new": "Needs review",
+        "approved": "Approved to run",
+        "in-progress": "Running",
+        "done": "Completed",
+        "error": "Failed",
         "rejected": "Rejected",
     }
     return f'<span class="status-pill status-{html.escape(tone_map.get(normalized, "neutral"), quote=True)}">{html.escape(label_map.get(normalized, _feedback_status_label(normalized)))}</span>'
@@ -1447,7 +1447,7 @@ def _feedback_cards(entries: list[dict[str, Any]], *, with_actions: bool = False
                   <button class="ghost tiny" type="submit">{label}</button>
                 </form>
                 '''
-                for status, label in [("approved", "Approve"), ("in-progress", "In Progress"), ("rejected", "Reject"), ("done", "Done")]
+                for status, label in [("approved", "Approve to run"), ("in-progress", "Mark running"), ("rejected", "Reject"), ("done", "Mark completed")]
               )}
             </div>
             """
@@ -1499,8 +1499,8 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         <section class="hero">
           <div class="card stack">
             <p class="eyebrow">Website Ops</p>
-            <h1>SEO <span style="color:var(--accent)">control tower</span>.</h1>
-            <p class="lead">Review daily website reports, approve changes, and route safe live actions through the same internal agent dashboard your team already uses.</p>
+            <h1>Website <span style="color:var(--accent)">action center</span>.</h1>
+            <p class="lead">Review what changed, what needs approval, and which website actions are safe to run.</p>
             {_mvp_mode_banner()}
             <div class="button-row">
               <form action="/admin/api/website-ops/run" method="post"><input type="hidden" name="mode" value="daily"><button type="submit">Run Daily Sweep</button></form>
@@ -1522,10 +1522,10 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         </section>
         <section class="stats">
           {_dashboard_stat_card("Reports", len(reports), "Daily, weekly, monthly", "/admin/website-ops/reports")}
-          {_dashboard_stat_card("Awaiting Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
-          {_dashboard_stat_card("Approved", status_counts.get('approved', 0) + status_counts.get('in-progress', 0), "Accepted or in progress", "/admin/website-ops/queue?status=approved")}
-          {_dashboard_stat_card("Done", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
-          {_dashboard_stat_card("Errors", error_count, "Needs intervention", "/admin/website-ops/queue?status=error") if error_count else ""}
+          {_dashboard_stat_card("Needs Review", status_counts.get('new', 0), "Needs a decision", "/admin/website-ops/queue?status=new")}
+          {_dashboard_stat_card("Approved to Run", status_counts.get('approved', 0) + status_counts.get('in-progress', 0), "Approved or running", "/admin/website-ops/queue?status=approved")}
+          {_dashboard_stat_card("Completed", status_counts.get('done', 0), "Completed safely", "/admin/website-ops/queue?status=done")}
+          {_dashboard_stat_card("Failed", error_count, "Needs intervention", "/admin/website-ops/queue?status=error") if error_count else ""}
         </section>
         <section class="grid-2">
           <div class="card stack">
@@ -1571,27 +1571,27 @@ def render_dashboard_page(settings: Settings, *, flash_message: str = "", user: 
         </section>
         <section class="grid-2">
           <div class="card stack">
-            <h2>Customer Questions</h2>
+            <h2>Buyer questions to answer</h2>
             <p class="lead">Repeated buyer questions extracted from Gmail threads and normalized for content decisions.</p>
             <div class="widget-scroll compact-scroll">{_customer_question_cards(customer_questions)}</div>
           </div>
           <div class="card stack">
-            <h2>SERP Blueprints</h2>
+            <h2>Search patterns from ranking pages</h2>
             <p class="lead">Repeated heading and FAQ patterns from ranking pages for the highest-signal service queries.</p>
             <div class="widget-scroll compact-scroll">{_serp_blueprint_cards(serp_blueprints)}</div>
           </div>
         </section>
         <section class="grid-2">
           <div class="card stack">
-            <h2>Content Tasks</h2>
+            <h2>Recommended content updates</h2>
             <p class="lead">Structured content updates generated from search demand and buyer language.</p>
             <div class="widget-scroll compact-scroll">{_content_task_cards(content_tasks)}</div>
           </div>
-          <div class="card stack"><h2>Open queue</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True)}</div></div>
+          <div class="card stack"><h2>Open issues</h2><div class="widget-scroll compact-scroll">{_feedback_cards(active_feedback[:8], with_actions=True)}</div></div>
         </section>
         <section class="grid-2">
           <div class="card stack"><h2>Recent reports</h2><div class="widget-scroll compact-scroll">{_report_cards(reports[:8])}</div></div>
-          <div class="card stack"><h2>Data connection notes</h2><p class="lead">Website Ops uses these signals to decide what to change next.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
+          <div class="card stack"><h2>Data sources</h2><p class="lead">Website Ops uses these signals to decide what to change next.</p><div class="setup-grid">{_analytics_connection_cards(analytics_status)}</div></div>
         </section>
         <section class="grid-2">
           {_system_details_panel(settings, analytics_status)}
@@ -1623,10 +1623,10 @@ def render_queue_page(settings: Settings, *, flash_message: str = "", status_fil
           {_mvp_mode_banner()}
           <p class="lead">Approve a deterministic action when the requested change is exact. Leave it as manual review if the request is still ambiguous.</p>
           <div class="button-row" style="margin-top:8px">
-            <a href="/admin/website-ops/queue" class="{'btn' if not normalized_filter else 'btn btn--ghost'}" style="font-size:13px">Active</a>
-            <a href="/admin/website-ops/queue?status=approved" class="{'btn' if normalized_filter == 'approved' else 'btn btn--ghost'}" style="font-size:13px">Approved</a>
-            <a href="/admin/website-ops/queue?status=done" class="{'btn' if normalized_filter == 'done' else 'btn btn--ghost'}" style="font-size:13px">Done</a>
-            <a href="/admin/website-ops/queue?status=error" class="{'btn' if normalized_filter == 'error' else 'btn btn--ghost'}" style="font-size:13px">Error</a>
+            <a href="/admin/website-ops/queue" class="{'btn' if not normalized_filter else 'btn btn--ghost'}" style="font-size:13px">Needs review</a>
+            <a href="/admin/website-ops/queue?status=approved" class="{'btn' if normalized_filter == 'approved' else 'btn btn--ghost'}" style="font-size:13px">Approved to run</a>
+            <a href="/admin/website-ops/queue?status=done" class="{'btn' if normalized_filter == 'done' else 'btn btn--ghost'}" style="font-size:13px">Completed</a>
+            <a href="/admin/website-ops/queue?status=error" class="{'btn' if normalized_filter == 'error' else 'btn btn--ghost'}" style="font-size:13px">Failed</a>
             <a href="/admin/website-ops/queue?status=rejected" class="{'btn' if normalized_filter == 'rejected' else 'btn btn--ghost'}" style="font-size:13px">Rejected</a>
           </div>
         </section>
@@ -1646,7 +1646,7 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
     confidence = str(record.get("confidence", "")).strip()
     suggested_action_type = str(record.get("suggested_action_type", "")).strip()
     is_auto_executable = _record_is_auto_executable(record)
-    recommendation_cta = "Approve and Execute" if is_auto_executable else "Approve Recommendation"
+    recommendation_cta = "Approve safe action" if is_auto_executable else "Approve recommendation"
     recommendation_note = (
         "This recommendation maps to a supported safe action. Approving it will execute immediately when auto-execution is enabled."
         if is_auto_executable
@@ -1693,19 +1693,19 @@ def render_feedback_detail_page(settings: Settings, feedback_id: str, *, flash_m
             {f"<div class='button-row'><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='approved'><button type='submit'>{recommendation_cta}</button></form><form class='inline' action='/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review' method='post'><input type='hidden' name='status' value='rejected'><button class='ghost' type='submit'>Reject Recommendation</button></form><span class='muted'>{html.escape(recommendation_note)}</span></div>" if is_auto_generated else ""}
             <form action="/admin/api/website-ops/feedback/{html.escape(str(record.get('feedback_id', '')), quote=True)}/review" method="post" class="form-grid">
               <div><label>Status</label><select name="status">
-                <option value="new" {'selected' if record.get('status') == 'new' else ''}>New</option>
-                <option value="approved" {'selected' if record.get('status') == 'approved' else ''}>Approved</option>
-                <option value="in-progress" {'selected' if record.get('status') == 'in-progress' else ''}>In Progress</option>
-                <option value="done" {'selected' if record.get('status') == 'done' else ''}>Done</option>
+                <option value="new" {'selected' if record.get('status') == 'new' else ''}>Needs review</option>
+                <option value="approved" {'selected' if record.get('status') == 'approved' else ''}>Approved to run</option>
+                <option value="in-progress" {'selected' if record.get('status') == 'in-progress' else ''}>Running</option>
+                <option value="done" {'selected' if record.get('status') == 'done' else ''}>Completed</option>
                 <option value="rejected" {'selected' if record.get('status') == 'rejected' else ''}>Rejected</option>
-                <option value="error" {'selected' if record.get('status') == 'error' else ''}>Error</option>
+                <option value="error" {'selected' if record.get('status') == 'error' else ''}>Failed</option>
               </select></div>
               <div><label>Reviewer</label><input type="text" name="reviewer_name" value="{html.escape(str(record.get('reviewer_name', '')), quote=True)}"></div>
-              <div><label>Action type</label><select name="action_type"><option value="">Manual only</option><option value="inject_faq_block" {'selected' if record.get('action_type') == 'inject_faq_block' else ''}>Inject Faq Block</option><option value="expand_service_page_section" {'selected' if record.get('action_type') == 'expand_service_page_section' else ''}>Expand Service Page Section</option></select></div>
-              <div><label>Target post ID</label><input type="text" name="target_post_id" value="{html.escape(str(record.get('target_post_id', '')), quote=True)}" placeholder="Optional WordPress page ID"></div>
-              <div class="span-2"><label>Action value</label><textarea name="action_value" placeholder="Exact action payload">{html.escape(str(record.get('action_value', '')))}</textarea></div>
+              <div><label>Safe action</label><select name="action_type"><option value="">Manual review only</option><option value="inject_faq_block" {'selected' if record.get('action_type') == 'inject_faq_block' else ''}>Add FAQ block</option><option value="expand_service_page_section" {'selected' if record.get('action_type') == 'expand_service_page_section' else ''}>Expand service page section</option></select></div>
+              <div><label>WordPress page ID</label><input type="text" name="target_post_id" value="{html.escape(str(record.get('target_post_id', '')), quote=True)}" placeholder="Optional WordPress page ID"></div>
+              <div class="span-2"><label>Exact content or change</label><textarea name="action_value" placeholder="Paste the exact content, JSON payload, or implementation note.">{html.escape(str(record.get('action_value', '')))}</textarea></div>
               <div class="span-2"><label>Review notes</label><textarea name="review_notes">{html.escape(str(record.get('review_notes', '')))}</textarea></div>
-              <div class="span-2"><button type="submit">Submit Review</button></div>
+              <div class="span-2"><button type="submit">Save decision</button></div>
             </form>
           </section>
         </section>
@@ -1743,7 +1743,7 @@ def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict |
         debug_panel = (
             "<section style=\"max-width:1200px;margin:24px auto 0;padding:0 20px;\">"
             "<div style=\"background:#fff;border:1px solid rgba(25,55,109,0.12);border-radius:24px;padding:24px;box-shadow:0 16px 40px rgba(24,39,75,0.08);\">"
-            "<p style=\"margin:0 0 8px;font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#5d6b82;\">MVP debug</p>"
+            "<p style=\"margin:0 0 8px;font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#5d6b82;\">Generation trace</p>"
             "<h2 style=\"margin:0 0 12px;font-size:28px;line-height:1.1;color:#16233b;\">Per-page generation trace</h2>"
             f"{_insight_snapshot_cards(debug_insights)}"
             "</div></section>"

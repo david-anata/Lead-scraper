@@ -196,7 +196,7 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
     body = f"""
       <span class="eyebrow">Executive · Brand Analysis</span>
       <h1>Brand Analysis<span style="color:var(--light-blue)">.</span></h1>
-      <p class="muted">Drop a brand's financial file dump — P&amp;L, Balance Sheet, Trial Balance, GL, prior-year — and get a graded executive acquisition report. .xlsx, .xls, .csv and .pdf are accepted.</p>
+      <p class="muted">Upload a brand's financial exports: P&amp;L, Balance Sheet, Trial Balance, GL, and prior-year files. The system returns an executive acquisition report. .xlsx, .xls, .csv and .pdf are accepted.</p>
       {flash_html}
       <div style="display:flex;align-items:center;gap:12px;background:#f0f4ff;border:1px solid #c7d7f8;border-radius:8px;padding:12px 16px;margin-bottom:18px">
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#1d4ed8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
@@ -206,12 +206,12 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
         </div>
         <a href="/brand-intake" target="_blank"
            style="flex-shrink:0;background:#1d4ed8;color:#fff;font-size:12px;font-weight:600;padding:7px 14px;border-radius:6px;text-decoration:none;white-space:nowrap">
-          View Checklist
+          View intake checklist
         </a>
       </div>
       <form method="post" action="/admin/executive/brand-analysis/run" enctype="multipart/form-data">
         <div class="drop">
-          <strong>Drop financial files here</strong>
+          <strong>Upload financial statements and exports</strong>
           <div class="muted">Upload one or many at once.</div>
           <input type="file" name="files" multiple accept=".xlsx,.xls,.csv,.pdf">
         </div>
@@ -239,7 +239,7 @@ def render_brand_analysis_page(*, runs: list, user: Optional[dict] = None,
         {_social_fields()}
         {_override_fields()}
         <div class="btn-row">
-          <button class="btn" type="submit">Run analysis</button>
+          <button class="btn" type="submit">Generate acquisition report</button>
           <a class="btn btn--ghost" href="/admin/executive/brand-analysis/pipeline">Pipeline &rarr;</a>
         </div>
       </form>
@@ -293,8 +293,8 @@ def _override_fields(row: Optional[dict] = None) -> str:
             </div>"""
     return f"""
         <details class="social-block">
-          <summary>Corrections (optional — override a mis-parsed number)</summary>
-          <p class="muted" style="margin:8px 0 4px">Enter exact dollar amounts to override what the parser found. Blank fields keep the parsed value.</p>
+          <summary>Financial corrections (optional)</summary>
+          <p class="muted" style="margin:8px 0 4px">Enter exact dollar amounts when a parsed number is wrong. Blank fields keep the parsed value.</p>
           <div class="grid2">{cells}</div>
         </details>"""
 
@@ -305,7 +305,7 @@ def _social_fields(*, email_list_size: object = "", social_urls: str = "",
     website; these let the analyst supply what public pages don't expose."""
     return f"""
         <details class="social-block">
-          <summary>Brand &amp; Social signals (optional — scored as a separate grade)</summary>
+          <summary>Brand and audience signals (optional)</summary>
           <p class="muted" style="margin:8px 0 4px">Social profiles auto-discover from the website; add anything below to sharpen the Brand &amp; Social score. Public follower counts are unreliable, so owned-list size and reviews carry the most weight.</p>
           <div class="grid2">
             <div class="field">
@@ -313,7 +313,7 @@ def _social_fields(*, email_list_size: object = "", social_urls: str = "",
               <input id="email_list_size" name="email_list_size" inputmode="numeric" placeholder="e.g. 45000" value="{_esc(email_list_size)}">
             </div>
             <div class="field">
-              <label for="social_urls">Social profile URLs (override auto-detect)</label>
+              <label for="social_urls">Social profile URLs</label>
               <input id="social_urls" name="social_urls" placeholder="instagram.com/brand  tiktok.com/@brand" value="{_esc(social_urls)}">
             </div>
           </div>
@@ -414,7 +414,7 @@ def _expand_panel(row: dict) -> str:
         <table class="ep-table">
           <tr><td>Net Revenue</td><td class="num">{_esc(rev)}</td></tr>
           <tr><td>Contribution Margin</td><td class="num">{_esc(cm)}</td></tr>
-          <tr><td>Blended MER</td><td class="num">{_esc(mer)}</td></tr>
+          <tr><td>Blended MER (revenue / marketing)</td><td class="num">{_esc(mer)}</td></tr>
           <tr><td>YoY Growth</td><td class="num" style="color:{yoy_color}">{_esc(yoy)}</td></tr>
         </table>
       </div>"""
@@ -1203,7 +1203,7 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
           <span class="eyebrow">Executive &middot; Brand Analysis</span>
           <h1 style="margin-top:8px;margin-bottom:0">Pipeline</h1>
         </div>
-        <a class="btn btn--ghost" href="/admin/executive/brand-analysis">&larr; New Analysis</a>
+        <a class="btn btn--ghost" href="/admin/executive/brand-analysis">&larr; Start new analysis</a>
       </div>
 
       <div class="filter-bar">
@@ -1248,8 +1248,8 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             <th class="num" onclick="sortBy(4,'num')">Revenue<span class="sort-arrow"></span></th>
             <th class="num" onclick="sortBy(5,'num')">YoY<span class="sort-arrow"></span></th>
             <th class="num" onclick="sortBy(6,'num')">Net Margin<span class="sort-arrow"></span></th>
-            <th class="num" onclick="sortBy(7,'num')">Blended MER<span class="sort-arrow"></span></th>
-            <th class="num" onclick="sortBy(8,'num')">CM%<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(7,'num')">Blended MER (revenue / marketing)<span class="sort-arrow"></span></th>
+            <th class="num" onclick="sortBy(8,'num')">Contribution margin %<span class="sort-arrow"></span></th>
             <th onclick="sortBy(9,'num')">Social<span class="sort-arrow"></span></th>
             <th onclick="sortBy(10,'str')">Confidence<span class="sort-arrow"></span></th>
             <th onclick="sortBy(11,'str')">Period<span class="sort-arrow"></span></th>
@@ -1272,8 +1272,8 @@ def render_pipeline_page(runs: list, *, user: Optional[dict] = None) -> str:
             <div class="legend-row"><span class="legend-key">Revenue</span><span class="legend-val">LTM net revenue</span></div>
             <div class="legend-row"><span class="legend-key">YoY</span><span class="legend-val">Revenue growth vs. prior period (green = up)</span></div>
             <div class="legend-row"><span class="legend-key">Net Margin</span><span class="legend-val">Net earnings &divide; net revenue</span></div>
-            <div class="legend-row"><span class="legend-key">Blended MER</span><span class="legend-val">Every $1 marketing spend returns X revenue (higher = more efficient)</span></div>
-            <div class="legend-row"><span class="legend-key">CM%</span><span class="legend-val">Contribution margin % — revenue after COGS + marketing + fulfillment</span></div>
+            <div class="legend-row"><span class="legend-key">Blended MER</span><span class="legend-val">Marketing efficiency: revenue divided by marketing spend</span></div>
+            <div class="legend-row"><span class="legend-key">Contribution margin %</span><span class="legend-val">Revenue after COGS, marketing, and fulfillment</span></div>
             <div class="legend-row"><span class="legend-key">Social</span><span class="legend-val">Channel expansion opportunity score (0–100) — hover to see details</span></div>
             <div class="legend-row"><span class="legend-key">Confidence</span><span class="legend-val">% of key inputs actually supplied</span></div>
           </div>

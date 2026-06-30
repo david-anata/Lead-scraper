@@ -195,7 +195,7 @@ class HttpTest(_Base):
         resp = client.get("/admin/advertising/audit")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Burn", resp.text)
-        self.assertIn("Run an audit", resp.text)
+        self.assertIn("Generate burn-list workbook", resp.text)
         self.assertIn("History", resp.text)
         # The burn-list table is NOT rendered inline anymore — only in the workbook.
         self.assertNotIn("prioritized optimizations", resp.text)

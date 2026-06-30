@@ -78,7 +78,7 @@ class AdminWebsiteOpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             settings = self._settings(Path(tmpdir))
             html = render_dashboard_page(settings)
-            self.assertIn("control tower", html)
+            self.assertIn("action center", html)
             self.assertIn("/admin/api/website-ops/run", html)
             self.assertIn("/admin/api/website-ops/feedback", html)
 
@@ -199,9 +199,9 @@ class AdminWebsiteOpsTests(unittest.TestCase):
                 },
             )
             html = render_feedback_detail_page(settings, record["feedback_id"])
-            self.assertIn("Submit Review", html)
+            self.assertIn("Save decision", html)
             self.assertIn("inject_faq_block", html)
-            self.assertIn("Approve Recommendation", html)
+            self.assertIn("Approve recommendation", html)
             self.assertIn("Current state", html)
 
     def test_review_feedback_approve_autofills_supported_action(self) -> None:

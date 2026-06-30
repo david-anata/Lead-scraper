@@ -71,7 +71,7 @@ def _ar_form(*, action: str, values: dict | None = None, submit_label: str = "Sa
           {sel("category", _CATEGORIES)}
         </div>
         <div>
-          <label>Confidence</label>
+          <label>Source confidence</label>
           {sel("confidence", ["confirmed", "estimated"])}
         </div>
       </div>

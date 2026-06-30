@@ -299,7 +299,7 @@ class RenderPipelinePage(unittest.TestCase):
         row = self._make_pipeline_row()
         html = render_pipeline_page([row], user=None)
         self.assertIn("Blended MER", html)
-        self.assertIn("CM%", html)
+        self.assertIn("Contribution margin %", html)
 
     def test_renders_social_score(self) -> None:
         row = self._make_pipeline_row()

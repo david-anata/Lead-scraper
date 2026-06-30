@@ -45,14 +45,14 @@ class _NavSection:
 
 
 _NAV_SECTIONS = [
-    _NavSection("sales", "Sales Priorities", "sales", [
-        _NavSubpage("sales.priorities", "Sales Priorities", "/admin", "sales"),
-        _NavSubpage("sales.deals", "Sales Operator", "/admin/sales", "sales_operator"),
+    _NavSection("sales", "Sales", "sales", [
+        _NavSubpage("sales.priorities", "Priority Queue", "/admin", "sales"),
+        _NavSubpage("sales.deals", "Sales Control Room", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
-        _NavSubpage("sales.decks", "Generate sales deck", "/admin/sales-decks", "sales_decks"),
+        _NavSubpage("sales.decks", "Sales Assets", "/admin/sales-decks", "sales_decks"),
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
-        _NavSubpage("website_ops.seo", "SEO Dashboard", "/admin/website-ops", "seo_dashboard"),
+        _NavSubpage("website_ops.seo", "Overview", "/admin/website-ops", "seo_dashboard"),
         _NavSubpage("website_ops.queue", "Queue", "/admin/website-ops/queue", "queue"),
         _NavSubpage("website_ops.reports", "Reports", "/admin/website-ops/reports", "reports"),
     ]),

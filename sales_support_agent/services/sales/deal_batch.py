@@ -397,7 +397,7 @@ def render_batch_cleanup_page(
                     dot = _SEVERITY_DOT.get(action.severity, "")
                     cat_label = _CATEGORY_LABEL.get(action.category, action.category)
                     hs_link = (
-                        f'<a href="{_esc(action.link_url)}" target="_blank" class="hs-link">Fix in HubSpot →</a>'
+                        f'<a href="{_esc(action.link_url)}" target="_blank" class="hs-link">Fix in HubSpot -></a>'
                         if action.link_url else ""
                     )
                     low_html += f"""
@@ -418,7 +418,7 @@ def render_batch_cleanup_page(
                 deals_html += f"""
   <div class="low-flags">
     <button class="flags-toggle" type="button" onclick="toggleFlags(this)">
-      ▸ {len(low_actions)} hygiene flag{"s" if len(low_actions) != 1 else ""} (fix in HubSpot)
+      ▸ {len(low_actions)} manual HubSpot fix{"es" if len(low_actions) != 1 else ""}
     </button>
     <div class="flags-content" style="display:none">{low_html}</div>
   </div>"""
@@ -432,7 +432,7 @@ def render_batch_cleanup_page(
         toolbar_html = f"""
 <div class="toolbar">
   <button type="submit" class="btn btn--apply" id="apply-btn" disabled>
-    Apply selected (<span id="sel-count">0</span>)
+    Apply selected HubSpot updates (<span id="sel-count">0</span>)
   </button>
   <button type="button" class="btn btn--ghost" id="sel-all-btn">Select all ({total_mid_count})</button>
   <button type="button" class="btn btn--ghost btn--crit" id="sel-crit-btn">Select critical ({total_critical})</button>
@@ -445,7 +445,7 @@ def render_batch_cleanup_page(
   {deals_html}
   <div class="toolbar" style="margin-top:16px">
     <button type="submit" class="btn btn--apply" disabled
-      data-mirror="apply-btn">Apply selected (<span class="sel-count-mirror">0</span>)</button>
+      data-mirror="apply-btn">Apply selected HubSpot updates (<span class="sel-count-mirror">0</span>)</button>
   </div>
 </form>"""
     else:
@@ -459,7 +459,7 @@ def render_batch_cleanup_page(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>agent | Cleanup Queue</title>
+    <title>agent | HubSpot Fix Queue</title>
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
@@ -576,10 +576,10 @@ def render_batch_cleanup_page(
       <div class="workspace">
         <a href="/admin/sales/deals" class="back-link">← Deal Board</a>
         <p class="eyebrow">Sales — HubSpot</p>
-        <h1>Cleanup <span style="color:#3B7DD8">Queue.</span></h1>
+        <h1>HubSpot Fix <span style="color:#3B7DD8">Queue.</span></h1>
         <p class="intro">
-          All mid-confidence actions across your open deals — close dates, amounts, staleness, and review notes —
-          ready to push to HubSpot in one click. Flag items (⚑) need a manual fix directly in HubSpot.
+          All mid-confidence updates across your open deals: close dates, amounts, staleness, and review notes.
+          Apply selected updates in one click. Flag items need a manual fix directly in HubSpot.
         </p>
         {flash_html}
         {summary_html}

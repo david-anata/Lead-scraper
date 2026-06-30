@@ -265,7 +265,7 @@ class TestBatchCleanupRoutes(unittest.TestCase):
     def test_get_cleanup_page_renders(self):
         resp = self.client.get("/admin/sales/deals/cleanup")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("Cleanup", resp.text)
+        self.assertIn("HubSpot Fix", resp.text)
 
     def test_get_cleanup_page_shows_pending_actions(self):
         resp = self.client.get("/admin/sales/deals/cleanup")

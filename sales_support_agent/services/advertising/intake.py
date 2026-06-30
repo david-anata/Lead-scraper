@@ -33,10 +33,10 @@ KIND_LABELS = {
     KIND_BULK: "Ads bulk-operations file",
     KIND_ADS_REPORT: "Ads performance report",
     KIND_BUSINESS: "Business Report (Sales & Traffic)",
-    KIND_SQP: "Brand Analytics SQP",
+    KIND_SQP: "Search Query Performance (SQP)",
     KIND_DSP: "DSP performance",
     KIND_EXTERNAL: "External costs",
-    KIND_COGS: "Per-ASIN COGS",
+    KIND_COGS: "Unit costs by ASIN",
 }
 
 # What a real audit needs: at least one ads performance report (for the burn

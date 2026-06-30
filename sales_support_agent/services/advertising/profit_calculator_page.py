@@ -1169,7 +1169,7 @@ def render_profit_calculator_app_page(*, api_base: str, bulk_app_src: str = "/am
 
             <div class="apc-row apc-row-2">
               <div class="apc-field">
-                <label>ASIN</label>
+                <label>Product ASIN</label>
                 <div class="apc-inline-action">
                   <input type="text" data-field="asin" placeholder="B08N5WRWNW">
                   <button class="apc-button-secondary" type="button" data-action="lookup">Lookup ASIN</button>
@@ -1187,7 +1187,7 @@ def render_profit_calculator_app_page(*, api_base: str, bulk_app_src: str = "/am
                 <div class="apc-thumb" data-output-bg="lookupImage"></div>
               </div>
               <div class="apc-meta-card">
-                <span>Lookup Title</span>
+                <span>Listing title</span>
                 <strong data-output="lookupTitle">No ASIN loaded</strong>
                 <p data-output="lookupMeta">Use the live backend to pull product details.</p>
               </div>

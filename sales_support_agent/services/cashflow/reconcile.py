@@ -382,7 +382,7 @@ def _render_surprise_section(unmatched_posted: list[dict], today: date) -> str:
                      value="{html.escape(str(r.get("category","other")))}">
               <input type="hidden" name="amount_dollars"
                      value="{int(r.get("amount_cents",0))/100:.2f}">
-              <button type="submit" class="btn btn-secondary btn-sm">Track as Recurring</button>
+              <button type="submit" class="btn btn-secondary btn-sm">Track as recurring rule</button>
             </form>
           </td>
         </tr>"""
@@ -455,7 +455,7 @@ def _render_trend_section(patterns: list[RecurringPattern]) -> str:
                   <input type="hidden" name="avg_amount_cents"   value="{p.avg_amount_cents}">
                   <input type="hidden" name="frequency"          value="{html.escape(p.frequency)}">
                   <input type="hidden" name="next_expected"      value="{p.next_expected.isoformat()}">
-                  <button type="submit" class="btn btn-primary btn-sm">+ Add Template</button>
+                  <button type="submit" class="btn btn-primary btn-sm">+ Add recurring rule</button>
                 </form>"""
 
             out += f"""

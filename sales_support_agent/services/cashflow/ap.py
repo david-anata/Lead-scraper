@@ -88,7 +88,7 @@ def _obligation_form(
           {sel("category", _CATEGORIES)}
         </div>
         <div>
-          <label>Confidence</label>
+          <label>Source confidence</label>
           {sel("confidence", ["confirmed", "estimated"])}
         </div>
       </div>

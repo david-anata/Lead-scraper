@@ -918,7 +918,7 @@ def render_bulk_profitability_app_page(*, api_base: str) -> str:
 
           <div class="abu-actions">
             <button class="abu-button abu-button-secondary" type="button" data-action="reset">Reset</button>
-            <button class="abu-button abu-button-primary" type="button" data-action="run">Run Batch</button>
+            <button class="abu-button abu-button-primary" type="button" data-action="run">Generate profitability CSV</button>
           </div>
         </div>
 

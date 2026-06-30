@@ -132,7 +132,7 @@ class FulfillmentDashboardTests(unittest.TestCase):
                 response = client.get("/admin/fulfillment/cs/")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("Fulfillment CS", response.text)
-                self.assertIn("Candidate preview", response.text)
+                self.assertIn("Support thread preview", response.text)
                 self.assertIn("Unresolved", response.text)
 
                 response = client.get("/admin/fulfillment/cs/reports/")

@@ -511,7 +511,7 @@ def render_intake_guide(print_mode: bool = False) -> str:
   <p>
     <strong>Ready to submit?</strong> Upload your files at
     <a href="https://agent.anatainc.com/admin/executive/brand-analysis" target="_blank">agent.anatainc.com</a>
-    → Executive → Brand Analysis → New Analysis
+    → Executive → Brand Analysis → Start new analysis
   </p>
   <p style="margin-top:8px">
     <strong>Questions?</strong> Contact your Anata analyst or email

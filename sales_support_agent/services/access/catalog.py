@@ -25,10 +25,10 @@ class Tool:
 
 # Ordered; grouped by section. `access.manage` gates the RBAC admin UI itself.
 TOOL_CATALOG: tuple[Tool, ...] = (
-    Tool("sales.priorities", "Sales Priorities", "Sales Priorities", ("/admin",), exact=True),
-    Tool("sales.deals", "Sales Deal Board (HubSpot)", "Sales Priorities", ("/admin/sales/deals",)),
-    Tool("sales.decks", "Generate sales deck", "Sales Priorities", ("/admin/sales-decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
-    Tool("website_ops.seo", "SEO Dashboard", "Website Ops", ("/admin/website-ops", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),
+    Tool("sales.priorities", "Priority Queue", "Sales", ("/admin",), exact=True),
+    Tool("sales.deals", "Deal Board", "Sales", ("/admin/sales/deals",)),
+    Tool("sales.decks", "Sales Assets", "Sales", ("/admin/sales-decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
+    Tool("website_ops.seo", "Overview", "Website Ops", ("/admin/website-ops", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),
     Tool("website_ops.queue", "Queue", "Website Ops", ("/admin/website-ops/queue", "/admin/website-ops/feedback", "/admin/api/website-ops/feedback")),
     Tool("website_ops.reports", "Reports", "Website Ops", ("/admin/website-ops/reports",)),
     Tool("finance", "Finance", "Finance", ("/admin/finances",)),
@@ -44,7 +44,7 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     # though hr.access covers the broader /admin/hr.
     Tool("hr.access", "HR — people, time & reports", "HR", ("/admin/hr",)),
     Tool("hr.payroll", "HR — run payroll & settings", "HR", ("/admin/hr/payroll", "/admin/hr/settings")),
-    Tool("access.manage", "Access admin (users & roles)", "Access", ("/admin/access",)),
+    Tool("access.manage", "People and access", "Access", ("/admin/access",)),
 )
 
 ALL_TOOL_KEYS: frozenset = frozenset(t.key for t in TOOL_CATALOG)

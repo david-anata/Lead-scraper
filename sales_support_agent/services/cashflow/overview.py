@@ -1085,11 +1085,11 @@ document.addEventListener('DOMContentLoaded', loadDailyChart);
     </div>
     <div class="action-row" style="margin-top:0">
       <form method="post" action="/admin/finances/sync-qbo" style="display:inline">
-        <button type="submit" class="btn btn-primary">⟳ Sync All (QBO + ClickUp)</button>
+        <button type="submit" class="btn btn-primary">Refresh finance data (QuickBooks + ClickUp)</button>
       </form>
       <a href="/admin/finances/ap/new" class="btn btn-secondary">+ Add Payable</a>
       <a href="/admin/finances/ar/new" class="btn btn-secondary">+ Add Receivable</a>
-      <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring Templates</a>
+      <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring rules</a>
       <a href="/admin/finances/reconcile" class="btn btn-secondary">Actuals vs Planned</a>
       <a href="/admin/finances/upload" class="btn btn-secondary btn-sm" style="opacity:0.6" title="Manual CSV upload (fallback)">Upload CSV</a>
     </div>"""
