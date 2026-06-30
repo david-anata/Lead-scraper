@@ -52,8 +52,14 @@ def _fake_options() -> DealCreateOptions:
             ),
         ),
         owners=(SelectOption("owner1", "David Narayan", "david@anatainc.com | owner1"),),
-        companies=(SelectOption("company1", "Anata", "anatainc.com | company1"),),
-        contacts=(SelectOption("contact1", "Maya Lee", "maya@anatainc.com | contact1"),),
+        companies=(
+            SelectOption("company1", "Anata", "anatainc.com | company1"),
+            SelectOption("company_toothy", "My Friend Toothy", "myfriendtoothy.com | company_toothy"),
+        ),
+        contacts=(
+            SelectOption("contact1", "Maya Lee", "maya@anatainc.com | contact1"),
+            SelectOption("contact_toothy", "Jamie Buyer", "jamie@myfriendtoothy.com | contact_toothy"),
+        ),
         service_lines=(SelectOption("fulfillment", "Fulfillment"), SelectOption("marketing", "Marketing")),
         lead_sources=(SelectOption("agent", "Agent"), SelectOption("website", "Website")),
     )
@@ -125,6 +131,22 @@ class SalesDealCreateRouteTests(unittest.TestCase):
         self.assertIn('value="123"', body)
         self.assertIn('<option value="company1" selected>', body)
         self.assertIn('<option value="contact1" selected>', body)
+
+    def test_create_form_audits_accessible_company_and_contact_matches(self) -> None:
+        resp = self.client.get(
+            "/admin/sales/deals/create"
+            "?dealname=My+Friend+Toothy+Fulfillment"
+            "&company_name=My+Friend+Toothy"
+            "&company_domain=myfriendtoothy.com"
+            "&contact_email=jamie@myfriendtoothy.com"
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.text
+        self.assertIn("Access audit", body)
+        self.assertIn("Company auto-selected", body)
+        self.assertIn("Contact auto-selected", body)
+        self.assertIn('<option value="company_toothy" selected>', body)
+        self.assertIn('<option value="contact_toothy" selected>', body)
 
     def test_create_validates_rules_before_hubspot_call(self) -> None:
         object.__setattr__(self.settings, "hubspot_api_token", "test-token")

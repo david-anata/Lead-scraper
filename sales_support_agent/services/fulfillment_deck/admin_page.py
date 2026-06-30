@@ -1244,6 +1244,8 @@ def _create_deal_href(run_id: int, summary: dict, profile: dict) -> str:
     prospect = str(summary.get("prospect") or summary.get("design_title") or profile.get("company") or "").strip()
     deal_name = f"{prospect} Fulfillment" if prospect else "Fulfillment Deal"
     company_id = str(summary.get("hubspot_company_id") or "").strip()
+    company_name = str(profile.get("company") or profile.get("brand") or prospect).strip()
+    company_domain = str(profile.get("website") or summary.get("company_domain") or "").strip()
     contact_ids = summary.get("hubspot_contact_ids") or []
     if isinstance(contact_ids, str):
         contact_id = contact_ids.split(",", 1)[0].strip()
@@ -1257,6 +1259,11 @@ def _create_deal_href(run_id: int, summary: dict, profile: dict) -> str:
         "anata_lead_source_detail": "agent",
         "hubspot_company_id": company_id,
         "hubspot_contact_id": contact_id,
+        "company_name": company_name,
+        "company_domain": company_domain,
+        "brand": str(profile.get("brand") or prospect).strip(),
+        "contact_name": str(profile.get("contact_name") or "").strip(),
+        "contact_email": str(profile.get("contact_email") or "").strip(),
         "return_to": f"/admin/fulfillment/sales/runs/{run_id}/review",
         "rate_sheet_run_id": str(run_id),
     }

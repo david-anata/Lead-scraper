@@ -178,6 +178,52 @@ def _safe_internal_return_path(value: object) -> str:
     return path
 
 
+def _normalize_lookup(value: object) -> str:
+    chars = []
+    for char in str(value or "").lower():
+        chars.append(char if char.isalnum() else " ")
+    return " ".join("".join(chars).split())
+
+
+def _domain_lookup(value: object) -> str:
+    raw = str(value or "").lower().strip()
+    raw = raw.removeprefix("https://").removeprefix("http://").removeprefix("www.")
+    raw = raw.split("/", 1)[0].split("?", 1)[0].strip()
+    return raw.removeprefix("www.")
+
+
+def _deal_company_candidate(value: object) -> str:
+    text = str(value or "")
+    for suffix in (" fulfillment", " rate sheet", " 3pl", " deal"):
+        if text.lower().endswith(suffix):
+            text = text[: -len(suffix)]
+    return text.strip()
+
+
+def _option_text(option: SelectOption) -> str:
+    return f"{option.label} {option.detail} {option.value}".strip()
+
+
+def _match_option_by_context(options: tuple[SelectOption, ...], *, name: str = "", domain: str = "", email: str = "") -> tuple[str, str]:
+    domain = _domain_lookup(domain)
+    email = str(email or "").lower().strip()
+    name_norm = _normalize_lookup(name)
+    if domain:
+        for option in options:
+            if domain in _option_text(option).lower():
+                return option.value, f"matched {option.label} by domain {domain}"
+    if email:
+        for option in options:
+            if email in _option_text(option).lower():
+                return option.value, f"matched {option.label} by email {email}"
+    if len(name_norm) >= 3:
+        for option in options:
+            option_norm = _normalize_lookup(_option_text(option))
+            if name_norm in option_norm:
+                return option.value, f"matched {option.label} by name {name}"
+    return "", ""
+
+
 async def _deal_create_payload(request: Request) -> dict[str, Any]:
     if "application/json" in request.headers.get("content-type", ""):
         payload = await request.json()
@@ -268,6 +314,47 @@ def _render_create_deal_page(
 
     return_to = _safe_internal_return_path(raw("return_to"))
     rate_sheet_run_id = raw("rate_sheet_run_id")
+    company_context = raw("company_name") or raw("brand") or raw("prospect") or _deal_company_candidate(raw("dealname"))
+    company_domain = raw("company_domain") or raw("website") or raw("website_url")
+    contact_context = raw("contact_name")
+    contact_email = raw("contact_email")
+
+    selected_company_value = raw("company_id") or raw("hubspot_company_id")
+    selected_contact_value = raw("contact_id") or raw("hubspot_contact_id")
+    company_audit = ""
+    contact_audit = ""
+    if not selected_company_value:
+        selected_company_value, company_audit = _match_option_by_context(
+            options.companies,
+            name=company_context,
+            domain=company_domain,
+        )
+    if not selected_contact_value:
+        selected_contact_value, contact_audit = _match_option_by_context(
+            options.contacts,
+            name=contact_context,
+            email=contact_email,
+        )
+    audit_items = []
+    if selected_company_value and company_audit:
+        audit_items.append(f"Company auto-selected: {company_audit}.")
+    elif company_context or company_domain:
+        audit_items.append("Company not auto-selected: no accessible HubSpot company matched the rate sheet context.")
+    if selected_contact_value and contact_audit:
+        audit_items.append(f"Contact auto-selected: {contact_audit}.")
+    elif contact_context or contact_email:
+        audit_items.append("Contact not auto-selected: no accessible HubSpot contact matched the rate sheet context.")
+    audit_html = (
+        '<div class="flash flash--soft"><strong>Access audit</strong><ul>'
+        + "".join(f"<li>{_esc(item)}</li>" for item in audit_items)
+        + "</ul></div>"
+        if audit_items else ""
+    )
+    context_hidden = "".join(
+        f'<input type="hidden" name="{key}" value="{_esc(raw(key))}">'
+        for key in ("company_name", "company_domain", "website", "website_url", "brand", "prospect", "contact_name", "contact_email")
+        if raw(key)
+    )
 
     fallback_pipeline = settings.hubspot_sales_pipeline_id or "default"
     selected_pipeline = raw("pipeline") or fallback_pipeline
@@ -317,14 +404,14 @@ def _render_create_deal_page(
         field_id="company_id",
         name="company_id",
         options=options.companies,
-        selected=raw("company_id") or raw("hubspot_company_id"),
+        selected=selected_company_value,
         placeholder="company",
     )
     contact_select = _select_html(
         field_id="contact_id",
         name="contact_id",
         options=options.contacts,
-        selected=raw("contact_id") or raw("hubspot_contact_id"),
+        selected=selected_contact_value,
         placeholder="contact",
     )
     pipeline_stage_data = {
@@ -368,9 +455,11 @@ def _render_create_deal_page(
         <p class="intro">Creates a HubSpot deal only after validating required fields and company/contact associations from <code>config/hubspot_sales_rules.json</code>.</p>
         {error_html}
         {warning_html}
+        {audit_html}
         <form method="post" action="/admin/sales/deals/create">
           <input type="hidden" name="return_to" value="{_esc(return_to)}">
           <input type="hidden" name="rate_sheet_run_id" value="{_esc(rate_sheet_run_id)}">
+          {context_hidden}
           <label for="dealname">Deal name</label>
           <input id="dealname" name="dealname" value="{v('dealname')}" required>
           <div class="grid">
