@@ -117,6 +117,50 @@ def _deal_not_found_page(request: Request) -> str:
 </html>"""
 
 
+def _render_sales_operator_unavailable(request: Request, message: str) -> str:
+    from sales_support_agent.services.admin_nav import (
+        render_agent_favicon_links,
+        render_agent_nav,
+        render_agent_nav_styles,
+    )
+    nav_styles = render_agent_nav_styles()
+    nav = render_agent_nav("sales", sales_section="sales_operator", user=get_current_user(request))
+    favicons = render_agent_favicon_links()
+    safe_message = html.escape(str(message or "Sales Control Room is temporarily unavailable."))
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>agent | Sales Control Room Unavailable</title>
+    {favicons}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {{--dark-blue:#2B3644;--light-brown:#F9F7F3;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);--white:#FFF;}}
+      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
+      a{{color:var(--dark-blue);}}
+      {nav_styles}
+      .shell{{max-width:1180px;margin:0 auto;padding:48px 18px;}}
+      .workspace{{background:var(--white);border:1px solid var(--border);border-radius:20px;box-shadow:0 18px 40px var(--shadow);padding:32px 28px;}}
+      h1{{font-family:"Montserrat",sans-serif;font-weight:800;font-size:24px;margin:0 0 10px;}}
+      .note{{margin:16px 0 0;padding:14px 16px;border-radius:14px;background:rgba(133,187,218,0.14);border:1px solid rgba(43,54,68,0.08);}}
+    </style>
+  </head>
+  <body>
+    {nav}
+    <main class="shell">
+      <div class="workspace">
+        <h1>Sales Control Room unavailable</h1>
+        <p style="color:rgba(43,54,68,0.7)">The HubSpot-backed sales operator layer could not load right now. The rest of the admin workspace is still available.</p>
+        <div class="note">{safe_message}</div>
+        <p style="margin-top:18px"><a href="/admin/settings">Open settings</a> · <a href="/admin/sales/deals">Open deal board</a></p>
+      </div>
+    </main>
+  </body>
+</html>"""
+
+
 def _esc(value: object) -> str:
     return html.escape(str(value or ""))
 
@@ -411,15 +455,23 @@ def _sales_settings(request: Request):
 @router.get("/", response_class=HTMLResponse)
 def sales_operator(request: Request) -> HTMLResponse:
     settings = _sales_settings(request)
-    snapshot = get_operator_snapshot(settings, session_factory=request.app.state.session_factory)
-    return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request)))
+    try:
+        snapshot = get_operator_snapshot(settings, session_factory=request.app.state.session_factory)
+        return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request)))
+    except Exception as exc:  # noqa: BLE001 - this route should surface blockers, not 500
+        logger.exception("Sales operator page failed")
+        return HTMLResponse(_render_sales_operator_unavailable(request, str(exc)), status_code=503)
 
 
 @router.get("/snapshot")
 def sales_operator_snapshot(request: Request) -> JSONResponse:
     settings = _sales_settings(request)
-    snapshot = get_operator_snapshot(settings, session_factory=request.app.state.session_factory, force_refresh=True)
-    return JSONResponse({"ok": True, "snapshot": snapshot})
+    try:
+        snapshot = get_operator_snapshot(settings, session_factory=request.app.state.session_factory, force_refresh=True)
+        return JSONResponse({"ok": True, "snapshot": snapshot})
+    except Exception as exc:  # noqa: BLE001 - expose the setup/runtime blocker in JSON
+        logger.exception("Sales operator snapshot failed")
+        return JSONResponse({"ok": False, "error": str(exc) or "Sales operator unavailable."}, status_code=503)
 
 
 @router.post("/writeback")
@@ -433,19 +485,23 @@ def sales_operator_writeback(
         parsed_limit = int(limit)
     except ValueError:
         parsed_limit = 10
-    result = run_writeback(
-        settings,
-        session_factory=request.app.state.session_factory,
-        mode=("apply" if mode == "apply" else "preview"),
-        limit=parsed_limit,
-    )
-    snapshot = get_operator_snapshot(
-        settings,
-        session_factory=request.app.state.session_factory,
-        force_refresh=(mode == "apply"),
-    )
-    message = "High-confidence sales write-back actions were applied." if mode == "apply" else "Sales write-back preview generated."
-    return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request), writeback=result, status_message=message))
+    try:
+        result = run_writeback(
+            settings,
+            session_factory=request.app.state.session_factory,
+            mode=("apply" if mode == "apply" else "preview"),
+            limit=parsed_limit,
+        )
+        snapshot = get_operator_snapshot(
+            settings,
+            session_factory=request.app.state.session_factory,
+            force_refresh=(mode == "apply"),
+        )
+        message = "High-confidence sales write-back actions were applied." if mode == "apply" else "Sales write-back preview generated."
+        return HTMLResponse(render_operator_page(snapshot, user=get_current_user(request), writeback=result, status_message=message))
+    except Exception as exc:  # noqa: BLE001 - surface the blocker in-page instead of 500ing
+        logger.exception("Sales operator write-back failed")
+        return HTMLResponse(_render_sales_operator_unavailable(request, str(exc)), status_code=503)
 
 
 @router.get("/deals/create", response_class=HTMLResponse)
