@@ -933,26 +933,34 @@ def render_fulfillment_sales_page(
       }});
     }}
     function pipelineCosts(btn, runId) {{
+      function costVal(id) {{
+        var el = document.getElementById(id + '-' + runId);
+        if (!el) return null;
+        var raw = String(el.value || '').trim();
+        if (raw === '') return null;
+        var parsed = parseFloat(raw);
+        return Number.isFinite(parsed) ? parsed : null;
+      }}
       var costs = {{
-        pick_pack_per_order:  parseFloat(document.getElementById('pp-'+runId).value) || null,
-        pick_pack_additional_item: parseFloat(document.getElementById('ppi-'+runId).value) || null,
-        storage_per_pallet_mo: parseFloat(document.getElementById('st-'+runId).value) || null,
-        storage_cubic_foot_mo: parseFloat(document.getElementById('scf-'+runId).value) || null,
-        receiving_precounted_box: parseFloat(document.getElementById('rcb-'+runId).value) || null,
-        receiving_count_per_item: parseFloat(document.getElementById('rci-'+runId).value) || null,
-        receiving_per_pallet: parseFloat(document.getElementById('rc-'+runId).value) || null,
-        monthly_tech_fee:     parseFloat(document.getElementById('tf-'+runId).value) || null,
-        customer_service_monthly: parseFloat(document.getElementById('cs-'+runId).value) || null,
-        pallet_order_per_pallet: parseFloat(document.getElementById('po-'+runId).value) || null,
-        kitting_per_item: parseFloat(document.getElementById('kit-'+runId).value) || null,
-        labeling_per_item: parseFloat(document.getElementById('lab-'+runId).value) || null,
-        bagging_labeling_per_item: parseFloat(document.getElementById('bag-'+runId).value) || null,
-        returns_units_mo: parseFloat(document.getElementById('ru-'+runId).value) || null,
-        returns_receive_per_unit: parseFloat(document.getElementById('rr-'+runId).value) || null,
-        returns_examination_per_unit: parseFloat(document.getElementById('re-'+runId).value) || null,
-        returns_custom_steps_per_unit: parseFloat(document.getElementById('rs-'+runId).value) || null,
-        special_project_hours_mo: parseFloat(document.getElementById('sph-'+runId).value) || null,
-        special_projects_per_hour: parseFloat(document.getElementById('spr-'+runId).value) || null,
+        pick_pack_per_order: costVal('pp'),
+        pick_pack_additional_item: costVal('ppi'),
+        storage_per_pallet_mo: costVal('st'),
+        storage_cubic_foot_mo: costVal('scf'),
+        receiving_precounted_box: costVal('rcb'),
+        receiving_count_per_item: costVal('rci'),
+        receiving_per_pallet: costVal('rc'),
+        monthly_tech_fee: costVal('tf'),
+        customer_service_monthly: costVal('cs'),
+        pallet_order_per_pallet: costVal('po'),
+        kitting_per_item: costVal('kit'),
+        labeling_per_item: costVal('lab'),
+        bagging_labeling_per_item: costVal('bag'),
+        returns_units_mo: costVal('ru'),
+        returns_receive_per_unit: costVal('rr'),
+        returns_examination_per_unit: costVal('re'),
+        returns_custom_steps_per_unit: costVal('rs'),
+        special_project_hours_mo: costVal('sph'),
+        special_projects_per_hour: costVal('spr'),
       }};
       btn.textContent = 'Saving…';
       fetch('/admin/fulfillment/sales/runs/' + runId + '/costs', {{
@@ -1501,6 +1509,10 @@ def render_rate_sheet_review_page(
         shown = sum(vals) if len(vals) > 1 else vals[0]
         return f'<span class="hint">{_esc(label)}: {_fmt_rate(shown)}. Customer fee should cover this plus sales margin.</span>'
 
+    def _aval(key: str) -> str:
+        v = _actual_costs.get(key)
+        return f"{float(v):g}" if v is not None else ""
+
     rate_card_note_val = _esc(str(summary.get("rate_card_note") or ""))
 
     status_label = "Published" if published else "Draft — not publicly visible yet"
@@ -1592,6 +1604,94 @@ def render_rate_sheet_review_page(
                 <label for="quote_margin_override">Quote margin override %</label>
                 <input type="number" id="quote_margin_override" name="quote_margin_override" step="any" min="0" value="{_esc(margin_value)}">
                 <span class="hint">Blank = automatic by product category. e.g. 12 quotes everything at baseline × 1.12.</span>
+              </div>
+            </div>
+          </div>
+
+          <h2>Internal Fulfillment Costs</h2>
+          <p class="muted" style="margin-bottom:12px">Internal warehouse costs used for gross-to-net margin. These are not shown to the prospect. Saving this page now saves these costs too.</p>
+          <input type="hidden" name="actual_costs_form" value="1">
+          <div class="edit-grid">
+            <div class="edit-col">
+              <div class="field">
+                <label for="actual_pick_pack_per_order">Fulfillment cost: DTC pick &amp; pack / order</label>
+                <input type="number" id="actual_pick_pack_per_order" name="actual_pick_pack_per_order" step="0.01" min="0" value="{_aval('pick_pack_per_order')}" placeholder="{BASELINE_RATES['dtc_base_per_order']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_pick_pack_additional_item">Fulfillment cost: DTC additional item</label>
+                <input type="number" id="actual_pick_pack_additional_item" name="actual_pick_pack_additional_item" step="0.01" min="0" value="{_aval('pick_pack_additional_item')}" placeholder="{BASELINE_RATES['dtc_additional_item']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_storage_per_pallet_mo">Fulfillment cost: storage / pallet/mo</label>
+                <input type="number" id="actual_storage_per_pallet_mo" name="actual_storage_per_pallet_mo" step="0.01" min="0" value="{_aval('storage_per_pallet_mo')}" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_storage_cubic_foot_mo">Fulfillment cost: storage / cubic foot/mo</label>
+                <input type="number" id="actual_storage_cubic_foot_mo" name="actual_storage_cubic_foot_mo" step="0.01" min="0" value="{_aval('storage_cubic_foot_mo')}" placeholder="{BASELINE_RATES['storage_cubic_foot_mo']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_monthly_tech_fee">Fulfillment cost: monthly tech fee</label>
+                <input type="number" id="actual_monthly_tech_fee" name="actual_monthly_tech_fee" step="0.01" min="0" value="{_aval('monthly_tech_fee')}" placeholder="{BASELINE_RATES['monthly_tech_fee']:g}">
+              </div>
+            </div>
+            <div class="edit-col">
+              <div class="field">
+                <label for="actual_receiving_precounted_box">Fulfillment cost: receiving pre-counted box</label>
+                <input type="number" id="actual_receiving_precounted_box" name="actual_receiving_precounted_box" step="0.01" min="0" value="{_aval('receiving_precounted_box')}" placeholder="{BASELINE_RATES['receiving_precounted_box']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_receiving_count_per_item">Fulfillment cost: receiving counted item</label>
+                <input type="number" id="actual_receiving_count_per_item" name="actual_receiving_count_per_item" step="0.01" min="0" value="{_aval('receiving_count_per_item')}" placeholder="{BASELINE_RATES['receiving_count_per_item']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_customer_service_monthly">Fulfillment cost: customer service / month</label>
+                <input type="number" id="actual_customer_service_monthly" name="actual_customer_service_monthly" step="0.01" min="0" value="{_aval('customer_service_monthly')}" placeholder="{BASELINE_RATES['customer_service_monthly']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_kitting_per_item">Fulfillment cost: kitting / item</label>
+                <input type="number" id="actual_kitting_per_item" name="actual_kitting_per_item" step="0.01" min="0" value="{_aval('kitting_per_item')}" placeholder="{BASELINE_RATES['kitting_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_labeling_per_item">Fulfillment cost: labeling / item</label>
+                <input type="number" id="actual_labeling_per_item" name="actual_labeling_per_item" step="0.01" min="0" value="{_aval('labeling_per_item')}" placeholder="{BASELINE_RATES['labeling_per_unit']:g}">
+              </div>
+            </div>
+          </div>
+          <div class="edit-grid">
+            <div class="edit-col">
+              <div class="field">
+                <label for="actual_bagging_labeling_per_item">Fulfillment cost: bagging + labeling / item</label>
+                <input type="number" id="actual_bagging_labeling_per_item" name="actual_bagging_labeling_per_item" step="0.01" min="0" value="{_aval('bagging_labeling_per_item')}" placeholder="{BASELINE_RATES['bagging_labeling_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_pallet_order_per_pallet">Fulfillment cost: pallet orders / pallet</label>
+                <input type="number" id="actual_pallet_order_per_pallet" name="actual_pallet_order_per_pallet" step="0.01" min="0" value="{_aval('pallet_order_per_pallet')}" placeholder="{BASELINE_RATES['pallet_order_per_pallet']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_returns_units_mo">Returns units / month</label>
+                <input type="number" id="actual_returns_units_mo" name="actual_returns_units_mo" step="1" min="0" value="{_aval('returns_units_mo')}" placeholder="0">
+              </div>
+              <div class="field">
+                <label for="actual_returns_receive_per_unit">Fulfillment cost: return receive / unit</label>
+                <input type="number" id="actual_returns_receive_per_unit" name="actual_returns_receive_per_unit" step="0.01" min="0" value="{_aval('returns_receive_per_unit')}" placeholder="{BASELINE_RATES['returns_receive_per_unit']:g}">
+              </div>
+            </div>
+            <div class="edit-col">
+              <div class="field">
+                <label for="actual_returns_examination_per_unit">Fulfillment cost: return examination / unit</label>
+                <input type="number" id="actual_returns_examination_per_unit" name="actual_returns_examination_per_unit" step="0.01" min="0" value="{_aval('returns_examination_per_unit')}" placeholder="{BASELINE_RATES['returns_examination_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_returns_custom_steps_per_unit">Fulfillment cost: return custom steps / unit</label>
+                <input type="number" id="actual_returns_custom_steps_per_unit" name="actual_returns_custom_steps_per_unit" step="0.01" min="0" value="{_aval('returns_custom_steps_per_unit')}" placeholder="{BASELINE_RATES['returns_custom_steps_per_unit']:g}">
+              </div>
+              <div class="field">
+                <label for="actual_special_project_hours_mo">Special project hours / month</label>
+                <input type="number" id="actual_special_project_hours_mo" name="actual_special_project_hours_mo" step="0.25" min="0" value="{_aval('special_project_hours_mo')}" placeholder="0">
+              </div>
+              <div class="field">
+                <label for="actual_special_projects_per_hour">Fulfillment cost: special projects / hour</label>
+                <input type="number" id="actual_special_projects_per_hour" name="actual_special_projects_per_hour" step="0.01" min="0" value="{_aval('special_projects_per_hour')}" placeholder="{BASELINE_RATES['special_projects_per_hour']:g}">
               </div>
             </div>
           </div>

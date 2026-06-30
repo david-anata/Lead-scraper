@@ -407,6 +407,12 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
                 "origin_zip": "84043",
                 "rate_pick_pack": "2",
                 "rate_additional_item": "0.50",
+                "actual_costs_form": "1",
+                "actual_pick_pack_per_order": "0.80",
+                "actual_pick_pack_additional_item": "0.15",
+                "actual_storage_per_pallet_mo": "30",
+                "actual_monthly_tech_fee": "50",
+                "actual_customer_service_monthly": "0",
                 "sales_pricing_reviewed": "1",
                 "product_name": ["Widget"],
                 "product_length": ["6"],
@@ -421,25 +427,36 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         summary = dict(storage.get_run(run["id"]).summary_json)
         self.assertEqual(summary["rate_overrides"]["dtc_base_per_order"], 2.0)
+        self.assertEqual(summary["fulfillment_actual_costs"]["pick_pack_per_order"], 0.80)
+        self.assertEqual(summary["fulfillment_actual_costs"]["customer_service_monthly"], 0.0)
         pick_pack = next(line for line in summary["fulfillment_quote"]["lines"] if line.get("key") == "pick_pack")
         self.assertGreaterEqual(float(pick_pack["rate"]), 2.0)
 
-        storage.update_costs(
-            run["id"],
-            {
-                "pick_pack_per_order": 0.80,
-                "pick_pack_additional_item": 0.15,
-                "storage_per_pallet_mo": 30.0,
-                "monthly_tech_fee": 50.0,
-            },
-        )
         review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
         self.assertEqual(review.status_code, 200)
         self.assertIn("Pricing definitions", review.text)
         self.assertIn("Customer-facing monthly estimate", review.text)
         self.assertIn("Estimated monthly net margin", review.text)
+        self.assertIn("Internal Fulfillment Costs", review.text)
+        self.assertIn('name="actual_pick_pack_per_order"', review.text)
         self.assertIn("Fulfillment pick &amp; pack cost", review.text)
         self.assertIn("Customer fee: DTC pick &amp; pack / order", review.text)
+
+    def test_pipeline_cost_save_preserves_zero_values(self) -> None:
+        run = self._generate_published()
+        response = self.client.patch(
+            f"{_BASE}/runs/{run['id']}/costs",
+            json={
+                "pick_pack_per_order": 0,
+                "monthly_tech_fee": 0,
+                "storage_per_pallet_mo": 30,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(summary["fulfillment_actual_costs"]["pick_pack_per_order"], 0.0)
+        self.assertEqual(summary["fulfillment_actual_costs"]["monthly_tech_fee"], 0.0)
+        self.assertEqual(summary["fulfillment_actual_costs"]["storage_per_pallet_mo"], 30.0)
 
     def test_review_page_shows_volume_basis_hint(self) -> None:
         run = self._generate()

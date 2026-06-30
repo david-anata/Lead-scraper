@@ -318,6 +318,26 @@ def update_run(
     waiver_reason: str = Form(default=""),
     sales_pricing_reviewed: str = Form(default=""),
     margin_approved: str = Form(default=""),
+    actual_costs_form: str = Form(default=""),
+    actual_pick_pack_per_order: str = Form(default=""),
+    actual_pick_pack_additional_item: str = Form(default=""),
+    actual_storage_per_pallet_mo: str = Form(default=""),
+    actual_storage_cubic_foot_mo: str = Form(default=""),
+    actual_receiving_precounted_box: str = Form(default=""),
+    actual_receiving_count_per_item: str = Form(default=""),
+    actual_receiving_per_pallet: str = Form(default=""),
+    actual_monthly_tech_fee: str = Form(default=""),
+    actual_customer_service_monthly: str = Form(default=""),
+    actual_pallet_order_per_pallet: str = Form(default=""),
+    actual_kitting_per_item: str = Form(default=""),
+    actual_labeling_per_item: str = Form(default=""),
+    actual_bagging_labeling_per_item: str = Form(default=""),
+    actual_returns_units_mo: str = Form(default=""),
+    actual_returns_receive_per_unit: str = Form(default=""),
+    actual_returns_examination_per_unit: str = Form(default=""),
+    actual_returns_custom_steps_per_unit: str = Form(default=""),
+    actual_special_project_hours_mo: str = Form(default=""),
+    actual_special_projects_per_hour: str = Form(default=""),
 ) -> RedirectResponse:
     removed = {str(idx).strip() for idx in product_remove or []}
 
@@ -376,6 +396,32 @@ def update_run(
             row["customer_price"] = 0
         fee_rows.append(row)
 
+    actual_cost_fields = {
+        "pick_pack_per_order": actual_pick_pack_per_order,
+        "pick_pack_additional_item": actual_pick_pack_additional_item,
+        "storage_per_pallet_mo": actual_storage_per_pallet_mo,
+        "storage_cubic_foot_mo": actual_storage_cubic_foot_mo,
+        "receiving_precounted_box": actual_receiving_precounted_box,
+        "receiving_count_per_item": actual_receiving_count_per_item,
+        "receiving_per_pallet": actual_receiving_per_pallet,
+        "monthly_tech_fee": actual_monthly_tech_fee,
+        "customer_service_monthly": actual_customer_service_monthly,
+        "pallet_order_per_pallet": actual_pallet_order_per_pallet,
+        "kitting_per_item": actual_kitting_per_item,
+        "labeling_per_item": actual_labeling_per_item,
+        "bagging_labeling_per_item": actual_bagging_labeling_per_item,
+        "returns_units_mo": actual_returns_units_mo,
+        "returns_receive_per_unit": actual_returns_receive_per_unit,
+        "returns_examination_per_unit": actual_returns_examination_per_unit,
+        "returns_custom_steps_per_unit": actual_returns_custom_steps_per_unit,
+        "special_project_hours_mo": actual_special_project_hours_mo,
+        "special_projects_per_hour": actual_special_projects_per_hour,
+    }
+    actual_costs = {
+        key: _opt_float(raw)
+        for key, raw in actual_cost_fields.items()
+    }
+
     settings = load_settings()
     hubspot_deal_id = (hubspot_deal_id_manual or hubspot_deal_id or "").strip()
     hubspot_deal_url = ""
@@ -406,6 +452,8 @@ def update_run(
     }
     try:
         result = apply_profile_edits(run_id, edits, settings=settings)
+        if actual_costs_form == "1":
+            storage.update_costs(run_id, actual_costs)
         if hubspot_deal_id:
             try:
                 from sqlalchemy.orm import Session
