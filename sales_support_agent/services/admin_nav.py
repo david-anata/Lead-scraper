@@ -70,10 +70,10 @@ _NAV_SECTIONS = [
         _NavSubpage("executive.brand_analysis", "Brand Analysis", "/admin/executive/brand-analysis", "brand_analysis"),
     ]),
     _NavSection("fulfillment", "Fulfillment", "fulfillment", [
-        _NavSubpage("fulfillment.rate_sheets", "Prospects", "/admin/fulfillment/sales", "fulfillment_sales"),
+        _NavSubpage("fulfillment.rate_sheets", "Rate Sheets", "/admin/fulfillment/sales", "fulfillment_sales"),
         _NavSubpage("fulfillment.dashboard", "CS Dashboard", "/admin/fulfillment/cs/", "fulfillment_dashboard"),
         _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
-        _NavSubpage("fulfillment.reports", "Latest", "/admin/fulfillment/cs/reports/latest", "fulfillment_latest"),
+        _NavSubpage("fulfillment.reports", "Latest Report", "/admin/fulfillment/cs/reports/latest", "fulfillment_latest"),
     ]),
     _NavSection("hr", "HR", "hr", [
         _NavSubpage("hr.access", "HR", "/admin/hr", "hr"),
@@ -259,6 +259,22 @@ def render_agent_nav_styles() -> str:
       .topbar-divider {
         height: 1px;
         background: linear-gradient(90deg, rgba(43, 54, 68, 0.10) 0%, rgba(43, 54, 68, 0.04) 100%);
+      }
+      .topbar-section-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding-top: 2px;
+        overflow-x: auto;
+      }
+      .topbar-section-label {
+        font-family: "Montserrat", sans-serif;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(43, 54, 68, 0.48);
+        white-space: nowrap;
       }
       /* User chip + dropdown */
       .user-chip {
@@ -464,7 +480,7 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </div>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
     # Per-tool nav filtering. When neither permissions nor is_superadmin is
     # supplied, we keep the legacy "show everything" behaviour (the routes
     # themselves are still guarded server-side). The Access admin link is the
@@ -491,6 +507,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "advertising"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"
+    if active in {"fulfillment", "fulfillment_sales", "fulfillment_dashboard", "fulfillment_reports", "fulfillment_latest"}:
+        primary_active = "fulfillment"
     if active in {"access", "access_users", "access_roles", "access_invites", "access_requests"}:
         primary_active = "access"
     if active == "hr" or active.startswith("hr_"):
@@ -505,11 +523,14 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         "advertising": advertising_section or ("advertising_audit" if active == "advertising" else active),
         "executive": executive_section or ("executive" if active == "executive" else active),
         "finance": active,
-        "fulfillment": active,
+        "fulfillment": fulfillment_section or (website_ops_section if website_ops_section.startswith("fulfillment_") else "") or ("fulfillment_sales" if active == "fulfillment" else active),
         "hr": active,
     }
 
     nav_items: list = []
+    active_section_label = ""
+    active_section_subpages: list = []
+    active_section_current = ""
     for section in _NAV_SECTIONS:
         accessible = [
             sp for sp in section.subpages
@@ -521,6 +542,10 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         is_primary_active = primary_active == section.primary_active
         primary_href = accessible[0].href  # first page the user can actually open
         current = _current_subpage.get(section.primary_active, active)
+        if is_primary_active and len(accessible) > 1:
+            active_section_label = section.label
+            active_section_subpages = accessible
+            active_section_current = current
 
         if len(accessible) == 1:
             # Single reachable page — plain link, no caret/dropdown.
@@ -546,6 +571,22 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
             </div>"""
         )
 
+    active_section_row = ""
+    if active_section_subpages:
+        secondary_pills = "".join(
+            _nav_item(sp.label, sp.href, active=(active_section_current == sp.active_key), extra_class="top-link--secondary")
+            for sp in active_section_subpages
+        )
+        active_section_row = f"""
+        <div class="topbar-divider"></div>
+        <div class="topbar-section-row" aria-label="{html.escape(active_section_label)} pages">
+          <span class="topbar-section-label">{html.escape(active_section_label)} pages</span>
+          <nav class="top-actions top-actions--secondary">
+            {secondary_pills}
+          </nav>
+        </div>
+        """
+
     # Access/Team management is intentionally NOT a primary nav section — it lives
     # only in the profile dropdown ("Team"), so the top bar stays identical on
     # every page.
@@ -559,6 +600,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
           </nav>
           {_user_chip_html(user)}
         </div>
+        {active_section_row}
       </div>
     </header>
     """

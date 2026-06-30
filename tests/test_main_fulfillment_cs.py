@@ -327,16 +327,18 @@ class MainFulfillmentCSTests(unittest.TestCase):
     def test_nav_shows_renamed_fulfillment_section(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
 
-        # Full access (superadmin) — the Fulfillment primary now carries a caret
-        # and its sub-pages live inside a dropdown rather than a floating row.
+        # Full access (superadmin) — the Fulfillment primary carries a caret,
+        # with sub-pages in both the dropdown and active-section row.
         nav_html = render_agent_nav("fulfillment", is_superadmin=True)
-        # Label still present (caret span is now spliced before the closing tag).
-        self.assertIn(">Fulfillment<", nav_html)
+        self.assertIn(">Fulfillment<span", nav_html)
         self.assertNotIn("Fulfillment CS</a>", nav_html)
-        # Both fulfillment pages still reachable, now inside the dropdown markup.
+        # Fulfillment pages are visible and directly reachable.
         self.assertIn("nav-dropdown", nav_html)
+        self.assertIn("topbar-section-row", nav_html)
         self.assertIn('href="/admin/fulfillment/sales"', nav_html)
         self.assertIn('href="/admin/fulfillment/cs/"', nav_html)
+        self.assertIn(">Rate Sheets</a>", nav_html)
+        self.assertIn(">Latest Report</a>", nav_html)
 
 
 if __name__ == "__main__":

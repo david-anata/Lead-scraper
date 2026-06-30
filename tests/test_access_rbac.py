@@ -897,11 +897,28 @@ class NavAccessSafetyTests(unittest.TestCase):
             "fulfillment_dashboard",
             permissions={"fulfillment.dashboard", "fulfillment.reports"},
         )
-        # >=2 accessible CS pages -> a dropdown of pills, none pointing at /sales.
+        # >=2 accessible CS pages -> a dropdown and visible section row of pills,
+        # none pointing at /sales.
         self.assertIn("nav-dropdown", nav)
+        self.assertIn("topbar-section-row", nav)
         self.assertIn('href="/admin/fulfillment/cs/"', nav)
         self.assertIn('href="/admin/fulfillment/cs/reports/"', nav)
         self.assertNotIn('href="/admin/fulfillment/sales"', nav)
+
+    def test_active_fulfillment_section_exposes_visible_subpage_row(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav = render_agent_nav(
+            "fulfillment",
+            fulfillment_section="fulfillment_sales",
+            permissions={"fulfillment.rate_sheets", "fulfillment.dashboard", "fulfillment.reports"},
+        )
+
+        self.assertIn('aria-label="Fulfillment pages"', nav)
+        self.assertIn(">Rate Sheets</a>", nav)
+        self.assertIn(">CS Dashboard</a>", nav)
+        self.assertIn(">CS Reports</a>", nav)
+        self.assertIn(">Latest Report</a>", nav)
 
     def test_single_accessible_page_section_has_no_dropdown(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
