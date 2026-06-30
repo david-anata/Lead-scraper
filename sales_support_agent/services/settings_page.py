@@ -1,11 +1,12 @@
 """Settings page renderer — /admin/settings.
 
-Displays five sections visible to superadmins / access.manage holders:
+Displays six sections visible to superadmins / access.manage holders:
   1. Your Account   — profile info from the session
   2. Team           — user/invite/request counts + quick links
   3. Amazon         — SP-API config values (read-only, secrets masked)
-  4. Notifications  — Slack config (read-only)
-  5. Appearance     — branding placeholder
+  4. Connected Inboxes — configured Gmail inboxes + sync evidence
+  5. Notifications  — Slack config (read-only)
+  6. Appearance     — branding placeholder
 """
 
 from __future__ import annotations
@@ -93,6 +94,26 @@ _STYLES = """
   .config-table tr:last-child td { border-bottom:none; }
   .config-table td:first-child { color:rgba(43,54,68,0.58); width:52%; }
   .config-table td:last-child { font-weight:600; color:#2B3644; text-align:right; }
+  .inbox-summary { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }
+  .inbox-pill { min-width:120px; padding:12px 14px; border-radius:14px; background:rgba(249,247,243,0.9);
+    border:1px solid rgba(43,54,68,0.08); }
+  .inbox-pill-num { font-family:"Montserrat",sans-serif; font-weight:900; font-size:22px; line-height:1; color:#2B3644; }
+  .inbox-pill-label { font-size:11px; color:rgba(43,54,68,0.52); margin-top:4px; text-transform:uppercase; letter-spacing:0.05em; }
+  .inbox-list { display:grid; gap:10px; }
+  .inbox-row { border:1px solid rgba(43,54,68,0.08); border-radius:16px; padding:14px 16px; background:rgba(255,255,255,0.72); }
+  .inbox-top { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .inbox-name { font-family:"Montserrat",sans-serif; font-weight:800; font-size:14px; color:#2B3644; }
+  .inbox-key { font-size:12px; color:rgba(43,54,68,0.52); margin-top:2px; }
+  .inbox-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:12px; }
+  .inbox-meta-block { font-size:12px; color:rgba(43,54,68,0.62); }
+  .inbox-meta-block strong { display:block; color:#2B3644; font-size:12px; margin-bottom:2px; }
+  .status-badge { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; font-size:10px; font-weight:800;
+    font-family:"Montserrat",sans-serif; text-transform:uppercase; letter-spacing:0.05em; }
+  .status-connected { background:rgba(46,125,91,0.12); color:#2e7d5b; }
+  .status-attention { background:rgba(194,102,59,0.12); color:#c2663b; }
+  .status-configured-not-seen { background:rgba(43,54,68,0.08); color:#586270; }
+  .status-invalid { background:rgba(139,76,66,0.12); color:#8b4c42; }
+  .muted-note { font-size:12px; color:rgba(43,54,68,0.42); margin:14px 0 0; }
   /* Placeholder */
   .placeholder-note { color:rgba(43,54,68,0.42); font-size:14px;
     font-style:italic; padding:8px 0; }
@@ -105,6 +126,7 @@ def render_settings_page(
     *,
     team_counts: Optional[dict] = None,
     agent_settings=None,
+    inbox_summary: Optional[dict] = None,
 ) -> str:
     name = _esc(user.get("name") or user.get("email") or "User")
     email = _esc(user.get("email") or "")
@@ -201,7 +223,53 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 4. Notifications card ──────────────────────────────────────────────
+    # ── 4. Connected inboxes card ──────────────────────────────────────────
+    inboxes = inbox_summary or {}
+    inbox_rows = list(inboxes.get("accounts", []) or [])
+    inbox_items = ""
+    for row in inbox_rows:
+        source_domains = ", ".join(row.get("source_domains", []) or []) or "—"
+        inbox_items += f"""
+        <div class="inbox-row">
+          <div class="inbox-top">
+            <div>
+              <div class="inbox-name">{_esc(row.get("label") or "Inbox")}</div>
+              <div class="inbox-key">{_esc(row.get("account_key") or "unknown")}</div>
+            </div>
+            <span class="status-badge status-{_esc(row.get("status") or "configured-not-seen").replace("_", "-")}">{_esc(row.get("status_label") or row.get("status") or "Unknown")}</span>
+          </div>
+          <div class="inbox-meta">
+            <div class="inbox-meta-block"><strong>Last message</strong>{_esc(row.get("last_received_at") or "No synced traffic")}</div>
+            <div class="inbox-meta-block"><strong>Last sender</strong>{_esc(row.get("last_sender_email") or "—")}</div>
+            <div class="inbox-meta-block"><strong>Last subject</strong>{_esc(row.get("last_subject") or "—")}</div>
+            <div class="inbox-meta-block"><strong>Matched deals</strong>{int(row.get("matched_deal_count") or 0)}</div>
+            <div class="inbox-meta-block"><strong>Messages synced</strong>{int(row.get("message_count") or 0)}</div>
+            <div class="inbox-meta-block"><strong>Source domains</strong>{_esc(source_domains)}</div>
+          </div>
+        </div>"""
+    if not inbox_items:
+        inbox_items = '<p class="placeholder-note">No shared inboxes are configured yet.</p>'
+
+    inboxes_card = f"""
+    <div class="settings-card settings-grid-wide">
+      <div class="card-title"><span class="card-icon">&#128231;</span> Connected Inboxes</div>
+      <div class="inbox-summary">
+        <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("total_configured") or 0)}</div><div class="inbox-pill-label">Configured</div></div>
+        <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("connected_count") or 0)}</div><div class="inbox-pill-label">Connected</div></div>
+        <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("attention_count") or 0)}</div><div class="inbox-pill-label">Needs attention</div></div>
+        <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("configured_not_seen_count") or 0)}</div><div class="inbox-pill-label">No traffic yet</div></div>
+      </div>
+      <div class="quick-links" style="margin-bottom:16px;">
+        <a class="quick-link" href="/admin/settings/inboxes">&#123;&#125; View JSON</a>
+      </div>
+      <div class="inbox-list">{inbox_items}</div>
+      <p class="muted-note">
+        Connection state is inferred from the configured shared inbox list and synced mailbox evidence.
+        This does not yet represent a user-managed OAuth connection page.
+      </p>
+    </div>"""
+
+    # ── 5. Notifications card ──────────────────────────────────────────────
     slack_token = getattr(s, "slack_bot_token", "") or ""
     slack_channel = _esc(getattr(s, "slack_channel_id", "") or "")
     digest_enabled = getattr(s, "stale_lead_slack_digest_enabled", False)
@@ -226,7 +294,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 5. Appearance card ─────────────────────────────────────────────────
+    # ── 6. Appearance card ─────────────────────────────────────────────────
     appearance_card = """
     <div class="settings-card">
       <div class="card-title"><span class="card-icon">&#127912;</span> Appearance</div>
@@ -265,6 +333,7 @@ def render_settings_page(
       {account_card}
       {team_card}
       {amazon_card}
+      {inboxes_card}
       {notifications_card}
       {appearance_card}
     </div>

@@ -131,6 +131,15 @@ Preferred approach:
 4. Verify syntax and affected behavior after edits.
 5. Document new operational behavior in `README.md` when relevant.
 
+## Deployment Default
+
+For this repo, treat `Lead-scraper` as deploy-by-default.
+
+- If a user asks for a feature or fix in the `Lead-scraper` app, do not stop at a local-only implementation.
+- After validation, commit and push the relevant changes unless the user explicitly says not to deploy yet.
+- Do not ask the user to manually verify a local-only version first when the target is the live `Lead-scraper` app.
+- Keep unrelated local modifications out of the deploy commit.
+
 ## Expected Outputs
 
 When making changes:

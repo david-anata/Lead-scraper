@@ -32,8 +32,9 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from sales_support_agent.models.database import session_scope
 from sales_support_agent.services.access import store
 from sales_support_agent.services.access.pages import (
     render_invite_created_page,
@@ -47,6 +48,7 @@ from sales_support_agent.services.access.pages import (
 )
 from sales_support_agent.services.access.notify import send_approval_email, send_invite_email
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.inbox_connections import build_inbox_connection_summary
 from sales_support_agent.services.settings_page import render_settings_page
 
 logger = logging.getLogger(__name__)
@@ -395,8 +397,19 @@ async def settings_page(request: Request, current_user: dict = Depends(_guard)):
         "pending_requests": pending_requests,
     }
     agent_settings = getattr(request.app.state, "agent_settings", None)
+    with session_scope(request.app.state.session_factory) as session:
+        inbox_summary = build_inbox_connection_summary(session, agent_settings)
     return HTMLResponse(render_settings_page(
         current_user,
         team_counts=team_counts,
         agent_settings=agent_settings,
+        inbox_summary=inbox_summary,
     ))
+
+
+@_settings_router.get("/admin/settings/inboxes")
+async def settings_inboxes(request: Request, current_user: dict = Depends(_guard)) -> JSONResponse:
+    agent_settings = getattr(request.app.state, "agent_settings", None)
+    with session_scope(request.app.state.session_factory) as session:
+        inbox_summary = build_inbox_connection_summary(session, agent_settings)
+    return JSONResponse({"ok": True, "summary": inbox_summary})
