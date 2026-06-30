@@ -129,11 +129,20 @@ class InboxConnectionsTests(unittest.TestCase):
                 slack_channel_id="channel-1",
                 stale_lead_slack_digest_enabled=True,
                 stale_lead_slack_digest_max_items=20,
+                google_oauth_client_id="google-client",
+                google_oauth_client_secret="google-secret",
+                google_oauth_allowed_domain="anatainc.com",
+                admin_password="fallback-password",
+                admin_session_secret="session-secret",
             ),
             inbox_summary=summary,
         )
 
         self.assertIn("Connected Inboxes", html)
+        self.assertIn("Auth &amp; Access", html)
+        self.assertIn("Google sign-in", html)
+        self.assertIn("anatainc.com", html)
+        self.assertIn("Fallback password", html)
         self.assertIn("David Narayan", html)
         self.assertIn("Needs Attention", html)
         self.assertIn("/admin/settings/inboxes", html)

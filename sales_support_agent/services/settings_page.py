@@ -1,12 +1,13 @@
 """Settings page renderer — /admin/settings.
 
-Displays six sections visible to superadmins / access.manage holders:
+Displays seven sections visible to superadmins / access.manage holders:
   1. Your Account   — profile info from the session
   2. Team           — user/invite/request counts + quick links
-  3. Amazon         — SP-API config values (read-only, secrets masked)
-  4. Connected Inboxes — configured Gmail inboxes + sync evidence
-  5. Notifications  — Slack config (read-only)
-  6. Appearance     — branding placeholder
+  3. Auth & Access  — SSO/fallback status + approval queue state
+  4. Amazon         — SP-API config values (read-only, secrets masked)
+  5. Connected Inboxes — configured Gmail inboxes + sync evidence
+  6. Notifications  — Slack config (read-only)
+  7. Appearance     — branding placeholder
 """
 
 from __future__ import annotations
@@ -35,6 +36,12 @@ def _masked(v: str) -> str:
 def _connected(v: str) -> str:
     if v:
         return '<span style="color:#2e7d5b;font-weight:700;">&#10003; Connected</span>'
+    return '<span style="color:#8b4c42;font-weight:700;">&#10007; Not configured</span>'
+
+
+def _configured(v: bool) -> str:
+    if v:
+        return '<span style="color:#2e7d5b;font-weight:700;">&#10003; Configured</span>'
     return '<span style="color:#8b4c42;font-weight:700;">&#10007; Not configured</span>'
 
 
@@ -192,7 +199,40 @@ def render_settings_page(
       </div>
     </div>"""
 
-    # ── 3. Amazon config card ──────────────────────────────────────────────
+    # ── 3. Auth & access card ──────────────────────────────────────────────
+    s = agent_settings
+    google_client_id = getattr(s, "google_oauth_client_id", "") or ""
+    google_client_secret = getattr(s, "google_oauth_client_secret", "") or ""
+    google_domain = _esc(getattr(s, "google_oauth_allowed_domain", "") or "—")
+    fallback_password = getattr(s, "admin_password", "") or ""
+    session_secret = getattr(s, "admin_session_secret", "") or ""
+    google_ready = bool(google_client_id and google_client_secret)
+    request_status = (
+        '<span style="color:#c2663b;font-weight:700;">Needs review</span>'
+        if pending_requests > 0
+        else '<span style="color:#2e7d5b;font-weight:700;">Clear</span>'
+    )
+
+    auth_card = f"""
+    <div class="settings-card settings-grid-wide">
+      <div class="card-title"><span class="card-icon">&#128274;</span> Auth &amp; Access</div>
+      <table class="config-table">
+        <tr><td>Google sign-in</td><td>{_configured(google_ready)}</td></tr>
+        <tr><td>Allowed Google domain</td><td>{google_domain}</td></tr>
+        <tr><td>Fallback password</td><td>{_configured(bool(fallback_password))}</td></tr>
+        <tr><td>Session signing secret</td><td>{_configured(bool(session_secret))}</td></tr>
+        <tr><td>Pending access requests</td><td>{pending_requests} · {request_status}</td></tr>
+      </table>
+      <div class="quick-links" style="margin-top:14px;">
+        <a class="quick-link" href="/admin/access/requests">&#9888; Review requests</a>
+        <a class="quick-link" href="/admin/access">&#128101; Manage access</a>
+      </div>
+      <p class="muted-note">
+        Secrets are masked in Render. This card only reports whether the runtime can see the required auth configuration.
+      </p>
+    </div>"""
+
+    # ── 4. Amazon config card ──────────────────────────────────────────────
     s = agent_settings
     marketplace_id = _esc(getattr(s, "amazon_sp_api_marketplace_id", "") or "")
     region = _esc(getattr(s, "amazon_sp_api_region", "") or "")
@@ -226,7 +266,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 4. Connected inboxes card ──────────────────────────────────────────
+    # ── 5. Connected inboxes card ──────────────────────────────────────────
     inboxes = inbox_summary or {}
     inbox_rows = list(inboxes.get("accounts", []) or [])
     inbox_warning = str(inboxes.get("warning") or "").strip()
@@ -274,7 +314,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 5. Notifications card ──────────────────────────────────────────────
+    # ── 6. Notifications card ──────────────────────────────────────────────
     slack_token = getattr(s, "slack_bot_token", "") or ""
     slack_channel = _esc(getattr(s, "slack_channel_id", "") or "")
     digest_enabled = getattr(s, "stale_lead_slack_digest_enabled", False)
@@ -299,7 +339,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 6. Appearance card ─────────────────────────────────────────────────
+    # ── 7. Appearance card ─────────────────────────────────────────────────
     appearance_card = """
     <div class="settings-card">
       <div class="card-title"><span class="card-icon">&#127912;</span> Appearance</div>
@@ -337,6 +377,7 @@ def render_settings_page(
     <div class="settings-grid">
       {account_card}
       {team_card}
+      {auth_card}
       {amazon_card}
       {inboxes_card}
       {notifications_card}
