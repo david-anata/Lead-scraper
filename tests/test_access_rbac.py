@@ -453,7 +453,7 @@ class AccessFinalizeTests(unittest.TestCase):
         self.assertIn('name="password"', both)
         self.assertIn('<div class="login-divider">', both)
         self.assertIn("Admin fallback", both)
-        self.assertIn("break-glass admin access", both)
+        self.assertIn("shared break-glass password", both)
         self.assertIn("Continue with fallback", both)
         self.assertNotIn("GET STARTED", both)
 
@@ -746,6 +746,40 @@ class GoogleSessionMintTests(unittest.TestCase):
         token = sess.split("=", 1)[1].split(";")[0]
         # The crux: /admin's strict validator accepts the Google-minted token
         self.assertTrue(validate_admin_session_token(admin_dash, token))
+
+    def test_google_callback_shows_unavailable_when_rbac_store_is_down(self) -> None:
+        from unittest import mock
+
+        from sales_support_agent.api import auth_router
+        from sales_support_agent.services.admin_auth import create_signed_state_token
+
+        settings = _settings()
+        state = create_signed_state_token(settings.admin_session_secret, {"action": "login"})
+        client = TestClient(app)
+        client.cookies.set("oauth_state", state)
+        try:
+            with mock.patch(
+                "sales_support_agent.api.auth_router.exchange_google_code",
+                return_value={
+                    "email": "outage-login@anatainc.com",
+                    "name": "Outage Login",
+                    "hd": "anatainc.com",
+                },
+            ), mock.patch(
+                "sales_support_agent.services.access.store.get_user_by_email",
+                side_effect=RuntimeError("database unavailable"),
+            ):
+                resp = client.get(
+                    f"/admin/auth/callback?code=test-code&state={state}",
+                    follow_redirects=False,
+                )
+        finally:
+            client.cookies.clear()
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("Access system unavailable", resp.text)
+        self.assertIn("outage-login@anatainc.com", resp.text)
+        self.assertNotIn(settings.admin_cookie_name + "=", resp.headers.get("set-cookie", ""))
 
     def test_allowed_domain_login_auto_provisions_website_ops_review_tools(self) -> None:
         from sales_support_agent.api import auth_router
