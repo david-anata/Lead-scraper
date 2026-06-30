@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import uuid
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/rbac_test.db")
 
@@ -687,6 +688,29 @@ class GoogleSessionMintTests(unittest.TestCase):
         token = sess.split("=", 1)[1].split(";")[0]
         # The crux: /admin's strict validator accepts the Google-minted token
         self.assertTrue(validate_admin_session_token(admin_dash, token))
+
+    def test_allowed_domain_login_auto_provisions_website_ops_review_tools(self) -> None:
+        from sales_support_agent.api import auth_router
+
+        settings = _settings()
+        email = f"website-ops-review-{uuid.uuid4().hex}@anatainc.com"
+
+        class _URL:
+            def __str__(self): return "https://agent.anatainc.com/"
+
+        class _Req:
+            cookies = {}
+            base_url = _URL()
+            app = type("A", (), {"state": type("St", (), {"agent_settings": settings})()})()
+
+        resp = auth_router._rbac_login(_Req(), settings, email, "Website Ops Reviewer")
+        self.assertEqual(resp.status_code, 302)
+        user = store.get_user_by_email(email)
+        self.assertIsNotNone(user)
+        self.assertEqual(
+            user["permissions"],
+            {"website_ops.seo", "website_ops.queue", "website_ops.reports"},
+        )
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")

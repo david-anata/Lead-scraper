@@ -223,6 +223,16 @@ def _rbac_login(request: Request, settings, email: str, name: str, picture: str 
         _store.record_login(email)
         return _mint_session(request, settings, email, name)
 
-    # 4. Unprovisioned — create an access request and show the pending page.
+    # 4. Allowed-domain reviewer — provision narrow default tools so internal
+    # users are not blocked on a manual DB grant before they can review work.
+    allowed_domain = (getattr(settings, "google_oauth_allowed_domain", "") or "").strip().lower()
+    default_tools = tuple(getattr(settings, "rbac_auto_provision_domain_tools", ()) or ())
+    if allowed_domain and email.endswith(f"@{allowed_domain}") and default_tools:
+        uid = _store.upsert_user(email, name, status="active", picture_url=picture)
+        _store.set_user_permissions(uid, default_tools)
+        _store.record_login(email)
+        return _mint_session(request, settings, email, name)
+
+    # 5. Unprovisioned — create an access request and show the pending page.
     _store.create_access_request(email, name)
     return _HTML(render_access_pending_page(email), status_code=200)
