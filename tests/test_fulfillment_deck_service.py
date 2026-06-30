@@ -845,24 +845,24 @@ class RateSheetServiceTests(unittest.TestCase):
         # Receiving/storage qty = SUM of per-product pallets: 3 + 5 = 8.
         self.assertEqual(quote["pallets_per_month"], 8)
         by_key = {line["key"]: line for line in quote["lines"]}
-        # Receiving: 8 x $20 x 1.15 = $184.00
-        self.assertEqual(by_key["receiving"]["monthly"], 184.00)
-        # Storage: 8 x $35 x 1.15 = $322.00
-        self.assertEqual(by_key["storage"]["monthly"], 322.00)
+        # Receiving: 8 x $2 x 1.15 = $18.40
+        self.assertEqual(by_key["receiving"]["monthly"], 18.40)
+        # Storage: 8 x $30 x 1.15 = $276.00
+        self.assertEqual(by_key["storage"]["monthly"], 276.00)
         # Pick & pack: avg items = 3000/3000 = 1 -> no additional-item fee;
-        # 3000 x $1.60 x 1.15 = $5,520.00
+        # 3000 x $0.80 x 1.15 = $2,760.00
         self.assertEqual(quote["avg_items_per_order"], 1.0)
-        self.assertEqual(by_key["pick_pack"]["monthly"], 5520.00)
-        # Packaging: largest DTC dim = 10in (Kit) -> small box class $0.65;
-        # 3000 x $0.65 x 1.15 = $2,242.50.
+        self.assertEqual(by_key["pick_pack"]["monthly"], 2760.00)
+        # Packaging: largest DTC dim = 10in (Kit) -> small box class $0.65
+        # plus 5% fulfillment packaging markup, then sales margin.
         self.assertEqual(quote["packaging_class"], "small box")
-        self.assertEqual(by_key["packaging"]["monthly"], 2242.50)
+        self.assertEqual(by_key["packaging"]["monthly"], 2354.63)
         self.assertTrue(by_key["packaging"]["scales_with_orders"])
-        self.assertIn("cost +10%", by_key["packaging"]["label"])
+        self.assertIn("cost +5%", by_key["packaging"]["label"])
         # No fragile product -> no special-handling line.
         self.assertNotIn("fragile", by_key)
-        # Tech: $75 flat, NO multiplier.
-        self.assertEqual(by_key["tech"]["monthly"], 75.00)
+        # Tech: $50 flat, NO multiplier.
+        self.assertEqual(by_key["tech"]["monthly"], 50.00)
         self.assertEqual(by_key["tech"]["multiplier"], 1.0)
         # Shipping: 3000 x $7.50 = $22,500.00, NO multiplier.
         self.assertEqual(by_key["shipping"]["monthly"], 22500.00)
@@ -870,14 +870,14 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertEqual(by_key["shipping"]["note"], "at the carrier rates above")
         # No wholesale-smelling product -> no wholesale line.
         self.assertNotIn("wholesale", by_key)
-        # Total 184 + 322 + 5520 + 2242.50 + 75 + 22500 = 30,843.50;
-        # per order 30,843.50 / 3000 = 10.28.
-        self.assertEqual(quote["monthly_total"], 30843.50)
-        self.assertEqual(quote["effective_per_order"], 10.28)
+        # Total 18.40 + 276 + 2760 + 2354.63 + 50 + 22500 = 27,959.03;
+        # per order 27,959.03 / 3000 = 9.32.
+        self.assertEqual(quote["monthly_total"], 27959.03)
+        self.assertEqual(quote["effective_per_order"], 9.32)
         # Order-driven vs flat split for the scenario slider:
-        # variable = 5520 + 2242.50 + 22500 = 30,262.50; fixed = 581.00.
-        self.assertEqual(quote["variable_monthly"], 30262.50)
-        self.assertEqual(quote["fixed_monthly"], 581.00)
+        # variable = 2760 + 2354.63 + 22500 = 27,614.63; fixed = 344.40.
+        self.assertEqual(quote["variable_monthly"], 27614.63)
+        self.assertEqual(quote["fixed_monthly"], 344.40)
         # HOW-DETERMINED bullets map every line to its derivation.
         assumptions = " | ".join(quote["assumptions"])
         self.assertIn("Super Serum: ~780 units/pallet → 3 pallets/mo", assumptions)
@@ -899,8 +899,8 @@ class RateSheetServiceTests(unittest.TestCase):
         )
 
         # Fragile beauty product: multiplier 1.15 + 0.05 = 1.20; special
-        # handling = 400 units x $0.50 x 1.20 = $240.00. Max dim 5in and
-        # 0.8 lb -> poly mailer ($0.35 x 1.20 = $0.42/order).
+        # handling = 400 units x $0.15 x 1.20 = $72.00. Max dim 5in and
+        # 0.8 lb -> poly mailer ($0.35 x 1.05 x 1.20 = $0.441/order).
         profile = ProspectProfile.from_dict({
             "brand": "VaseCo",
             "monthly_order_volume": 400,
@@ -914,9 +914,9 @@ class RateSheetServiceTests(unittest.TestCase):
         by_key = {line["key"]: line for line in quote["lines"]}
         self.assertEqual(quote["multiplier"], 1.20)
         self.assertEqual(by_key["fragile"]["label"], "Special handling (fragile)")
-        self.assertEqual(by_key["fragile"]["monthly"], 240.00)
+        self.assertEqual(by_key["fragile"]["monthly"], 72.00)
         self.assertEqual(quote["packaging_class"], "poly mailer")
-        self.assertEqual(by_key["packaging"]["monthly"], 168.00)  # 400 x 0.42
+        self.assertEqual(by_key["packaging"]["monthly"], 176.40)  # 400 x 0.441
         assumptions = " | ".join(quote["assumptions"])
         self.assertIn("Mini Vase", assumptions)
         self.assertIn("fragile", assumptions.lower())
@@ -931,6 +931,53 @@ class RateSheetServiceTests(unittest.TestCase):
         })
         big_quote = build_fulfillment_quote(big, RateMatrix(products=()), None)
         self.assertEqual(big_quote["packaging_class"], "medium box")
+
+    def test_compute_margin_uses_fulfillment_team_baselines_and_optional_fees(self) -> None:
+        from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+
+        profile = ProspectProfile.from_dict({
+            "brand": "MarginCo",
+            "monthly_order_volume": 100,
+            "products": [
+                {
+                    "name": "Widget",
+                    "length_in": 20,
+                    "width_in": 20,
+                    "height_in": 20,
+                    "monthly_units": 150,
+                }
+            ],
+        })
+        margin = compute_margin(
+            1000.00,
+            {
+                "pick_pack_per_order": 0.80,
+                "pick_pack_additional_item": 0.15,
+                "storage_per_pallet_mo": 30.00,
+                "storage_cubic_foot_mo": 0.45,
+                "monthly_tech_fee": 0.00,  # waived
+                "customer_service_monthly": 200.00,
+                "kitting_per_item": 0.15,
+                "labeling_per_item": 0.15,
+                "bagging_labeling_per_item": 0.25,
+                "returns_units_mo": 10,
+                "returns_receive_per_unit": 1.00,
+                "returns_examination_per_unit": 1.00,
+                "returns_custom_steps_per_unit": 2.00,
+                "special_project_hours_mo": 2,
+                "special_projects_per_hour": 40.00,
+            },
+            profile,
+        )
+        self.assertEqual(margin["actual_pick_pack"], 87.50)
+        self.assertEqual(margin["actual_storage_cubic"], 312.50)
+        self.assertGreater(margin["actual_storage"], margin["actual_storage_pallet"])
+        self.assertEqual(margin["actual_tech_fee"], 0.00)
+        self.assertEqual(margin["actual_customer_service"], 200.00)
+        self.assertEqual(margin["actual_returns"], 40.00)
+        self.assertEqual(margin["actual_special_projects"], 80.00)
+        self.assertEqual(margin["actual_monthly"], 802.50)
+        self.assertEqual(margin["monthly_margin"], 197.50)
 
     def test_quote_multiplier_rules(self) -> None:
         from sales_support_agent.services.fulfillment_deck.quote import (
@@ -1395,10 +1442,7 @@ class RateSheetServiceTests(unittest.TestCase):
         )
 
         # Tiny volume: 10 orders / 10 units, "other" category (x1.10), no
-        # blended rate. Lines: receiving 1pallet x $20 x 1.10 = $22.00; storage
-        # 1 x $35 x 1.10 = $38.50; pick&pack 10 x $1.60 x 1.10 = $17.60;
-        # packaging 10 x ($0.35 x 1.10) poly mailer = $3.85; tech $75 flat.
-        # sum = 156.95 < 500 -> adjustment $343.05 -> total $500.00.
+        # blended rate. Baselines come from the fulfillment team rate card.
         tiny = ProspectProfile.from_dict({
             "brand": "TinyCo", "monthly_order_volume": 10,
             "products": [{"name": "Trinket", "length_in": 3, "width_in": 3,
@@ -1411,11 +1455,11 @@ class RateSheetServiceTests(unittest.TestCase):
                 if l["label"] != "Monthly minimum adjustment"),
             2,
         )
-        self.assertEqual(sum_lines, 156.95)
+        self.assertEqual(sum_lines, 98.04)
         adj = next(
             l for l in quote["lines"] if l["label"] == "Monthly minimum adjustment"
         )
-        self.assertEqual(adj["monthly"], 343.05)
+        self.assertEqual(adj["monthly"], 401.96)
         self.assertFalse(adj["scales_with_orders"])  # counts as fixed
         self.assertEqual(quote["monthly_total"], 500.00)
         # effective_per_order divides the FINAL total: 500 / 10 = 50.00.

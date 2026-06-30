@@ -534,6 +534,7 @@ def sync_margin(run_id: int, margin: dict, pitched: float) -> None:
             f"  Pick & pack actual: −${margin.get('actual_pick_pack', 0):,.0f}\n"
             f"  Storage actual: −${margin.get('actual_storage', 0):,.0f}\n"
             f"  Tech fee actual: −${margin.get('actual_tech_fee', 0):,.0f}\n"
+            f"  Optional/service actuals: −${margin.get('actual_optional_monthly', 0):,.0f}\n"
             f"  Monthly margin: ${margin.get('monthly_margin', 0):,.0f} "
             f"({margin.get('margin_pct', 0)}%)\n"
             f"  Annual margin: ${margin.get('annual_margin', 0):,.0f}"

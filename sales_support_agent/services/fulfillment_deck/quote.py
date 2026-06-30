@@ -24,20 +24,32 @@ from sales_support_agent.services.fulfillment_deck.schema import (
 
 # Anata contract baseline (floors, USD). Keys mirror the rate card language.
 BASELINE_RATES = {
-    "receiving_per_pallet": 20.00,
-    "storage_short_per_pallet_mo": 35.00,
-    "dtc_base_per_order": 1.60,
-    "dtc_additional_item": 0.25,
-    "special_handling_per_unit": 0.50,
+    "receiving_precounted_box": 2.00,
+    "receiving_count_per_item": 0.15,
+    # Back-compat key used by the existing receiving estimate UI.
+    "receiving_per_pallet": 2.00,
+    "storage_short_per_pallet_mo": 30.00,
+    "storage_cubic_foot_mo": 0.45,
+    "dtc_base_per_order": 0.80,
+    "dtc_additional_item": 0.15,
+    "special_handling_per_unit": 0.15,
     "wholesale_per_unit": 0.15,
     "pallet_order_min": 20.00,
+    "pallet_order_per_pallet": 20.00,
     "pallet_per_unit": 0.80,
     "kitting_per_unit": 0.15,
-    "returns_per_unit": 2.00,
-    "labeling_per_unit": 0.25,
-    "monthly_tech_fee": 75.00,
+    "labeling_per_unit": 0.15,
+    "bagging_labeling_per_unit": 0.25,
+    "returns_receive_per_unit": 1.00,
+    "returns_examination_per_unit": 1.00,
+    "returns_custom_steps_per_unit": 2.00,
+    "returns_per_unit": 4.00,
+    "special_projects_per_hour": 40.00,
+    "monthly_tech_fee": 50.00,
+    "customer_service_monthly": 200.00,
     "monthly_minimum": 500.00,
-    "packaging": "at cost + 10%",
+    "packaging_markup_pct": 5.00,
+    "packaging": "at cost + 5%",
 }
 
 # Category -> margin multiplier over the baseline floors.
@@ -200,9 +212,7 @@ def _pallet_breakdown(profile: ProspectProfile) -> list[dict]:
 
 
 def _packaging_class(profile: ProspectProfile) -> tuple[str, float, str]:
-    """(class name, est. cost per order, why) — class by the largest single
-    dimension among DTC (non-wholesale) products; poly mailer also needs the
-    heaviest DTC product at or under 1 lb."""
+    """(class name, est. fulfillment cost+markup per order, why)."""
     dtc = [
         p for p in profile.products
         if not (p.name and WHOLESALE_RE.search(p.name))
@@ -214,7 +224,7 @@ def _packaging_class(profile: ProspectProfile) -> tuple[str, float, str]:
     ]
     if not dims:
         name, cost, _d, _w = PACKAGING_CLASSES[1]  # small box
-        return name, cost, "package size unconfirmed → small box class assumed"
+        return name, _with_packaging_markup(cost), "package size unconfirmed → small box class assumed"
     max_dim = max(dims)
     weights = [p.weight_lb for p in dtc if p.weight_lb is not None]
     max_weight = max(weights) if weights else None
@@ -227,10 +237,14 @@ def _packaging_class(profile: ProspectProfile) -> tuple[str, float, str]:
     small_name, small_cost, small_dim, _sw = PACKAGING_CLASSES[1]
     medium_name, medium_cost, _md, _mw = PACKAGING_CLASSES[2]
     if max_dim <= poly_dim and max_weight is not None and max_weight <= poly_weight:
-        return poly_name, poly_cost, f"{dims_label} parcel → poly mailer class"
+        return poly_name, _with_packaging_markup(poly_cost), f"{dims_label} parcel → poly mailer class"
     if max_dim <= small_dim:
-        return small_name, small_cost, f"{dims_label} parcel → small box class"
-    return medium_name, medium_cost, f"{dims_label} parcel → medium box class"
+        return small_name, _with_packaging_markup(small_cost), f"{dims_label} parcel → small box class"
+    return medium_name, _with_packaging_markup(medium_cost), f"{dims_label} parcel → medium box class"
+
+
+def _with_packaging_markup(cost: float) -> float:
+    return cost * (1 + float(BASELINE_RATES["packaging_markup_pct"]) / 100.0)
 
 
 def _line(key: str, label: str, qty: float, unit: str, rate: float,
@@ -327,12 +341,13 @@ def build_fulfillment_quote(
             )
         )
 
-    # Packaging: size-class estimate per order, billed at cost + 10%.
+    # Packaging: size-class estimate per order, billed at fulfillment cost + 5%,
+    # then marked up by the sales margin multiplier.
     packaging_class, packaging_cost, packaging_why = _packaging_class(profile)
     packaging_rate = packaging_cost * m
     lines.append(
         _line(
-            "packaging", "Packaging (est., billed at cost +10%)",
+            "packaging", "Packaging (est., cost +5% before margin)",
             orders, "orders",
             packaging_rate,
             orders * packaging_rate,
@@ -423,7 +438,7 @@ def build_fulfillment_quote(
             f"65% cube) -> {pallets} pallet{'s' if pallets != 1 else ''}/month, "
             "one month of inventory on hand"
         )
-    assumptions.append(f"Packaging: {packaging_why}, billed at cost + 10%")
+    assumptions.append(f"Packaging: {packaging_why}, billed at cost + 5% before sales margin")
     if fragile_units:
         names = ", ".join(
             p.name or "(unnamed product)" for p in fragile_products
@@ -497,6 +512,16 @@ def estimate_pallets_mo(profile: ProspectProfile) -> float:
     return round(total_units / upp, 2) if upp else 0.0
 
 
+def estimate_storage_cuft_mo(profile: ProspectProfile) -> float:
+    total = 0.0
+    for product in profile.products:
+        units = product.monthly_units or 0
+        if units <= 0 or None in (product.length_in, product.width_in, product.height_in):
+            continue
+        total += (product.length_in * product.width_in * product.height_in / 1728.0) * units
+    return round(total, 2)
+
+
 def compute_margin(
     pitched_monthly: float,
     actual_costs: dict,
@@ -504,18 +529,49 @@ def compute_margin(
 ) -> dict:
     """Compute monthly margin: pitched monthly total minus actual warehouse cost.
 
-    actual_costs keys: pick_pack_per_order, storage_per_pallet_mo,
-    monthly_tech_fee (receiving is irregular — excluded from monthly).
+    actual_costs may include core rates plus optional service rates. Receiving
+    is returned as a one-time estimate and excluded from monthly margin.
     Returns a dict with the breakdown plus margin_pct and annual_margin.
     """
     pick_pack = float(actual_costs.get("pick_pack_per_order") or 0)
+    additional_item = float(actual_costs.get("pick_pack_additional_item") or 0)
     storage = float(actual_costs.get("storage_per_pallet_mo") or 0)
+    storage_cuft = float(actual_costs.get("storage_cubic_foot_mo") or 0)
     tech_fee = float(actual_costs.get("monthly_tech_fee") or 0)
+    customer_service = float(actual_costs.get("customer_service_monthly") or 0)
+    kitting = float(actual_costs.get("kitting_per_item") or 0)
+    labeling = float(actual_costs.get("labeling_per_item") or 0)
+    bagging_labeling = float(actual_costs.get("bagging_labeling_per_item") or 0)
+    pallet_order = float(actual_costs.get("pallet_order_per_pallet") or 0)
+    returns_receive = float(actual_costs.get("returns_receive_per_unit") or 0)
+    returns_exam = float(actual_costs.get("returns_examination_per_unit") or 0)
+    returns_custom = float(actual_costs.get("returns_custom_steps_per_unit") or 0)
+    returns_units = float(actual_costs.get("returns_units_mo") or 0)
+    special_project_hour = float(actual_costs.get("special_projects_per_hour") or 0)
+    special_project_hours = float(actual_costs.get("special_project_hours_mo") or 0)
     orders = profile.monthly_order_volume or 0
+    units_total = sum((p.monthly_units or 0) for p in profile.products) or orders
+    avg_items = max(1.0, units_total / orders) if orders else 1.0
+    extra_items = max(avg_items - 1.0, 0.0)
     pallets = estimate_pallets_mo(profile)
-    actual_pp = round(pick_pack * orders, 2)
-    actual_st = round(storage * pallets, 2)
-    actual_monthly = round(actual_pp + actual_st + tech_fee, 2)
+    storage_cuft_mo = estimate_storage_cuft_mo(profile)
+    actual_pp = round((pick_pack * orders) + (additional_item * extra_items * orders), 2)
+    pallet_storage = round(storage * pallets, 2)
+    cubic_storage = round(storage_cuft * storage_cuft_mo, 2)
+    actual_st = max(pallet_storage, cubic_storage)
+    actual_kitting = round(kitting * units_total, 2)
+    actual_labeling = round(labeling * units_total, 2)
+    actual_bagging_labeling = round(bagging_labeling * units_total, 2)
+    actual_pallet_orders = round(pallet_order * pallets, 2)
+    actual_returns = round((returns_receive + returns_exam + returns_custom) * returns_units, 2)
+    actual_special_projects = round(special_project_hour * special_project_hours, 2)
+    optional_monthly = round(
+        actual_kitting + actual_labeling + actual_bagging_labeling
+        + actual_pallet_orders + actual_returns + actual_special_projects
+        + customer_service,
+        2,
+    )
+    actual_monthly = round(actual_pp + actual_st + tech_fee + optional_monthly, 2)
     monthly_margin = round(pitched_monthly - actual_monthly, 2)
     margin_pct = (
         round(monthly_margin / pitched_monthly * 100, 1) if pitched_monthly > 0 else 0.0
@@ -523,11 +579,23 @@ def compute_margin(
     return {
         "actual_pick_pack": actual_pp,
         "actual_storage": actual_st,
+        "actual_storage_pallet": pallet_storage,
+        "actual_storage_cubic": cubic_storage,
         "actual_tech_fee": round(tech_fee, 2),
+        "actual_customer_service": round(customer_service, 2),
+        "actual_kitting": actual_kitting,
+        "actual_labeling": actual_labeling,
+        "actual_bagging_labeling": actual_bagging_labeling,
+        "actual_pallet_orders": actual_pallet_orders,
+        "actual_returns": actual_returns,
+        "actual_special_projects": actual_special_projects,
+        "actual_optional_monthly": optional_monthly,
         "actual_monthly": actual_monthly,
         "monthly_margin": monthly_margin,
         "annual_margin": round(monthly_margin * 12, 2),
         "margin_pct": margin_pct,
         "orders": orders,
+        "units_total": units_total,
         "pallets_mo": pallets,
+        "storage_cuft_mo": storage_cuft_mo,
     }

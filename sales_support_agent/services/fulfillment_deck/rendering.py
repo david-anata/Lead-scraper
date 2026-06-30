@@ -760,10 +760,12 @@ def _render_fee_schedule_section(
         )
 
     inbound = "".join([
-        _row("Receiving", f"${br['receiving_per_pallet']:.2f} / pallet"),
+        _row("Receiving — pre-counted box", f"${br['receiving_precounted_box']:.2f} / box"),
+        _row("Receiving — count required", f"${br['receiving_count_per_item']:.2f} / item"),
         _row("Kit assembly", f"${br['kitting_per_unit']:.2f} / unit",
              "open-box, assemble, re-box; quote after scoping call"),
         _row("Labeling / barcode prep", f"${br['labeling_per_unit']:.2f} / unit"),
+        _row("Bagging & labeling", f"${br['bagging_labeling_per_unit']:.2f} / item"),
     ])
     outbound_dtc = "".join([
         _row("Pick & pack — DTC", f"${br['dtc_base_per_order']:.2f} / order base"),
@@ -783,16 +785,28 @@ def _render_fee_schedule_section(
     storage_returns = "".join([
         _row("Storage (short-term)",
              f"${br['storage_short_per_pallet_mo']:.2f} / pallet / month"),
-        _row("Returns processing",
-             f"${br['returns_per_unit']:.2f} / unit",
-             "inspect, restock, or quarantine"),
+        _row("Storage (cubic-foot option)",
+             f"${br['storage_cubic_foot_mo']:.2f} / cubic foot / month",
+             "max cubic footage for the month"),
+        _row("Return receive & restock",
+             f"${br['returns_receive_per_unit']:.2f} / unit"),
+        _row("Return examination",
+             f"${br['returns_examination_per_unit']:.2f} / unit"),
+        _row("Return custom steps",
+             f"${br['returns_custom_steps_per_unit']:.2f} / unit"),
         _row("Packaging materials",
-             "at cost + 10%",
+             "at cost + 5%",
              "mailers, boxes, void fill — billed through"),
     ])
     platform = "".join([
         _row("Platform & tech (monthly flat)",
-             f"${br['monthly_tech_fee']:.2f} / month"),
+             f"${br['monthly_tech_fee']:.2f} / month",
+             "can be waived as a sales tactic"),
+        _row("Customer service",
+             f"${br['customer_service_monthly']:.2f} / month",
+             "waived when Anata manages the relationship"),
+        _row("Special projects",
+             f"${br['special_projects_per_hour']:.2f} / hour"),
         _row("Shopify integration", "included — no setup fee, no per-transaction fee"),
         _row("Amazon Seller Central", "included"),
         _row("Custom EDI / API", "contact us"),

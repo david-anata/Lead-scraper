@@ -263,11 +263,19 @@ def _expand_panel(run: dict) -> str:
             mg = compute_margin(float(pitched), costs, profile_obj)
             sign = "pos" if mg["monthly_margin"] >= 0 else "neg"
             _rec_pp = float(costs.get("receiving_per_pallet") or 0)
+            _rec_box = float(costs.get("receiving_precounted_box") or 0)
+            _rec_count = float(costs.get("receiving_count_per_item") or 0)
             _rec_pallets = int(mg.get("pallets_mo") or 0)
+            _rec_units = int(mg.get("units_total") or 0)
+            _rec_total_val = (_rec_pp * _rec_pallets) + (_rec_box * _rec_pallets) + (_rec_count * _rec_units)
             _rec_line = (
                 f'<div class="margin-line" style="opacity:0.65"><span>Receiving one-time (~{_rec_pallets} pallets)</span>'
-                f'<span>−{_fmt_usd(_rec_pp * _rec_pallets)}</span></div>'
-                if _rec_pp and _rec_pallets else ""
+                f'<span>−{_fmt_usd(_rec_total_val)}</span></div>'
+                if _rec_total_val and _rec_pallets else ""
+            )
+            _optional_line = (
+                f'<div class="margin-line"><span>Optional/service actuals</span><span>−{_fmt_usd(mg.get("actual_optional_monthly") or 0)}</span></div>'
+                if mg.get("actual_optional_monthly") else ""
             )
             margin_html = f"""
             <div class="margin-card" id="margin-{run_id}">
@@ -276,6 +284,7 @@ def _expand_panel(run: dict) -> str:
               <div class="margin-line"><span>Pick &amp; pack actual</span><span>−{_fmt_usd(mg['actual_pick_pack'])}</span></div>
               <div class="margin-line"><span>Storage actual</span><span>−{_fmt_usd(mg['actual_storage'])}</span></div>
               <div class="margin-line"><span>Tech fee actual</span><span>−{_fmt_usd(mg['actual_tech_fee'])}</span></div>
+              {_optional_line}
               {_rec_line}
               <div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>{_fmt_usd(mg['annual_margin'])}</span></div>
             </div>"""
@@ -320,15 +329,60 @@ def _expand_panel(run: dict) -> str:
           <div><label>Pick &amp; pack ($/order)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['dtc_base_per_order']:.2f}"
               id="pp-{run_id}" value="{_cv('pick_pack_per_order')}"></div>
+          <div><label>Additional item ($/item)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['dtc_additional_item']:.2f}"
+              id="ppi-{run_id}" value="{_cv('pick_pack_additional_item')}"></div>
           <div><label>Storage ($/pallet/mo)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:.2f}"
               id="st-{run_id}" value="{_cv('storage_per_pallet_mo')}"></div>
-          <div><label>Receiving ($/pallet) <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
+          <div><label>Storage ($/cu ft/mo)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_cubic_foot_mo']:.2f}"
+              id="scf-{run_id}" value="{_cv('storage_cubic_foot_mo')}"></div>
+          <div><label>Receiving pre-counted box <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_precounted_box']:.2f}"
+              id="rcb-{run_id}" value="{_cv('receiving_precounted_box')}"></div>
+          <div><label>Receiving counted item <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_count_per_item']:.2f}"
+              id="rci-{run_id}" value="{_cv('receiving_count_per_item')}"></div>
+          <div><label>Receiving legacy ($/pallet) <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_per_pallet']:.2f}"
               id="rc-{run_id}" value="{_cv('receiving_per_pallet')}"></div>
           <div><label>Tech fee ($/mo)</label>
             <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['monthly_tech_fee']:.2f}"
               id="tf-{run_id}" value="{_cv('monthly_tech_fee')}"></div>
+          <div><label>Customer service ($/mo)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['customer_service_monthly']:.2f}"
+              id="cs-{run_id}" value="{_cv('customer_service_monthly')}"></div>
+          <div><label>Pallet orders ($/pallet)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['pallet_order_per_pallet']:.2f}"
+              id="po-{run_id}" value="{_cv('pallet_order_per_pallet')}"></div>
+          <div><label>Kitting ($/item)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['kitting_per_unit']:.2f}"
+              id="kit-{run_id}" value="{_cv('kitting_per_item')}"></div>
+          <div><label>Labeling ($/item)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['labeling_per_unit']:.2f}"
+              id="lab-{run_id}" value="{_cv('labeling_per_item')}"></div>
+          <div><label>Bagging + labeling ($/item)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['bagging_labeling_per_unit']:.2f}"
+              id="bag-{run_id}" value="{_cv('bagging_labeling_per_item')}"></div>
+          <div><label>Returns units (/mo)</label>
+            <input type="number" step="1" min="0" placeholder="0"
+              id="ru-{run_id}" value="{_cv('returns_units_mo')}"></div>
+          <div><label>Return receive ($/unit)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['returns_receive_per_unit']:.2f}"
+              id="rr-{run_id}" value="{_cv('returns_receive_per_unit')}"></div>
+          <div><label>Return exam ($/unit)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['returns_examination_per_unit']:.2f}"
+              id="re-{run_id}" value="{_cv('returns_examination_per_unit')}"></div>
+          <div><label>Return custom steps ($/unit)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['returns_custom_steps_per_unit']:.2f}"
+              id="rs-{run_id}" value="{_cv('returns_custom_steps_per_unit')}"></div>
+          <div><label>Special project hours (/mo)</label>
+            <input type="number" step="0.25" min="0" placeholder="0"
+              id="sph-{run_id}" value="{_cv('special_project_hours_mo')}"></div>
+          <div><label>Special projects ($/hour)</label>
+            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['special_projects_per_hour']:.2f}"
+              id="spr-{run_id}" value="{_cv('special_projects_per_hour')}"></div>
         </div>
         <button class="btn btn--ghost" style="margin-top:10px" type="button"
           onclick="pipelineCosts(this,{run_id})">Save costs</button>
@@ -763,9 +817,24 @@ def render_fulfillment_sales_page(
     function pipelineCosts(btn, runId) {{
       var costs = {{
         pick_pack_per_order:  parseFloat(document.getElementById('pp-'+runId).value) || null,
+        pick_pack_additional_item: parseFloat(document.getElementById('ppi-'+runId).value) || null,
         storage_per_pallet_mo: parseFloat(document.getElementById('st-'+runId).value) || null,
+        storage_cubic_foot_mo: parseFloat(document.getElementById('scf-'+runId).value) || null,
+        receiving_precounted_box: parseFloat(document.getElementById('rcb-'+runId).value) || null,
+        receiving_count_per_item: parseFloat(document.getElementById('rci-'+runId).value) || null,
         receiving_per_pallet: parseFloat(document.getElementById('rc-'+runId).value) || null,
         monthly_tech_fee:     parseFloat(document.getElementById('tf-'+runId).value) || null,
+        customer_service_monthly: parseFloat(document.getElementById('cs-'+runId).value) || null,
+        pallet_order_per_pallet: parseFloat(document.getElementById('po-'+runId).value) || null,
+        kitting_per_item: parseFloat(document.getElementById('kit-'+runId).value) || null,
+        labeling_per_item: parseFloat(document.getElementById('lab-'+runId).value) || null,
+        bagging_labeling_per_item: parseFloat(document.getElementById('bag-'+runId).value) || null,
+        returns_units_mo: parseFloat(document.getElementById('ru-'+runId).value) || null,
+        returns_receive_per_unit: parseFloat(document.getElementById('rr-'+runId).value) || null,
+        returns_examination_per_unit: parseFloat(document.getElementById('re-'+runId).value) || null,
+        returns_custom_steps_per_unit: parseFloat(document.getElementById('rs-'+runId).value) || null,
+        special_project_hours_mo: parseFloat(document.getElementById('sph-'+runId).value) || null,
+        special_projects_per_hour: parseFloat(document.getElementById('spr-'+runId).value) || null,
       }};
       btn.textContent = 'Saving…';
       fetch('/admin/fulfillment/sales/runs/' + runId + '/costs', {{
@@ -784,6 +853,7 @@ def render_fulfillment_sales_page(
             if (data.receiving_one_time && data.pallets_mo) {{
               recLine = '<div class="margin-line" style="opacity:0.65"><span>Receiving one-time (~' + data.pallets_mo + ' pallets)</span><span>−' + fmt(data.receiving_one_time) + '</span></div>';
             }}
+            var optionalLine = mg.actual_optional_monthly ? '<div class="margin-line"><span>Optional/service actuals</span><span>−' + fmt(mg.actual_optional_monthly) + '</span></div>' : '';
             card.innerHTML =
               '<div class="big big--' + sign + '">' + (mg.monthly_margin < 0 ? '−' : '') + fmt(mg.monthly_margin) +
               '/mo (' + mg.margin_pct + '%)</div>' +
@@ -791,6 +861,7 @@ def render_fulfillment_sales_page(
               '<div class="margin-line"><span>Pick &amp; pack actual</span><span>−' + fmt(mg.actual_pick_pack) + '</span></div>' +
               '<div class="margin-line"><span>Storage actual</span><span>−' + fmt(mg.actual_storage) + '</span></div>' +
               '<div class="margin-line"><span>Tech fee actual</span><span>−' + fmt(mg.actual_tech_fee) + '</span></div>' +
+              optionalLine +
               recLine +
               '<div class="margin-line" style="font-weight:700"><span>Annual margin</span><span>' + (mg.annual_margin < 0 ? '−' : '') + fmt(mg.annual_margin) + '</span></div>';
           }}

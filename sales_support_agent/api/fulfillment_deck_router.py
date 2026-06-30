@@ -420,9 +420,24 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
 
     costs = {
         "pick_pack_per_order": _f("pick_pack_per_order"),
+        "pick_pack_additional_item": _f("pick_pack_additional_item"),
         "storage_per_pallet_mo": _f("storage_per_pallet_mo"),
+        "storage_cubic_foot_mo": _f("storage_cubic_foot_mo"),
+        "receiving_precounted_box": _f("receiving_precounted_box"),
+        "receiving_count_per_item": _f("receiving_count_per_item"),
         "receiving_per_pallet": _f("receiving_per_pallet"),
         "monthly_tech_fee": _f("monthly_tech_fee"),
+        "customer_service_monthly": _f("customer_service_monthly"),
+        "pallet_order_per_pallet": _f("pallet_order_per_pallet"),
+        "kitting_per_item": _f("kitting_per_item"),
+        "labeling_per_item": _f("labeling_per_item"),
+        "bagging_labeling_per_item": _f("bagging_labeling_per_item"),
+        "returns_units_mo": _f("returns_units_mo"),
+        "returns_receive_per_unit": _f("returns_receive_per_unit"),
+        "returns_examination_per_unit": _f("returns_examination_per_unit"),
+        "returns_custom_steps_per_unit": _f("returns_custom_steps_per_unit"),
+        "special_project_hours_mo": _f("special_project_hours_mo"),
+        "special_projects_per_hour": _f("special_projects_per_hour"),
     }
     if not storage.update_costs(run_id, costs):
         return JSONResponse(status_code=404, content={"error": "not found"})
@@ -441,8 +456,12 @@ async def patch_costs(run_id: int, request: Request) -> JSONResponse:
             from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
             _hs_margin(run_id, margin, pitched)
             rec_pp = float(costs.get("receiving_per_pallet") or 0)
+            rec_box = float(costs.get("receiving_precounted_box") or 0)
+            rec_count = float(costs.get("receiving_count_per_item") or 0)
             pallets_mo = int(margin.get("pallets_mo") or 0)
-            rec_total = round(rec_pp * pallets_mo, 2) if (rec_pp and pallets_mo) else None
+            units_total = int(margin.get("units_total") or 0)
+            rec_total = round((rec_pp * pallets_mo) + (rec_box * pallets_mo) + (rec_count * units_total), 2)
+            rec_total = rec_total if rec_total else None
             return JSONResponse({
                 "ok": True,
                 "margin": margin,
