@@ -134,15 +134,26 @@ class InboxConnectionsTests(unittest.TestCase):
                 google_oauth_allowed_domain="anatainc.com",
                 admin_password="fallback-password",
                 admin_session_secret="session-secret",
+                sales_agent_db_url="postgresql://example",
+                clickup_api_token="clickup-token",
+                clickup_list_id="clickup-list",
+                lead_build_url="https://lead-builder.example",
+                deck_public_base_url="https://agent.example",
+                shared_brand_package_path="/opt/render/project/src/shared/anata_brand",
             ),
             inbox_summary=summary,
         )
 
         self.assertIn("Connected Inboxes", html)
         self.assertIn("Auth &amp; Access", html)
+        self.assertIn("Core Runtime", html)
         self.assertIn("Google sign-in", html)
         self.assertIn("anatainc.com", html)
         self.assertIn("Fallback password", html)
+        self.assertIn("App database", html)
+        self.assertIn("Postgres", html)
+        self.assertIn("ClickUp list", html)
+        self.assertIn("https://lead-builder.example", html)
         self.assertIn("David Narayan", html)
         self.assertIn("Needs Attention", html)
         self.assertIn("/admin/settings/inboxes", html)

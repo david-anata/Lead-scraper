@@ -1,13 +1,14 @@
 """Settings page renderer — /admin/settings.
 
-Displays seven sections visible to superadmins / access.manage holders:
+Displays eight sections visible to superadmins / access.manage holders:
   1. Your Account   — profile info from the session
   2. Team           — user/invite/request counts + quick links
   3. Auth & Access  — SSO/fallback status + approval queue state
-  4. Amazon         — SP-API config values (read-only, secrets masked)
-  5. Connected Inboxes — configured Gmail inboxes + sync evidence
-  6. Notifications  — Slack config (read-only)
-  7. Appearance     — branding placeholder
+  4. Core Runtime   — database + primary integration readiness
+  5. Amazon         — SP-API config values (read-only, secrets masked)
+  6. Connected Inboxes — configured Gmail inboxes + sync evidence
+  7. Notifications  — Slack config (read-only)
+  8. Appearance     — branding placeholder
 """
 
 from __future__ import annotations
@@ -232,7 +233,37 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 4. Amazon config card ──────────────────────────────────────────────
+    # ── 4. Core runtime card ───────────────────────────────────────────────
+    db_url = str(getattr(s, "sales_agent_db_url", "") or "")
+    if db_url.startswith(("postgres://", "postgresql://")):
+        db_backend = "Postgres"
+    elif db_url.startswith("sqlite"):
+        db_backend = "SQLite"
+    else:
+        db_backend = "—"
+    clickup_token = getattr(s, "clickup_api_token", "") or ""
+    clickup_list = getattr(s, "clickup_list_id", "") or ""
+    lead_build_url = _esc(getattr(s, "lead_build_url", "") or "—")
+    deck_public_base_url = _esc(getattr(s, "deck_public_base_url", "") or "—")
+    brand_package_path = _esc(str(getattr(s, "shared_brand_package_path", "") or "—"))
+
+    runtime_card = f"""
+    <div class="settings-card settings-grid-wide">
+      <div class="card-title"><span class="card-icon">&#9881;</span> Core Runtime</div>
+      <table class="config-table">
+        <tr><td>App database</td><td>{_configured(bool(db_url))} · {db_backend}</td></tr>
+        <tr><td>ClickUp token</td><td>{_configured(bool(clickup_token))}</td></tr>
+        <tr><td>ClickUp list</td><td>{_configured(bool(clickup_list))}</td></tr>
+        <tr><td>Lead builder endpoint</td><td>{lead_build_url}</td></tr>
+        <tr><td>Deck public base URL</td><td>{deck_public_base_url}</td></tr>
+        <tr><td>Brand package path</td><td>{brand_package_path}</td></tr>
+      </table>
+      <p class="muted-note">
+        This is the runtime configuration the app can see now. It does not expose secret values.
+      </p>
+    </div>"""
+
+    # ── 5. Amazon config card ──────────────────────────────────────────────
     s = agent_settings
     marketplace_id = _esc(getattr(s, "amazon_sp_api_marketplace_id", "") or "")
     region = _esc(getattr(s, "amazon_sp_api_region", "") or "")
@@ -266,7 +297,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 5. Connected inboxes card ──────────────────────────────────────────
+    # ── 6. Connected inboxes card ──────────────────────────────────────────
     inboxes = inbox_summary or {}
     inbox_rows = list(inboxes.get("accounts", []) or [])
     inbox_warning = str(inboxes.get("warning") or "").strip()
@@ -314,7 +345,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 6. Notifications card ──────────────────────────────────────────────
+    # ── 7. Notifications card ──────────────────────────────────────────────
     slack_token = getattr(s, "slack_bot_token", "") or ""
     slack_channel = _esc(getattr(s, "slack_channel_id", "") or "")
     digest_enabled = getattr(s, "stale_lead_slack_digest_enabled", False)
@@ -339,7 +370,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 7. Appearance card ─────────────────────────────────────────────────
+    # ── 8. Appearance card ─────────────────────────────────────────────────
     appearance_card = """
     <div class="settings-card">
       <div class="card-title"><span class="card-icon">&#127912;</span> Appearance</div>
@@ -378,6 +409,7 @@ def render_settings_page(
       {account_card}
       {team_card}
       {auth_card}
+      {runtime_card}
       {amazon_card}
       {inboxes_card}
       {notifications_card}
