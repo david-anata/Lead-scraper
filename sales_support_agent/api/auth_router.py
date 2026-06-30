@@ -130,8 +130,11 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
             result = _rbac_login(request, settings, email, name, picture=picture)
             if result is not None:
                 return result
-        except Exception:  # noqa: BLE001 — never lock users out on an RBAC bug
-            logger.exception("RBAC login resolution failed for %s — falling back to legacy", email)
+        except Exception:  # noqa: BLE001 — make the outage explicit; do not bypass RBAC
+            logger.exception("RBAC login resolution failed for %s", email)
+            from sales_support_agent.services.access.pages import render_access_unavailable_page
+
+            return HTMLResponse(render_access_unavailable_page(email), status_code=503)
 
     # Legacy / RBAC disabled: mint cookie and redirect
     role = get_user_role(settings, email)
@@ -193,14 +196,20 @@ def access_pending(request: Request) -> Response:
 
     email = (identity.get("email") or "").strip().lower()
     name = (identity.get("name") or email).strip()
-    user = _store.get_user_by_email(email)
-    if user and (user.get("is_superadmin") or user.get("permissions")):
-        return RedirectResponse("/admin", status_code=302)
+    try:
+        user = _store.get_user_by_email(email)
+        if user and (user.get("is_superadmin") or user.get("permissions")):
+            return RedirectResponse("/admin", status_code=302)
 
-    pending = _store.get_pending_access_request_for_email(email)
-    if not pending:
-        request_id = _store.create_access_request(email, name)
-        pending = _store.get_access_request(request_id)
+        pending = _store.get_pending_access_request_for_email(email)
+        if not pending:
+            request_id = _store.create_access_request(email, name)
+            pending = _store.get_access_request(request_id)
+    except Exception:  # noqa: BLE001 — show an explicit outage state instead of a 500
+        logger.exception("Access pending page failed while resolving %s", email)
+        from sales_support_agent.services.access.pages import render_access_unavailable_page
+
+        return HTMLResponse(render_access_unavailable_page(email), status_code=503)
     return HTMLResponse(render_access_pending_page(email, request_record=pending), status_code=200)
 
 

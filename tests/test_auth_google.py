@@ -176,6 +176,29 @@ class TestGoogleCallback(unittest.TestCase):
         assert user is not None
         self.assertEqual(user["role"], "ops")
 
+    def test_rbac_resolution_failure_shows_access_unavailable(self) -> None:
+        settings = _make_settings(rbac_enabled=True)
+        app = _build_app(settings)
+        client = TestClient(app, follow_redirects=False)
+        state = _make_state_cookie(settings)
+        client.cookies.set("oauth_state", state)
+        with patch(
+            "sales_support_agent.api.auth_router.exchange_google_code",
+            return_value={
+                "email": "alice@example.com",
+                "name": "Alice",
+                "hd": "example.com",
+            },
+        ), patch(
+            "sales_support_agent.api.auth_router._rbac_login",
+            side_effect=RuntimeError("database unavailable"),
+        ):
+            resp = client.get(f"/admin/auth/callback?code=mycode&state={state}")
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("Access system unavailable", resp.text)
+        self.assertIn("access approval database is temporarily unavailable", resp.text)
+        self.assertNotIn(settings.admin_cookie_name, resp.cookies)
+
 
 if __name__ == "__main__":
     unittest.main()

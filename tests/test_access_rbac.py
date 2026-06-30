@@ -817,6 +817,26 @@ class GoogleSessionMintTests(unittest.TestCase):
         self.assertIn(email, resp.text)
         self.assertIn("Request received", resp.text)
 
+    def test_pending_page_shows_unavailable_when_access_store_is_down(self) -> None:
+        from unittest import mock
+
+        email = f"pending-down-{uuid.uuid4().hex}@anatainc.com"
+        client = TestClient(app)
+        name, token = _cookie_for(email, "Pending Down")
+        client.cookies.set(name, token)
+        try:
+            with mock.patch(
+                "sales_support_agent.services.access.store.get_user_by_email",
+                side_effect=RuntimeError("database unavailable"),
+            ):
+                resp = client.get("/admin/pending", follow_redirects=False)
+        finally:
+            client.cookies.clear()
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("Access system unavailable", resp.text)
+        self.assertIn("access approval database is temporarily unavailable", resp.text)
+        self.assertIn(email, resp.text)
+
     def test_existing_allowed_domain_user_gets_website_ops_review_tools(self) -> None:
         from sales_support_agent.api import auth_router
 

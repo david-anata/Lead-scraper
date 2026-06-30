@@ -532,6 +532,23 @@ def render_access_pending_page(email: str, *, request_record: Optional[dict] = N
     return _standalone_page("Access pending", "⏳", "Access requested", body)
 
 
+def render_access_unavailable_page(email: str = "") -> str:
+    email_line = (
+        f"Google sign-in was received for <strong>{_esc(email)}</strong>, but "
+        if email
+        else "Google sign-in is available, but "
+    )
+    body = f"""
+      <p class="muted">
+        {email_line}the access approval database is temporarily unavailable.<br><br>
+        No access request was changed. Try again after the data service recovers,
+        or use the admin password fallback if you already have break-glass access.
+      </p>
+      <a class="btn" href="/admin/login" style="margin-top:22px">Back to sign in</a>
+    """
+    return _standalone_page("Access unavailable", "!", "Access system unavailable", body)
+
+
 def render_suspended_page(email: str) -> str:
     body = f"""
       <p class="muted">
