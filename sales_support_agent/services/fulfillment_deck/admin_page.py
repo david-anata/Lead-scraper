@@ -80,7 +80,31 @@ _STYLES = """
       .pill--draft { background: rgba(43,54,68,0.10); color: rgba(43,54,68,0.65); }
       .pill--running { background: rgba(14,165,233,0.12); color: #0369a1; border: 1px solid rgba(14,165,233,0.3); }
       .pill--estimated { background: #fff4d9; color: #7a5b14; border: 1px solid #d2a94b; }
-      .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+      .row-actions { display: flex; justify-content: flex-end; }
+      .action-menu { position: relative; display: inline-flex; }
+      .action-menu-trigger {
+        width: 34px; height: 34px; border-radius: 999px; border: 1px solid var(--border);
+        background: #fff; color: var(--dark-blue); cursor: pointer; font-family: "Montserrat", sans-serif;
+        font-weight: 800; font-size: 14px; line-height: 1; display: inline-flex; align-items: center;
+        justify-content: center;
+      }
+      .action-menu-trigger:hover { border-color: rgba(43,54,68,0.24); box-shadow: 0 6px 14px rgba(43,54,68,0.08); }
+      .action-menu-panel {
+        position: absolute; right: 0; top: calc(100% + 6px); display: none; min-width: 180px;
+        background: #fff; border: 1px solid var(--border); border-radius: 10px;
+        box-shadow: 0 16px 34px rgba(43,54,68,0.16); padding: 6px; z-index: 30;
+      }
+      .action-menu[data-open] .action-menu-panel { display: grid; gap: 2px; }
+      .action-menu-panel form { margin: 0; }
+      .action-menu-item {
+        width: 100%; min-height: 34px; padding: 0 10px; border: 0; border-radius: 7px;
+        background: transparent; color: var(--dark-blue); text-decoration: none; cursor: pointer;
+        font-family: "Montserrat", sans-serif; font-size: 12px; font-weight: 700;
+        display: flex; align-items: center; justify-content: flex-start; text-align: left;
+      }
+      .action-menu-item:hover { background: rgba(43,54,68,0.06); }
+      .action-menu-item--quote { color: #FF7A59; }
+      .action-menu-item--danger { color: #8b4c42; }
       .muted { color: rgba(43,54,68,0.55); font-size: 12px; }
       .empty { color: rgba(43,54,68,0.55); font-size: 13.5px; padding: 18px 0; }
       .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
@@ -91,7 +115,7 @@ _STYLES = """
         table th:nth-child(4), table td:nth-child(4),
         table th:nth-child(5), table td:nth-child(5),
         table th:nth-child(7), table td:nth-child(7) { display: none; }
-        .row-actions { flex-direction: column; }
+        .row-actions { justify-content: flex-start; }
       }
       /* Pipeline summary bar */
       .pipeline-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
@@ -579,27 +603,34 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         if status == "running":
             pass  # just Delete below — page auto-refreshes
         elif status == "draft":
-            actions.append(f'<a class="btn btn--ghost" href="{review_path}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Review</a>')
+            actions.append(f'<a class="action-menu-item" href="{review_path}" target="_blank" rel="noreferrer">Review</a>')
         elif view_path and published:
-            actions.append(f'<a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Open</a>')
+            actions.append(f'<a class="action-menu-item" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>')
             actions.append(
-                f'<button class="btn btn--ghost" type="button" onclick="event.stopPropagation();'
-                f"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Share</button>"
+                f'<button class="action-menu-item" type="button" '
+                f"onclick=\"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Share</button>"
             )
             if hs_quote_url:
-                actions.append(f'<a class="btn btn--ghost" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()" title="Open e-signature quote in HubSpot" style="color:#FF7A59;border-color:rgba(255,122,89,0.4)">Open Quote ✍</a>')
+                actions.append(f'<a class="action-menu-item action-menu-item--quote" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" title="Open e-signature quote in HubSpot">Open Quote</a>')
             else:
                 actions.append(
                     f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/quote" '
-                    f'style="display:inline" onclick="event.stopPropagation()">'
-                    f'<button class="btn btn--ghost" type="submit" title="Create HubSpot e-signature quote">Create Quote ✍</button></form>'
+                    f'onclick="event.stopPropagation()">'
+                    f'<button class="action-menu-item action-menu-item--quote" type="submit" title="Create HubSpot e-signature quote">Create Quote</button></form>'
                 )
-            actions.append(f'<a class="btn btn--ghost" href="{review_path}" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">Edit</a>')
+            actions.append(f'<a class="action-menu-item" href="{review_path}" target="_blank" rel="noreferrer">Edit</a>')
         actions.append(
             f'<form method="post" action="/admin/fulfillment/sales/runs/{run_id}/delete" '
-            f'style="display:inline" onclick="event.stopPropagation()" '
+            f'onclick="event.stopPropagation()" '
             f"onsubmit=\"return confirm('Delete this rate sheet? The public link will stop working.');\">"
-            f'<button class="btn btn--danger" type="submit">Delete</button></form>'
+            f'<button class="action-menu-item action-menu-item--danger" type="submit">Delete</button></form>'
+        )
+        action_menu = (
+            f'<div class="action-menu" onclick="event.stopPropagation()">'
+            f'<button class="action-menu-trigger" type="button" aria-label="Actions for {prospect}" '
+            f'onclick="toggleActionMenu(this,event)">...</button>'
+            f'<div class="action-menu-panel" role="menu">{"".join(actions)}</div>'
+            f'</div>'
         )
 
         vol_str = f"{vol:,}" if vol else "—"
@@ -619,7 +650,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
             f"<td>{actual_cell}</td>"
             f'<td data-margin="{_raw_margin}">{margin_cell}</td>'
             f"<td>{views_str}</td>"
-            f"<td><div class='row-actions'>{''.join(actions)}</div></td></tr>"
+            f"<td><div class='row-actions'>{action_menu}</div></td></tr>"
             f'<tr class="expand-row" id="expand-{run_id}" style="display:none">'
             f'<td colspan="8">{_expand_panel(run)}</td></tr>'
         )
@@ -791,7 +822,7 @@ def render_fulfillment_sales_page(
       }});
     }})();
     function toggleExpand(e, id) {{
-      if (e.target.closest('select,button,a,form,input')) return;
+      if (e.target.closest('select,button,a,form,input,.action-menu')) return;
       var row = document.getElementById(id);
       if (!row) return;
       var open = row.style.display === 'none';
@@ -800,6 +831,21 @@ def render_fulfillment_sales_page(
       if (chev) chev.style.transform = open ? 'rotate(90deg)' : '';
       if (open) setTimeout(() => row.scrollIntoView({{behavior: 'smooth', block: 'nearest'}}), 40);
     }}
+    function toggleActionMenu(btn, event) {{
+      event.stopPropagation();
+      var menu = btn.closest('.action-menu');
+      if (!menu) return;
+      var willOpen = !menu.hasAttribute('data-open');
+      document.querySelectorAll('.action-menu[data-open]').forEach(function(openMenu) {{
+        if (openMenu !== menu) openMenu.removeAttribute('data-open');
+      }});
+      if (willOpen) menu.setAttribute('data-open', ''); else menu.removeAttribute('data-open');
+    }}
+    document.addEventListener('click', function() {{
+      document.querySelectorAll('.action-menu[data-open]').forEach(function(menu) {{
+        menu.removeAttribute('data-open');
+      }});
+    }});
     function quickStage(btn, stage, runId) {{
       var prospectRow = document.querySelector('tr.prospect-row[data-run="' + runId + '"]');
       var sel = prospectRow && prospectRow.querySelector('select');
@@ -947,6 +993,9 @@ def render_fulfillment_sales_page(
     document.addEventListener('keydown', function(e) {{
       // Escape: close any open expand panel
       if (e.key === 'Escape') {{
+        document.querySelectorAll('.action-menu[data-open]').forEach(function(menu) {{
+          menu.removeAttribute('data-open');
+        }});
         document.querySelectorAll('tr.expand-row').forEach(function(row) {{
           if (row.style.display !== 'none') {{
             row.style.display = 'none';

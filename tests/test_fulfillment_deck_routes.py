@@ -232,10 +232,14 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
 
         self.client.post(f"{_BASE}/runs/{run['id']}/publish", follow_redirects=False)
         page = self.client.get(_BASE).text
+        self.assertIn('class="action-menu"', page)
+        self.assertIn('aria-label="Actions for TabCo"', page)
         self.assertIn(f'href="{run["view_path"]}?viewer=internal"', page)
-        # Published rows expose the review link as an "Edit" action (drafts show "Review").
+        # Published rows expose the review link as an "Edit" action inside the row menu.
         self.assertIn(f'href="{_BASE}/runs/{run["id"]}/review"', page)
         self.assertIn(">Edit</a>", page)
+        self.assertIn(">Share</button>", page)
+        self.assertIn(">Create Quote</button>", page)
 
     def test_update_route_round_trip(self) -> None:
         run = self._generate()
