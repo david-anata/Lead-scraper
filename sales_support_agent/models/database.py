@@ -175,7 +175,7 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "contact_email": "ALTER TABLE brand_analysis_reports ADD COLUMN contact_email VARCHAR(255) NOT NULL DEFAULT ''",
         },
         "app_users": {
-            "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url VARCHAR(512) NOT NULL DEFAULT ''",
+            "picture_url": "ALTER TABLE app_users ADD COLUMN picture_url TEXT NOT NULL DEFAULT ''",
             "permissions_json": "ALTER TABLE app_users ADD COLUMN permissions_json JSON NOT NULL DEFAULT '[]'",
         },
         "ad_goals": {
@@ -749,7 +749,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                 id            TEXT         PRIMARY KEY,
                 email         VARCHAR(255) NOT NULL DEFAULT '',
                 name          VARCHAR(255) NOT NULL DEFAULT '',
-                picture_url   VARCHAR(512) NOT NULL DEFAULT '',
+                picture_url   TEXT         NOT NULL DEFAULT '',
                 role_id       TEXT         NULL,
                 permissions_json JSON      NOT NULL DEFAULT '[]',
                 status        VARCHAR(16)  NOT NULL DEFAULT 'active',
@@ -760,7 +760,9 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         """))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_app_users_email ON app_users (email)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_users_role_id ON app_users (role_id)"))
-        connection.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS picture_url VARCHAR(512) NOT NULL DEFAULT ''"))
+        connection.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS picture_url TEXT NOT NULL DEFAULT ''"))
+        if engine.dialect.name == "postgresql":
+            connection.execute(text("ALTER TABLE app_users ALTER COLUMN picture_url TYPE TEXT"))
         connection.execute(text("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS permissions_json JSON NOT NULL DEFAULT '[]'"))
         connection.execute(text("""
             CREATE TABLE IF NOT EXISTS app_invites (

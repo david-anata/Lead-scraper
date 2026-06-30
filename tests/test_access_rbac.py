@@ -865,6 +865,27 @@ class GoogleSessionMintTests(unittest.TestCase):
             {"website_ops.seo", "website_ops.queue", "website_ops.reports"},
         )
 
+    def test_google_login_accepts_long_profile_picture_url(self) -> None:
+        from sales_support_agent.api import auth_router
+
+        settings = _settings()
+        email = f"long-picture-{uuid.uuid4().hex}@anatainc.com"
+        picture_url = "https://lh3.googleusercontent.com/a-/" + ("x" * 900) + "=s96-c"
+
+        class _URL:
+            def __str__(self): return "https://agent.anatainc.com/"
+
+        class _Req:
+            cookies = {}
+            base_url = _URL()
+            app = type("A", (), {"state": type("St", (), {"agent_settings": settings})()})()
+
+        resp = auth_router._rbac_login(_Req(), settings, email, "Long Picture", picture=picture_url)
+        self.assertEqual(resp.status_code, 302)
+        user = store.get_user_by_email(email)
+        self.assertIsNotNone(user)
+        self.assertEqual(user["picture"], picture_url)
+
     def test_unprovisioned_google_login_creates_request_and_redirects_to_pending(self) -> None:
         from sales_support_agent.api import auth_router
 
