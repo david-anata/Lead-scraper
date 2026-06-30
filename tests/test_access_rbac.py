@@ -810,6 +810,38 @@ class GoogleSessionMintTests(unittest.TestCase):
         self.assertIn("outage-login@anatainc.com", resp.text)
         self.assertNotIn(settings.admin_cookie_name + "=", resp.headers.get("set-cookie", ""))
 
+    def test_google_callback_allows_seed_superadmin_when_rbac_store_is_down(self) -> None:
+        from unittest import mock
+
+        from sales_support_agent.services.admin_auth import create_signed_state_token
+
+        settings = _settings()
+        state = create_signed_state_token(settings.admin_session_secret, {"action": "login"})
+        client = TestClient(app)
+        client.cookies.set("oauth_state", state)
+        try:
+            with mock.patch(
+                "sales_support_agent.api.auth_router.exchange_google_code",
+                return_value={
+                    "email": "david@anatainc.com",
+                    "name": "David Narayan",
+                    "hd": "anatainc.com",
+                },
+            ), mock.patch(
+                "sales_support_agent.api.auth_router._rbac_login",
+                side_effect=RuntimeError("database unavailable"),
+            ):
+                resp = client.get(
+                    f"/admin/auth/callback?code=test-code&state={state}",
+                    follow_redirects=False,
+                )
+        finally:
+            client.cookies.clear()
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.headers.get("location"), "/admin")
+        self.assertIn(settings.admin_cookie_name + "=", resp.headers.get("set-cookie", ""))
+
     def test_allowed_domain_login_auto_provisions_website_ops_review_tools(self) -> None:
         from sales_support_agent.api import auth_router
 

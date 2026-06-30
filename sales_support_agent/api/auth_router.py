@@ -52,6 +52,12 @@ def _callback_uri(request: Request) -> str:
     return f"{base}/admin/auth/callback"
 
 
+def _is_seed_superadmin(settings, email: str) -> bool:
+    normalized = (email or "").strip().lower()
+    superadmins = {str(value or "").strip().lower() for value in (getattr(settings, "rbac_superadmin_emails", ()) or ())}
+    return normalized in superadmins
+
+
 def _cookie_opts(request: Request) -> dict:
     secure = "localhost" not in str(request.base_url)
     return {
@@ -132,6 +138,9 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
                 return result
         except Exception:  # noqa: BLE001 — make the outage explicit; do not bypass RBAC
             logger.exception("RBAC login resolution failed for %s", email)
+            if _is_seed_superadmin(settings, email):
+                logger.warning("RBAC store unavailable during Google login; allowing configured super-admin %s", email)
+                return _mint_session(request, settings, email, name)
             from sales_support_agent.services.access.pages import render_access_unavailable_page
 
             return HTMLResponse(render_access_unavailable_page(email), status_code=503)
