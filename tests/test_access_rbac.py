@@ -452,6 +452,10 @@ class AccessFinalizeTests(unittest.TestCase):
         both = render_login_page(show_google_button=True, show_password_form=True)
         self.assertIn('name="password"', both)
         self.assertIn('<div class="login-divider">', both)
+        self.assertIn("Admin fallback", both)
+        self.assertIn("break-glass admin access", both)
+        self.assertIn("Continue with fallback", both)
+        self.assertNotIn("GET STARTED", both)
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")

@@ -1746,6 +1746,11 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         line-height: 1.5;
         color: var(--dark-blue);
       }}
+      .login-card .fallback-note {{
+        margin: 0 0 18px;
+        font-size: 14px;
+        color: rgba(43,54,68,0.64);
+      }}
       label {{
         display: block;
         font-family: "Montserrat", sans-serif;
