@@ -140,6 +140,12 @@ class InboxConnectionsTests(unittest.TestCase):
                 lead_build_url="https://lead-builder.example",
                 deck_public_base_url="https://agent.example",
                 shared_brand_package_path="/opt/render/project/src/shared/anata_brand",
+                website_ops_execute_approved=True,
+                website_ops_site_urls=("https://anatainc.com/", "https://anatainc.com/services/"),
+                hubspot_api_token="hubspot-token",
+                hubspot_sales_pipeline_id="pipeline-1",
+                hubspot_portal_id="123456",
+                disable_clickup_sales_sync=True,
             ),
             inbox_summary=summary,
         )
@@ -147,12 +153,18 @@ class InboxConnectionsTests(unittest.TestCase):
         self.assertIn("Connected Inboxes", html)
         self.assertIn("Auth &amp; Access", html)
         self.assertIn("Core Runtime", html)
+        self.assertIn("Write Safety", html)
         self.assertIn("Google sign-in", html)
         self.assertIn("anatainc.com", html)
         self.assertIn("Fallback password", html)
         self.assertIn("App database", html)
         self.assertIn("Postgres", html)
         self.assertIn("ClickUp list", html)
+        self.assertIn("Website Ops execution", html)
+        self.assertIn("Enabled for approved actions", html)
+        self.assertIn("HubSpot write token", html)
+        self.assertIn("Sales write-back path", html)
+        self.assertIn("Preview first", html)
         self.assertIn("https://lead-builder.example", html)
         self.assertIn("David Narayan", html)
         self.assertIn("Needs Attention", html)

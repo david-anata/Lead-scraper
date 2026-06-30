@@ -1,14 +1,15 @@
 """Settings page renderer — /admin/settings.
 
-Displays eight sections visible to superadmins / access.manage holders:
+Displays nine sections visible to superadmins / access.manage holders:
   1. Your Account   — profile info from the session
   2. Team           — user/invite/request counts + quick links
   3. Auth & Access  — SSO/fallback status + approval queue state
   4. Core Runtime   — database + primary integration readiness
-  5. Amazon         — SP-API config values (read-only, secrets masked)
-  6. Connected Inboxes — configured Gmail inboxes + sync evidence
-  7. Notifications  — Slack config (read-only)
-  8. Appearance     — branding placeholder
+  5. Write Safety   — external-write gates and execution posture
+  6. Amazon         — SP-API config values (read-only, secrets masked)
+  7. Connected Inboxes — configured Gmail inboxes + sync evidence
+  8. Notifications  — Slack config (read-only)
+  9. Appearance     — branding placeholder
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav,
     render_agent_nav_styles,
 )
+from sales_support_agent.services.website_ops import MVP_ALLOWED_ACTION_TYPES, MVP_MODE_ACTIVE
 
 
 def _esc(v: object) -> str:
@@ -263,7 +265,48 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 5. Amazon config card ──────────────────────────────────────────────
+    # ── 5. Write safety card ───────────────────────────────────────────────
+    website_ops_auto_execution = bool(getattr(s, "website_ops_execute_approved", False))
+    website_ops_site_count = len(tuple(getattr(s, "website_ops_site_urls", ()) or ()))
+    website_ops_allowlist = (
+        f"MVP allowlist · {len(MVP_ALLOWED_ACTION_TYPES)} types"
+        if MVP_MODE_ACTIVE
+        else "MVP allowlist disabled"
+    )
+    hubspot_token = getattr(s, "hubspot_api_token", "") or ""
+    hubspot_pipeline = _esc(getattr(s, "hubspot_sales_pipeline_id", "") or "All pipelines")
+    hubspot_portal = _esc(getattr(s, "hubspot_portal_id", "") or "—")
+    clickup_sales_sync_disabled = bool(getattr(s, "disable_clickup_sales_sync", False))
+    website_ops_execution_label = (
+        '<span style="color:#2e7d5b;font-weight:700;">Enabled for approved actions</span>'
+        if website_ops_auto_execution
+        else '<span style="color:#8b4c42;font-weight:700;">Manual execution only</span>'
+    )
+    clickup_sales_label = (
+        '<span style="color:#2e7d5b;font-weight:700;">Disabled</span>'
+        if clickup_sales_sync_disabled
+        else '<span style="color:#c2663b;font-weight:700;">Still enabled</span>'
+    )
+
+    write_safety_card = f"""
+    <div class="settings-card settings-grid-wide">
+      <div class="card-title"><span class="card-icon">&#9998;</span> Write Safety</div>
+      <table class="config-table">
+        <tr><td>Website Ops execution</td><td>{website_ops_execution_label}</td></tr>
+        <tr><td>Website Ops action scope</td><td>{_esc(website_ops_allowlist)}</td></tr>
+        <tr><td>Website Ops tracked URLs</td><td>{website_ops_site_count}</td></tr>
+        <tr><td>HubSpot write token</td><td>{_configured(bool(hubspot_token))}</td></tr>
+        <tr><td>HubSpot pipeline scope</td><td>{hubspot_pipeline}</td></tr>
+        <tr><td>HubSpot portal</td><td>{hubspot_portal}</td></tr>
+        <tr><td>Sales write-back path</td><td>Preview first · Apply high-confidence actions</td></tr>
+        <tr><td>Legacy ClickUp sales sync</td><td>{clickup_sales_label}</td></tr>
+      </table>
+      <p class="muted-note">
+        This reports the external-write posture the runtime can see now. It does not execute actions or expose secret values.
+      </p>
+    </div>"""
+
+    # ── 6. Amazon config card ──────────────────────────────────────────────
     s = agent_settings
     marketplace_id = _esc(getattr(s, "amazon_sp_api_marketplace_id", "") or "")
     region = _esc(getattr(s, "amazon_sp_api_region", "") or "")
@@ -297,7 +340,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 6. Connected inboxes card ──────────────────────────────────────────
+    # ── 7. Connected inboxes card ──────────────────────────────────────────
     inboxes = inbox_summary or {}
     inbox_rows = list(inboxes.get("accounts", []) or [])
     inbox_warning = str(inboxes.get("warning") or "").strip()
@@ -345,7 +388,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 7. Notifications card ──────────────────────────────────────────────
+    # ── 8. Notifications card ──────────────────────────────────────────────
     slack_token = getattr(s, "slack_bot_token", "") or ""
     slack_channel = _esc(getattr(s, "slack_channel_id", "") or "")
     digest_enabled = getattr(s, "stale_lead_slack_digest_enabled", False)
@@ -370,7 +413,7 @@ def render_settings_page(
       </p>
     </div>"""
 
-    # ── 8. Appearance card ─────────────────────────────────────────────────
+    # ── 9. Appearance card ─────────────────────────────────────────────────
     appearance_card = """
     <div class="settings-card">
       <div class="card-title"><span class="card-icon">&#127912;</span> Appearance</div>
@@ -410,6 +453,7 @@ def render_settings_page(
       {team_card}
       {auth_card}
       {runtime_card}
+      {write_safety_card}
       {amazon_card}
       {inboxes_card}
       {notifications_card}
