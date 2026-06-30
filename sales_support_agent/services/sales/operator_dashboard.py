@@ -156,6 +156,10 @@ def _compact_text(value: str, *, limit: int = 140) -> str:
     return text[: max(limit - 1, 0)].rstrip() + "…"
 
 
+def _titleize_state(value: str) -> str:
+    return " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split()) or "Unknown"
+
+
 def _get_primary_pipeline(client: HubSpotClient, settings: Settings) -> dict[str, Any]:
     pipeline_id = (settings.hubspot_sales_pipeline_id or "").strip()
     if pipeline_id:
@@ -540,6 +544,7 @@ def _build_deal_intelligence(
     live_messages = list((live_mailbox or {}).get("messages") or [])
     live_inbound_times: list[datetime] = []
     live_outbound_times: list[datetime] = []
+    live_message_points: list[tuple[datetime, dict[str, Any]]] = []
     for message in live_messages:
         raw = str(message.get("occurredAt") or "").strip()
         if not raw:
@@ -548,19 +553,27 @@ def _build_deal_intelligence(
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             continue
+        aware_parsed = _aware(parsed) or parsed
+        live_message_points.append((aware_parsed, message))
         if str(message.get("direction") or "") == "inbound":
-            live_inbound_times.append(_aware(parsed) or parsed)
+            live_inbound_times.append(aware_parsed)
         else:
-            live_outbound_times.append(_aware(parsed) or parsed)
+            live_outbound_times.append(aware_parsed)
 
-    last_inbound = _latest_dt(
+    mirrored_last_inbound = _latest_dt(
         getattr(deal_row, "last_inbound_at", None),
         latest_signal.received_at if latest_signal is not None else None,
+    )
+    mirrored_last_outbound = _latest_dt(
+        getattr(deal_row, "last_outbound_at", None),
+        max((event.occurred_at for event in outbound_events), default=None),
+    )
+    last_inbound = _latest_dt(
+        mirrored_last_inbound,
         max(live_inbound_times) if live_inbound_times else None,
     )
     last_outbound = _latest_dt(
-        getattr(deal_row, "last_outbound_at", None),
-        max((event.occurred_at for event in outbound_events), default=None),
+        mirrored_last_outbound,
         max(live_outbound_times) if live_outbound_times else None,
     )
     last_touch = _latest_dt(
@@ -568,6 +581,15 @@ def _build_deal_intelligence(
         last_inbound,
         last_outbound,
         latest_event.occurred_at if latest_event is not None else None,
+    )
+    latest_live_message_at = max((item[0] for item in live_message_points), default=None)
+    latest_live_message = max(live_message_points, key=lambda item: item[0])[1] if live_message_points else None
+    mirror_latest_at = _latest_dt(
+        getattr(deal_row, "last_meaningful_touch_at", None),
+        mirrored_last_inbound,
+        mirrored_last_outbound,
+        latest_event.occurred_at if latest_event is not None else None,
+        latest_signal.received_at if latest_signal is not None else None,
     )
 
     contact_names = [
@@ -594,6 +616,31 @@ def _build_deal_intelligence(
     inbound_hours = _hours_since(last_inbound, as_of=as_of)
     outbound_days = _days_since(last_outbound, as_of=as_of)
     asset_days = _days_since(latest_asset_at, as_of=as_of)
+    mailbox_state = "not_configured"
+    if live_mailbox:
+        if not live_mailbox.get("configured"):
+            mailbox_state = "not_configured"
+        elif live_mailbox.get("error"):
+            mailbox_state = "error"
+        elif not live_mailbox.get("matched"):
+            mailbox_state = "no_match"
+        elif latest_live_message_at is not None and (
+            mirror_latest_at is None or latest_live_message_at > mirror_latest_at + timedelta(hours=6)
+        ):
+            mailbox_state = "ahead_of_mirror"
+        else:
+            mailbox_state = "validated"
+    asset_review_state = "none"
+    if share_state == "ready_to_share":
+        asset_review_state = "ready_to_share"
+    elif latest_asset_at is None:
+        asset_review_state = "missing"
+    elif share_state == "shared" and last_inbound is not None and last_inbound > latest_asset_at:
+        asset_review_state = "stale_after_reply"
+    elif share_state == "shared":
+        asset_review_state = "shared"
+    else:
+        asset_review_state = "linked"
 
     if last_inbound is not None and (last_outbound is None or last_inbound > last_outbound) and (inbound_hours is None or inbound_hours <= 120):
         ai_status = "reply_due"
@@ -630,6 +677,8 @@ def _build_deal_intelligence(
         summary_bits.append("fresh asset ready to share")
     elif not assets:
         summary_bits.append("no linked asset")
+    if asset_review_state == "stale_after_reply":
+        summary_bits.append("prospect replied after latest shared asset")
 
     if last_inbound is not None:
         summary_bits.append(f"last inbound {_fmt_relative(last_inbound.isoformat())}")
@@ -637,10 +686,17 @@ def _build_deal_intelligence(
         summary_bits.append(f"last outbound {_fmt_relative(last_outbound.isoformat())}")
 
     if live_mailbox:
-        if live_mailbox.get("matched"):
+        if mailbox_state == "ahead_of_mirror":
+            summary_bits.append("live Gmail is ahead of the mirrored deal context")
+        elif live_mailbox.get("matched"):
             summary_bits.append("live Gmail validated")
         elif live_mailbox.get("error"):
             summary_bits.append("live Gmail check failed")
+
+    if mailbox_state == "ahead_of_mirror":
+        reasons.append("Live Gmail shows a newer message than the mirrored HubSpot/local communication record.")
+    if asset_review_state == "stale_after_reply":
+        reasons.append("The prospect replied after the last shared asset, so the deck, audit, or quote may need a refresh.")
 
     current_lower = _normalize(current_next_step)
     proposed_lower = _normalize(str(recommendation.get("text") or ""))
@@ -680,6 +736,7 @@ def _build_deal_intelligence(
         "latestEventSummary": _compact_text(str(getattr(latest_event, "summary", "") or getattr(latest_event, "recommended_next_action", "") or "").strip(), limit=140) or None,
         "assetState": {
             "status": share_state,
+            "reviewState": asset_review_state,
             "latestAssetType": str(getattr(latest_asset, "asset_type", "") or "").strip() or None,
             "latestAssetLabel": _asset_label(latest_asset) if latest_asset is not None else None,
             "latestLinkedAt": latest_asset_at.isoformat() if latest_asset_at else None,
@@ -696,9 +753,66 @@ def _build_deal_intelligence(
             ],
         },
         "liveMailbox": live_mailbox or {"configured": False, "matched": False, "messages": [], "error": ""},
+        "liveMailboxState": mailbox_state,
+        "latestLiveMessageAt": latest_live_message_at.isoformat() if latest_live_message_at else None,
+        "latestLiveMessageDirection": str((latest_live_message or {}).get("direction") or "").strip() or None,
         "shouldUpdateNextStep": should_update_next_step,
         "stageHint": stage_hint,
         "stageHintConfidence": stage_hint_confidence,
+        "needsInboxSyncReview": mailbox_state == "ahead_of_mirror",
+        "needsAssetRefreshReview": asset_review_state == "stale_after_reply",
+    }
+
+
+def _build_queue_item(deal: dict[str, Any], why: str) -> dict[str, Any]:
+    intelligence = deal.get("intelligence", {}) or {}
+    return {
+        "id": str(deal.get("id") or ""),
+        "name": str(deal.get("name") or "").strip() or "Unnamed deal",
+        "company": str(deal.get("company") or "").strip() or "No company",
+        "stage": str(deal.get("stage") or "").strip() or "Unknown stage",
+        "owner": str(deal.get("owner") or "").strip() or "Unassigned",
+        "nextStep": str(deal.get("nextStep") or "").strip() or "No next step",
+        "url": str(deal.get("url") or "").strip(),
+        "why": why,
+        "ai": str(intelligence.get("recommendedNextStep") or "").strip() or "No AI recommendation",
+    }
+
+
+def _build_operator_queues(recent_deals: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    reply_now: list[dict[str, Any]] = []
+    share_asset: list[dict[str, Any]] = []
+    follow_up: list[dict[str, Any]] = []
+    inbox_sync: list[dict[str, Any]] = []
+    asset_refresh: list[dict[str, Any]] = []
+
+    for deal in recent_deals:
+        intelligence = deal.get("intelligence", {}) or {}
+        mailbox = intelligence.get("liveMailbox", {}) or {}
+        asset_state = intelligence.get("assetState", {}) or {}
+        status = str(intelligence.get("status") or "").strip()
+        if status == "reply_due":
+            why = str((intelligence.get("reasons") or ["Prospect replied more recently than the last outbound touch."])[0])
+            reply_now.append(_build_queue_item(deal, why))
+        if status == "asset_ready_to_share":
+            label = str(asset_state.get("latestAssetLabel") or "linked asset").strip()
+            share_asset.append(_build_queue_item(deal, f"{label} is newer than the last outbound touch."))
+        if status == "follow_up_due":
+            why = str((intelligence.get("reasons") or ["The last outbound touch is aging without a newer response."])[0])
+            follow_up.append(_build_queue_item(deal, why))
+        if intelligence.get("needsInboxSyncReview"):
+            direction = str(intelligence.get("latestLiveMessageDirection") or "message").strip()
+            inbox_sync.append(_build_queue_item(deal, f"Live Gmail has a newer {direction} than the mirrored deal context."))
+        if intelligence.get("needsAssetRefreshReview"):
+            label = str(asset_state.get("latestAssetLabel") or "asset package").strip()
+            asset_refresh.append(_build_queue_item(deal, f"{label} may be stale because the prospect replied after it was last shared."))
+
+    return {
+        "replyNow": reply_now[:5],
+        "shareLatestAsset": share_asset[:5],
+        "followUpDue": follow_up[:5],
+        "inboxSyncReview": inbox_sync[:5],
+        "assetRefreshReview": asset_refresh[:5],
     }
 
 
@@ -753,6 +867,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     open_deals = won_deals = lost_deals = nurture_deals = 0
     unclassified = missing_amount = missing_owner = missing_next = multi_offer = 0
     reply_due = follow_up_due = asset_ready_to_share = live_mailbox_validated = stage_hint_candidates = 0
+    mailbox_ahead = asset_refresh_review = 0
     open_amount = 0.0
     stage_rows: list[dict[str, Any]] = []
     stage_summary_map: dict[str, dict[str, Any]] = {}
@@ -807,6 +922,10 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             asset_ready_to_share += 1
         if intelligence["liveMailbox"].get("matched"):
             live_mailbox_validated += 1
+        if intelligence.get("needsInboxSyncReview"):
+            mailbox_ahead += 1
+        if intelligence.get("needsAssetRefreshReview"):
+            asset_refresh_review += 1
         if intelligence.get("stageHint"):
             stage_hint_candidates += 1
         if not stage or not summary:
@@ -897,6 +1016,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             }
         )
 
+    operator_queues = _build_operator_queues(recent_rows)
     live_labels = [str(stage.get("label") or "") for stage in pipeline.get("stages", []) or []]
     normalized_live = {_normalize(label): label for label in live_labels}
     normalized_target = {_normalize(label): label for label in TARGET_STAGE_LABELS}
@@ -925,6 +1045,8 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             "followUpDueDeals": follow_up_due,
             "assetsReadyToShare": asset_ready_to_share,
             "liveMailboxValidatedDeals": live_mailbox_validated,
+            "mailboxAheadDeals": mailbox_ahead,
+            "assetRefreshReviewDeals": asset_refresh_review,
             "stageHintCandidates": stage_hint_candidates,
         },
         "directives": {
@@ -936,6 +1058,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             "broken": [
                 f"{reply_due} deals need a reply now and {follow_up_due} need follow-up based on communication timing.",
                 f"{asset_ready_to_share} deals have a newer deck, rate sheet, or audit than the last outbound touch.",
+                f"{mailbox_ahead} recent deals have inbox activity that is ahead of the mirrored deal context, and {asset_refresh_review} may need refreshed assets after a reply.",
                 f"{missing_owner} deals are unassigned, {missing_amount} are missing amount data, and {unclassified} remain unclassified.",
             ],
             "next": [
@@ -970,6 +1093,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             "liveOnly": [label for label in live_labels if _normalize(label) not in normalized_target],
         },
         "recentDeals": recent_rows,
+        "operatorQueues": operator_queues,
     }
 
 
@@ -1080,6 +1204,14 @@ def run_writeback(
             medium_reasons.append(
                 f"next step should likely move to '{intelligence['recommendedNextStep']}' from {intelligence['status'].replace('_', ' ')} evidence, but confidence is only {round(float(intelligence.get('confidence') or 0.0) * 100)}%"
             )
+        if intelligence.get("needsInboxSyncReview"):
+            medium_reasons.append(
+                "live Gmail shows newer communication than the mirrored deal record; review the thread and sync the deal context before automating more writes"
+            )
+        if intelligence.get("needsAssetRefreshReview"):
+            medium_reasons.append(
+                "the prospect replied after the latest shared asset, so the deck, audit, or quote likely needs a refreshed version before the next send"
+            )
         if intelligence.get("stageHint"):
             medium_reasons.append(
                 f"communication and asset signals imply the deal may belong in {intelligence['stageHint']}, but stage automation is still gated for review"
@@ -1178,12 +1310,49 @@ def _recent_contact_suffix(deal: dict[str, Any]) -> str:
 
 
 def _recent_gmail_status(deal: dict[str, Any]) -> str:
+    state = str((deal.get("intelligence", {}).get("liveMailboxState") or "")).strip()
+    if state:
+        return _titleize_state(state)
     mailbox = (deal.get("intelligence", {}).get("liveMailbox", {}) or {})
     if mailbox.get("matched"):
-        return "validated"
+        return "Validated"
     if mailbox.get("error"):
-        return "error"
-    return "not validated"
+        return "Error"
+    return "Not validated"
+
+
+def _recent_asset_status(deal: dict[str, Any]) -> str:
+    state = str((((deal.get("intelligence") or {}).get("assetState") or {}).get("reviewState") or "")).strip()
+    if state:
+        return _titleize_state(state)
+    return "Unknown"
+
+
+def _render_queue_panel(title: str, items: list[dict[str, Any]], empty_text: str) -> str:
+    if not items:
+        body = f"<p class='muted'>{_esc(empty_text)}</p>"
+    else:
+        body = "".join(
+            f"""
+            <div class="queue-item">
+              <div class="queue-top">
+                <a href="{_esc(item.get('url'))}" target="_blank" rel="noreferrer">{_esc(item.get('name'))}</a>
+                <span class="queue-stage">{_esc(item.get('stage'))}</span>
+              </div>
+              <p class="muted">{_esc(item.get('company'))} · {_esc(item.get('owner'))}</p>
+              <p><strong>Why:</strong> {_esc(item.get('why'))}</p>
+              <p><strong>AI next step:</strong> {_esc(item.get('ai'))}</p>
+            </div>
+            """
+            for item in items
+        )
+    return f"""
+    <article class="panel">
+      <p class="eyebrow">{_esc(title)}</p>
+      <h3>{len(items)}</h3>
+      <div class="queue-list">{body}</div>
+    </article>
+    """
 
 
 def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, Any]] = None, writeback: Optional[dict[str, Any]] = None, status_message: str = "") -> str:
@@ -1192,6 +1361,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     favicons = render_agent_favicon_links()
     summary = snapshot.get("summary", {})
     schema = snapshot.get("schema", {})
+    queues = snapshot.get("operatorQueues", {}) or {}
     stage_cards = "".join(
         f"""
         <article class="panel">
@@ -1213,13 +1383,22 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p><strong>Next step:</strong> {_esc(deal.get("nextStep") or "No next step")}</p>
           <p><strong>AI read:</strong> {_esc(deal.get("intelligence", {}).get("recommendedNextStep") or "No AI recommendation")}</p>
           <p class="muted">{_esc(deal.get("intelligence", {}).get("summary") or "No communication summary yet.")}</p>
-          <p class="muted">Assets: {_esc((deal.get("intelligence", {}).get("assetState", {}) or {}).get("latestAssetLabel") or "No linked asset")} · Gmail: {_esc(_recent_gmail_status(deal))}</p>
+          <p class="muted">Assets: {_esc((deal.get("intelligence", {}).get("assetState", {}) or {}).get("latestAssetLabel") or "No linked asset")} · Asset state: {_esc(_recent_asset_status(deal))} · Gmail: {_esc(_recent_gmail_status(deal))}</p>
           <p><strong>Missing:</strong> {_esc(", ".join(deal.get("missingFields") or []) or "No critical gaps detected.")}</p>
           <p class="muted">Updated {_fmt_relative(str(deal.get("updatedAt") or ""))}</p>
         </article>
         """
         for deal in snapshot.get("recentDeals", [])
     ) or "<p class='muted'>No recent deals returned.</p>"
+    queue_cards = "".join(
+        [
+            _render_queue_panel("Reply Now", list(queues.get("replyNow") or []), "No prospect replies are currently ahead of the last outbound touch."),
+            _render_queue_panel("Share Latest Asset", list(queues.get("shareLatestAsset") or []), "No newer deck, audit, or rate sheet is waiting to be sent."),
+            _render_queue_panel("Follow Up Due", list(queues.get("followUpDue") or []), "No aged outbound motions are currently waiting on a follow-up."),
+            _render_queue_panel("Inbox Sync Review", list(queues.get("inboxSyncReview") or []), "No recent deals have live inbox activity ahead of the mirrored deal context."),
+            _render_queue_panel("Refresh Asset Review", list(queues.get("assetRefreshReview") or []), "No latest-reply signals currently suggest the shared asset package is stale."),
+        ]
+    )
     writeback_markup = ""
     if writeback:
         writeback_cards = "".join(
@@ -1291,6 +1470,11 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
       .inline-row {{ display:flex; gap:10px; flex-wrap:wrap; }}
       .list {{ margin:8px 0 0; padding-left:18px; }}
       .triple {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }}
+      .queue-list {{ display:grid; gap:10px; }}
+      .queue-item {{ padding-top:10px; border-top:1px solid rgba(43,54,68,0.08); }}
+      .queue-item:first-child {{ padding-top:0; border-top:none; }}
+      .queue-top {{ display:flex; align-items:center; justify-content:space-between; gap:8px; }}
+      .queue-stage {{ display:inline-flex; padding:4px 8px; border-radius:999px; background:rgba(133,187,218,0.16); font-size:11px; font-weight:700; }}
     </style>
   </head>
   <body>
@@ -1306,6 +1490,8 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <div class="stat"><div class="n">{int(summary.get("replyDueDeals") or 0)}</div><div class="l">Reply due</div></div>
           <div class="stat"><div class="n">{int(summary.get("assetsReadyToShare") or 0)}</div><div class="l">Assets ready</div></div>
           <div class="stat"><div class="n">{int(summary.get("liveMailboxValidatedDeals") or 0)}</div><div class="l">Gmail validated</div></div>
+          <div class="stat"><div class="n">{int(summary.get("mailboxAheadDeals") or 0)}</div><div class="l">Inbox ahead</div></div>
+          <div class="stat"><div class="n">{int(summary.get("assetRefreshReviewDeals") or 0)}</div><div class="l">Asset refresh review</div></div>
         </div>
       </section>
       {status_html}
@@ -1326,6 +1512,11 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <article class="panel"><p class="eyebrow">What Is Broken</p><ul class="list">{"".join(f"<li>{_esc(item)}</li>" for item in directives.get("broken", []))}</ul></article>
           <article class="panel"><p class="eyebrow">What Should Happen Next</p><ul class="list">{"".join(f"<li>{_esc(item)}</li>" for item in directives.get("next", []))}</ul></article>
         </div>
+      </section>
+      <section class="workspace section-gap">
+        <h2>Operator queues</h2>
+        <p class="muted">These queues turn deal, asset, and inbox evidence into the next operator motions without overhauling the page.</p>
+        <div class="grid">{queue_cards}</div>
       </section>
       <section class="workspace section-gap">
         <h2>Live pipeline and object model</h2>

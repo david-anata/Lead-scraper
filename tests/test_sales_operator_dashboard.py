@@ -128,5 +128,74 @@ class SalesOperatorDashboardTests(unittest.TestCase):
 
         self.assertEqual(intelligence["status"], "asset_ready_to_share")
         self.assertEqual(intelligence["assetState"]["status"], "ready_to_share")
+        self.assertEqual(intelligence["assetState"]["reviewState"], "ready_to_share")
         self.assertTrue(intelligence["shouldUpdateNextStep"])
         self.assertIn("Fulfillment Rate Sheet", intelligence["recommendedNextStep"])
+
+    def test_build_deal_intelligence_flags_inbox_ahead_of_mirror(self):
+        now = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)
+        intelligence = operator_dashboard._build_deal_intelligence(
+            deal={"id": "deal-1", "properties": {"dealname": "Acme Amazon", "hs_next_step": "Wait for reply"}},
+            stage={"label": "Proposal Sent"},
+            stage_status="open",
+            inference={"primary_offer": "amazon_marketing_service", "primary_offer_label": "Amazon Marketing Service"},
+            current_next_step="Wait for reply",
+            deal_row=SimpleNamespace(
+                last_inbound_at=now - timedelta(days=4),
+                last_outbound_at=now - timedelta(days=3),
+                last_meaningful_touch_at=now - timedelta(days=3),
+            ),
+            contacts=[SimpleNamespace(first_name="Taylor", last_name="Smith", email="taylor@example.com")],
+            assets=[],
+            events=[],
+            signals=[],
+            live_mailbox={
+                "configured": True,
+                "matched": True,
+                "messages": [
+                    {
+                        "direction": "inbound",
+                        "occurredAt": (now - timedelta(hours=1)).isoformat(),
+                        "subject": "Quick question",
+                    }
+                ],
+                "error": "",
+            },
+            as_of=now,
+        )
+
+        self.assertEqual(intelligence["liveMailboxState"], "ahead_of_mirror")
+        self.assertTrue(intelligence["needsInboxSyncReview"])
+        self.assertIn("Live Gmail shows a newer message", " ".join(intelligence["reasons"]))
+
+    def test_build_deal_intelligence_flags_asset_refresh_after_reply(self):
+        now = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)
+        intelligence = operator_dashboard._build_deal_intelligence(
+            deal={"id": "deal-1", "properties": {"dealname": "Acme Fulfillment", "hs_next_step": "Review open questions"}},
+            stage={"label": "Proposal Sent"},
+            stage_status="open",
+            inference={"primary_offer": "fulfillment", "primary_offer_label": "Fulfillment"},
+            current_next_step="Review open questions",
+            deal_row=SimpleNamespace(
+                last_inbound_at=now - timedelta(hours=5),
+                last_outbound_at=now - timedelta(days=2),
+                last_meaningful_touch_at=now - timedelta(hours=5),
+            ),
+            contacts=[SimpleNamespace(first_name="Jamie", last_name="Lee", email="jamie@example.com")],
+            assets=[
+                SimpleNamespace(
+                    asset_type="deck",
+                    label="Fulfillment Sales Deck",
+                    url="https://example.com/deck",
+                    linked_at=now - timedelta(days=4),
+                )
+            ],
+            events=[],
+            signals=[],
+            live_mailbox={"configured": True, "matched": False, "messages": [], "error": ""},
+            as_of=now,
+        )
+
+        self.assertEqual(intelligence["assetState"]["reviewState"], "stale_after_reply")
+        self.assertTrue(intelligence["needsAssetRefreshReview"])
+        self.assertIn("may need a refresh", " ".join(intelligence["reasons"]))
