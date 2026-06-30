@@ -512,6 +512,27 @@ class AdminWebsiteOpsTests(unittest.TestCase):
             self.assertTrue(faq_action["evidence"])
             self.assertTrue(faq_action["verification_requirements"])
 
+    def test_build_autonomy_overlay_degrades_invalid_google_credentials_to_setup_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(Path(tmpdir))
+            settings.google_service_account_json = "{not valid json"
+            settings.website_ops_gsc_property = "sc-domain:anatainc.com"
+            settings.website_ops_ga4_property_id = "372887830"
+            settings.website_ops_lookback_days = 28
+            settings.primary_lead_event = "generate_lead"
+            settings.gmail_poll_max_messages = 0
+            with mock.patch("sales_support_agent.services.website_ops_autonomy.collect_customer_questions", return_value=[]):
+                overlay = build_autonomy_overlay(
+                    settings=settings,
+                    report=self._fake_report(),
+                    observations=[{"url": "https://anatainc.com/services/fulfillment/", "title": "Fulfillment", "issues": []}],
+                    feedback_entries=[],
+                )
+            self.assertFalse(overlay["analytics_status"]["search_console"])
+            self.assertFalse(overlay["analytics_status"]["ga4"])
+            self.assertTrue(any("Search Console unavailable" in note for note in overlay["analytics_status"]["notes"]))
+            self.assertTrue(any("GA4 unavailable" in note for note in overlay["analytics_status"]["notes"]))
+
     def test_clean_generated_content_sanitizes_and_shortens(self) -> None:
         cleaned = clean_generated_content(
             "Search Atlas says this very long sentence should keep going well past any normal reader tolerance and keep naming competitor brands while avoiding a direct answer entirely."

@@ -79,6 +79,15 @@ def _load_service_account_info(raw: str) -> dict[str, Any]:
     return payload
 
 
+def _service_account_project_name(raw: str) -> str:
+    if not raw:
+        return "the configured project"
+    try:
+        return str(_load_service_account_info(raw).get("project_id") or "the configured project")
+    except Exception:
+        return "the configured project"
+
+
 def _google_access_token(raw_service_account_json: str, scopes: list[str]) -> str:
     if not GOOGLE_AUTH_AVAILABLE:
         raise RuntimeError("google-auth is not installed.")
@@ -348,7 +357,7 @@ def _ga4_failure_note(response: requests.Response, property_id: str, project_nam
 
 def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     config = analytics_config_from_settings(settings)
-    project_name = _load_service_account_info(config.service_account_json).get("project_id", "the configured project") if config.service_account_json else "the configured project"
+    project_name = _service_account_project_name(config.service_account_json)
     if not config.service_account_json:
         return {}, ["Search Console unavailable: GOOGLE_SERVICE_ACCOUNT_JSON is not configured."]
     if not config.search_console_property:
@@ -433,7 +442,7 @@ def fetch_search_console_snapshot(settings: Any, urls: list[str]) -> tuple[dict[
 
 def fetch_ga4_snapshot(settings: Any, urls: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     config = analytics_config_from_settings(settings)
-    project_name = _load_service_account_info(config.service_account_json).get("project_id", "the configured project") if config.service_account_json else "the configured project"
+    project_name = _service_account_project_name(config.service_account_json)
     if not config.service_account_json:
         return {}, ["GA4 unavailable: GOOGLE_SERVICE_ACCOUNT_JSON is not configured."]
     if not config.ga4_property_id:
