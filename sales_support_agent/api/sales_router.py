@@ -171,6 +171,13 @@ def _wants_json(request: Request) -> bool:
     return "application/json" in content_type or "application/json" in accept
 
 
+def _safe_internal_return_path(value: object) -> str:
+    path = str(value or "").strip()
+    if not path.startswith("/admin/") or path.startswith("//") or "\n" in path or "\r" in path:
+        return ""
+    return path
+
+
 async def _deal_create_payload(request: Request) -> dict[str, Any]:
     if "application/json" in request.headers.get("content-type", ""):
         payload = await request.json()
@@ -222,7 +229,7 @@ def _render_create_deal_page(
         render_agent_nav_styles,
     )
 
-    values = values or {}
+    values = values or dict(request.query_params)
     errors = errors or []
     error_html = ""
     if errors:
@@ -258,6 +265,9 @@ def _render_create_deal_page(
 
     def v(key: str) -> str:
         return _esc(raw(key))
+
+    return_to = _safe_internal_return_path(raw("return_to"))
+    rate_sheet_run_id = raw("rate_sheet_run_id")
 
     fallback_pipeline = settings.hubspot_sales_pipeline_id or "default"
     selected_pipeline = raw("pipeline") or fallback_pipeline
@@ -359,6 +369,8 @@ def _render_create_deal_page(
         {error_html}
         {warning_html}
         <form method="post" action="/admin/sales/deals/create">
+          <input type="hidden" name="return_to" value="{_esc(return_to)}">
+          <input type="hidden" name="rate_sheet_run_id" value="{_esc(rate_sheet_run_id)}">
           <label for="dealname">Deal name</label>
           <input id="dealname" name="dealname" value="{v('dealname')}" required>
           <div class="grid">
@@ -381,7 +393,7 @@ def _render_create_deal_page(
           <input id="closedate" name="closedate" value="{v('closedate')}" placeholder="YYYY-MM-DD">
           <div class="actions">
             <button class="btn" type="submit">Create HubSpot Deal</button>
-            <a class="btn btn--ghost" href="/admin/sales/deals">Back to board</a>
+            <a class="btn btn--ghost" href="{_esc(return_to or '/admin/sales/deals')}">Back</a>
           </div>
         </form>
       </div>
@@ -595,13 +607,49 @@ async def create_deal(request: Request) -> Response:
             logger.warning("[sales] post-create HubSpot sync failed to start")
 
     hubspot_url = hubspot_links.deal_url(settings.hubspot_portal_id or "", deal_id)
+    return_to = _safe_internal_return_path(payload.get("return_to"))
+    rate_sheet_run_id = str(payload.get("rate_sheet_run_id") or "").strip()
+    if deal_id and rate_sheet_run_id:
+        try:
+            from sqlalchemy.orm import Session
+
+            from sales_support_agent.models.database import get_engine
+            from sales_support_agent.services.fulfillment_deck import storage as fulfillment_storage
+            from sales_support_agent.services.fulfillment_deck.service import apply_profile_edits
+            from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
+
+            run_id = int(rate_sheet_run_id)
+            apply_profile_edits(
+                run_id,
+                {
+                    "hubspot_deal_id": deal_id,
+                    "hubspot_deal_url": hubspot_url,
+                },
+                settings=settings,
+            )
+            run = fulfillment_storage.get_run(run_id)
+            summary = dict(run.summary_json or {}) if run is not None else {}
+            view_path = str(summary.get("view_path") or "")
+            if view_path:
+                with Session(get_engine()) as session:
+                    link_asset_to_deal(
+                        session,
+                        hubspot_deal_id=deal_id,
+                        asset_type="rate_sheet",
+                        run_id=run_id,
+                        url=view_path,
+                        label="Fulfillment Rate Sheet",
+                    )
+                    session.commit()
+        except Exception:
+            logger.exception("[sales] failed to attach created deal to fulfillment rate sheet")
     if _wants_json(request):
         return JSONResponse(
             {"ok": True, "deal_id": deal_id, "hubspot_url": hubspot_url, "deal": created},
             status_code=201,
         )
     return RedirectResponse(
-        url=hubspot_url or (f"/admin/sales/deals/{deal_id}" if deal_id else "/admin/sales/deals"),
+        url=return_to or hubspot_url or (f"/admin/sales/deals/{deal_id}" if deal_id else "/admin/sales/deals"),
         status_code=303,
     )
 

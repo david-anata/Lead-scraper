@@ -334,6 +334,15 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
             self.assertIsNotNone(asset)
             self.assertEqual(asset.url, summary["view_path"])
 
+    def test_review_page_offers_create_deal_from_rate_sheet(self) -> None:
+        run = self._generate_published()
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(review.status_code, 200)
+        self.assertIn("Create new HubSpot deal", review.text)
+        self.assertIn("/admin/sales/deals/create?", review.text)
+        self.assertIn(f"rate_sheet_run_id={run['id']}", review.text)
+        self.assertIn(f"return_to=%2Fadmin%2Ffulfillment%2Fsales%2Fruns%2F{run['id']}%2Freview", review.text)
+
     def test_update_route_quote_margin_override_round_trip(self) -> None:
         run = self._generate()
         # Review page exposes the override input (blank = automatic).

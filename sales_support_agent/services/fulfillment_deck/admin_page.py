@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlencode
 
 from sales_support_agent.services.admin_nav import (
     render_agent_favicon_links,
@@ -1239,6 +1240,29 @@ def _hubspot_deal_picker(current_deal_id: str) -> str:
     """
 
 
+def _create_deal_href(run_id: int, summary: dict, profile: dict) -> str:
+    prospect = str(summary.get("prospect") or summary.get("design_title") or profile.get("company") or "").strip()
+    deal_name = f"{prospect} Fulfillment" if prospect else "Fulfillment Deal"
+    company_id = str(summary.get("hubspot_company_id") or "").strip()
+    contact_ids = summary.get("hubspot_contact_ids") or []
+    if isinstance(contact_ids, str):
+        contact_id = contact_ids.split(",", 1)[0].strip()
+    elif isinstance(contact_ids, list):
+        contact_id = str(contact_ids[0] if contact_ids else "").strip()
+    else:
+        contact_id = ""
+    params = {
+        "dealname": deal_name,
+        "anata_service_line": "fulfillment",
+        "anata_lead_source_detail": "agent",
+        "hubspot_company_id": company_id,
+        "hubspot_contact_id": contact_id,
+        "return_to": f"/admin/fulfillment/sales/runs/{run_id}/review",
+        "rate_sheet_run_id": str(run_id),
+    }
+    return "/admin/sales/deals/create?" + urlencode({k: v for k, v in params.items() if v})
+
+
 def render_rate_sheet_review_page(
     run: dict,
     summary: dict,
@@ -1383,6 +1407,7 @@ def render_rate_sheet_review_page(
     sales_pricing = dict(summary.get("sales_pricing") or {})
     hubspot_deal_id = str(summary.get("hubspot_deal_id") or "").strip()
     deal_picker_html = _hubspot_deal_picker(hubspot_deal_id)
+    create_deal_href = _esc(_create_deal_href(int(run_id), summary, profile))
     fee_rows = merge_fee_rows(sales_pricing.get("fee_rows") or summary.get("pricing_fee_rows") or [])
     waived_keys = {str(r.get("fee_key") or "") for r in fee_rows if r.get("waived")}
     waiver_reason = _esc(str(sales_pricing.get("waiver_reason") or ""))
@@ -1450,8 +1475,11 @@ def render_rate_sheet_review_page(
               <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:12px 0 8px">
                 <input type="checkbox" name="sales_pricing_reviewed" value="1" {"checked" if pricing_reviewed else ""} style="width:auto"> Sales pricing reviewed
               </label>
-              <p class="muted" style="margin:0 0 10px">Confirm the HubSpot deal and review sales pricing/waivers. Then save and create the quote.</p>
-              <button class="btn btn--ghost" type="submit">Save deal &amp; pricing</button>
+              <p class="muted" style="margin:0 0 10px">If the deal already exists, select it and save. If it does not exist yet, create it from this rate sheet; it will return here attached.</p>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn--ghost" type="submit">Save deal &amp; pricing</button>
+                <a class="btn" href="{create_deal_href}">Create new HubSpot deal</a>
+              </div>
             </div>
           </div>
         <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>

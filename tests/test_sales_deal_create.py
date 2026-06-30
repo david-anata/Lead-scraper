@@ -23,8 +23,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sales_support_agent.integrations.hubspot import HubSpotClient  # noqa: E402
 from sales_support_agent.main import app  # noqa: E402
 from sales_support_agent.models.database import session_scope  # noqa: E402
-from sales_support_agent.models.entities import HubSpotDeal, HubSpotDealContact  # noqa: E402
+from sales_support_agent.models.entities import HubSpotDeal, HubSpotDealContact, SalesDealAsset  # noqa: E402
 from sales_support_agent.services.admin_auth import create_user_session_token  # noqa: E402
+from sales_support_agent.services.fulfillment_deck import storage as fulfillment_storage  # noqa: E402
 from sales_support_agent.services.sales.deal_create import (  # noqa: E402
     DealCreateOptions,
     PipelineOption,
@@ -107,6 +108,23 @@ class SalesDealCreateRouteTests(unittest.TestCase):
         self.assertIn("Anata - anatainc.com | company1", body)
         self.assertIn('<select id="contact_id" name="contact_id"', body)
         self.assertIn("Maya Lee - maya@anatainc.com | contact1", body)
+
+    def test_create_form_prefills_from_rate_sheet_context(self) -> None:
+        resp = self.client.get(
+            "/admin/sales/deals/create"
+            "?dealname=TabCo+Fulfillment"
+            "&hubspot_company_id=company1"
+            "&hubspot_contact_id=contact1"
+            "&return_to=/admin/fulfillment/sales/runs/123/review"
+            "&rate_sheet_run_id=123"
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.text
+        self.assertIn('value="TabCo Fulfillment"', body)
+        self.assertIn('value="/admin/fulfillment/sales/runs/123/review"', body)
+        self.assertIn('value="123"', body)
+        self.assertIn('<option value="company1" selected>', body)
+        self.assertIn('<option value="contact1" selected>', body)
 
     def test_create_validates_rules_before_hubspot_call(self) -> None:
         object.__setattr__(self.settings, "hubspot_api_token", "test-token")
@@ -195,6 +213,67 @@ class SalesDealCreateRouteTests(unittest.TestCase):
                 hubspot_contact_id="contact1",
             ).one_or_none()
             self.assertIsNotNone(link)
+
+    def test_create_from_rate_sheet_attaches_deal_and_returns_to_review(self) -> None:
+        object.__setattr__(self.settings, "hubspot_api_token", "test-token")
+        object.__setattr__(self.settings, "hubspot_portal_id", "999")
+        run_id = fulfillment_storage.create_run(trigger="test")
+        fulfillment_storage.save_draft(
+            run_id,
+            {
+                "prospect": "TabCo",
+                "view_path": f"/rate-sheets/tabco/{run_id}/token",
+                "prospect_profile": {"company": "TabCo", "brand": "TabCo", "products": []},
+            },
+        )
+        created = {
+            "id": "deal_from_rate_sheet",
+            "properties": {
+                "dealname": "TabCo Fulfillment",
+                "pipeline": "default",
+                "dealstage": "appointmentscheduled",
+                "amount": "12000",
+                "hubspot_owner_id": "owner1",
+            },
+            "createdAt": "2026-06-29T12:00:00Z",
+            "updatedAt": "2026-06-29T12:00:00Z",
+        }
+        with patch.object(HubSpotClient, "create_deal", return_value=created), patch(
+            "sales_support_agent.api.sales_router.start_hubspot_sync"
+        ), patch("sales_support_agent.services.fulfillment_deck.service.apply_profile_edits") as apply_edits:
+            resp = self.client.post(
+                "/admin/sales/deals/create",
+                data={
+                    "dealname": "TabCo Fulfillment",
+                    "pipeline": "default",
+                    "dealstage": "appointmentscheduled",
+                    "anata_service_line": "fulfillment",
+                    "anata_lead_source_detail": "agent",
+                    "hubspot_owner_id": "owner1",
+                    "amount": "12000",
+                    "company_id": "company1",
+                    "contact_id": "contact1",
+                    "return_to": f"/admin/fulfillment/sales/runs/{run_id}/review",
+                    "rate_sheet_run_id": str(run_id),
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(resp.status_code, 303)
+        self.assertEqual(resp.headers["location"], f"/admin/fulfillment/sales/runs/{run_id}/review")
+        apply_edits.assert_called_once()
+        with session_scope(app.state.session_factory) as session:
+            asset = (
+                session.query(SalesDealAsset)
+                .filter_by(
+                    hubspot_deal_id="deal_from_rate_sheet",
+                    asset_type="rate_sheet",
+                    run_id=str(run_id),
+                )
+                .one_or_none()
+            )
+            self.assertIsNotNone(asset)
+            self.assertEqual(asset.url, f"/rate-sheets/tabco/{run_id}/token")
 
 
 if __name__ == "__main__":
