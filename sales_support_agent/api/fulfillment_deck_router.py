@@ -35,6 +35,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
 )
 from sales_support_agent.services.fulfillment_deck.us_map import map_payload
 from sales_support_agent.services.fulfillment_deck.admin_page import (
+    render_fulfillment_cost_form_page,
     render_fulfillment_sales_page,
     render_rate_sheet_review_page,
 )
@@ -914,6 +915,118 @@ def _load_valid_run(run_id: int, token: str):
     if not token or summary.get("export_token") != token:
         return None
     return run
+
+
+def _load_token_run(run_id: int, token: str):
+    """Token-gated run loader for non-customer internal share forms.
+
+    Unlike the customer rate sheet, this intentionally allows drafts so the
+    warehouse team can enter costs before sales publishes anything.
+    """
+    run = storage.get_run(run_id)
+    if run is None:
+        return None
+    summary = dict(run.summary_json or {})
+    if not token or summary.get("export_token") != token:
+        return None
+    return run
+
+
+@public_router.get("/fulfillment-costs/{run_id}/{token}", response_class=HTMLResponse)
+def fulfillment_cost_form(run_id: int, token: str, saved: str = "") -> HTMLResponse:
+    run = _load_token_run(run_id, token)
+    if run is None:
+        return HTMLResponse("Cost form not found.", status_code=404)
+    return HTMLResponse(
+        render_fulfillment_cost_form_page(
+            run_id,
+            dict(run.summary_json or {}),
+            saved=saved == "1",
+        )
+    )
+
+
+@public_router.post("/fulfillment-costs/{run_id}/{token}")
+def save_fulfillment_cost_form(
+    run_id: int,
+    token: str,
+    actual_pick_pack_per_order: str = Form(default=""),
+    actual_pick_pack_additional_item: str = Form(default=""),
+    actual_storage_per_pallet_mo: str = Form(default=""),
+    actual_storage_cubic_foot_mo: str = Form(default=""),
+    actual_receiving_precounted_box: str = Form(default=""),
+    actual_receiving_count_per_item: str = Form(default=""),
+    actual_receiving_per_pallet: str = Form(default=""),
+    actual_monthly_tech_fee: str = Form(default=""),
+    actual_customer_service_monthly: str = Form(default=""),
+    actual_pallet_order_per_pallet: str = Form(default=""),
+    actual_kitting_per_item: str = Form(default=""),
+    actual_labeling_per_item: str = Form(default=""),
+    actual_bagging_labeling_per_item: str = Form(default=""),
+    actual_returns_units_mo: str = Form(default=""),
+    actual_returns_receive_per_unit: str = Form(default=""),
+    actual_returns_examination_per_unit: str = Form(default=""),
+    actual_returns_custom_steps_per_unit: str = Form(default=""),
+    actual_special_project_hours_mo: str = Form(default=""),
+    actual_special_projects_per_hour: str = Form(default=""),
+):
+    run = _load_token_run(run_id, token)
+    if run is None:
+        return HTMLResponse("Cost form not found.", status_code=404)
+    costs = {
+        "pick_pack_per_order": _opt_float(actual_pick_pack_per_order),
+        "pick_pack_additional_item": _opt_float(actual_pick_pack_additional_item),
+        "storage_per_pallet_mo": _opt_float(actual_storage_per_pallet_mo),
+        "storage_cubic_foot_mo": _opt_float(actual_storage_cubic_foot_mo),
+        "receiving_precounted_box": _opt_float(actual_receiving_precounted_box),
+        "receiving_count_per_item": _opt_float(actual_receiving_count_per_item),
+        "receiving_per_pallet": _opt_float(actual_receiving_per_pallet),
+        "monthly_tech_fee": _opt_float(actual_monthly_tech_fee),
+        "customer_service_monthly": _opt_float(actual_customer_service_monthly),
+        "pallet_order_per_pallet": _opt_float(actual_pallet_order_per_pallet),
+        "kitting_per_item": _opt_float(actual_kitting_per_item),
+        "labeling_per_item": _opt_float(actual_labeling_per_item),
+        "bagging_labeling_per_item": _opt_float(actual_bagging_labeling_per_item),
+        "returns_units_mo": _opt_float(actual_returns_units_mo),
+        "returns_receive_per_unit": _opt_float(actual_returns_receive_per_unit),
+        "returns_examination_per_unit": _opt_float(actual_returns_examination_per_unit),
+        "returns_custom_steps_per_unit": _opt_float(actual_returns_custom_steps_per_unit),
+        "special_project_hours_mo": _opt_float(actual_special_project_hours_mo),
+        "special_projects_per_hour": _opt_float(actual_special_projects_per_hour),
+    }
+    storage.update_costs(run_id, costs)
+    storage.append_history(
+        run_id,
+        "Fulfillment costs submitted",
+        "Shared cost form saved by fulfillment team",
+    )
+    try:
+        from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+        from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+        from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_margin as _hs_margin
+
+        updated = storage.get_run(run_id)
+        summary = dict(updated.summary_json or {}) if updated is not None else dict(run.summary_json or {})
+        quote = dict(summary.get("fulfillment_quote") or {})
+        pitched = float(quote.get("monthly_total") or 0)
+        pass_through = 0.0
+        for line in quote.get("lines") or []:
+            if isinstance(line, dict) and str(line.get("key") or "") == "shipping":
+                try:
+                    pass_through += float(line.get("monthly") or 0)
+                except (TypeError, ValueError):
+                    pass
+        if pitched and any(v for v in costs.values() if v):
+            margin = compute_margin(
+                pitched,
+                costs,
+                ProspectProfile.from_dict(summary.get("prospect_profile") or {}),
+                pass_through,
+            )
+            _hs_margin(run_id, margin, pitched)
+    except Exception:
+        logger.exception("[fulfillment_deck] shared cost form margin sync failed")
+    return RedirectResponse(f"/fulfillment-costs/{run_id}/{token}?saved=1", status_code=303)
 
 
 @public_router.get("/rate-sheets/{slug}/{run_id}/{token}", response_class=HTMLResponse)

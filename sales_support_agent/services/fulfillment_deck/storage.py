@@ -187,6 +187,7 @@ def list_runs(limit: int = 100) -> list[dict]:
                     "rates_source": str(summary.get("rates_source") or ""),
                     "sections_included": list(summary.get("sections_included") or []),
                     "view_path": str(summary.get("view_path") or ""),
+                    "export_token": str(summary.get("export_token") or ""),
                     "warnings": list(summary.get("warnings") or []),
                     "error": str(summary.get("error") or ""),
                     # Pipeline fields

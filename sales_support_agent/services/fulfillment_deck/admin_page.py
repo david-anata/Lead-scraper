@@ -21,6 +21,7 @@ from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
 from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ADDRESS,
     ANATA_HQ_ZIP,
+    ProspectProfile,
     RATE_SOURCE_WMS,
 )
 
@@ -299,6 +300,11 @@ def _pass_through_monthly_from_quote(quote: dict) -> float:
     return round(total, 2)
 
 
+def _cost_form_path(run_id: int, summary: dict) -> str:
+    token = str(summary.get("export_token") or "").strip()
+    return f"/fulfillment-costs/{run_id}/{token}" if token else ""
+
+
 def _build_brief(run: dict) -> str:
     """Plain-text fulfillment brief for clipboard copy."""
     profile = run.get("prospect_profile") or {}
@@ -403,6 +409,185 @@ def _history_bar_html(summary: dict) -> str:
         '<div class="history-list">' + "".join(items) + '</div>'
         '</div>'
     )
+
+
+_COST_FORM_FIELDS = (
+    ("Core pick/pack", (
+        ("actual_pick_pack_per_order", "pick_pack_per_order", "DTC pick & pack / order", BASELINE_RATES["dtc_base_per_order"], "per order"),
+        ("actual_pick_pack_additional_item", "pick_pack_additional_item", "DTC additional item", BASELINE_RATES["dtc_additional_item"], "per additional item"),
+        ("actual_monthly_tech_fee", "monthly_tech_fee", "Monthly tech fee", BASELINE_RATES["monthly_tech_fee"], "per month"),
+        ("actual_customer_service_monthly", "customer_service_monthly", "Customer service", BASELINE_RATES["customer_service_monthly"], "per month"),
+    )),
+    ("Receiving & storage", (
+        ("actual_receiving_precounted_box", "receiving_precounted_box", "Receiving pre-counted box", BASELINE_RATES["receiving_precounted_box"], "one-time / box"),
+        ("actual_receiving_count_per_item", "receiving_count_per_item", "Receiving counted item", BASELINE_RATES["receiving_count_per_item"], "one-time / item"),
+        ("actual_receiving_per_pallet", "receiving_per_pallet", "Receiving legacy pallet", BASELINE_RATES["receiving_per_pallet"], "one-time / pallet"),
+        ("actual_storage_per_pallet_mo", "storage_per_pallet_mo", "Storage / pallet", BASELINE_RATES["storage_short_per_pallet_mo"], "per pallet / month"),
+        ("actual_storage_cubic_foot_mo", "storage_cubic_foot_mo", "Storage / cubic foot", BASELINE_RATES["storage_cubic_foot_mo"], "per cubic foot / month"),
+    )),
+    ("Value-added services", (
+        ("actual_pallet_order_per_pallet", "pallet_order_per_pallet", "Pallet orders", BASELINE_RATES["pallet_order_per_pallet"], "per pallet"),
+        ("actual_kitting_per_item", "kitting_per_item", "Kitting", BASELINE_RATES["kitting_per_unit"], "per item"),
+        ("actual_labeling_per_item", "labeling_per_item", "Labeling", BASELINE_RATES["labeling_per_unit"], "per item"),
+        ("actual_bagging_labeling_per_item", "bagging_labeling_per_item", "Bagging + labeling", BASELINE_RATES["bagging_labeling_per_unit"], "per item"),
+    )),
+    ("Returns & projects", (
+        ("actual_returns_units_mo", "returns_units_mo", "Returns units / month", 0, "units / month"),
+        ("actual_returns_receive_per_unit", "returns_receive_per_unit", "Return receive", BASELINE_RATES["returns_receive_per_unit"], "per return"),
+        ("actual_returns_examination_per_unit", "returns_examination_per_unit", "Return examination", BASELINE_RATES["returns_examination_per_unit"], "per return"),
+        ("actual_returns_custom_steps_per_unit", "returns_custom_steps_per_unit", "Return custom steps", BASELINE_RATES["returns_custom_steps_per_unit"], "per return"),
+        ("actual_special_project_hours_mo", "special_project_hours_mo", "Special project hours / month", 0, "hours / month"),
+        ("actual_special_projects_per_hour", "special_projects_per_hour", "Special projects", BASELINE_RATES["special_projects_per_hour"], "per hour"),
+    )),
+)
+
+
+def render_fulfillment_cost_form_page(
+    run_id: int,
+    summary: dict,
+    *,
+    saved: bool = False,
+) -> str:
+    profile = dict(summary.get("prospect_profile") or {})
+    costs = dict(summary.get("fulfillment_actual_costs") or {})
+    prospect = str(summary.get("prospect") or summary.get("design_title") or profile.get("brand") or f"Run {run_id}")
+    products = [p for p in (profile.get("products") or []) if isinstance(p, dict)]
+    token = str(summary.get("export_token") or "")
+    form_path = _cost_form_path(run_id, summary)
+
+    def _value(key: str, suggested: float) -> str:
+        value = costs.get(key)
+        if value in (None, ""):
+            value = suggested
+        try:
+            return f"{float(value):g}"
+        except (TypeError, ValueError):
+            return ""
+
+    def _product_rows() -> str:
+        if not products:
+            return '<tr><td colspan="5" class="muted">No products were parsed yet.</td></tr>'
+        rows = []
+        for p in products:
+            dims = " × ".join(
+                str(p.get(k) if p.get(k) is not None else "—")
+                for k in ("length_in", "width_in", "height_in")
+            )
+            rows.append(
+                "<tr>"
+                f"<td>{_esc(p.get('name') or 'Product')}</td>"
+                f"<td>{_esc(dims)} in</td>"
+                f"<td>{_esc(p.get('weight_lb') or '—')}</td>"
+                f"<td>{_esc(p.get('monthly_units') or '—')}</td>"
+                f"<td>{'Yes' if p.get('fragile') else 'No'}</td>"
+                "</tr>"
+            )
+        return "".join(rows)
+
+    try:
+        from sales_support_agent.services.fulfillment_deck.quote import (
+            estimate_pallets_mo,
+            estimate_storage_cuft_mo,
+        )
+        profile_obj = ProspectProfile.from_dict(profile)
+        pallet_est = estimate_pallets_mo(profile_obj)
+        cuft_est = estimate_storage_cuft_mo(profile_obj)
+    except Exception:
+        pallet_est = 0
+        cuft_est = 0
+
+    groups_html = []
+    for group, fields in _COST_FORM_FIELDS:
+        inputs = []
+        for form_name, key, label, suggested, unit in fields:
+            step = "1" if key in {"returns_units_mo"} else "0.01"
+            inputs.append(
+                '<div class="field">'
+                f'<label for="{form_name}">{_esc(label)}</label>'
+                f'<input type="number" id="{form_name}" name="{form_name}" step="{step}" min="0" value="{_value(key, suggested)}">'
+                f'<span class="hint">Suggested: {_fmt_rate(suggested)} · {_esc(unit)}</span>'
+                '</div>'
+            )
+        groups_html.append(
+            '<section class="cost-group">'
+            f'<h2>{_esc(group)}</h2>'
+            '<div class="cost-grid-wide">' + "".join(inputs) + '</div>'
+            '</section>'
+        )
+
+    saved_html = (
+        '<div class="flash flash--ok"><strong>Saved.</strong> Fulfillment costs were pushed back to Agent.</div>'
+        if saved else ""
+    )
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fulfillment cost form | {_esc(prospect)}</title>
+    {render_agent_favicon_links()}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <style>
+      :root {{ --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --border:rgba(43,54,68,.12); --shadow:rgba(43,54,68,.10); }}
+      * {{ box-sizing:border-box; }}
+      body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Inter","Segoe UI",sans-serif; }}
+      .shell {{ max-width:1120px; margin:0 auto; padding:28px 18px 64px; }}
+      .workspace {{ background:white; border:1px solid var(--border); border-radius:18px; box-shadow:0 18px 40px var(--shadow); padding:26px 28px 30px; }}
+      h1 {{ font-family:"Montserrat",sans-serif; font-size:26px; margin:0 0 4px; }}
+      h2 {{ font-family:"Montserrat",sans-serif; font-size:15px; margin:0 0 10px; }}
+      .eyebrow {{ font-family:"Montserrat",sans-serif; font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:rgba(43,54,68,.55); margin:0 0 4px; }}
+      .intro {{ color:rgba(43,54,68,.72); margin:0 0 18px; max-width:760px; line-height:1.45; }}
+      .flash {{ border:1px solid rgba(133,187,218,.55); background:rgba(133,187,218,.16); border-radius:12px; padding:12px 14px; margin:14px 0; }}
+      .flash--ok {{ border-color:rgba(46,125,91,.35); background:rgba(46,125,91,.12); }}
+      .facts {{ display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:10px; margin:16px 0; }}
+      .fact {{ border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:#fff; }}
+      .fact span {{ display:block; font-size:11px; color:rgba(43,54,68,.55); font-weight:700; text-transform:uppercase; letter-spacing:.05em; }}
+      .fact strong {{ display:block; margin-top:3px; font-size:16px; }}
+      .cost-group {{ border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin:12px 0; background:#fff; }}
+      .cost-grid-wide {{ display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:12px 16px; }}
+      .field {{ display:grid; gap:5px; }}
+      .field label {{ font-family:"Montserrat",sans-serif; font-size:12px; font-weight:800; }}
+      .field input {{ width:100%; min-height:44px; padding:0 12px; border:1px solid var(--border); border-radius:10px; font-size:15px; font-family:inherit; }}
+      .field input:focus {{ outline:2px solid rgba(133,187,218,.38); border-color:rgba(133,187,218,.9); }}
+      .hint,.muted {{ font-size:12px; color:rgba(43,54,68,.55); }}
+      table {{ width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }}
+      th,td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }}
+      th {{ background:rgba(133,187,218,.18); font-family:"Montserrat",sans-serif; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
+      .btn {{ display:inline-flex; align-items:center; min-height:46px; padding:0 22px; border-radius:999px; border:0; background:var(--dark-blue); color:white; font-family:"Montserrat",sans-serif; font-weight:800; cursor:pointer; }}
+      .actions {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:18px; }}
+      @media (max-width:860px) {{ .facts,.cost-grid-wide {{ grid-template-columns:1fr; }} }}
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="workspace">
+        <p class="eyebrow">Anata fulfillment cost input</p>
+        <h1>{_esc(prospect)}</h1>
+        <p class="intro">This page is for fulfillment cost input only. It does not show sales pricing, customer pitch, margin, or quote details. Suggested values are based on current baseline operating costs; overwrite anything that needs warehouse-specific pricing.</p>
+        {saved_html}
+        <div class="facts">
+          <div class="fact"><span>Monthly orders</span><strong>{_esc(profile.get('monthly_order_volume') or '—')}</strong></div>
+          <div class="fact"><span>Products</span><strong>{len(products)}</strong></div>
+          <div class="fact"><span>Est. pallets/mo</span><strong>{_esc(pallet_est or '—')}</strong></div>
+          <div class="fact"><span>Est. cu ft/mo</span><strong>{_esc(cuft_est or '—')}</strong></div>
+        </div>
+        <h2>Latest product inputs</h2>
+        <table>
+          <thead><tr><th>Product</th><th>Dims</th><th>Weight lb</th><th>Units/mo</th><th>Fragile</th></tr></thead>
+          <tbody>{_product_rows()}</tbody>
+        </table>
+        <form method="post" action="{_esc(form_path)}">
+          {''.join(groups_html)}
+          <div class="actions">
+            <button class="btn" type="submit">Save fulfillment costs</button>
+            <span class="muted">This pushes costs back to Agent and updates the sales-side margin view.</span>
+          </div>
+        </form>
+      </div>
+    </main>
+  </body>
+</html>"""
 
 
 def _expand_panel(run: dict) -> str:
@@ -656,6 +841,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         prospect = _esc(run.get("prospect") or run.get("design_title") or f"Run {run_id}")
         status = str(run.get("status") or "")
         view_path = str(run.get("view_path") or "")
+        cost_form_path = _cost_form_path(run_id, run)
         hs_quote_url = str(run.get("hubspot_quote_url") or "")
         published = bool(run.get("published")) and status == "completed"
         review_path = f"/admin/fulfillment/sales/runs/{run_id}/review"
@@ -749,12 +935,22 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
             pass  # just Delete below — page auto-refreshes
         elif status == "draft":
             actions.append(f'<a class="action-menu-item" href="{review_path}" target="_blank" rel="noreferrer">Review</a>')
+            if cost_form_path:
+                actions.append(
+                    f'<button class="action-menu-item" type="button" '
+                    f"onclick=\"navigator.clipboard.writeText(window.location.origin + '{_esc(cost_form_path)}');this.textContent='Cost form copied';\">Copy Cost Form</button>"
+                )
         elif view_path and published:
             actions.append(f'<a class="action-menu-item" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>')
             actions.append(
                 f'<button class="action-menu-item" type="button" '
                 f"onclick=\"navigator.clipboard.writeText(window.location.origin + '{_esc(view_path)}');this.textContent='Copied';\">Share</button>"
             )
+            if cost_form_path:
+                actions.append(
+                    f'<button class="action-menu-item" type="button" '
+                    f"onclick=\"navigator.clipboard.writeText(window.location.origin + '{_esc(cost_form_path)}');this.textContent='Cost form copied';\">Copy Cost Form</button>"
+                )
             if hs_quote_url:
                 actions.append(f'<a class="action-menu-item action-menu-item--quote" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer" title="Open e-signature quote in HubSpot">Open Quote</a>')
             else:
@@ -1466,6 +1662,7 @@ def render_rate_sheet_review_page(
         )
 
     view_path = str(summary.get("view_path") or "")
+    cost_form_path = _cost_form_path(run_id, summary)
     hs_deal_id = str(summary.get("hubspot_deal_id") or "").strip()
     hs_deal_url = str(summary.get("hubspot_deal_url") or "").strip()
     hs_quote_url = str(summary.get("hubspot_quote_url") or "")
@@ -1494,6 +1691,18 @@ def render_rate_sheet_review_page(
     elif hs_deal_id:
         hs_deal_chip = f'<span class="pill pill--live">HubSpot deal {_esc(hs_deal_id)}</span>'
     prospect_name = str(summary.get("prospect") or summary.get("design_title") or "your brand")
+    cost_form_block = ""
+    if cost_form_path:
+        cost_form_block = f"""
+        <div class="flash" style="background:rgba(43,54,68,0.035);border-color:rgba(43,54,68,0.12)">
+          <strong>Fulfillment cost form.</strong>
+          <span class="muted">Share this with fulfillment for internal cost input only. It does not show sales pricing, customer pitch, margin, or quote details.</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+            <button class="btn btn--ghost" type="button"
+              onclick="navigator.clipboard.writeText(window.location.origin+'{_esc(cost_form_path)}');this.textContent='Cost form copied!';setTimeout(()=>this.textContent='Copy cost form link',2000)">Copy cost form link</button>
+            <a class="btn btn--ghost" href="{_esc(cost_form_path)}" target="_blank" rel="noreferrer">Open cost form</a>
+          </div>
+        </div>"""
     if published and view_path:
         _full_link_js = f"window.location.origin+'{_esc(view_path)}'"
         _subj_attr = html.escape(f"Anata 3PL — {prospect_name} Fulfillment Rate Sheet", quote=True)
@@ -1660,6 +1869,7 @@ def render_rate_sheet_review_page(
         <p class="intro">{'Rate sheet is live — edit fields below and re-publish to update. Shareable link stays the same.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
         {flash_html}
         {publish_block}
+        {cost_form_block}
         {warnings_html}
         {quote_guard_html}
         {assortment_html}

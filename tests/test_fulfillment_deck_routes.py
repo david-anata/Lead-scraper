@@ -473,6 +473,50 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(summary["fulfillment_actual_costs"]["monthly_tech_fee"], 0.0)
         self.assertEqual(summary["fulfillment_actual_costs"]["storage_per_pallet_mo"], 30.0)
 
+    def test_shared_fulfillment_cost_form_saves_without_sales_pricing(self) -> None:
+        run = self._generate()
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        path = f"/fulfillment-costs/{run['id']}/{summary['export_token']}"
+        public = TestClient(app)
+
+        page = public.get(path)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Anata fulfillment cost input", page.text)
+        self.assertIn("Save fulfillment costs", page.text)
+        self.assertIn("Suggested:", page.text)
+        self.assertNotIn("Customer-facing monthly estimate", page.text)
+        self.assertNotIn("Fee Card Adjustments", page.text)
+        self.assertNotIn("Estimated monthly net margin", page.text)
+
+        bad = public.get(f"/fulfillment-costs/{run['id']}/{'0' * 32}")
+        self.assertEqual(bad.status_code, 404)
+
+        posted = public.post(
+            path,
+            data={
+                "actual_pick_pack_per_order": "0.91",
+                "actual_pick_pack_additional_item": "0.16",
+                "actual_storage_per_pallet_mo": "31",
+                "actual_monthly_tech_fee": "0",
+                "actual_customer_service_monthly": "200",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(posted.status_code, 303)
+        self.assertIn("saved=1", posted.headers["location"])
+        updated = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(updated["fulfillment_actual_costs"]["pick_pack_per_order"], 0.91)
+        self.assertEqual(updated["fulfillment_actual_costs"]["monthly_tech_fee"], 0.0)
+        self.assertEqual(updated["negotiation_history"][-1]["event"], "Fulfillment costs submitted")
+
+    def test_review_page_exposes_fulfillment_cost_form_link(self) -> None:
+        run = self._generate()
+        response = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Fulfillment cost form.", response.text)
+        self.assertIn("Copy cost form link", response.text)
+        self.assertIn("/fulfillment-costs/", response.text)
+
     def test_review_page_shows_volume_basis_hint(self) -> None:
         run = self._generate()
         summary = dict(storage.get_run(run["id"]).summary_json)
