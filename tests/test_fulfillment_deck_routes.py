@@ -282,6 +282,58 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         # Re-rendered HTML reflects the edit.
         self.assertIn("9 × 7 × 4 in", summary["deck_html"])
 
+    def test_review_page_can_select_deal_and_mark_pricing_ready_for_quote(self) -> None:
+        run = self._generate_published()
+        with Session(get_engine()) as s:
+            for model in (SalesDealAsset, HubSpotDeal):
+                for row in s.query(model).all():
+                    if getattr(row, "hubspot_deal_id", "") == "quote_ready_deal":
+                        s.delete(row)
+            s.add(HubSpotDeal(
+                hubspot_deal_id="quote_ready_deal",
+                deal_name="TabCo Fulfillment",
+                is_closed=False,
+            ))
+            s.commit()
+
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(review.status_code, 200)
+        self.assertIn("Deal &amp; Quote Readiness", review.text)
+        self.assertIn("TabCo Fulfillment", review.text)
+        self.assertIn('name="hubspot_deal_id"', review.text)
+
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo",
+                "origin_zip": "84043",
+                "hubspot_deal_id": "quote_ready_deal",
+                "sales_pricing_reviewed": "1",
+                "product_name": ["Widget"],
+                "product_length": ["6"],
+                "product_width": ["5"],
+                "product_height": ["3"],
+                "product_weight": ["1.5"],
+                "product_units": ["500"],
+                "product_estimated": ["0"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(summary["hubspot_deal_id"], "quote_ready_deal")
+        self.assertTrue(summary["sales_pricing"]["reviewed"])
+        from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
+        self.assertEqual(validate_quote_readiness(summary, published=True), [])
+        with Session(get_engine()) as s:
+            asset = (
+                s.query(SalesDealAsset)
+                .filter_by(hubspot_deal_id="quote_ready_deal", asset_type="rate_sheet", run_id=str(run["id"]))
+                .first()
+            )
+            self.assertIsNotNone(asset)
+            self.assertEqual(asset.url, summary["view_path"])
+
     def test_update_route_quote_margin_override_round_trip(self) -> None:
         run = self._generate()
         # Review page exposes the override input (blank = automatic).

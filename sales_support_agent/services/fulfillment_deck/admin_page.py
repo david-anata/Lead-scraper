@@ -1167,6 +1167,78 @@ def _assortment_hint(profile: dict) -> str:
     )
 
 
+def _hubspot_deal_picker(current_deal_id: str) -> str:
+    """Visible quote-readiness control for selecting a mirrored open deal."""
+    from sales_support_agent.services.sales import hubspot_links
+
+    try:
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+
+        from sales_support_agent.config import load_settings
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.entities import HubSpotCompany, HubSpotDeal
+
+        settings = load_settings()
+        portal_id = settings.hubspot_portal_id or ""
+        with Session(get_engine()) as session:
+            rows = (
+                session.execute(
+                    select(HubSpotDeal)
+                    .where(HubSpotDeal.is_closed.is_(False))
+                    .order_by(HubSpotDeal.updated_at.desc().nullslast(), HubSpotDeal.deal_name.asc())
+                    .limit(200)
+                )
+                .scalars()
+                .all()
+            )
+            company_ids = {r.hubspot_company_id for r in rows if r.hubspot_company_id}
+            companies = {}
+            if company_ids:
+                for co in session.execute(select(HubSpotCompany).where(HubSpotCompany.hubspot_company_id.in_(company_ids))).scalars():
+                    companies[co.hubspot_company_id] = co.name
+    except Exception:
+        rows = []
+        companies = {}
+        portal_id = ""
+
+    options = ['<option value="">Select open HubSpot deal...</option>']
+    selected_label = ""
+    for deal in rows:
+        deal_id = str(deal.hubspot_deal_id or "")
+        company = str(companies.get(deal.hubspot_company_id, "") or "")
+        amount = f" · ${deal.amount_cents / 100:,.0f}" if int(deal.amount_cents or 0) else ""
+        stage = str(deal.deal_stage_label or deal.deal_stage or "").strip()
+        label = f"{deal.deal_name or deal_id}{(' · ' + company) if company else ''}{amount}{(' · ' + stage) if stage else ''}"
+        if deal_id == current_deal_id:
+            selected_label = label
+        options.append(f'<option value="{_esc(deal_id)}" {"selected" if deal_id == current_deal_id else ""}>{_esc(label)}</option>')
+
+    manual_hint = (
+        '<span class="hint">No mirrored open deals loaded. Paste the HubSpot deal ID below, then save.</span>'
+        if not rows else
+        '<span class="hint">Choose the open HubSpot deal this rate sheet belongs to. Use manual ID only if the mirror is stale.</span>'
+    )
+    deal_url = hubspot_links.deal_url(portal_id, current_deal_id) if portal_id and current_deal_id else ""
+    selected_html = (
+        f'<div class="muted" style="margin-top:6px">Selected: {_esc(selected_label or current_deal_id)}'
+        + (f' · <a href="{_esc(deal_url)}" target="_blank" rel="noreferrer">Open in HubSpot</a>' if deal_url else "")
+        + "</div>"
+        if current_deal_id else ""
+    )
+    return f"""
+      <div class="field">
+        <label for="hubspot_deal_id">HubSpot deal</label>
+        <select id="hubspot_deal_id" name="hubspot_deal_id" style="min-height:40px;padding:0 12px;border-radius:10px;border:1px solid var(--border);font-size:14px;background:#fff">
+          {''.join(options)}
+        </select>
+        {manual_hint}
+        <input type="text" id="hubspot_deal_id_manual" name="hubspot_deal_id_manual" placeholder="Manual HubSpot deal ID" value="{_esc(current_deal_id if current_deal_id and not selected_label else '')}" style="margin-top:8px">
+        {selected_html}
+      </div>
+    """
+
+
 def render_rate_sheet_review_page(
     run: dict,
     summary: dict,
@@ -1309,6 +1381,8 @@ def render_rate_sheet_review_page(
     margin_override = summary.get("quote_margin_override")
     margin_value = "" if margin_override is None else f"{margin_override:g}"
     sales_pricing = dict(summary.get("sales_pricing") or {})
+    hubspot_deal_id = str(summary.get("hubspot_deal_id") or "").strip()
+    deal_picker_html = _hubspot_deal_picker(hubspot_deal_id)
     fee_rows = merge_fee_rows(sales_pricing.get("fee_rows") or summary.get("pricing_fee_rows") or [])
     waived_keys = {str(r.get("fee_key") or "") for r in fee_rows if r.get("waived")}
     waiver_reason = _esc(str(sales_pricing.get("waiver_reason") or ""))
@@ -1365,10 +1439,24 @@ def render_rate_sheet_review_page(
         {assortment_html}
         {brief_block}
         {'<form method="post" action="' + base + '/runs/' + str(run_id) + '/publish" style="margin-bottom:10px"><button class="btn" type="submit" style="width:100%">Publish — get shareable link</button></form>' if not published else ''}
+        <form method="post" action="{base}/runs/{run_id}/update">
+          <h2>Deal &amp; Quote Readiness</h2>
+          <div class="grid2">
+            <div>
+              {deal_picker_html}
+            </div>
+            <div class="flash" style="margin:0;background:rgba(133,187,218,0.08);border-color:rgba(133,187,218,0.35)">
+              <strong>Before creating a quote</strong>
+              <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:700;margin:12px 0 8px">
+                <input type="checkbox" name="sales_pricing_reviewed" value="1" {"checked" if pricing_reviewed else ""} style="width:auto"> Sales pricing reviewed
+              </label>
+              <p class="muted" style="margin:0 0 10px">Confirm the HubSpot deal and review sales pricing/waivers. Then save and create the quote.</p>
+              <button class="btn btn--ghost" type="submit">Save deal &amp; pricing</button>
+            </div>
+          </div>
         <iframe class="preview-frame" id="preview" src="{base}/runs/{run_id}/preview" title="Rate sheet preview"></iframe>
 
         <h2>Prospect details</h2>
-        <form method="post" action="{base}/runs/{run_id}/update">
           <div class="grid2">
             <div>
               <div class="field">

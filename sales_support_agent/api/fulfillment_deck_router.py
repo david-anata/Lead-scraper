@@ -291,6 +291,8 @@ def update_run(
     monthly_order_volume: str = Form(default=""),
     current_cost_per_parcel_usd: str = Form(default=""),
     quote_margin_override: str = Form(default=""),
+    hubspot_deal_id: str = Form(default=""),
+    hubspot_deal_id_manual: str = Form(default=""),
     destinations_note: str = Form(default=""),
     current_costs_note: str = Form(default=""),
     product_name: list[str] = Form(default=[]),
@@ -374,6 +376,13 @@ def update_run(
             row["customer_price"] = 0
         fee_rows.append(row)
 
+    settings = load_settings()
+    hubspot_deal_id = (hubspot_deal_id_manual or hubspot_deal_id or "").strip()
+    hubspot_deal_url = ""
+    if hubspot_deal_id:
+        from sales_support_agent.services.sales import hubspot_links
+        hubspot_deal_url = hubspot_links.deal_url(settings.hubspot_portal_id or "", hubspot_deal_id)
+
     edits = {
         "brand": (brand or "").strip(),
         "origin_zip": (origin_zip or "").strip(),
@@ -386,6 +395,8 @@ def update_run(
         "products": products,
         "rate_overrides": rate_overrides,
         "rate_card_note": (rate_card_note or "").strip(),
+        "hubspot_deal_id": hubspot_deal_id,
+        "hubspot_deal_url": hubspot_deal_url,
         "sales_pricing": {
             "reviewed": sales_pricing_reviewed == "1",
             "margin_approved": margin_approved == "1",
@@ -394,7 +405,26 @@ def update_run(
         },
     }
     try:
-        apply_profile_edits(run_id, edits, settings=load_settings())
+        result = apply_profile_edits(run_id, edits, settings=settings)
+        if hubspot_deal_id:
+            try:
+                from sqlalchemy.orm import Session
+                from sales_support_agent.models.database import get_engine
+                from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
+
+                view_path = str(result.get("view_path") or "")
+                with Session(get_engine()) as session:
+                    link_asset_to_deal(
+                        session,
+                        hubspot_deal_id=hubspot_deal_id,
+                        asset_type="rate_sheet",
+                        run_id=run_id,
+                        url=view_path,
+                        label="Fulfillment Rate Sheet",
+                    )
+                    session.commit()
+            except Exception:
+                logger.exception("[fulfillment_deck] explicit deal asset link failed")
     except ValueError:
         return RedirectResponse(
             f"{_BASE}?kind=warn&msg=" + quote_plus("Rate sheet not found."), status_code=303

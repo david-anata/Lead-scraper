@@ -620,6 +620,9 @@ def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict
         patch["rate_card_note"] = str(edits.get("rate_card_note") or "").strip()
     if "sales_pricing" in edits:
         patch["sales_pricing"] = dict(edits.get("sales_pricing") or {})
+    for key in ("hubspot_deal_id", "hubspot_deal_url"):
+        if key in edits:
+            patch[key] = str(edits.get(key) or "").strip()
     storage.update_summary(run_id, patch)
 
     return rerender_rate_sheet(run_id, settings=settings)
