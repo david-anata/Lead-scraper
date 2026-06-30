@@ -42,6 +42,18 @@ services:
         sync: false
       - key: FULFILLMENT_CS_REPORTS_DIR
         sync: false
+      - key: HUBSPOT_API_TOKEN
+        sync: false
+      - key: HUBSPOT_PORTAL_ID
+        sync: false
+      - key: HUBSPOT_SALES_PIPELINE_ID
+        sync: false
+      - key: HUBSPOT_DEFAULT_OWNER_ID
+        sync: false
+      - key: HUBSPOT_DEFAULT_SERVICE_LINE
+        value: fulfillment
+      - key: HUBSPOT_DEFAULT_LEAD_SOURCE_DETAIL
+        value: agent
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
         sync: false
       - key: GOOGLE_SHEETS_SALES_RANGE

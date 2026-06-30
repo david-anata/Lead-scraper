@@ -285,6 +285,18 @@ class HubSpotClient:
             json_body={"properties": properties},
         )
 
+    def create_deal(
+        self,
+        properties: dict[str, str],
+        *,
+        associations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Create a HubSpot deal with optional CRM associations."""
+        body: dict[str, Any] = {"properties": properties}
+        if associations:
+            body["associations"] = associations
+        return self._request("POST", "/crm/v3/objects/deals", json_body=body)
+
     def update_contact(self, contact_id: str, properties: dict[str, str]) -> dict[str, Any]:
         """PATCH a contact's properties in HubSpot."""
         return self._request(

@@ -276,6 +276,9 @@ _STYLES = """
     border-radius:10px; padding:7px 14px; cursor:pointer; color:var(--dark-blue); }
   .cleanup-link { font-size:13px; font-weight:600; color:#2f8f5b; text-decoration:none; }
   .cleanup-link:hover { text-decoration:underline; }
+  .create-link { font-size:13px; font-weight:700; color:var(--dark-blue); text-decoration:none;
+    border:1px solid var(--border); border-radius:10px; padding:7px 14px; background:var(--white); }
+  .create-link:hover { border-color:rgba(43,54,68,0.3); }
   .stale-badge { font-size:13px; color:#b23b3b; margin-left:4px; cursor:default; }
   .stat--warn .n { color:#b23b3b; }
   .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
@@ -408,6 +411,7 @@ def render_deal_board_page(
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
             <button type="submit" onclick="this.textContent='Syncing…';this.disabled=true">Sync now</button>
           </form>
+          <a href="/admin/sales/deals/create" class="create-link">Create deal</a>
           <a href="/admin/sales/deals/cleanup" class="cleanup-link">Run cleanup →</a>
           {last_synced_html}
           <span id="sync-note">{sync_note}</span>

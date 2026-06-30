@@ -1,0 +1,175 @@
+{
+  "schema_version": "1.0",
+  "system_name": "anata_hubspot_sales",
+  "source_of_truth": "hubspot",
+  "service_lines": [
+    "marketing",
+    "fulfillment",
+    "ads"
+  ],
+  "objects": {
+    "contact": {
+      "required_properties": [
+        "firstname_or_full_name",
+        "email_or_phone",
+        "lifecyclestage"
+      ],
+      "rules": [
+        {
+          "id": "contact_has_reachable_channel",
+          "severity": "high",
+          "when": "always",
+          "require_any": [
+            "email",
+            "phone"
+          ]
+        },
+        {
+          "id": "contact_associated_to_company_for_b2b",
+          "severity": "medium",
+          "when": "deal_exists",
+          "require_association": "company"
+        }
+      ]
+    },
+    "company": {
+      "required_properties": [
+        "name"
+      ],
+      "recommended_properties": [
+        "domain",
+        "industry",
+        "anata_service_line"
+      ],
+      "rules": [
+        {
+          "id": "company_has_owner_before_proposal",
+          "severity": "high",
+          "when": "proposal_stage_or_later",
+          "require_properties": [
+            "hubspot_owner_id"
+          ]
+        }
+      ]
+    },
+    "deal": {
+      "required_properties": [
+        "dealname",
+        "pipeline",
+        "dealstage",
+        "anata_service_line",
+        "anata_lead_source_detail",
+        "hubspot_owner_id"
+      ],
+      "recommended_properties": [
+        "amount",
+        "closedate",
+        "anata_next_step",
+        "anata_next_step_due_at",
+        "anata_primary_deck_type",
+        "anata_primary_deck_url",
+        "anata_primary_audit_type",
+        "anata_primary_audit_url",
+        "anata_commercial_status",
+        "anata_handoff_status"
+      ],
+      "rules": [
+        {
+          "id": "deal_has_company",
+          "severity": "critical",
+          "when": "always",
+          "require_association": "company"
+        },
+        {
+          "id": "deal_has_contact",
+          "severity": "critical",
+          "when": "always",
+          "require_association": "contact"
+        },
+        {
+          "id": "deal_has_next_step_after_qualification",
+          "severity": "high",
+          "when": "qualified_or_later",
+          "require_properties": [
+            "anata_next_step",
+            "anata_next_step_due_at"
+          ]
+        },
+        {
+          "id": "deal_has_deck_before_quote",
+          "severity": "high",
+          "when": "quote_requested",
+          "require_properties": [
+            "anata_primary_deck_type",
+            "anata_primary_deck_url"
+          ]
+        }
+      ]
+    },
+    "quote": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "quote_only_for_pricing_ready_stage",
+          "severity": "critical",
+          "when": "quote_exists",
+          "allowed_deal_stage_group": "pricing_ready"
+        },
+        {
+          "id": "quote_requires_primary_contact",
+          "severity": "high",
+          "when": "quote_exists",
+          "require_association": "contact"
+        },
+        {
+          "id": "quote_requires_company",
+          "severity": "high",
+          "when": "quote_exists",
+          "require_association": "company"
+        }
+      ]
+    },
+    "deck": {
+      "artifact_types": [
+        "marketing_strategy",
+        "fulfillment_strategy",
+        "ads_audit",
+        "marketing_audit",
+        "fulfillment_audit"
+      ],
+      "rules": [
+        {
+          "id": "one_primary_deck_per_service_line",
+          "severity": "medium",
+          "when": "deck_exists",
+          "enforce_unique_by": [
+            "deal_id",
+            "service_line",
+            "is_primary"
+          ]
+        }
+      ]
+    }
+  },
+  "stage_groups": {
+    "qualified_or_later": [
+      "qualified_to_buy",
+      "proposal",
+      "decision_maker_bought_in",
+      "contract_sent",
+      "closed_won"
+    ],
+    "pricing_ready": [
+      "proposal",
+      "decision_maker_bought_in",
+      "contract_sent"
+    ]
+  },
+  "automation_queues": [
+    "lead_audit_failures",
+    "stale_deals",
+    "deck_ready",
+    "quote_ready",
+    "handoff_blocked"
+  ]
+}

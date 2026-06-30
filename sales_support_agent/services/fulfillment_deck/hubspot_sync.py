@@ -47,7 +47,11 @@ _STAGE_DEFAULTS = {
 
 
 def _token() -> Optional[str]:
-    return os.environ.get("HUBSPOT_API_TOKEN", "").strip() or None
+    for name in ("HUBSPOT_API_TOKEN", "HUBSPOT_PRIVATE_APP_TOKEN", "HUBSPOT_ACCESS_TOKEN", "HS_PRIVATE_APP_TOKEN"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
 
 
 def _headers() -> dict:

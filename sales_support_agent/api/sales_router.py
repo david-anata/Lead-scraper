@@ -9,13 +9,14 @@ Priorities page (kept) and the off-limits "Generate sales deck" feature.
 from __future__ import annotations
 
 import logging
+import html
 
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from sales_support_agent.integrations.hubspot import HubSpotClient
+from sales_support_agent.integrations.hubspot import HubSpotAPIError, HubSpotClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     HubSpotContact,
@@ -38,6 +39,15 @@ from sales_support_agent.services.sales.deal_detail import (
     build_deal_detail,
     render_deal_detail_page,
 )
+from sales_support_agent.services.sales.deal_create import (
+    SalesDealRulesError,
+    build_deal_associations,
+    mirror_created_deal,
+    normalize_deal_create_request,
+    read_sales_rules,
+    validate_deal_create_request,
+)
+from sales_support_agent.services.sales import hubspot_links
 from sales_support_agent.integrations.gmail import GmailClient
 from sales_support_agent.services.sales.deal_batch import (
     build_batch_cleanup,
@@ -53,7 +63,7 @@ from sales_support_agent.services.sales.followup_draft import (
 )
 
 from sqlalchemy import func, select
-from typing import List
+from typing import Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +109,119 @@ def _deal_not_found_page(request: Request) -> str:
 </html>"""
 
 
+def _esc(value: object) -> str:
+    return html.escape(str(value or ""))
+
+
+def _wants_json(request: Request) -> bool:
+    content_type = request.headers.get("content-type", "")
+    accept = request.headers.get("accept", "")
+    return "application/json" in content_type or "application/json" in accept
+
+
+async def _deal_create_payload(request: Request) -> dict[str, Any]:
+    if "application/json" in request.headers.get("content-type", ""):
+        payload = await request.json()
+        return dict(payload) if isinstance(payload, dict) else {}
+    form = await request.form()
+    return {str(key): str(value) for key, value in form.items()}
+
+
+def _render_create_deal_page(
+    request: Request,
+    *,
+    message: str = "",
+    errors: list[str] | None = None,
+    values: dict[str, Any] | None = None,
+) -> str:
+    from sales_support_agent.services.admin_nav import (
+        render_agent_favicon_links,
+        render_agent_nav,
+        render_agent_nav_styles,
+    )
+
+    values = values or {}
+    errors = errors or []
+    error_html = ""
+    if errors:
+        error_html = (
+            '<div class="flash flash--warn"><strong>Fix before creating:</strong><ul>'
+            + "".join(f"<li>{_esc(err)}</li>" for err in errors)
+            + "</ul></div>"
+        )
+    elif message:
+        error_html = f'<div class="flash flash--warn">{_esc(message)}</div>'
+
+    def v(key: str) -> str:
+        return _esc(values.get(key, ""))
+
+    settings = _sales_settings(request)
+    default_pipeline = v("pipeline") or _esc(settings.hubspot_sales_pipeline_id or "default")
+    default_stage = v("dealstage") or _esc("appointmentscheduled")
+    default_service = v("anata_service_line") or _esc("fulfillment")
+    default_source = v("anata_lead_source_detail") or _esc("agent")
+    nav_styles = render_agent_nav_styles()
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>agent | Create HubSpot Deal</title>
+    {render_agent_favicon_links()}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <style>
+      :root{{--dark-blue:#2B3644;--light-blue:#85BBDA;--light-brown:#F9F7F3;--white:#FFF;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);}}
+      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}} a{{color:var(--dark-blue);}}
+      {nav_styles}
+      .shell{{max-width:900px;margin:0 auto;padding:28px 18px 64px;}} .workspace{{background:var(--white);border:1px solid var(--border);border-radius:20px;box-shadow:0 18px 40px var(--shadow);padding:26px 28px 30px;}}
+      h1{{font-family:"Montserrat",sans-serif;font-size:26px;margin:0 0 6px;}} .intro{{font-size:14px;color:rgba(43,54,68,.72);margin:0 0 18px;}}
+      label{{display:block;font-weight:700;font-size:12px;margin:13px 0 5px;}} input,select,textarea{{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font:inherit;color:var(--dark-blue);background:#fff;}}
+      .grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;}} .btn{{border:1px solid var(--dark-blue);background:var(--dark-blue);color:#fff;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer;}} .btn--ghost{{background:#fff;color:var(--dark-blue);text-decoration:none;display:inline-block;}}
+      .actions{{display:flex;gap:10px;align-items:center;margin-top:18px;flex-wrap:wrap;}} .flash{{border:1px solid rgba(178,59,59,.25);background:#fff4f4;color:#8a2424;border-radius:12px;padding:12px 14px;margin:0 0 16px;font-size:13px;}} .flash ul{{margin:6px 0 0;padding-left:18px;}}
+      @media(max-width:720px){{.grid{{grid-template-columns:1fr;}}}}
+    </style>
+  </head>
+  <body>
+    {render_agent_nav("sales", sales_section="sales_deals", user=get_current_user(request))}
+    <main class="shell">
+      <div class="workspace">
+        <p style="font-family:Montserrat,sans-serif;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:rgba(43,54,68,.55);margin:0 0 4px">Sales Priorities — HubSpot</p>
+        <h1>Create Deal.</h1>
+        <p class="intro">Creates a HubSpot deal only after validating required fields and company/contact associations from <code>config/hubspot_sales_rules.json</code>.</p>
+        {error_html}
+        <form method="post" action="/admin/sales/deals/create">
+          <label for="dealname">Deal name</label>
+          <input id="dealname" name="dealname" value="{v('dealname')}" required>
+          <div class="grid">
+            <div><label for="pipeline">Pipeline</label><input id="pipeline" name="pipeline" value="{default_pipeline}" required></div>
+            <div><label for="dealstage">Deal stage</label><input id="dealstage" name="dealstage" value="{default_stage}" required></div>
+          </div>
+          <div class="grid">
+            <div><label for="anata_service_line">Service line</label><input id="anata_service_line" name="anata_service_line" value="{default_service}" required></div>
+            <div><label for="anata_lead_source_detail">Lead source detail</label><input id="anata_lead_source_detail" name="anata_lead_source_detail" value="{default_source}" required></div>
+          </div>
+          <div class="grid">
+            <div><label for="hubspot_owner_id">HubSpot owner ID</label><input id="hubspot_owner_id" name="hubspot_owner_id" value="{v('hubspot_owner_id')}" required></div>
+            <div><label for="amount">Amount</label><input id="amount" name="amount" value="{v('amount')}" inputmode="decimal"></div>
+          </div>
+          <div class="grid">
+            <div><label for="company_id">HubSpot company ID</label><input id="company_id" name="company_id" value="{v('company_id')}" required></div>
+            <div><label for="contact_id">HubSpot contact ID</label><input id="contact_id" name="contact_id" value="{v('contact_id')}" required></div>
+          </div>
+          <label for="closedate">Close date</label>
+          <input id="closedate" name="closedate" value="{v('closedate')}" placeholder="YYYY-MM-DD">
+          <div class="actions">
+            <button class="btn" type="submit">Create HubSpot Deal</button>
+            <a class="btn btn--ghost" href="/admin/sales/deals">Back to board</a>
+          </div>
+        </form>
+      </div>
+    </main>
+  </body>
+</html>"""
+
+
 router = APIRouter(
     prefix="/admin/sales",
     tags=["sales-deals"],
@@ -128,6 +251,108 @@ def _sales_settings(request: Request):
     s = _load_agent_settings()
     request.app.state.agent_settings = s
     return s
+
+
+@router.get("/deals/create", response_class=HTMLResponse)
+def create_deal_form(request: Request) -> HTMLResponse:
+    return HTMLResponse(_render_create_deal_page(request))
+
+
+@router.post("/deals/create")
+async def create_deal(request: Request) -> Response:
+    settings = _sales_settings(request)
+    payload: dict[str, Any] = {}
+    try:
+        payload = await _deal_create_payload(request)
+        rules = read_sales_rules()
+        deal_request = normalize_deal_create_request(payload, rules, settings=settings)
+    except (ValueError, TypeError):
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": "bad-request"}, status_code=400)
+        return HTMLResponse(
+            _render_create_deal_page(
+                request,
+                message="Deal creation request was incomplete.",
+                values=payload,
+            ),
+            status_code=400,
+        )
+    except SalesDealRulesError as exc:
+        logger.exception("[sales] deal create rules load failed")
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return HTMLResponse(
+            _render_create_deal_page(request, message=str(exc), values=payload),
+            status_code=500,
+        )
+
+    validation_errors = validate_deal_create_request(deal_request, rules)
+    if validation_errors:
+        if _wants_json(request):
+            return JSONResponse(
+                {"ok": False, "error": "validation-failed", "errors": validation_errors},
+                status_code=400,
+            )
+        return HTMLResponse(
+            _render_create_deal_page(
+                request,
+                message="Deal creation request failed validation.",
+                errors=validation_errors,
+                values=payload,
+            ),
+            status_code=400,
+        )
+
+    client = HubSpotClient(settings)
+    if not client.is_configured:
+        msg = "HubSpot token is not configured. Set HUBSPOT_API_TOKEN or HUBSPOT_PRIVATE_APP_TOKEN in Render."
+        if _wants_json(request):
+            return JSONResponse({"ok": False, "error": msg}, status_code=503)
+        return HTMLResponse(
+            _render_create_deal_page(request, message=msg, errors=[msg], values=payload),
+            status_code=503,
+        )
+
+    try:
+        created = client.create_deal(
+            deal_request.properties,
+            associations=build_deal_associations(deal_request),
+        )
+    except HubSpotAPIError as exc:
+        logger.exception("[sales] HubSpot deal create failed")
+        msg = str(exc)[:240]
+        if _wants_json(request):
+            return JSONResponse(
+                {"ok": False, "error": msg, "status_code": exc.status_code},
+                status_code=502,
+            )
+        return HTMLResponse(
+            _render_create_deal_page(request, message=msg, errors=[msg], values=payload),
+            status_code=502,
+        )
+
+    deal_id = str(created.get("id") or "").strip()
+    if deal_id:
+        try:
+            with session_scope(request.app.state.session_factory) as session:
+                mirror_created_deal(session, created, deal_request)
+        except Exception:
+            logger.exception("[sales] local mirror insert failed for created HubSpot deal %s", deal_id)
+        try:
+            start_hubspot_sync(request.app, force=True)
+        except Exception:
+            logger.warning("[sales] post-create HubSpot sync failed to start")
+
+    hubspot_url = hubspot_links.deal_url(settings.hubspot_portal_id or "", deal_id)
+    if _wants_json(request):
+        return JSONResponse(
+            {"ok": True, "deal_id": deal_id, "hubspot_url": hubspot_url, "deal": created},
+            status_code=201,
+        )
+    return RedirectResponse(
+        url=hubspot_url or (f"/admin/sales/deals/{deal_id}" if deal_id else "/admin/sales/deals"),
+        status_code=303,
+    )
 
 
 @router.get("/deals", response_class=HTMLResponse)

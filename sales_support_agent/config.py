@@ -433,10 +433,19 @@ def load_settings() -> Settings:
         clickup_api_token=(os.getenv("CLICKUP_API_TOKEN") or os.getenv("CLICKUP_API_KEY") or "").strip(),
         clickup_base_url=(os.getenv("CLICKUP_BASE_URL", "https://api.clickup.com/api/v2").strip() or "https://api.clickup.com/api/v2"),
         clickup_list_id=os.getenv("CLICKUP_LIST_ID", "").strip(),
-        hubspot_api_token=os.getenv("HUBSPOT_API_TOKEN", "").strip(),
+        hubspot_api_token=(
+            os.getenv("HUBSPOT_API_TOKEN", "").strip()
+            or os.getenv("HUBSPOT_ACCESS_TOKEN", "").strip()
+            or os.getenv("HUBSPOT_PRIVATE_APP_TOKEN", "").strip()
+            or os.getenv("HS_PRIVATE_APP_TOKEN", "").strip()
+        ),
         hubspot_base_url=(os.getenv("HUBSPOT_BASE_URL", "https://api.hubapi.com").strip() or "https://api.hubapi.com"),
         hubspot_request_timeout_seconds=int((os.getenv("HUBSPOT_REQUEST_TIMEOUT_SECONDS", "30") or "30").strip()),
-        hubspot_sales_pipeline_id=os.getenv("HUBSPOT_SALES_PIPELINE_ID", "").strip(),
+        hubspot_sales_pipeline_id=(
+            os.getenv("HUBSPOT_SALES_PIPELINE_ID", "").strip()
+            or os.getenv("HUBSPOT_PRIMARY_PIPELINE_ID", "").strip()
+            or os.getenv("HUBSPOT_PIPELINE_ID", "").strip()
+        ),
         hubspot_portal_id=os.getenv("HUBSPOT_PORTAL_ID", "").strip(),
         stale_deal_days=int((os.getenv("STALE_DEAL_DAYS", "14") or "14").strip()),
         stale_deal_slack_digest_enabled=_parse_bool(os.getenv("STALE_DEAL_SLACK_DIGEST_ENABLED", "false"), default=False),
