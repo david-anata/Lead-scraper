@@ -1299,6 +1299,10 @@ class RateSheetServiceTests(unittest.TestCase):
             quote["monthly_total"],
             round(sum(line["monthly"] for line in quote["lines"]), 2),
         )
+        rate_card = html[html.index('data-key="fee-schedule"'):]
+        self.assertIn("Implementation &amp; onboarding", rate_card)
+        self.assertIn("$2,000 one-time", rate_card)
+        self.assertIn("Shopify integration</td><td class=\"ql-qty\">included after onboarding", rate_card)
 
     # ------------------------------------------------------------------
     # v5: share polish

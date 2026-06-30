@@ -312,6 +312,7 @@ def update_run(
     rate_wholesale: str = Form(default=""),
     rate_returns: str = Form(default=""),
     rate_tech_fee: str = Form(default=""),
+    rate_integration_setup_fee: str = Form(default=""),
     rate_minimum: str = Form(default=""),
     rate_card_note: str = Form(default=""),
     fee_waived: list[str] = Form(default=[]),
@@ -379,6 +380,7 @@ def update_run(
         "wholesale_per_unit": rate_wholesale,
         "returns_per_unit": rate_returns,
         "monthly_tech_fee": rate_tech_fee,
+        "integration_setup_fee": rate_integration_setup_fee,
         "monthly_minimum": rate_minimum,
     }
     rate_overrides = {k: v for k, raw in _rate_fields.items() if (v := _opt_float(raw)) is not None}

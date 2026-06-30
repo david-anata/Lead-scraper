@@ -46,6 +46,7 @@ BASELINE_RATES = {
     "returns_per_unit": 4.00,
     "special_projects_per_hour": 40.00,
     "monthly_tech_fee": 50.00,
+    "integration_setup_fee": 2000.00,
     "customer_service_monthly": 200.00,
     "monthly_minimum": 500.00,
     "packaging_markup_pct": 5.00,
@@ -91,7 +92,7 @@ ONE_TIME_FEES = (
     {
         "key": "implementation",
         "label": "Implementation & onboarding",
-        "amount": 2000.00,
+        "amount": BASELINE_RATES["integration_setup_fee"],
         "unit": "one-time",
         "note": "dedicated onboarding specialist",
     },
@@ -483,6 +484,13 @@ def build_fulfillment_quote(
     # and the assumption bullets.
     headline_units_per_pallet = int(round(units_total / pallets)) if pallets else units_per_pallet
 
+    one_time = []
+    for fee in ONE_TIME_FEES:
+        item = dict(fee)
+        if item.get("key") == "implementation":
+            item["amount"] = float(br["integration_setup_fee"])
+        one_time.append(item)
+
     return {
         "orders": int(orders),
         "units_total": int(units_total),
@@ -502,7 +510,7 @@ def build_fulfillment_quote(
         "effective_per_order": round(monthly_total / orders, 2),
         "assumptions": assumptions,
         # One-time fees: listed transparently, never in the monthly total.
-        "one_time": [dict(fee) for fee in ONE_TIME_FEES],
+        "one_time": one_time,
     }
 
 

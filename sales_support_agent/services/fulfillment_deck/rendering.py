@@ -807,7 +807,10 @@ def _render_fee_schedule_section(
              "waived when Anata manages the relationship"),
         _row("Special projects",
              f"${br['special_projects_per_hour']:.2f} / hour"),
-        _row("Shopify integration", "included — no setup fee, no per-transaction fee"),
+        _row("Implementation & onboarding",
+             f"${br['integration_setup_fee']:,.0f} one-time",
+             "Shopify, Amazon, and standard WMS setup; can be waived or reduced"),
+        _row("Shopify integration", "included after onboarding"),
         _row("Amazon Seller Central", "included"),
         _row("Custom EDI / API", "contact us"),
     ])
@@ -1577,10 +1580,33 @@ def render_rate_sheet_html(
     }}
 
     /* v4: estimated-invoice table + assumptions. */
-    .quote-table .ql-qty {{ color: var(--anata-ink-soft); white-space: nowrap; }}
-    .quote-table .ql-monthly {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .quote-table {{
+      table-layout: auto;
+      background: white;
+    }}
+    .quote-table th:first-child,
+    .quote-table td:first-child {{ width: 48%; }}
+    .quote-table th:nth-child(2),
+    .quote-table td:nth-child(2) {{ text-align: right; }}
+    .quote-table th:last-child,
+    .quote-table td:last-child {{ text-align: right; }}
+    .quote-table .ql-qty {{
+      color: var(--anata-ink-soft);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }}
+    .quote-table .ql-monthly {{
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }}
     .quote-table .ql-note {{
-      display: block; font-size: 10.5px; color: var(--anata-muted); margin-top: 2px;
+      display: block;
+      font-size: 10.5px;
+      line-height: 1.35;
+      color: var(--anata-muted);
+      margin-top: 2px;
+      max-width: 42ch;
     }}
     .quote-table tr.ql-total td {{
       border-top: 2px solid var(--anata-line-strong);
@@ -1668,6 +1694,8 @@ def render_rate_sheet_html(
       font-size: 15px; font-weight: 700; letter-spacing: -0.01em;
       margin: 0 0 8px;
     }}
+    .q-onetime .quote-table th:first-child,
+    .q-onetime .quote-table td:first-child {{ width: 72%; }}
     .q-waiver {{
       margin: 14px 0 0; padding: 11px 14px; border-radius: 10px;
       border: 1px solid var(--anata-sky, #85bbda);
@@ -1686,7 +1714,8 @@ def render_rate_sheet_html(
       border-bottom: 1px solid var(--anata-line);
     }}
     .fs-table {{ width: 100%; border-collapse: collapse; }}
-    .fs-table td {{ padding: 5px 4px; font-size: 13px; vertical-align: top; }}
+    .fs-table td {{ padding: 7px 6px; font-size: 13px; vertical-align: top; }}
+    .fs-table td:first-child {{ width: 62%; }}
     .fs-table td:last-child {{
       text-align: right; font-variant-numeric: tabular-nums;
       white-space: nowrap; color: var(--anata-ink); font-weight: 600;
@@ -1701,7 +1730,14 @@ def render_rate_sheet_html(
       background: rgba(238,233,220,0.6); border: 1px solid var(--anata-line);
       font-size: 13px; font-weight: 500; line-height: 1.55;
     }}
-    @media (max-width: 640px) {{ .fs-grid {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 640px) {{
+      .quote-table th, .quote-table td {{ padding: 7px 8px; font-size: 12px; }}
+      .quote-table th:first-child,
+      .quote-table td:first-child {{ width: auto; }}
+      .quote-table .ql-qty {{ white-space: normal; }}
+      .quote-table .ql-note {{ max-width: none; }}
+      .fs-grid {{ grid-template-columns: 1fr; }}
+    }}
     @media print {{ .fs-grid {{ grid-template-columns: 1fr; gap: 14px; }} }}
 
     /* v4: trust stamp under the live-rate table. */

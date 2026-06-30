@@ -1749,6 +1749,11 @@ def render_rate_sheet_review_page(
                 {_cost_hint('monthly_tech_fee', label='Fulfillment tech cost')}
               </div>
               <div class="field">
+                <label for="rate_integration_setup_fee">Customer fee: one-time implementation &amp; integration setup (baseline ${BASELINE_RATES['integration_setup_fee']:,.0f})</label>
+                <input type="number" id="rate_integration_setup_fee" name="rate_integration_setup_fee" step="1" min="0" value="{_rval('integration_setup_fee')}" placeholder="{BASELINE_RATES['integration_setup_fee']:g}">
+                <span class="hint">One-time prospect-facing setup fee. It is not included in monthly gross-to-net margin.</span>
+              </div>
+              <div class="field">
                 <label for="rate_minimum">Customer fee: monthly minimum (baseline ${BASELINE_RATES['monthly_minimum']:g})</label>
                 <input type="number" id="rate_minimum" name="rate_minimum" step="1" min="0" value="{_rval('monthly_minimum')}" placeholder="{BASELINE_RATES['monthly_minimum']:g}">
               </div>

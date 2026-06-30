@@ -407,6 +407,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
                 "origin_zip": "84043",
                 "rate_pick_pack": "2",
                 "rate_additional_item": "0.50",
+                "rate_integration_setup_fee": "1500",
                 "actual_costs_form": "1",
                 "actual_pick_pack_per_order": "0.80",
                 "actual_pick_pack_additional_item": "0.15",
@@ -427,6 +428,12 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         summary = dict(storage.get_run(run["id"]).summary_json)
         self.assertEqual(summary["rate_overrides"]["dtc_base_per_order"], 2.0)
+        self.assertEqual(summary["rate_overrides"]["integration_setup_fee"], 1500.0)
+        implementation_fee = next(
+            fee for fee in summary["fulfillment_quote"]["one_time"]
+            if fee.get("key") == "implementation"
+        )
+        self.assertEqual(implementation_fee["amount"], 1500.0)
         self.assertEqual(summary["fulfillment_actual_costs"]["pick_pack_per_order"], 0.80)
         self.assertEqual(summary["fulfillment_actual_costs"]["customer_service_monthly"], 0.0)
         pick_pack = next(line for line in summary["fulfillment_quote"]["lines"] if line.get("key") == "pick_pack")
@@ -441,6 +448,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn('name="actual_pick_pack_per_order"', review.text)
         self.assertIn("Fulfillment pick &amp; pack cost", review.text)
         self.assertIn("Customer fee: DTC pick &amp; pack / order", review.text)
+        self.assertIn("Customer fee: one-time implementation &amp; integration setup", review.text)
 
     def test_pipeline_cost_save_preserves_zero_values(self) -> None:
         run = self._generate_published()

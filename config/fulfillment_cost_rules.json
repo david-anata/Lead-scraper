@@ -19,6 +19,7 @@
     {"fee_key": "special_projects_per_hour", "label": "Special projects", "baseline_cost": 40.0, "unit": "hour", "waivable": true},
     {"fee_key": "packaging_markup_pct", "label": "Packaging markup", "baseline_cost": 5.0, "unit": "percent", "waivable": true},
     {"fee_key": "monthly_tech_fee", "label": "Monthly tech fee", "baseline_cost": 50.0, "unit": "month", "waivable": true},
+    {"fee_key": "integration_setup_fee", "label": "Implementation and integration setup", "baseline_cost": 2000.0, "unit": "one-time", "waivable": true},
     {"fee_key": "customer_service_monthly", "label": "Customer service", "baseline_cost": 200.0, "unit": "month", "waivable": true}
   ],
   "volume_tiers": []
