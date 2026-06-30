@@ -247,6 +247,18 @@ def _with_packaging_markup(cost: float) -> float:
     return cost * (1 + float(BASELINE_RATES["packaging_markup_pct"]) / 100.0)
 
 
+def _effective_rates(rate_overrides: Optional[dict] = None) -> dict:
+    rates = dict(BASELINE_RATES)
+    for key, value in (rate_overrides or {}).items():
+        if key not in rates:
+            continue
+        try:
+            rates[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return rates
+
+
 def _line(key: str, label: str, qty: float, unit: str, rate: float,
           monthly: float, *, multiplier: float = 1.0,
           scales_with_orders: bool = False, note: str = "") -> dict:
@@ -269,6 +281,7 @@ def build_fulfillment_quote(
     blended_rate: Optional[float],
     *,
     margin_override: Optional[float] = None,
+    rate_overrides: Optional[dict] = None,
 ) -> Optional[dict]:
     """Directional monthly fulfillment invoice for the prospect.
 
@@ -283,6 +296,7 @@ def build_fulfillment_quote(
     if not units_total:
         units_total = orders  # assume one unit per order when units unknown
 
+    br = _effective_rates(rate_overrides)
     m = quote_multiplier(profile, margin_override)
     units_per_pallet = _units_per_pallet(profile)
     # PER-PRODUCT pallet math: each product's pallets from ITS dims; the
@@ -298,21 +312,21 @@ def build_fulfillment_quote(
     avg_items = max(1.0, min(5.0, units_total / orders))
     extra_items = max(avg_items - 1.0, 0.0)
     pick_pack_rate = (
-        BASELINE_RATES["dtc_base_per_order"]
-        + extra_items * BASELINE_RATES["dtc_additional_item"]
+        br["dtc_base_per_order"]
+        + extra_items * br["dtc_additional_item"]
     ) * m
 
     lines = [
         _line(
             "receiving", "Receiving", pallets, "pallets",
-            BASELINE_RATES["receiving_per_pallet"] * m,
-            pallets * BASELINE_RATES["receiving_per_pallet"] * m,
+            br["receiving_per_pallet"] * m,
+            pallets * br["receiving_per_pallet"] * m,
             multiplier=m,
         ),
         _line(
             "storage", "Storage", pallets, "pallets",
-            BASELINE_RATES["storage_short_per_pallet_mo"] * m,
-            pallets * BASELINE_RATES["storage_short_per_pallet_mo"] * m,
+            br["storage_short_per_pallet_mo"] * m,
+            pallets * br["storage_short_per_pallet_mo"] * m,
             multiplier=m,
         ),
         _line(
@@ -334,8 +348,8 @@ def build_fulfillment_quote(
         lines.append(
             _line(
                 "wholesale", "Wholesale fulfillment", wholesale_units, "units",
-                BASELINE_RATES["wholesale_per_unit"] * m,
-                wholesale_units * BASELINE_RATES["wholesale_per_unit"] * m,
+                br["wholesale_per_unit"] * m,
+                wholesale_units * br["wholesale_per_unit"] * m,
                 multiplier=m,
                 scales_with_orders=True,
             )
@@ -364,8 +378,8 @@ def build_fulfillment_quote(
             _line(
                 "fragile", "Special handling (fragile)",
                 fragile_units, "units",
-                BASELINE_RATES["special_handling_per_unit"] * m,
-                fragile_units * BASELINE_RATES["special_handling_per_unit"] * m,
+                br["special_handling_per_unit"] * m,
+                fragile_units * br["special_handling_per_unit"] * m,
                 multiplier=m,
                 scales_with_orders=True,
             )
@@ -374,8 +388,8 @@ def build_fulfillment_quote(
     lines.append(
         _line(
             "tech", "Account & tech", 1, "flat",
-            BASELINE_RATES["monthly_tech_fee"],
-            BASELINE_RATES["monthly_tech_fee"],
+            br["monthly_tech_fee"],
+            br["monthly_tech_fee"],
         )
     )
     if blended_rate:
@@ -393,7 +407,7 @@ def build_fulfillment_quote(
     # Anata's $500 monthly minimum: a tiny-volume account that prices out below
     # the floor is topped up to $500 with a visible adjustment line (counted as
     # FIXED). Above the floor, the total is the line sum as-is.
-    monthly_minimum = BASELINE_RATES["monthly_minimum"]
+    monthly_minimum = br["monthly_minimum"]
     floor_applied = sum_lines < monthly_minimum
     if floor_applied:
         lines.append({

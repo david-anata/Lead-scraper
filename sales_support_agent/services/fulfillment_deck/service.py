@@ -332,7 +332,9 @@ def _assemble(
     blended_rate, blend_method = _blended_rate(profile, matrix)
     avg_transit = _avg_transit_days(profile, matrix)
     fulfillment_quote = build_fulfillment_quote(
-        profile, matrix, blended_rate, margin_override=quote_margin_override
+        profile, matrix, blended_rate,
+        margin_override=quote_margin_override,
+        rate_overrides=rate_overrides or {},
     )
     narrative = _build_narrative(profile, matrix, savings)
     flags = decide_sections(profile, matrix)
@@ -545,6 +547,7 @@ def apply_viewer_requote(
     fulfillment_quote = build_fulfillment_quote(
         profile, matrix, blended_rate,
         margin_override=_opt_margin(summary.get("quote_margin_override")),
+        rate_overrides=dict(summary.get("rate_overrides") or {}),
     )
     # Deterministic narrative only — viewer edits must never trigger an LLM call.
     narrative_fn = getattr(llm_module, "_fallback_narrative", None) or _fallback_narrative
@@ -567,6 +570,8 @@ def apply_viewer_requote(
         blend_method=blend_method,
         avg_transit_days=avg_transit,
         quote=fulfillment_quote,
+        rate_overrides=dict(summary.get("rate_overrides") or {}),
+        rate_card_note=str(summary.get("rate_card_note") or ""),
     )
     patch = {
         "prospect_profile": profile.to_dict(),

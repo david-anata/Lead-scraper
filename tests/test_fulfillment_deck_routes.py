@@ -398,6 +398,49 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIsNone(summary["quote_margin_override"])
         self.assertNotEqual(summary["fulfillment_quote"]["multiplier"], 1.12)
 
+    def test_customer_fee_overrides_update_quote_and_margin_review(self) -> None:
+        run = self._generate_published()
+        response = self.client.post(
+            f"{_BASE}/runs/{run['id']}/update",
+            data={
+                "brand": "TabCo",
+                "origin_zip": "84043",
+                "rate_pick_pack": "2",
+                "rate_additional_item": "0.50",
+                "sales_pricing_reviewed": "1",
+                "product_name": ["Widget"],
+                "product_length": ["6"],
+                "product_width": ["5"],
+                "product_height": ["3"],
+                "product_weight": ["1.5"],
+                "product_units": ["500"],
+                "product_estimated": ["0"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        summary = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(summary["rate_overrides"]["dtc_base_per_order"], 2.0)
+        pick_pack = next(line for line in summary["fulfillment_quote"]["lines"] if line.get("key") == "pick_pack")
+        self.assertGreaterEqual(float(pick_pack["rate"]), 2.0)
+
+        storage.update_costs(
+            run["id"],
+            {
+                "pick_pack_per_order": 0.80,
+                "pick_pack_additional_item": 0.15,
+                "storage_per_pallet_mo": 30.0,
+                "monthly_tech_fee": 50.0,
+            },
+        )
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(review.status_code, 200)
+        self.assertIn("Pricing definitions", review.text)
+        self.assertIn("Customer-facing monthly estimate", review.text)
+        self.assertIn("Estimated monthly net margin", review.text)
+        self.assertIn("Fulfillment pick &amp; pack cost", review.text)
+        self.assertIn("Customer fee: DTC pick &amp; pack / order", review.text)
+
     def test_review_page_shows_volume_basis_hint(self) -> None:
         run = self._generate()
         summary = dict(storage.get_run(run["id"]).summary_json)

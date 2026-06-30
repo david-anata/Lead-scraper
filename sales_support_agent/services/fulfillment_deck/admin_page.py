@@ -238,6 +238,17 @@ def _fmt_usd(value) -> str:
         return "—"
 
 
+def _fmt_rate(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+        sign = "−" if v < 0 else ""
+        return f"{sign}${abs(v):,.2f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _build_brief(run: dict) -> str:
     """Plain-text fulfillment brief for clipboard copy."""
     profile = run.get("prospect_profile") or {}
@@ -266,6 +277,45 @@ def _build_brief(run: dict) -> str:
         f"Products:\n{products_str}\n"
         f"Category: {cat} | Fragile: {'yes' if fragile else 'no'}"
     )
+
+
+def _pricing_summary_html(summary: dict, profile: dict) -> str:
+    quote = dict(summary.get("fulfillment_quote") or {})
+    customer_monthly = float(quote.get("monthly_total") or 0)
+    actual_costs = dict(summary.get("fulfillment_actual_costs") or {})
+    has_actual_costs = bool(actual_costs and any(v for v in actual_costs.values() if v))
+    if not customer_monthly and not has_actual_costs:
+        return ""
+    cost_html = '<div class="muted">Enter fulfillment costs in the pipeline row to calculate net.</div>'
+    if has_actual_costs:
+        try:
+            from sales_support_agent.services.fulfillment_deck.quote import compute_margin
+            from sales_support_agent.services.fulfillment_deck.schema import ProspectProfile
+            mg = compute_margin(customer_monthly, actual_costs, ProspectProfile.from_dict(profile or {}))
+            sign = "#15803d" if float(mg.get("monthly_margin") or 0) >= 0 else "#b91c1c"
+            cost_html = f"""
+              <div class="margin-line"><span>Fulfillment monthly cost</span><span>−{_fmt_usd(mg.get('actual_monthly'))}</span></div>
+              <div class="margin-line" style="font-weight:800;color:{sign}"><span>Estimated monthly net margin</span><span>{_fmt_usd(mg.get('monthly_margin'))} ({_esc(mg.get('margin_pct'))}%)</span></div>
+              <div class="margin-line"><span>Estimated annual net margin</span><span>{_fmt_usd(mg.get('annual_margin'))}</span></div>
+            """
+        except Exception:
+            cost_html = '<div class="muted">Could not calculate margin from stored fulfillment costs.</div>'
+    return f"""
+      <div class="flash" style="background:rgba(43,54,68,0.035);border-color:rgba(43,54,68,0.12);margin:14px 0 18px">
+        <strong>Pricing definitions</strong>
+        <div class="grid2" style="margin-top:10px">
+          <div>
+            <div class="margin-line"><span>Customer-facing monthly estimate</span><span>{_fmt_usd(customer_monthly)}</span></div>
+            {cost_html}
+          </div>
+          <div class="muted" style="font-size:12px;line-height:1.5">
+            <strong>Fee Card Adjustments</strong> are prices shown to the customer in the rate sheet and used for the monthly estimate.
+            <br><strong>Fulfillment costs</strong> are internal warehouse costs from the pipeline.
+            <br><strong>Net margin</strong> = customer-facing monthly estimate minus internal fulfillment monthly cost.
+          </div>
+        </div>
+      </div>
+    """
 
 
 def _expand_panel(run: dict) -> str:
@@ -1430,10 +1480,26 @@ def render_rate_sheet_review_page(
 
     from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
     _ro = dict(summary.get("rate_overrides") or {})
+    _actual_costs = dict(summary.get("fulfillment_actual_costs") or {})
+    pricing_summary_html = _pricing_summary_html(summary, profile)
 
     def _rval(key: str) -> str:
         v = _ro.get(key)
         return f"{v:g}" if v is not None else ""
+
+    def _cost_hint(*keys: str, label: str = "Fulfillment cost") -> str:
+        vals = []
+        for key in keys:
+            value = _actual_costs.get(key)
+            if value not in (None, ""):
+                try:
+                    vals.append(float(value))
+                except (TypeError, ValueError):
+                    pass
+        if not vals:
+            return ""
+        shown = sum(vals) if len(vals) > 1 else vals[0]
+        return f'<span class="hint">{_esc(label)}: {_fmt_rate(shown)}. Customer fee should cover this plus sales margin.</span>'
 
     rate_card_note_val = _esc(str(summary.get("rate_card_note") or ""))
 
@@ -1531,49 +1597,59 @@ def render_rate_sheet_review_page(
           </div>
 
           <h2>Fee Card Adjustments</h2>
-          <p class="muted" style="margin-bottom:12px">Override any baseline rate for this prospect's deck only. Leave blank to use the standard rate shown in parentheses.</p>
+          {pricing_summary_html}
+          <p class="muted" style="margin-bottom:12px">Customer-facing fees shown in the public rate sheet. Leave blank to use the baseline customer fee in parentheses; enter a value to override what the prospect sees and what the monthly estimate uses.</p>
           <div class="edit-grid">
             <div class="edit-col">
               <div class="field">
-                <label for="rate_receiving">Receiving / pallet (baseline ${BASELINE_RATES['receiving_per_pallet']:g})</label>
+                <label for="rate_receiving">Customer fee: receiving / pallet (baseline ${BASELINE_RATES['receiving_per_pallet']:g})</label>
                 <input type="number" id="rate_receiving" name="rate_receiving" step="0.01" min="0" value="{_rval('receiving_per_pallet')}" placeholder="{BASELINE_RATES['receiving_per_pallet']:g}">
+                {_cost_hint('receiving_per_pallet', 'receiving_precounted_box', label='Fulfillment receiving cost')}
               </div>
               <div class="field">
-                <label for="rate_storage">Storage / pallet/mo (baseline ${BASELINE_RATES['storage_short_per_pallet_mo']:g})</label>
+                <label for="rate_storage">Customer fee: storage / pallet/mo (baseline ${BASELINE_RATES['storage_short_per_pallet_mo']:g})</label>
                 <input type="number" id="rate_storage" name="rate_storage" step="0.01" min="0" value="{_rval('storage_short_per_pallet_mo')}" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:g}">
+                {_cost_hint('storage_per_pallet_mo', label='Fulfillment pallet storage cost')}
               </div>
               <div class="field">
-                <label for="rate_pick_pack">DTC pick &amp; pack / order (baseline ${BASELINE_RATES['dtc_base_per_order']:g})</label>
+                <label for="rate_pick_pack">Customer fee: DTC pick &amp; pack / order (baseline ${BASELINE_RATES['dtc_base_per_order']:g})</label>
                 <input type="number" id="rate_pick_pack" name="rate_pick_pack" step="0.01" min="0" value="{_rval('dtc_base_per_order')}" placeholder="{BASELINE_RATES['dtc_base_per_order']:g}">
+                {_cost_hint('pick_pack_per_order', label='Fulfillment pick & pack cost')}
               </div>
               <div class="field">
-                <label for="rate_additional_item">DTC additional item (baseline ${BASELINE_RATES['dtc_additional_item']:g})</label>
+                <label for="rate_additional_item">Customer fee: DTC additional item (baseline ${BASELINE_RATES['dtc_additional_item']:g})</label>
                 <input type="number" id="rate_additional_item" name="rate_additional_item" step="0.01" min="0" value="{_rval('dtc_additional_item')}" placeholder="{BASELINE_RATES['dtc_additional_item']:g}">
+                {_cost_hint('pick_pack_additional_item', label='Fulfillment additional item cost')}
               </div>
               <div class="field">
-                <label for="rate_kitting">Kitting / unit (baseline ${BASELINE_RATES['kitting_per_unit']:g})</label>
+                <label for="rate_kitting">Customer fee: kitting / unit (baseline ${BASELINE_RATES['kitting_per_unit']:g})</label>
                 <input type="number" id="rate_kitting" name="rate_kitting" step="0.01" min="0" value="{_rval('kitting_per_unit')}" placeholder="{BASELINE_RATES['kitting_per_unit']:g}">
+                {_cost_hint('kitting_per_item', label='Fulfillment kitting cost')}
               </div>
             </div>
             <div class="edit-col">
               <div class="field">
-                <label for="rate_labeling">Labeling / unit (baseline ${BASELINE_RATES['labeling_per_unit']:g})</label>
+                <label for="rate_labeling">Customer fee: labeling / unit (baseline ${BASELINE_RATES['labeling_per_unit']:g})</label>
                 <input type="number" id="rate_labeling" name="rate_labeling" step="0.01" min="0" value="{_rval('labeling_per_unit')}" placeholder="{BASELINE_RATES['labeling_per_unit']:g}">
+                {_cost_hint('labeling_per_item', label='Fulfillment labeling cost')}
               </div>
               <div class="field">
-                <label for="rate_wholesale">Wholesale / unit (baseline ${BASELINE_RATES['wholesale_per_unit']:g})</label>
+                <label for="rate_wholesale">Customer fee: wholesale / unit (baseline ${BASELINE_RATES['wholesale_per_unit']:g})</label>
                 <input type="number" id="rate_wholesale" name="rate_wholesale" step="0.01" min="0" value="{_rval('wholesale_per_unit')}" placeholder="{BASELINE_RATES['wholesale_per_unit']:g}">
+                {_cost_hint('pallet_order_per_pallet', label='Fulfillment pallet-order cost')}
               </div>
               <div class="field">
-                <label for="rate_returns">Returns / unit (baseline ${BASELINE_RATES['returns_per_unit']:g})</label>
+                <label for="rate_returns">Customer fee: returns / unit (baseline ${BASELINE_RATES['returns_per_unit']:g})</label>
                 <input type="number" id="rate_returns" name="rate_returns" step="0.01" min="0" value="{_rval('returns_per_unit')}" placeholder="{BASELINE_RATES['returns_per_unit']:g}">
+                {_cost_hint('returns_receive_per_unit', 'returns_examination_per_unit', 'returns_custom_steps_per_unit', label='Fulfillment returns cost stack')}
               </div>
               <div class="field">
-                <label for="rate_tech_fee">Monthly tech fee (baseline ${BASELINE_RATES['monthly_tech_fee']:g})</label>
+                <label for="rate_tech_fee">Customer fee: monthly tech fee (baseline ${BASELINE_RATES['monthly_tech_fee']:g})</label>
                 <input type="number" id="rate_tech_fee" name="rate_tech_fee" step="0.01" min="0" value="{_rval('monthly_tech_fee')}" placeholder="{BASELINE_RATES['monthly_tech_fee']:g}">
+                {_cost_hint('monthly_tech_fee', label='Fulfillment tech cost')}
               </div>
               <div class="field">
-                <label for="rate_minimum">Monthly minimum (baseline ${BASELINE_RATES['monthly_minimum']:g})</label>
+                <label for="rate_minimum">Customer fee: monthly minimum (baseline ${BASELINE_RATES['monthly_minimum']:g})</label>
                 <input type="number" id="rate_minimum" name="rate_minimum" step="1" min="0" value="{_rval('monthly_minimum')}" placeholder="{BASELINE_RATES['monthly_minimum']:g}">
               </div>
             </div>
