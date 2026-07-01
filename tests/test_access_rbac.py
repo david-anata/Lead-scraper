@@ -121,6 +121,29 @@ class EnforcementTests(unittest.TestCase):
         r_no = self._get("/admin/advertising/audit", "enf_fin@anatainc.com")
         self.assertEqual(r_no.status_code, 403)
 
+    def test_sales_decks_menu_target_renders_for_sales_decks_user(self) -> None:
+        from unittest import mock
+
+        uid = store.upsert_user("sales_decks@anatainc.com", "Sales Decks")
+        store.set_user_permissions(uid, ["sales.decks"])
+        name, token = _cookie_for("sales_decks@anatainc.com", "Sales Decks")
+        self.client.cookies.set(name, token)
+        try:
+            with mock.patch("sales_support_agent.api.router.build_dashboard_data", return_value=object()), mock.patch(
+                "sales_support_agent.api.router.render_sales_deck_page",
+                return_value="<html><body>Sales assets</body></html>",
+            ):
+                r = self.client.get("/admin/sales-decks", follow_redirects=False)
+                canonical = self.client.get("/admin/sales/decks/", follow_redirects=False)
+                redirect = self.client.get("/admin/sales/decks", follow_redirects=False)
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Sales assets", r.text)
+        self.assertEqual(canonical.status_code, 200)
+        self.assertEqual(redirect.status_code, 303)
+        self.assertEqual(redirect.headers.get("location"), "/admin/sales/decks/")
+
     def test_website_ops_run_api_requires_seo_permission(self) -> None:
         name, token = _cookie_for("enf_fin@anatainc.com")
         self.client.cookies.set(name, token)
@@ -566,6 +589,20 @@ class RootAppGuardsTest(unittest.TestCase):
             "/amazon-profit-calculator/runtime",
             "/api/public/amazon-profit-calculator/catalog/{asin}",
             "/api/public/amazon-profit-calculator/profitability/estimate",
+        }
+        root_paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
+        agent_paths = {r.path for r in agentmain.app.routes if hasattr(r, "path")}
+        self.assertTrue(expected.issubset(root_paths))
+        self.assertTrue(expected.issubset(agent_paths))
+
+    def test_both_entrypoints_mount_sales_deck_page_routes(self) -> None:
+        import main as rootmain
+        import sales_support_agent.main as agentmain
+
+        expected = {
+            "/admin/sales-decks",
+            "/admin/sales/decks",
+            "/admin/sales/decks/",
         }
         root_paths = {r.path for r in rootmain.app.routes if hasattr(r, "path")}
         agent_paths = {r.path for r in agentmain.app.routes if hasattr(r, "path")}
@@ -1086,6 +1123,14 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn('href="/admin/website-ops/queue"', nav)
         # reports tool not held -> its pill must not appear.
         self.assertNotIn('href="/admin/website-ops/reports"', nav)
+
+    def test_sales_decks_menu_label_is_visible(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav = render_agent_nav("sales_decks", sales_section="sales_decks", permissions={"sales.decks"})
+        self.assertIn('href="/admin/sales-decks"', nav)
+        self.assertIn(">Sales Decks</a>", nav)
+        self.assertNotIn(">Sales Assets</a>", nav)
 
     def test_superadmin_only_advertising_subpage_is_hidden_from_non_superadmins(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav

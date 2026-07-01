@@ -49,7 +49,7 @@ _NAV_SECTIONS = [
         _NavSubpage("sales.deals", "Control Room", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.priorities", "Fix Queue", "/admin", "sales"),
-        _NavSubpage("sales.decks", "Sales Assets", "/admin/sales-decks", "sales_decks"),
+        _NavSubpage("sales.decks", "Sales Decks", "/admin/sales-decks", "sales_decks"),
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
         _NavSubpage("website_ops.seo", "Overview", "/admin/website-ops", "seo_dashboard"),
@@ -554,7 +554,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
 
         if len(accessible) == 1:
             # Single reachable page — plain link, no caret/dropdown.
-            nav_items.append(_nav_item(section.label, primary_href, active=is_primary_active))
+            nav_items.append(_nav_item(accessible[0].label, primary_href, active=is_primary_active))
             continue
 
         # >=2 reachable pages — non-navigating trigger + caret + dropdown of pills.

@@ -69,6 +69,7 @@ from sales_support_agent.services.admin_dashboard import (
     render_dashboard_page,
     render_executive_page,
     render_login_page,
+    render_sales_deck_page,
 )
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.deck_generator import DeckGenerationService
@@ -763,6 +764,35 @@ def admin_dashboard(request: Request) -> Response:
     if settings.dashboard_auto_sync_enabled:
         _start_dashboard_sync(request, trigger="admin_page_load", force=False)
     return HTMLResponse(render_dashboard_page(dashboard, user=_get_request_user(request)))
+
+
+@router.get("/admin/sales/decks")
+def admin_sales_decks_canonical_redirect(request: Request) -> RedirectResponse:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/sales/decks/", status_code=303)
+
+
+@router.get("/admin/sales-decks", response_class=HTMLResponse)
+@router.get("/admin/sales/decks/", response_class=HTMLResponse)
+def admin_sales_decks(request: Request) -> Response:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    _, auth_response = _require_admin_tool(request, "sales.decks")
+    if auth_response is not None:
+        return auth_response
+
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        dashboard = build_dashboard_data(
+            settings=settings,
+            session=session,
+            lead_builder_status=_lead_builder_status(settings),
+            clickup_client=ClickUpClient(settings),
+        )
+    return HTMLResponse(render_sales_deck_page(dashboard, user=_get_request_user(request)))
 
 
 @router.get("/admin/executive", response_class=HTMLResponse)

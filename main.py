@@ -3890,6 +3890,7 @@ def admin_dashboard(request: Request) -> Response:
 
 
 @app.get("/admin/sales-decks", response_class=HTMLResponse)
+@app.get("/admin/sales/decks/", response_class=HTMLResponse)
 def admin_sales_decks(request: Request) -> Response:
     admin_settings = load_admin_dashboard_settings()
     if not admin_login_enabled(admin_settings):
@@ -3899,6 +3900,17 @@ def admin_sales_decks(request: Request) -> Response:
         return RedirectResponse(url="/admin/login", status_code=302)
     dashboard = fetch_remote_dashboard_data()
     return HTMLResponse(render_sales_deck_page(dashboard, user=_current_nav_user(request)))
+
+
+@app.get("/admin/sales/decks")
+def admin_sales_decks_canonical_redirect(request: Request) -> Response:
+    admin_settings = load_admin_dashboard_settings()
+    if not admin_login_enabled(admin_settings):
+        raise HTTPException(status_code=503, detail="Admin dashboard is not configured. Set ADMIN_DASHBOARD_PASSWORD.")
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return RedirectResponse(url="/admin/sales/decks/", status_code=303)
 
 
 @app.get("/admin/executive", response_class=HTMLResponse)

@@ -27,7 +27,7 @@ class Tool:
 TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("sales.deals", "Control Room & Deal Board", "Sales", ("/admin/sales",)),
     Tool("sales.priorities", "Fix Queue", "Sales", ("/admin",), exact=True),
-    Tool("sales.decks", "Sales Assets", "Sales", ("/admin/sales-decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
+    Tool("sales.decks", "Sales Decks", "Sales", ("/admin/sales-decks", "/admin/sales/decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
     Tool("website_ops.seo", "Overview", "Website Ops", ("/admin/website-ops", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),
     Tool("website_ops.queue", "Queue", "Website Ops", ("/admin/website-ops/queue", "/admin/website-ops/feedback", "/admin/api/website-ops/feedback")),
     Tool("website_ops.reports", "Reports", "Website Ops", ("/admin/website-ops/reports",)),
