@@ -242,3 +242,24 @@ class SalesOperatorDashboardTests(unittest.TestCase):
         self.assertEqual(actions[0]["state"], "blocked")
         self.assertIn("Collect the missing info", actions[0]["title"])
         self.assertIn("company link", actions[0]["blockedBy"])
+
+    def test_decorate_automation_schedules_includes_last_run_summary(self):
+        rows = operator_dashboard._decorate_automation_schedules(
+            {
+                "sales_operator_review": {
+                    "status": "success",
+                    "startedAt": "2026-06-30 10:05 UTC",
+                    "completedAt": "2026-06-30 10:06 UTC",
+                    "summary": {
+                        "candidate_deals": 3,
+                        "applied_actions": 2,
+                        "deferred_actions": 1,
+                        "next_action": "Reply to Acme today",
+                    },
+                }
+            }
+        )
+
+        operator_row = next(item for item in rows if item["runType"] == "sales_operator_review")
+        self.assertEqual(operator_row["lastRun"]["status"], "success")
+        self.assertEqual(operator_row["lastRun"]["summary"]["next_action"], "Reply to Acme today")

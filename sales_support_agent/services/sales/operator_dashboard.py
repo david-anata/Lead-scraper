@@ -102,30 +102,50 @@ AUTOMATION_SCHEDULES = [
         "cadence": "Every 15 minutes",
         "purpose": "Pull fresh Gmail evidence, classify it, and match it to active HubSpot deals.",
         "outputs": ["Mailbox signals", "reply-due detection", "inbox-ahead drift checks"],
+        "runType": "gmail_mailbox_sync",
+        "execution": "live",
+        "runtime": "Render cron",
+        "endpoint": "/api/jobs/gmail-sync/run",
     },
     {
         "name": "Sales operator review",
         "cadence": "Hourly",
         "purpose": "Re-score active deals, refresh proposed actions, and queue high-confidence write-backs.",
         "outputs": ["Reply queues", "asset-share queues", "deferred review tasks"],
+        "runType": "sales_operator_review",
+        "execution": "live",
+        "runtime": "Render cron",
+        "endpoint": "/api/jobs/sales-operator/run",
     },
     {
         "name": "Deck and audit readiness scan",
         "cadence": "Daily at 8:00 AM",
         "purpose": "Check whether each proposal-stage deal has enough information to create or refresh the right deck or audit.",
         "outputs": ["Ready-to-create deck actions", "blocked-by-missing-info actions", "asset refresh review"],
+        "runType": "sales_deck_readiness_scan",
+        "execution": "planned",
+        "runtime": "Planned",
+        "endpoint": "/api/jobs/sales-deck-readiness/run",
     },
     {
         "name": "Follow-up and nurture sweep",
         "cadence": "Daily at 2:00 PM",
         "purpose": "Catch stale outbound threads, missing next steps, and nurture deals that need the next touch.",
         "outputs": ["Follow-up due queue", "internal review notes", "owner tasks"],
+        "runType": "sales_followup_sweep",
+        "execution": "planned",
+        "runtime": "Planned",
+        "endpoint": "/api/jobs/sales-followup/run",
     },
     {
         "name": "Morning digest",
         "cadence": "Weekdays at 7:30 AM",
         "purpose": "Summarize what changed overnight and what each operator should work first.",
         "outputs": ["Operator digest", "reply priorities", "asset-send priorities"],
+        "runType": "sales_morning_digest",
+        "execution": "planned",
+        "runtime": "Planned",
+        "endpoint": "/api/jobs/sales-digest/run",
     },
 ]
 
@@ -186,6 +206,45 @@ def _compact_text(value: str, *, limit: int = 140) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 1, 0)].rstrip() + "…"
+
+
+def _format_run_timestamp(value: Optional[datetime]) -> str:
+    aware = _aware(value)
+    if aware is None:
+        return ""
+    return aware.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _build_schedule_runs(session) -> dict[str, dict[str, Any]]:
+    from sales_support_agent.models.entities import AutomationRun
+
+    runs = session.scalars(
+        select(AutomationRun).order_by(AutomationRun.started_at.desc()).limit(50)
+    ).all()
+    latest: dict[str, dict[str, Any]] = {}
+    wanted = {str(item.get("runType") or "") for item in AUTOMATION_SCHEDULES if str(item.get("runType") or "")}
+    for run in runs:
+        run_type = str(run.run_type or "")
+        if run_type not in wanted or run_type in latest:
+            continue
+        latest[run_type] = {
+            "status": str(run.status or "unknown"),
+            "trigger": str(run.trigger or ""),
+            "startedAt": _format_run_timestamp(run.started_at),
+            "completedAt": _format_run_timestamp(run.completed_at),
+            "summary": dict(run.summary_json or {}),
+        }
+    return latest
+
+
+def _decorate_automation_schedules(schedule_runs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in AUTOMATION_SCHEDULES:
+        row = dict(item)
+        run = schedule_runs.get(str(item.get("runType") or ""))
+        row["lastRun"] = run or {}
+        rows.append(row)
+    return rows
 
 
 def _titleize_state(value: str) -> str:
@@ -873,11 +932,14 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
     if session_factory is not None and all_deal_ids:
         with session_scope(session_factory) as session:
             local_context = _load_local_deal_context(session, all_deal_ids)
+            schedule_runs = _build_schedule_runs(session)
         live_mailbox_by_deal = _fetch_live_mailbox_state(
             settings,
             {deal_id: local_context["contactEmailsByDeal"].get(deal_id, []) for deal_id in recent_deal_ids},
             max_deals=LIVE_MAILBOX_MAX_DEALS,
         )
+    else:
+        schedule_runs = {}
 
     company_ids = set()
     contact_ids = set()
@@ -1130,7 +1192,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         },
         "objectDefinitions": OBJECT_DEFINITIONS,
         "autonomy": AUTONOMY_POLICY,
-        "automationSchedules": AUTOMATION_SCHEDULES,
+        "automationSchedules": _decorate_automation_schedules(schedule_runs),
         "stageDrift": {
             "targetOnly": [label for label in TARGET_STAGE_LABELS if _normalize(label) not in normalized_live],
             "liveOnly": [label for label in live_labels if _normalize(label) not in normalized_target],
@@ -1460,11 +1522,39 @@ def _render_next_best_action(summary: dict[str, Any], queues: dict[str, list[dic
 
 
 def _render_schedule_panel(item: dict[str, Any]) -> str:
+    last_run = item.get("lastRun") or {}
+    last_run_summary = last_run.get("summary") or {}
+    execution = "Live now" if str(item.get("execution") or "") == "live" else "Planned"
+    runtime = str(item.get("runtime") or "")
+    status = str(last_run.get("status") or "").strip()
+    completed_at = str(last_run.get("completedAt") or "").strip()
+    started_at = str(last_run.get("startedAt") or "").strip()
+    next_action = str(last_run_summary.get("next_action") or "").strip()
+    status_line = "Not run yet."
+    if status:
+        when = completed_at or started_at
+        status_line = f"Last run: {status}"
+        if when:
+            status_line += f" · {when}"
+    detail_line = ""
+    if next_action:
+        detail_line = f'<p class="muted">Latest suggested action: {_esc(next_action)}</p>'
+    elif last_run_summary:
+        candidate_deals = int(last_run_summary.get("candidate_deals") or 0)
+        applied_actions = int(last_run_summary.get("applied_actions") or 0)
+        deferred_actions = int(last_run_summary.get("deferred_actions") or 0)
+        detail_line = (
+            f'<p class="muted">Latest result: {candidate_deals} candidate deals, '
+            f'{applied_actions} applied actions, {deferred_actions} deferred.</p>'
+        )
     return f"""
     <article class="panel">
       <p class="eyebrow">{_esc(item.get('cadence'))}</p>
       <h3>{_esc(item.get('name'))}</h3>
       <p>{_esc(item.get('purpose'))}</p>
+      <p class="muted">{_esc(execution)} · {_esc(runtime)}</p>
+      <p class="muted">{_esc(status_line)}</p>
+      {detail_line}
       <p class="muted">Outputs: {_esc(', '.join(item.get('outputs') or []))}</p>
     </article>
     """

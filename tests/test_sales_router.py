@@ -53,6 +53,23 @@ class SalesRouterTests(unittest.TestCase):
         self.assertEqual(resp.json()["ok"], False)
         self.assertIn("HubSpot token is not configured", resp.json()["error"])
 
+    def test_run_sales_operator_job_route_returns_summary(self) -> None:
+        internal_api_key = app.state.settings.internal_api_key
+        headers = {"X-Internal-Api-Key": internal_api_key} if internal_api_key else {}
+        with mock.patch(
+            "sales_support_agent.api.sales_jobs_router.SalesOperatorReviewJob"
+        ) as job_cls:
+            job_cls.return_value.run.return_value = {"status": "completed", "candidate_deals": 2}
+            resp = self.client.post(
+                "/api/jobs/sales-operator/run",
+                json={"dry_run": True, "limit": 5},
+                headers=headers,
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "ok")
+        self.assertEqual(resp.json()["details"]["candidate_deals"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,10 +38,17 @@ class GmailMailboxSyncJob:
         self.session = session
         self.audit = AuditService(session)
 
-    def run(self, *, dry_run: bool = False, query: str | None = None, max_messages: int | None = None) -> dict[str, int | str | bool]:
+    def run(
+        self,
+        *,
+        dry_run: bool = False,
+        query: str | None = None,
+        max_messages: int | None = None,
+        trigger: str = "manual",
+    ) -> dict[str, int | str | bool]:
         run = self.audit.start_run(
             "gmail_mailbox_sync",
-            trigger="manual",
+            trigger=trigger,
             metadata={"dry_run": dry_run, "query": query or self.settings.gmail_poll_query},
         )
         inbox_accounts = self.settings.gmail_mailbox_accounts

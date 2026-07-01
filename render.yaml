@@ -88,3 +88,35 @@ services:
         sync: false
       - key: SALES_AGENT_INTERNAL_API_KEY
         sync: false
+
+  - type: cron
+    name: sales-support-gmail-sync
+    runtime: python
+    schedule: "*/15 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/gmail-sync/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+        -d '{"dry_run":false}'
+    envVars:
+      - key: SALES_SUPPORT_AGENT_URL
+        sync: false
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
+
+  - type: cron
+    name: sales-support-operator-review
+    runtime: python
+    schedule: "5 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/sales-operator/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+        -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
+    envVars:
+      - key: SALES_SUPPORT_AGENT_URL
+        sync: false
+      - key: SALES_AGENT_INTERNAL_API_KEY
+        sync: false
