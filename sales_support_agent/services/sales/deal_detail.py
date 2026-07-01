@@ -426,16 +426,23 @@ def _assets_html(d: DealDetail) -> str:
 
 def _fulfillment_workflow_html(d: DealDetail) -> str:
     rate_sheet = next((a for a in d.assets if a.asset_type == "rate_sheet"), None)
-    deck_url = f"/admin/fulfillment/sales?hubspot_deal_id={_esc(d.deal_id)}"
+    sales_deck = next((a for a in d.assets if a.asset_type == "deck"), None)
+    fulfillment_url = f"/admin/fulfillment/sales?hubspot_deal_id={_esc(d.deal_id)}"
+    sales_deck_url = f"/admin/sales-decks?hubspot_deal_id={_esc(d.deal_id)}"
     items = []
+    if sales_deck:
+        items.append(f'<a class="draft-btn" href="{_esc(sales_deck.url)}" target="_blank" rel="noopener">Open sales deck →</a>')
+    else:
+        items.append(f'<a class="draft-btn" href="{sales_deck_url}">Create sales deck →</a>')
     if rate_sheet:
         items.append(f'<a class="draft-btn" href="{_esc(rate_sheet.url)}" target="_blank" rel="noopener">Open fulfillment deck →</a>')
         if rate_sheet.run_id:
             items.append(f'<a class="hs-link" href="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/review">Edit deck</a>')
             items.append(f'<form method="post" action="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/quote" style="margin:0"><button class="approve-btn" type="submit">Create quote</button></form>')
     else:
-        items.append(f'<a class="draft-btn" href="{deck_url}">Create fulfillment deck →</a>')
-    items.append(f'<a class="hs-link" href="{deck_url}">Attach / create from HubSpot context</a>')
+        items.append(f'<a class="draft-btn" href="{fulfillment_url}">Create fulfillment deck →</a>')
+    items.append(f'<a class="hs-link" href="{sales_deck_url}">Attach / create sales deck from HubSpot context</a>')
+    items.append(f'<a class="hs-link" href="{fulfillment_url}">Attach / create fulfillment deck from HubSpot context</a>')
     return '<div class="workflow-actions">' + "".join(items) + "</div>"
 
 

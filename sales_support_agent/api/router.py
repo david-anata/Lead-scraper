@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import hashlib
 from typing import Optional
@@ -73,6 +74,7 @@ from sales_support_agent.services.admin_dashboard import (
 )
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.deck_generator import DeckGenerationService
+from sales_support_agent.services.deck.preview_image import render_sales_deck_preview_png
 from sales_support_agent.services.fulfillment_dashboard import (
     fulfillment_report_entries,
     latest_fulfillment_report_entry,
@@ -110,6 +112,11 @@ from sales_support_agent.services.auth_deps import (
     has_tool,
     is_authenticated,
     require_tool_inline,
+)
+from sales_support_agent.services.sales.sales_deck_context_resolver import (
+    SalesDeckContextInput,
+    SalesDeckResolution,
+    resolve_sales_deck_context,
 )
 
 
@@ -792,7 +799,15 @@ def admin_sales_decks(request: Request) -> Response:
             lead_builder_status=_lead_builder_status(settings),
             clickup_client=ClickUpClient(settings),
         )
-    return HTMLResponse(render_sales_deck_page(dashboard, user=_get_request_user(request)))
+        hubspot_deal_id = str(request.query_params.get("hubspot_deal_id") or "").strip()
+        sales_deck_context = None
+        if hubspot_deal_id:
+            resolution = resolve_sales_deck_context(
+                session,
+                SalesDeckContextInput(hubspot_deal_id=hubspot_deal_id),
+            )
+            sales_deck_context = resolution.to_dict()
+    return HTMLResponse(render_sales_deck_page(dashboard, user=_get_request_user(request), sales_deck_context=sales_deck_context))
 
 
 @router.get("/admin/executive", response_class=HTMLResponse)
@@ -1564,6 +1579,34 @@ def deck_export_slug_view(request: Request, deck_slug: str, run_id: int, token: 
     return _render_deck_export(request, run_id, token)
 
 
+@router.get("/decks/{deck_slug}/{run_id}/{token}/preview.png")
+def deck_export_preview_image(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.execute(
+            select(AutomationRun).where(
+                AutomationRun.id == run_id,
+                AutomationRun.run_type == "deck_generation",
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            return PlainTextResponse("Deck preview not found.", status_code=404)
+        summary = dict(run.summary_json or {})
+        if summary.get("export_token") != token:
+            return PlainTextResponse("Deck preview not found.", status_code=404)
+        preview = dict(summary.get("share_preview") or {})
+        if not preview:
+            preview = {
+                "title": summary.get("design_title") or f"Sales Deck {run_id}",
+                "description": "Anata strategy deck.",
+                "brand": str(summary.get("design_title") or "").split(" x ")[0],
+            }
+    return Response(
+        content=render_sales_deck_preview_png(preview),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 # PR54: deck-engagement heartbeat endpoint.
 # Client posts here every 15s active / 60s idle with current session state.
 # Server upserts the session row + per-section dwell rows. No response body
@@ -1891,6 +1934,238 @@ _GROWTH_PLAN_FORM_KEYS = {
 }
 
 
+def _first_form_value(payload: object, key: str) -> str:
+    try:
+        value = payload.get(key)  # type: ignore[attr-defined]
+    except Exception:
+        value = ""
+    return str(value or "").strip()
+
+
+def _sales_deck_context_payload(form_payload: object, result: object, summary: dict[str, object]) -> dict[str, object]:
+    share_preview = dict(summary.get("share_preview") or {})
+    return {
+        "hubspot_deal_id": _first_form_value(form_payload, "hubspot_deal_id"),
+        "hubspot_company_id": _first_form_value(form_payload, "hubspot_company_id"),
+        "hubspot_contact_ids": _first_form_value(form_payload, "hubspot_contact_ids"),
+        "company_name": _first_form_value(form_payload, "company_name"),
+        "company_domain": _first_form_value(form_payload, "company_domain") or _first_form_value(form_payload, "website") or _first_form_value(form_payload, "website_url"),
+        "contact_email": _first_form_value(form_payload, "contact_email"),
+        "brand_name": _first_form_value(form_payload, "brand_name") or str(share_preview.get("brand") or ""),
+        "product_title": _first_form_value(form_payload, "product_title"),
+        "target_product_input": _first_form_value(form_payload, "target_product_input") or str(summary.get("target_product_identifier") or ""),
+        "deck_title": str(getattr(result, "design_title", "") or summary.get("design_title") or ""),
+        "notes": _first_form_value(form_payload, "notes"),
+    }
+
+
+def _fetch_live_sales_deck_mailbox(settings: object, ctx: SalesDeckContextInput) -> list[dict[str, object]]:
+    """Bounded Gmail lookup for recent context. Best-effort; never blocks generation."""
+    try:
+        gmail_client = GmailClient(settings)
+        if not gmail_client.is_configured():
+            return []
+        query_parts = []
+        if ctx.contact_email:
+            query_parts.extend([f"from:{ctx.contact_email}", f"to:{ctx.contact_email}"])
+        if ctx.company_domain:
+            query_parts.append(ctx.company_domain)
+        if not query_parts:
+            return []
+        query = "newer_than:45d (" + " OR ".join(query_parts[:4]) + ")"
+        from sales_support_agent.integrations.gmail_payloads import normalize_gmail_message
+
+        messages: list[dict[str, object]] = []
+        for ref in gmail_client.list_messages(query=query, max_results=3)[:3]:
+            message_id = str(ref.get("id") or "").strip()
+            if not message_id:
+                continue
+            normalized = normalize_gmail_message(
+                gmail_client.get_message(message_id),
+                configured_source_domains=gmail_client.source_domains,
+                matched_task=True,
+            )
+            messages.append({
+                "messageId": normalized.external_message_id,
+                "senderEmail": normalized.sender_email,
+                "subject": normalized.subject,
+                "snippet": normalized.snippet,
+                "occurredAt": normalized.occurred_at.isoformat(),
+            })
+        return messages
+    except Exception:
+        logger.exception("[sales_decks] live Gmail context lookup failed")
+        return []
+
+
+def _create_deal_for_sales_deck(
+    *,
+    session,
+    settings,
+    resolution: SalesDeckResolution,
+    ctx: SalesDeckContextInput,
+    view_url: str,
+    design_title: str,
+) -> tuple[str, list[str]]:
+    selected = resolution.selected
+    audit: list[str] = []
+    if selected is None:
+        return "", ["No selected lead candidate available for deal creation."]
+
+    from sales_support_agent.integrations.hubspot import HubSpotClient
+    from sales_support_agent.models.entities import HubSpotCompany, HubSpotContact
+    from sales_support_agent.services.sales.deal_create import (
+        build_deal_associations,
+        mirror_created_deal,
+        normalize_deal_create_request,
+        read_sales_rules,
+        validate_deal_create_request,
+    )
+
+    client = HubSpotClient(settings)
+    if not client.is_configured:
+        return "", ["HubSpot token is not configured; cannot create deal automatically."]
+
+    company_id = selected.hubspot_company_id or ctx.hubspot_company_id
+    contact_ids = list(selected.hubspot_contact_ids or ctx.hubspot_contact_ids)
+    company_name = selected.company_name or ctx.company_name or ctx.brand_name or design_title.split(" x ")[0]
+    company_domain = selected.company_domain or ctx.company_domain
+    contact_email = selected.contact_email or ctx.contact_email
+
+    if not company_id:
+        if not company_name:
+            return "", ["Company name is missing; cannot create a validated HubSpot deal."]
+        created_company = client.create_company({
+            "name": company_name,
+            **({"domain": company_domain} if company_domain else {}),
+        })
+        company_id = str(created_company.get("id") or "").strip()
+        if company_id:
+            session.add(HubSpotCompany(
+                hubspot_company_id=company_id,
+                name=company_name,
+                domain=company_domain,
+                raw_properties=dict(created_company.get("properties") or {}),
+            ))
+            audit.append(f"Created HubSpot company {company_id}.")
+
+    if not contact_ids:
+        if not contact_email:
+            return "", ["Contact email is missing; cannot create a validated HubSpot deal."]
+        created_contact = client.create_contact({"email": contact_email, **({"company": company_name} if company_name else {})})
+        contact_id = str(created_contact.get("id") or "").strip()
+        if contact_id:
+            contact_ids = [contact_id]
+            session.add(HubSpotContact(
+                hubspot_contact_id=contact_id,
+                hubspot_company_id=company_id,
+                email=contact_email,
+                raw_properties=dict(created_contact.get("properties") or {}),
+            ))
+            audit.append(f"Created HubSpot contact {contact_id}.")
+
+    rules = read_sales_rules()
+    owner_id = os.getenv("HUBSPOT_DEFAULT_OWNER_ID", "").strip()
+    payload = {
+        "dealname": f"{company_name or design_title} - Sales Deck",
+        "pipeline": getattr(settings, "hubspot_sales_pipeline_id", "") or os.getenv("HUBSPOT_DEFAULT_DEAL_PIPELINE", "") or os.getenv("HUBSPOT_PIPELINE_ID", "") or "default",
+        "dealstage": os.getenv("HUBSPOT_DEFAULT_DEAL_STAGE", "") or os.getenv("HUBSPOT_STAGE_INTAKE", "") or "appointmentscheduled",
+        "hubspot_owner_id": owner_id,
+        "anata_service_line": "marketing",
+        "anata_lead_source_detail": "agent",
+        "anata_primary_deck_type": "marketing_strategy",
+        "anata_primary_deck_url": view_url,
+        "anata_next_step": "Share sales deck with prospect.",
+        "hubspot_company_id": company_id,
+        "hubspot_contact_id": contact_ids[0] if contact_ids else "",
+    }
+    deal_request = normalize_deal_create_request(payload, rules, settings=settings)
+    errors = validate_deal_create_request(deal_request, rules)
+    if errors:
+        return "", [f"Validated deal creation blocked: {err}" for err in errors]
+    created = client.create_deal(deal_request.properties, associations=build_deal_associations(deal_request))
+    deal_id = mirror_created_deal(session, created, deal_request)
+    if deal_id:
+        audit.append(f"Created HubSpot deal {deal_id}.")
+    return deal_id, audit
+
+
+def _resolve_and_attach_sales_deck(
+    request: Request,
+    *,
+    result: object,
+    form_payload: object,
+) -> dict[str, object]:
+    settings = request.app.state.settings
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, int(getattr(result, "run_id")))
+        if run is None:
+            return {"attachment_status": "unmatched", "deal_match_audit": ["Deck run was not found after generation."]}
+        summary = dict(run.summary_json or {})
+        context_payload = _sales_deck_context_payload(form_payload, result, summary)
+        ctx = SalesDeckContextInput.from_mapping(context_payload)
+        live_messages = _fetch_live_sales_deck_mailbox(settings, ctx)
+        resolution = resolve_sales_deck_context(session, ctx, live_mailbox_messages=live_messages)
+        audit_lines = list(resolution.audit_lines)
+        attachment_status = resolution.action
+        attached_deal_id = ""
+
+        if resolution.action == "attach_existing" and resolution.selected is not None:
+            from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
+
+            attached_deal_id = link_asset_to_deal(
+                session,
+                hubspot_deal_id=resolution.selected.hubspot_deal_id,
+                asset_type="deck",
+                run_id=int(getattr(result, "run_id")),
+                url=str(getattr(result, "view_url") or ""),
+                label="Sales Deck",
+            ) or ""
+            attachment_status = "attached" if attached_deal_id else "attach_blocked"
+        elif resolution.action == "create_then_attach":
+            created_deal_id, create_audit = _create_deal_for_sales_deck(
+                session=session,
+                settings=settings,
+                resolution=resolution,
+                ctx=ctx,
+                view_url=str(getattr(result, "view_url") or ""),
+                design_title=str(getattr(result, "design_title") or ""),
+            )
+            audit_lines.extend(create_audit)
+            if created_deal_id:
+                from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
+
+                attached_deal_id = link_asset_to_deal(
+                    session,
+                    hubspot_deal_id=created_deal_id,
+                    asset_type="deck",
+                    run_id=int(getattr(result, "run_id")),
+                    url=str(getattr(result, "view_url") or ""),
+                    label="Sales Deck",
+                ) or ""
+                attachment_status = "created_and_attached" if attached_deal_id else "created_attach_blocked"
+            else:
+                attachment_status = "create_blocked"
+
+        summary["hubspot_context"] = {
+            **context_payload,
+            "attached_deal_id": attached_deal_id,
+            "live_mailbox_messages": live_messages[:3],
+        }
+        summary["deal_match_audit"] = audit_lines
+        summary["deal_match_resolution"] = resolution.to_dict()
+        summary["attachment_status"] = attachment_status
+        run.summary_json = summary
+        session.add(run)
+        session.commit()
+        return {
+            "attachment_status": attachment_status,
+            "attached_deal_id": attached_deal_id,
+            "deal_match_audit": audit_lines,
+            "deal_match_resolution": resolution.to_dict(),
+        }
+
+
 async def _run_generate_deck(
     request: Request,
     *,
@@ -1966,6 +2241,7 @@ async def _run_generate_deck(
     # we read them straight from the form payload and forward as a dict.
     growth_plan_inputs: Optional[dict[str, str]] = None
     category_label_input: str = ""
+    form_payload = {}
     if include_growth_plan:
         try:
             form_data = await request.form()
@@ -1983,6 +2259,7 @@ async def _run_generate_deck(
         form_payload = await request.form()
         category_label_input = str(form_payload.get("category_label") or "").strip()
     except Exception:
+        form_payload = {}
         category_label_input = ""
 
     try:
@@ -2088,6 +2365,11 @@ async def _run_generate_deck(
     response_warnings = list(result.warnings or [])
     if autodetect_log:
         response_warnings.append("Auto-detected uploads: " + "; ".join(autodetect_log))
+    attachment_details = _resolve_and_attach_sales_deck(
+        request,
+        result=result,
+        form_payload=form_payload,
+    )
     return ApiMessage(
         status="ok",
         message=result.message,
@@ -2103,6 +2385,10 @@ async def _run_generate_deck(
             "sales_row_count": result.sales_row_count,
             "competitor_row_count": result.competitor_row_count,
             "template_fields": result.template_fields,
+            "attachment_status": attachment_details.get("attachment_status", ""),
+            "attached_deal_id": attachment_details.get("attached_deal_id", ""),
+            "deal_match_audit": attachment_details.get("deal_match_audit", []),
+            "deal_match_resolution": attachment_details.get("deal_match_resolution", {}),
         },
     )
 
@@ -2222,6 +2508,55 @@ def admin_delete_deck_run(request: Request, run_id: int) -> ApiMessage:
         session.delete(run)
         session.commit()
     return ApiMessage(status="ok", message=f"Deck run {run_id} deleted.")
+
+
+@router.post("/admin/api/deck-runs/{run_id}/attach-deal", response_model=ApiMessage)
+def admin_attach_deck_run_to_deal(
+    request: Request,
+    run_id: int,
+    hubspot_deal_id: str = Form(default=""),
+) -> ApiMessage:
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Admin login required.")
+    deal_id = str(hubspot_deal_id or "").strip()
+    if not deal_id:
+        raise HTTPException(status_code=400, detail="HubSpot deal id is required.")
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, run_id)
+        if run is None or run.run_type != "deck_generation":
+            raise HTTPException(status_code=404, detail="Deck run not found.")
+        summary = dict(run.summary_json or {})
+        view_url = str(summary.get("view_url") or "").strip()
+        if not view_url:
+            raise HTTPException(status_code=400, detail="Deck run has no public URL.")
+        from sales_support_agent.services.sales.asset_linker import link_asset_to_deal
+
+        attached = link_asset_to_deal(
+            session,
+            hubspot_deal_id=deal_id,
+            asset_type="deck",
+            run_id=run_id,
+            url=view_url,
+            label="Sales Deck",
+        )
+        if not attached:
+            raise HTTPException(status_code=400, detail="Could not attach deck to that open HubSpot deal.")
+        context = dict(summary.get("hubspot_context") or {})
+        context["attached_deal_id"] = attached
+        summary["hubspot_context"] = context
+        summary["attachment_status"] = "attached"
+        audit = list(summary.get("deal_match_audit") or [])
+        audit.append(f"Manually attached to HubSpot deal {attached}.")
+        summary["deal_match_audit"] = audit
+        run.summary_json = summary
+        session.add(run)
+        session.commit()
+    return ApiMessage(
+        status="ok",
+        message="Sales deck attached to HubSpot deal.",
+        details={"run_id": run_id, "attached_deal_id": attached, "attachment_status": "attached"},
+    )
 
 
 @router.post("/api/admin/deck-runs/{run_id}/delete", response_model=ApiMessage)

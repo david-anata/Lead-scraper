@@ -369,6 +369,7 @@ class DeckGenerationService:
                             ("first_viewed_at", ""),
                             ("last_viewed_at", ""),
                             ("story_markdown", ""),
+                            ("share_preview", {}),
                         )
                     },
                 },
@@ -400,7 +401,6 @@ class DeckGenerationService:
         warnings: list[str],
     ) -> DeckGenerationResult:
         export_token = secrets.token_urlsafe(18)
-        html_content = self._render_html_deck(title=title, dataset=dataset, warnings=warnings)
         # PR49: slug = `{brand}-{short_name}-x-anata-strategy-deck-{YYYY-MM-DD-HHMM}`.
         # Strategic intent reads first, timestamp at the end disambiguates
         # multiple decks generated for the same brand/SKU on the same day.
@@ -414,6 +414,21 @@ class DeckGenerationService:
         else:
             deck_slug = _slugify(title) or f"deck-{run.id}"
         view_url = self._build_export_url(run_id=run.id, deck_slug=deck_slug, token=export_token)
+        preview_image_url = f"{view_url.rstrip('/')}/preview.png"
+        share_preview = self._build_share_preview_metadata(
+            title=title,
+            dataset=dataset,
+            public_url=view_url,
+            preview_image_url=preview_image_url,
+        )
+        html_content = self._render_html_deck(
+            title=title,
+            dataset=dataset,
+            warnings=warnings,
+            public_url=view_url,
+            preview_image_url=preview_image_url,
+            share_preview=share_preview,
+        )
         target = dataset.deck_payload.get("target", {})
         target_identifier = str(target.get("asin") or target.get("source_url") or "").strip()
 
@@ -478,6 +493,7 @@ class DeckGenerationService:
             "first_viewed_at": prior_first_viewed_at,
             "last_viewed_at": prior_last_viewed_at,
             "story_markdown": story_markdown,
+            "share_preview": share_preview,
         }
         self.session.add(run)
         self.session.flush()
@@ -947,8 +963,45 @@ class DeckGenerationService:
                 return urljoin(f"{parsed.scheme}://{parsed.netloc}", relative_path)
         return relative_path
 
-    def _render_html_deck(self, *, title: str, dataset: DeckDataset, warnings: list[str]) -> str:
+    def _build_share_preview_metadata(
+        self,
+        *,
+        title: str,
+        dataset: DeckDataset,
+        public_url: str,
+        preview_image_url: str,
+    ) -> dict[str, str]:
         payload = dataset.deck_payload
+        target = dict(payload.get("target", {}) or {})
+        text_fields = dict(dataset.text_fields or {})
+        brand = str(target.get("brand_name") or target.get("brand") or "").strip()
+        category = str(payload.get("category_label") or payload.get("niche_keyword") or "").strip()
+        description = (
+            str(text_fields.get("executive_summary") or text_fields.get("market_summary") or "").strip()
+            or f"Anata strategy deck prepared for {brand or 'this prospect'}."
+        )
+        return {
+            "title": title,
+            "description": _trim_text(description, 220),
+            "brand": brand,
+            "category": category,
+            "target_image_url": str(target.get("image_url") or "").strip(),
+            "url": public_url,
+            "preview_image_url": preview_image_url,
+        }
+
+    def _render_html_deck(
+        self,
+        *,
+        title: str,
+        dataset: DeckDataset,
+        warnings: list[str],
+        public_url: str = "",
+        preview_image_url: str = "",
+        share_preview: dict[str, str] | None = None,
+    ) -> str:
+        payload = dataset.deck_payload
+        share_preview = share_preview or {}
         target = dict(payload.get("target", {}))
         xray_report = payload.get("xray_report")
         keyword_report = payload.get("keyword_report")
@@ -1461,6 +1514,22 @@ class DeckGenerationService:
             "Two engagement models. The recommended one aligns our incentives with your growth.",
             ["2 offer cards", "Why now", "What happens next"],
         ) if include_recommended_plan else ""
+        _meta_title = html.escape(str(share_preview.get("title") or title), quote=True)
+        _meta_description = html.escape(str(share_preview.get("description") or _exec_sub_text or ""), quote=True)
+        _meta_url = html.escape(str(share_preview.get("url") or public_url or ""), quote=True)
+        _meta_image = html.escape(str(share_preview.get("preview_image_url") or preview_image_url or ""), quote=True)
+        _social_meta = f"""
+  <meta property="og:title" content="{_meta_title}">
+  <meta property="og:description" content="{_meta_description}">
+  <meta property="og:type" content="website">
+  {f'<meta property="og:url" content="{_meta_url}">' if _meta_url else ''}
+  {f'<meta property="og:image" content="{_meta_image}">' if _meta_image else ''}
+  {f'<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">' if _meta_image else ''}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{_meta_title}">
+  <meta name="twitter:description" content="{_meta_description}">
+  {f'<meta name="twitter:image" content="{_meta_image}">' if _meta_image else ''}
+"""
 
         return f"""<!doctype html>
 <html lang="en">
@@ -1468,6 +1537,7 @@ class DeckGenerationService:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
+  {_social_meta}
   {favicon_link}
   <style>{stylesheet}</style>
 </head>

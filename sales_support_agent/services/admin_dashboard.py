@@ -1109,6 +1109,9 @@ def build_dashboard_data(
             "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
             "first_viewed_at": dict(run.summary_json or {}).get("first_viewed_at", ""),
             "last_viewed_at": dict(run.summary_json or {}).get("last_viewed_at", ""),
+            "attachment_status": dict(run.summary_json or {}).get("attachment_status", ""),
+            "hubspot_context": dict(run.summary_json or {}).get("hubspot_context", {}),
+            "deal_match_resolution": dict(run.summary_json or {}).get("deal_match_resolution", {}),
             # PR54: legacy view_analytics (visit counts, daily) MERGED with
             # the new engagement payload (per-visitor table, sections,
             # source/device/country, avg session length). Modal reads one
@@ -2196,6 +2199,17 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         box-shadow: 0 18px 40px var(--shadow);
         padding: 24px;
       }}
+      .deck-context-panel {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(260px, 0.8fr);
+        gap: 18px;
+        margin: 0 0 18px;
+        padding: 16px 18px;
+        border: 1px solid rgba(43, 54, 68, 0.12);
+        border-radius: 14px;
+        background: rgba(133, 187, 218, 0.12);
+      }}
+      .deck-context-panel ul {{ margin: 0; padding-left: 18px; color: rgba(43, 54, 68, 0.72); font-size: 13px; }}
       .page-header {{
         display: grid;
         grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
@@ -3786,6 +3800,32 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         }}
       }});
 
+      document.addEventListener("click", async (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const btn = target.closest(".deck-attach-deal");
+        if (!btn) return;
+        const runId = btn.dataset.runId || "";
+        const dealId = btn.dataset.dealId || "";
+        if (!runId || !dealId) return;
+        const original = btn.textContent;
+        btn.textContent = "Attaching...";
+        btn.setAttribute("disabled", "disabled");
+        const body = new FormData();
+        body.append("hubspot_deal_id", dealId);
+        try {{
+          const response = await fetch(`/admin/api/deck-runs/${{encodeURIComponent(runId)}}/attach-deal`, {{ method: "POST", body }});
+          if (!response.ok) throw new Error("Attach failed");
+          btn.textContent = "Attached";
+        }} catch (_err) {{
+          btn.textContent = "Attach failed";
+          setTimeout(() => {{
+            btn.textContent = original || "Attach";
+            btn.removeAttribute("disabled");
+          }}, 1600);
+        }}
+      }});
+
       const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
       const deckAnalyticsClose = document.getElementById("deck-analytics-close");
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
@@ -4002,7 +4042,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           <article class="deck-run-item">
             <div>
               <strong>${{safeTitle}}</strong>
-              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}}</p>
+              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}} · HubSpot ${{escapeHtml(run.attachment_status || "unmatched")}}</p>
             </div>
             <div class="deck-run-links">
               ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
@@ -4349,10 +4389,17 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           }}
           const details = payload.details || {{}};
           const openUrl = details.view_url ? `${{details.view_url}}?viewer=internal` : "";
+          const attachCandidates = ((details.deal_match_resolution || {{}}).candidates || [])
+            .filter((candidate) => candidate.kind === "deal" && candidate.hubspot_deal_id)
+            .slice(0, 3);
+          const attachCandidateHtml = (details.attachment_status === "needs_review" && attachCandidates.length)
+            ? `<div class="deck-success-row"><label>HubSpot match needs review</label><div class="deck-url-group">${{attachCandidates.map((candidate) => `<button type="button" class="deck-attach-deal" data-run-id="${{escapeHtml(String(details.run_id || ""))}}" data-deal-id="${{escapeHtml(candidate.hubspot_deal_id)}}">Attach ${{escapeHtml(candidate.label || candidate.hubspot_deal_id)}} (${{escapeHtml(String(candidate.confidence || ""))}})</button>`).join("")}}</div></div>`
+            : "";
           const createdRun = {{
             id: details.run_id,
             design_title: details.design_title,
             view_url: details.view_url,
+            attachment_status: details.attachment_status || "unmatched",
             channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
             started_at: new Date().toISOString(),
             view_analytics: {{
@@ -4368,7 +4415,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           if (openUrl) {{
             window.open(openUrl, "_blank", "noopener,noreferrer");
           }}
-          deckStatus.innerHTML = `Deck generated. ${{openUrl ? `<a href="${{openUrl}}" target="_blank" rel="noreferrer">Open deck</a>` : ""}}`;
+          deckStatus.innerHTML = `Deck generated. ${{openUrl ? `<a href="${{openUrl}}" target="_blank" rel="noreferrer">Open deck</a>` : ""}} ${{attachCandidateHtml}}`;
           if (deckSubmitButton) {{
             deckSubmitButton.disabled = false;
             deckSubmitButton.textContent = "GENERATE DECK";
@@ -4449,7 +4496,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
 </html>"""
 
 
-def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) -> str:
+def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, sales_deck_context: Optional[dict] = None) -> str:
     latest_sync = format_date_label(data.latest_sync_at) if data.latest_sync_at else "not synced yet"
     deck_ready_notice = (
         '<div class="notice warning">Deck generator is missing env vars: '
@@ -4481,11 +4528,44 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
         analytics = dict(run_dict.get("view_analytics") or {})
         return int(dict(analytics.get("internal") or {}).get("total_visits", 0) or 0)
 
+    context = dict(sales_deck_context or {})
+    context_selected = dict(context.get("selected") or {})
+    context_hidden = ""
+    if context_selected:
+        context_hidden = "".join(
+            f'<input type="hidden" name="{html.escape(key)}" value="{html.escape(str(value or ""), quote=True)}">'
+            for key, value in {
+                "hubspot_deal_id": context_selected.get("hubspot_deal_id", ""),
+                "hubspot_company_id": context_selected.get("hubspot_company_id", ""),
+                "hubspot_contact_ids": ",".join(str(v) for v in (context_selected.get("hubspot_contact_ids") or [])),
+                "company_name": context_selected.get("company_name", ""),
+                "company_domain": context_selected.get("company_domain", ""),
+                "contact_email": context_selected.get("contact_email", ""),
+            }.items()
+            if value
+        )
+    context_panel = ""
+    if context:
+        selected_label = context_selected.get("label") or "No automatic match"
+        selected_source = context.get("matched_source") or context.get("action") or "unmatched"
+        audit_items = "".join(f"<li>{html.escape(str(line))}</li>" for line in list(context.get("audit_lines") or [])[:5])
+        context_panel = f"""
+        <div class="deck-context-panel">
+          <div>
+            <div class="eyebrow">HubSpot context</div>
+            <strong>{html.escape(str(selected_label))}</strong>
+            <p class="muted">Action: {html.escape(str(context.get("action") or "unmatched"))} · Source: {html.escape(str(selected_source))} · Confidence: {html.escape(str(context.get("confidence") or 0))}</p>
+          </div>
+          {f'<ul>{audit_items}</ul>' if audit_items else ''}
+        </div>
+        """
+
     recent_deck_rows_html = "".join(
         f"""
         <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}" data-run-id="{html.escape(str(run.get("id", "")))}">
           <td><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
           <td class="muted">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
+          <td class="muted">{html.escape(str(run.get("attachment_status") or "unmatched"))}</td>
           <td class="muted deck-cell-created">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
           <td class="num">{_ext_views(run)}</td>
           <td class="num">{_int_views(run)}</td>
@@ -4536,6 +4616,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
               <tr>
                 <th class="col-brand">Brand</th>
                 <th>Deck title</th>
+                <th>HubSpot</th>
                 <th class="col-created">Created</th>
                 <th class="num col-views">Ext. views</th>
                 <th class="num col-views">Int. views</th>
@@ -5502,7 +5583,9 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
           <h2>Sales assets</h2>
           <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
           {deck_ready_notice}
+          {context_panel}
           <form class="lead-form intake-form" id="deck-generator-form">
+            {context_hidden}
             <fieldset class="intake-section intake-target">
               <legend>1. Target product</legend>
               <label class="intake-label">
@@ -6075,6 +6158,32 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
         }}
       }});
 
+      document.addEventListener("click", async (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const btn = target.closest(".deck-attach-deal");
+        if (!btn) return;
+        const runId = btn.dataset.runId || "";
+        const dealId = btn.dataset.dealId || "";
+        if (!runId || !dealId) return;
+        const original = btn.textContent;
+        btn.textContent = "Attaching...";
+        btn.setAttribute("disabled", "disabled");
+        const body = new FormData();
+        body.append("hubspot_deal_id", dealId);
+        try {{
+          const response = await fetch(`/admin/api/deck-runs/${{encodeURIComponent(runId)}}/attach-deal`, {{ method: "POST", body }});
+          if (!response.ok) throw new Error("Attach failed");
+          btn.textContent = "Attached";
+        }} catch (_err) {{
+          btn.textContent = "Attach failed";
+          setTimeout(() => {{
+            btn.textContent = original || "Attach";
+            btn.removeAttribute("disabled");
+          }}, 1600);
+        }}
+      }});
+
       const deckAnalyticsModal = document.getElementById("deck-analytics-modal");
       const deckAnalyticsClose = document.getElementById("deck-analytics-close");
       const deckAnalyticsSummary = document.getElementById("deck-analytics-summary");
@@ -6208,7 +6317,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
           <article class="deck-run-item">
             <div>
               <strong>${{safeTitle}}</strong>
-              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}}</p>
+              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}} · HubSpot ${{escapeHtml(run.attachment_status || "unmatched")}}</p>
             </div>
             <div class="deck-run-links">
               ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
@@ -6422,10 +6531,17 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
           }}
           const details = payload.details || {{}};
           const openUrl = details.view_url ? `${{details.view_url}}?viewer=internal` : "";
+          const attachCandidates = ((details.deal_match_resolution || {{}}).candidates || [])
+            .filter((candidate) => candidate.kind === "deal" && candidate.hubspot_deal_id)
+            .slice(0, 3);
+          const attachCandidateHtml = (details.attachment_status === "needs_review" && attachCandidates.length)
+            ? `<div class="deck-success-row"><label>HubSpot match needs review</label><div class="deck-url-group">${{attachCandidates.map((candidate) => `<button type="button" class="deck-attach-deal" data-run-id="${{escapeHtml(String(details.run_id || ""))}}" data-deal-id="${{escapeHtml(candidate.hubspot_deal_id)}}">Attach ${{escapeHtml(candidate.label || candidate.hubspot_deal_id)}} (${{escapeHtml(String(candidate.confidence || ""))}})</button>`).join("")}}</div></div>`
+            : "";
           const createdRun = {{
             id: details.run_id,
             design_title: details.design_title,
             view_url: details.view_url,
+            attachment_status: details.attachment_status || "unmatched",
             channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
             started_at: new Date().toISOString(),
             view_analytics: {{
@@ -6476,6 +6592,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None) 
                     <a href="${{safeExt}}/story.md" target="_blank" rel="noreferrer">Download .md</a>
                   </div>
                 </div>
+                ${{attachCandidateHtml}}
               </div>`;
           }} else {{
             deckStatus.textContent = "Deck generated.";

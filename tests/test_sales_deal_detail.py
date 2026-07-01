@@ -108,6 +108,7 @@ class SalesDealDetailTests(unittest.TestCase):
         # The other two closing tools show as "not linked yet" placeholders.
         self.assertIn("Sales Deck", body)
         self.assertIn("Ads Audit", body)
+        self.assertIn("/admin/sales-decks?hubspot_deal_id=full", body)
 
     def test_empty_deal_shows_accountability_nudge(self) -> None:
         body = self.client.get("/admin/sales/deals/empty").text

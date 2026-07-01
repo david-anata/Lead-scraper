@@ -332,6 +332,9 @@ class DeckGeneratorTests(unittest.TestCase):
             )
             self.assertTrue(summary.get("deck_html"))
             self.assertTrue(summary.get("deck_slug"))
+            self.assertTrue(summary.get("share_preview"))
+            self.assertIn('property="og:image"', str(summary.get("deck_html") or ""))
+            self.assertIn('name="twitter:card" content="summary_large_image"', str(summary.get("deck_html") or ""))
 
     def test_generate_deck_without_keyword_csv_still_generates(self) -> None:
         session_factory = create_session_factory("sqlite:///:memory:")

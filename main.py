@@ -4788,6 +4788,11 @@ def public_deck_story_proxy(request: Request, deck_slug: str, run_id: int, token
     return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/story")
 
 
+@app.get("/decks/{deck_slug}/{run_id}/{token}/preview.png")
+def public_deck_preview_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
+    return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/preview.png")
+
+
 @app.get("/decks/{deck_slug}/{run_id}/{token}/story.md")
 def public_deck_story_md_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
     """Raw markdown download — backend sets Content-Disposition: attachment."""
