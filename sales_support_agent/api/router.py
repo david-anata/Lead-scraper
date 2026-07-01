@@ -820,7 +820,7 @@ def admin_fulfillment_cs_dashboard(request: Request) -> Response:
     reports_dir = request.app.state.settings.fulfillment_cs_reports_dir
     latest_report = load_latest_fulfillment_report(reports_dir)
     entries = fulfillment_report_entries(reports_dir)
-    return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries))
+    return HTMLResponse(render_fulfillment_dashboard_page(latest_report, entries, user=_get_request_user(request)))
 
 
 @router.get("/admin/fulfillment/cs/reports", response_class=HTMLResponse)
@@ -837,7 +837,7 @@ def admin_fulfillment_cs_reports(request: Request) -> Response:
     if not _is_admin_authenticated(request):
         return RedirectResponse(url="/admin/login", status_code=302)
     reports_dir = request.app.state.settings.fulfillment_cs_reports_dir
-    return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(reports_dir)))
+    return HTMLResponse(render_fulfillment_reports_page(fulfillment_report_entries(reports_dir), user=_get_request_user(request)))
 
 
 @router.get("/admin/fulfillment/cs/reports/latest", response_class=HTMLResponse)
@@ -885,7 +885,7 @@ def admin_fulfillment_cs_report_html(request: Request, report_slug: str) -> Resp
 
     artifact = load_fulfillment_report_artifact(request.app.state.settings.fulfillment_cs_reports_dir, report_slug, "html")
     if artifact is None:
-        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report HTML was not found."), status_code=404)
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report HTML was not found.", user=_get_request_user(request)), status_code=404)
     body, content_type = artifact
     return Response(content=body, media_type=content_type)
 
@@ -897,8 +897,8 @@ def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Re
         return RedirectResponse(url="/admin/login", status_code=302)
     report = load_fulfillment_report_by_slug(request.app.state.settings.fulfillment_cs_reports_dir, report_slug)
     if report is None:
-        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found."), status_code=404)
-    return HTMLResponse(render_fulfillment_report_detail_page(report))
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found.", user=_get_request_user(request)), status_code=404)
+    return HTMLResponse(render_fulfillment_report_detail_page(report, user=_get_request_user(request)))
 
 
 @router.get("/admin/website-ops", response_class=HTMLResponse)

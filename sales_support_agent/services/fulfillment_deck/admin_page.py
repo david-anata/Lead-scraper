@@ -78,6 +78,9 @@ _STYLES = """
         font-weight: 700; font-size: 13px; border: none; cursor: pointer; text-decoration: none; }
       .btn--ghost { background: #fff; color: var(--dark-blue); border: 1px solid var(--border); min-height: 34px; padding: 0 14px; font-size: 12px; }
       .btn--danger { background: #fff; color: #8b4c42; border: 1px solid rgba(139,76,66,0.4); min-height: 34px; padding: 0 14px; font-size: 12px; }
+      .inline-chip { min-height: 24px; padding: 0 8px; border-radius: 999px; border: 1px solid rgba(133,187,218,0.55);
+        background: rgba(133,187,218,0.12); color: var(--dark-blue); cursor: pointer; font-family: "Montserrat", sans-serif;
+        font-weight: 700; font-size: 10.5px; white-space: nowrap; }
       table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 6px 0 8px; }
       th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--border); vertical-align: middle; }
       thead th { background: rgba(133,187,218,0.20); font-family: "Montserrat", sans-serif; font-size: 11px;
@@ -145,8 +148,25 @@ _STYLES = """
       .history-item span { color: rgba(43,54,68,0.55); font-size: 12px; }
       .history-item em { color: rgba(43,54,68,0.72); font-size: 12.5px; font-style: normal; }
       .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+      .prospect-summary { display:grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap:10px; margin: 14px 0 12px; }
+      .prospect-summary__item { border:1px solid var(--border); border-radius:12px; background:rgba(43,54,68,0.025); padding:10px 12px; min-width:0; }
+      .prospect-summary__item span { display:block; font-size:10px; font-family:"Montserrat", sans-serif; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:rgba(43,54,68,.5); }
+      .prospect-summary__item strong { display:block; margin-top:3px; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .pricing-lines { table-layout: fixed; border:1px solid var(--border); border-radius:12px; overflow:hidden; display:table; }
+      .pricing-lines th, .pricing-lines td { vertical-align: top; }
+      .pricing-lines th:nth-child(1), .pricing-lines td:nth-child(1) { width: 25%; }
+      .pricing-lines th:nth-child(2), .pricing-lines td:nth-child(2),
+      .pricing-lines th:nth-child(3), .pricing-lines td:nth-child(3) { width: 27%; }
+      .pricing-lines th:nth-child(4), .pricing-lines td:nth-child(4) { width: 21%; }
+      .pricing-lines__label { font-weight: 800; font-family: "Montserrat", sans-serif; font-size: 12px; }
+      .pricing-lines__sub { margin-top: 3px; color: rgba(43,54,68,0.55); font-size: 11.5px; line-height: 1.35; }
+      .pricing-cell { display:grid; gap:4px; }
+      .pricing-cell label { font-size:10px; font-weight:800; font-family:"Montserrat", sans-serif; color:rgba(43,54,68,.58); letter-spacing:.04em; text-transform:uppercase; }
+      .pricing-cell input { width:100%; min-height:36px; padding:0 10px; border-radius:8px; border:1px solid var(--border); font-size:13px; font-family:inherit; }
+      .pricing-cell--empty { color:rgba(43,54,68,.42); font-size:12px; line-height:1.45; padding-top:20px; }
+      .pricing-note { color:rgba(43,54,68,.62); font-size:12px; line-height:1.45; }
       @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } .edit-grid { grid-template-columns: 1fr; } }
-      @media (max-width: 900px) { .form-grid, .form-grid--wide { grid-template-columns: 1fr; } }
+      @media (max-width: 900px) { .form-grid, .form-grid--wide, .prospect-summary { grid-template-columns: 1fr; } .pricing-lines { min-width:760px; } .review-section__body { overflow-x:auto; } }
       /* On narrow screens keep only Prospect, Stage, Margin, Actions */
       @media (max-width: 640px) {
         table th:nth-child(3), table td:nth-child(3),
@@ -165,6 +185,15 @@ _STYLES = """
         letter-spacing: 0.07em; text-transform: uppercase; color: rgba(43,54,68,0.5); margin-top: 3px; }
       .pipeline-stat__sub { font-size: 11px; color: rgba(43,54,68,0.5); margin-top: 2px; }
       .pipeline-stat--won .pipeline-stat__val { color: #15803d; }
+      .operator-callout {
+        display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center;
+        margin: 18px 0 20px; padding: 18px 20px; border: 1px solid rgba(133,187,218,0.55);
+        border-radius: 16px; background: rgba(133,187,218,0.12);
+      }
+      .operator-callout h2 { margin: 0 0 6px; font-size: 20px; }
+      .operator-callout p { margin: 0; color: rgba(43,54,68,0.72); line-height: 1.45; }
+      .operator-callout__side { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+      .operator-callout__meta { margin-top: 8px; color: rgba(43,54,68,0.55); font-size: 12px; }
       /* Pipeline table */
       .prospect-row { cursor: pointer; }
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
@@ -221,6 +250,8 @@ _STYLES = """
       @media (max-width: 900px) {
         .expand-panel { grid-template-columns: 1fr; }
         .grid2 { grid-template-columns: 1fr; }
+        .operator-callout { grid-template-columns: 1fr; }
+        .operator-callout__side { justify-content: flex-start; }
       }
 """
 
@@ -360,6 +391,8 @@ def _pricing_summary_html(summary: dict, profile: dict) -> str:
               <div class="margin-line"><span>Fulfillment monthly cost</span><span>−{_fmt_usd(mg.get('actual_monthly'))}</span></div>
               <div class="margin-line" style="font-weight:800;color:{sign}"><span>Estimated monthly net margin</span><span>{_fmt_usd(mg.get('monthly_margin'))} ({_esc(mg.get('margin_pct'))}%)</span></div>
               <div class="margin-line"><span>Estimated annual net margin</span><span>{_fmt_usd(mg.get('annual_margin'))}</span></div>
+              <div class="margin-line" style="font-size:12px;color:rgba(43,54,68,0.62)"><span>Formula</span><span>(customer monthly − pass-through − fulfillment costs) × 12</span></div>
+              {('<div class="margin-line" style="font-size:12px;color:#b91c1c"><span>Margin warning</span><span>Internal costs exceed marginable revenue.</span></div>' if float(mg.get("monthly_margin") or 0) < 0 else '')}
             """
         except Exception:
             cost_html = '<div class="muted">Could not calculate margin from stored fulfillment costs.</div>'
@@ -374,7 +407,7 @@ def _pricing_summary_html(summary: dict, profile: dict) -> str:
           <div class="muted" style="font-size:12px;line-height:1.5">
             <strong>Fee Card Adjustments</strong> are prices shown to the customer in the rate sheet and used for the monthly estimate.
             <br><strong>Fulfillment costs</strong> are internal warehouse costs from the pipeline.
-            <br><strong>Net margin</strong> = customer-facing monthly estimate minus carrier/pass-through revenue, then minus internal fulfillment monthly cost.
+            <br><strong>Net margin</strong> = customer-facing monthly estimate minus carrier/pass-through revenue, then minus internal fulfillment monthly cost. Annual margin is monthly net margin × 12.
           </div>
         </div>
       </div>
@@ -647,9 +680,18 @@ def _expand_panel(run: dict) -> str:
     _view_path = _esc(str(run.get("view_path") or ""))
     _hs_quote_url = _esc(str(run.get("hubspot_quote_url") or ""))
     _hs_deal_url = _esc(str(run.get("hubspot_deal_url") or ""))
+    _cost_form_url_path = _esc(_cost_form_path(run_id, run))
     _quick_links = ""
-    if _view_path or _hs_deal_url:
+    if _view_path or _hs_deal_url or _cost_form_url_path:
         _btns = []
+        if _cost_form_url_path:
+            _btns.append(
+                f'<button class="btn btn--ghost" type="button" style="font-size:12px" '
+                f"onclick=\"event.stopPropagation();navigator.clipboard.writeText(window.location.origin+'{_cost_form_url_path}');"
+                f"this.textContent='Cost form copied!';setTimeout(()=>this.textContent='Copy cost form',1800)\">Copy cost form</button>"
+                f'<a class="btn btn--ghost" href="{_cost_form_url_path}" target="_blank" rel="noreferrer" '
+                f'onclick="event.stopPropagation()" style="font-size:12px">Open cost form</a>'
+            )
         if _view_path:
             _btns.append(
                 f'<button class="btn btn--ghost" type="button" style="font-size:12px" '
@@ -826,6 +868,108 @@ def _pipeline_stats(runs: list[dict]) -> str:
     )
 
 
+def _pipeline_next_action(runs: list[dict], engagement: dict[int, dict]) -> str:
+    """Resolve the single best pipeline action so the page does not start as a table audit."""
+    if not runs:
+        return (
+            '<section class="operator-callout">'
+            '<div><p class="eyebrow">Next action</p><h2>Create the first prospect rate sheet.</h2>'
+            '<p>Paste prospect notes, upload supporting files, and generate the hosted rate sheet. The pipeline will track follow-up after the sheet exists.</p></div>'
+            '<div class="operator-callout__side"><a class="btn" href="#notes">Start intake</a></div>'
+            '</section>'
+        )
+
+    def _name(run: dict) -> str:
+        return _esc(run.get("prospect") or run.get("design_title") or f"Run {int(run.get('id') or 0)}")
+
+    for run in runs:
+        if str(run.get("status") or "") == "running":
+            return (
+                '<section class="operator-callout">'
+                f'<div><p class="eyebrow">Next action</p><h2>Rate sheet is building for {_name(run)}.</h2>'
+                '<p>Wait for the generation pass to finish, then review the output before sending it to the prospect.</p>'
+                '<div class="operator-callout__meta">The page can be refreshed safely while generation is running.</div></div>'
+                '<div class="operator-callout__side"><a class="btn btn--ghost" href="#pipeline">Watch pipeline</a></div>'
+                '</section>'
+            )
+
+    for run in runs:
+        run_id = int(run.get("id") or 0)
+        if str(run.get("status") or "") == "draft" or not bool(run.get("published")):
+            return (
+                '<section class="operator-callout">'
+                f'<div><p class="eyebrow">Next action</p><h2>Review and publish {_name(run)}.</h2>'
+                '<p>The rate sheet is not live yet. Review the extracted details, confirm pricing, and publish only when the offer is ready to share.</p>'
+                '<div class="operator-callout__meta">Resolution path: review -> publish -> share link or create quote.</div></div>'
+                f'<div class="operator-callout__side"><a class="btn" href="/admin/fulfillment/sales/runs/{run_id}/review">Review rate sheet</a></div>'
+                '</section>'
+            )
+
+    for run in runs:
+        run_id = int(run.get("id") or 0)
+        stage = str(run.get("pipeline_stage") or "intake")
+        costs = run.get("fulfillment_actual_costs") or {}
+        if stage in {"intake", "pending_fulfillment"} and not any(v for v in costs.values() if v):
+            cost_form_path = _cost_form_path(run_id, run)
+            copy_cost_button = (
+                f'<button class="btn" type="button" onclick="navigator.clipboard.writeText(window.location.origin + \'{_esc(cost_form_path)}\');this.textContent=\'Cost form copied\';">Copy cost form</button>'
+                if cost_form_path else ""
+            )
+            return (
+                '<section class="operator-callout">'
+                f'<div><p class="eyebrow">Next action</p><h2>Get warehouse costs for {_name(run)}.</h2>'
+                '<p>The public offer exists, but margin is not trusted until fulfillment costs are entered. Send the warehouse brief or cost form, then update the row.</p>'
+                '<div class="operator-callout__meta">Resolution path: collect costs -> save margin -> create quote.</div></div>'
+                f'<div class="operator-callout__side">{copy_cost_button}<a class="btn btn--ghost" href="/admin/fulfillment/sales/runs/{run_id}/review">Open review</a></div>'
+                '</section>'
+            )
+
+    for run in runs:
+        run_id = int(run.get("id") or 0)
+        stage = str(run.get("pipeline_stage") or "intake")
+        if stage == "costs_received" and not str(run.get("hubspot_quote_url") or "").strip():
+            return (
+                '<section class="operator-callout">'
+                f'<div><p class="eyebrow">Next action</p><h2>Create the HubSpot quote for {_name(run)}.</h2>'
+                '<p>Costs are in. Move from internal review to a quote the sales team can send and track.</p>'
+                '<div class="operator-callout__meta">Resolution path: create quote -> send prospect follow-up.</div></div>'
+                f'<div class="operator-callout__side"><a class="btn" href="/admin/fulfillment/sales/runs/{run_id}/review">Create quote</a></div>'
+                '</section>'
+            )
+
+    for run in runs:
+        run_id = int(run.get("id") or 0)
+        stage = str(run.get("pipeline_stage") or "intake")
+        view_count = int((engagement.get(run_id) or {}).get("external_sessions") or 0)
+        if stage == "published" and view_count == 0:
+            return (
+                '<section class="operator-callout">'
+                f'<div><p class="eyebrow">Next action</p><h2>Follow up on unopened sheet for {_name(run)}.</h2>'
+                '<p>The offer is live but has no external view activity. Copy the outreach email or reopen the sheet before the prospect goes cold.</p>'
+                '<div class="operator-callout__meta">Resolution path: resend link -> monitor views -> advance stage.</div></div>'
+                f'<div class="operator-callout__side"><a class="btn" href="/admin/fulfillment/sales/runs/{run_id}/review">Open follow-up tools</a></div>'
+                '</section>'
+            )
+
+    active = [r for r in runs if str(r.get("pipeline_stage") or "") not in {"won", "lost"}]
+    if active:
+        return (
+            '<section class="operator-callout">'
+            '<div><p class="eyebrow">Next action</p><h2>Pipeline is current. Work the next sales conversation.</h2>'
+            '<p>No rate sheet is blocked by missing review, costs, or quote setup. Use the table only for stage updates or follow-up context.</p>'
+            '<div class="operator-callout__meta">Resolution path: monitor views -> update stage -> close won or archive.</div></div>'
+            '<div class="operator-callout__side"><a class="btn btn--ghost" href="#pipeline">Review pipeline</a></div>'
+            '</section>'
+        )
+    return (
+        '<section class="operator-callout">'
+        '<div><p class="eyebrow">Next action</p><h2>No open fulfillment prospects.</h2>'
+        '<p>Closed prospects are preserved for history. Start intake when the next fulfillment opportunity appears.</p></div>'
+        '<div class="operator-callout__side"><a class="btn" href="#notes">Start intake</a></div>'
+        '</section>'
+    )
+
+
 def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
     rows = []
     for run in runs:
@@ -885,7 +1029,14 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         elif str(run.get("rates_source")) == RATE_SOURCE_WMS:
             source_pill = '<span class="pill pill--live" style="font-size:10px">Live</span>'
         else:
-            source_pill = '<span class="pill pill--sample" style="font-size:10px">Sample</span>'
+            source_pill = '<span class="pill pill--estimated" style="font-size:10px" title="Generated estimate; confirm costs with fulfillment">Estimated</span>'
+        cost_form_quick = ""
+        if cost_form_path:
+            cost_form_quick = (
+                f'<button class="inline-chip" type="button" title="Copy fulfillment-only cost form link" '
+                f"onclick=\"event.stopPropagation();navigator.clipboard.writeText(window.location.origin + '{_esc(cost_form_path)}');"
+                f"this.textContent='Cost form copied';setTimeout(()=>this.textContent='Cost form',1800);\">Cost form</button>"
+            )
 
         # Engagement
         stats = engagement.get(run_id) or {}
@@ -983,7 +1134,7 @@ def _history_rows(runs: list[dict], engagement: dict[int, dict]) -> str:
         row_idx = len(rows)
         rows.append(
             f'<tr class="prospect-row" data-order="{row_idx}" data-stage="{_esc(stage)}" data-run="{run_id}" data-expand="expand-{run_id}" onclick="toggleExpand(event,\'expand-{run_id}\')">'
-            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot}{_stale_badge} {source_pill}"
+            f"<td><span class='row-chevron'>›</span><strong>{prospect}</strong>{notes_dot}{_stale_badge} {source_pill} {cost_form_quick}"
             f"<div class='muted'>{started}</div></td>"
             f"<td>{_stage_select(run_id, stage)}</td>"
             f"<td>{vol_str}</td>"
@@ -1059,27 +1210,30 @@ def render_fulfillment_sales_page(
         if runs
         else '<p class="empty">No rate sheets generated yet — the first one will appear here with its shareable link.</p>'
     )
+    next_action_html = _pipeline_next_action(runs, engagement)
     styles = _STYLES.replace("__NAV__", render_agent_nav_styles())
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>agent | Fulfillment Prospects</title>
+    <title>agent | Fulfillment Pipeline</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css">
     <style>{styles}</style>
   </head>
   <body>
-    {render_agent_nav("fulfillment", website_ops_section="fulfillment_sales", user=user)}
+    {render_agent_nav("fulfillment", fulfillment_section="fulfillment_sales", user=user)}
     <main class="shell">
       <div class="workspace">
-        <p class="eyebrow">Fulfillment — Sales</p>
-        <h1>Fulfillment <span style="color:var(--light-blue)">Prospects</span>.</h1>
-        <p class="intro">Manage your fulfillment prospect pipeline. Paste what you know about a new prospect and the system builds a hosted rate sheet — then track each deal through quoting, cost entry, and close below.</p>
+        <p class="eyebrow">Fulfillment — Pipeline</p>
+        <h1>Prospect <span style="color:var(--light-blue)">Pipeline</span>.</h1>
+        <p class="intro">Turn fulfillment opportunities into one next action: intake, review, collect costs, create quote, follow up, or close. The table below is supporting context, not the starting point.</p>
         {flash_html}
         {ctx_banner}
+        {next_action_html}
         <form method="post" action="/admin/fulfillment/sales/generate" enctype="multipart/form-data">
           <input type="hidden" name="hubspot_deal_id" value="{_esc(ctx_deal_id)}">
           <input type="hidden" name="hubspot_company_id" value="{_esc(ctx_company_id)}">
@@ -1111,7 +1265,7 @@ def render_fulfillment_sales_page(
             </div>
           </div>
           <button class="btn" type="submit" id="generate-btn"
-            onclick="setTimeout(()=>{{this.textContent='Building… (this takes ~20s)';this.disabled=true;}},10)">Generate rate sheet</button>
+            onclick="setTimeout(()=>{{this.textContent='Building… (this takes ~20s)';this.disabled=true;}},10)">Create rate sheet</button>
           {'<a href="#pipeline" class="muted" style="margin-left:12px;font-size:13px;text-decoration:none;opacity:.65">↓ or jump to pipeline</a>' if runs else ''}
         </form>
         <h2 id="pipeline">Pipeline</h2>
@@ -1740,6 +1894,21 @@ def render_rate_sheet_review_page(
     else:
         publish_block = ""
         publish_button = '<button class="btn" type="submit">Publish — get shareable link</button>'
+    publish_form_html = (
+        f"""
+        <form method="post" action="{base}/runs/{run_id}/publish" style="margin-top:10px">
+          <div class="review-actions">
+            {publish_button}
+            <a class="btn btn--ghost" href="{base}">← Pipeline</a>
+            <span class="muted" style="font-size:12px">Re-publish refreshes the prospect-facing rate sheet and can re-run the HubSpot quote workflow when quote guards pass.</span>
+          </div>
+        </form>"""
+        if published else
+        f"""
+        <div class="review-actions" style="margin-top:10px">
+          <a class="btn btn--ghost" href="{base}">← Pipeline</a>
+        </div>"""
+    )
 
     rows = "".join(_product_row(i, p) for i, p in enumerate(products))
     rows += _product_row(len(products), {}, template=True)
@@ -1837,11 +2006,261 @@ def render_rate_sheet_review_page(
         v = _actual_costs.get(key)
         return f"{float(v):g}" if v is not None else ""
 
+    def _number_cell(
+        label: str,
+        input_id: str,
+        name: str,
+        value: str,
+        placeholder: object,
+        *,
+        step: str = "0.01",
+    ) -> str:
+        try:
+            placeholder_str = f"{float(placeholder):g}"
+        except (TypeError, ValueError):
+            placeholder_str = str(placeholder or "")
+        return (
+            '<div class="pricing-cell">'
+            f'<label for="{_esc(input_id)}">{_esc(label)}</label>'
+            f'<input type="number" id="{_esc(input_id)}" name="{_esc(name)}" step="{_esc(step)}" min="0" '
+            f'value="{_esc(value)}" placeholder="{_esc(placeholder_str)}">'
+            '</div>'
+        )
+
+    def _empty_cell(text: str = "No mapped field yet") -> str:
+        return f'<div class="pricing-cell--empty">{_esc(text)}</div>'
+
+    def _pricing_line(label: str, sub: str, cost: str, fee: str, note: str = "") -> str:
+        return (
+            "<tr>"
+            f'<td><div class="pricing-lines__label">{_esc(label)}</div>'
+            f'<div class="pricing-lines__sub">{_esc(sub)}</div></td>'
+            f"<td>{cost}</td>"
+            f"<td>{fee}</td>"
+            f'<td><div class="pricing-note">{_esc(note)}</div></td>'
+            "</tr>"
+        )
+
+    pricing_lines = [
+        _pricing_line(
+            "DTC pick & pack / order",
+            "Monthly order handling",
+            _number_cell("Fulfillment cost", "actual_pick_pack_per_order", "actual_pick_pack_per_order", _aval("pick_pack_per_order"), BASELINE_RATES["dtc_base_per_order"]),
+            _number_cell("Customer fee", "rate_pick_pack", "rate_pick_pack", _rval("dtc_base_per_order"), BASELINE_RATES["dtc_base_per_order"]),
+            "Feeds the public estimate and monthly margin.",
+        ),
+        _pricing_line(
+            "DTC additional item",
+            "Extra item in an order",
+            _number_cell("Fulfillment cost", "actual_pick_pack_additional_item", "actual_pick_pack_additional_item", _aval("pick_pack_additional_item"), BASELINE_RATES["dtc_additional_item"]),
+            _number_cell("Customer fee", "rate_additional_item", "rate_additional_item", _rval("dtc_additional_item"), BASELINE_RATES["dtc_additional_item"]),
+            "Uses average items per order from product volume.",
+        ),
+        _pricing_line(
+            "Receiving / pallet",
+            "Legacy receiving line",
+            _number_cell("Fulfillment cost", "actual_receiving_per_pallet", "actual_receiving_per_pallet", _aval("receiving_per_pallet"), BASELINE_RATES["receiving_per_pallet"]),
+            _number_cell("Customer fee", "rate_receiving", "rate_receiving", _rval("receiving_per_pallet"), BASELINE_RATES["receiving_per_pallet"]),
+            "One-time receiving support; excluded from recurring monthly net margin.",
+        ),
+        _pricing_line(
+            "Receiving pre-counted box",
+            "Fulfillment-only baseline",
+            _number_cell("Fulfillment cost", "actual_receiving_precounted_box", "actual_receiving_precounted_box", _aval("receiving_precounted_box"), BASELINE_RATES["receiving_precounted_box"]),
+            _empty_cell("No customer override yet"),
+            "Use for warehouse cost capture when receiving is quoted as a custom/setup item.",
+        ),
+        _pricing_line(
+            "Receiving counted item",
+            "Fulfillment counts units",
+            _number_cell("Fulfillment cost", "actual_receiving_count_per_item", "actual_receiving_count_per_item", _aval("receiving_count_per_item"), BASELINE_RATES["receiving_count_per_item"]),
+            _empty_cell("No customer override yet"),
+            "Use when Anata must count inbound units.",
+        ),
+        _pricing_line(
+            "Storage / pallet/mo",
+            "Recurring storage",
+            _number_cell("Fulfillment cost", "actual_storage_per_pallet_mo", "actual_storage_per_pallet_mo", _aval("storage_per_pallet_mo"), BASELINE_RATES["storage_short_per_pallet_mo"]),
+            _number_cell("Customer fee", "rate_storage", "rate_storage", _rval("storage_short_per_pallet_mo"), BASELINE_RATES["storage_short_per_pallet_mo"]),
+            "Margin uses the higher of pallet storage or cubic-foot storage cost.",
+        ),
+        _pricing_line(
+            "Storage / cubic foot/mo",
+            "Recurring storage alternative",
+            _number_cell("Fulfillment cost", "actual_storage_cubic_foot_mo", "actual_storage_cubic_foot_mo", _aval("storage_cubic_foot_mo"), BASELINE_RATES["storage_cubic_foot_mo"]),
+            _empty_cell("Public rate card baseline only"),
+            "Internal margin compares this with pallet storage and uses the max.",
+        ),
+        _pricing_line(
+            "Kitting / item",
+            "Optional fulfillment service",
+            _number_cell("Fulfillment cost", "actual_kitting_per_item", "actual_kitting_per_item", _aval("kitting_per_item"), BASELINE_RATES["kitting_per_unit"]),
+            _number_cell("Customer fee", "rate_kitting", "rate_kitting", _rval("kitting_per_unit"), BASELINE_RATES["kitting_per_unit"]),
+            "Included in optional monthly costs when entered.",
+        ),
+        _pricing_line(
+            "Labeling / item",
+            "Optional fulfillment service",
+            _number_cell("Fulfillment cost", "actual_labeling_per_item", "actual_labeling_per_item", _aval("labeling_per_item"), BASELINE_RATES["labeling_per_unit"]),
+            _number_cell("Customer fee", "rate_labeling", "rate_labeling", _rval("labeling_per_unit"), BASELINE_RATES["labeling_per_unit"]),
+            "Included in optional monthly costs when entered.",
+        ),
+        _pricing_line(
+            "Bagging + labeling / item",
+            "Optional fulfillment service",
+            _number_cell("Fulfillment cost", "actual_bagging_labeling_per_item", "actual_bagging_labeling_per_item", _aval("bagging_labeling_per_item"), BASELINE_RATES["bagging_labeling_per_unit"]),
+            _empty_cell("Public rate card baseline only"),
+            "Cost is included in optional monthly margin when entered.",
+        ),
+        _pricing_line(
+            "Wholesale / unit",
+            "Customer-facing wholesale fee",
+            _empty_cell("No direct fulfillment cost field"),
+            _number_cell("Customer fee", "rate_wholesale", "rate_wholesale", _rval("wholesale_per_unit"), BASELINE_RATES["wholesale_per_unit"]),
+            "Use pallet-order cost below for internal warehouse cost.",
+        ),
+        _pricing_line(
+            "Pallet orders / pallet",
+            "Wholesale pallet handling cost",
+            _number_cell("Fulfillment cost", "actual_pallet_order_per_pallet", "actual_pallet_order_per_pallet", _aval("pallet_order_per_pallet"), BASELINE_RATES["pallet_order_per_pallet"]),
+            _empty_cell("No customer override yet"),
+            "Internal cost is included in optional monthly margin when entered.",
+        ),
+        _pricing_line(
+            "Returns / unit",
+            "Customer-facing return fee",
+            _empty_cell("See return cost stack below"),
+            _number_cell("Customer fee", "rate_returns", "rate_returns", _rval("returns_per_unit"), BASELINE_RATES["returns_per_unit"]),
+            "Compare to receive + examination + custom-step costs.",
+        ),
+        _pricing_line(
+            "Returns units / month",
+            "Volume used for return costs",
+            _number_cell("Monthly units", "actual_returns_units_mo", "actual_returns_units_mo", _aval("returns_units_mo"), 0, step="1"),
+            _empty_cell("Not a customer fee"),
+            "Multiplier for return cost stack.",
+        ),
+        _pricing_line(
+            "Return receive / unit",
+            "Cost stack",
+            _number_cell("Fulfillment cost", "actual_returns_receive_per_unit", "actual_returns_receive_per_unit", _aval("returns_receive_per_unit"), BASELINE_RATES["returns_receive_per_unit"]),
+            _empty_cell("Covered by returns fee"),
+            "",
+        ),
+        _pricing_line(
+            "Return examination / unit",
+            "Cost stack",
+            _number_cell("Fulfillment cost", "actual_returns_examination_per_unit", "actual_returns_examination_per_unit", _aval("returns_examination_per_unit"), BASELINE_RATES["returns_examination_per_unit"]),
+            _empty_cell("Covered by returns fee"),
+            "",
+        ),
+        _pricing_line(
+            "Return custom steps / unit",
+            "Cost stack",
+            _number_cell("Fulfillment cost", "actual_returns_custom_steps_per_unit", "actual_returns_custom_steps_per_unit", _aval("returns_custom_steps_per_unit"), BASELINE_RATES["returns_custom_steps_per_unit"]),
+            _empty_cell("Covered by returns fee"),
+            "",
+        ),
+        _pricing_line(
+            "Monthly tech fee",
+            "Recurring platform/admin fee",
+            _number_cell("Fulfillment cost", "actual_monthly_tech_fee", "actual_monthly_tech_fee", _aval("monthly_tech_fee"), BASELINE_RATES["monthly_tech_fee"]),
+            _number_cell("Customer fee", "rate_tech_fee", "rate_tech_fee", _rval("monthly_tech_fee"), BASELINE_RATES["monthly_tech_fee"]),
+            "Can be waived, but waiver reason is required before quote creation.",
+        ),
+        _pricing_line(
+            "Customer service / month",
+            "Fulfillment team relationship support",
+            _number_cell("Fulfillment cost", "actual_customer_service_monthly", "actual_customer_service_monthly", _aval("customer_service_monthly"), BASELINE_RATES["customer_service_monthly"]),
+            _empty_cell("No customer override yet"),
+            "Use when fulfillment owns the customer-service relationship.",
+        ),
+        _pricing_line(
+            "Special projects / hour",
+            "Hourly project work",
+            _number_cell("Fulfillment cost", "actual_special_projects_per_hour", "actual_special_projects_per_hour", _aval("special_projects_per_hour"), BASELINE_RATES["special_projects_per_hour"]),
+            _empty_cell("Public rate card baseline only"),
+            "Enter expected hours below to include internal monthly cost.",
+        ),
+        _pricing_line(
+            "Special project hours / month",
+            "Expected monthly hours",
+            _number_cell("Monthly hours", "actual_special_project_hours_mo", "actual_special_project_hours_mo", _aval("special_project_hours_mo"), 0, step="0.25"),
+            _empty_cell("Not a customer fee"),
+            "Multiplier for special-project internal cost.",
+        ),
+        _pricing_line(
+            "Implementation & integration setup",
+            "One-time customer setup fee",
+            _empty_cell("One-time cost not modeled yet"),
+            _number_cell("Customer fee", "rate_integration_setup_fee", "rate_integration_setup_fee", _rval("integration_setup_fee"), BASELINE_RATES["integration_setup_fee"], step="1"),
+            "Shown on the public rate sheet; excluded from recurring monthly net margin.",
+        ),
+        _pricing_line(
+            "Monthly minimum",
+            "Customer-facing floor",
+            _empty_cell("Not an internal cost"),
+            _number_cell("Customer fee", "rate_minimum", "rate_minimum", _rval("monthly_minimum"), BASELINE_RATES["monthly_minimum"], step="1"),
+            "Shown on the public rate sheet and quote guard context.",
+        ),
+    ]
+    pricing_lines_html = (
+        '<table class="pricing-lines"><thead><tr>'
+        '<th>Line item</th><th>Internal fulfillment cost</th><th>Customer fee</th><th>Margin treatment</th>'
+        '</tr></thead><tbody>'
+        + "".join(pricing_lines)
+        + "</tbody></table>"
+    )
+    prospect_summary_html = f"""
+      <div class="prospect-summary" aria-label="Prospect summary">
+        <div class="prospect-summary__item"><span>Prospect</span><strong>{_esc(profile.get('brand') or summary.get('prospect') or '—')}</strong></div>
+        <div class="prospect-summary__item"><span>Monthly volume</span><strong>{_esc(monthly_volume or '—')}</strong></div>
+        <div class="prospect-summary__item"><span>Products</span><strong>{len(products)}</strong></div>
+        <div class="prospect-summary__item"><span>HubSpot deal</span><strong>{_esc(hubspot_deal_id or 'Not attached')}</strong></div>
+      </div>
+    """
+
     rate_card_note_val = _esc(str(summary.get("rate_card_note") or ""))
     history_bar_html = _history_bar_html(summary)
 
     status_label = "Published" if published else "Draft — not publicly visible yet"
     status_pill_cls = "pill--live" if published else "pill--draft"
+    if not published:
+        primary_action_html = (
+            '<section class="operator-callout">'
+            '<div><p class="eyebrow">Next action</p><h2>Publish this rate sheet.</h2>'
+            '<p>The sheet is still private. Confirm the extraction, pricing, and costs below, then publish to create the shareable link.</p>'
+            '<div class="operator-callout__meta">Resolution path: publish -> copy email/link -> create quote when ready.</div></div>'
+            f'<div class="operator-callout__side"><form method="post" action="{base}/runs/{run_id}/publish">'
+            '<button class="btn" type="submit">Publish rate sheet</button></form></div>'
+            '</section>'
+        )
+    elif quote_guard_errors:
+        primary_action_html = (
+            '<section class="operator-callout">'
+            '<div><p class="eyebrow">Next action</p><h2>Clear quote blockers.</h2>'
+            f'<p>{_esc(str(quote_guard_errors[0]))}</p>'
+            '<div class="operator-callout__meta">Save the required deal, pricing, or cost fields below before creating the HubSpot quote.</div></div>'
+            '<div class="operator-callout__side"><button class="btn btn--ghost" type="submit" form="rate-sheet-update">Save changes</button></div>'
+            '</section>'
+        )
+    elif hs_quote_url:
+        primary_action_html = (
+            '<section class="operator-callout">'
+            '<div><p class="eyebrow">Next action</p><h2>Quote is ready to send.</h2>'
+            '<p>The rate sheet is live and the HubSpot quote exists. Open it to send or confirm e-signature status.</p></div>'
+            f'<div class="operator-callout__side"><a class="btn" href="{_esc(hs_quote_url)}" target="_blank" rel="noreferrer">Open HubSpot quote</a></div>'
+            '</section>'
+        )
+    else:
+        primary_action_html = (
+            '<section class="operator-callout">'
+            '<div><p class="eyebrow">Next action</p><h2>Create the HubSpot quote.</h2>'
+            '<p>The sheet is live and quote readiness checks passed. Create the quote so Sales has a sendable closing asset.</p></div>'
+            f'<div class="operator-callout__side"><form method="post" action="{base}/runs/{run_id}/quote">'
+            '<button class="btn" type="submit" style="background:#ff7a59;border-color:#ff7a59;color:#fff">Create HubSpot quote</button></form></div>'
+            '</section>'
+        )
 
     styles = _STYLES.replace("__NAV__", render_agent_nav_styles())
     return f"""<!doctype html>
@@ -1853,6 +2272,7 @@ def render_rate_sheet_review_page(
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css">
     <style>{styles}
       .preview-frame {{ width: 100%; height: 70vh; border: 1px solid var(--border);
         border-radius: 16px; background: #fff; box-shadow: 0 12px 28px var(--shadow); }}
@@ -1861,21 +2281,22 @@ def render_rate_sheet_review_page(
     </style>
   </head>
   <body>
-    {render_agent_nav("fulfillment", website_ops_section="fulfillment_sales", user=user)}
+    {render_agent_nav("fulfillment", fulfillment_section="fulfillment_sales", user=user)}
     <main class="shell">
       <div class="workspace">
         <p class="eyebrow"><a href="{base}" style="color:inherit;text-decoration:none;opacity:0.7">← Pipeline</a> · Review</p>
         <h1>{_esc(summary.get('prospect') or 'Rate sheet')} <span style="color:var(--light-blue)">rate sheet</span>.</h1>
         <p class="intro">{'Rate sheet is live — edit fields below and re-publish to update. Shareable link stays the same.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
         {flash_html}
+        {primary_action_html}
         {publish_block}
         {cost_form_block}
         {warnings_html}
         {quote_guard_html}
         {assortment_html}
         {brief_block}
-        {'<form method="post" action="' + base + '/runs/' + str(run_id) + '/publish" style="margin-bottom:10px"><button class="btn" type="submit" style="width:100%">Publish — get shareable link</button></form>' if not published else ''}
-        <form method="post" action="{base}/runs/{run_id}/update">
+        <form method="post" action="{base}/runs/{run_id}/update" id="rate-sheet-update">
+          {prospect_summary_html}
           <div class="review-sections">
           <details class="review-section" open>
             <summary>
@@ -1949,172 +2370,18 @@ def render_rate_sheet_review_page(
 
           <details class="review-section" open>
             <summary>
-              <span>Internal Fulfillment Costs <span class="review-section__sub">{_esc(section_cost_status)} · used for net margin only</span></span>
+              <span>Pricing &amp; Cost Lines <span class="review-section__sub">{_esc(section_cost_status)} · customer fees beside fulfillment costs</span></span>
             </summary>
             <div class="review-section__body">
-          <p class="muted" style="margin-bottom:12px">Internal warehouse costs used for gross-to-net margin. These are not shown to the prospect. Saving this page now saves these costs too.</p>
           <input type="hidden" name="actual_costs_form" value="1">
-          <div class="edit-grid">
-            <div class="edit-col">
-              <div class="field">
-                <label for="actual_pick_pack_per_order">Fulfillment cost: DTC pick &amp; pack / order</label>
-                <input type="number" id="actual_pick_pack_per_order" name="actual_pick_pack_per_order" step="0.01" min="0" value="{_aval('pick_pack_per_order')}" placeholder="{BASELINE_RATES['dtc_base_per_order']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_pick_pack_additional_item">Fulfillment cost: DTC additional item</label>
-                <input type="number" id="actual_pick_pack_additional_item" name="actual_pick_pack_additional_item" step="0.01" min="0" value="{_aval('pick_pack_additional_item')}" placeholder="{BASELINE_RATES['dtc_additional_item']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_storage_per_pallet_mo">Fulfillment cost: storage / pallet/mo</label>
-                <input type="number" id="actual_storage_per_pallet_mo" name="actual_storage_per_pallet_mo" step="0.01" min="0" value="{_aval('storage_per_pallet_mo')}" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_storage_cubic_foot_mo">Fulfillment cost: storage / cubic foot/mo</label>
-                <input type="number" id="actual_storage_cubic_foot_mo" name="actual_storage_cubic_foot_mo" step="0.01" min="0" value="{_aval('storage_cubic_foot_mo')}" placeholder="{BASELINE_RATES['storage_cubic_foot_mo']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_monthly_tech_fee">Fulfillment cost: monthly tech fee</label>
-                <input type="number" id="actual_monthly_tech_fee" name="actual_monthly_tech_fee" step="0.01" min="0" value="{_aval('monthly_tech_fee')}" placeholder="{BASELINE_RATES['monthly_tech_fee']:g}">
-              </div>
-            </div>
-            <div class="edit-col">
-              <div class="field">
-                <label for="actual_receiving_precounted_box">Fulfillment cost: receiving pre-counted box</label>
-                <input type="number" id="actual_receiving_precounted_box" name="actual_receiving_precounted_box" step="0.01" min="0" value="{_aval('receiving_precounted_box')}" placeholder="{BASELINE_RATES['receiving_precounted_box']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_receiving_count_per_item">Fulfillment cost: receiving counted item</label>
-                <input type="number" id="actual_receiving_count_per_item" name="actual_receiving_count_per_item" step="0.01" min="0" value="{_aval('receiving_count_per_item')}" placeholder="{BASELINE_RATES['receiving_count_per_item']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_customer_service_monthly">Fulfillment cost: customer service / month</label>
-                <input type="number" id="actual_customer_service_monthly" name="actual_customer_service_monthly" step="0.01" min="0" value="{_aval('customer_service_monthly')}" placeholder="{BASELINE_RATES['customer_service_monthly']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_kitting_per_item">Fulfillment cost: kitting / item</label>
-                <input type="number" id="actual_kitting_per_item" name="actual_kitting_per_item" step="0.01" min="0" value="{_aval('kitting_per_item')}" placeholder="{BASELINE_RATES['kitting_per_unit']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_labeling_per_item">Fulfillment cost: labeling / item</label>
-                <input type="number" id="actual_labeling_per_item" name="actual_labeling_per_item" step="0.01" min="0" value="{_aval('labeling_per_item')}" placeholder="{BASELINE_RATES['labeling_per_unit']:g}">
-              </div>
-            </div>
-          </div>
-          <div class="edit-grid">
-            <div class="edit-col">
-              <div class="field">
-                <label for="actual_bagging_labeling_per_item">Fulfillment cost: bagging + labeling / item</label>
-                <input type="number" id="actual_bagging_labeling_per_item" name="actual_bagging_labeling_per_item" step="0.01" min="0" value="{_aval('bagging_labeling_per_item')}" placeholder="{BASELINE_RATES['bagging_labeling_per_unit']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_pallet_order_per_pallet">Fulfillment cost: pallet orders / pallet</label>
-                <input type="number" id="actual_pallet_order_per_pallet" name="actual_pallet_order_per_pallet" step="0.01" min="0" value="{_aval('pallet_order_per_pallet')}" placeholder="{BASELINE_RATES['pallet_order_per_pallet']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_returns_units_mo">Returns units / month</label>
-                <input type="number" id="actual_returns_units_mo" name="actual_returns_units_mo" step="1" min="0" value="{_aval('returns_units_mo')}" placeholder="0">
-              </div>
-              <div class="field">
-                <label for="actual_returns_receive_per_unit">Fulfillment cost: return receive / unit</label>
-                <input type="number" id="actual_returns_receive_per_unit" name="actual_returns_receive_per_unit" step="0.01" min="0" value="{_aval('returns_receive_per_unit')}" placeholder="{BASELINE_RATES['returns_receive_per_unit']:g}">
-              </div>
-            </div>
-            <div class="edit-col">
-              <div class="field">
-                <label for="actual_returns_examination_per_unit">Fulfillment cost: return examination / unit</label>
-                <input type="number" id="actual_returns_examination_per_unit" name="actual_returns_examination_per_unit" step="0.01" min="0" value="{_aval('returns_examination_per_unit')}" placeholder="{BASELINE_RATES['returns_examination_per_unit']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_returns_custom_steps_per_unit">Fulfillment cost: return custom steps / unit</label>
-                <input type="number" id="actual_returns_custom_steps_per_unit" name="actual_returns_custom_steps_per_unit" step="0.01" min="0" value="{_aval('returns_custom_steps_per_unit')}" placeholder="{BASELINE_RATES['returns_custom_steps_per_unit']:g}">
-              </div>
-              <div class="field">
-                <label for="actual_special_project_hours_mo">Special project hours / month</label>
-                <input type="number" id="actual_special_project_hours_mo" name="actual_special_project_hours_mo" step="0.25" min="0" value="{_aval('special_project_hours_mo')}" placeholder="0">
-              </div>
-              <div class="field">
-                <label for="actual_special_projects_per_hour">Fulfillment cost: special projects / hour</label>
-                <input type="number" id="actual_special_projects_per_hour" name="actual_special_projects_per_hour" step="0.01" min="0" value="{_aval('special_projects_per_hour')}" placeholder="{BASELINE_RATES['special_projects_per_hour']:g}">
-              </div>
-            </div>
-          </div>
-
-            </div>
-          </details>
-
-          <details class="review-section" open>
-            <summary>
-              <span>Fee Card Adjustments <span class="review-section__sub">Customer-facing prices · affects Calculate My Estimate after save/re-publish</span></span>
-            </summary>
-            <div class="review-section__body">
           {pricing_summary_html}
-          <p class="muted" style="margin-bottom:12px">Customer-facing fees shown in the public rate sheet. Leave blank to use the baseline customer fee in parentheses; enter a value to override what the prospect sees and what the monthly estimate uses.</p>
-          <div class="edit-grid">
-            <div class="edit-col">
-              <div class="field">
-                <label for="rate_receiving">Customer fee: receiving / pallet (baseline ${BASELINE_RATES['receiving_per_pallet']:g})</label>
-                <input type="number" id="rate_receiving" name="rate_receiving" step="0.01" min="0" value="{_rval('receiving_per_pallet')}" placeholder="{BASELINE_RATES['receiving_per_pallet']:g}">
-                {_cost_hint('receiving_per_pallet', 'receiving_precounted_box', label='Fulfillment receiving cost')}
-              </div>
-              <div class="field">
-                <label for="rate_storage">Customer fee: storage / pallet/mo (baseline ${BASELINE_RATES['storage_short_per_pallet_mo']:g})</label>
-                <input type="number" id="rate_storage" name="rate_storage" step="0.01" min="0" value="{_rval('storage_short_per_pallet_mo')}" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:g}">
-                {_cost_hint('storage_per_pallet_mo', label='Fulfillment pallet storage cost')}
-              </div>
-              <div class="field">
-                <label for="rate_pick_pack">Customer fee: DTC pick &amp; pack / order (baseline ${BASELINE_RATES['dtc_base_per_order']:g})</label>
-                <input type="number" id="rate_pick_pack" name="rate_pick_pack" step="0.01" min="0" value="{_rval('dtc_base_per_order')}" placeholder="{BASELINE_RATES['dtc_base_per_order']:g}">
-                {_cost_hint('pick_pack_per_order', label='Fulfillment pick & pack cost')}
-              </div>
-              <div class="field">
-                <label for="rate_additional_item">Customer fee: DTC additional item (baseline ${BASELINE_RATES['dtc_additional_item']:g})</label>
-                <input type="number" id="rate_additional_item" name="rate_additional_item" step="0.01" min="0" value="{_rval('dtc_additional_item')}" placeholder="{BASELINE_RATES['dtc_additional_item']:g}">
-                {_cost_hint('pick_pack_additional_item', label='Fulfillment additional item cost')}
-              </div>
-              <div class="field">
-                <label for="rate_kitting">Customer fee: kitting / unit (baseline ${BASELINE_RATES['kitting_per_unit']:g})</label>
-                <input type="number" id="rate_kitting" name="rate_kitting" step="0.01" min="0" value="{_rval('kitting_per_unit')}" placeholder="{BASELINE_RATES['kitting_per_unit']:g}">
-                {_cost_hint('kitting_per_item', label='Fulfillment kitting cost')}
-              </div>
-            </div>
-            <div class="edit-col">
-              <div class="field">
-                <label for="rate_labeling">Customer fee: labeling / unit (baseline ${BASELINE_RATES['labeling_per_unit']:g})</label>
-                <input type="number" id="rate_labeling" name="rate_labeling" step="0.01" min="0" value="{_rval('labeling_per_unit')}" placeholder="{BASELINE_RATES['labeling_per_unit']:g}">
-                {_cost_hint('labeling_per_item', label='Fulfillment labeling cost')}
-              </div>
-              <div class="field">
-                <label for="rate_wholesale">Customer fee: wholesale / unit (baseline ${BASELINE_RATES['wholesale_per_unit']:g})</label>
-                <input type="number" id="rate_wholesale" name="rate_wholesale" step="0.01" min="0" value="{_rval('wholesale_per_unit')}" placeholder="{BASELINE_RATES['wholesale_per_unit']:g}">
-                {_cost_hint('pallet_order_per_pallet', label='Fulfillment pallet-order cost')}
-              </div>
-              <div class="field">
-                <label for="rate_returns">Customer fee: returns / unit (baseline ${BASELINE_RATES['returns_per_unit']:g})</label>
-                <input type="number" id="rate_returns" name="rate_returns" step="0.01" min="0" value="{_rval('returns_per_unit')}" placeholder="{BASELINE_RATES['returns_per_unit']:g}">
-                {_cost_hint('returns_receive_per_unit', 'returns_examination_per_unit', 'returns_custom_steps_per_unit', label='Fulfillment returns cost stack')}
-              </div>
-              <div class="field">
-                <label for="rate_tech_fee">Customer fee: monthly tech fee (baseline ${BASELINE_RATES['monthly_tech_fee']:g})</label>
-                <input type="number" id="rate_tech_fee" name="rate_tech_fee" step="0.01" min="0" value="{_rval('monthly_tech_fee')}" placeholder="{BASELINE_RATES['monthly_tech_fee']:g}">
-                {_cost_hint('monthly_tech_fee', label='Fulfillment tech cost')}
-              </div>
-              <div class="field">
-                <label for="rate_integration_setup_fee">Customer fee: one-time implementation &amp; integration setup (baseline ${BASELINE_RATES['integration_setup_fee']:,.0f})</label>
-                <input type="number" id="rate_integration_setup_fee" name="rate_integration_setup_fee" step="1" min="0" value="{_rval('integration_setup_fee')}" placeholder="{BASELINE_RATES['integration_setup_fee']:g}">
-                <span class="hint">One-time prospect-facing setup fee. It is not included in monthly gross-to-net margin.</span>
-              </div>
-              <div class="field">
-                <label for="rate_minimum">Customer fee: monthly minimum (baseline ${BASELINE_RATES['monthly_minimum']:g})</label>
-                <input type="number" id="rate_minimum" name="rate_minimum" step="1" min="0" value="{_rval('monthly_minimum')}" placeholder="{BASELINE_RATES['monthly_minimum']:g}">
-              </div>
-            </div>
-          </div>
-          <div class="field" style="margin-top:8px">
+          <p class="muted" style="margin-bottom:12px">Internal fulfillment costs are warehouse-only and never shown to the prospect. Customer fees are shown on the public rate sheet and used by Calculate My Estimate after save/re-publish.</p>
+          {pricing_lines_html}
+          <div class="field" style="margin-top:14px">
             <label for="rate_card_note">Rate card note (shown at bottom of Full Rate Card section)</label>
             <textarea id="rate_card_note" name="rate_card_note" rows="2" style="width:100%;resize:vertical">{rate_card_note_val}</textarea>
             <span class="hint">Use to call out specials, volume commitments, expiry dates, etc.</span>
           </div>
-
             </div>
           </details>
 
@@ -2165,13 +2432,7 @@ def render_rate_sheet_review_page(
             <span class="muted" style="font-size:12px">Saves changes and rebuilds the agent/public preview. Use Re-publish below when the prospect-facing sheet should be refreshed.</span>
           </div>
         </form>
-        <form method="post" action="{base}/runs/{run_id}/publish" style="margin-top:10px">
-          <div class="review-actions">
-            {publish_button}
-            <a class="btn btn--ghost" href="{base}">← Pipeline</a>
-            <span class="muted" style="font-size:12px">Re-publish refreshes the prospect-facing rate sheet and can re-run the HubSpot quote workflow when quote guards pass.</span>
-          </div>
-        </form>
+        {publish_form_html}
         {history_bar_html}
       </div>
     </main>

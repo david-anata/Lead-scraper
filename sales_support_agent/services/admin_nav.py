@@ -46,9 +46,9 @@ class _NavSection:
 
 _NAV_SECTIONS = [
     _NavSection("sales", "Sales", "sales", [
-        _NavSubpage("sales.priorities", "Priority Queue", "/admin", "sales"),
-        _NavSubpage("sales.deals", "Sales Control Room", "/admin/sales", "sales_operator"),
+        _NavSubpage("sales.deals", "Control Room", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
+        _NavSubpage("sales.priorities", "Fix Queue", "/admin", "sales"),
         _NavSubpage("sales.decks", "Sales Assets", "/admin/sales-decks", "sales_decks"),
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
@@ -70,11 +70,9 @@ _NAV_SECTIONS = [
         _NavSubpage("executive.brand_analysis", "Brand Analysis", "/admin/executive/brand-analysis", "brand_analysis"),
     ]),
     _NavSection("fulfillment", "Fulfillment", "fulfillment", [
-        _NavSubpage("fulfillment.pipeline", "Pipeline", "/admin/fulfillment/sales#pipeline", "fulfillment_sales"),
-        _NavSubpage("fulfillment.rate_sheets", "Rate Sheets", "/admin/fulfillment/sales", "fulfillment_sales"),
-        _NavSubpage("fulfillment.dashboard", "CS Dashboard", "/admin/fulfillment/cs/", "fulfillment_dashboard"),
+        _NavSubpage("fulfillment.rate_sheets", "Sales Pipeline", "/admin/fulfillment/sales", "fulfillment_sales"),
+        _NavSubpage("fulfillment.dashboard", "CS Action Queue", "/admin/fulfillment/cs/", "fulfillment_dashboard"),
         _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
-        _NavSubpage("fulfillment.reports", "Latest Report", "/admin/fulfillment/cs/reports/latest", "fulfillment_latest"),
     ]),
     _NavSection("hr", "HR", "hr", [
         _NavSubpage("hr.access", "HR", "/admin/hr", "hr"),
@@ -487,10 +485,16 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     # themselves are still guarded server-side). The Access admin link is the
     # one exception: it only ever appears when explicitly granted.
     _granted: Optional[set] = None
-    if is_superadmin:
+    user_permissions = None
+    if permissions is None and user is not None and ("permissions" in user or "is_superadmin" in user):
+        user_permissions = user.get("permissions")
+        if user_permissions is None:
+            user_permissions = set()
+    if is_superadmin or bool((user or {}).get("is_superadmin")):
         _granted = None  # superadmin sees all
         _show_all = True
-    elif permissions is not None:
+    elif permissions is not None or user_permissions is not None:
+        permissions = permissions if permissions is not None else user_permissions
         _granted = set(permissions)
         _show_all = False
     else:

@@ -1,0 +1,104 @@
+:root {
+  --agent-ink: #2b3644;
+  --agent-blue: #85bbda;
+  --agent-surface: #ffffff;
+  --agent-page: #f9f7f3;
+  --agent-border: rgba(43, 54, 68, 0.12);
+  --agent-shadow: rgba(43, 54, 68, 0.10);
+  --agent-good: #15803d;
+  --agent-warn: #b45309;
+  --agent-danger: #b91c1c;
+}
+
+.admin-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 18px 64px;
+}
+
+.admin-workspace,
+.admin-panel {
+  background: var(--agent-surface);
+  border: 1px solid var(--agent-border);
+  box-shadow: 0 18px 40px var(--agent-shadow);
+}
+
+.admin-workspace {
+  border-radius: 20px;
+  padding: 26px 28px 30px;
+}
+
+.admin-panel {
+  border-radius: 16px;
+  padding: 18px 20px;
+}
+
+.admin-eyebrow {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(43, 54, 68, 0.55);
+}
+
+.admin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--agent-ink);
+  color: #fff;
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.admin-btn--ghost {
+  background: #fff;
+  color: var(--agent-ink);
+  border-color: var(--agent-border);
+}
+
+.admin-action-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  margin: 18px 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(133, 187, 218, 0.55);
+  border-radius: 16px;
+  background: rgba(133, 187, 218, 0.12);
+}
+
+.admin-action-panel h2,
+.admin-action-panel h3 {
+  margin: 0 0 6px;
+  font-family: "Montserrat", sans-serif;
+  color: var(--agent-ink);
+}
+
+.admin-action-panel p {
+  margin: 0;
+  color: rgba(43, 54, 68, 0.72);
+  line-height: 1.45;
+}
+
+.admin-action-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(43, 54, 68, 0.58);
+}
+
+@media (max-width: 760px) {
+  .admin-action-panel {
+    grid-template-columns: 1fr;
+  }
+}

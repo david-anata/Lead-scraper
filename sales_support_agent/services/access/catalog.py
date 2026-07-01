@@ -25,8 +25,8 @@ class Tool:
 
 # Ordered; grouped by section. `access.manage` gates the RBAC admin UI itself.
 TOOL_CATALOG: tuple[Tool, ...] = (
-    Tool("sales.priorities", "Priority Queue", "Sales", ("/admin",), exact=True),
-    Tool("sales.deals", "Deal Board", "Sales", ("/admin/sales/deals",)),
+    Tool("sales.deals", "Control Room & Deal Board", "Sales", ("/admin/sales",)),
+    Tool("sales.priorities", "Fix Queue", "Sales", ("/admin",), exact=True),
     Tool("sales.decks", "Sales Assets", "Sales", ("/admin/sales-decks", "/admin/api/generate-deck", "/admin/api/deck-runs")),
     Tool("website_ops.seo", "Overview", "Website Ops", ("/admin/website-ops", "/admin/api/website-ops/run", "/admin/api/website-ops/status"), exact=True),
     Tool("website_ops.queue", "Queue", "Website Ops", ("/admin/website-ops/queue", "/admin/website-ops/feedback", "/admin/api/website-ops/feedback")),
@@ -35,8 +35,8 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("advertising.audit", "Advertising Audit", "Advertising", ("/admin/advertising",)),
     Tool("executive.summary", "Executive Summary", "Executive", ("/admin/executive",), exact=True),
     Tool("executive.brand_analysis", "Brand Analysis", "Executive", ("/admin/executive/brand-analysis",)),
-    Tool("fulfillment.rate_sheets", "Fulfillment Prospects", "Fulfillment", ("/admin/fulfillment/sales",)),
-    Tool("fulfillment.dashboard", "CS Dashboard", "Fulfillment", ("/admin/fulfillment/cs",), exact=True),
+    Tool("fulfillment.rate_sheets", "Sales Pipeline", "Fulfillment", ("/admin/fulfillment/sales",)),
+    Tool("fulfillment.dashboard", "CS Action Queue", "Fulfillment", ("/admin/fulfillment/cs",), exact=True),
     Tool("fulfillment.reports", "CS Reports", "Fulfillment", ("/admin/fulfillment/cs/reports",)),
     # HR — employees/time/reports under hr.access; the sensitive money + config
     # (payroll runs, pay schedules, tax settings) gated separately by hr.payroll.

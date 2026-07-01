@@ -3938,6 +3938,11 @@ def admin_fulfillment_root(request: Request) -> Response:
     token = request.cookies.get(admin_settings.admin_cookie_name, "")
     if not validate_admin_session_token(admin_settings, token):
         return RedirectResponse(url="/admin/login", status_code=302)
+    from sales_support_agent.services.auth_deps import has_tool
+    if has_tool(request, "fulfillment.rate_sheets"):
+        return RedirectResponse(url="/admin/fulfillment/sales", status_code=302)
+    if has_tool(request, "fulfillment.dashboard"):
+        return RedirectResponse(url="/admin/fulfillment/cs/", status_code=302)
     return RedirectResponse(url="/admin/fulfillment/sales", status_code=302)
 
 
@@ -4025,7 +4030,8 @@ def _fulfillment_report_artifact_response(
         return RedirectResponse(url="/admin/login", status_code=302)
     artifact = load_fulfillment_report_artifact(load_fulfillment_cs_settings().fulfillment_cs_reports_dir, report_slug, extension)
     if artifact is None:
-        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report artifact was not found."), status_code=404)
+        from sales_support_agent.services.auth_deps import get_current_user
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report artifact was not found.", user=get_current_user(request)), status_code=404)
     body, media_type = artifact
     return Response(content=body, media_type=media_type)
 
@@ -4055,7 +4061,8 @@ def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Re
         return RedirectResponse(url="/admin/login", status_code=302)
     report = load_fulfillment_report_by_slug(load_fulfillment_cs_settings().fulfillment_cs_reports_dir, report_slug)
     if report is None:
-        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found."), status_code=404)
+        from sales_support_agent.services.auth_deps import get_current_user
+        return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found.", user=get_current_user(request)), status_code=404)
     from sales_support_agent.services.auth_deps import get_current_user
     return HTMLResponse(render_fulfillment_report_detail_page(report, user=get_current_user(request)))
 

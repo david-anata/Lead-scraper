@@ -1066,10 +1066,9 @@ class NavAccessSafetyTests(unittest.TestCase):
         )
 
         self.assertIn('aria-label="Fulfillment pages"', nav)
-        self.assertIn(">Rate Sheets</a>", nav)
-        self.assertIn(">CS Dashboard</a>", nav)
+        self.assertIn(">Sales Pipeline</a>", nav)
+        self.assertIn(">CS Action Queue</a>", nav)
         self.assertIn(">CS Reports</a>", nav)
-        self.assertIn(">Latest Report</a>", nav)
 
     def test_single_accessible_page_section_has_no_dropdown(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav

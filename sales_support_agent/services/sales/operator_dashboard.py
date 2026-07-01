@@ -1398,6 +1398,67 @@ def _render_queue_panel(title: str, items: list[dict[str, Any]], empty_text: str
     """
 
 
+def _render_next_best_action(summary: dict[str, Any], queues: dict[str, list[dict[str, Any]]]) -> str:
+    queue_specs = [
+        ("replyNow", "Reply now", "Respond to the newest prospect message.", "Open deal"),
+        ("shareLatestAsset", "Send latest asset", "Share the newest deck, rate sheet, or audit.", "Open deal"),
+        ("followUpDue", "Follow up", "Send the next touch before the thread goes stale.", "Open deal"),
+        ("assetRefreshReview", "Refresh stale asset", "Review the package before the next send.", "Open deal"),
+        ("inboxSyncReview", "Sync inbox context", "Review Gmail drift before automation acts.", "Open deal"),
+    ]
+    for key, label, fallback, cta in queue_specs:
+        items = list(queues.get(key) or [])
+        if not items:
+            continue
+        item = items[0]
+        return f"""
+        <section class="workspace section-gap action-command">
+          <div>
+            <p class="eyebrow">Next Best Action</p>
+            <h2>{_esc(label)}: {_esc(item.get("name"))}</h2>
+            <p>{_esc(item.get("why") or fallback)}</p>
+            <p class="muted">{_esc(item.get("company"))} · {_esc(item.get("stage"))} · {_esc(item.get("owner"))}</p>
+          </div>
+          <div class="action-command__side">
+            <a class="btn btn--dark" href="{_esc(item.get("url") or "/admin/sales/deals")}">{_esc(cta)}</a>
+            <a class="btn" href="/admin/sales/deals">View all deals</a>
+          </div>
+        </section>
+        """
+
+    cleanup_count = int(summary.get("dealsMissingAmount") or 0) + int(summary.get("dealsMissingOwner") or 0) + int(summary.get("unclassifiedDeals") or 0)
+    if cleanup_count:
+        return f"""
+        <section class="workspace section-gap action-command">
+          <div>
+            <p class="eyebrow">Next Best Action</p>
+            <h2>Clean up {cleanup_count} deal gap{"s" if cleanup_count != 1 else ""}</h2>
+            <p>Fix missing owner, amount, or service classification before automation writes back to HubSpot.</p>
+          </div>
+          <div class="action-command__side">
+            <a class="btn btn--dark" href="/admin/sales/deals/cleanup">Open cleanup review</a>
+            <a class="btn" href="/admin/sales/deals">View deals</a>
+          </div>
+        </section>
+        """
+
+    return """
+    <section class="workspace section-gap action-command">
+      <div>
+        <p class="eyebrow">Next Best Action</p>
+        <h2>No urgent sales action detected</h2>
+        <p>Pipeline signals are stable. Keep the mirror fresh and review the deal board when new replies or assets arrive.</p>
+      </div>
+      <div class="action-command__side">
+        <form method="post" action="/admin/sales/deals/sync" style="margin:0">
+          <button class="btn btn--dark" type="submit">Refresh HubSpot mirror</button>
+        </form>
+        <a class="btn" href="/admin/sales/deals">Open deals</a>
+      </div>
+    </section>
+    """
+
+
 def _render_schedule_panel(item: dict[str, Any]) -> str:
     return f"""
     <article class="panel">
@@ -1525,6 +1586,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     summary = snapshot.get("summary", {})
     schema = snapshot.get("schema", {})
     queues = snapshot.get("operatorQueues", {}) or {}
+    next_best_action = _render_next_best_action(summary, queues)
     automation_schedules = list(snapshot.get("automationSchedules") or [])
     stage_cards = "".join(
         f"""
@@ -1606,6 +1668,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css">
     <style>
       :root {{ --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --white:#FFF; --border:rgba(43,54,68,0.12); --shadow:rgba(43,54,68,0.10); }}
       * {{ box-sizing:border-box; }}
@@ -1633,6 +1696,9 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
       .toolbar {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }}
       .btn {{ display:inline-flex; align-items:center; justify-content:center; padding:10px 14px; border-radius:999px; border:1px solid var(--border); background:#fff; color:var(--dark-blue); text-decoration:none; font-weight:700; cursor:pointer; }}
       .btn--dark {{ background:var(--dark-blue); color:#fff; border-color:var(--dark-blue); }}
+      .action-command {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:center; border-left:6px solid var(--light-blue); }}
+      .action-command h2 {{ margin-bottom:8px; }}
+      .action-command__side {{ display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }}
       input[type="text"] {{ width:100%; padding:12px 13px; border-radius:14px; border:1px solid var(--border); font:inherit; }}
       .inline-form {{ display:grid; gap:12px; margin-top:12px; }}
       .inline-row {{ display:flex; gap:10px; flex-wrap:wrap; }}
@@ -1652,6 +1718,9 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
       .action-state--review {{ background:rgba(194,102,59,0.14); color:#b85f36; }}
       .action-state--blocked {{ background:rgba(139,76,66,0.14); color:#8b4c42; }}
       .action-state--monitor {{ background:rgba(43,54,68,0.10); color:#2B3644; }}
+      details.diagnostic {{ border:1px solid var(--border); border-radius:16px; background:#fff; padding:16px; }}
+      details.diagnostic > summary {{ cursor:pointer; font-weight:800; font-family:"Montserrat",sans-serif; }}
+      @media (max-width:760px) {{ .action-command {{ grid-template-columns:1fr; }} .action-command__side {{ justify-content:flex-start; }} }}
     </style>
   </head>
   <body>
@@ -1659,24 +1728,23 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     <main class="shell">
       <section class="workspace hero">
         <p class="eyebrow">Sales Control Room</p>
-        <h1>HubSpot visibility first. Autonomous action next.</h1>
-        <p class="muted">HubSpot is the source of truth. This root sales page reads the live pipeline and property model, then exposes the first high-confidence write-back layer directly inside agent.anatainc.com.</p>
+        <h1>Work the highest-value sales action first.</h1>
+        <p class="muted">The control room ranks replies, follow-ups, asset sends, and cleanup gaps so Sales does not have to inspect raw CRM data before acting.</p>
         <div class="stats">
           <div class="stat"><div class="n">{int(summary.get("openDeals") or 0)}</div><div class="l">Open deals</div></div>
           <div class="stat"><div class="n">{_fmt_money(summary.get("openAmount"))}</div><div class="l">Open value</div></div>
           <div class="stat"><div class="n">{int(summary.get("replyDueDeals") or 0)}</div><div class="l">Reply due</div></div>
           <div class="stat"><div class="n">{int(summary.get("assetsReadyToShare") or 0)}</div><div class="l">Assets ready</div></div>
-          <div class="stat"><div class="n">{int(summary.get("liveMailboxValidatedDeals") or 0)}</div><div class="l">Gmail validated</div></div>
           <div class="stat"><div class="n">{int(summary.get("mailboxAheadDeals") or 0)}</div><div class="l">Inbox ahead</div></div>
           <div class="stat"><div class="n">{int(summary.get("assetRefreshReviewDeals") or 0)}</div><div class="l">Asset refresh review</div></div>
         </div>
       </section>
       {status_html}
+      {next_best_action}
       <section class="workspace section-gap">
         <div class="toolbar">
           <a class="btn" href="/admin/sales/deals">Open deal board</a>
           <a class="btn" href="/admin/sales/deals/cleanup">Open cleanup review</a>
-          <a class="btn" href="/admin/sales/snapshot">Open JSON snapshot</a>
           <form method="post" action="/admin/sales/deals/sync" style="margin:0">
             <button class="btn btn--dark" type="submit">Refresh HubSpot mirror</button>
           </form>
@@ -1700,12 +1768,12 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
         <p class="muted">These are the clean scheduled jobs that should drive the operator layer instead of relying on manual refreshes.</p>
         <div class="grid">{schedule_cards}</div>
       </section>
-      <section class="workspace section-gap">
-        <h2>Live pipeline and object model</h2>
+      <details class="diagnostic section-gap">
+        <summary>Pipeline diagnostics</summary>
         <p class="muted">Portal {_esc(snapshot.get("portalId") or "Unknown")} · {_esc(snapshot.get("pipeline", {}).get("label") or "Unknown pipeline")} / {_esc(snapshot.get("pipeline", {}).get("id") or "")}</p>
         <p class="muted">{int(snapshot.get("pipeline", {}).get("liveStageCount") or 0)} live stages · {int(snapshot.get("pipeline", {}).get("targetStageCount") or 0)} target stages · {int(schema.get("properties", {}).get("deals", {}).get("customCount") or 0) + int(schema.get("properties", {}).get("companies", {}).get("customCount") or 0) + int(schema.get("properties", {}).get("contacts", {}).get("customCount") or 0)} custom core properties</p>
         <div class="grid section-gap">{stage_cards}</div>
-      </section>
+      </details>
       <section class="workspace section-gap">
         <h2>First write-back action layer</h2>
         <p class="muted">Preview candidate actions first. Apply writes only when the service inference or communication-backed next step is high confidence, then support that with internal notes and follow-up tasks.</p>
@@ -1718,12 +1786,12 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           </div>
         </form>
       </section>
-      <section class="workspace section-gap">
-        <h2>Object definitions and autonomy policy</h2>
+      <details class="diagnostic section-gap">
+        <summary>Object definitions and autonomy policy</summary>
         <div class="grid">
           {"".join(f"<article class='panel'><p class='eyebrow'>{_esc(name.title())}</p><h3>{_esc(name.title())}</h3><p class='muted'>Source: {_esc(defn.get('system_of_record') or '')}</p><p>{_esc(', '.join(defn.get('required_fields') or []) or defn.get('notes') or '')}</p></article>" for name, defn in OBJECT_DEFINITIONS.items())}
         </div>
-      </section>
+      </details>
       <section class="workspace section-gap">
         <h2>Recent live deals</h2>
         <div class="grid">{recent_cards}</div>

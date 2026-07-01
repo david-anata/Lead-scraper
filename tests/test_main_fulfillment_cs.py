@@ -337,8 +337,8 @@ class MainFulfillmentCSTests(unittest.TestCase):
         self.assertIn("topbar-section-row", nav_html)
         self.assertIn('href="/admin/fulfillment/sales"', nav_html)
         self.assertIn('href="/admin/fulfillment/cs/"', nav_html)
-        self.assertIn(">Rate Sheets</a>", nav_html)
-        self.assertIn(">Latest Report</a>", nav_html)
+        self.assertIn(">Sales Pipeline</a>", nav_html)
+        self.assertIn(">CS Reports</a>", nav_html)
 
 
 if __name__ == "__main__":

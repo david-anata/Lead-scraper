@@ -87,8 +87,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
     def test_landing_renders_for_superadmin(self) -> None:
         response = self.client.get(_BASE)
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Rate", response.text)
-        self.assertIn("Generate rate sheet", response.text)
+        self.assertIn("Fulfillment Pipeline", response.text)
+        self.assertIn("Create rate sheet", response.text)
         self.assertIn("84043", response.text)
 
     def test_tool_gate_blocks_unauthorized_user(self) -> None:
@@ -174,7 +174,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("TabCo", response.text)
         self.assertIn(f"{_BASE}/runs/{run['id']}/preview", response.text)
-        self.assertIn("Publish — get shareable link", response.text)
+        self.assertIn("Publish rate sheet", response.text)
         self.assertIn("Save &amp; re-render", response.text)
         self.assertIn("Widget", response.text)
 
@@ -446,15 +446,16 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn("Pricing definitions", review.text)
         self.assertIn("Customer-facing monthly estimate", review.text)
         self.assertIn("Estimated monthly net margin", review.text)
-        self.assertIn("Internal Fulfillment Costs", review.text)
+        self.assertIn("Pricing &amp; Cost Lines", review.text)
         self.assertIn('class="review-section"', review.text)
         self.assertIn("Save &amp; re-render agent preview", review.text)
         self.assertIn("Re-publish live sheet", review.text)
         self.assertIn("Negotiation history", review.text)
         self.assertIn('name="actual_pick_pack_per_order"', review.text)
-        self.assertIn("Fulfillment pick &amp; pack cost", review.text)
-        self.assertIn("Customer fee: DTC pick &amp; pack / order", review.text)
-        self.assertIn("Customer fee: one-time implementation &amp; integration setup", review.text)
+        self.assertIn('name="rate_pick_pack"', review.text)
+        self.assertIn("Internal fulfillment cost", review.text)
+        self.assertIn("Customer fee", review.text)
+        self.assertIn("Implementation &amp; integration setup", review.text)
 
     def test_pipeline_cost_save_preserves_zero_values(self) -> None:
         run = self._generate_published()

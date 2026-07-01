@@ -16,11 +16,6 @@ ACTION_STATE_ORDER = ("clarifying", "investigating", "ready_to_answer", "escalat
 LIFECYCLE_STATE_ORDER = ("new", "investigating", "responded", "escalated", "waiting_human", "resolved")
 
 
-DEFAULT_TITLE = "Fulfillment CS Review"
-ACTION_STATE_ORDER = ("clarifying", "investigating", "ready_to_answer", "escalated", "resolved")
-LIFECYCLE_STATE_ORDER = ("new", "investigating", "responded", "escalated", "waiting_human", "resolved")
-
-
 @dataclass(frozen=True)
 class FulfillmentReportEntry:
     slug: str
@@ -248,6 +243,61 @@ def _warning_block(warnings: list[str]) -> str:
     return f'<section class="warning-panel"><strong>Attention needed</strong><ul>{items}</ul></section>'
 
 
+def _primary_action_queue(action_counts: dict[str, int], entries: list[FulfillmentReportEntry]) -> str:
+    latest_href = "/admin/fulfillment/cs/reports/latest" if entries else "/admin/fulfillment/cs/reports/"
+    ready = _int(action_counts.get("ready_to_answer", 0), 0)
+    escalated = _int(action_counts.get("escalated", 0), 0)
+    clarifying = _int(action_counts.get("clarifying", 0), 0)
+    investigating = _int(action_counts.get("investigating", 0), 0)
+    if ready:
+        title = f"Answer {ready} ready thread{'s' if ready != 1 else ''}."
+        copy = "The latest review found enough evidence to respond. Open the reviewed threads and use the prepared draft before checking lower-priority reports."
+        cta = "Open ready replies"
+    elif escalated:
+        title = f"Handle {escalated} escalation{'s' if escalated != 1 else ''}."
+        copy = "These cases need human ownership before the automation should continue. Start with escalation reasons, then assign or respond."
+        cta = "Open escalations"
+    elif clarifying:
+        title = f"Ask for clarification on {clarifying} thread{'s' if clarifying != 1 else ''}."
+        copy = "The system cannot safely answer yet. Use the draft prompt to request order, SKU, or account details."
+        cta = "Open clarifying threads"
+    elif investigating:
+        title = f"Continue {investigating} investigation{'s' if investigating != 1 else ''}."
+        copy = "Evidence is incomplete. Open the report to inspect source context and decide whether to wait, search, or escalate."
+        cta = "Open investigations"
+    else:
+        title = "No CS blocker detected."
+        copy = "The latest review has no ready reply, escalation, or clarification queue. Reports remain available for audit history."
+        cta = "Browse reports"
+    return (
+        '<section class="action-command">'
+        f'<div><p class="eyebrow-mini">Next action</p><h2>{html.escape(title)}</h2><p>{html.escape(copy)}</p></div>'
+        f'<div class="action-command__side"><a class="button-primary" href="{latest_href}">{html.escape(cta)}</a></div>'
+        '</section>'
+    )
+
+
+def _candidate_action_controls(candidate: dict[str, Any], draft_reply: str) -> str:
+    recommendation = str(candidate.get("ui_recommendation", "investigating") or "investigating").strip()
+    thread_url = str(candidate.get("customer_thread_link", candidate.get("permalink", "#")) or "#")
+    labels = {
+        "ready_to_answer": "Open thread to reply",
+        "escalated": "Open escalation",
+        "clarifying": "Ask clarifying question",
+        "investigating": "Continue investigation",
+        "resolved": "Review resolved case",
+    }
+    primary = labels.get(recommendation, "Open thread")
+    draft_attr = html.escape(draft_reply, quote=True)
+    return (
+        '<div class="candidate-actions">'
+        f'<a class="button-primary" href="{html.escape(thread_url, quote=True)}" target="_blank" rel="noreferrer">{html.escape(primary)}</a>'
+        f'<button class="button-secondary" type="button" data-draft="{draft_attr}" '
+        "onclick=\"navigator.clipboard.writeText(this.dataset.draft || '');this.textContent='Draft copied';setTimeout(()=>this.textContent='Copy draft',1800)\">Copy draft</button>"
+        "</div>"
+    )
+
+
 def _candidate_cards(candidates: list[dict[str, Any]]) -> str:
     if not candidates:
         return '<p class="empty">No support threads are available yet.</p>'
@@ -256,6 +306,7 @@ def _candidate_cards(candidates: list[dict[str, Any]]) -> str:
         draft_reply = str(candidate.get("draft_reply", "")).strip()
         evidence_summary = str(candidate.get("evidence_summary", "")).strip()
         escalation_reason = str(candidate.get("escalation_reason", "") or "").strip()
+        action_controls = _candidate_action_controls(candidate, draft_reply)
         cards.append(
             f"""
             <article class="candidate-card">
@@ -272,7 +323,7 @@ def _candidate_cards(candidates: list[dict[str, Any]]) -> str:
               <p><strong>Draft reply:</strong> {html.escape(draft_reply or 'No draft reply recorded.')}</p>
               <p class="candidate-meta">{html.escape(evidence_summary or 'No evidence summary recorded.')}</p>
               {f'<p class="candidate-meta"><strong>Escalation reason:</strong> {html.escape(escalation_reason)}</p>' if escalation_reason else ''}
-              <p><a href="{html.escape(str(candidate.get('customer_thread_link', candidate.get('permalink', '#'))), quote=True)}" target="_blank" rel="noreferrer">Open Slack thread</a></p>
+              {action_controls}
             </article>
             """
         )
@@ -290,6 +341,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -375,6 +427,64 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
       .warning-panel ul {{
         margin: 0;
         padding-left: 20px;
+      }}
+      .action-command {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 18px;
+        align-items: center;
+        margin-bottom: 22px;
+        padding: 18px 20px;
+        border: 1px solid rgba(133, 187, 218, 0.55);
+        border-radius: 16px;
+        background: rgba(133, 187, 218, 0.12);
+      }}
+      .action-command h2 {{
+        margin: 0 0 6px;
+        font-family: "Montserrat", sans-serif;
+        font-size: 22px;
+      }}
+      .action-command p {{
+        margin: 0;
+        color: rgba(43, 54, 68, 0.72);
+      }}
+      .action-command__side {{
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+      }}
+      .eyebrow-mini {{
+        margin: 0 0 6px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(43, 54, 68, 0.55);
+      }}
+      .button-primary, .button-secondary {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 16px;
+        border-radius: 999px;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 800;
+        font-size: 12px;
+        text-decoration: none;
+        cursor: pointer;
+      }}
+      .button-primary {{
+        border: 1px solid var(--dark-blue);
+        background: var(--dark-blue);
+        color: #fff;
+      }}
+      .button-secondary {{
+        border: 1px solid rgba(43, 54, 68, 0.14);
+        background: #fff;
+        color: var(--dark-blue);
       }}
       .metrics {{
         display: grid;
@@ -468,6 +578,12 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
         gap: 8px;
         margin: 10px 0 14px;
       }}
+      .candidate-actions {{
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }}
       .pill {{
         display: inline-flex;
         align-items: center;
@@ -526,14 +642,15 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
         text-decoration: underline;
       }}
       @media (max-width: 980px) {{
-        .page-header, .layout-two, .metrics {{
+        .page-header, .layout-two, .metrics, .action-command {{
           grid-template-columns: 1fr;
         }}
+        .action-command__side {{ justify-content: flex-start; }}
       }}
     </style>
   </head>
   <body>
-    {render_agent_nav("fulfillment", website_ops_section=active_subnav, user=user)}
+    {render_agent_nav("fulfillment", fulfillment_section=active_subnav, user=user)}
     <div class="shell">
       <div class="workspace">
         <section class="page-header">
@@ -564,6 +681,7 @@ def render_fulfillment_dashboard_page(report: dict[str, Any] | None, entries: li
     status = str(report.get("status", "not-ready") if isinstance(report, dict) else "not-ready")
     body = (
         _warning_block(warnings)
+        + _primary_action_queue(action_counts, entries)
         + '<section class="metrics">'
         + _metric("Support threads", str(candidate_count), "Open support threads in the latest review snapshot.")
         + _metric("Unresolved", str(unresolved_count), "Lifecycle state is not resolved.")
@@ -622,7 +740,7 @@ def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry], *, us
         for entry in entries
     ) or '<p class="empty">No support-review reports found yet. Reports appear here automatically after each CS review pipeline run.</p>'
     body = (
-        '<p class="breadcrumb"><a href="/admin/fulfillment/cs/">← CS Dashboard</a></p>'
+        '<p class="breadcrumb"><a href="/admin/fulfillment/cs/">← CS Action Queue</a></p>'
         + f'<section class="panel"><h2>Report library</h2><div class="report-list">{cards}</div></section>'
     )
     return _page_shell(
@@ -686,7 +804,7 @@ def render_fulfillment_report_detail_page(report: dict[str, Any], *, user: dict 
     )
 
 
-def render_fulfillment_not_found_page(message: str) -> str:
+def render_fulfillment_not_found_page(message: str, *, user: dict | None = None) -> str:
     body = f'<section class="panel"><h2>Not found</h2><p>{html.escape(message)}</p><p><a href="/admin/fulfillment/cs/reports/">Browse reports</a></p></section>'
     return _page_shell(
         title="agent | Fulfillment CS",
@@ -695,4 +813,5 @@ def render_fulfillment_not_found_page(message: str) -> str:
         intro="The requested fulfillment support view could not be found.",
         body=body,
         active_subnav="fulfillment_dashboard",
+        user=user,
     )
