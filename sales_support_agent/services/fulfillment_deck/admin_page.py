@@ -194,6 +194,29 @@ _STYLES = """
       .operator-callout p { margin: 0; color: rgba(43,54,68,0.72); line-height: 1.45; }
       .operator-callout__side { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
       .operator-callout__meta { margin-top: 8px; color: rgba(43,54,68,0.55); font-size: 12px; }
+      .review-hub { display: grid; gap: 12px; margin: 14px 0 16px; }
+      .review-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .review-action-card {
+        border: 1px solid var(--border); border-radius: 14px; background: rgba(43,54,68,0.025);
+        padding: 14px 16px; min-width: 0;
+      }
+      .review-action-card__head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom: 10px; }
+      .review-action-card h3 { margin:0; font-family:"Montserrat", sans-serif; font-size:14px; }
+      .review-action-card code { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; color:rgba(43,54,68,.65); }
+      .review-action-card p { margin:0 0 10px; color:rgba(43,54,68,.62); font-size:12.5px; line-height:1.45; }
+      .review-action-card__buttons { display:flex; gap:8px; flex-wrap:wrap; }
+      .review-drawers { display:grid; gap:8px; }
+      .review-drawer { border:1px solid var(--border); border-radius:12px; background:#fff; overflow:hidden; }
+      .review-drawer > summary {
+        list-style:none; cursor:pointer; padding:11px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px;
+        font-family:"Montserrat", sans-serif; font-size:12px; font-weight:800;
+      }
+      .review-drawer > summary::-webkit-details-marker { display:none; }
+      .review-drawer > summary::after { content:"▾"; color:rgba(43,54,68,.45); font-size:11px; }
+      .review-drawer:not([open]) > summary::after { transform:rotate(-90deg); }
+      .review-drawer__body { padding: 0 14px 13px; color:rgba(43,54,68,.72); font-size:13px; line-height:1.5; }
+      .review-drawer__body ul { margin:6px 0 0; padding-left:18px; }
+      .review-drawer__body pre { margin:8px 0 0; font-family:inherit; font-size:12.5px; white-space:pre-wrap; color:rgba(43,54,68,.72); line-height:1.55; }
       /* Pipeline table */
       .prospect-row { cursor: pointer; }
       .prospect-row:hover td { background: rgba(133,187,218,0.07); }
@@ -252,6 +275,7 @@ _STYLES = """
         .grid2 { grid-template-columns: 1fr; }
         .operator-callout { grid-template-columns: 1fr; }
         .operator-callout__side { justify-content: flex-start; }
+        .review-action-grid { grid-template-columns: 1fr; }
       }
 """
 
@@ -2261,6 +2285,104 @@ def render_rate_sheet_review_page(
             '<button class="btn" type="submit" style="background:#ff7a59;border-color:#ff7a59;color:#fff">Create HubSpot quote</button></form></div>'
             '</section>'
         )
+    if published and view_path:
+        rate_sheet_card = f"""
+          <article class="review-action-card">
+            <div class="review-action-card__head">
+              <h3>Published rate sheet</h3>
+              <span class="pill pill--live">Live</span>
+            </div>
+            <code>{_esc(view_path)}</code>
+            <p>Prospect-facing sheet. Save &amp; re-render updates the preview and public URL; re-publish refreshes the live sheet and quote workflow.</p>
+            <div class="review-action-card__buttons">
+              <button class="btn btn--ghost" type="button"
+                onclick="navigator.clipboard.writeText(window.location.origin+'{_esc(view_path)}');this.textContent='Copied!';setTimeout(()=>this.textContent='Copy link',1800)">Copy link</button>
+              <button class="btn btn--ghost" type="button" onclick="{_copy_email_js}">Copy email</button>
+              <a class="btn btn--ghost" href="{_esc(view_path)}?viewer=internal" target="_blank" rel="noreferrer">Open</a>
+              {hs_deal_chip}
+              {hs_quote_btn if hs_quote_url else hs_create_quote_btn}
+            </div>
+          </article>"""
+    else:
+        rate_sheet_card = f"""
+          <article class="review-action-card">
+            <div class="review-action-card__head">
+              <h3>Draft rate sheet</h3>
+              <span class="pill pill--draft">Private</span>
+            </div>
+            <p>Confirm the extracted prospect details, products, pricing, and costs below before publishing.</p>
+          </article>"""
+
+    if cost_form_path:
+        cost_form_card = f"""
+          <article class="review-action-card">
+            <div class="review-action-card__head">
+              <h3>Fulfillment cost form.</h3>
+              <span class="pill pill--estimated">Internal</span>
+            </div>
+            <p>Share with fulfillment for warehouse cost input only. It does not show sales pricing, customer pitch, margin, or quote details.</p>
+            <div class="review-action-card__buttons">
+              <button class="btn btn--ghost" type="button"
+                onclick="navigator.clipboard.writeText(window.location.origin+'{_esc(cost_form_path)}');this.textContent='Cost form copied!';setTimeout(()=>this.textContent='Copy cost form link',2000)">Copy cost form link</button>
+              <a class="btn btn--ghost" href="{_esc(cost_form_path)}" target="_blank" rel="noreferrer">Open cost form</a>
+            </div>
+          </article>"""
+    else:
+        cost_form_card = """
+          <article class="review-action-card">
+            <div class="review-action-card__head"><h3>Fulfillment cost form.</h3></div>
+            <p>Cost form link is not available yet. Save or regenerate this rate sheet if the link is missing.</p>
+          </article>"""
+
+    review_flag_sections = []
+    if quote_guard_errors:
+        review_flag_sections.append(
+            '<strong>Quote blocked until:</strong><ul>'
+            + "".join(f"<li>{_esc(item)}</li>" for item in quote_guard_errors)
+            + "</ul>"
+        )
+    if warnings:
+        warn_label = "Published — notes:" if published else "Check before publishing:"
+        review_flag_sections.append(
+            f"<strong>{warn_label}</strong><ul>"
+            + "".join(f"<li>{_esc(w)}</li>" for w in warnings[:12])
+            + "</ul>"
+        )
+    review_flags_drawer = ""
+    if review_flag_sections:
+        review_flags_drawer = (
+            '<details class="review-drawer">'
+            f'<summary>Review flags ({len(quote_guard_errors) + len(warnings)})</summary>'
+            '<div class="review-drawer__body">'
+            + "".join(review_flag_sections)
+            + "</div></details>"
+        )
+    warehouse_drawer = f"""
+      <details class="review-drawer">
+        <summary>Warehouse approval &amp; handoff</summary>
+        <div class="review-drawer__body">
+          {assortment_html}
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:10px">
+            <strong>Fulfillment Brief</strong>
+            <button class="btn btn--ghost" type="button" style="flex-shrink:0"
+              data-brief="{review_brief_attr}"
+              onclick="navigator.clipboard.writeText(this.dataset.brief);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy brief',2000)">Copy brief</button>
+          </div>
+          <pre>{_esc(review_brief_text)}</pre>
+        </div>
+      </details>"""
+    action_hub_html = f"""
+      <section class="review-hub">
+        <div class="review-action-grid">
+          {rate_sheet_card}
+          {cost_form_card}
+        </div>
+        <div class="review-drawers">
+          {review_flags_drawer}
+          {warehouse_drawer}
+        </div>
+      </section>
+    """
 
     styles = _STYLES.replace("__NAV__", render_agent_nav_styles())
     return f"""<!doctype html>
@@ -2289,12 +2411,7 @@ def render_rate_sheet_review_page(
         <p class="intro">{'Rate sheet is live — edit fields below and re-publish to update. Shareable link stays the same.' if published else 'Check the preview, fix anything the extraction got wrong, then publish to activate the shareable link.'} <span class="pill {status_pill_cls}">{_esc(status_label)}</span></p>
         {flash_html}
         {primary_action_html}
-        {publish_block}
-        {cost_form_block}
-        {warnings_html}
-        {quote_guard_html}
-        {assortment_html}
-        {brief_block}
+        {action_hub_html}
         <form method="post" action="{base}/runs/{run_id}/update" id="rate-sheet-update">
           {prospect_summary_html}
           <div class="review-sections">
