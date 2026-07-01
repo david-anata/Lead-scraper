@@ -950,6 +950,8 @@ def fulfillment_cost_form(run_id: int, token: str, saved: str = "") -> HTMLRespo
 def save_fulfillment_cost_form(
     run_id: int,
     token: str,
+    submitter_name: str = Form(default=""),
+    submitter_email: str = Form(default=""),
     actual_pick_pack_per_order: str = Form(default=""),
     actual_pick_pack_additional_item: str = Form(default=""),
     actual_storage_per_pallet_mo: str = Form(default=""),
@@ -973,6 +975,18 @@ def save_fulfillment_cost_form(
     run = _load_token_run(run_id, token)
     if run is None:
         return HTMLResponse("Cost form not found.", status_code=404)
+    submitter_name = str(submitter_name or "").strip()
+    submitter_email = str(submitter_email or "").strip().lower()
+    email_domain = submitter_email.rsplit("@", 1)[-1] if "@" in submitter_email else ""
+    if not submitter_name or not email_domain or "." not in email_domain:
+        return HTMLResponse(
+            render_fulfillment_cost_form_page(
+                run_id,
+                dict(run.summary_json or {}),
+                error="Name and a valid email are required before saving fulfillment costs.",
+            ),
+            status_code=400,
+        )
     costs = {
         "pick_pack_per_order": _opt_float(actual_pick_pack_per_order),
         "pick_pack_additional_item": _opt_float(actual_pick_pack_additional_item),
@@ -994,11 +1008,29 @@ def save_fulfillment_cost_form(
         "special_project_hours_mo": _opt_float(actual_special_project_hours_mo),
         "special_projects_per_hour": _opt_float(actual_special_projects_per_hour),
     }
-    storage.update_costs(run_id, costs)
+    summary = dict(run.summary_json or {})
+    submissions = [
+        s for s in (summary.get("fulfillment_cost_submissions") or [])
+        if isinstance(s, dict)
+    ]
+    submissions.append({
+        "at": datetime.now(timezone.utc).isoformat(),
+        "name": submitter_name[:120],
+        "email": submitter_email[:160],
+        "costs": {key: value for key, value in costs.items() if value is not None},
+    })
+    storage.update_summary(
+        run_id,
+        {
+            "fulfillment_actual_costs": costs,
+            "fulfillment_cost_submissions": submissions[-50:],
+        },
+    )
     storage.append_history(
         run_id,
         "Fulfillment costs submitted",
-        "Shared cost form saved by fulfillment team",
+        f"Shared cost form saved by {submitter_name} <{submitter_email}>",
+        user_email=submitter_email,
     )
     try:
         from sales_support_agent.services.fulfillment_deck.quote import compute_margin

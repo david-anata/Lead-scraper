@@ -504,6 +504,7 @@ def render_fulfillment_cost_form_page(
     summary: dict,
     *,
     saved: bool = False,
+    error: str = "",
 ) -> str:
     profile = dict(summary.get("prospect_profile") or {})
     costs = dict(summary.get("fulfillment_actual_costs") or {})
@@ -541,6 +542,38 @@ def render_fulfillment_cost_form_page(
             )
         return "".join(rows)
 
+    def _submission_history() -> str:
+        submissions = [
+            s for s in (summary.get("fulfillment_cost_submissions") or [])
+            if isinstance(s, dict)
+        ]
+        if not submissions:
+            return (
+                '<section class="cost-group">'
+                '<h2>Signed submission history</h2>'
+                '<p class="muted">No signed fulfillment cost submissions yet.</p>'
+                '</section>'
+            )
+        rows = []
+        for item in reversed(submissions[-8:]):
+            at = str(item.get("at") or "")
+            when = at[:16].replace("T", " ") if at else "unknown time"
+            rows.append(
+                "<tr>"
+                f"<td>{_esc(when)}</td>"
+                f"<td>{_esc(item.get('name') or '—')}</td>"
+                f"<td>{_esc(item.get('email') or '—')}</td>"
+                "</tr>"
+            )
+        return (
+            '<section class="cost-group">'
+            '<h2>Signed submission history</h2>'
+            '<p class="muted">These are previous fulfillment-only cost saves for this prospect. Sales pricing and margin are not shown here.</p>'
+            '<table><thead><tr><th>Saved</th><th>Name</th><th>Email</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table>'
+            '</section>'
+        )
+
     try:
         from sales_support_agent.services.fulfillment_deck.quote import (
             estimate_pallets_mo,
@@ -576,6 +609,10 @@ def render_fulfillment_cost_form_page(
         '<div class="flash flash--ok"><strong>Saved.</strong> Fulfillment costs were pushed back to Agent.</div>'
         if saved else ""
     )
+    error_html = (
+        f'<div class="flash flash--error"><strong>Required before saving.</strong> {_esc(error)}</div>'
+        if error else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -597,6 +634,7 @@ def render_fulfillment_cost_form_page(
       .intro {{ color:rgba(43,54,68,.72); margin:0 0 18px; max-width:760px; line-height:1.45; }}
       .flash {{ border:1px solid rgba(133,187,218,.55); background:rgba(133,187,218,.16); border-radius:12px; padding:12px 14px; margin:14px 0; }}
       .flash--ok {{ border-color:rgba(46,125,91,.35); background:rgba(46,125,91,.12); }}
+      .flash--error {{ border-color:rgba(178,72,54,.45); background:rgba(178,72,54,.10); }}
       .facts {{ display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:10px; margin:16px 0; }}
       .fact {{ border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:#fff; }}
       .fact span {{ display:block; font-size:11px; color:rgba(43,54,68,.55); font-weight:700; text-transform:uppercase; letter-spacing:.05em; }}
@@ -623,6 +661,7 @@ def render_fulfillment_cost_form_page(
         <h1>{_esc(prospect)}</h1>
         <p class="intro">This page is for fulfillment cost input only. It does not show sales pricing, customer pitch, margin, or quote details. Suggested values are based on current baseline operating costs; overwrite anything that needs warehouse-specific pricing.</p>
         {saved_html}
+        {error_html}
         <div class="facts">
           <div class="fact"><span>Monthly orders</span><strong>{_esc(profile.get('monthly_order_volume') or '—')}</strong></div>
           <div class="fact"><span>Products</span><strong>{len(products)}</strong></div>
@@ -634,7 +673,22 @@ def render_fulfillment_cost_form_page(
           <thead><tr><th>Product</th><th>Dims</th><th>Weight lb</th><th>Units/mo</th><th>Fragile</th></tr></thead>
           <tbody>{_product_rows()}</tbody>
         </table>
+        {_submission_history()}
         <form method="post" action="{_esc(form_path)}">
+          <section class="cost-group">
+            <h2>Cost submission signature</h2>
+            <p class="muted">Required on every save so Agent can track who committed the fulfillment costs.</p>
+            <div class="cost-grid-wide">
+              <div class="field">
+                <label for="submitter_name">Your name</label>
+                <input type="text" id="submitter_name" name="submitter_name" autocomplete="name" required>
+              </div>
+              <div class="field">
+                <label for="submitter_email">Your email</label>
+                <input type="email" id="submitter_email" name="submitter_email" autocomplete="email" required>
+              </div>
+            </div>
+          </section>
           {''.join(groups_html)}
           <div class="actions">
             <button class="btn" type="submit">Save fulfillment costs</button>

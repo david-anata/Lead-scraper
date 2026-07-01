@@ -484,6 +484,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("Anata fulfillment cost input", page.text)
         self.assertIn("Save fulfillment costs", page.text)
+        self.assertIn("Cost submission signature", page.text)
+        self.assertIn('name="submitter_name"', page.text)
+        self.assertIn('name="submitter_email"', page.text)
         self.assertIn("Suggested:", page.text)
         self.assertNotIn("Customer-facing monthly estimate", page.text)
         self.assertNotIn("Fee Card Adjustments", page.text)
@@ -492,9 +495,22 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         bad = public.get(f"/fulfillment-costs/{run['id']}/{'0' * 32}")
         self.assertEqual(bad.status_code, 404)
 
+        unsigned = public.post(
+            path,
+            data={
+                "actual_pick_pack_per_order": "0.91",
+                "actual_pick_pack_additional_item": "0.16",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(unsigned.status_code, 400)
+        self.assertIn("Name and a valid email are required", unsigned.text)
+
         posted = public.post(
             path,
             data={
+                "submitter_name": "Kyle Paulson",
+                "submitter_email": "Kyle@AnataInc.com",
                 "actual_pick_pack_per_order": "0.91",
                 "actual_pick_pack_additional_item": "0.16",
                 "actual_storage_per_pallet_mo": "31",
@@ -509,6 +525,22 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(updated["fulfillment_actual_costs"]["pick_pack_per_order"], 0.91)
         self.assertEqual(updated["fulfillment_actual_costs"]["monthly_tech_fee"], 0.0)
         self.assertEqual(updated["negotiation_history"][-1]["event"], "Fulfillment costs submitted")
+        self.assertEqual(updated["negotiation_history"][-1]["user_email"], "kyle@anatainc.com")
+        self.assertIn("Kyle Paulson", updated["negotiation_history"][-1]["detail"])
+        submissions = updated["fulfillment_cost_submissions"]
+        self.assertEqual(submissions[-1]["name"], "Kyle Paulson")
+        self.assertEqual(submissions[-1]["email"], "kyle@anatainc.com")
+        self.assertEqual(submissions[-1]["costs"]["pick_pack_per_order"], 0.91)
+
+        saved_page = public.get(path)
+        self.assertEqual(saved_page.status_code, 200)
+        self.assertIn("Signed submission history", saved_page.text)
+        self.assertIn("Kyle Paulson", saved_page.text)
+
+        review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
+        self.assertEqual(review.status_code, 200)
+        self.assertIn("Fulfillment costs submitted", review.text)
+        self.assertIn("kyle@anatainc.com", review.text)
 
     def test_review_page_exposes_fulfillment_cost_form_link(self) -> None:
         run = self._generate()
