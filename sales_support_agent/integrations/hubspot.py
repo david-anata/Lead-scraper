@@ -75,6 +75,13 @@ LINE_ITEM_PROPERTIES: tuple[str, ...] = (
     "hs_sku",
 )
 
+NOTE_PROPERTIES: tuple[str, ...] = (
+    "hs_note_body",
+    "hs_timestamp",
+    "hs_lastmodifieddate",
+    "hubspot_owner_id",
+)
+
 
 class HubSpotClient:
     def __init__(self, settings: Settings):
@@ -257,6 +264,17 @@ class HubSpotClient:
 
     def get_line_items(self, ids: Sequence[str]) -> list[dict[str, Any]]:
         return self.batch_read("line_items", ids, properties=LINE_ITEM_PROPERTIES)
+
+    def get_notes(self, ids: Sequence[str]) -> list[dict[str, Any]]:
+        return self.batch_read("notes", ids, properties=NOTE_PROPERTIES)
+
+    def get_recent_deal_notes(self, deal_id: str, *, limit: int = 8) -> list[dict[str, Any]]:
+        note_ids = self.list_associations("deals", deal_id, "notes")[: max(int(limit), 1)]
+        notes = self.get_notes(note_ids)
+        def _sort_key(row: dict[str, Any]) -> str:
+            props = row.get("properties") or {}
+            return str(props.get("hs_timestamp") or props.get("hs_lastmodifieddate") or "")
+        return sorted(notes, key=_sort_key, reverse=True)
 
     def list_owners(self) -> list[dict[str, Any]]:
         payload = self._request("GET", "/crm/v3/owners", params={"limit": 100})

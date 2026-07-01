@@ -9,6 +9,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.entities import MailboxSignal
+from sales_support_agent.services.inbox_connection_store import load_user_inbox_connections
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -45,6 +46,8 @@ def _account_key_expr(session: Session):
 def _default_summary(configured_accounts: list[Any]) -> dict[str, Any]:
     return {
         "total_configured": len(configured_accounts),
+        "legacy_configured_count": 0,
+        "user_configured_count": 0,
         "connected_count": 0,
         "attention_count": 0,
         "invalid_count": 0,
@@ -139,12 +142,21 @@ def build_inbox_connection_summary(
     as_of = _aware(as_of) or datetime.now(timezone.utc)
     stale_cutoff = as_of - timedelta(days=max(int(stale_days), 1))
     configured_accounts = list(getattr(settings, "gmail_mailbox_accounts", ()) or ())
+    persisted_accounts = list(load_user_inbox_connections(session))
     summary = _default_summary(configured_accounts)
+    summary["legacy_configured_count"] = len(configured_accounts)
+    summary["user_configured_count"] = len(persisted_accounts)
+    summary["total_configured"] = len(configured_accounts) + len(persisted_accounts)
     configured_account_keys = [
         str(getattr(account, "account_key", "") or "").strip()
         for account in configured_accounts
         if str(getattr(account, "account_key", "") or "").strip()
     ]
+    configured_account_keys.extend(
+        str(getattr(account, "account_key", "") or "").strip()
+        for account in persisted_accounts
+        if str(getattr(account, "account_key", "") or "").strip()
+    )
     signal_snapshot = _load_signal_snapshot(session, account_keys=configured_account_keys)
 
     rows: list[dict[str, Any]] = []
@@ -182,12 +194,67 @@ def build_inbox_connection_summary(
                 "last_subject": signal_data.get("last_subject"),
                 "poll_query": str(getattr(account, "poll_query", "") or "").strip(),
                 "source_domains": list(getattr(account, "source_domains", ()) or ()),
+                "source": "legacy_env",
+                "source_label": "Legacy system inbox",
+                "owner_user_email": None,
+                "owner_user_name": "System-managed",
                 "status": status,
                 "status_label": {
                     "connected": "Connected",
                     "configured_not_seen": "Configured, No Traffic Yet",
                     "attention": "Needs Attention",
                     "invalid": "Invalid",
+                }[status],
+            }
+        )
+
+    for account in persisted_accounts:
+        account_key = str(getattr(account, "account_key", "") or "").strip()
+        label = str(getattr(account, "account_label", "") or getattr(account, "account_email", "") or account_key or "Inbox").strip()
+        signal_data = signal_snapshot.get(account_key, {})
+        has_credentials = bool(str(getattr(account, "sealed_refresh_token", "") or "").strip())
+        last_received_at = _aware(signal_data.get("last_received_at"))
+        row_status = str(getattr(account, "status", "") or "").strip() or "connected"
+
+        if row_status == "disconnected":
+            status = "invalid"
+            summary["invalid_count"] += 1
+        elif not has_credentials:
+            status = "invalid"
+            summary["invalid_count"] += 1
+        elif int(signal_data.get("message_count") or 0) <= 0:
+            status = "configured_not_seen"
+            summary["configured_not_seen_count"] += 1
+        elif last_received_at is not None and last_received_at < stale_cutoff:
+            status = "attention"
+            summary["attention_count"] += 1
+        else:
+            status = "connected"
+            summary["connected_count"] += 1
+
+        rows.append(
+            {
+                "account_key": account_key,
+                "label": label,
+                "configured": True,
+                "has_credentials": has_credentials,
+                "message_count": int(signal_data.get("message_count") or 0),
+                "matched_deal_count": int(signal_data.get("matched_deal_count") or 0),
+                "last_received_at": _iso(last_received_at),
+                "last_sender_email": signal_data.get("last_sender_email"),
+                "last_subject": signal_data.get("last_subject"),
+                "poll_query": str(getattr(account, "poll_query", "") or "").strip(),
+                "source_domains": list(getattr(account, "source_domains_json", ()) or ()),
+                "source": "user_oauth",
+                "source_label": "User-connected inbox",
+                "owner_user_email": str(getattr(account, "owner_user_email", "") or "").strip() or None,
+                "owner_user_name": str(getattr(account, "owner_user_name", "") or "").strip() or None,
+                "status": status,
+                "status_label": {
+                    "connected": "Connected",
+                    "configured_not_seen": "Configured, No Traffic Yet",
+                    "attention": "Needs Attention",
+                    "invalid": "Disconnected",
                 }[status],
             }
         )

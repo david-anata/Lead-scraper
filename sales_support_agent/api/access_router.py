@@ -35,6 +35,8 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from sales_support_agent.models.database import session_scope
+from sales_support_agent.services.admin_auth import create_signed_state_token, read_signed_state_token
+from sales_support_agent.services.auth_deps import get_session_user_from_request
 from sales_support_agent.services.access import store
 from sales_support_agent.services.access.pages import (
     render_invite_created_page,
@@ -48,7 +50,12 @@ from sales_support_agent.services.access.pages import (
 )
 from sales_support_agent.services.access.notify import send_approval_email, send_invite_email
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.gmail_oauth import exchange_gmail_code, gmail_auth_url, gmail_oauth_enabled
 from sales_support_agent.services.inbox_connections import build_inbox_connection_summary
+from sales_support_agent.services.inbox_connection_store import (
+    disconnect_user_inbox_connection,
+    upsert_user_gmail_connection,
+)
 from sales_support_agent.services.settings_page import render_settings_page
 
 logger = logging.getLogger(__name__)
@@ -98,6 +105,8 @@ def _empty_inbox_summary(agent_settings) -> dict:
     configured_accounts = list(getattr(agent_settings, "gmail_mailbox_accounts", ()) or ())
     return {
         "total_configured": len(configured_accounts),
+        "legacy_configured_count": len(configured_accounts),
+        "user_configured_count": 0,
         "connected_count": 0,
         "attention_count": 0,
         "invalid_count": 0,
@@ -434,3 +443,70 @@ async def settings_inboxes(request: Request, current_user: dict = Depends(_guard
     except Exception:  # noqa: BLE001 - endpoint should surface fallback summary, not 500
         logger.exception("Failed to build inbox connection summary for /admin/settings/inboxes")
         return JSONResponse({"ok": False, "summary": _empty_inbox_summary(agent_settings)})
+
+
+@_settings_router.get("/admin/settings/inboxes/connect")
+async def connect_inbox(request: Request, current_user: dict = Depends(_guard)) -> RedirectResponse:
+    settings = getattr(request.app.state, "agent_settings", None)
+    if not gmail_oauth_enabled(settings):
+        return RedirectResponse("/admin/settings?err=gmail_oauth_missing", status_code=303)
+    session_user = get_session_user_from_request(request) or current_user or {}
+    redirect_uri = str(request.url_for("connect_inbox_callback"))
+    state = create_signed_state_token(
+        getattr(settings, "admin_session_secret", ""),
+        {
+            "purpose": "gmail_connect",
+            "email": str(session_user.get("email") or "").strip().lower(),
+        },
+    )
+    url = gmail_auth_url(
+        settings,
+        redirect_uri=redirect_uri,
+        state=state,
+        login_hint=str(session_user.get("email") or "").strip(),
+    )
+    return RedirectResponse(url, status_code=302)
+
+
+@_settings_router.get("/admin/settings/inboxes/callback", name="connect_inbox_callback")
+async def connect_inbox_callback(request: Request, code: str = "", state: str = "") -> RedirectResponse:
+    settings = getattr(request.app.state, "agent_settings", None)
+    session_user = get_session_user_from_request(request)
+    if not session_user:
+        return RedirectResponse("/admin/login?err=session", status_code=303)
+    state_payload = read_signed_state_token(getattr(settings, "admin_session_secret", ""), state)
+    if not state_payload or state_payload.get("purpose") != "gmail_connect":
+        return RedirectResponse("/admin/settings?err=gmail_state", status_code=303)
+    if str(state_payload.get("email") or "").strip().lower() != str(session_user.get("email") or "").strip().lower():
+        return RedirectResponse("/admin/settings?err=gmail_identity", status_code=303)
+    try:
+        exchanged = exchange_gmail_code(settings, code=code, redirect_uri=str(request.url_for("connect_inbox_callback")))
+        tokens = exchanged.get("tokens") or {}
+        userinfo = exchanged.get("userinfo") or {}
+        refresh_token = str(tokens.get("refresh_token") or "").strip()
+        access_token = str(tokens.get("access_token") or "").strip()
+        account_email = str(userinfo.get("email") or session_user.get("email") or "").strip().lower()
+        account_label = str(userinfo.get("name") or account_email or "Inbox").strip()
+        with session_scope(request.app.state.session_factory) as session:
+            upsert_user_gmail_connection(
+                session,
+                settings,
+                owner_user_id=str(session_user.get("user_id") or session_user.get("id") or "").strip(),
+                owner_user_email=str(session_user.get("email") or "").strip().lower(),
+                owner_user_name=str(session_user.get("name") or "").strip(),
+                account_email=account_email,
+                account_label=account_label,
+                access_token=access_token,
+                refresh_token=refresh_token,
+            )
+    except Exception:
+        logger.exception("Failed to connect Gmail inbox for %s", session_user.get("email"))
+        return RedirectResponse("/admin/settings?err=gmail_connect_failed", status_code=303)
+    return RedirectResponse("/admin/settings?ok=inbox_connected", status_code=303)
+
+
+@_settings_router.post("/admin/settings/inboxes/disconnect")
+async def disconnect_inbox(request: Request, current_user: dict = Depends(_guard)) -> RedirectResponse:
+    with session_scope(request.app.state.session_factory) as session:
+        disconnect_user_inbox_connection(session, owner_user_email=str(current_user.get("email") or "").strip().lower())
+    return RedirectResponse("/admin/settings?ok=inbox_disconnected", status_code=303)

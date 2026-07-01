@@ -18,6 +18,7 @@ from sales_support_agent.models.entities import (
     HubSpotContact,
     HubSpotDeal,
     HubSpotDealContact,
+    HubSpotDealNote,
     MailboxSignal,
     SalesDealAsset,
 )
@@ -206,6 +207,45 @@ def _compact_text(value: str, *, limit: int = 140) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 1, 0)].rstrip() + "…"
+
+
+def _parse_hubspot_timestamp(value: object) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        try:
+            return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+    try:
+        return _aware(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _classify_note_override(body: str) -> tuple[str, str]:
+    haystack = _normalize(body)
+    rules = (
+        ("no_response_needed", ("no response needed", "dont need to respond", "do not respond", "no need to respond")),
+        ("waiting_on_internal", ("waiting on internal", "internal work", "building the deck", "preparing proposal", "working on proposal")),
+        ("deck_already_sent", ("deck already sent", "proposal sent", "audit sent", "sent the deck")),
+        ("waiting_on_prospect", ("waiting on prospect", "waiting for prospect", "waiting on client", "waiting for client")),
+    )
+    for state, phrases in rules:
+        if any(phrase in haystack for phrase in phrases):
+            return state, phrase_to_reason(state)
+    return "", ""
+
+
+def phrase_to_reason(state: str) -> str:
+    mapping = {
+        "no_response_needed": "Latest HubSpot note says no reply is needed right now.",
+        "waiting_on_internal": "Latest HubSpot note says internal work is still in progress.",
+        "deck_already_sent": "Latest HubSpot note says the deck or proposal was already sent.",
+        "waiting_on_prospect": "Latest HubSpot note says the deal is waiting on the prospect.",
+    }
+    return mapping.get(state, "")
 
 
 def _format_run_timestamp(value: Optional[datetime]) -> str:
@@ -507,6 +547,14 @@ def _load_local_deal_context(session, deal_ids: list[str]) -> dict[str, Any]:
     ).all():
         signals_by_deal.setdefault(signal.matched_deal_id, []).append(signal)
 
+    notes_by_deal: dict[str, list[HubSpotDealNote]] = {deal_id: [] for deal_id in deal_ids}
+    for note in session.scalars(
+        select(HubSpotDealNote)
+        .where(HubSpotDealNote.hubspot_deal_id.in_(deal_ids))
+        .order_by(HubSpotDealNote.note_timestamp.desc(), HubSpotDealNote.hubspot_note_id.desc())
+    ).all():
+        notes_by_deal.setdefault(note.hubspot_deal_id, []).append(note)
+
     contact_emails_by_deal = {
         deal_id: [
             str(contact.email or "").strip().lower()
@@ -522,7 +570,35 @@ def _load_local_deal_context(session, deal_ids: list[str]) -> dict[str, Any]:
         "assetsByDeal": assets_by_deal,
         "eventsByDeal": events_by_deal,
         "signalsByDeal": signals_by_deal,
+        "notesByDeal": notes_by_deal,
     }
+
+
+def _sync_recent_hubspot_notes(session, client: HubSpotClient, deal_ids: list[str], *, max_notes_per_deal: int = 8) -> None:
+    now = datetime.now(timezone.utc)
+    for deal_id in deal_ids:
+        for note in client.get_recent_deal_notes(deal_id, limit=max_notes_per_deal):
+            note_id = str(note.get("id") or "").strip()
+            if not note_id:
+                continue
+            properties = note.get("properties") or {}
+            body_text = str(properties.get("hs_note_body") or "").strip()
+            override_state, override_reason = _classify_note_override(body_text)
+            row = session.get(HubSpotDealNote, note_id)
+            if row is None:
+                row = HubSpotDealNote(hubspot_note_id=note_id, hubspot_deal_id=deal_id)
+                session.add(row)
+            row.hubspot_deal_id = deal_id
+            row.owner_id = str(properties.get("hubspot_owner_id") or "").strip()
+            row.body_text = body_text
+            row.body_preview = _compact_text(body_text, limit=240)
+            row.override_state = override_state
+            row.override_reason = override_reason
+            row.note_timestamp = _parse_hubspot_timestamp(
+                properties.get("hs_timestamp") or properties.get("hs_lastmodifieddate")
+            )
+            row.raw_properties = dict(properties)
+            row.last_sync_at = now
 
 
 def _build_live_mailbox_query(contact_emails: list[str]) -> str:
@@ -624,6 +700,7 @@ def _build_deal_intelligence(
     assets: list[SalesDealAsset],
     events: list[CommunicationEvent],
     signals: list[MailboxSignal],
+    notes: list[HubSpotDealNote],
     live_mailbox: Optional[dict[str, Any]],
     as_of: datetime,
 ) -> dict[str, Any]:
@@ -631,6 +708,12 @@ def _build_deal_intelligence(
     latest_event = max(events, key=lambda item: _aware(item.occurred_at) or datetime.min.replace(tzinfo=timezone.utc)) if events else None
     latest_signal = max(signals, key=lambda item: _aware(item.received_at) or datetime.min.replace(tzinfo=timezone.utc)) if signals else None
     latest_asset = max(assets, key=lambda item: _aware(item.linked_at) or datetime.min.replace(tzinfo=timezone.utc)) if assets else None
+    latest_note = max(notes, key=lambda item: _aware(item.note_timestamp) or datetime.min.replace(tzinfo=timezone.utc)) if notes else None
+    latest_override_note = max(
+        (note for note in notes if str(note.override_state or "").strip()),
+        key=lambda item: _aware(item.note_timestamp) or datetime.min.replace(tzinfo=timezone.utc),
+        default=None,
+    )
 
     live_messages = list((live_mailbox or {}).get("messages") or [])
     live_inbound_times: list[datetime] = []
@@ -707,6 +790,12 @@ def _build_deal_intelligence(
     inbound_hours = _hours_since(last_inbound, as_of=as_of)
     outbound_days = _days_since(last_outbound, as_of=as_of)
     asset_days = _days_since(latest_asset_at, as_of=as_of)
+    note_override_at = _aware(getattr(latest_override_note, "note_timestamp", None))
+    note_override_active = bool(
+        latest_override_note is not None
+        and note_override_at is not None
+        and (last_inbound is None or note_override_at >= last_inbound)
+    )
     mailbox_state = "not_configured"
     if live_mailbox:
         if not live_mailbox.get("configured"):
@@ -733,7 +822,14 @@ def _build_deal_intelligence(
     else:
         asset_review_state = "linked"
 
-    if last_inbound is not None and (last_outbound is None or last_inbound > last_outbound) and (inbound_hours is None or inbound_hours <= 120):
+    if note_override_active and stage_status in {"open", "nurture"}:
+        ai_status = "note_override"
+        recommendation = {
+            "text": str(getattr(latest_override_note, "override_reason", "") or "Hold the reply queue and wait for the next qualifying external update.").strip(),
+            "confidence": 0.94,
+        }
+        reasons.append(str(getattr(latest_override_note, "override_reason", "") or "A recent HubSpot note is suppressing reply prompts.").strip())
+    elif last_inbound is not None and (last_outbound is None or last_inbound > last_outbound) and (inbound_hours is None or inbound_hours <= 120):
         ai_status = "reply_due"
         recommendation = {
             "text": f"Reply to {primary_contact} today, capture the new information, and update the deal state from their latest response.",
@@ -775,6 +871,8 @@ def _build_deal_intelligence(
         summary_bits.append(f"last inbound {_fmt_relative(last_inbound.isoformat())}")
     elif last_outbound is not None:
         summary_bits.append(f"last outbound {_fmt_relative(last_outbound.isoformat())}")
+    if note_override_active and note_override_at is not None:
+        summary_bits.append(f"note override active since {_fmt_relative(note_override_at.isoformat())}")
 
     if live_mailbox:
         if mailbox_state == "ahead_of_mirror":
@@ -825,6 +923,10 @@ def _build_deal_intelligence(
         "communicationEventCount": len(events),
         "latestSignalSubject": str(getattr(latest_signal, "subject", "") or "").strip() or None,
         "latestEventSummary": _compact_text(str(getattr(latest_event, "summary", "") or getattr(latest_event, "recommended_next_action", "") or "").strip(), limit=140) or None,
+        "latestNoteSummary": str(getattr(latest_note, "body_preview", "") or "").strip() or None,
+        "noteOverrideState": str(getattr(latest_override_note, "override_state", "") or "").strip() or None,
+        "noteOverrideReason": str(getattr(latest_override_note, "override_reason", "") or "").strip() or None,
+        "noteOverrideAt": note_override_at.isoformat() if note_override_at else None,
         "assetState": {
             "status": share_state,
             "reviewState": asset_review_state,
@@ -927,10 +1029,12 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
         "assetsByDeal": {},
         "eventsByDeal": {},
         "signalsByDeal": {},
+        "notesByDeal": {},
     }
     live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
     if session_factory is not None and all_deal_ids:
         with session_scope(session_factory) as session:
+            _sync_recent_hubspot_notes(session, client, all_deal_ids)
             local_context = _load_local_deal_context(session, all_deal_ids)
             schedule_runs = _build_schedule_runs(session)
         live_mailbox_by_deal = _fetch_live_mailbox_state(
@@ -997,6 +1101,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             assets=local_context["assetsByDeal"].get(deal_id, []),
             events=local_context["eventsByDeal"].get(deal_id, []),
             signals=local_context["signalsByDeal"].get(deal_id, []),
+            notes=local_context["notesByDeal"].get(deal_id, []),
             live_mailbox=live_mailbox_by_deal.get(deal_id),
             as_of=as_of,
         )
@@ -1066,6 +1171,7 @@ def build_operator_snapshot(settings: Settings, *, session_factory: Any | None =
             assets=local_context["assetsByDeal"].get(deal_id, []),
             events=local_context["eventsByDeal"].get(deal_id, []),
             signals=local_context["signalsByDeal"].get(deal_id, []),
+            notes=local_context["notesByDeal"].get(deal_id, []),
             live_mailbox=live_mailbox_by_deal.get(deal_id),
             as_of=as_of,
         )
@@ -1251,11 +1357,13 @@ def run_writeback(
         "assetsByDeal": {},
         "eventsByDeal": {},
         "signalsByDeal": {},
+        "notesByDeal": {},
     }
     live_mailbox_by_deal: dict[str, dict[str, Any]] = {}
     candidate_deal_ids = [str(deal.get("id") or "") for deal in deals if str(deal.get("id") or "").strip()]
     if session_factory is not None and candidate_deal_ids:
         with session_scope(session_factory) as session:
+            _sync_recent_hubspot_notes(session, client, candidate_deal_ids)
             local_context = _load_local_deal_context(session, candidate_deal_ids)
         live_mailbox_by_deal = _fetch_live_mailbox_state(
             settings,
@@ -1286,6 +1394,7 @@ def run_writeback(
             assets=local_context["assetsByDeal"].get(deal_id, []),
             events=local_context["eventsByDeal"].get(deal_id, []),
             signals=local_context["signalsByDeal"].get(deal_id, []),
+            notes=local_context["notesByDeal"].get(deal_id, []),
             live_mailbox=live_mailbox_by_deal.get(deal_id),
             as_of=as_of,
         )
@@ -1698,6 +1807,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
           <p>{_fmt_money(deal.get("amount"))} · {_esc(deal.get("stage"))} · {_esc(deal.get("owner"))}</p>
           <p><strong>Next step:</strong> {_esc(deal.get("nextStep") or "No next step")}</p>
           <p><strong>AI read:</strong> {_esc(deal.get("intelligence", {}).get("recommendedNextStep") or "No AI recommendation")}</p>
+          <p class="muted"><strong>Note override:</strong> {_esc(deal.get("intelligence", {}).get("noteOverrideReason") or "None")}</p>
           <p class="muted">{_esc(deal.get("intelligence", {}).get("summary") or "No communication summary yet.")}</p>
           <p class="muted">Assets: {_esc((deal.get("intelligence", {}).get("assetState", {}) or {}).get("latestAssetLabel") or "No linked asset")} · Asset state: {_esc(_recent_asset_status(deal))} · Gmail: {_esc(_recent_gmail_status(deal))}</p>
           <div class="action-stack">
@@ -1730,6 +1840,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
               <p><strong>Current service type:</strong> {_esc(deal.get("current", {}).get("serviceType") or "Blank")}</p>
               <p><strong>Current next step:</strong> {_esc(deal.get("current", {}).get("nextStep") or "Blank")}</p>
               <p><strong>AI recommendation:</strong> {_esc(deal.get("intelligence", {}).get("recommendedNextStep") or "None")}</p>
+              <p class="muted"><strong>Note override:</strong> {_esc(deal.get("intelligence", {}).get("noteOverrideReason") or "None")}</p>
               <p class="muted">{_esc(deal.get("intelligence", {}).get("summary") or "")}</p>
               <ul class="list">{"".join(f"<li>{_esc(action.get('type'))} · {_esc(action.get('status'))} · {_esc(action.get('reason'))}</li>" for action in deal.get("actions", [])) or "<li>No actions recorded.</li>"}</ul>
             </article>

@@ -2166,6 +2166,36 @@ def _resolve_and_attach_sales_deck(
         }
 
 
+def _deck_attachment_response_details(payload: dict[str, object]) -> dict[str, str]:
+    attachment_status = str(payload.get("attachment_status") or "").strip() or "unmatched"
+    resolution = dict(payload.get("deal_match_resolution") or {})
+    confidence = float(resolution.get("confidence") or 0.0)
+    action = str(resolution.get("action") or "").strip()
+    matched_source = str(resolution.get("matched_source") or "").strip().replace("_", " ")
+    attached_deal_id = str(payload.get("attached_deal_id") or "").strip()
+    if attachment_status == "attached" and action == "create_then_attach":
+        label = "Created + Attached"
+    elif attachment_status == "attached":
+        label = "Attached"
+    elif attachment_status == "needs_review":
+        label = "Needs Review"
+    elif attachment_status == "unmatched":
+        label = "Unmatched"
+    else:
+        label = attachment_status.replace("_", " ").title()
+    detail_bits = []
+    if attached_deal_id:
+        detail_bits.append(attached_deal_id)
+    if confidence:
+        detail_bits.append(f"{round(confidence * 100)}%")
+    if matched_source:
+        detail_bits.append(matched_source)
+    return {
+        "attachment_status_label": label,
+        "attachment_status_detail": " · ".join(detail_bits),
+    }
+
+
 async def _run_generate_deck(
     request: Request,
     *,
@@ -2389,6 +2419,7 @@ async def _run_generate_deck(
             "attached_deal_id": attachment_details.get("attached_deal_id", ""),
             "deal_match_audit": attachment_details.get("deal_match_audit", []),
             "deal_match_resolution": attachment_details.get("deal_match_resolution", {}),
+            **_deck_attachment_response_details(attachment_details),
         },
     )
 

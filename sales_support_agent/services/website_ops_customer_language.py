@@ -12,6 +12,8 @@ from typing import Any
 
 from sales_support_agent.integrations.gmail import GmailClient, GmailIntegrationError
 from sales_support_agent.integrations.gmail_payloads import normalize_gmail_message
+from sales_support_agent.models.database import session_scope
+from sales_support_agent.services.inbox_connection_store import load_active_gmail_mailbox_accounts
 
 
 QUESTION_PATTERN = re.compile(r"\?|(?:^|\s)(how|what|when|why|where|who|can|does|do|is|are)\b", re.IGNORECASE)
@@ -57,7 +59,13 @@ def _customer_language_dir(settings: Any) -> Path:
 
 def fetch_gmail_threads(settings: Any, *, max_messages: int = 30) -> list[dict[str, Any]]:
     threads: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    clients = [GmailClient(settings, mailbox_account=account) for account in getattr(settings, "gmail_mailbox_accounts", ()) or ()]
+    clients = []
+    session_factory = getattr(settings, "session_factory", None)
+    if session_factory is not None:
+        with session_scope(session_factory) as session:
+            clients = [GmailClient(settings, mailbox_account=account) for account in load_active_gmail_mailbox_accounts(session, settings)]
+    else:
+        clients = [GmailClient(settings, mailbox_account=account) for account in getattr(settings, "gmail_mailbox_accounts", ()) or ()]
     if not clients:
         clients = [GmailClient(settings)]
     for client in clients:

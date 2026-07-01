@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from sales_support_agent.config import GmailMailboxAccount
 from sales_support_agent.models.database import create_session_factory, init_database, session_scope
-from sales_support_agent.models.entities import MailboxSignal
+from sales_support_agent.models.entities import InboxConnection, MailboxSignal
 from sales_support_agent.services.inbox_connections import build_inbox_connection_summary
 from sales_support_agent.services.settings_page import render_settings_page
 
@@ -65,6 +65,20 @@ class InboxConnectionsTests(unittest.TestCase):
                 )
             )
             session.add(
+                InboxConnection(
+                    provider="gmail",
+                    connection_source="user_oauth",
+                    account_key="jamie-example-com",
+                    account_label="Jamie Lee",
+                    account_email="jamie@example.com",
+                    owner_user_email="jamie@anatainc.com",
+                    owner_user_name="Jamie Lee",
+                    sealed_refresh_token="sealed-refresh",
+                    source_domains_json=["anatainc.com"],
+                    status="connected",
+                )
+            )
+            session.add(
                 MailboxSignal(
                     provider="gmail",
                     sender_email="lead-three@example.com",
@@ -95,11 +109,13 @@ class InboxConnectionsTests(unittest.TestCase):
         with session_scope(self.session_factory) as session:
             summary = build_inbox_connection_summary(session, self.settings, as_of=self.as_of, stale_days=7)
 
-        self.assertEqual(summary["total_configured"], 4)
+        self.assertEqual(summary["total_configured"], 5)
+        self.assertEqual(summary["legacy_configured_count"], 4)
+        self.assertEqual(summary["user_configured_count"], 1)
         self.assertEqual(summary["connected_count"], 1)
         self.assertEqual(summary["attention_count"], 1)
         self.assertEqual(summary["invalid_count"], 1)
-        self.assertEqual(summary["configured_not_seen_count"], 1)
+        self.assertEqual(summary["configured_not_seen_count"], 2)
 
         rows = {row["account_key"]: row for row in summary["accounts"]}
         self.assertEqual(rows["david"]["status"], "connected")
@@ -110,6 +126,8 @@ class InboxConnectionsTests(unittest.TestCase):
         self.assertEqual(rows["alex"]["status"], "attention")
         self.assertEqual(rows["ops"]["status"], "invalid")
         self.assertEqual(rows["sam"]["status"], "configured_not_seen")
+        self.assertEqual(rows["jamie-example-com"]["source"], "user_oauth")
+        self.assertEqual(rows["jamie-example-com"]["owner_user_email"], "jamie@anatainc.com")
 
     def test_render_settings_page_includes_connected_inboxes_card(self):
         with session_scope(self.session_factory) as session:
@@ -151,6 +169,7 @@ class InboxConnectionsTests(unittest.TestCase):
         )
 
         self.assertIn("Connected Inboxes", html)
+        self.assertIn("Connect your inbox", html)
         self.assertIn("Auth &amp; Access", html)
         self.assertIn("Core Runtime", html)
         self.assertIn("Write Safety", html)
@@ -167,6 +186,7 @@ class InboxConnectionsTests(unittest.TestCase):
         self.assertIn("Preview first", html)
         self.assertIn("https://lead-builder.example", html)
         self.assertIn("David Narayan", html)
+        self.assertIn("User-connected inbox", html)
         self.assertIn("Needs Attention", html)
         self.assertIn("/admin/settings/inboxes", html)
 

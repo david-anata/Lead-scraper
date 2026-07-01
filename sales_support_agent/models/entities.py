@@ -810,6 +810,35 @@ class AppUser(Base):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class InboxConnection(Base):
+    """Persisted per-user inbox connection metadata for self-serve Gmail sync."""
+
+    __tablename__ = "inbox_connections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), default="gmail", index=True)
+    connection_source: Mapped[str] = mapped_column(String(32), default="user_oauth", index=True)
+    account_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    account_label: Mapped[str] = mapped_column(String(255), default="")
+    account_email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    owner_user_email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    owner_user_name: Mapped[str] = mapped_column(String(255), default="")
+    gmail_user_id: Mapped[str] = mapped_column(String(64), default="me")
+    sealed_access_token: Mapped[str] = mapped_column(Text, default="")
+    sealed_refresh_token: Mapped[str] = mapped_column(Text, default="")
+    poll_query: Mapped[str] = mapped_column(String(255), default="newer_than:2d")
+    poll_max_messages: Mapped[int] = mapped_column(Integer, default=25)
+    source_domains_json: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class AppInvite(Base):
     """A direct invite to a specific email, granting a role on acceptance.
     The bearer token is stored hashed; the raw token lives only in the link."""
@@ -936,6 +965,23 @@ class HubSpotDealContact(Base):
     __table_args__ = (
         Index("ix_hs_deal_contact_unique", "hubspot_deal_id", "hubspot_contact_id", unique=True),
     )
+
+
+class HubSpotDealNote(Base):
+    """Recent HubSpot notes mirrored locally for operator reasoning."""
+
+    __tablename__ = "hubspot_deal_notes"
+
+    hubspot_note_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hubspot_deal_id: Mapped[str] = mapped_column(String(64), index=True)
+    owner_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    body_text: Mapped[str] = mapped_column(Text, default="")
+    body_preview: Mapped[str] = mapped_column(String(512), default="")
+    override_state: Mapped[str] = mapped_column(String(64), default="", index=True)
+    override_reason: Mapped[str] = mapped_column(String(255), default="")
+    note_timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    raw_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
 class SalesDealAsset(Base):

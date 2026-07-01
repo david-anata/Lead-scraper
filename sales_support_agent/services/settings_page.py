@@ -117,6 +117,7 @@ _STYLES = """
   .inbox-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:12px; }
   .inbox-meta-block { font-size:12px; color:rgba(43,54,68,0.62); }
   .inbox-meta-block strong { display:block; color:#2B3644; font-size:12px; margin-bottom:2px; }
+  .inbox-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
   .status-badge { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; font-size:10px; font-weight:800;
     font-family:"Montserrat",sans-serif; text-transform:uppercase; letter-spacing:0.05em; }
   .status-connected { background:rgba(46,125,91,0.12); color:#2e7d5b; }
@@ -347,6 +348,19 @@ def render_settings_page(
     inbox_items = ""
     for row in inbox_rows:
         source_domains = ", ".join(row.get("source_domains", []) or []) or "—"
+        owner = _esc(row.get("owner_user_name") or row.get("owner_user_email") or "System-managed")
+        connect_action = (
+            f'<a class="quick-link" href="/admin/settings/inboxes/connect">Reconnect</a>'
+            if row.get("source") == "user_oauth"
+            else ""
+        )
+        disconnect_action = (
+            '<form method="post" action="/admin/settings/inboxes/disconnect" style="margin:0;">'
+            '<button class="quick-link" type="submit" style="background:none;">Disconnect</button>'
+            "</form>"
+            if row.get("source") == "user_oauth"
+            else ""
+        )
         inbox_items += f"""
         <div class="inbox-row">
           <div class="inbox-top">
@@ -363,7 +377,10 @@ def render_settings_page(
             <div class="inbox-meta-block"><strong>Matched deals</strong>{int(row.get("matched_deal_count") or 0)}</div>
             <div class="inbox-meta-block"><strong>Messages synced</strong>{int(row.get("message_count") or 0)}</div>
             <div class="inbox-meta-block"><strong>Source domains</strong>{_esc(source_domains)}</div>
+            <div class="inbox-meta-block"><strong>Owner</strong>{owner}</div>
+            <div class="inbox-meta-block"><strong>Connection source</strong>{_esc(row.get("source_label") or "Unknown")}</div>
           </div>
+          <div class="inbox-actions">{connect_action}{disconnect_action}</div>
         </div>"""
     if not inbox_items:
         inbox_items = '<p class="placeholder-note">No shared inboxes are configured yet.</p>'
@@ -374,17 +391,19 @@ def render_settings_page(
       {'<div class="warning-note">' + _esc(inbox_warning) + '</div>' if inbox_warning else ''}
       <div class="inbox-summary">
         <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("total_configured") or 0)}</div><div class="inbox-pill-label">Configured</div></div>
+        <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("user_configured_count") or 0)}</div><div class="inbox-pill-label">User connected</div></div>
+        <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("legacy_configured_count") or 0)}</div><div class="inbox-pill-label">Legacy system</div></div>
         <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("connected_count") or 0)}</div><div class="inbox-pill-label">Connected</div></div>
         <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("attention_count") or 0)}</div><div class="inbox-pill-label">Needs attention</div></div>
         <div class="inbox-pill"><div class="inbox-pill-num">{int(inboxes.get("configured_not_seen_count") or 0)}</div><div class="inbox-pill-label">No traffic yet</div></div>
       </div>
       <div class="quick-links" style="margin-bottom:16px;">
+        <a class="quick-link" href="/admin/settings/inboxes/connect">&#10133; Connect your inbox</a>
         <a class="quick-link" href="/admin/settings/inboxes">&#123;&#125; View JSON</a>
       </div>
       <div class="inbox-list">{inbox_items}</div>
       <p class="muted-note">
-        Connection state is inferred from the configured shared inbox list and synced mailbox evidence.
-        This does not yet represent a user-managed OAuth connection page.
+        User-connected Gmail inboxes now live alongside legacy env-configured inboxes. Sales sync reads both sources and attributes traffic to the owning user when available.
       </p>
     </div>"""
 

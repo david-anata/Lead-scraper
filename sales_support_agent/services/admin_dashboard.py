@@ -248,6 +248,41 @@ def _empty_engagement_payload() -> dict[str, object]:
     return {"internal": _empty_engagement_cohort(), "external": _empty_engagement_cohort()}
 
 
+def _deck_hubspot_status(summary: dict[str, object]) -> dict[str, object]:
+    attachment_status = str(summary.get("attachment_status") or "").strip() or "unmatched"
+    resolution = dict(summary.get("deal_match_resolution") or {})
+    context = dict(summary.get("hubspot_context") or {})
+    selected = dict(resolution.get("selected") or {})
+    attached_deal_id = str(context.get("attached_deal_id") or selected.get("hubspot_deal_id") or "").strip()
+    confidence = float(resolution.get("confidence") or 0.0)
+    action = str(resolution.get("action") or "").strip()
+    matched_source = str(resolution.get("matched_source") or "").strip()
+    if attachment_status == "attached" and action == "create_then_attach":
+        label = "Created + Attached"
+    elif attachment_status == "attached":
+        label = "Attached"
+    elif attachment_status == "needs_review":
+        label = "Needs Review"
+    elif attachment_status == "unmatched":
+        label = "Unmatched"
+    else:
+        label = attachment_status.replace("_", " ").title()
+    detail_parts = []
+    if attached_deal_id:
+        detail_parts.append(attached_deal_id)
+    if confidence:
+        detail_parts.append(f"{round(confidence * 100)}%")
+    if matched_source:
+        detail_parts.append(matched_source.replace("_", " "))
+    return {
+        "label": label,
+        "detail": " · ".join(detail_parts),
+        "attached_deal_id": attached_deal_id,
+        "confidence": confidence,
+        "matched_source": matched_source,
+    }
+
+
 def _build_deck_engagement_batch(session, run_ids: list[int]) -> dict[int, dict[str, object]]:
     """PR56: batched version of `_build_deck_engagement`. Eliminates the N+1
     on the past-decks table — was 2 queries × 200 decks = 400 round-trips
@@ -1093,36 +1128,43 @@ def build_dashboard_data(
         session, [r.id for r in deck_runs]
     )
     recent_deck_runs = [
-        {
+        (
+        lambda summary, hubspot_status: {
             "id": run.id,
-            "status": dict(run.summary_json or {}).get("status") or run.status,
-            "message": dict(run.summary_json or {}).get("message", ""),
-            "design_id": dict(run.summary_json or {}).get("design_id", ""),
-            "design_title": dict(run.summary_json or {}).get("design_title", ""),
-            "edit_url": dict(run.summary_json or {}).get("edit_url", ""),
-            "view_url": dict(run.summary_json or {}).get("view_url", ""),
-            "warnings": list(dict(run.summary_json or {}).get("warnings", []) or []),
-            "output_type": dict(run.summary_json or {}).get("output_type", ""),
-            "deck_slug": dict(run.summary_json or {}).get("deck_slug", ""),
-            "channels": list(dict(run.summary_json or {}).get("channels", []) or []),
-            "view_count": int(dict(run.summary_json or {}).get("view_count", 0) or 0),
-            "first_viewed_at": dict(run.summary_json or {}).get("first_viewed_at", ""),
-            "last_viewed_at": dict(run.summary_json or {}).get("last_viewed_at", ""),
-            "attachment_status": dict(run.summary_json or {}).get("attachment_status", ""),
-            "hubspot_context": dict(run.summary_json or {}).get("hubspot_context", {}),
-            "deal_match_resolution": dict(run.summary_json or {}).get("deal_match_resolution", {}),
+            "status": summary.get("status") or run.status,
+            "message": summary.get("message", ""),
+            "design_id": summary.get("design_id", ""),
+            "design_title": summary.get("design_title", ""),
+            "edit_url": summary.get("edit_url", ""),
+            "view_url": summary.get("view_url", ""),
+            "warnings": list(summary.get("warnings", []) or []),
+            "output_type": summary.get("output_type", ""),
+            "deck_slug": summary.get("deck_slug", ""),
+            "channels": list(summary.get("channels", []) or []),
+            "view_count": int(summary.get("view_count", 0) or 0),
+            "first_viewed_at": summary.get("first_viewed_at", ""),
+            "last_viewed_at": summary.get("last_viewed_at", ""),
+            "attachment_status": summary.get("attachment_status", ""),
+            "attachment_status_label": hubspot_status["label"],
+            "attachment_status_detail": hubspot_status["detail"],
+            "attached_deal_id": hubspot_status["attached_deal_id"],
+            "hubspot_context": dict(summary.get("hubspot_context", {}) or {}),
+            "deal_match_resolution": dict(summary.get("deal_match_resolution", {}) or {}),
             # PR54: legacy view_analytics (visit counts, daily) MERGED with
             # the new engagement payload (per-visitor table, sections,
             # source/device/country, avg session length). Modal reads one
             # unified shape: each of internal/external has both legacy
             # counters and new engagement fields.
             "view_analytics": _merge_legacy_with_engagement(
-                _build_deck_view_analytics(dict(run.summary_json or {})),
+                _build_deck_view_analytics(summary),
                 engagement_by_run.get(run.id, _empty_engagement_payload()),
             ),
             "started_at": run.started_at.isoformat() if run.started_at else "",
             "completed_at": run.completed_at.isoformat() if run.completed_at else "",
-        }
+        })(
+            dict(run.summary_json or {}),
+            _deck_hubspot_status(dict(run.summary_json or {})),
+        )
         for run in deck_runs
     ]
 
@@ -4044,11 +4086,13 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         const viewUrl = run.view_url || "";
         const safeTitle = escapeHtml(run.design_title || `Run ${{run.id || ""}}`);
         const analyticsPayload = escapeHtml(JSON.stringify(run.view_analytics || {{}}));
+        const hubspotLabel = escapeHtml(run.attachment_status_label || run.attachment_status || "Unmatched");
+        const hubspotDetail = escapeHtml(run.attachment_status_detail || "");
         return `
           <article class="deck-run-item">
             <div>
               <strong>${{safeTitle}}</strong>
-              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}} · HubSpot ${{escapeHtml(run.attachment_status || "unmatched")}}</p>
+              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}} · HubSpot ${{hubspotLabel}}${{hubspotDetail ? ` · ${{hubspotDetail}}` : ""}}</p>
             </div>
             <div class="deck-run-links">
               ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
@@ -4406,6 +4450,8 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
             design_title: details.design_title,
             view_url: details.view_url,
             attachment_status: details.attachment_status || "unmatched",
+            attachment_status_label: details.attachment_status_label || details.attachment_status || "Unmatched",
+            attachment_status_detail: details.attachment_status_detail || "",
             channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
             started_at: new Date().toISOString(),
             view_analytics: {{
@@ -4571,7 +4617,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         <tr class="deck-row" data-brand="{html.escape(_brand_from_title(str(run.get("design_title") or "")))}" data-started-at="{html.escape(str(run.get("started_at") or ""))}" data-run-id="{html.escape(str(run.get("id", "")))}">
           <td><strong>{html.escape(_brand_from_title(str(run.get("design_title") or "")))}</strong></td>
           <td class="muted">{html.escape(str(run.get("design_title") or run.get("design_id") or f"Run {run.get('id', '')}"))}</td>
-          <td class="muted">{html.escape(str(run.get("attachment_status") or "unmatched"))}</td>
+          <td class="muted">{html.escape(str(run.get("attachment_status_label") or run.get("attachment_status") or "Unmatched"))}{f"<br><span style='font-size:11px;color:rgba(43,54,68,0.45)'>{html.escape(str(run.get('attachment_status_detail') or ''))}</span>" if str(run.get('attachment_status_detail') or '').strip() else ""}</td>
           <td class="muted deck-cell-created">{html.escape(_format_dashboard_datetime(str(run.get("started_at") or "")) or "Today")}</td>
           <td class="num">{_ext_views(run)}</td>
           <td class="num">{_int_views(run)}</td>
@@ -6326,11 +6372,13 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         const viewUrl = run.view_url || "";
         const safeTitle = escapeHtml(run.design_title || `Run ${{run.id || ""}}`);
         const analyticsPayload = escapeHtml(JSON.stringify(run.view_analytics || {{}}));
+        const hubspotLabel = escapeHtml(run.attachment_status_label || run.attachment_status || "Unmatched");
+        const hubspotDetail = escapeHtml(run.attachment_status_detail || "");
         return `
           <article class="deck-run-item">
             <div>
               <strong>${{safeTitle}}</strong>
-              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}} · HubSpot ${{escapeHtml(run.attachment_status || "unmatched")}}</p>
+              <p class="muted">Created ${{escapeHtml(formatDeckDate(run.started_at || ""))}} · HubSpot ${{hubspotLabel}}${{hubspotDetail ? ` · ${{hubspotDetail}}` : ""}}</p>
             </div>
             <div class="deck-run-links">
               ${{viewUrl ? `<a href="${{escapeHtml(viewUrl)}}?viewer=internal" target="_blank" rel="noreferrer">Open deck</a>` : ""}}
@@ -6556,6 +6604,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             design_title: details.design_title,
             view_url: details.view_url,
             attachment_status: details.attachment_status || "unmatched",
+            attachment_status_label: details.attachment_status_label || details.attachment_status || "Unmatched",
+            attachment_status_detail: details.attachment_status_detail || "",
             channels: ["amazon", "tiktok_shop", "shopify", "3pl", "shipping_os"],
             started_at: new Date().toISOString(),
             view_analytics: {{

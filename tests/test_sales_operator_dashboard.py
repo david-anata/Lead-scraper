@@ -90,6 +90,7 @@ class SalesOperatorDashboardTests(unittest.TestCase):
             assets=[],
             events=[],
             signals=[],
+            notes=[],
             live_mailbox={"configured": True, "matched": True, "messages": []},
             as_of=now,
         )
@@ -122,6 +123,7 @@ class SalesOperatorDashboardTests(unittest.TestCase):
             ],
             events=[],
             signals=[],
+            notes=[],
             live_mailbox={"configured": False, "matched": False, "messages": [], "error": ""},
             as_of=now,
         )
@@ -149,6 +151,7 @@ class SalesOperatorDashboardTests(unittest.TestCase):
             assets=[],
             events=[],
             signals=[],
+            notes=[],
             live_mailbox={
                 "configured": True,
                 "matched": True,
@@ -192,6 +195,7 @@ class SalesOperatorDashboardTests(unittest.TestCase):
             ],
             events=[],
             signals=[],
+            notes=[],
             live_mailbox={"configured": True, "matched": False, "messages": [], "error": ""},
             as_of=now,
         )
@@ -242,6 +246,70 @@ class SalesOperatorDashboardTests(unittest.TestCase):
         self.assertEqual(actions[0]["state"], "blocked")
         self.assertIn("Collect the missing info", actions[0]["title"])
         self.assertIn("company link", actions[0]["blockedBy"])
+
+    def test_build_deal_intelligence_suppresses_reply_due_with_qualified_note(self):
+        now = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)
+        intelligence = operator_dashboard._build_deal_intelligence(
+            deal={"id": "deal-1", "properties": {"dealname": "Acme Amazon", "hs_next_step": "Reply to prospect"}},
+            stage={"label": "Proposal Sent"},
+            stage_status="open",
+            inference={"primary_offer": "amazon_marketing_service", "primary_offer_label": "Amazon Marketing Service"},
+            current_next_step="Reply to prospect",
+            deal_row=SimpleNamespace(
+                last_inbound_at=now - timedelta(days=2),
+                last_outbound_at=now - timedelta(days=3),
+                last_meaningful_touch_at=now - timedelta(days=2),
+            ),
+            contacts=[SimpleNamespace(first_name="Taylor", last_name="Smith", email="taylor@example.com")],
+            assets=[],
+            events=[],
+            signals=[],
+            notes=[
+                SimpleNamespace(
+                    note_timestamp=now - timedelta(hours=2),
+                    body_preview="No response needed until the updated numbers are ready.",
+                    override_state="no_response_needed",
+                    override_reason="Latest HubSpot note says no reply is needed right now.",
+                )
+            ],
+            live_mailbox={"configured": True, "matched": True, "messages": []},
+            as_of=now,
+        )
+
+        self.assertEqual(intelligence["status"], "note_override")
+        self.assertEqual(intelligence["noteOverrideState"], "no_response_needed")
+        self.assertIn("no reply is needed", intelligence["noteOverrideReason"])
+
+    def test_build_deal_intelligence_newer_inbound_beats_note_override(self):
+        now = datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc)
+        intelligence = operator_dashboard._build_deal_intelligence(
+            deal={"id": "deal-1", "properties": {"dealname": "Acme Amazon", "hs_next_step": ""}},
+            stage={"label": "Proposal Sent"},
+            stage_status="open",
+            inference={"primary_offer": "amazon_marketing_service", "primary_offer_label": "Amazon Marketing Service"},
+            current_next_step="",
+            deal_row=SimpleNamespace(
+                last_inbound_at=now - timedelta(minutes=30),
+                last_outbound_at=now - timedelta(days=2),
+                last_meaningful_touch_at=now - timedelta(minutes=30),
+            ),
+            contacts=[SimpleNamespace(first_name="Taylor", last_name="Smith", email="taylor@example.com")],
+            assets=[],
+            events=[],
+            signals=[],
+            notes=[
+                SimpleNamespace(
+                    note_timestamp=now - timedelta(hours=2),
+                    body_preview="Waiting on prospect",
+                    override_state="waiting_on_prospect",
+                    override_reason="Latest HubSpot note says the deal is waiting on the prospect.",
+                )
+            ],
+            live_mailbox={"configured": True, "matched": True, "messages": []},
+            as_of=now,
+        )
+
+        self.assertEqual(intelligence["status"], "reply_due")
 
     def test_decorate_automation_schedules_includes_last_run_summary(self):
         rows = operator_dashboard._decorate_automation_schedules(

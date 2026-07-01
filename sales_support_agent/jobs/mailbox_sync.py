@@ -16,6 +16,7 @@ from sales_support_agent.models.entities import MailboxSignal
 from sales_support_agent.models.schemas import CommunicationEventRequest
 from sales_support_agent.services.audit import AuditService
 from sales_support_agent.services.communications import CommunicationService
+from sales_support_agent.services.inbox_connection_store import load_active_gmail_mailbox_accounts
 from sales_support_agent.services.matching import LeadMatchingService
 
 
@@ -51,7 +52,7 @@ class GmailMailboxSyncJob:
             trigger=trigger,
             metadata={"dry_run": dry_run, "query": query or self.settings.gmail_poll_query},
         )
-        inbox_accounts = self.settings.gmail_mailbox_accounts
+        inbox_accounts = load_active_gmail_mailbox_accounts(self.session, self.settings)
         if not inbox_accounts and (self.gmail_client is None or not self.gmail_client.is_configured()):
             summary = {
                 "status": "skipped",
@@ -349,5 +350,9 @@ class GmailMailboxSyncJob:
                 **dict(normalized.raw_payload),
                 "gmail_account_key": account_key,
                 "gmail_account_label": account_label,
+                "gmail_connection_source": "legacy_env" if account_key in {
+                    str(item.account_key or "").strip()
+                    for item in getattr(self.settings, "gmail_mailbox_accounts", ()) or ()
+                } else "user_oauth",
             },
         )

@@ -237,6 +237,50 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                 updated_at TEXT NOT NULL DEFAULT ''
             )
         """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS inbox_connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider VARCHAR(32) NOT NULL DEFAULT 'gmail',
+                connection_source VARCHAR(32) NOT NULL DEFAULT 'user_oauth',
+                account_key VARCHAR(128) NOT NULL UNIQUE,
+                account_label VARCHAR(255) NOT NULL DEFAULT '',
+                account_email VARCHAR(255) NOT NULL DEFAULT '',
+                owner_user_id VARCHAR(64) NOT NULL DEFAULT '',
+                owner_user_email VARCHAR(255) NOT NULL DEFAULT '',
+                owner_user_name VARCHAR(255) NOT NULL DEFAULT '',
+                gmail_user_id VARCHAR(64) NOT NULL DEFAULT 'me',
+                sealed_access_token TEXT NOT NULL DEFAULT '',
+                sealed_refresh_token TEXT NOT NULL DEFAULT '',
+                poll_query VARCHAR(255) NOT NULL DEFAULT 'newer_than:2d',
+                poll_max_messages INTEGER NOT NULL DEFAULT 25,
+                source_domains_json JSON NOT NULL DEFAULT '[]',
+                status VARCHAR(32) NOT NULL DEFAULT 'connected',
+                last_error TEXT NOT NULL DEFAULT '',
+                last_validated_at DATETIME NULL,
+                last_sync_at DATETIME NULL,
+                disconnected_at DATETIME NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_inbox_connections_owner_user_email ON inbox_connections(owner_user_email)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_inbox_connections_status ON inbox_connections(status)"))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_deal_notes (
+                hubspot_note_id VARCHAR(64) PRIMARY KEY,
+                hubspot_deal_id VARCHAR(64) NOT NULL,
+                owner_id VARCHAR(64) NOT NULL DEFAULT '',
+                body_text TEXT NOT NULL DEFAULT '',
+                body_preview VARCHAR(512) NOT NULL DEFAULT '',
+                override_state VARCHAR(64) NOT NULL DEFAULT '',
+                override_reason VARCHAR(255) NOT NULL DEFAULT '',
+                note_timestamp DATETIME NULL,
+                raw_properties JSON NOT NULL DEFAULT '{}',
+                last_sync_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hubspot_deal_notes_deal_id ON hubspot_deal_notes(hubspot_deal_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hubspot_deal_notes_note_timestamp ON hubspot_deal_notes(note_timestamp)"))
 
     # Add indexes for Calendar/Ledger range queries
     with engine.begin() as conn:
@@ -957,6 +1001,50 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         """))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_sales_deal_assets_deal ON sales_deal_assets (hubspot_deal_id)"))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_sales_deal_asset_unique ON sales_deal_assets (hubspot_deal_id, asset_type, run_id)"))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS inbox_connections (
+                id BIGSERIAL PRIMARY KEY,
+                provider VARCHAR(32) NOT NULL DEFAULT 'gmail',
+                connection_source VARCHAR(32) NOT NULL DEFAULT 'user_oauth',
+                account_key VARCHAR(128) NOT NULL UNIQUE,
+                account_label VARCHAR(255) NOT NULL DEFAULT '',
+                account_email VARCHAR(255) NOT NULL DEFAULT '',
+                owner_user_id VARCHAR(64) NOT NULL DEFAULT '',
+                owner_user_email VARCHAR(255) NOT NULL DEFAULT '',
+                owner_user_name VARCHAR(255) NOT NULL DEFAULT '',
+                gmail_user_id VARCHAR(64) NOT NULL DEFAULT 'me',
+                sealed_access_token TEXT NOT NULL DEFAULT '',
+                sealed_refresh_token TEXT NOT NULL DEFAULT '',
+                poll_query VARCHAR(255) NOT NULL DEFAULT 'newer_than:2d',
+                poll_max_messages INTEGER NOT NULL DEFAULT 25,
+                source_domains_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                status VARCHAR(32) NOT NULL DEFAULT 'connected',
+                last_error TEXT NOT NULL DEFAULT '',
+                last_validated_at TIMESTAMPTZ NULL,
+                last_sync_at TIMESTAMPTZ NULL,
+                disconnected_at TIMESTAMPTZ NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_inbox_connections_owner_user_email ON inbox_connections(owner_user_email)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_inbox_connections_status ON inbox_connections(status)"))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS hubspot_deal_notes (
+                hubspot_note_id VARCHAR(64) PRIMARY KEY,
+                hubspot_deal_id VARCHAR(64) NOT NULL,
+                owner_id VARCHAR(64) NOT NULL DEFAULT '',
+                body_text TEXT NOT NULL DEFAULT '',
+                body_preview VARCHAR(512) NOT NULL DEFAULT '',
+                override_state VARCHAR(64) NOT NULL DEFAULT '',
+                override_reason VARCHAR(255) NOT NULL DEFAULT '',
+                note_timestamp TIMESTAMPTZ NULL,
+                raw_properties JSONB NOT NULL DEFAULT '{}'::jsonb,
+                last_sync_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hubspot_deal_notes_deal_id ON hubspot_deal_notes(hubspot_deal_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_hubspot_deal_notes_note_timestamp ON hubspot_deal_notes(note_timestamp)"))
 
 
 # Canonical column order for cash_events upsert
