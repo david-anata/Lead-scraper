@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
@@ -149,6 +150,19 @@ class AdminDashboardTests(unittest.TestCase):
                 clickup_client=self._FakeClickUpClient(),
                 as_of_date=date(2026, 3, 14),
             )
+            dashboard = replace(
+                dashboard,
+                recent_deck_runs=[
+                    {
+                        "id": 1,
+                        "design_title": "OceanRx x anata - Strategy Deck",
+                        "view_url": "https://sales-support-agent.onrender.com/deck-exports/1/token",
+                        "started_at": "2026-03-14T10:00:00+00:00",
+                        "view_analytics": {},
+                        "attachment_status": "unmatched",
+                    }
+                ],
+            )
 
         html = render_sales_deck_page(dashboard)
         self.assertIn("deck-generator-form", html)
@@ -157,6 +171,9 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("Product URL or ASIN", html)
         self.assertIn("All Helium 10 CSVs", html)
         self.assertIn("deck-run-list", html)
+        self.assertIn("Times shown in Mountain time.", html)
+        self.assertIn("Mar 14 · 4:00 AM", html)
+        self.assertNotIn("Times shown in UTC.", html)
         self.assertNotIn("Bulk Gmail drafts", html)
 
     def test_follow_up_status_is_excluded_from_dashboard(self) -> None:

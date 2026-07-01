@@ -8,6 +8,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
@@ -25,6 +26,8 @@ from sales_support_agent.services.admin_nav import render_agent_favicon_links, r
 from sales_support_agent.services.notification_policy import STALE_URGENCY_LABELS, STALE_URGENCY_ORDER
 from sales_support_agent.services.reminders import ReminderService
 from sales_support_agent.services.reply_templates import format_date_label, trim_for_slack
+
+MOUNTAIN_TZ = ZoneInfo("America/Denver")
 
 
 @dataclass(frozen=True)
@@ -163,20 +166,16 @@ def _format_dashboard_date(value: str) -> str:
 
 
 def _format_dashboard_datetime(value: str) -> str:
-    """PR52: compact `MMM D · h:MM AM/PM` format (e.g. "May 9 · 4:47 PM").
-    Was "MM/DD/YYYY HH:MM UTC" in PR49 — that string broke the Created
-    column at the page width because "UTC" wrapped onto its own line.
-    The "Times in UTC" caption above the table tells the user the
-    timezone now, so the per-cell suffix can go.
-    Year omitted from the per-row cell because all rows in the past-decks
-    table are from the current year for any reasonable use; if we ever
-    show year-old decks this can re-add %Y."""
+    """Compact Mountain-time `MMM D · h:MM AM/PM` format."""
     raw = str(value or "").strip()
     if not raw:
         return ""
     try:
         if "T" in raw:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(MOUNTAIN_TZ)
             # %-d / %-I are POSIX-only (strip leading zeros). On portable
             # platforms use %d / %I and lstrip the zero manually.
             day_part = dt.strftime("%b ") + str(dt.day)
@@ -4026,12 +4025,19 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
 
       function formatDeckDate(value) {{
         if (!value) return "Not available";
+        const raw = String(value);
+        if (/^\\d{{4}}-\\d{{2}}-\\d{{2}}$/.test(raw)) {{
+          const [year, month, day] = raw.split("-");
+          return `${{month}}/${{day}}/${{year}}`;
+        }}
         const parsed = new Date(value);
         if (Number.isNaN(parsed.getTime())) return String(value);
-        const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
-        const day = String(parsed.getUTCDate()).padStart(2, "0");
-        const year = parsed.getUTCFullYear();
-        return `${{month}}/${{day}}/${{year}}`;
+        return new Intl.DateTimeFormat("en-US", {{
+          timeZone: "America/Denver",
+          month: "2-digit",
+          day: "2-digit",
+          year: "numeric",
+        }}).format(parsed);
       }}
 
       function buildDeckRunHtml(run) {{
@@ -4609,7 +4615,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             </select>
           </label>
         </div>
-        <p class="deck-run-caption">Times shown in UTC.</p>
+        <p class="deck-run-caption">Times shown in Mountain time.</p>
         <div class="table-wrap deck-run-table-wrap">
           <table class="deck-run-table">
             <thead>
@@ -6301,12 +6307,19 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
 
       function formatDeckDate(value) {{
         if (!value) return "Not available";
+        const raw = String(value);
+        if (/^\\d{{4}}-\\d{{2}}-\\d{{2}}$/.test(raw)) {{
+          const [year, month, day] = raw.split("-");
+          return `${{month}}/${{day}}/${{year}}`;
+        }}
         const parsed = new Date(value);
         if (Number.isNaN(parsed.getTime())) return String(value);
-        const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
-        const day = String(parsed.getUTCDate()).padStart(2, "0");
-        const year = parsed.getUTCFullYear();
-        return `${{month}}/${{day}}/${{year}}`;
+        return new Intl.DateTimeFormat("en-US", {{
+          timeZone: "America/Denver",
+          month: "2-digit",
+          day: "2-digit",
+          year: "numeric",
+        }}).format(parsed);
       }}
 
       function buildDeckRunHtml(run) {{
@@ -6353,12 +6366,13 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         if (!iso) return "—";
         const d = new Date(iso);
         if (isNaN(d.getTime())) return iso;
-        const month = d.toLocaleString("en-US", {{ month: "short" }});
-        const day = d.getDate();
-        const hour12 = (d.getHours() % 12) || 12;
-        const min = String(d.getMinutes()).padStart(2, "0");
-        const ampm = d.getHours() >= 12 ? "PM" : "AM";
-        return `${{month}} ${{day}} · ${{hour12}}:${{min}} ${{ampm}}`;
+        return new Intl.DateTimeFormat("en-US", {{
+          timeZone: "America/Denver",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        }}).format(d).replace(",", " ·");
       }}
       function visitorLabel(v) {{
         const flag = v.country ? v.country : "🌐";
