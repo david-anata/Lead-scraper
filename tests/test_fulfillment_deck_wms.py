@@ -28,6 +28,7 @@ from sales_support_agent.services.fulfillment_deck.wms_client import (
     AnataWMSClient,
     MockWMSClient,
     get_wms_client,
+    wms_runtime_diagnostics,
 )
 from sales_support_agent.services.fulfillment_deck.zones import zone_for
 
@@ -109,6 +110,26 @@ class GetWMSClientTests(unittest.TestCase):
         self.assertIsInstance(client, AnataWMSClient)
         self.assertEqual(client.base_url, "https://wms.example.com")
         self.assertEqual(client.account_number, "ACCT-1")
+
+    def test_runtime_diagnostics_are_non_secret(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ANATA_WMS_BASE_URL": "https://wms.example.com",
+                "ANATA_WMS_ACCOUNT_NUMBER": "ACCT-1",
+                "ANATA_WMS_API_KEY": "key-secret",
+                "ANATA_WMS_API_PASSWORD": "password-secret",
+            },
+            clear=False,
+        ):
+            diagnostics = wms_runtime_diagnostics()
+        self.assertTrue(diagnostics["wms_configured"])
+        self.assertEqual(diagnostics["wms_missing_keys"], [])
+        self.assertEqual(diagnostics["wms_base_host"], "wms.example.com")
+        self.assertEqual(diagnostics["wms_client_mode"], "wms")
+        rendered = str(diagnostics)
+        self.assertNotIn("key-secret", rendered)
+        self.assertNotIn("password-secret", rendered)
 
 def _response(payload: dict) -> mock.Mock:
     response = mock.Mock()

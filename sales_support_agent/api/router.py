@@ -86,6 +86,7 @@ from sales_support_agent.services.fulfillment_dashboard import (
     render_fulfillment_report_detail_page,
     render_fulfillment_reports_page,
 )
+from sales_support_agent.services.fulfillment_deck.wms_client import wms_runtime_diagnostics
 from sales_support_agent.services.gmail_drafts import create_bulk_draft_payloads
 from sales_support_agent.services.instantly_webhooks import InstantlyWebhookService
 from sales_support_agent.services.sync import ClickUpSyncService
@@ -578,6 +579,7 @@ def health(request: Request) -> ApiMessage:
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
             "deck_generator_configured": brand_package_path.exists(),
             "deck_brand_package_path": str(brand_package_path),
+            **wms_runtime_diagnostics(),
             **db_details,
             **ticket1_details,
         },

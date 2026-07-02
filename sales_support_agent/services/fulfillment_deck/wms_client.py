@@ -34,11 +34,19 @@ import math
 import os
 import threading
 import time
+from urllib.parse import urlparse
 
 from .schema import ANATA_HQ_ZIP, ProductSpec, RateQuote, RATE_SOURCE_MOCK, RATE_SOURCE_WMS
 from .zones import REPRESENTATIVE_METROS, zone_for
 
 logger = logging.getLogger(__name__)
+
+WMS_ENV_KEYS = (
+    "ANATA_WMS_BASE_URL",
+    "ANATA_WMS_ACCOUNT_NUMBER",
+    "ANATA_WMS_API_KEY",
+    "ANATA_WMS_API_PASSWORD",
+)
 
 # dest zip -> (city, state) for the representative metros we quote against.
 _METRO_BY_ZIP: dict = {
@@ -254,3 +262,17 @@ def get_wms_client() -> object:
             api_password=os.environ.get("ANATA_WMS_API_PASSWORD", ""),
         )
     return MockWMSClient()
+
+
+def wms_runtime_diagnostics() -> dict[str, object]:
+    """Non-secret WMS configuration status for health/admin diagnostics."""
+    present = {key: bool(str(os.environ.get(key) or "").strip()) for key in WMS_ENV_KEYS}
+    base_url = str(os.environ.get("ANATA_WMS_BASE_URL") or "").strip()
+    parsed = urlparse(base_url)
+    return {
+        "wms_configured": all(present.values()),
+        "wms_env_present": present,
+        "wms_missing_keys": [key for key, value in present.items() if not value],
+        "wms_base_host": parsed.netloc or parsed.path,
+        "wms_client_mode": "wms" if present["ANATA_WMS_BASE_URL"] else "mock",
+    }
