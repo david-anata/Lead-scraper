@@ -281,6 +281,26 @@ class HttpTest(_Base):
         run = self.storage.get_run(run_id)
         self.assertEqual(run["goal_snapshot"].get("revenue_target_cents"), 45000000)
 
+    def test_background_run_snapshots_submitted_goals(self):
+        client = self._client()
+        resp = client.post(
+            "/admin/advertising/audit/run",
+            data={
+                "label": "Background goals",
+                "revenue_target": "1200",
+                "acos_target": "27",
+                "tacos_target": "14",
+            },
+            files={"business_report_csv": ("biz.csv", _BUSINESS_CSV, "text/csv")},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        run_id = resp.headers["location"].split("run=")[1].split("&")[0]
+        run = self.storage.get_run(run_id)
+        self.assertEqual(run["goal_snapshot"].get("revenue_target_cents"), 120000)
+        self.assertEqual(run["goal_snapshot"].get("acos_target_bps"), 2700)
+        self.assertEqual(run["goal_snapshot"].get("tacos_target_bps"), 1400)
+
     def test_run_with_no_files_redirects_with_message(self):
         client = self._client()
         resp = client.post("/admin/advertising/audit/run", data={}, follow_redirects=False)

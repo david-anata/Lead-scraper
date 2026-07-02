@@ -412,6 +412,82 @@ def _truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolved_client_id(client_id: str) -> Optional[str]:
+    cid = (client_id or "").strip() or None
+    if cid and not storage.get_client(cid):
+        return None
+    return cid
+
+
+def _goals_from_form(goals_form: dict) -> Goals:
+    return Goals(
+        revenue_target_cents=_dollars_to_cents(goals_form.get("revenue_target", "")),
+        acos_target_bps=_pct_to_bps(goals_form.get("acos_target", "")),
+        tacos_target_bps=_pct_to_bps(goals_form.get("tacos_target", "")),
+        units_target=_int_or_none(goals_form.get("units_target", "")),
+        period=goals_form.get("period") or "monthly",
+    )
+
+
+def _has_goal_values(goals: Optional[Goals]) -> bool:
+    return bool(goals) and any([
+        goals.revenue_target_cents,
+        goals.acos_target_bps,
+        goals.tacos_target_bps,
+        goals.units_target,
+    ])
+
+
+def _inputs_for_mismatch_check(batch: list[tuple[str, bytes]], labeled: dict) -> AuditInputs:
+    inputs, _ = route_files(batch)
+    for attr, data in (labeled or {}).items():
+        if data:
+            setattr(inputs, attr, data)
+    return inputs
+
+
+def _maybe_render_brand_mismatch(
+    *,
+    batch: list[tuple[str, bytes]],
+    labeled: dict,
+    ext_channel: list[str],
+    ext_label: list[str],
+    ext_amount: list[str],
+    label: str,
+    brand: str,
+    client_id: Optional[str],
+    goals_form: dict,
+) -> Optional[HTMLResponse]:
+    """Preflight the client/file brand mismatch before a background run starts.
+
+    Async runs must not create a persistent `running` row and then bail out for
+    confirmation, otherwise the UI is left showing a run that can never finish.
+    """
+    if not client_id:
+        return None
+    inputs = _inputs_for_mismatch_check(batch, labeled)
+    if not inputs.business_report_csv:
+        return None
+    known = _client_known_brands(client_id)
+    if not known:
+        return None
+    detected = detect_brand_in_business_report(inputs.business_report_csv)
+    if not detected or any(_brands_match(detected, k) for k in known):
+        return None
+    token = storage.stage_pending_upload(_encode_pending(
+        batch, labeled, ext_channel, ext_label, ext_amount,
+        label, brand, client_id, goals_form,
+    ))
+    client = storage.get_client(client_id) or {}
+    return HTMLResponse(render_brand_mismatch_page(
+        client_name=client.get("name") or "this client",
+        detected=detected,
+        known=sorted(known),
+        token=token,
+        user=None,
+    ))
+
+
 def _client_known_brands(client_id: str) -> set[str]:
     """Brands this client has audited before (typed brand + auto-detected),
     drawn from completed run summaries — the basis for the mismatch check."""
@@ -471,9 +547,7 @@ def _do_run(
 
     # A client may be selected — scope goals + history to it. Blank = ad-hoc
     # (the existing global goal set), preserving the prior behavior.
-    cid = (client_id or "").strip() or None
-    if cid and not storage.get_client(cid):
-        cid = None  # stale/unknown id — treat as ad-hoc rather than 500
+    cid = _resolved_client_id(client_id)
 
     # --- The catch: block/confirm before running on a brand mismatch ---
     # If this client has run audits before and the uploaded Business Report's
@@ -496,14 +570,8 @@ def _do_run(
 
     # Goals are part of the run form: save them (per-client when one is selected,
     # "tweaks save back to the client"), and run against them.
-    goals = Goals(
-        revenue_target_cents=_dollars_to_cents(goals_form.get("revenue_target", "")),
-        acos_target_bps=_pct_to_bps(goals_form.get("acos_target", "")),
-        tacos_target_bps=_pct_to_bps(goals_form.get("tacos_target", "")),
-        units_target=_int_or_none(goals_form.get("units_target", "")),
-        period=goals_form.get("period") or "monthly",
-    )
-    if any([goals.revenue_target_cents, goals.acos_target_bps, goals.tacos_target_bps, goals.units_target]):
+    goals = _goals_from_form(goals_form)
+    if _has_goal_values(goals):
         storage.save_goals(goals, client_id=cid)
     else:
         goals = storage.get_active_goals(client_id=cid)  # fall back to saved targets
@@ -526,10 +594,23 @@ def _do_run(
 
 
 def _do_run_background(**kwargs) -> None:
+    run_id = str(kwargs.get("run_id") or "").strip()
     try:
-        _do_run(**kwargs)
-    except Exception:
+        response = _do_run(**kwargs)
+        if run_id and isinstance(response, HTMLResponse):
+            storage.finalize_run(
+                run_id,
+                status="error",
+                error="Audit needs confirmation before it can run. Re-open the audit page and confirm the client/brand match.",
+            )
+        elif run_id and isinstance(response, RedirectResponse):
+            location = str(response.headers.get("location") or "")
+            if "Upload+at+least+one+report" in location:
+                storage.finalize_run(run_id, status="error", error="No valid report files were uploaded.")
+    except Exception as exc:
         logger.exception("[advertising] background audit run failed")
+        if run_id:
+            storage.finalize_run(run_id, status="error", error=str(exc))
 
 
 def _encode_pending(batch, labeled, ext_channel, ext_label, ext_amount,
@@ -604,15 +685,33 @@ async def run(
         "tacos_target": tacos_target, "units_target": units_target, "period": period,
     }
     if _truthy(run_async):
-        if not batch and not labeled:
+        preflight_inputs = _inputs_for_mismatch_check(batch, labeled)
+        if not preflight_inputs.any_data():
             return RedirectResponse(
                 "/admin/advertising/audit?msg=Upload+at+least+one+report+to+run+an+audit.",
                 status_code=303,
             )
+        cid = _resolved_client_id(client_id)
+        mismatch = _maybe_render_brand_mismatch(
+            batch=batch,
+            labeled=labeled,
+            ext_channel=ext_channel,
+            ext_label=ext_label,
+            ext_amount=ext_amount,
+            label=label,
+            brand=brand,
+            client_id=cid,
+            goals_form=goals_form,
+        )
+        if mismatch is not None:
+            return mismatch
+        pending_goals = _goals_from_form(goals_form)
+        if not _has_goal_values(pending_goals):
+            pending_goals = storage.get_active_goals(client_id=cid)
         pending_run_id = storage.create_run(
             label=(f"{(brand or '').strip()} — {label}".strip(" —") if (brand or "").strip() else label),
-            client_id=(client_id or "").strip() or None,
-            goals=storage.get_active_goals(client_id=(client_id or "").strip() or None),
+            client_id=cid,
+            goals=pending_goals,
             status="running",
         )
         background_tasks.add_task(
