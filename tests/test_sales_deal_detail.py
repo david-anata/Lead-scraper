@@ -24,6 +24,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sales_support_agent.main import app  # noqa: E402
 from sales_support_agent.models.database import session_scope  # noqa: E402
 from sales_support_agent.models.entities import (  # noqa: E402
+    AutomationRun,
+    DeckVisitSession,
     HubSpotCompany,
     HubSpotContact,
     HubSpotDeal,
@@ -54,10 +56,12 @@ class SalesDealDetailTests(unittest.TestCase):
     def _seed(cls) -> None:
         with session_scope(app.state.session_factory) as s:
             # FK-safe delete order: join/child tables before parents.
-            for model in (HubSpotDealContact, SalesDealAsset, HubSpotLineItem,
+            for model in (HubSpotDealContact, SalesDealAsset, HubSpotLineItem, DeckVisitSession,
                           HubSpotContact, HubSpotDeal, HubSpotCompany):
                 for row in s.query(model).all():
                     s.delete(row)
+            for row in s.query(AutomationRun).all():
+                s.delete(row)
             s.flush()
             # A fully-populated deal.
             s.add(HubSpotCompany(hubspot_company_id="co1", name="Acme Inc", domain="acme.com"))
@@ -73,6 +77,33 @@ class SalesDealDetailTests(unittest.TestCase):
             s.add(HubSpotLineItem(hubspot_line_item_id="li1", hubspot_deal_id="full",
                                   name="3PL Pick & Pack", quantity=2,
                                   unit_price_cents=100000, amount_cents=200000))
+            s.add(AutomationRun(
+                id=42,
+                run_type="fulfillment_rate_sheet",
+                status="completed",
+                trigger="test",
+                started_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                completed_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                summary_json={
+                    "view_path": "/rate-sheets/acme/42/tok",
+                    "export_token": "cost-token",
+                    "hubspot_deal_id": "full",
+                    "hubspot_quote_url": "https://app.hubspot.com/quotes/abc",
+                    "published_at": "2026-06-01T00:00:00+00:00",
+                    "fulfillment_cost_submissions": [{
+                        "at": "2026-06-01T12:00:00+00:00",
+                        "name": "Kyle Paulson",
+                        "email": "kyle@anatainc.com",
+                        "costs": {"pick_pack_per_order": 0.8},
+                    }],
+                    "sales_pricing": {
+                        "reviewed": True,
+                        "margin_pct": 42.5,
+                        "fee_rows": [],
+                    },
+                },
+            ))
+            s.add(DeckVisitSession(run_id=42, visitor_token="visitor-1", is_internal=False))
             s.add(SalesDealAsset(hubspot_deal_id="full", asset_type="rate_sheet",
                                  run_id="42", url="/rate-sheets/acme/42/tok", label="Rate Sheet"))
             # An empty deal — missing everything (drives the accountability nudge).
@@ -110,11 +141,24 @@ class SalesDealDetailTests(unittest.TestCase):
         self.assertIn("Ads Audit", body)
         self.assertIn("/admin/sales-decks?hubspot_deal_id=full", body)
 
+    def test_command_center_shows_fulfillment_quote_and_cost_status(self) -> None:
+        body = self.client.get("/admin/sales/deals/full").text
+        self.assertIn("Sales command center", body)
+        self.assertIn("Fulfillment-to-sales workflow", body)
+        self.assertIn("Source of truth", body)
+        self.assertIn("Signed", body)
+        self.assertIn("Kyle Paulson", body)
+        self.assertIn("/fulfillment-costs/42/cost-token", body)
+        self.assertIn("Quote ready", body)
+        self.assertIn("https://app.hubspot.com/quotes/abc", body)
+        self.assertIn("1 prospect view", body)
+
     def test_empty_deal_shows_accountability_nudge(self) -> None:
         body = self.client.get("/admin/sales/deals/empty").text
         # The companion's value: a concrete next action + completeness gaps.
         self.assertIn("Next action", body)
         self.assertIn("add the buyer in HubSpot", body)
+        self.assertIn("Create fulfillment deck", body)
 
 
 if __name__ == "__main__":

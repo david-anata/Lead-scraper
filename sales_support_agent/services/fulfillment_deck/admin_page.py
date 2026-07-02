@@ -195,6 +195,11 @@ _STYLES = """
       .operator-callout__side { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
       .operator-callout__meta { margin-top: 8px; color: rgba(43,54,68,0.55); font-size: 12px; }
       .review-hub { display: grid; gap: 12px; margin: 14px 0 16px; }
+      .review-status-strip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+      .review-status-card { border:1px solid var(--border); border-radius:12px; background:#fff; padding:11px 13px; display:grid; gap:3px; }
+      .review-status-card span { font-family:"Montserrat", sans-serif; font-size:10.5px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:rgba(43,54,68,.48); }
+      .review-status-card strong { font-family:"Montserrat", sans-serif; font-size:13px; }
+      .review-status-card em { font-style:normal; font-size:12px; color:rgba(43,54,68,.62); line-height:1.35; }
       .review-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
       .review-action-card {
         border: 1px solid var(--border); border-radius: 14px; background: rgba(43,54,68,0.025);
@@ -275,6 +280,7 @@ _STYLES = """
         .grid2 { grid-template-columns: 1fr; }
         .operator-callout { grid-template-columns: 1fr; }
         .operator-callout__side { justify-content: flex-start; }
+        .review-status-strip { grid-template-columns: 1fr; }
         .review-action-grid { grid-template-columns: 1fr; }
       }
 """
@@ -2055,9 +2061,14 @@ def render_rate_sheet_review_page(
     from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
     _ro = dict(summary.get("rate_overrides") or {})
     _actual_costs = dict(summary.get("fulfillment_actual_costs") or {})
+    signed_cost_submissions = [
+        s for s in (summary.get("fulfillment_cost_submissions") or [])
+        if isinstance(s, dict) and str(s.get("name") or "").strip() and str(s.get("email") or "").strip()
+    ]
+    latest_cost_submission = signed_cost_submissions[-1] if signed_cost_submissions else {}
     section_deal_status = "Deal attached" if hubspot_deal_id else "Select or create deal"
     section_pricing_status = "Reviewed" if pricing_reviewed else "Needs review"
-    section_cost_status = "Costs entered" if any(v for v in _actual_costs.values() if v not in (None, "")) else "Add costs"
+    section_cost_status = "Signed by fulfillment" if signed_cost_submissions else "Needs signed costs"
     section_waiver_status = f"{len(waived_keys)} waived" if waived_keys else "No waivers"
     section_product_status = f"{len(products)} product{'s' if len(products) != 1 else ''}"
     pricing_summary_html = _pricing_summary_html(summary, profile)
@@ -2425,8 +2436,22 @@ def render_rate_sheet_review_page(
           <pre>{_esc(review_brief_text)}</pre>
         </div>
       </details>"""
+    latest_cost_sig = ""
+    if latest_cost_submission:
+        latest_cost_sig = " by " + _esc(latest_cost_submission.get("name") or latest_cost_submission.get("email") or "fulfillment")
+    quote_status_text = "HubSpot quote ready" if hs_quote_url else ("Blocked" if quote_guard_errors else "Ready to create")
+    quote_status_detail = "Open quote in HubSpot." if hs_quote_url else (quote_guard_errors[0] if quote_guard_errors else "Quote guards passed.")
+    status_strip_html = f"""
+      <div class="review-status-strip" aria-label="Rate sheet workflow status">
+        <div class="review-status-card"><span>Rate sheet</span><strong>{_esc(status_label)}</strong><em>{'Public link is live.' if published else 'Publish before sharing.'}</em></div>
+        <div class="review-status-card"><span>Cost form</span><strong>{_esc(section_cost_status)}</strong><em>{'Latest signed submission' + latest_cost_sig if signed_cost_submissions else 'Send the cost form to fulfillment.'}</em></div>
+        <div class="review-status-card"><span>Quote</span><strong>{_esc(quote_status_text)}</strong><em>{_esc(quote_status_detail)}</em></div>
+        <div class="review-status-card"><span>Sales follow-up</span><strong>{'Ready after quote' if hs_quote_url else 'Use Deal Detail'}</strong><em>Draft the email from the HubSpot deal command center.</em></div>
+      </div>
+    """
     action_hub_html = f"""
       <section class="review-hub">
+        {status_strip_html}
         <div class="review-action-grid">
           {rate_sheet_card}
           {cost_form_card}

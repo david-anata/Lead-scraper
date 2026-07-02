@@ -107,6 +107,18 @@ class TestBuildFollowupDraft(unittest.TestCase):
         )
         self.assertIn("https://agent.anatainc.com/rate-sheets/acme/1/tok", draft.body)
 
+    def test_fallback_prefers_quote_link_when_available(self):
+        draft = self._build(
+            hooks_sent=["rate_sheet"],
+            hooks_pending=[],
+            asset_links=[
+                {"type": "rate_sheet", "label": "Fulfillment Rate Sheet", "url": "https://agent.anatainc.com/rate-sheets/acme/1/tok"},
+                {"type": "quote", "label": "HubSpot Quote", "url": "https://app.hubspot.com/quotes/abc"},
+            ],
+        )
+        self.assertIn("https://app.hubspot.com/quotes/abc", draft.body)
+        self.assertNotIn("https://agent.anatainc.com/rate-sheets/acme/1/tok", draft.body)
+
 
 class TestDraftFollowupRoute(unittest.TestCase):
     @classmethod

@@ -70,6 +70,12 @@ def validate_quote_readiness(summary: dict[str, Any], *, published: bool) -> lis
         errors.append("Select or confirm the HubSpot deal before creating a quote.")
     if not str(summary.get("view_path") or "").strip():
         errors.append("Rate sheet public link is missing.")
+    signed_costs = [
+        s for s in (summary.get("fulfillment_cost_submissions") or [])
+        if isinstance(s, dict) and str(s.get("name") or "").strip() and str(s.get("email") or "").strip()
+    ]
+    if not signed_costs:
+        errors.append("Collect a signed fulfillment cost submission before creating a quote.")
     sales_pricing = dict(summary.get("sales_pricing") or {})
     if not sales_pricing.get("reviewed"):
         errors.append("Review sales pricing and waivers before creating a quote.")

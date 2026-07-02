@@ -1005,9 +1005,26 @@ def draft_followup(request: Request, deal_id: str) -> Response:
     ][:5]
     pending_actions = [a.label for a in detail.pending_actions[:6]]
     prospect_activity = ""
+    pricing_summary = ""
     rate_sheet = next((a for a in detail.assets if a.asset_type == "rate_sheet"), None)
     if rate_sheet:
         prospect_activity = f"Fulfillment deck linked; {rate_sheet.external_views} prospect views."
+        cost_state = (
+            f"signed fulfillment costs by {rate_sheet.latest_cost_submitter or rate_sheet.latest_cost_email}"
+            if rate_sheet.cost_submission_count else
+            "fulfillment costs not signed yet"
+        )
+        quote_state = (
+            "HubSpot quote ready"
+            if rate_sheet.quote_url else
+            ("quote blocked: " + rate_sheet.quote_blockers[0] if rate_sheet.quote_blockers else "quote ready to create")
+        )
+        margin_state = (
+            f"margin {rate_sheet.margin_pct:.1f}%"
+            if rate_sheet.margin_pct is not None else
+            "margin not calculated"
+        )
+        pricing_summary = f"Rate sheet status: {cost_state}; {quote_state}; {margin_state}."
 
     draft = build_followup_draft(
         company_name=detail.company_name,
@@ -1027,6 +1044,7 @@ def draft_followup(request: Request, deal_id: str) -> Response:
         recent_mailbox_snippets=mailbox_snippets,
         pending_actions=pending_actions,
         prospect_activity=prospect_activity,
+        pricing_summary=pricing_summary,
     )
     draft.gmail_configured = GmailClient(settings).is_configured()
 

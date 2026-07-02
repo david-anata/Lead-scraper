@@ -37,6 +37,7 @@ from sales_support_agent.services.admin_nav import (
 )
 from sales_support_agent.services.sales import hubspot_links
 from sales_support_agent.services.sales.actions import ContactInfo, SalesAction, compute_pending_actions
+from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
 
 
 def _esc(value: object) -> str:
@@ -104,6 +105,14 @@ class AssetView:
     quote_url: str = ""
     published: bool = False
     external_views: int = 0
+    cost_form_url: str = ""
+    cost_submission_count: int = 0
+    latest_cost_submitter: str = ""
+    latest_cost_email: str = ""
+    latest_cost_at: str = ""
+    pricing_reviewed: bool = False
+    margin_pct: Optional[float] = None
+    quote_blockers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -158,15 +167,21 @@ def _next_action(d: DealDetail, *, as_of: datetime) -> str:
         return "No deal value set — add the amount in HubSpot."
     if "close date" in d.missing:
         return "No close date — set one in HubSpot so this deal can be prioritized."
+    if d.last_inbound_at and (not d.last_outbound_at or _aware(d.last_inbound_at) > _aware(d.last_outbound_at)):
+        return "Prospect replied after our last outbound — answer the inbound message."
     if not d.assets:
         return "Link a sales deck, rate sheet, or ads audit so you have something to send."
     rate_sheet = next((a for a in d.assets if a.asset_type == "rate_sheet"), None)
+    if rate_sheet and not rate_sheet.published:
+        return "Fulfillment deck is still a draft — open the workbench and publish it."
+    if rate_sheet and not rate_sheet.cost_submission_count:
+        return "Fulfillment costs need a signed submission — share the cost form with fulfillment."
+    if rate_sheet and rate_sheet.quote_blockers:
+        return f"Quote blocked — {rate_sheet.quote_blockers[0]}"
     if rate_sheet and rate_sheet.quote_url and not d.last_outbound_at:
         return "Quote is ready — send it to the prospect and schedule a review call."
     if rate_sheet and not d.last_outbound_at:
         return "Fulfillment deck is ready — send it to the prospect and log the follow-up."
-    if d.last_inbound_at and (not d.last_outbound_at or _aware(d.last_inbound_at) > _aware(d.last_outbound_at)):
-        return "Prospect replied after our last outbound — answer the inbound message."
     return "Looks ready — send a follow-up to keep it moving toward close."
 
 
@@ -253,6 +268,14 @@ def build_deal_detail(
         quote_url = ""
         published = False
         external_views = 0
+        cost_form_url = ""
+        submissions = []
+        latest_cost_submitter = ""
+        latest_cost_email = ""
+        latest_cost_at = ""
+        pricing_reviewed = False
+        margin_pct = None
+        quote_blockers = []
         if t == "rate_sheet" and a.run_id:
             try:
                 run = session.get(AutomationRun, int(a.run_id))
@@ -260,12 +283,41 @@ def build_deal_detail(
                     summary = dict(run.summary_json or {})
                     quote_url = str(summary.get("hubspot_quote_url") or "")
                     published = run.status == "completed" or bool(summary.get("published_at"))
+                    export_token = str(summary.get("export_token") or "")
+                    if export_token:
+                        cost_form_url = f"/fulfillment-costs/{int(a.run_id)}/{export_token}"
+                    else:
+                        cost_form_url = ""
+                    submissions = [
+                        s for s in (summary.get("fulfillment_cost_submissions") or [])
+                        if isinstance(s, dict)
+                    ]
+                    latest_submission = submissions[-1] if submissions else {}
+                    latest_cost_submitter = str(latest_submission.get("name") or "")
+                    latest_cost_email = str(latest_submission.get("email") or "")
+                    latest_cost_at = str(latest_submission.get("at") or "")
+                    sales_pricing = dict(summary.get("sales_pricing") or {})
+                    pricing_reviewed = bool(sales_pricing.get("reviewed"))
+                    raw_margin = sales_pricing.get("margin_pct")
+                    try:
+                        margin_pct = float(raw_margin) if raw_margin is not None else None
+                    except (TypeError, ValueError):
+                        margin_pct = None
+                    quote_blockers = validate_quote_readiness(summary, published=published)
                     sessions = session.scalars(
                         select(DeckVisitSession).where(DeckVisitSession.run_id == int(a.run_id))
                     ).all()
                     external_views = sum(1 for s in sessions if not s.is_internal)
             except Exception:
                 quote_url = ""
+                cost_form_url = ""
+                submissions = []
+                latest_cost_submitter = ""
+                latest_cost_email = ""
+                latest_cost_at = ""
+                pricing_reviewed = False
+                margin_pct = None
+                quote_blockers = []
         detail.assets.append(
             AssetView(
                 asset_type=t,
@@ -276,6 +328,14 @@ def build_deal_detail(
                 quote_url=quote_url,
                 published=published,
                 external_views=external_views,
+                cost_form_url=cost_form_url,
+                cost_submission_count=len(submissions),
+                latest_cost_submitter=latest_cost_submitter,
+                latest_cost_email=latest_cost_email,
+                latest_cost_at=latest_cost_at,
+                pricing_reviewed=pricing_reviewed,
+                margin_pct=margin_pct,
+                quote_blockers=quote_blockers,
             )
         )
         if quote_url and not detail.quote_url:
@@ -424,6 +484,139 @@ def _assets_html(d: DealDetail) -> str:
     return f'<div class="ctas">{cards}</div>'
 
 
+def _source_truth_html() -> str:
+    rows = (
+        ("Deal, contact, company, quote", "HubSpot"),
+        ("Fulfillment costs", "Signed cost form"),
+        ("Customer fees", "Rate sheet workbench"),
+        ("Net margin", "Calculated from price minus pass-through and fulfillment cost"),
+        ("Follow-up email", "Gmail send, HubSpot logging best-effort"),
+    )
+    items = "".join(
+        f'<div class="source-row"><span>{_esc(label)}</span><strong>{_esc(source)}</strong></div>'
+        for label, source in rows
+    )
+    return f'<div class="source-box"><h3>Source of truth</h3>{items}</div>'
+
+
+def _status_badge(label: str, tone: str) -> str:
+    return f'<span class="status-badge status-badge--{_esc(tone)}">{_esc(label)}</span>'
+
+
+def _fmt_short_at(value: str) -> str:
+    if not value:
+        return ""
+    return value[:16].replace("T", " ")
+
+
+def _sales_workflow_html(d: DealDetail) -> str:
+    """Sales command center: one scan of the fulfillment-to-follow-up path."""
+    rate_sheet = next((a for a in d.assets if a.asset_type == "rate_sheet"), None)
+    sales_deck = next((a for a in d.assets if a.asset_type == "deck"), None)
+    fulfillment_url = f"/admin/fulfillment/sales?hubspot_deal_id={_esc(d.deal_id)}"
+    sales_deck_url = f"/admin/sales-decks?hubspot_deal_id={_esc(d.deal_id)}"
+    followup_url = f"/admin/sales/deals/{_esc(d.deal_id)}/draft-followup"
+
+    if d.missing:
+        hubspot_status = _status_badge("Needs HubSpot data", "warn")
+        hubspot_detail = "Missing: " + ", ".join(d.missing)
+        hubspot_action = _hs_link(d.deal_url, "Fix in HubSpot")
+    else:
+        hubspot_status = _status_badge("Ready", "ok")
+        hubspot_detail = "Company, contact, amount, line items, and close date are present."
+        hubspot_action = _hs_link(d.deal_url, "Open in HubSpot")
+
+    if rate_sheet is None:
+        deck_status = _status_badge("Not started", "warn")
+        deck_detail = "No fulfillment rate sheet is linked to this HubSpot deal."
+        deck_actions = f'<a class="draft-btn" href="{fulfillment_url}">Create fulfillment deck</a>'
+    else:
+        deck_status = _status_badge("Published", "ok") if rate_sheet.published else _status_badge("Draft", "warn")
+        views = f" · {rate_sheet.external_views} prospect view{'s' if rate_sheet.external_views != 1 else ''}" if rate_sheet.external_views else ""
+        deck_detail = ("Prospect-facing link is live" if rate_sheet.published else "Workbench exists, but the public link is not live yet") + views + "."
+        deck_actions = ""
+        if rate_sheet.published and rate_sheet.url:
+            deck_actions += f'<a class="draft-btn" href="{_esc(rate_sheet.url)}" target="_blank" rel="noopener">Open deck</a>'
+        if rate_sheet.run_id:
+            deck_actions += f'<a class="hs-link" href="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/review">Edit workbench</a>'
+
+    if rate_sheet is None:
+        cost_status = _status_badge("Waiting", "muted")
+        cost_detail = "Create the fulfillment deck before requesting warehouse cost input."
+        cost_actions = ""
+    elif rate_sheet.cost_submission_count:
+        signer = rate_sheet.latest_cost_submitter or rate_sheet.latest_cost_email or "fulfillment"
+        when = _fmt_short_at(rate_sheet.latest_cost_at)
+        cost_status = _status_badge("Signed", "ok")
+        cost_detail = f"Latest internal cost submission by {signer}" + (f" on {when}." if when else ".")
+        cost_actions = f'<a class="hs-link" href="{_esc(rate_sheet.cost_form_url)}" target="_blank" rel="noopener">Open cost form</a>' if rate_sheet.cost_form_url else ""
+    else:
+        cost_status = _status_badge("Needs signature", "warn")
+        cost_detail = "Fulfillment has not signed off on internal costs yet."
+        cost_actions = f'<a class="draft-btn" href="{_esc(rate_sheet.cost_form_url)}" target="_blank" rel="noopener">Open cost form</a>' if rate_sheet.cost_form_url else ""
+
+    if rate_sheet is None:
+        quote_status = _status_badge("Blocked", "warn")
+        quote_detail = "Create and publish the fulfillment deck before creating a quote."
+        quote_actions = ""
+    elif rate_sheet.quote_url:
+        quote_status = _status_badge("Quote ready", "ok")
+        quote_detail = "HubSpot quote exists and is ready for sales follow-up."
+        quote_actions = f'<a class="draft-btn" href="{_esc(rate_sheet.quote_url)}" target="_blank" rel="noopener">Open quote</a>'
+    elif rate_sheet.quote_blockers:
+        quote_status = _status_badge("Blocked", "warn")
+        quote_detail = rate_sheet.quote_blockers[0]
+        quote_actions = f'<a class="hs-link" href="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/review">Clear quote blocker</a>' if rate_sheet.run_id else ""
+    else:
+        quote_status = _status_badge("Ready to create", "ok")
+        quote_detail = "Quote guards passed. Create the HubSpot quote from Agent."
+        quote_actions = (
+            f'<form method="post" action="/admin/fulfillment/sales/runs/{_esc(rate_sheet.run_id)}/quote" style="margin:0">'
+            '<button class="approve-btn" type="submit">Create quote</button></form>'
+        ) if rate_sheet.run_id else ""
+
+    followup_detail = "Uses linked deck/quote URLs, last contact dates, mailbox context, pending actions, and prospect activity."
+    if d.last_inbound_at and (not d.last_outbound_at or _aware(d.last_inbound_at) > _aware(d.last_outbound_at)):
+        followup_status = _status_badge("Reply due", "warn")
+    elif rate_sheet and (rate_sheet.quote_url or rate_sheet.published):
+        followup_status = _status_badge("Ready", "ok")
+    else:
+        followup_status = _status_badge("Needs asset", "muted")
+
+    sales_deck_action = (
+        f'<a class="hs-link" href="{_esc(sales_deck.url)}" target="_blank" rel="noopener">Open sales deck</a>'
+        if sales_deck else
+        f'<a class="hs-link" href="{sales_deck_url}">Create sales deck</a>'
+    )
+
+    steps = (
+        ("HubSpot data", hubspot_status, hubspot_detail, hubspot_action),
+        ("Fulfillment deck", deck_status, deck_detail, deck_actions),
+        ("Fulfillment costs", cost_status, cost_detail, cost_actions),
+        ("HubSpot quote", quote_status, quote_detail, quote_actions),
+        ("AI follow-up", followup_status, followup_detail, f'<a class="draft-btn" href="{followup_url}">Draft follow-up</a>'),
+    )
+    cards = "".join(
+        '<article class="workflow-card">'
+        f'<div class="workflow-card__head"><h3>{_esc(title)}</h3>{badge}</div>'
+        f'<p>{_esc(detail)}</p>'
+        f'<div class="workflow-card__actions">{actions}</div>'
+        '</article>'
+        for title, badge, detail, actions in steps
+    )
+    return (
+        '<section class="command-center">'
+        '<div class="command-center__head">'
+        '<div><p class="eyebrow">Sales command center</p><h2>Fulfillment-to-sales workflow</h2>'
+        '<p class="muted">Sales owns follow-through here. Fulfillment owns signed internal costs in the cost form. HubSpot remains the source of truth for deal and quote records.</p></div>'
+        f'<div class="command-center__quick">{sales_deck_action}<a class="draft-btn" href="{followup_url}">Draft follow-up</a></div>'
+        '</div>'
+        f'<div class="workflow-grid">{cards}</div>'
+        f'{_source_truth_html()}'
+        '</section>'
+    )
+
+
 def _fulfillment_workflow_html(d: DealDetail) -> str:
     rate_sheet = next((a for a in d.assets if a.asset_type == "rate_sheet"), None)
     sales_deck = next((a for a in d.assets if a.asset_type == "deck"), None)
@@ -527,6 +720,29 @@ _STYLES = """
     padding:9px 18px; text-decoration:none; cursor:pointer; }
   .draft-btn:hover { opacity:0.88; }
   .workflow-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .command-center { border:1px solid var(--border); border-radius:16px; padding:16px; background:#fff; margin:14px 0 0; }
+  .command-center__head { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
+  .command-center__head h2 { margin:0 0 6px; font-size:17px; }
+  .command-center__quick { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .workflow-grid { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:10px; }
+  @media (max-width: 980px){ .workflow-grid { grid-template-columns:repeat(2,minmax(180px,1fr)); } }
+  @media (max-width: 620px){ .workflow-grid { grid-template-columns:1fr; } .command-center__quick { justify-content:flex-start; } }
+  .workflow-card { border:1px solid var(--border); border-radius:12px; padding:12px; background:var(--light-brown); min-height:150px; display:flex; flex-direction:column; gap:8px; }
+  .workflow-card__head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+  .workflow-card h3 { font-family:"Montserrat",sans-serif; font-size:12px; margin:0; }
+  .workflow-card p { margin:0; font-size:12.5px; line-height:1.4; color:rgba(43,54,68,0.70); flex:1; }
+  .workflow-card__actions { display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
+  .workflow-card__actions .draft-btn, .workflow-card__actions .approve-btn, .workflow-card__actions .hs-link,
+  .command-center__quick .draft-btn, .command-center__quick .hs-link { font-size:12px; padding:7px 10px; border-radius:9px; min-height:auto; }
+  .status-badge { font-size:10.5px; font-weight:800; border-radius:999px; padding:3px 7px; white-space:nowrap; }
+  .status-badge--ok { color:#1f6b43; background:rgba(47,143,91,0.14); }
+  .status-badge--warn { color:#8a5a11; background:#fff0c2; }
+  .status-badge--muted { color:rgba(43,54,68,0.55); background:rgba(43,54,68,0.08); }
+  .source-box { margin-top:12px; border:1px solid rgba(43,54,68,0.10); border-radius:12px; padding:12px; background:rgba(43,54,68,0.025); }
+  .source-box h3 { font-family:"Montserrat",sans-serif; font-size:12px; margin:0 0 8px; }
+  .source-row { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-top:1px solid rgba(43,54,68,0.08); font-size:12.5px; }
+  .source-row:first-of-type { border-top:0; }
+  .source-row strong { text-align:right; }
   .action-cards { display:grid; gap:10px; }
   .action-card { border:1px solid var(--border); border-radius:14px; padding:14px 16px;
     display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap; }
@@ -688,7 +904,7 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
           <div class="l">Next action</div>
           <div class="a">{_esc(d.next_action)}</div>
         </div>
-        {_fulfillment_workflow_html(d)}
+        {_sales_workflow_html(d)}
         <div class="facts" style="margin-top:16px">
           <div class="fact"><div class="l">Last inbound</div><div class="v">{_fmt_date(d.last_inbound_at)}</div></div>
           <div class="fact"><div class="l">Last outbound</div><div class="v">{_fmt_date(d.last_outbound_at)}</div></div>

@@ -324,6 +324,17 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertEqual(summary["hubspot_deal_id"], "quote_ready_deal")
         self.assertTrue(summary["sales_pricing"]["reviewed"])
         from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
+        blockers = validate_quote_readiness(summary, published=True)
+        self.assertIn("Collect a signed fulfillment cost submission before creating a quote.", blockers)
+        storage.update_summary(run["id"], {
+            "fulfillment_cost_submissions": [{
+                "at": "2026-07-01T00:00:00+00:00",
+                "name": "Kyle Paulson",
+                "email": "kyle@anatainc.com",
+                "costs": {"pick_pack_per_order": 0.8},
+            }]
+        })
+        summary = dict(storage.get_run(run["id"]).summary_json)
         self.assertEqual(validate_quote_readiness(summary, published=True), [])
         with Session(get_engine()) as s:
             asset = (
@@ -539,6 +550,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
 
         review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
         self.assertEqual(review.status_code, 200)
+        self.assertIn("Rate sheet workflow status", review.text)
+        self.assertIn("Signed by fulfillment", review.text)
         self.assertIn("Fulfillment costs submitted", review.text)
         self.assertIn("kyle@anatainc.com", review.text)
 

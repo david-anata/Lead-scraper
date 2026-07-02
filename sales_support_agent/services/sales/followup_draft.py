@@ -109,7 +109,11 @@ def _fallback_draft(
     company = company_name or "your brand"
 
     links = asset_links or []
-    lead_link = next((l for l in links if l.get("url") and l.get("type") in {"rate_sheet", "deck", "quote"}), None)
+    lead_link = None
+    for preferred_type in ("quote", "rate_sheet", "deck"):
+        lead_link = next((l for l in links if l.get("url") and l.get("type") == preferred_type), None)
+        if lead_link:
+            break
     link_line = ""
     if lead_link:
         link_label = lead_link.get("label") or HOOK_LABELS.get(str(lead_link.get("type") or ""), "deck")
