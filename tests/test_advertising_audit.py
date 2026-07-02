@@ -378,6 +378,52 @@ class HttpTest(_Base):
         self.assertNotIn("Hidden Draft", resp.text)
         self.assertNotIn(hidden_id, resp.text)
 
+    def test_page_keeps_running_run_out_of_history_and_shows_active_card(self):
+        client = self._client()
+
+        visible_id = self.storage.create_run(label="complete")
+        self.storage.finalize_run(
+            visible_id,
+            status="complete",
+            summary={"detected_brand": "Visible Brand", "recommendation_count": 3},
+            narrative="ready",
+        )
+        self.storage.save_bulk_file(visible_id, "growth_plan", b"PLAN")
+
+        running_id = self.storage.create_run(label="Background goals", status="running")
+
+        resp = client.get(f"/admin/advertising/audit?run={running_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Visible Brand", resp.text)
+        self.assertIn("Background goals", resp.text)
+        self.assertIn("refreshes automatically", resp.text)
+        self.assertNotIn("Full account", resp.text)
+
+    def test_page_keeps_error_run_out_of_history_and_shows_error_card(self):
+        client = self._client()
+
+        visible_id = self.storage.create_run(label="complete")
+        self.storage.finalize_run(
+            visible_id,
+            status="complete",
+            summary={"detected_brand": "Visible Brand", "recommendation_count": 3},
+            narrative="ready",
+        )
+
+        error_id = self.storage.create_run(label="Bad upload", status="running")
+        self.storage.finalize_run(
+            error_id,
+            status="error",
+            error="No valid report files were uploaded.",
+        )
+
+        resp = client.get(f"/admin/advertising/audit?run={error_id}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Visible Brand", resp.text)
+        self.assertIn("Bad upload", resp.text)
+        self.assertIn("No valid report files were uploaded.", resp.text)
+        self.assertNotIn("Full account", resp.text)
+
 
 if __name__ == "__main__":
     unittest.main()

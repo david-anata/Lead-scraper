@@ -415,6 +415,32 @@ def _last_run_strip(latest: dict) -> str:
     )
 
 
+def _active_run_card(active_run: dict) -> str:
+    status = str(active_run.get("status") or "").strip().lower()
+    summary = active_run.get("summary", {}) or {}
+    brand = summary.get("brand") or summary.get("detected_brand") or active_run.get("label") or "Full account"
+    when = (active_run.get("created_at") or "")[:16].replace("T", " ")
+    label = (active_run.get("label") or "").strip()
+    label_html = f'<div class="flash-detail">Run label: {_esc(label)}</div>' if label else ""
+    if status == "running":
+        body = (
+            "Audit is still running. This page refreshes automatically and the run will move into "
+            "History once the downloads are ready."
+        )
+        card_style = 'border:2px solid var(--light-blue);background:#f4f8fb;'
+    else:
+        body = _esc(active_run.get("error") or "Audit failed before downloads were generated. Re-run with the same files.")
+        card_style = 'border:2px solid #d9a441;background:#fdf6e9;'
+    return (
+        f'<div class="card" style="{card_style}">'
+        f'<h2 style="margin-bottom:8px;">{_esc(brand)}</h2>'
+        f'<div style="font-size:14px;line-height:1.6;">{body}</div>'
+        f'<div class="flash-detail">Started: {_esc(when or "just now")}</div>'
+        f'{label_html}'
+        '</div>'
+    )
+
+
 def _history_table(runs: list[dict]) -> str:
     if not runs:
         return '<p class="empty">No audits yet — run one above.</p>'
@@ -452,6 +478,7 @@ def render_audit_page(
     goals: Optional[Goals],
     runs: list[dict],
     latest: Optional[dict] = None,
+    active_run: Optional[dict] = None,
     user: Optional[dict] = None,
     flash: str = "",
     detail: str = "",
@@ -464,6 +491,12 @@ def render_audit_page(
         flash_html = f'<div class="flash">{_esc(flash)}{detail_html}</div>'
 
     strip_html = _last_run_strip(latest) if latest else ""
+    active_html = _active_run_card(active_run) if active_run else ""
+    auto_refresh_html = (
+        "<script>setTimeout(function(){ window.location.reload(); }, 8000);</script>"
+        if active_run and str(active_run.get("status") or "").strip().lower() == "running"
+        else ""
+    )
 
     body = f"""
       <section class="page-header">
@@ -474,6 +507,7 @@ def render_audit_page(
         The full analysis lives in the workbook — this page runs it and keeps your history.</p>
       </section>
       {flash_html}
+      {active_html}
       {strip_html}
       <div class="card"><h2>Run an audit <small>· drop your CSV / XLSX exports</small></h2>{_upload_form(latest, goals, clients, client_goals_map)}</div>
       <div class="card"><h2>History <small>· past runs &amp; downloads</small></h2>{_history_table(runs)}</div>
@@ -486,6 +520,7 @@ def render_audit_page(
           <span class="empty" style="font-size:12px;">Large Bulk Operations files can take up to a minute — this page will refresh with your downloads when it's done.</span>
         </div>
       </div>
+      {auto_refresh_html}
     """
     return _page("agent | Advertising Burn List", body, user=user)
 

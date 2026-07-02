@@ -148,33 +148,43 @@ def _with_files(run_dict: Optional[dict]) -> Optional[dict]:
 
 
 def _visible_run(run_dict: Optional[dict]) -> bool:
-    """Only finalized runs belong in operator-facing history.
+    """Only download-ready runs belong in operator-facing history.
 
-    A deploy or worker restart can interrupt an audit after create_run() has
-    already persisted a draft row. Those rows have no summary/download content
-    and should not replace the last good run in the page strip/history.
+    Draft, running, and error rows do not have operator-ready summary/download
+    content. Keep history/latest anchored to completed runs only; active/error
+    runs are surfaced separately so the page stays populated instead of filling
+    with blank rows.
     """
-    return bool(run_dict) and str((run_dict or {}).get("status") or "").strip().lower() != "draft"
+    return bool(run_dict) and str((run_dict or {}).get("status") or "").strip().lower() == "complete"
+
+
+def _status_run(run_dict: Optional[dict]) -> bool:
+    return bool(run_dict) and str((run_dict or {}).get("status") or "").strip().lower() in {"running", "error"}
 
 
 @router.get("/audit", response_class=HTMLResponse)
 def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "") -> HTMLResponse:
     user = get_session_user_from_request(request)
 
-    runs = [_with_files(r) for r in storage.list_runs() if _visible_run(r)]
+    all_runs = [_with_files(r) for r in storage.list_runs()]
+    runs = [r for r in all_runs if _visible_run(r)]
 
     # Slim last-run strip: the ?run= run if given, else the most recent.
     latest = None
+    active_run = None
     if run:
         selected = _with_files(storage.get_run(run))
         latest = selected if _visible_run(selected) else None
+        active_run = selected if _status_run(selected) else None
     elif runs:
         latest = runs[0]
+        active_run = next((r for r in all_runs if _status_run(r)), None)
 
     html = render_audit_page(
         goals=storage.get_active_goals(),
         runs=runs,
         latest=latest,
+        active_run=active_run,
         user=user,
         flash=msg,
         detail=detail,
