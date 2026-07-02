@@ -450,7 +450,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn("negotiation_history", summary)
         self.assertEqual(summary["negotiation_history"][-1]["event"], "Saved and re-rendered")
         pick_pack = next(line for line in summary["fulfillment_quote"]["lines"] if line.get("key") == "pick_pack")
-        self.assertGreaterEqual(float(pick_pack["rate"]), 2.0)
+        self.assertEqual(float(pick_pack["rate"]), 2.0)
 
         review = self.client.get(f"{_BASE}/runs/{run['id']}/review")
         self.assertEqual(review.status_code, 200)
@@ -465,7 +465,10 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn('name="actual_pick_pack_per_order"', review.text)
         self.assertIn('name="rate_pick_pack"', review.text)
         self.assertIn("Internal fulfillment cost", review.text)
-        self.assertIn("Customer fee", review.text)
+        self.assertIn("Final customer price", review.text)
+        self.assertIn('name="rate_receiving_precounted_box"', review.text)
+        self.assertIn('name="rate_storage_cubic_foot"', review.text)
+        self.assertIn('name="rate_customer_service_monthly"', review.text)
         self.assertIn("Implementation &amp; integration setup", review.text)
 
     def test_pipeline_cost_save_preserves_zero_values(self) -> None:

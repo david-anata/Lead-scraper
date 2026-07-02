@@ -247,6 +247,8 @@ _UNIT_MAP: dict[str, str] = {
     "pallet/mo": "pallet/month",
     "flat": "month",
     "units": "unit",
+    "one-time": "one-time",
+    "per occurrence": "occurrence",
 }
 
 
@@ -346,6 +348,24 @@ def _get_deal_id(run_id: int) -> Optional[str]:
     return str((run.summary_json or {}).get("hubspot_deal_id") or "") or None
 
 
+def _monthly_mrr(fulfillment_quote: dict) -> float:
+    """Monthly recurring revenue for HubSpot deal amount.
+
+    One-time fees are intentionally excluded. Carrier/shipping pass-through is
+    also excluded because it is not marginable top-line revenue for the sales
+    deal amount standard.
+    """
+    monthly_total = float((fulfillment_quote or {}).get("monthly_total") or 0)
+    pass_through = 0.0
+    for line in (fulfillment_quote or {}).get("lines") or []:
+        if isinstance(line, dict) and str(line.get("key") or "") == "shipping":
+            try:
+                pass_through += float(line.get("monthly") or 0)
+            except (TypeError, ValueError):
+                pass
+    return round(max(monthly_total - pass_through, 0.0), 2)
+
+
 # ---------------------------------------------------------------------------
 # Background executor
 # ---------------------------------------------------------------------------
@@ -358,7 +378,7 @@ def _bg(fn, *args, **kwargs) -> None:
 # Public sync functions
 # ---------------------------------------------------------------------------
 
-def _do_sync_new(run_id: int, prospect: str, website: str, stage: str, annual: float, brief: str) -> None:
+def _do_sync_new(run_id: int, prospect: str, website: str, stage: str, monthly_mrr: float, brief: str) -> None:
     from sales_support_agent.services.fulfillment_deck import storage
 
     run = storage.get_run(run_id)
@@ -370,7 +390,7 @@ def _do_sync_new(run_id: int, prospect: str, website: str, stage: str, annual: f
 
     company_id = _find_company(prospect) or _create_company(prospect, website)
     deal_name = f"{prospect} — 3PL Fulfillment"
-    deal_id = _find_deal(deal_name) or _create_deal(deal_name, annual, stage, company_id or "", brief)
+    deal_id = _find_deal(deal_name) or _create_deal(deal_name, monthly_mrr, stage, company_id or "", brief)
 
     if deal_id:
         hub_domain = os.environ.get("HUBSPOT_DOMAIN", "app-na2.hubspot.com").strip()
@@ -397,7 +417,8 @@ def sync_new_prospect(run_id: int, summary: dict, prospect_profile: dict) -> Non
     prospect = str(summary.get("prospect") or f"Run {run_id}")
     website = str(prospect_profile.get("website") or "")
     stage = str(summary.get("pipeline_stage") or "intake")
-    pitched = float((summary.get("fulfillment_quote") or {}).get("monthly_total") or 0)
+    fq = dict(summary.get("fulfillment_quote") or {})
+    pitched = _monthly_mrr(fq)
     brief = _build_brief({
         "id": run_id,
         "prospect": prospect,
@@ -405,7 +426,7 @@ def sync_new_prospect(run_id: int, summary: dict, prospect_profile: dict) -> Non
         "monthly_order_volume": prospect_profile.get("monthly_order_volume"),
         "prospect_profile": prospect_profile,
     })
-    _bg(_do_sync_new, run_id, prospect, website, stage, round(pitched * 12, 2), brief)
+    _bg(_do_sync_new, run_id, prospect, website, stage, round(pitched, 2), brief)
 
 
 def sync_stage(run_id: int, stage: str) -> None:
@@ -454,7 +475,8 @@ def _do_sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> N
         prospect = str(summary.get("prospect") or f"Run {run_id}")
         website = str(prospect_profile.get("website") or "")
         stage = str(summary.get("pipeline_stage") or "intake")
-        pitched = float((summary.get("fulfillment_quote") or {}).get("monthly_total") or 0)
+        fq = dict(summary.get("fulfillment_quote") or {})
+        pitched = _monthly_mrr(fq)
         from sales_support_agent.services.fulfillment_deck.admin_page import _build_brief
         brief = _build_brief({
             "id": run_id,
@@ -463,7 +485,7 @@ def _do_sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> N
             "monthly_order_volume": prospect_profile.get("monthly_order_volume"),
             "prospect_profile": prospect_profile,
         })
-        _do_sync_new(run_id, prospect, website, stage, round(pitched * 12, 2), brief)
+        _do_sync_new(run_id, prospect, website, stage, round(pitched, 2), brief)
         run = storage.get_run(run_id)
         if run is None:
             return
@@ -497,6 +519,17 @@ def _do_sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> N
         label = str(line.get("label") or "Service")
         unit = _unit_label(str(line.get("unit") or ""))
         li_id = _create_line_item(label, 1, rate, rate, unit)
+        if li_id:
+            line_item_ids.append(li_id)
+    for fee in (fq.get("one_time") or []):
+        if not isinstance(fee, dict):
+            continue
+        amount = float(fee.get("amount") or 0)
+        if amount <= 0:
+            continue
+        label = str(fee.get("label") or "One-time fulfillment fee")
+        unit = _unit_label(str(fee.get("unit") or "one-time"))
+        li_id = _create_line_item(label, 1, amount, amount, unit)
         if li_id:
             line_item_ids.append(li_id)
 
@@ -533,7 +566,7 @@ def sync_quote(run_id: int, owner_email: str = "", force: bool = False) -> None:
 
 
 def sync_margin(run_id: int, margin: dict, pitched: float) -> None:
-    """Call after costs are saved. Updates deal amount + adds margin note."""
+    """Call after costs are saved. Updates deal MRR amount + adds margin note."""
     if not _token():
         return
 
@@ -541,9 +574,9 @@ def sync_margin(run_id: int, margin: dict, pitched: float) -> None:
         deal_id = _get_deal_id(run_id)
         if not deal_id:
             return
-        annual_margin = float(margin.get("annual_margin") or 0)
-        if annual_margin > 0:
-            _patch_deal(deal_id, {"amount": str(round(annual_margin, 2))})
+        monthly_mrr = float(margin.get("marginable_revenue") or pitched or 0)
+        if monthly_mrr > 0:
+            _patch_deal(deal_id, {"amount": str(round(monthly_mrr, 2))})
         note = (
             f"Fulfillment cost analysis:\n"
             f"  Pitched: ${pitched:,.0f}/mo\n"

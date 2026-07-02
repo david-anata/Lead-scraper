@@ -26,11 +26,13 @@ def default_fee_rows() -> list[dict[str, Any]]:
         if not key:
             continue
         baseline = fee.get("baseline_cost")
+        suggested = fee.get("suggested_customer_price", baseline)
         rows.append({
             "fee_key": key,
             "label": str(fee.get("label") or key),
             "baseline_cost": baseline,
-            "customer_price": baseline,
+            "suggested_customer_price": suggested,
+            "customer_price": suggested,
             "unit": str(fee.get("unit") or ""),
             "quantity": 1,
             "waivable": bool(fee.get("waivable", True)),

@@ -1,11 +1,12 @@
-"""Fulfillment quote engine — Anata's contract baseline x category margin.
+"""Fulfillment quote engine — Anata customer rate defaults x category margin.
 
-The baseline numbers below are Anata's contract FLOORS. Every quoted rate is
-``baseline x multiplier`` where the multiplier comes from the product
-category table (plus a fragile bump, hard-capped for competitiveness), or a
-flat admin override. The public sheet renders QUOTED rates only — the
-baseline and multiplier never appear in the rendered HTML (the quote dict
-keeps them for the admin/History record).
+The customer defaults below come from Anata's template fulfillment agreement.
+Blank sales fields quote ``default x multiplier`` where the multiplier comes
+from the product category table (plus a fragile bump, hard-capped for
+competitiveness), or a flat margin override. Admin-entered rate overrides are
+treated as final customer prices and are not multiplied again. The public
+sheet renders quoted rates only; internal costs and multipliers stay in the
+admin/workflow record.
 
 Pure module: no I/O, deterministic, returns plain dicts the service stores
 in the run summary as ``fulfillment_quote``.
@@ -22,35 +23,69 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     RateMatrix,
 )
 
-# Anata contract baseline (floors, USD). Keys mirror the rate card language.
-BASELINE_RATES = {
+# Fulfillment manager internal baseline costs. These are warehouse-only values
+# used by the admin cost form and margin review, not customer-facing defaults.
+INTERNAL_COST_BASELINES = {
     "receiving_precounted_box": 2.00,
     "receiving_count_per_item": 0.15,
-    # Back-compat key used by the existing receiving estimate UI.
     "receiving_per_pallet": 2.00,
     "storage_short_per_pallet_mo": 30.00,
     "storage_cubic_foot_mo": 0.45,
     "dtc_base_per_order": 0.80,
     "dtc_additional_item": 0.15,
-    "special_handling_per_unit": 0.15,
-    "wholesale_per_unit": 0.15,
-    "pallet_order_min": 20.00,
     "pallet_order_per_pallet": 20.00,
-    "pallet_per_unit": 0.80,
     "kitting_per_unit": 0.15,
     "labeling_per_unit": 0.15,
     "bagging_labeling_per_unit": 0.25,
     "returns_receive_per_unit": 1.00,
     "returns_examination_per_unit": 1.00,
     "returns_custom_steps_per_unit": 2.00,
-    "returns_per_unit": 4.00,
     "special_projects_per_hour": 40.00,
+    "packaging_markup_pct": 5.00,
     "monthly_tech_fee": 50.00,
+    "customer_service_monthly": 200.00,
+}
+
+# Customer-facing template agreement defaults (USD). Keys mirror the rate card
+# language. Some lines are optional/custom in the agreement but remain
+# chargeable here so sales can quote or waive them intentionally.
+BASELINE_RATES = {
+    "receiving_precounted_box": 2.00,
+    "receiving_count_per_item": 0.15,
+    # Back-compat key used by the existing receiving estimate UI.
+    "receiving_per_pallet": 20.00,
+    "uro_fee": 35.00,
+    "storage_short_per_pallet_mo": 35.00,
+    "storage_long_per_pallet_mo": 45.00,
+    "storage_cubic_foot_mo": 0.45,
+    "dtc_base_per_order": 1.60,
+    "dtc_additional_item": 0.15,
+    "special_handling_per_unit": 0.50,
+    "wholesale_per_unit": 0.15,
+    "pallet_order_min": 20.00,
+    "pallet_order_per_pallet": 20.00,
+    "pallet_per_unit": 0.80,
+    "kitting_per_unit": 0.15,
+    "labeling_per_unit": 0.25,
+    "bagging_labeling_per_unit": 0.25,
+    "returns_receive_per_unit": 1.00,
+    "returns_examination_per_unit": 1.00,
+    "returns_custom_steps_per_unit": 2.00,
+    "returns_per_unit": 2.00,
+    "special_projects_per_hour": 40.00,
+    "monthly_tech_fee": 75.00,
     "integration_setup_fee": 2000.00,
     "customer_service_monthly": 200.00,
     "monthly_minimum": 500.00,
-    "packaging_markup_pct": 5.00,
-    "packaging": "at cost + 5%",
+    "packaging_markup_pct": 10.00,
+    "packaging": "at cost + 10%",
+    "late_fee_pct_per_7_days": 2.00,
+    "fba_prep_per_unit": 0.75,
+    "fnsku_labeling_per_unit": 0.25,
+    "bundle_2pack_per_bundle": 1.00,
+    "custom_kitting_per_kit": 1.50,
+    "carton_labeling_per_carton": 1.00,
+    "label_printing_per_label": 0.10,
 }
 
 # Category -> margin multiplier over the baseline floors.
@@ -260,6 +295,38 @@ def _effective_rates(rate_overrides: Optional[dict] = None) -> dict:
     return rates
 
 
+def _valid_override_keys(rate_overrides: Optional[dict] = None) -> set[str]:
+    keys: set[str] = set()
+    for key, value in (rate_overrides or {}).items():
+        if key not in BASELINE_RATES:
+            continue
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            continue
+        keys.add(key)
+    return keys
+
+
+def _customer_rate(
+    key: str,
+    rates: dict,
+    multiplier: float,
+    overridden_keys: set[str],
+    *,
+    marginable: bool = True,
+) -> tuple[float, float]:
+    """Return the quoted customer rate and multiplier metadata.
+
+    Admin-entered customer rates are final prices. Blank fields use agreement
+    defaults and apply the product/category margin multiplier.
+    """
+    rate = float(rates[key])
+    if key in overridden_keys or not marginable:
+        return rate, 1.0
+    return rate * multiplier, multiplier
+
+
 def _line(key: str, label: str, qty: float, unit: str, rate: float,
           monthly: float, *, multiplier: float = 1.0,
           scales_with_orders: bool = False, note: str = "") -> dict:
@@ -298,6 +365,7 @@ def build_fulfillment_quote(
         units_total = orders  # assume one unit per order when units unknown
 
     br = _effective_rates(rate_overrides)
+    overridden_keys = _valid_override_keys(rate_overrides)
     m = quote_multiplier(profile, margin_override)
     units_per_pallet = _units_per_pallet(profile)
     # PER-PRODUCT pallet math: each product's pallets from ITS dims; the
@@ -312,29 +380,41 @@ def build_fulfillment_quote(
     # Average items per order, clamped 1..5 — drives the additional-item fee.
     avg_items = max(1.0, min(5.0, units_total / orders))
     extra_items = max(avg_items - 1.0, 0.0)
-    pick_pack_rate = (
-        br["dtc_base_per_order"]
-        + extra_items * br["dtc_additional_item"]
-    ) * m
+    pick_pack_base_rate, pick_pack_base_multiplier = _customer_rate(
+        "dtc_base_per_order", br, m, overridden_keys
+    )
+    additional_item_rate, additional_item_multiplier = _customer_rate(
+        "dtc_additional_item", br, m, overridden_keys
+    )
+    pick_pack_rate = pick_pack_base_rate + extra_items * additional_item_rate
+    pick_pack_multiplier = pick_pack_base_multiplier
+    if extra_items > 0:
+        pick_pack_multiplier = max(pick_pack_base_multiplier, additional_item_multiplier)
+    receiving_rate, receiving_multiplier = _customer_rate(
+        "receiving_per_pallet", br, m, overridden_keys
+    )
+    storage_rate, storage_multiplier = _customer_rate(
+        "storage_short_per_pallet_mo", br, m, overridden_keys
+    )
 
     lines = [
         _line(
             "receiving", "Receiving", pallets, "pallets",
-            br["receiving_per_pallet"] * m,
-            pallets * br["receiving_per_pallet"] * m,
-            multiplier=m,
+            receiving_rate,
+            pallets * receiving_rate,
+            multiplier=receiving_multiplier,
         ),
         _line(
             "storage", "Storage", pallets, "pallets",
-            br["storage_short_per_pallet_mo"] * m,
-            pallets * br["storage_short_per_pallet_mo"] * m,
-            multiplier=m,
+            storage_rate,
+            pallets * storage_rate,
+            multiplier=storage_multiplier,
         ),
         _line(
             "pick_pack", "Pick & pack (DTC)", orders, "orders",
             pick_pack_rate,
             orders * pick_pack_rate,
-            multiplier=m,
+            multiplier=pick_pack_multiplier,
             scales_with_orders=True,
         ),
     ]
@@ -346,23 +426,26 @@ def build_fulfillment_quote(
         if p.name and WHOLESALE_RE.search(p.name)
     )
     if wholesale_units:
+        wholesale_rate, wholesale_multiplier = _customer_rate(
+            "wholesale_per_unit", br, m, overridden_keys
+        )
         lines.append(
             _line(
                 "wholesale", "Wholesale fulfillment", wholesale_units, "units",
-                br["wholesale_per_unit"] * m,
-                wholesale_units * br["wholesale_per_unit"] * m,
-                multiplier=m,
+                wholesale_rate,
+                wholesale_units * wholesale_rate,
+                multiplier=wholesale_multiplier,
                 scales_with_orders=True,
             )
         )
 
-    # Packaging: size-class estimate per order, billed at fulfillment cost + 5%,
+    # Packaging: size-class estimate per order, billed at package cost + 10%,
     # then marked up by the sales margin multiplier.
     packaging_class, packaging_cost, packaging_why = _packaging_class(profile)
     packaging_rate = packaging_cost * m
     lines.append(
         _line(
-            "packaging", "Packaging (est., cost +5% before margin)",
+            "packaging", "Packaging (est., cost +10% before margin)",
             orders, "orders",
             packaging_rate,
             orders * packaging_rate,
@@ -375,13 +458,16 @@ def build_fulfillment_quote(
     fragile_products = [p for p in profile.products if p.fragile]
     fragile_units = sum(p.monthly_units or 0 for p in fragile_products)
     if fragile_units:
+        fragile_rate, fragile_multiplier = _customer_rate(
+            "special_handling_per_unit", br, m, overridden_keys
+        )
         lines.append(
             _line(
                 "fragile", "Special handling (fragile)",
                 fragile_units, "units",
-                br["special_handling_per_unit"] * m,
-                fragile_units * br["special_handling_per_unit"] * m,
-                multiplier=m,
+                fragile_rate,
+                fragile_units * fragile_rate,
+                multiplier=fragile_multiplier,
                 scales_with_orders=True,
             )
         )
@@ -453,7 +539,7 @@ def build_fulfillment_quote(
             f"65% cube) -> {pallets} pallet{'s' if pallets != 1 else ''}/month, "
             "one month of inventory on hand"
         )
-    assumptions.append(f"Packaging: {packaging_why}, billed at cost + 5% before sales margin")
+    assumptions.append(f"Packaging: {packaging_why}, billed at cost + 10% before sales margin")
     if fragile_units:
         names = ", ".join(
             p.name or "(unnamed product)" for p in fragile_products

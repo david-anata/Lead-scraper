@@ -17,7 +17,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav_styles,
 )
 from sales_support_agent.services.fulfillment_deck.pricing_rules import merge_fee_rows, validate_quote_readiness
-from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
+from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES, INTERNAL_COST_BASELINES
 from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ADDRESS,
     ANATA_HQ_ZIP,
@@ -161,7 +161,7 @@ _STYLES = """
       .pricing-lines__label { font-weight: 800; font-family: "Montserrat", sans-serif; font-size: 12px; }
       .pricing-lines__sub { margin-top: 3px; color: rgba(43,54,68,0.55); font-size: 11.5px; line-height: 1.35; }
       .pricing-cell { display:grid; gap:4px; }
-      .pricing-cell label { font-size:10px; font-weight:800; font-family:"Montserrat", sans-serif; color:rgba(43,54,68,.58); letter-spacing:.04em; text-transform:uppercase; }
+      .pricing-cell label { font-size:10px; font-weight:800; font-family:"Montserrat", sans-serif; color:rgba(43,54,68,.58); letter-spacing:0; text-transform:uppercase; }
       .pricing-cell input { width:100%; min-height:36px; padding:0 10px; border-radius:8px; border:1px solid var(--border); font-size:13px; font-family:inherit; }
       .pricing-cell--empty { color:rgba(43,54,68,.42); font-size:12px; line-height:1.45; padding-top:20px; }
       .pricing-note { color:rgba(43,54,68,.62); font-size:12px; line-height:1.45; }
@@ -476,31 +476,31 @@ def _history_bar_html(summary: dict) -> str:
 
 _COST_FORM_FIELDS = (
     ("Core pick/pack", (
-        ("actual_pick_pack_per_order", "pick_pack_per_order", "DTC pick & pack / order", BASELINE_RATES["dtc_base_per_order"], "per order"),
-        ("actual_pick_pack_additional_item", "pick_pack_additional_item", "DTC additional item", BASELINE_RATES["dtc_additional_item"], "per additional item"),
-        ("actual_monthly_tech_fee", "monthly_tech_fee", "Monthly tech fee", BASELINE_RATES["monthly_tech_fee"], "per month"),
-        ("actual_customer_service_monthly", "customer_service_monthly", "Customer service", BASELINE_RATES["customer_service_monthly"], "per month"),
+        ("actual_pick_pack_per_order", "pick_pack_per_order", "DTC pick & pack / order", INTERNAL_COST_BASELINES["dtc_base_per_order"], "per order"),
+        ("actual_pick_pack_additional_item", "pick_pack_additional_item", "DTC additional item", INTERNAL_COST_BASELINES["dtc_additional_item"], "per additional item"),
+        ("actual_monthly_tech_fee", "monthly_tech_fee", "Monthly tech fee", INTERNAL_COST_BASELINES["monthly_tech_fee"], "per month"),
+        ("actual_customer_service_monthly", "customer_service_monthly", "Customer service", INTERNAL_COST_BASELINES["customer_service_monthly"], "per month"),
     )),
     ("Receiving & storage", (
-        ("actual_receiving_precounted_box", "receiving_precounted_box", "Receiving pre-counted box", BASELINE_RATES["receiving_precounted_box"], "one-time / box"),
-        ("actual_receiving_count_per_item", "receiving_count_per_item", "Receiving counted item", BASELINE_RATES["receiving_count_per_item"], "one-time / item"),
-        ("actual_receiving_per_pallet", "receiving_per_pallet", "Receiving legacy pallet", BASELINE_RATES["receiving_per_pallet"], "one-time / pallet"),
-        ("actual_storage_per_pallet_mo", "storage_per_pallet_mo", "Storage / pallet", BASELINE_RATES["storage_short_per_pallet_mo"], "per pallet / month"),
-        ("actual_storage_cubic_foot_mo", "storage_cubic_foot_mo", "Storage / cubic foot", BASELINE_RATES["storage_cubic_foot_mo"], "per cubic foot / month"),
+        ("actual_receiving_precounted_box", "receiving_precounted_box", "Receiving pre-counted box", INTERNAL_COST_BASELINES["receiving_precounted_box"], "one-time / box"),
+        ("actual_receiving_count_per_item", "receiving_count_per_item", "Receiving counted item", INTERNAL_COST_BASELINES["receiving_count_per_item"], "one-time / item"),
+        ("actual_receiving_per_pallet", "receiving_per_pallet", "Receiving legacy pallet", INTERNAL_COST_BASELINES["receiving_per_pallet"], "one-time / pallet"),
+        ("actual_storage_per_pallet_mo", "storage_per_pallet_mo", "Storage / pallet", INTERNAL_COST_BASELINES["storage_short_per_pallet_mo"], "per pallet / month"),
+        ("actual_storage_cubic_foot_mo", "storage_cubic_foot_mo", "Storage / cubic foot", INTERNAL_COST_BASELINES["storage_cubic_foot_mo"], "per cubic foot / month"),
     )),
     ("Value-added services", (
-        ("actual_pallet_order_per_pallet", "pallet_order_per_pallet", "Pallet orders", BASELINE_RATES["pallet_order_per_pallet"], "per pallet"),
-        ("actual_kitting_per_item", "kitting_per_item", "Kitting", BASELINE_RATES["kitting_per_unit"], "per item"),
-        ("actual_labeling_per_item", "labeling_per_item", "Labeling", BASELINE_RATES["labeling_per_unit"], "per item"),
-        ("actual_bagging_labeling_per_item", "bagging_labeling_per_item", "Bagging + labeling", BASELINE_RATES["bagging_labeling_per_unit"], "per item"),
+        ("actual_pallet_order_per_pallet", "pallet_order_per_pallet", "Pallet orders", INTERNAL_COST_BASELINES["pallet_order_per_pallet"], "per pallet"),
+        ("actual_kitting_per_item", "kitting_per_item", "Kitting", INTERNAL_COST_BASELINES["kitting_per_unit"], "per item"),
+        ("actual_labeling_per_item", "labeling_per_item", "Labeling", INTERNAL_COST_BASELINES["labeling_per_unit"], "per item"),
+        ("actual_bagging_labeling_per_item", "bagging_labeling_per_item", "Bagging + labeling", INTERNAL_COST_BASELINES["bagging_labeling_per_unit"], "per item"),
     )),
     ("Returns & projects", (
         ("actual_returns_units_mo", "returns_units_mo", "Returns units / month", 0, "units / month"),
-        ("actual_returns_receive_per_unit", "returns_receive_per_unit", "Return receive", BASELINE_RATES["returns_receive_per_unit"], "per return"),
-        ("actual_returns_examination_per_unit", "returns_examination_per_unit", "Return examination", BASELINE_RATES["returns_examination_per_unit"], "per return"),
-        ("actual_returns_custom_steps_per_unit", "returns_custom_steps_per_unit", "Return custom steps", BASELINE_RATES["returns_custom_steps_per_unit"], "per return"),
+        ("actual_returns_receive_per_unit", "returns_receive_per_unit", "Return receive", INTERNAL_COST_BASELINES["returns_receive_per_unit"], "per return"),
+        ("actual_returns_examination_per_unit", "returns_examination_per_unit", "Return examination", INTERNAL_COST_BASELINES["returns_examination_per_unit"], "per return"),
+        ("actual_returns_custom_steps_per_unit", "returns_custom_steps_per_unit", "Return custom steps", INTERNAL_COST_BASELINES["returns_custom_steps_per_unit"], "per return"),
         ("actual_special_project_hours_mo", "special_project_hours_mo", "Special project hours / month", 0, "hours / month"),
-        ("actual_special_projects_per_hour", "special_projects_per_hour", "Special projects", BASELINE_RATES["special_projects_per_hour"], "per hour"),
+        ("actual_special_projects_per_hour", "special_projects_per_hour", "Special projects", INTERNAL_COST_BASELINES["special_projects_per_hour"], "per hour"),
     )),
 )
 
@@ -803,61 +803,61 @@ def _expand_panel(run: dict) -> str:
         <h3>Fulfillment Team Costs</h3>
         <div class="cost-grid">
           <div><label>Pick &amp; pack ($/order)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['dtc_base_per_order']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['dtc_base_per_order']:.2f}"
               id="pp-{run_id}" value="{_cv('pick_pack_per_order')}"></div>
           <div><label>Additional item ($/item)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['dtc_additional_item']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['dtc_additional_item']:.2f}"
               id="ppi-{run_id}" value="{_cv('pick_pack_additional_item')}"></div>
           <div><label>Storage ($/pallet/mo)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_short_per_pallet_mo']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['storage_short_per_pallet_mo']:.2f}"
               id="st-{run_id}" value="{_cv('storage_per_pallet_mo')}"></div>
           <div><label>Storage ($/cu ft/mo)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['storage_cubic_foot_mo']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['storage_cubic_foot_mo']:.2f}"
               id="scf-{run_id}" value="{_cv('storage_cubic_foot_mo')}"></div>
           <div><label>Receiving pre-counted box <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_precounted_box']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['receiving_precounted_box']:.2f}"
               id="rcb-{run_id}" value="{_cv('receiving_precounted_box')}"></div>
           <div><label>Receiving counted item <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_count_per_item']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['receiving_count_per_item']:.2f}"
               id="rci-{run_id}" value="{_cv('receiving_count_per_item')}"></div>
           <div><label>Receiving legacy ($/pallet) <span style="font-weight:400;font-size:11px;opacity:.6">— one-time</span></label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['receiving_per_pallet']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['receiving_per_pallet']:.2f}"
               id="rc-{run_id}" value="{_cv('receiving_per_pallet')}"></div>
           <div><label>Tech fee ($/mo)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['monthly_tech_fee']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['monthly_tech_fee']:.2f}"
               id="tf-{run_id}" value="{_cv('monthly_tech_fee')}"></div>
           <div><label>Customer service ($/mo)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['customer_service_monthly']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['customer_service_monthly']:.2f}"
               id="cs-{run_id}" value="{_cv('customer_service_monthly')}"></div>
           <div><label>Pallet orders ($/pallet)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['pallet_order_per_pallet']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['pallet_order_per_pallet']:.2f}"
               id="po-{run_id}" value="{_cv('pallet_order_per_pallet')}"></div>
           <div><label>Kitting ($/item)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['kitting_per_unit']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['kitting_per_unit']:.2f}"
               id="kit-{run_id}" value="{_cv('kitting_per_item')}"></div>
           <div><label>Labeling ($/item)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['labeling_per_unit']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['labeling_per_unit']:.2f}"
               id="lab-{run_id}" value="{_cv('labeling_per_item')}"></div>
           <div><label>Bagging + labeling ($/item)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['bagging_labeling_per_unit']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['bagging_labeling_per_unit']:.2f}"
               id="bag-{run_id}" value="{_cv('bagging_labeling_per_item')}"></div>
           <div><label>Returns units (/mo)</label>
             <input type="number" step="1" min="0" placeholder="0"
               id="ru-{run_id}" value="{_cv('returns_units_mo')}"></div>
           <div><label>Return receive ($/unit)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['returns_receive_per_unit']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['returns_receive_per_unit']:.2f}"
               id="rr-{run_id}" value="{_cv('returns_receive_per_unit')}"></div>
           <div><label>Return exam ($/unit)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['returns_examination_per_unit']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['returns_examination_per_unit']:.2f}"
               id="re-{run_id}" value="{_cv('returns_examination_per_unit')}"></div>
           <div><label>Return custom steps ($/unit)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['returns_custom_steps_per_unit']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['returns_custom_steps_per_unit']:.2f}"
               id="rs-{run_id}" value="{_cv('returns_custom_steps_per_unit')}"></div>
           <div><label>Special project hours (/mo)</label>
             <input type="number" step="0.25" min="0" placeholder="0"
               id="sph-{run_id}" value="{_cv('special_project_hours_mo')}"></div>
           <div><label>Special projects ($/hour)</label>
-            <input type="number" step="0.01" min="0" placeholder="{BASELINE_RATES['special_projects_per_hour']:.2f}"
+            <input type="number" step="0.01" min="0" placeholder="{INTERNAL_COST_BASELINES['special_projects_per_hour']:.2f}"
               id="spr-{run_id}" value="{_cv('special_projects_per_hour')}"></div>
         </div>
         <button class="btn btn--ghost" style="margin-top:10px" type="button"
@@ -2058,7 +2058,10 @@ def render_rate_sheet_review_page(
         for row in fee_rows
     )
 
-    from sales_support_agent.services.fulfillment_deck.quote import BASELINE_RATES
+    from sales_support_agent.services.fulfillment_deck.quote import (
+        BASELINE_RATES,
+        INTERNAL_COST_BASELINES,
+    )
     _ro = dict(summary.get("rate_overrides") or {})
     _actual_costs = dict(summary.get("fulfillment_actual_costs") or {})
     signed_cost_submissions = [
@@ -2077,6 +2080,16 @@ def render_rate_sheet_review_page(
         v = _ro.get(key)
         return f"{v:g}" if v is not None else ""
 
+    def _rate_hint(key: str, *, source: str = "Agreement default") -> str:
+        value = BASELINE_RATES.get(key)
+        if value in (None, ""):
+            return ""
+        try:
+            shown = _fmt_rate(float(value))
+        except (TypeError, ValueError):
+            shown = str(value)
+        return f"{source}: {shown}. Blank uses this before any margin override; entered values are final."
+
     def _cost_hint(*keys: str, label: str = "Fulfillment cost") -> str:
         vals = []
         for key in keys:
@@ -2089,11 +2102,19 @@ def render_rate_sheet_review_page(
         if not vals:
             return ""
         shown = sum(vals) if len(vals) > 1 else vals[0]
-        return f'<span class="hint">{_esc(label)}: {_fmt_rate(shown)}. Customer fee should cover this plus sales margin.</span>'
+        return f'<span class="hint">{_esc(label)}: {_fmt_rate(shown)}. Final customer price should cover this plus sales margin.</span>'
 
-    def _aval(key: str) -> str:
+    def _aval(key: str, default_key: str | None = None) -> str:
         v = _actual_costs.get(key)
+        if v is None and default_key:
+            v = INTERNAL_COST_BASELINES.get(default_key)
         return f"{float(v):g}" if v is not None else ""
+
+    def _internal_hint(key: str) -> str:
+        value = INTERNAL_COST_BASELINES.get(key)
+        if value in (None, ""):
+            return ""
+        return f"Fulfillment baseline: {_fmt_rate(float(value))}."
 
     def _number_cell(
         label: str,
@@ -2103,16 +2124,19 @@ def render_rate_sheet_review_page(
         placeholder: object,
         *,
         step: str = "0.01",
+        hint: str = "",
     ) -> str:
         try:
             placeholder_str = f"{float(placeholder):g}"
         except (TypeError, ValueError):
             placeholder_str = str(placeholder or "")
+        hint_html = f'<span class="hint">{_esc(hint)}</span>' if hint else ""
         return (
             '<div class="pricing-cell">'
             f'<label for="{_esc(input_id)}">{_esc(label)}</label>'
             f'<input type="number" id="{_esc(input_id)}" name="{_esc(name)}" step="{_esc(step)}" min="0" '
             f'value="{_esc(value)}" placeholder="{_esc(placeholder_str)}">'
+            f'{hint_html}'
             '</div>'
         )
 
@@ -2134,92 +2158,92 @@ def render_rate_sheet_review_page(
         _pricing_line(
             "DTC pick & pack / order",
             "Monthly order handling",
-            _number_cell("Fulfillment cost", "actual_pick_pack_per_order", "actual_pick_pack_per_order", _aval("pick_pack_per_order"), BASELINE_RATES["dtc_base_per_order"]),
-            _number_cell("Customer fee", "rate_pick_pack", "rate_pick_pack", _rval("dtc_base_per_order"), BASELINE_RATES["dtc_base_per_order"]),
-            "Feeds the public estimate and monthly margin.",
+            _number_cell("Fulfillment cost", "actual_pick_pack_per_order", "actual_pick_pack_per_order", _aval("pick_pack_per_order", "dtc_base_per_order"), INTERNAL_COST_BASELINES["dtc_base_per_order"], hint=_internal_hint("dtc_base_per_order")),
+            _number_cell("Final customer price", "rate_pick_pack", "rate_pick_pack", _rval("dtc_base_per_order"), BASELINE_RATES["dtc_base_per_order"], hint=_rate_hint("dtc_base_per_order")),
+            "Feeds the public estimate and MRR. Manual price is final; blank uses agreement default and margin override.",
         ),
         _pricing_line(
             "DTC additional item",
             "Extra item in an order",
-            _number_cell("Fulfillment cost", "actual_pick_pack_additional_item", "actual_pick_pack_additional_item", _aval("pick_pack_additional_item"), BASELINE_RATES["dtc_additional_item"]),
-            _number_cell("Customer fee", "rate_additional_item", "rate_additional_item", _rval("dtc_additional_item"), BASELINE_RATES["dtc_additional_item"]),
+            _number_cell("Fulfillment cost", "actual_pick_pack_additional_item", "actual_pick_pack_additional_item", _aval("pick_pack_additional_item", "dtc_additional_item"), INTERNAL_COST_BASELINES["dtc_additional_item"], hint=_internal_hint("dtc_additional_item")),
+            _number_cell("Final customer price", "rate_additional_item", "rate_additional_item", _rval("dtc_additional_item"), BASELINE_RATES["dtc_additional_item"], hint=_rate_hint("dtc_additional_item")),
             "Uses average items per order from product volume.",
         ),
         _pricing_line(
             "Receiving / pallet",
-            "Legacy receiving line",
-            _number_cell("Fulfillment cost", "actual_receiving_per_pallet", "actual_receiving_per_pallet", _aval("receiving_per_pallet"), BASELINE_RATES["receiving_per_pallet"]),
-            _number_cell("Customer fee", "rate_receiving", "rate_receiving", _rval("receiving_per_pallet"), BASELINE_RATES["receiving_per_pallet"]),
+            "Agreement standard pallet receiving",
+            _number_cell("Fulfillment cost", "actual_receiving_per_pallet", "actual_receiving_per_pallet", _aval("receiving_per_pallet", "receiving_per_pallet"), INTERNAL_COST_BASELINES["receiving_per_pallet"], hint=_internal_hint("receiving_per_pallet")),
+            _number_cell("Final customer price", "rate_receiving", "rate_receiving", _rval("receiving_per_pallet"), BASELINE_RATES["receiving_per_pallet"], hint=_rate_hint("receiving_per_pallet")),
             "One-time receiving support; excluded from recurring monthly net margin.",
         ),
         _pricing_line(
             "Receiving pre-counted box",
-            "Fulfillment-only baseline",
-            _number_cell("Fulfillment cost", "actual_receiving_precounted_box", "actual_receiving_precounted_box", _aval("receiving_precounted_box"), BASELINE_RATES["receiving_precounted_box"]),
-            _empty_cell("No customer override yet"),
-            "Use for warehouse cost capture when receiving is quoted as a custom/setup item.",
+            "Fulfillment manager baseline",
+            _number_cell("Fulfillment cost", "actual_receiving_precounted_box", "actual_receiving_precounted_box", _aval("receiving_precounted_box", "receiving_precounted_box"), INTERNAL_COST_BASELINES["receiving_precounted_box"], hint=_internal_hint("receiving_precounted_box")),
+            _number_cell("Final customer price", "rate_receiving_precounted_box", "rate_receiving_precounted_box", _rval("receiving_precounted_box"), BASELINE_RATES["receiving_precounted_box"], hint=_rate_hint("receiving_precounted_box", source="Chargeable default")),
+            "Optional/custom receiving charge. Can be waived with reason.",
         ),
         _pricing_line(
             "Receiving counted item",
             "Fulfillment counts units",
-            _number_cell("Fulfillment cost", "actual_receiving_count_per_item", "actual_receiving_count_per_item", _aval("receiving_count_per_item"), BASELINE_RATES["receiving_count_per_item"]),
-            _empty_cell("No customer override yet"),
+            _number_cell("Fulfillment cost", "actual_receiving_count_per_item", "actual_receiving_count_per_item", _aval("receiving_count_per_item", "receiving_count_per_item"), INTERNAL_COST_BASELINES["receiving_count_per_item"], hint=_internal_hint("receiving_count_per_item")),
+            _number_cell("Final customer price", "rate_receiving_count_per_item", "rate_receiving_count_per_item", _rval("receiving_count_per_item"), BASELINE_RATES["receiving_count_per_item"], hint=_rate_hint("receiving_count_per_item", source="Chargeable default")),
             "Use when Anata must count inbound units.",
         ),
         _pricing_line(
             "Storage / pallet/mo",
             "Recurring storage",
-            _number_cell("Fulfillment cost", "actual_storage_per_pallet_mo", "actual_storage_per_pallet_mo", _aval("storage_per_pallet_mo"), BASELINE_RATES["storage_short_per_pallet_mo"]),
-            _number_cell("Customer fee", "rate_storage", "rate_storage", _rval("storage_short_per_pallet_mo"), BASELINE_RATES["storage_short_per_pallet_mo"]),
+            _number_cell("Fulfillment cost", "actual_storage_per_pallet_mo", "actual_storage_per_pallet_mo", _aval("storage_per_pallet_mo", "storage_short_per_pallet_mo"), INTERNAL_COST_BASELINES["storage_short_per_pallet_mo"], hint=_internal_hint("storage_short_per_pallet_mo")),
+            _number_cell("Final customer price", "rate_storage", "rate_storage", _rval("storage_short_per_pallet_mo"), BASELINE_RATES["storage_short_per_pallet_mo"], hint=_rate_hint("storage_short_per_pallet_mo")),
             "Margin uses the higher of pallet storage or cubic-foot storage cost.",
         ),
         _pricing_line(
             "Storage / cubic foot/mo",
             "Recurring storage alternative",
-            _number_cell("Fulfillment cost", "actual_storage_cubic_foot_mo", "actual_storage_cubic_foot_mo", _aval("storage_cubic_foot_mo"), BASELINE_RATES["storage_cubic_foot_mo"]),
-            _empty_cell("Public rate card baseline only"),
+            _number_cell("Fulfillment cost", "actual_storage_cubic_foot_mo", "actual_storage_cubic_foot_mo", _aval("storage_cubic_foot_mo", "storage_cubic_foot_mo"), INTERNAL_COST_BASELINES["storage_cubic_foot_mo"], hint=_internal_hint("storage_cubic_foot_mo")),
+            _number_cell("Final customer price", "rate_storage_cubic_foot", "rate_storage_cubic_foot", _rval("storage_cubic_foot_mo"), BASELINE_RATES["storage_cubic_foot_mo"], hint=_rate_hint("storage_cubic_foot_mo", source="Chargeable default")),
             "Internal margin compares this with pallet storage and uses the max.",
         ),
         _pricing_line(
             "Kitting / item",
             "Optional fulfillment service",
-            _number_cell("Fulfillment cost", "actual_kitting_per_item", "actual_kitting_per_item", _aval("kitting_per_item"), BASELINE_RATES["kitting_per_unit"]),
-            _number_cell("Customer fee", "rate_kitting", "rate_kitting", _rval("kitting_per_unit"), BASELINE_RATES["kitting_per_unit"]),
+            _number_cell("Fulfillment cost", "actual_kitting_per_item", "actual_kitting_per_item", _aval("kitting_per_item", "kitting_per_unit"), INTERNAL_COST_BASELINES["kitting_per_unit"], hint=_internal_hint("kitting_per_unit")),
+            _number_cell("Final customer price", "rate_kitting", "rate_kitting", _rval("kitting_per_unit"), BASELINE_RATES["kitting_per_unit"], hint=_rate_hint("kitting_per_unit")),
             "Included in optional monthly costs when entered.",
         ),
         _pricing_line(
             "Labeling / item",
             "Optional fulfillment service",
-            _number_cell("Fulfillment cost", "actual_labeling_per_item", "actual_labeling_per_item", _aval("labeling_per_item"), BASELINE_RATES["labeling_per_unit"]),
-            _number_cell("Customer fee", "rate_labeling", "rate_labeling", _rval("labeling_per_unit"), BASELINE_RATES["labeling_per_unit"]),
+            _number_cell("Fulfillment cost", "actual_labeling_per_item", "actual_labeling_per_item", _aval("labeling_per_item", "labeling_per_unit"), INTERNAL_COST_BASELINES["labeling_per_unit"], hint=_internal_hint("labeling_per_unit")),
+            _number_cell("Final customer price", "rate_labeling", "rate_labeling", _rval("labeling_per_unit"), BASELINE_RATES["labeling_per_unit"], hint=_rate_hint("labeling_per_unit")),
             "Included in optional monthly costs when entered.",
         ),
         _pricing_line(
             "Bagging + labeling / item",
             "Optional fulfillment service",
-            _number_cell("Fulfillment cost", "actual_bagging_labeling_per_item", "actual_bagging_labeling_per_item", _aval("bagging_labeling_per_item"), BASELINE_RATES["bagging_labeling_per_unit"]),
-            _empty_cell("Public rate card baseline only"),
+            _number_cell("Fulfillment cost", "actual_bagging_labeling_per_item", "actual_bagging_labeling_per_item", _aval("bagging_labeling_per_item", "bagging_labeling_per_unit"), INTERNAL_COST_BASELINES["bagging_labeling_per_unit"], hint=_internal_hint("bagging_labeling_per_unit")),
+            _number_cell("Final customer price", "rate_bagging_labeling", "rate_bagging_labeling", _rval("bagging_labeling_per_unit"), BASELINE_RATES["bagging_labeling_per_unit"], hint=_rate_hint("bagging_labeling_per_unit", source="Chargeable default")),
             "Cost is included in optional monthly margin when entered.",
         ),
         _pricing_line(
             "Wholesale / unit",
             "Customer-facing wholesale fee",
             _empty_cell("No direct fulfillment cost field"),
-            _number_cell("Customer fee", "rate_wholesale", "rate_wholesale", _rval("wholesale_per_unit"), BASELINE_RATES["wholesale_per_unit"]),
+            _number_cell("Final customer price", "rate_wholesale", "rate_wholesale", _rval("wholesale_per_unit"), BASELINE_RATES["wholesale_per_unit"], hint=_rate_hint("wholesale_per_unit")),
             "Use pallet-order cost below for internal warehouse cost.",
         ),
         _pricing_line(
             "Pallet orders / pallet",
             "Wholesale pallet handling cost",
-            _number_cell("Fulfillment cost", "actual_pallet_order_per_pallet", "actual_pallet_order_per_pallet", _aval("pallet_order_per_pallet"), BASELINE_RATES["pallet_order_per_pallet"]),
-            _empty_cell("No customer override yet"),
+            _number_cell("Fulfillment cost", "actual_pallet_order_per_pallet", "actual_pallet_order_per_pallet", _aval("pallet_order_per_pallet", "pallet_order_per_pallet"), INTERNAL_COST_BASELINES["pallet_order_per_pallet"], hint=_internal_hint("pallet_order_per_pallet")),
+            _number_cell("Final customer price", "rate_pallet_order", "rate_pallet_order", _rval("pallet_order_per_pallet"), BASELINE_RATES["pallet_order_per_pallet"], hint=_rate_hint("pallet_order_per_pallet")),
             "Internal cost is included in optional monthly margin when entered.",
         ),
         _pricing_line(
             "Returns / unit",
             "Customer-facing return fee",
             _empty_cell("See return cost stack below"),
-            _number_cell("Customer fee", "rate_returns", "rate_returns", _rval("returns_per_unit"), BASELINE_RATES["returns_per_unit"]),
+            _number_cell("Final customer price", "rate_returns", "rate_returns", _rval("returns_per_unit"), BASELINE_RATES["returns_per_unit"], hint=_rate_hint("returns_per_unit")),
             "Compare to receive + examination + custom-step costs.",
         ),
         _pricing_line(
@@ -2232,43 +2256,43 @@ def render_rate_sheet_review_page(
         _pricing_line(
             "Return receive / unit",
             "Cost stack",
-            _number_cell("Fulfillment cost", "actual_returns_receive_per_unit", "actual_returns_receive_per_unit", _aval("returns_receive_per_unit"), BASELINE_RATES["returns_receive_per_unit"]),
+            _number_cell("Fulfillment cost", "actual_returns_receive_per_unit", "actual_returns_receive_per_unit", _aval("returns_receive_per_unit", "returns_receive_per_unit"), INTERNAL_COST_BASELINES["returns_receive_per_unit"], hint=_internal_hint("returns_receive_per_unit")),
             _empty_cell("Covered by returns fee"),
             "",
         ),
         _pricing_line(
             "Return examination / unit",
             "Cost stack",
-            _number_cell("Fulfillment cost", "actual_returns_examination_per_unit", "actual_returns_examination_per_unit", _aval("returns_examination_per_unit"), BASELINE_RATES["returns_examination_per_unit"]),
+            _number_cell("Fulfillment cost", "actual_returns_examination_per_unit", "actual_returns_examination_per_unit", _aval("returns_examination_per_unit", "returns_examination_per_unit"), INTERNAL_COST_BASELINES["returns_examination_per_unit"], hint=_internal_hint("returns_examination_per_unit")),
             _empty_cell("Covered by returns fee"),
             "",
         ),
         _pricing_line(
             "Return custom steps / unit",
             "Cost stack",
-            _number_cell("Fulfillment cost", "actual_returns_custom_steps_per_unit", "actual_returns_custom_steps_per_unit", _aval("returns_custom_steps_per_unit"), BASELINE_RATES["returns_custom_steps_per_unit"]),
+            _number_cell("Fulfillment cost", "actual_returns_custom_steps_per_unit", "actual_returns_custom_steps_per_unit", _aval("returns_custom_steps_per_unit", "returns_custom_steps_per_unit"), INTERNAL_COST_BASELINES["returns_custom_steps_per_unit"], hint=_internal_hint("returns_custom_steps_per_unit")),
             _empty_cell("Covered by returns fee"),
             "",
         ),
         _pricing_line(
             "Monthly tech fee",
             "Recurring platform/admin fee",
-            _number_cell("Fulfillment cost", "actual_monthly_tech_fee", "actual_monthly_tech_fee", _aval("monthly_tech_fee"), BASELINE_RATES["monthly_tech_fee"]),
-            _number_cell("Customer fee", "rate_tech_fee", "rate_tech_fee", _rval("monthly_tech_fee"), BASELINE_RATES["monthly_tech_fee"]),
+            _number_cell("Fulfillment cost", "actual_monthly_tech_fee", "actual_monthly_tech_fee", _aval("monthly_tech_fee", "monthly_tech_fee"), INTERNAL_COST_BASELINES["monthly_tech_fee"], hint=_internal_hint("monthly_tech_fee")),
+            _number_cell("Final customer price", "rate_tech_fee", "rate_tech_fee", _rval("monthly_tech_fee"), BASELINE_RATES["monthly_tech_fee"], hint=_rate_hint("monthly_tech_fee")),
             "Can be waived, but waiver reason is required before quote creation.",
         ),
         _pricing_line(
             "Customer service / month",
             "Fulfillment team relationship support",
-            _number_cell("Fulfillment cost", "actual_customer_service_monthly", "actual_customer_service_monthly", _aval("customer_service_monthly"), BASELINE_RATES["customer_service_monthly"]),
-            _empty_cell("No customer override yet"),
+            _number_cell("Fulfillment cost", "actual_customer_service_monthly", "actual_customer_service_monthly", _aval("customer_service_monthly", "customer_service_monthly"), INTERNAL_COST_BASELINES["customer_service_monthly"], hint=_internal_hint("customer_service_monthly")),
+            _number_cell("Final customer price", "rate_customer_service_monthly", "rate_customer_service_monthly", _rval("customer_service_monthly"), BASELINE_RATES["customer_service_monthly"], hint=_rate_hint("customer_service_monthly")),
             "Use when fulfillment owns the customer-service relationship.",
         ),
         _pricing_line(
             "Special projects / hour",
             "Hourly project work",
-            _number_cell("Fulfillment cost", "actual_special_projects_per_hour", "actual_special_projects_per_hour", _aval("special_projects_per_hour"), BASELINE_RATES["special_projects_per_hour"]),
-            _empty_cell("Public rate card baseline only"),
+            _number_cell("Fulfillment cost", "actual_special_projects_per_hour", "actual_special_projects_per_hour", _aval("special_projects_per_hour", "special_projects_per_hour"), INTERNAL_COST_BASELINES["special_projects_per_hour"], hint=_internal_hint("special_projects_per_hour")),
+            _number_cell("Final customer price", "rate_special_projects", "rate_special_projects", _rval("special_projects_per_hour"), BASELINE_RATES["special_projects_per_hour"], hint=_rate_hint("special_projects_per_hour")),
             "Enter expected hours below to include internal monthly cost.",
         ),
         _pricing_line(
@@ -2282,20 +2306,27 @@ def render_rate_sheet_review_page(
             "Implementation & integration setup",
             "One-time customer setup fee",
             _empty_cell("One-time cost not modeled yet"),
-            _number_cell("Customer fee", "rate_integration_setup_fee", "rate_integration_setup_fee", _rval("integration_setup_fee"), BASELINE_RATES["integration_setup_fee"], step="1"),
+            _number_cell("Final customer price", "rate_integration_setup_fee", "rate_integration_setup_fee", _rval("integration_setup_fee"), BASELINE_RATES["integration_setup_fee"], step="1", hint=_rate_hint("integration_setup_fee")),
             "Shown on the public rate sheet; excluded from recurring monthly net margin.",
         ),
         _pricing_line(
             "Monthly minimum",
             "Customer-facing floor",
             _empty_cell("Not an internal cost"),
-            _number_cell("Customer fee", "rate_minimum", "rate_minimum", _rval("monthly_minimum"), BASELINE_RATES["monthly_minimum"], step="1"),
+            _number_cell("Final customer price", "rate_minimum", "rate_minimum", _rval("monthly_minimum"), BASELINE_RATES["monthly_minimum"], step="1", hint=_rate_hint("monthly_minimum")),
             "Shown on the public rate sheet and quote guard context.",
+        ),
+        _pricing_line(
+            "Late fee",
+            "Past-due agreement term",
+            _empty_cell("Not an internal cost"),
+            _empty_cell(f"{BASELINE_RATES['late_fee_pct_per_7_days']:g}% every 7 days past due"),
+            "Agreement term for collections. It is visible as guidance but not included in MRR.",
         ),
     ]
     pricing_lines_html = (
         '<table class="pricing-lines"><thead><tr>'
-        '<th>Line item</th><th>Internal fulfillment cost</th><th>Customer fee</th><th>Margin treatment</th>'
+        '<th>Line item</th><th>Internal fulfillment cost</th><th>Final customer price</th><th>Treatment</th>'
         '</tr></thead><tbody>'
         + "".join(pricing_lines)
         + "</tbody></table>"
@@ -2557,7 +2588,7 @@ def render_rate_sheet_review_page(
               <div class="field">
                 <label for="quote_margin_override">Quote margin override %</label>
                 <input type="number" id="quote_margin_override" name="quote_margin_override" step="any" min="0" value="{_esc(margin_value)}">
-                <span class="hint">Blank = automatic by product category. e.g. 12 quotes everything at baseline × 1.12.</span>
+                <span class="hint">Blank = automatic by product category. Example: 12 suggests blank customer prices at agreement default x 1.12. Manual final prices are not multiplied again.</span>
               </div>
             </div>
           </div>
@@ -2571,7 +2602,7 @@ def render_rate_sheet_review_page(
             <div class="review-section__body">
           <input type="hidden" name="actual_costs_form" value="1">
           {pricing_summary_html}
-          <p class="muted" style="margin-bottom:12px">Internal fulfillment costs are warehouse-only and never shown to the prospect. Customer fees are shown on the public rate sheet and used by Calculate My Estimate after save/re-publish.</p>
+          <p class="muted" style="margin-bottom:12px">Internal fulfillment costs are warehouse-only and never shown to the prospect. Final customer prices are shown on the public rate sheet and used by Calculate My Estimate after save/re-publish. Leave a final price blank to use the agreement default plus any quote margin override.</p>
           {pricing_lines_html}
           <div class="field" style="margin-top:14px">
             <label for="rate_card_note">Rate card note (shown at bottom of Full Rate Card section)</label>

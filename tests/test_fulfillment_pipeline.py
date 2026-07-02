@@ -222,6 +222,66 @@ def test_hubspot_domain_strip():
     assert stripped == "www.example.com"
 
 
+def test_hubspot_monthly_mrr_excludes_shipping_pass_through():
+    quote = {
+        "monthly_total": 2500.0,
+        "one_time": [{"label": "Implementation", "amount": 2000.0}],
+        "lines": [
+            {"key": "pick_pack", "monthly": 1200.0},
+            {"key": "shipping", "monthly": 700.0},
+        ],
+    }
+    assert hubspot_sync._monthly_mrr(quote) == pytest.approx(1800.0)
+
+
+def test_hubspot_new_prospect_uses_monthly_mrr(isolated_db, monkeypatch):
+    run_id = _make_run({
+        "prospect": "MrrCo",
+        "pipeline_stage": "intake",
+        "fulfillment_quote": {
+            "monthly_total": 3000.0,
+            "lines": [{"key": "shipping", "monthly": 800.0}],
+            "one_time": [{"label": "Implementation", "amount": 2000.0}],
+        },
+    })
+    created = {}
+    monkeypatch.setenv("HUBSPOT_API_TOKEN", "tok-test")
+    monkeypatch.setattr(hubspot_sync, "_bg", lambda fn, *args, **kwargs: fn(*args, **kwargs))
+    monkeypatch.setattr(hubspot_sync, "_find_company", lambda prospect: "co1")
+    monkeypatch.setattr(hubspot_sync, "_create_company", lambda prospect, website: "co1")
+    monkeypatch.setattr(hubspot_sync, "_find_deal", lambda name: None)
+
+    def _create_deal(name, amount, stage, company_id, brief):
+        created["amount"] = amount
+        return "deal1"
+
+    monkeypatch.setattr(hubspot_sync, "_create_deal", _create_deal)
+    monkeypatch.setattr(hubspot_sync, "_portal_id", lambda: "999")
+    hubspot_sync.sync_new_prospect(run_id, fds.get_run(run_id).summary_json, {})
+    assert created["amount"] == pytest.approx(2200.0)
+
+
+def test_hubspot_margin_sync_patches_monthly_mrr_not_annual_margin(isolated_db, monkeypatch):
+    run_id = _make_run({"prospect": "MarginCo", "hubspot_deal_id": "deal1"})
+    patched = {}
+    monkeypatch.setenv("HUBSPOT_API_TOKEN", "tok-test")
+    monkeypatch.setattr(hubspot_sync, "_bg", lambda fn, *args, **kwargs: fn(*args, **kwargs))
+
+    def _patch_deal(deal_id, props):
+        patched["deal_id"] = deal_id
+        patched["props"] = props
+
+    monkeypatch.setattr(hubspot_sync, "_patch_deal", _patch_deal)
+    monkeypatch.setattr(hubspot_sync, "_add_note", lambda deal_id, note: None)
+    hubspot_sync.sync_margin(
+        run_id,
+        {"marginable_revenue": 2200.0, "annual_margin": 12000.0},
+        3000.0,
+    )
+    assert patched["deal_id"] == "deal1"
+    assert patched["props"]["amount"] == "2200.0"
+
+
 # ---------------------------------------------------------------------------
 # Rate overrides persistence
 # ---------------------------------------------------------------------------
