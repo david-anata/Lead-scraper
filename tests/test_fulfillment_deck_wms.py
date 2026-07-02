@@ -419,6 +419,43 @@ class SelectDisplayQuotesTests(unittest.TestCase):
                 sorted({q.carrier for q in zone.quotes}), ["CarrierA", "CarrierB"]
             )
 
+    def test_preferred_carrier_survives_display_cap_when_returned(self):
+        """UniUni should not disappear only because five other carriers average
+        cheaper for a product. If WMS returns it, keep it visible unless it is
+        explicitly excluded."""
+
+        class _UniUniSixthClient:
+            def quote_rates(self, package, origin_zip, dest_zip):
+                zone = zone_for(origin_zip, dest_zip) or 5
+                table = (
+                    ("USPS", "Ground Advantage", 4.0),
+                    ("UPS", "Ground", 4.2),
+                    ("FEDEX", "Home Delivery", 4.4),
+                    ("DHL", "Ground", 4.6),
+                    ("GLS", "Ground", 4.8),
+                    ("UNIUNI", "Standard", 9.0),
+                )
+                return [
+                    RateQuote(carrier=carrier, service=service, rate_usd=base + zone,
+                              transit_days=3, zone=zone, source=RATE_SOURCE_WMS)
+                    for carrier, service, base in table
+                ]
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ANATA_RATE_EXCLUDED_CARRIERS": "ysp",
+                "ANATA_RATE_PREFERRED_CARRIERS": "uniuni",
+            },
+        ):
+            matrix, _ = build_rate_matrix([_small_product()], "84043", _UniUniSixthClient())
+
+        for zone in matrix.products[0].zones:
+            carriers = {q.carrier for q in zone.quotes}
+            self.assertEqual(len(carriers), 5)
+            self.assertIn("UNIUNI", carriers)
+            self.assertNotIn("GLS", carriers)
+
     def test_excluded_carriers_dropped_and_fedex_surfaces(self):
         """YSP never displays; with YSP out of the way FEDEX ranks into the
         5-carrier cap (the v3 bug: YSP ate FedEx's slot)."""
