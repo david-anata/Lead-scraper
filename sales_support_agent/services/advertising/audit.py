@@ -96,6 +96,7 @@ def run_audit(
     client_id: Optional[str] = None,
     week_start: Optional[datetime] = None,
     week_end: Optional[datetime] = None,
+    run_id: Optional[str] = None,
 ) -> AuditResult:
     """Execute one audit run end to end. Never raises on bad input data — a
     malformed file yields fewer rows, not a crash. Hard failures are recorded on
@@ -103,7 +104,7 @@ def run_audit(
     goals = goals or storage.get_active_goals(client_id=client_id) or Goals()
     brand = (brand or "").strip()
     run_label = f"{brand} — {label}".strip(" —") if brand else label
-    run_id = storage.create_run(
+    run_id = run_id or storage.create_run(
         label=run_label, goals=goals, week_start=week_start, week_end=week_end, client_id=client_id,
     )
 

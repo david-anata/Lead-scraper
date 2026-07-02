@@ -275,7 +275,7 @@ def get_external_costs(run_id: Optional[str] = None) -> list[ExternalCostRow]:
 
 def create_run(*, label: str = "", goals: Optional[Goals] = None,
                week_start: Optional[datetime] = None, week_end: Optional[datetime] = None,
-               client_id: Optional[str] = None) -> str:
+               client_id: Optional[str] = None, status: str = "draft") -> str:
     rid = _new_id()
     with _session() as s:
         s.add(
@@ -285,7 +285,7 @@ def create_run(*, label: str = "", goals: Optional[Goals] = None,
                 label=label,
                 week_start=week_start,
                 week_end=week_end,
-                status="draft",
+                status=status or "draft",
                 goal_snapshot_json=(goals.to_dict() if goals else {}),
             )
         )

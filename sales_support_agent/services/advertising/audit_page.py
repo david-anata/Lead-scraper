@@ -276,6 +276,7 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
     prefill_json = json.dumps(prefill)
     return f"""
     <form id="adv-run-form" class="grid" method="post" action="/admin/advertising/audit/run" enctype="multipart/form-data">
+      <input type="hidden" name="run_async" value="true">
       {_client_select(clients or [])}
       <div class="dropzone">
         <label for="adv-files"><strong>Upload Amazon performance files</strong><br>
@@ -372,6 +373,7 @@ def _upload_form(latest: Optional[dict] = None, goals: Optional[Goals] = None,
 def _last_run_strip(latest: dict) -> str:
     """Compact one-line summary of the most recent run + its downloads."""
     s = latest.get("summary", {}) or {}
+    status = str(latest.get("status") or "").strip().lower()
     brand = s.get("brand") or s.get("detected_brand") or "Full account"
     when = (latest.get("created_at") or "")[:16].replace("T", " ")
     rid = latest.get("id")
@@ -388,7 +390,12 @@ def _last_run_strip(latest: dict) -> str:
         dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/additions.xlsx" title="New keywords + negatives. Upload after the bid file; some rows may already exist.">⬇ Additions</a>')
     if latest.get("has_apply"):  # legacy combined file
         dls.append(f'<a class="btn secondary" href="/admin/advertising/audit/{_esc(rid)}/bulk/combined.xlsx">⬇ Apply sheet</a>')
-    dl_html = " ".join(dls) or '<span class="empty">No downloads for this run.</span>'
+    if status == "running":
+        dl_html = '<span class="empty">Audit is running. Refresh in a minute for downloads.</span>'
+    elif status == "error":
+        dl_html = f'<span class="empty">Audit failed: {_esc(latest.get("error") or "check inputs and retry")}</span>'
+    else:
+        dl_html = " ".join(dls) or '<span class="empty">No downloads for this run.</span>'
     ncc = s.get("new_campaign_count") or 0
     warn = ""
     if ncc:

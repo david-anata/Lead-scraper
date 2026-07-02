@@ -196,6 +196,7 @@ class HttpTest(_Base):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("Burn", resp.text)
         self.assertIn("Generate burn-list workbook", resp.text)
+        self.assertIn('name="run_async" value="true"', resp.text)
         self.assertIn("History", resp.text)
         # The burn-list table is NOT rendered inline anymore — only in the workbook.
         self.assertNotIn("prioritized optimizations", resp.text)
@@ -218,7 +219,7 @@ class HttpTest(_Base):
         client = self._client()
         resp = client.post(
             "/admin/advertising/audit/run",
-            data={"label": "HTTP week", "ext_channel": "meta", "ext_amount": "100"},
+            data={"label": "HTTP week", "ext_channel": "meta", "ext_amount": "100", "run_async": "false"},
             files={
                 "bulk_xlsx": ("bulk.xlsx", _bulk_xlsx(),
                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
@@ -246,11 +247,27 @@ class HttpTest(_Base):
         )
         self.assertTrue(dl.content)
 
+    def test_run_via_http_defaults_to_background_redirect(self):
+        client = self._client()
+        resp = client.post(
+            "/admin/advertising/audit/run",
+            data={"label": "Background week"},
+            files={"business_report_csv": ("biz.csv", _BUSINESS_CSV, "text/csv")},
+            follow_redirects=False,
+        )
+        self.assertEqual(resp.status_code, 303)
+        self.assertIn("/admin/advertising/audit?run=", resp.headers["location"])
+        self.assertIn("Audit+started", resp.headers["location"])
+        run_id = resp.headers["location"].split("run=")[1].split("&")[0]
+        page = client.get(f"/admin/advertising/audit?run={run_id}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(run_id, page.text)
+
     def test_run_form_saves_and_applies_goals(self):
         client = self._client()
         resp = client.post(
             "/admin/advertising/audit/run",
-            data={"label": "Goals-in-run", "revenue_target": "450000", "acos_target": "30", "tacos_target": "18"},
+            data={"label": "Goals-in-run", "revenue_target": "450000", "acos_target": "30", "tacos_target": "18", "run_async": "false"},
             files={"business_report_csv": ("biz.csv", _BUSINESS_CSV, "text/csv")},
             follow_redirects=False,
         )
@@ -276,6 +293,7 @@ class HttpTest(_Base):
             "/admin/advertising/audit/run",
             data={
                 "label": "Ext multi",
+                "run_async": "false",
                 "ext_channel": ["meta", "tiktok", "influencer"],
                 "ext_label": ["prospecting", "spark ads", "Jane Doe"],
                 "ext_amount": ["100", "50", "25"],
@@ -297,7 +315,7 @@ class HttpTest(_Base):
         # Two files under ONE `files` field — the tool must route each by content.
         resp = client.post(
             "/admin/advertising/audit/run",
-            data={"label": "Mass"},
+            data={"label": "Mass", "run_async": "false"},
             files=[
                 ("files", ("anything.xlsx", _bulk_xlsx(),
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
@@ -313,6 +331,32 @@ class HttpTest(_Base):
         # Bulk file was auto-detected, so a bulk sheet got generated.
         files = self.storage.list_bulk_files(run_id)
         self.assertTrue("bids" in files or "additions" in files)
+
+    def test_page_ignores_newest_draft_run_in_latest_and_history(self):
+        client = self._client()
+
+        visible_id = self.storage.create_run(label="complete")
+        self.storage.finalize_run(
+            visible_id,
+            status="complete",
+            summary={"detected_brand": "Visible Brand", "recommendation_count": 3},
+            narrative="ready",
+        )
+        self.storage.save_bulk_file(visible_id, "growth_plan", b"PLAN")
+
+        hidden_id = self.storage.create_run(label="draft")
+        self.storage.finalize_run(
+            hidden_id,
+            status="draft",
+            summary={"detected_brand": "Hidden Draft"},
+        )
+
+        resp = client.get("/admin/advertising/audit")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Visible Brand", resp.text)
+        self.assertIn(f"/admin/advertising/audit/{visible_id}/plan.xlsx", resp.text)
+        self.assertNotIn("Hidden Draft", resp.text)
+        self.assertNotIn(hidden_id, resp.text)
 
 
 if __name__ == "__main__":

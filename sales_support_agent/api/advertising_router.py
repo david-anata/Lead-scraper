@@ -14,7 +14,7 @@ from typing import Optional
 from urllib.parse import quote_plus
 
 import requests
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.services.advertising import storage
@@ -147,16 +147,27 @@ def _with_files(run_dict: Optional[dict]) -> Optional[dict]:
     return run_dict
 
 
+def _visible_run(run_dict: Optional[dict]) -> bool:
+    """Only finalized runs belong in operator-facing history.
+
+    A deploy or worker restart can interrupt an audit after create_run() has
+    already persisted a draft row. Those rows have no summary/download content
+    and should not replace the last good run in the page strip/history.
+    """
+    return bool(run_dict) and str((run_dict or {}).get("status") or "").strip().lower() != "draft"
+
+
 @router.get("/audit", response_class=HTMLResponse)
 def audit_page(request: Request, run: str = "", msg: str = "", detail: str = "") -> HTMLResponse:
     user = get_session_user_from_request(request)
 
-    runs = [_with_files(r) for r in storage.list_runs()]
+    runs = [_with_files(r) for r in storage.list_runs() if _visible_run(r)]
 
     # Slim last-run strip: the ?run= run if given, else the most recent.
     latest = None
     if run:
-        latest = _with_files(storage.get_run(run))
+        selected = _with_files(storage.get_run(run))
+        latest = selected if _visible_run(selected) else None
     elif runs:
         latest = runs[0]
 
@@ -184,7 +195,7 @@ def clients_page(request: Request, msg: str = "") -> HTMLResponse:
     clients = storage.list_clients()
     for c in clients:
         c["goals"] = storage.get_active_goals(client_id=c["id"])
-        c["runs"] = [_with_files(r) for r in storage.list_runs(client_id=c["id"])]
+        c["runs"] = [_with_files(r) for r in storage.list_runs(client_id=c["id"]) if _visible_run(r)]
     return HTMLResponse(render_clients_page(clients, user=user, flash=msg))
 
 
@@ -397,6 +408,10 @@ def _brands_match(a: str, b: str) -> bool:
     return na == nb or na in nb or nb in na
 
 
+def _truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _client_known_brands(client_id: str) -> set[str]:
     """Brands this client has audited before (typed brand + auto-detected),
     drawn from completed run summaries — the basis for the mismatch check."""
@@ -424,6 +439,7 @@ def _do_run(
     client_id: str,
     goals_form: dict,
     confirmed: bool = False,
+    run_id: Optional[str] = None,
 ):
     """Shared run pipeline used by both the direct POST and the confirm
     round-trip. Rebuilds AuditInputs from already-read bytes, applies the
@@ -492,7 +508,7 @@ def _do_run(
     else:
         goals = storage.get_active_goals(client_id=cid)  # fall back to saved targets
 
-    result = run_audit(inputs, goals=goals, label=label, brand=brand, client_id=cid)
+    result = run_audit(inputs, goals=goals, label=label, brand=brand, client_id=cid, run_id=run_id)
     if result.status == "error":
         return RedirectResponse(
             f"/admin/advertising/audit?run={result.run_id}&msg=Audit+failed:+{result.error[:80]}",
@@ -507,6 +523,13 @@ def _do_run(
     )
     suffix = f"&detail={detect}" if detect else ""
     return RedirectResponse(f"/admin/advertising/audit?run={result.run_id}&msg={msg}{suffix}", status_code=303)
+
+
+def _do_run_background(**kwargs) -> None:
+    try:
+        _do_run(**kwargs)
+    except Exception:
+        logger.exception("[advertising] background audit run failed")
 
 
 def _encode_pending(batch, labeled, ext_channel, ext_label, ext_amount,
@@ -533,6 +556,7 @@ def _decode_pending(p: dict):
 
 @router.post("/audit/run")
 async def run(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(default=[]),
     bulk_xlsx: Optional[UploadFile] = File(default=None),
     search_term_csv: Optional[UploadFile] = File(default=None),
@@ -552,6 +576,7 @@ async def run(
     tacos_target: str = Form(default=""),
     units_target: str = Form(default=""),
     period: str = Form(default="monthly"),
+    run_async: str = Form(default="true"),
 ):
     # Read every dropped file once (auto-detect path), plus the labeled slots.
     batch: list[tuple[str, bytes]] = []
@@ -578,6 +603,29 @@ async def run(
         "revenue_target": revenue_target, "acos_target": acos_target,
         "tacos_target": tacos_target, "units_target": units_target, "period": period,
     }
+    if _truthy(run_async):
+        if not batch and not labeled:
+            return RedirectResponse(
+                "/admin/advertising/audit?msg=Upload+at+least+one+report+to+run+an+audit.",
+                status_code=303,
+            )
+        pending_run_id = storage.create_run(
+            label=(f"{(brand or '').strip()} — {label}".strip(" —") if (brand or "").strip() else label),
+            client_id=(client_id or "").strip() or None,
+            goals=storage.get_active_goals(client_id=(client_id or "").strip() or None),
+            status="running",
+        )
+        background_tasks.add_task(
+            _do_run_background,
+            batch=batch, labeled=labeled, ext_channel=ext_channel, ext_label=ext_label,
+            ext_amount=ext_amount, label=label, brand=brand, client_id=client_id,
+            goals_form=goals_form, confirmed=False,
+            run_id=pending_run_id,
+        )
+        return RedirectResponse(
+            f"/admin/advertising/audit?run={pending_run_id}&msg=Audit+started.+Refresh+this+page+in+a+minute+to+see+downloads.",
+            status_code=303,
+        )
     return _do_run(
         batch=batch, labeled=labeled, ext_channel=ext_channel, ext_label=ext_label,
         ext_amount=ext_amount, label=label, brand=brand, client_id=client_id,
