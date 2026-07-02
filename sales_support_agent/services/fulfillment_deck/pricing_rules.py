@@ -8,6 +8,7 @@ from typing import Any
 
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "fulfillment_cost_rules.json"
+_MARKET_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "fulfillment_market_pricing.json"
 
 
 def read_cost_rules() -> dict[str, Any]:
@@ -15,6 +16,69 @@ def read_cost_rules() -> dict[str, Any]:
         return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {"minimum_margin_pct": 15, "fees": [], "volume_tiers": []}
+
+
+def read_market_pricing() -> dict[str, Any]:
+    try:
+        return json.loads(_MARKET_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"market_ranges": {}, "source_note": ""}
+
+
+def _money(value: float) -> str:
+    if abs(value - round(value)) < 0.005:
+        return f"${value:,.0f}"
+    return f"${value:,.2f}"
+
+
+def suggest_customer_price(
+    fee_key: str,
+    *,
+    internal_cost: float | None,
+    agreement_default: float | None,
+    margin_override_pct: float | None,
+) -> dict[str, Any]:
+    """Build a market-aware customer price suggestion for one line item.
+
+    The result is guidance only. Sales still owns the final customer price and
+    can intentionally match a line to cost to close the deal.
+    """
+    market = (read_market_pricing().get("market_ranges") or {}).get(fee_key) or {}
+    low = market.get("low")
+    high = market.get("high")
+    markup_pct = 20.0 if margin_override_pct is None else float(margin_override_pct or 0)
+    candidates: list[float] = []
+    if internal_cost is not None:
+        candidates.append(max(float(internal_cost), 0.0) * (1 + max(markup_pct, 0.0) / 100.0))
+    if agreement_default is not None:
+        candidates.append(max(float(agreement_default), 0.0))
+    if low is not None:
+        candidates.append(float(low))
+    if not candidates:
+        return {"price": None, "rationale": "No suggestion yet.", "market": None}
+
+    suggested = max(candidates)
+    if low is not None and high is not None:
+        suggested = max(float(low), suggested)
+        if suggested > float(high) and (internal_cost is None or float(internal_cost) <= float(high)):
+            suggested = float(high)
+
+    reasons: list[str] = []
+    if low is not None and high is not None:
+        reasons.append(f"Market {_money(float(low))}-{_money(float(high))}")
+    if agreement_default is not None:
+        reasons.append(f"Agreement {_money(float(agreement_default))}")
+    if internal_cost is not None:
+        reasons.append(f"Cost+target {_money(float(internal_cost) * (1 + max(markup_pct, 0.0) / 100.0))}")
+    note = str(market.get("note") or "").strip()
+    if note:
+        reasons.append(note)
+    reasons.append("Sales can match cost to close; call it out as a concession.")
+    return {
+        "price": round(float(suggested), 2),
+        "rationale": " · ".join(reasons),
+        "market": market or None,
+    }
 
 
 def default_fee_rows() -> list[dict[str, Any]]:

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "source_note": "Directional 2026 3PL market ranges from public fulfillment pricing guides and competitor pricing pages. Use as sales guidance, not a binding quote.",
+  "market_ranges": {
+    "dtc_base_per_order": {"low": 2.0, "high": 3.5, "note": "Common first-pick/order pricing often sits in the low-to-mid dollar range."},
+    "dtc_additional_item": {"low": 0.3, "high": 0.75, "note": "Additional-item pick fees are commonly quoted below the first-pick fee."},
+    "receiving_per_pallet": {"low": 5.0, "high": 15.0, "note": "Standard pallet receiving is often market-priced below custom inbound work."},
+    "receiving_precounted_box": {"low": 0.5, "high": 3.0, "note": "Carton/box receiving varies heavily by count quality and ASN accuracy."},
+    "receiving_count_per_item": {"low": 0.05, "high": 0.2, "note": "Per-piece inbound counting is usually a small variable fee."},
+    "storage_short_per_pallet_mo": {"low": 15.0, "high": 40.0, "note": "Pallet storage varies by geography, volume, and storage complexity."},
+    "storage_cubic_foot_mo": {"low": 0.3, "high": 0.78, "note": "Cubic-foot storage is usually used when pallet pricing would be distorted."},
+    "kitting_per_unit": {"low": 0.15, "high": 1.5, "note": "Simple kitting can be inexpensive; custom kits should price higher."},
+    "labeling_per_unit": {"low": 0.1, "high": 0.5, "note": "Labeling depends on label source, print needs, and error tolerance."},
+    "bagging_labeling_per_unit": {"low": 0.25, "high": 0.75, "note": "Bagging plus labeling should not be priced below simple labeling."},
+    "wholesale_per_unit": {"low": 0.15, "high": 0.8, "note": "Wholesale unit pricing depends on case/pallet handling assumptions."},
+    "pallet_order_per_pallet": {"low": 15.0, "high": 35.0, "note": "Pallet-order handling is usually quoted as a minimum or per-pallet fee."},
+    "returns_per_unit": {"low": 2.0, "high": 10.0, "note": "Returns vary based on inspection, restock, disposition, and custom steps."},
+    "monthly_tech_fee": {"low": 0.0, "high": 100.0, "note": "Tech/account platform fees are commonly waived or bundled to close larger accounts."},
+    "customer_service_monthly": {"low": 0.0, "high": 300.0, "note": "Customer service should be charged when fulfillment owns relationship work."},
+    "special_projects_per_hour": {"low": 40.0, "high": 75.0, "note": "Hourly warehouse project work commonly tracks labor complexity."},
+    "integration_setup_fee": {"low": 300.0, "high": 2000.0, "note": "Setup fees are often waived, reduced, or raised based on integration complexity."},
+    "monthly_minimum": {"low": 500.0, "high": 1500.0, "note": "Minimums protect low-volume accounts and can be delayed as a concession."}
+  }
+}
