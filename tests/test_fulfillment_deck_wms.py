@@ -15,6 +15,7 @@ from sales_support_agent.services.fulfillment_deck.rates import (
     build_rate_matrix,
     select_display_quotes,
 )
+from sales_support_agent.services.fulfillment_deck.carriers import normalize_carrier_key
 from sales_support_agent.services.fulfillment_deck.schema import (
     ANATA_HQ_ZIP,
     RATE_SOURCE_MOCK,
@@ -456,6 +457,33 @@ class SelectDisplayQuotesTests(unittest.TestCase):
             self.assertIn("UNIUNI", carriers)
             self.assertNotIn("GLS", carriers)
 
+    def test_preferred_carrier_alias_survives_display_cap(self):
+        """UniUni aliases from carrier APIs should still match the preferred
+        display rule."""
+
+        class _UniUniAliasClient:
+            def quote_rates(self, package, origin_zip, dest_zip):
+                zone = zone_for(origin_zip, dest_zip) or 5
+                table = (
+                    ("USPS", "Ground Advantage", 4.0),
+                    ("UPS", "Ground", 4.2),
+                    ("FEDEX", "Home Delivery", 4.4),
+                    ("DHL", "Ground", 4.6),
+                    ("GLS", "Ground", 4.8),
+                    ("Uni-Uni", "Standard", 9.0),
+                )
+                return [
+                    RateQuote(carrier=carrier, service=service, rate_usd=base + zone,
+                              transit_days=3, zone=zone, source=RATE_SOURCE_WMS)
+                    for carrier, service, base in table
+                ]
+
+        matrix, _ = build_rate_matrix([_small_product()], "84043", _UniUniAliasClient())
+        for zone in matrix.products[0].zones:
+            carrier_keys = {normalize_carrier_key(q.carrier) for q in zone.quotes}
+            self.assertIn("UNIUNI", carrier_keys)
+            self.assertNotIn("GLS", carrier_keys)
+
     def test_excluded_carriers_dropped_and_fedex_surfaces(self):
         """YSP never displays; with YSP out of the way FEDEX ranks into the
         5-carrier cap (the v3 bug: YSP ate FedEx's slot)."""
@@ -535,6 +563,16 @@ class MultiSampleCollapseTests(unittest.TestCase):
     ZoneRates per zone keeping each carrier's cheapest-per-service quote across
     sampled cities — so a metro-specific carrier (UniUni) surfaces in a zone if
     it serves ANY sampled city, not just the first one quoted."""
+
+    def test_uniuni_priority_metros_are_sampled(self):
+        from sales_support_agent.services.fulfillment_deck.zones import (
+            representative_destinations_multi,
+        )
+
+        sampled = representative_destinations_multi("84043", per_zone=2, cap=18)
+        self.assertEqual(sampled[4][1][0], "90012")  # Los Angeles
+        self.assertEqual(sampled[5][1][0], "92101")  # San Diego
+        self.assertEqual(sampled[8][1][0], "10001")  # New York
 
     def test_regional_carrier_surfaces_when_serving_one_sampled_city(self):
         from sales_support_agent.services.fulfillment_deck.zones import (
@@ -616,6 +654,46 @@ class MultiSampleCollapseTests(unittest.TestCase):
         matrix, _ = build_rate_matrix([_small_product()], "84043", _SecondCityOnly())
         zone4 = next(z for z in matrix.products[0].zones if z.zone == target_zone)
         self.assertIn("UNIUNI", {q.carrier for q in zone4.quotes})
+
+    def test_mixed_uniuni_aliases_collapse_to_one_preferred_carrier(self):
+        from sales_support_agent.services.fulfillment_deck.zones import (
+            representative_destinations_multi,
+        )
+
+        sampled = representative_destinations_multi("84043", per_zone=2, cap=18)
+        target_zone = 4
+        first_city = sampled[target_zone][0][0]
+        second_city = sampled[target_zone][1][0]
+
+        class _MixedAliasClient:
+            def quote_rates(self, package, origin_zip, dest_zip):
+                zone = zone_for(origin_zip, dest_zip) or 5
+                quotes = [
+                    RateQuote(carrier="USPS", service="GA", rate_usd=6.0 + zone,
+                              transit_days=3, zone=zone, source=RATE_SOURCE_WMS),
+                ]
+                if dest_zip == first_city:
+                    quotes.append(
+                        RateQuote(carrier="Uni-Uni", service="Standard",
+                                  rate_usd=5.0 + zone, transit_days=4, zone=zone,
+                                  source=RATE_SOURCE_WMS)
+                    )
+                if dest_zip == second_city:
+                    quotes.append(
+                        RateQuote(carrier="Uni Uni", service="Standard",
+                                  rate_usd=4.0 + zone, transit_days=4, zone=zone,
+                                  source=RATE_SOURCE_WMS)
+                    )
+                return quotes
+
+        matrix, _ = build_rate_matrix([_small_product()], "84043", _MixedAliasClient())
+        zone4 = next(z for z in matrix.products[0].zones if z.zone == target_zone)
+        uni_quotes = [
+            q for q in zone4.quotes
+            if normalize_carrier_key(q.carrier) == "UNIUNI"
+        ]
+        self.assertEqual(len(uni_quotes), 1)
+        self.assertEqual(uni_quotes[0].rate_usd, 8.0)
 
     def test_cap_bounds_total_destinations(self):
         from sales_support_agent.services.fulfillment_deck.zones import (

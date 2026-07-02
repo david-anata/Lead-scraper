@@ -326,13 +326,15 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         from sales_support_agent.services.fulfillment_deck.pricing_rules import validate_quote_readiness
         blockers = validate_quote_readiness(summary, published=True)
         self.assertIn("Collect a signed fulfillment cost submission before creating a quote.", blockers)
+        self.assertIn("Configure live WMS carrier rates before creating a quote.", blockers)
         storage.update_summary(run["id"], {
             "fulfillment_cost_submissions": [{
                 "at": "2026-07-01T00:00:00+00:00",
                 "name": "Kyle Paulson",
                 "email": "kyle@anatainc.com",
                 "costs": {"pick_pack_per_order": 0.8},
-            }]
+            }],
+            "rates_source": "wms",
         })
         summary = dict(storage.get_run(run["id"]).summary_json)
         self.assertEqual(validate_quote_readiness(summary, published=True), [])

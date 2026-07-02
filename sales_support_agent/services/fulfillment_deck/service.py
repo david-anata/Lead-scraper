@@ -34,6 +34,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     ProductSpec,
     ProspectProfile,
     RateMatrix,
+    RATE_SOURCE_MOCK,
     clean_zip,
 )
 from sales_support_agent.services.fulfillment_deck.sections import decide_sections
@@ -325,6 +326,11 @@ def _assemble(
     """
     matrix, rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
     warnings.extend(rate_warnings)
+    if matrix.source == RATE_SOURCE_MOCK:
+        warnings.append(
+            "Live WMS carrier rates are not configured or unavailable — using sample rates "
+            "(USPS, UPS, and FedEx only). Configure ANATA_WMS_* before quoting."
+        )
 
     savings, savings_warnings = _compute_savings(profile, matrix)
     warnings.extend(savings_warnings)

@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+from .carriers import normalize_carrier_key
 from .schema import ANATA_HQ_ZIP, ProductRates, RateMatrix, ZoneRates, clean_zip
 from .wms_client import MockWMSClient
 from .zip3_centroids import ZIP3_CENTROIDS
@@ -60,16 +61,16 @@ def _excluded_carriers() -> set:
     """Effective exclusion set (uppercase), env override wins when set."""
     raw = os.environ.get("ANATA_RATE_EXCLUDED_CARRIERS")
     if raw is None or not raw.strip():
-        return {c.upper() for c in EXCLUDED_DISPLAY_CARRIERS}
-    return {tok.strip().upper() for tok in raw.split(",") if tok.strip()}
+        return {normalize_carrier_key(c) for c in EXCLUDED_DISPLAY_CARRIERS}
+    return {normalize_carrier_key(tok) for tok in raw.split(",") if tok.strip()}
 
 
 def _preferred_carriers() -> set:
     """Effective preferred display set (uppercase), env override wins when set."""
     raw = os.environ.get("ANATA_RATE_PREFERRED_CARRIERS")
     if raw is None or not raw.strip():
-        return {c.upper() for c in PREFERRED_DISPLAY_CARRIERS}
-    return {tok.strip().upper() for tok in raw.split(",") if tok.strip()}
+        return {normalize_carrier_key(c) for c in PREFERRED_DISPLAY_CARRIERS}
+    return {normalize_carrier_key(tok) for tok in raw.split(",") if tok.strip()}
 
 
 def _pareto_frontier(quotes: list) -> list:
@@ -145,9 +146,10 @@ def select_display_quotes(matrix: RateMatrix, max_carriers: int = 5) -> RateMatr
         for zone in product_rates.zones:
             groups: dict = {}
             for quote in zone.quotes:
-                if (quote.carrier or "").strip().upper() in excluded:
+                carrier_key = normalize_carrier_key(quote.carrier)
+                if carrier_key in excluded:
                     continue
-                groups.setdefault(quote.carrier, []).append(quote)
+                groups.setdefault(carrier_key, []).append(quote)
             per_zone_groups.append((zone, groups))
 
         # Carrier ranking uses each carrier's CHEAPEST rate per zone, averaged
@@ -163,7 +165,7 @@ def select_display_quotes(matrix: RateMatrix, max_carriers: int = 5) -> RateMatr
         keep_ordered: list = [
             carrier
             for carrier in ranked_carriers
-            if (carrier or "").strip().upper() in preferred
+            if carrier in preferred
         ][:max_carriers]
         for carrier in ranked_carriers:
             if len(keep_ordered) >= max_carriers:
@@ -312,7 +314,7 @@ def build_rate_matrix(products, origin_zip, client) -> tuple:
                 else:
                     quotes = value
                 for quote in quotes or ():
-                    key = (quote.carrier, quote.service)
+                    key = (normalize_carrier_key(quote.carrier), quote.service)
                     existing = best_by_service.get(key)
                     if existing is None or quote.rate_usd < existing.rate_usd:
                         best_by_service[key] = quote

@@ -11,8 +11,8 @@ radiate from the ship-from origin. Hover any cell for the area name, ZIP
 prefix, true straight-line miles, zone, and rate. A Cost / Transit-time
 toggle recolors the dots; the carrier filter chips live in the map controls
 and drive both the map repaint and the rate-table columns below. The viewer
-can edit dims/weight and press "Request rates" — the whole sheet re-quotes
-live and saves.
+can edit dims/weight and press "Request rates" — published sheets re-quote
+for the current view while draft/admin previews can persist confirmed specs.
 
 Alaska / Hawaii / Puerto Rico & USVI render as compact inset rows (top-right,
 clear of the Wikimedia AK/HI inset outlines at bottom-left) — their prefixes
@@ -30,6 +30,7 @@ import json
 import math
 import re
 
+from sales_support_agent.services.fulfillment_deck.carriers import normalize_carrier_key
 from sales_support_agent.services.fulfillment_deck.schema import RateMatrix, clean_zip
 from sales_support_agent.services.fulfillment_deck.us_states_svg import (
     STATE_PATHS,
@@ -75,7 +76,7 @@ _CARRIER_CHIP_FALLBACK = ("var(--anata-ink, #1d2d44)", "#FFFFFF")
 
 def carrier_chip(carrier: str) -> str:
     """Small rounded pill with the carrier wordmark on its brand color."""
-    key = (carrier or "").strip().upper()
+    key = normalize_carrier_key(carrier)
     bg, fg = CARRIER_BRAND_COLORS.get(key, _CARRIER_CHIP_FALLBACK)
     return (
         f'<span class="carrier-chip" style="background:{bg};color:{fg}">'

@@ -87,8 +87,8 @@ REPRESENTATIVE_METROS: tuple = (
     ("89801", "Elko, NV"),
     # Zone 4 — Southwest + Front Range + NorCal + Pacific NW interior.
     ("80202", "Denver, CO"),
-    ("85004", "Phoenix, AZ"),
     ("90012", "Los Angeles, CA"),
+    ("85004", "Phoenix, AZ"),
     ("94103", "San Francisco, CA"),
     ("89101", "Las Vegas, NV"),
     ("87102", "Albuquerque, NM"),
@@ -98,12 +98,12 @@ REPRESENTATIVE_METROS: tuple = (
     ("59101", "Billings, MT"),
     # Zone 5 — Pacific NW coast, southern plains, upper midwest.
     ("98101", "Seattle, WA"),
+    ("92101", "San Diego, CA"),
     ("97201", "Portland, OR"),
     ("75201", "Dallas, TX"),
     ("73102", "Oklahoma City, OK"),
     ("64106", "Kansas City, MO"),
     ("55401", "Minneapolis, MN"),
-    ("92101", "San Diego, CA"),
     ("99201", "Spokane, WA"),
     ("79901", "El Paso, TX"),
     # Zone 6 — Texas triangle, midwest, mid-south.
@@ -126,12 +126,12 @@ REPRESENTATIVE_METROS: tuple = (
     ("70112", "New Orleans, LA"),
     # Zone 8 — Florida + eastern seaboard.
     ("33101", "Miami, FL"),
+    ("10001", "New York, NY"),
     ("32801", "Orlando, FL"),
     ("33602", "Tampa, FL"),
     ("27601", "Raleigh, NC"),
     ("20001", "Washington, DC"),
     ("19102", "Philadelphia, PA"),
-    ("10001", "New York, NY"),
     ("02108", "Boston, MA"),
 )
 
