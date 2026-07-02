@@ -1101,11 +1101,12 @@ async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: st
     """Live re-quote for the interactive map's "Request rates" button.
 
     The viewer edits dims/weight on the rendered sheet; this rebuilds the
-    rate matrix AND PERSISTS the updated report (profile, rates, savings,
-    narrative, HTML), so the edit survives leaving and coming back. Returns
-    the fresh map payload plus re-rendered section fragments the page swaps
-    in. Token-gated; allowed for drafts too (the admin review preview embeds
-    the same map). Concurrent requotes: last write wins."""
+    rate matrix and returns the fresh map payload plus re-rendered section
+    fragments the page swaps in. Token-gated; allowed for drafts too (the
+    admin review preview embeds the same map). Draft requotes persist so the
+    admin workbench can confirm package specs; published requotes are
+    session-only so a shared/prospect link cannot overwrite the canonical
+    published sheet."""
     run = storage.get_run(run_id)
     if run is None or (dict(run.summary_json or {}).get("export_token") != token) or not token:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
@@ -1127,7 +1128,11 @@ async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: st
 
     try:
         result = apply_viewer_requote(
-            run_id, products, origin, settings=load_settings()
+            run_id,
+            products,
+            origin,
+            settings=load_settings(),
+            persist=(run.status != "completed"),
         )
     except ValueError:
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
@@ -1145,6 +1150,7 @@ async def rate_sheet_requote(request: Request, slug: str, run_id: int, token: st
         "products": map_data["products"],
         "source": map_data["source"],
         "fragments": fragments,
+        "persisted": bool(result.get("persisted")),
     })
 
 

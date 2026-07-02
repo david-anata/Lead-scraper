@@ -491,21 +491,26 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
 
 
 def apply_viewer_requote(
-    run_id: int, products: list, origin_zip: str, *, settings: Settings
+    run_id: int, products: list, origin_zip: str, *, settings: Settings,
+    persist: bool = True,
 ) -> dict:
-    """Persist a viewer's "Request rates" edit from the hosted sheet's map.
+    """Requote a viewer's "Request rates" edit from the hosted sheet's map.
 
     Merges the posted dims onto the stored profile's products by name match
     (posted dims override; products not posted keep their stored values;
     ``dims_estimated`` clears for any posted product with a full spec — the
     viewer just confirmed real numbers), rebuilds rates/savings, regenerates
     the narrative via the DETERMINISTIC fallback only (no LLM call on viewer
-    edits), re-renders the deck at the SAME view/requote URL, and persists
-    every changed field. Concurrent requotes: last write wins, by design.
+    edits), and re-renders the deck at the SAME view/requote URL.
+
+    Draft/admin preview requotes pass ``persist=True`` so confirmed package
+    specs can land on the workbench. Published public sheets pass
+    ``persist=False`` so a prospect or internal viewer cannot overwrite the
+    canonical published rate matrix for everyone else.
 
     ``products`` are already-clamped ProductSpec objects. Posted names that
     don't match a stored product are ignored — a public token can't grow the
-    stored catalog. Returns the patch dict (plus run_id).
+    stored catalog. Returns the patch dict (plus run_id and persisted flag).
     """
     run = storage.get_run(run_id)
     if run is None:
@@ -586,8 +591,9 @@ def apply_viewer_requote(
         "rates_source": matrix.source,
         "sections_included": [key for key, on in flags.to_dict().items() if on],
     }
-    storage.update_summary(run_id, patch)
-    return {"run_id": run_id, **patch}
+    if persist:
+        storage.update_summary(run_id, patch)
+    return {"run_id": run_id, "persisted": bool(persist), **patch}
 
 
 def apply_profile_edits(run_id: int, edits: dict, *, settings: Settings) -> dict:

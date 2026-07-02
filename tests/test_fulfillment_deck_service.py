@@ -364,6 +364,31 @@ class RateSheetServiceTests(unittest.TestCase):
         self.assertNotIn("Injected Product", names)
         self.assertEqual(names, ["Super Serum", "Glow Kit"])
 
+    def test_apply_viewer_requote_can_preview_without_persisting(self) -> None:
+        result = self._generate()
+        run_id = result["run_id"]
+        before = dict(storage.get_run(run_id).summary_json)
+        posted = [
+            ProductSpec.from_dict(
+                {"name": "Super Serum", "length_in": 10, "width_in": 8,
+                 "height_in": 6, "weight_lb": 4.0}
+            )
+        ]
+
+        patch = apply_viewer_requote(
+            run_id,
+            posted,
+            "84043",
+            settings=load_settings(),
+            persist=False,
+        )
+
+        self.assertFalse(patch["persisted"])
+        self.assertIn("10 × 8 × 6 in", patch["deck_html"])
+        stored = dict(storage.get_run(run_id).summary_json)
+        self.assertEqual(stored["prospect_profile"], before["prospect_profile"])
+        self.assertEqual(stored["deck_html"], before["deck_html"])
+
     def test_data_keys_and_carrier_grouped_table(self) -> None:
         result = self._generate_with_current_cost()
         html = result["deck_html"]

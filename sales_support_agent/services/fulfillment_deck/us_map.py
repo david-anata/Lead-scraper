@@ -1124,9 +1124,12 @@ def render_interactive_rate_map(matrix: RateMatrix, origin_label: str,
                 edited = !isReset;
                 swapFragments(data.fragments);
                 updateDimsLabels();
+                var saved = !!data.persisted;
                 statusEl.textContent = isReset
-                  ? 'Restored the quoted specs — rates updated and saved.'
-                  : 'Rates updated and saved to this report.';
+                  ? (saved ? 'Restored the quoted specs — rates updated and saved.'
+                           : 'Restored the quoted specs for this view.')
+                  : (saved ? 'Rates updated and saved to this report.'
+                           : 'Rates updated for this view. The shared sheet was not overwritten.');
                 // The combined rates-explorer section is NEVER swapped — the
                 // data-driven table + map both re-read DATA.products here, and
                 // re-applying the carrier filter repaints both (applyIntel +

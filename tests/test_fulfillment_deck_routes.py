@@ -702,11 +702,11 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         bad = run["view_path"].rsplit("/", 1)[0] + "/" + "0" * 32 + "/requote"
         self.assertEqual(public.post(bad, json={"products": [{}]}).status_code, 404)
 
-    def test_requote_persists_edits_and_returns_fragments(self) -> None:
+    def test_published_requote_returns_fragments_without_persisting(self) -> None:
         run = self._generate_published()
         before = dict(storage.get_run(run["id"]).summary_json)
         # Mark the stored product estimated so we can verify the requote
-        # clears the flag (the viewer confirmed real numbers).
+        # would clear the flag if persisted.
         profile = dict(before["prospect_profile"])
         products = [dict(p) for p in profile["products"]]
         products[0]["dims_estimated"] = True
@@ -726,6 +726,7 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
+        self.assertFalse(data["persisted"])
 
         # v6: the combined rates-explorer section is NEVER swapped (its
         # data-driven table updates client-side from the returned products),
@@ -749,18 +750,16 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         self.assertIn('data-key="monthly-math"', data["fragments"]["monthly-math"])
         self.assertIn("What this means monthly", data["fragments"]["monthly-math"])
 
-        # Persistence: dims landed on the stored profile, estimated cleared,
-        # deck re-rendered at the same link.
+        # Published public requotes are session-only: they must not overwrite
+        # the canonical saved rate sheet/carrier matrix for everyone else.
         stored = dict(storage.get_run(run["id"]).summary_json)
         widget = stored["prospect_profile"]["products"][0]
-        self.assertEqual(widget["length_in"], 10.0)
-        self.assertEqual(widget["weight_lb"], 4.0)
-        self.assertFalse(widget["dims_estimated"])
-        self.assertNotEqual(stored["deck_html"], before["deck_html"])
-        self.assertIn("10 × 8 × 6 in", stored["deck_html"])
+        self.assertEqual(widget["length_in"], before["prospect_profile"]["products"][0]["length_in"])
+        self.assertEqual(widget["weight_lb"], before["prospect_profile"]["products"][0]["weight_lb"])
+        self.assertTrue(widget["dims_estimated"])
+        self.assertEqual(stored["deck_html"], before["deck_html"])
         self.assertEqual(stored["view_path"], before["view_path"])
-        # The viewer can leave and come back: the public view serves the edit.
-        self.assertIn("10 × 8 × 6 in", public.get(run["view_path"]).text)
+        self.assertNotIn("10 × 8 × 6 in", public.get(run["view_path"]).text)
 
     def test_requote_works_for_drafts(self) -> None:
         # The admin review preview embeds the same map, so drafts must be
@@ -774,6 +773,9 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
                                 "height_in": 3, "weight_lb": 1.5}]},
         )
         self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["persisted"])
+        stored = dict(storage.get_run(run["id"]).summary_json)
+        self.assertEqual(stored["prospect_profile"]["products"][0]["length_in"], 6.0)
 
     # ------------------------------------------------------------------
     # Engagement + delete (published sheets)
