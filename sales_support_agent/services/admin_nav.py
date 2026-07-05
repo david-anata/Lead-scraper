@@ -48,6 +48,7 @@ _NAV_SECTIONS = [
     _NavSection("sales", "Sales", "sales", [
         _NavSubpage("sales.deals", "Control Room", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
+        _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
         _NavSubpage("sales.priorities", "Fix Queue", "/admin", "sales"),
         _NavSubpage("sales.decks", "Sales Decks", "/admin/sales-decks", "sales_decks"),
     ]),
@@ -504,7 +505,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         return _show_all or (_granted is not None and key in _granted)
 
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
-    if active in {"sales", "sales_decks"}:
+    if active in {"sales", "sales_decks", "sales_reps"}:
         primary_active = "sales"
     if active in {"finance", "finances"}:
         primary_active = "finance"

@@ -65,6 +65,15 @@ def _run_sync(app) -> dict[str, Any]:
             "errors": [str(exc)],
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }
+    # Auto-link fulfillment rate sheets to deals after each successful sync.
+    if payload.get("ok"):
+        try:
+            from sales_support_agent.services.sales.fulfillment_linker import sync_fulfillment_links
+            with session_scope(app.state.session_factory) as session:
+                link_counts = sync_fulfillment_links(session)
+            payload["fulfillment_links"] = link_counts
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[hubspot_sync] fulfillment link sweep failed: %s", exc)
     app.state.hubspot_sync_last_result = payload
     # Persist outside the sync transaction (kv helpers use their own engine).
     try:

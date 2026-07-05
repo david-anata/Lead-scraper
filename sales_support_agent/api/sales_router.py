@@ -69,6 +69,11 @@ from sales_support_agent.services.sales.operator_dashboard import (
     render_operator_page,
     run_writeback,
 )
+from sales_support_agent.services.sales.rep_dashboard import (
+    build_rep_dashboard,
+    render_rep_dashboard_page,
+)
+from sales_support_agent.services.sales.slack_alerts import send_critical_deal_alerts
 
 from sqlalchemy import func, select
 from typing import Any, List
@@ -1153,3 +1158,20 @@ def send_followup(
     return RedirectResponse(
         url=f"/admin/sales/deals/{deal_id}?sent=1", status_code=303
     )
+
+
+@router.get("/reps", response_class=HTMLResponse)
+def rep_accountability(request: Request) -> HTMLResponse:
+    user = get_current_user(request)
+    settings = _sales_settings(request)
+    with session_scope(request.app.state.session_factory) as session:
+        dashboard = build_rep_dashboard(session, stale_days=settings.stale_deal_days)
+    return HTMLResponse(render_rep_dashboard_page(dashboard, user=user))
+
+
+@router.post("/deals/alerts/send")
+def send_slack_alerts(request: Request) -> JSONResponse:
+    settings = _sales_settings(request)
+    with session_scope(request.app.state.session_factory) as session:
+        result = send_critical_deal_alerts(session, settings)
+    return JSONResponse(result)
