@@ -6024,6 +6024,20 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       }}
       deckModeTabs.forEach(t => t.addEventListener("click", () => _activateDeckMode(t.dataset.mode)));
 
+      // Restore the "Deck ready" banner after the post-generation reload that
+      // refreshes the saved-decks table.
+      try {{
+        const _lastDeck = sessionStorage.getItem("ds_last_deck");
+        if (_lastDeck) {{
+          sessionStorage.removeItem("ds_last_deck");
+          const {{ viewUrl, competitors }} = JSON.parse(_lastDeck);
+          const _st = document.getElementById("deck-status");
+          if (_st) {{
+            _st.innerHTML = `Deck ready — <strong>${{competitors}} competitors</strong> discovered. <a href="${{viewUrl}}" target="_blank" rel="noopener">Open deck ↗</a>`;
+          }}
+        }}
+      }} catch (e) {{ /* no stashed banner */ }}
+
       // ----------------------------------------------------------------
       // Digital Shelf submit
       // ----------------------------------------------------------------
@@ -6061,24 +6075,17 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
           if (resp.ok && (data.status === "ok" || data.status === "success")) {{
             const viewUrl = data.details?.view_url || data.data?.view_url || data.view_url || "";
             const competitors = data.details?.competitor_row_count ?? data.data?.competitor_row_count ?? "?";
-            dsStatus.innerHTML = `Deck ready — <strong>${{competitors}} competitors</strong> discovered. <a href="${{viewUrl}}" target="_blank" rel="noopener">Open deck ↗</a>`;
-            // Refresh the saved-decks table so the new deck appears without a
-            // manual reload. The GET /admin/api/deck-runs endpoint returns
-            // structured data (no pre-rendered html) and would need URL
-            // rewriting, so instead we re-fetch this page — which renders the
-            // run list live from the backend DB with correct agent-host links —
-            // and swap in just its fresh fragment.
+            // The saved-decks table is server-rendered live from the backend DB
+            // on every page load, so a reload is the reliable way to show the
+            // new deck at the top (an in-page fetch can race the backend while
+            // it finishes generating and come back empty). Stash the success
+            // banner so we can restore it after the reload.
             try {{
-              const pageResp = await fetch(location.pathname, {{ credentials: "same-origin" }});
-              const pageHtml = await pageResp.text();
-              const freshList = new DOMParser()
-                .parseFromString(pageHtml, "text/html")
-                .getElementById("deck-run-list");
-              const curList = document.getElementById("deck-run-list");
-              if (freshList && curList) curList.innerHTML = freshList.innerHTML;
-            }} catch (err) {{
-              /* non-fatal: the deck is saved and shows on the next page load */
-            }}
+              sessionStorage.setItem("ds_last_deck", JSON.stringify({{ viewUrl, competitors }}));
+            }} catch (e) {{ /* sessionStorage unavailable — banner just won't persist */ }}
+            dsStatus.innerHTML = `Deck ready — <strong>${{competitors}} competitors</strong> discovered. Refreshing the list…`;
+            setTimeout(() => window.location.reload(), 700);
+            return;
           }} else {{
             dsStatus.textContent = "Error: " + (data.detail || data.message || "Unknown error.");
           }}
