@@ -1082,9 +1082,21 @@ class DeckGenerationService:
         gallery_html = "".join(_render_gallery_card(item) for item in gallery_items if item)
         market_summary_html = "".join(_render_metric_card(card) for card in market_cards)
         keyword_summary_html = "".join(_render_metric_card(card) for card in keyword_cards)
-        country_donut = _render_distribution_card("Seller country of origin", xray_report.seller_country_distribution)
-        size_donut = _render_distribution_card("Size tier", xray_report.size_tier_distribution)
-        fulfillment_donut = _render_distribution_card("Fulfillment", xray_report.fulfillment_distribution)
+        # Suppress donuts with no real data rather than emit an empty ring
+        # (the Digital Shelf path intentionally leaves seller-country and
+        # size-tier unset because Rainforest can't source them honestly).
+        country_donut = (
+            _render_distribution_card("Seller country of origin", xray_report.seller_country_distribution)
+            if xray_report.seller_country_distribution else ""
+        )
+        size_donut = (
+            _render_distribution_card("Size tier", xray_report.size_tier_distribution)
+            if xray_report.size_tier_distribution else ""
+        )
+        fulfillment_donut = (
+            _render_distribution_card("Fulfillment", xray_report.fulfillment_distribution)
+            if xray_report.fulfillment_distribution else ""
+        )
         niche_keyword = str(payload.get("niche_keyword") or target.get("asin") or "the niche").strip()
         # PR47: category_label is the user-facing broad category. Falls back
         # to niche_keyword for back-compat with payloads built before PR47.

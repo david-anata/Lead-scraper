@@ -37,10 +37,39 @@ _BSR_ESTIMATE_CAP = 50_000
 
 
 def _bsr_to_units(bsr: float | None) -> int:
-    """Estimate monthly unit sales from BSR. Same formula as service.py:180."""
+    """Estimate monthly unit sales from BSR. Same formula as service.py:180.
+
+    Only used as a fallback when Amazon's real ``recent_sales`` badge
+    ("X+ bought in past month") is absent from the listing.
+    """
     if not bsr or bsr <= 0:
         return 0
     return min(_BSR_ESTIMATE_CAP, max(1, int(round(75_000.0 / bsr))))
+
+
+def _parse_recent_sales(value: str | None) -> int | None:
+    """Parse Amazon's real "X+ bought in past month" badge into a unit floor.
+
+    Rainforest surfaces this verbatim in the ``recent_sales`` field, e.g.
+    "50+ bought in past month" or "1K+ bought in past month". This is real
+    Amazon data (a lower bound), not a BSR estimate. Returns the integer
+    floor, or None when the field is absent/unparseable.
+    """
+    if not value:
+        return None
+    m = re.search(r"([\d,.]+)\s*([KkMm]?)\s*\+?\s*bought", value)
+    if not m:
+        return None
+    try:
+        num = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    suffix = m.group(2).lower()
+    if suffix == "k":
+        num *= 1_000
+    elif suffix == "m":
+        num *= 1_000_000
+    return int(num) if num > 0 else None
 
 
 def _extract_asin_from_url(url: str) -> str:
@@ -106,8 +135,13 @@ class RainforestClient:
         # Walk the BSR list from most specific (deepest) to least specific.
         # Avoid the root category (e.g. "Books" — too broad).
         for rank_entry in reversed(bestsellers_rank):
-            cat_url = rank_entry.get("category_url", "")
-            if not cat_url or "best-sellers" not in cat_url.lower():
+            # Rainforest's real field is `link`; `category_url` kept as a
+            # defensive fallback in case the schema differs by account.
+            cat_url = rank_entry.get("link") or rank_entry.get("category_url") or ""
+            lc = cat_url.lower()
+            if not cat_url or not (
+                "best-sellers" in lc or "bestsellers" in lc or "/zgbs/" in lc
+            ):
                 continue
             try:
                 bs_data = self.get_bestsellers(cat_url)
@@ -185,8 +219,23 @@ class RainforestClient:
         rating = product.get("rating")
         ratings_total = product.get("ratings_total")
 
-        units = _bsr_to_units(bsr)
+        # Units: prefer Amazon's REAL "X+ bought in past month" badge when
+        # present; only fall back to the BSR estimate when it's absent.
+        real_units = _parse_recent_sales(product.get("recent_sales"))
+        units = real_units if real_units is not None else _bsr_to_units(bsr)
+        units_are_real = real_units is not None
         revenue = (units * price_val) if (units and price_val) else None
+        # Real badges are a floor ("50+"), so mark units/revenue with a "+".
+        _suffix = "+" if units_are_real else ""
+
+        # Real fulfillment (FBA/FBM) from the buybox winner, not a hardcode.
+        fulfillment_obj = (product.get("buybox_winner") or {}).get("fulfillment") or {}
+        if fulfillment_obj.get("is_fulfilled_by_amazon") or fulfillment_obj.get("is_sold_by_amazon"):
+            fulfillment = "FBA"
+        elif fulfillment_obj.get("is_sold_by_third_party") or fulfillment_obj.get("third_party_seller"):
+            fulfillment = "FBM"
+        else:
+            fulfillment = ""
 
         return XrayProduct(
             display_order=display_order,
@@ -198,20 +247,20 @@ class RainforestClient:
             price=price_val,
             price_label=price_label,
             revenue=revenue,
-            revenue_label=f"${revenue:,.0f}" if revenue else "N/A",
+            revenue_label=f"${revenue:,.0f}{_suffix}" if revenue else "N/A",
             units_sold=float(units) if units else None,
-            units_label=f"{units:,}" if units else "N/A",
+            units_label=f"{units:,}{_suffix}" if units else "N/A",
             bsr=float(bsr) if bsr else None,
             bsr_label=f"{int(bsr):,}" if bsr else "N/A",
             rating=float(rating) if rating else None,
             rating_label=f"{rating:.1f}" if rating else "N/A",
             review_count=int(ratings_total) if ratings_total else None,
             category=category,
-            seller_country="US",
+            seller_country="",
             size_tier="",
-            fulfillment="FBA",
-            dimensions="",
-            weight="",
+            fulfillment=fulfillment,
+            dimensions=str(product.get("dimensions") or ""),
+            weight=str(product.get("weight") or ""),
         )
 
     def build_xray_report(
@@ -296,8 +345,47 @@ class RainforestClient:
 
         distinct_brands = len({(p.brand or "").lower() for p in products if p.brand})
 
-        seller_dist = [DistributionSlice("US", len(products), 1.0)] if products else []
-        fulfillment_dist = [DistributionSlice("FBA", len(products), 1.0)] if products else []
+        # Real fulfillment distribution from the parsed FBA/FBM labels.
+        # Seller "country of origin" is NOT reliably available from Rainforest,
+        # so we leave it empty (the deck suppresses empty donuts) rather than
+        # fabricate "100% US". Size tier is likewise left to real data only.
+        fulfillment_counts: dict[str, int] = {}
+        for p in products:
+            if p.fulfillment:
+                fulfillment_counts[p.fulfillment] = fulfillment_counts.get(p.fulfillment, 0) + 1
+        _ff_total = sum(fulfillment_counts.values())
+        fulfillment_dist = (
+            [
+                DistributionSlice(label, count, count / _ff_total)
+                for label, count in sorted(fulfillment_counts.items(), key=lambda kv: -kv[1])
+            ]
+            if _ff_total
+            else []
+        )
+        seller_dist: list[DistributionSlice] = []
+
+        # Honest sourcing note: how many listings carried Amazon's real
+        # "bought in past month" badge vs. fell back to a BSR estimate.
+        real_units_count = sum(
+            1 for raw in competitor_raw
+            if _parse_recent_sales((raw.get("product") or {}).get("recent_sales")) is not None
+        )
+        if real_units_count and real_units_count == len(products):
+            _sales_warning = (
+                "Unit/revenue figures use Amazon's real \"bought in past month\" "
+                "data for every listing (a reported floor)."
+            )
+        elif real_units_count:
+            _sales_warning = (
+                f"Unit/revenue figures use Amazon's real \"bought in past month\" "
+                f"data where available ({real_units_count} of {len(products)} listings); "
+                f"the rest are BSR-based estimates."
+            )
+        else:
+            _sales_warning = (
+                "Sales estimates are BSR-based (Amazon did not expose a "
+                "\"bought in past month\" figure for these listings)."
+            )
 
         xray_report = Helium10XrayReport(
             products=products,
@@ -312,10 +400,7 @@ class RainforestClient:
             seller_country_distribution=seller_dist,
             size_tier_distribution=[],
             fulfillment_distribution=fulfillment_dist,
-            warnings=[
-                "Sales estimates are BSR-based (Rainforest API). "
-                "For exact figures, upload a Helium 10 Xray CSV."
-            ],
+            warnings=[_sales_warning],
             distinct_brand_count=distinct_brands,
         )
 

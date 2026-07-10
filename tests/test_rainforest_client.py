@@ -10,6 +10,7 @@ from sales_support_agent.services.rainforest import (
     RainforestClient,
     _bsr_to_units,
     _normalize_asin,
+    _parse_recent_sales,
 )
 from sales_support_agent.services.helium10 import Helium10XrayReport, XrayProduct
 
@@ -76,6 +77,25 @@ class TestBsrToUnits(unittest.TestCase):
         self.assertEqual(_bsr_to_units(0), 0)
 
 
+class TestParseRecentSales(unittest.TestCase):
+    def test_plain_number(self):
+        self.assertEqual(_parse_recent_sales("50+ bought in past month"), 50)
+
+    def test_thousands_suffix(self):
+        self.assertEqual(_parse_recent_sales("1K+ bought in past month"), 1000)
+
+    def test_comma_number(self):
+        self.assertEqual(_parse_recent_sales("2,000+ bought in past month"), 2000)
+
+    def test_million_suffix(self):
+        self.assertEqual(_parse_recent_sales("3M+ bought in past month"), 3_000_000)
+
+    def test_absent_returns_none(self):
+        self.assertIsNone(_parse_recent_sales(None))
+        self.assertIsNone(_parse_recent_sales(""))
+        self.assertIsNone(_parse_recent_sales("Best Seller"))
+
+
 class TestNormalizeAsin(unittest.TestCase):
     def test_bare_asin(self):
         self.assertEqual(_normalize_asin("B09ABCDEF1"), "B09ABCDEF1")
@@ -121,6 +141,39 @@ class TestRainforestClientProductToXray(unittest.TestCase):
     def test_empty_product_returns_none(self):
         xp = self.client._product_to_xray({}, display_order=1)
         self.assertIsNone(xp)
+
+    def test_real_recent_sales_overrides_bsr_estimate(self):
+        # When Amazon exposes "bought in past month", use it (not the BSR guess).
+        raw = _mock_product("B09ABCDEF1", bsr=20_000, price=10.00)
+        raw["product"]["recent_sales"] = "500+ bought in past month"
+        xp = self.client._product_to_xray(raw, display_order=1)
+        self.assertEqual(xp.units_sold, 500.0)  # real, not 75000/20000≈4
+        self.assertAlmostEqual(xp.revenue, 5000.0)
+        self.assertTrue(xp.units_label.endswith("+"))  # floor marker
+
+    def test_falls_back_to_bsr_when_no_recent_sales(self):
+        raw = _mock_product("B09ABCDEF1", bsr=5_000, price=20.00)
+        raw["product"].pop("recent_sales", None)
+        xp = self.client._product_to_xray(raw, display_order=1)
+        self.assertEqual(xp.units_sold, float(_bsr_to_units(5_000)))
+        self.assertFalse(xp.units_label.endswith("+"))
+
+    def test_real_fulfillment_fba(self):
+        raw = _mock_product("B09ABCDEF1", bsr=5_000, price=20.00)
+        raw["product"]["buybox_winner"]["fulfillment"] = {"is_fulfilled_by_amazon": True}
+        xp = self.client._product_to_xray(raw, display_order=1)
+        self.assertEqual(xp.fulfillment, "FBA")
+
+    def test_real_fulfillment_fbm(self):
+        raw = _mock_product("B09ABCDEF1", bsr=5_000, price=20.00)
+        raw["product"]["buybox_winner"]["fulfillment"] = {"is_sold_by_third_party": True}
+        xp = self.client._product_to_xray(raw, display_order=1)
+        self.assertEqual(xp.fulfillment, "FBM")
+
+    def test_no_fabricated_seller_country(self):
+        raw = _mock_product("B09ABCDEF1", bsr=5_000, price=20.00)
+        xp = self.client._product_to_xray(raw, display_order=1)
+        self.assertEqual(xp.seller_country, "")  # no hardcoded "US"
 
 
 class TestRainforestBuildXrayReport(unittest.TestCase):
