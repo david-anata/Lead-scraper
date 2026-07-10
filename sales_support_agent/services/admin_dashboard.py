@@ -4661,7 +4661,6 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             </select>
           </label>
         </div>
-        <p class="deck-run-caption">Times shown in Mountain time.</p>
         <div class="table-wrap deck-run-table-wrap">
           <table class="deck-run-table">
             <thead>
