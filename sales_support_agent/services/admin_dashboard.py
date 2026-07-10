@@ -6062,11 +6062,22 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             const viewUrl = data.details?.view_url || data.data?.view_url || data.view_url || "";
             const competitors = data.details?.competitor_row_count ?? data.data?.competitor_row_count ?? "?";
             dsStatus.innerHTML = `Deck ready — <strong>${{competitors}} competitors</strong> discovered. <a href="${{viewUrl}}" target="_blank" rel="noopener">Open deck ↗</a>`;
-            const runListEl = document.getElementById("deck-run-list");
-            if (runListEl) {{
-              fetch("/admin/api/deck-runs").then(r => r.json()).then(d => {{
-                if (d.data?.html) runListEl.innerHTML = d.data.html;
-              }}).catch(() => {{}});
+            // Refresh the saved-decks table so the new deck appears without a
+            // manual reload. The GET /admin/api/deck-runs endpoint returns
+            // structured data (no pre-rendered html) and would need URL
+            // rewriting, so instead we re-fetch this page — which renders the
+            // run list live from the backend DB with correct agent-host links —
+            // and swap in just its fresh fragment.
+            try {{
+              const pageResp = await fetch(location.pathname, {{ credentials: "same-origin" }});
+              const pageHtml = await pageResp.text();
+              const freshList = new DOMParser()
+                .parseFromString(pageHtml, "text/html")
+                .getElementById("deck-run-list");
+              const curList = document.getElementById("deck-run-list");
+              if (freshList && curList) curList.innerHTML = freshList.innerHTML;
+            }} catch (err) {{
+              /* non-fatal: the deck is saved and shows on the next page load */
             }}
           }} else {{
             dsStatus.textContent = "Error: " + (data.detail || data.message || "Unknown error.");

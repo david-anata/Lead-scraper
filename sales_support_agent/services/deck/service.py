@@ -551,6 +551,16 @@ class DeckGenerationService:
             if not target_product_input.strip():
                 from sales_support_agent.services.rainforest import _normalize_asin
                 target_product_input = _normalize_asin(rainforest_asin) or rainforest_asin
+            # Default the user-facing category label to the target's real
+            # Amazon BSR subcategory when the AE left it blank, so the deck
+            # headline reads e.g. "Chewing Gum" instead of "this category".
+            if not category_label.strip() and rainforest_target_raw:
+                _ranks = (rainforest_target_raw.get("product") or {}).get("bestsellers_rank") or []
+                for _entry in reversed(_ranks):  # deepest (most specific) first
+                    _name = str(_entry.get("category") or "").strip()
+                    if _name:
+                        category_label = _name
+                        break
         else:
             # ------------------------------------------------------------------
             # Manual CSV path (original flow)
