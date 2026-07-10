@@ -6058,9 +6058,9 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             body: JSON.stringify(body),
           }});
           const data = await resp.json();
-          if (resp.ok && data.status === "success") {{
-            const viewUrl = data.data?.view_url || data.view_url || "";
-            const competitors = data.data?.competitor_row_count ?? "?";
+          if (resp.ok && (data.status === "ok" || data.status === "success")) {{
+            const viewUrl = data.details?.view_url || data.data?.view_url || data.view_url || "";
+            const competitors = data.details?.competitor_row_count ?? data.data?.competitor_row_count ?? "?";
             dsStatus.innerHTML = `Deck ready — <strong>${{competitors}} competitors</strong> discovered. <a href="${{viewUrl}}" target="_blank" rel="noopener">Open deck ↗</a>`;
             const runListEl = document.getElementById("deck-run-list");
             if (runListEl) {{

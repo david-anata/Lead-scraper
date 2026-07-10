@@ -2576,9 +2576,9 @@ async def admin_digital_shelf_generate_deck(request: Request) -> ApiMessage:
         raise HTTPException(status_code=500, detail=str(exc))
 
     return ApiMessage(
-        status="success",
+        status="ok",
         message=result.message,
-        data={
+        details={
             "view_url": result.view_url,
             "edit_url": result.edit_url,
             "design_id": result.design_id,
