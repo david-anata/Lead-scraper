@@ -5968,8 +5968,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
               <button type="submit" id="deck-submit-button">GENERATE DECK</button>
             </div>
           </form>
-          <div class="draft-help">
-            This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.
+          <div class="draft-help" id="deck-mode-help">
+            Sales figures are estimated from BSR via Rainforest API. For exact revenue data, switch to the Manual tab and upload a Helium 10 Xray CSV.
           </div>
           <div class="status-line" id="deck-status">Deck status: Ready.</div>
           <div class="deck-run-list" id="deck-run-list">
@@ -6006,6 +6006,11 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       const deckDigitalShelfForm = document.getElementById("deck-digital-shelf-form");
       const deckManualForm = document.getElementById("deck-generator-form");
 
+      const deckModeHelp = document.getElementById("deck-mode-help");
+      const _DECK_MODE_HELP = {{
+        digital_shelf: "Sales figures are estimated from BSR via Rainforest API. For exact revenue data, switch to the Manual tab and upload a Helium 10 Xray CSV.",
+        manual: "This workflow creates a first-party HTML deck with Anata branding, a persistent URL, embedded case studies, and a fixed service-offering section. The keyword CSV is optional but recommended for SEO slides.",
+      }};
       function _activateDeckMode(mode) {{
         deckModeTabs.forEach(t => t.classList.toggle("is-active", t.dataset.mode === mode));
         if (mode === "digital_shelf") {{
@@ -6015,6 +6020,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
           deckDigitalShelfForm.style.display = "none";
           deckManualForm.style.display = "";
         }}
+        if (deckModeHelp) deckModeHelp.textContent = _DECK_MODE_HELP[mode] || "";
       }}
       deckModeTabs.forEach(t => t.addEventListener("click", () => _activateDeckMode(t.dataset.mode)));
 
