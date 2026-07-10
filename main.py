@@ -4532,6 +4532,41 @@ def admin_delete_deck_run_proxy(request: Request, run_id: int) -> JSONResponse:
     return JSONResponse(status_code=response.status_code, content=body)
 
 
+@app.post("/admin/api/digital-shelf/generate-deck")
+async def admin_digital_shelf_generate_deck_proxy(request: Request) -> JSONResponse:
+    """Digital Shelf proxy: forward JSON body to the backend, no file uploads."""
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+    if not admin_settings.sales_support_agent_url:
+        return JSONResponse(status_code=500, content={"detail": "Sales support agent URL not configured."})
+
+    try:
+        body_bytes = await request.body()
+    except Exception:
+        body_bytes = b"{}"
+
+    try:
+        response = requests.post(
+            f"{admin_settings.sales_support_agent_url}/admin/api/digital-shelf/generate-deck",
+            data=body_bytes,
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": f"{admin_settings.admin_cookie_name}={token}",
+            },
+            timeout=120,
+        )
+    except requests.RequestException as exc:
+        return JSONResponse(status_code=502, content={"detail": f"Failed to reach backend: {exc}"})
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"detail": response.text or "Unexpected backend response."}
+    return JSONResponse(status_code=response.status_code, content=payload)
+
+
 @app.post("/admin/api/generate-deck")
 async def admin_generate_deck_proxy(
     request: Request,

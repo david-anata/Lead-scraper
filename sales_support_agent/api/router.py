@@ -2510,6 +2510,95 @@ async def internal_admin_generate_deck(
     )
 
 
+@router.post("/admin/api/digital-shelf/generate-deck", response_model=ApiMessage)
+async def admin_digital_shelf_generate_deck(request: Request) -> ApiMessage:
+    """Digital Shelf: generate a deck from a single ASIN via Rainforest API.
+
+    Accepts JSON body (not multipart). Growth plan inputs may be included as
+    top-level keys using the same growth_* names as the manual form.
+    """
+    _require_admin_enabled(request)
+    if not _is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="Admin login required.")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+
+    asin_or_url = (body.get("asin_or_url") or "").strip()
+    if not asin_or_url:
+        raise HTTPException(status_code=400, detail="asin_or_url is required.")
+
+    category_label = (body.get("category_label") or "").strip()
+    creative_mockup_url = (body.get("creative_mockup_url") or "").strip()
+    case_study_url = (body.get("case_study_url") or "").strip()
+    offer_payload_json = (body.get("offer_payload_json") or "").strip()
+    include_recommended_plan = bool(body.get("include_recommended_plan", True))
+    include_growth_plan = bool(body.get("include_growth_plan", True))
+
+    growth_plan_inputs: dict[str, str] | None = None
+    if include_growth_plan:
+        growth_plan_inputs = {
+            key: str(body[key])
+            for key in _GROWTH_PLAN_FORM_KEYS
+            if key in body and body[key] not in (None, "")
+        }
+
+    settings = request.app.state.settings
+    from sales_support_agent.services.deck.formatting import DEFAULT_SERVICE_TABS
+    from sales_support_agent.services.deck.formatting import _normalize_offers, _normalize_custom_offer_cards
+
+    enabled_channels = list(DEFAULT_SERVICE_TABS)
+    enabled_offers = _normalize_offers([])
+    offer_cards = _normalize_custom_offer_cards(offer_payload_json=offer_payload_json, offers=enabled_offers)
+
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            result = DeckGenerationService(settings, session).generate_deck(
+                target_product_input=asin_or_url,
+                rainforest_asin=asin_or_url,
+                competitor_xray_csv_payloads=[],
+                keyword_xray_csv_payloads=[],
+                channels=enabled_channels,
+                creative_mockup_url=creative_mockup_url,
+                case_study_url=case_study_url,
+                offers=enabled_offers,
+                offer_payload_json=offer_payload_json,
+                include_recommended_plan=include_recommended_plan,
+                growth_plan_inputs=growth_plan_inputs if include_growth_plan else None,
+                category_label=category_label,
+                trigger="digital_shelf",
+            )
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).error("[digital_shelf] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return ApiMessage(
+        status="success",
+        message=result.message,
+        data={
+            "view_url": result.view_url,
+            "edit_url": result.edit_url,
+            "design_id": result.design_id,
+            "design_title": result.design_title,
+            "warnings": result.warnings,
+            "competitor_row_count": result.competitor_row_count,
+        },
+    )
+
+
+@router.post("/api/admin/digital-shelf/generate-deck", response_model=ApiMessage)
+async def internal_digital_shelf_generate_deck(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> ApiMessage:
+    """Internal-key variant of the Digital Shelf endpoint."""
+    _enforce_api_key(request, x_internal_api_key)
+    return await admin_digital_shelf_generate_deck(request)
+
+
 @router.get("/admin/api/deck-runs", response_model=ApiMessage)
 def admin_deck_runs(request: Request) -> ApiMessage:
     _require_admin_enabled(request)

@@ -279,6 +279,7 @@ class DeckGenerationService:
         growth_plan_inputs: dict[str, Any] | None = None,
         category_label: str = "",
         trigger: str = "admin_dashboard",
+        rainforest_asin: str = "",
     ) -> DeckGenerationResult:
         effective_target_input = target_product_input.strip()
         competitor_payloads = [
@@ -298,12 +299,14 @@ class DeckGenerationService:
         enabled_channels = list(DEFAULT_SERVICE_TABS)
         enabled_offers = _normalize_offers(offers or [])
         offer_cards = _normalize_custom_offer_cards(offer_payload_json=offer_payload_json, offers=enabled_offers)
+        effective_rainforest_asin = rainforest_asin.strip()
         run = self.audit.start_run(
             "deck_generation",
             trigger=trigger,
             metadata={
-                "generation_mode": "amazon_first_html",
+                "generation_mode": "digital_shelf" if effective_rainforest_asin else "amazon_first_html",
                 "target_product_input": effective_target_input,
+                "rainforest_asin": effective_rainforest_asin,
                 "competitor_xray_filename": ", ".join(filename for filename, _ in competitor_payloads),
                 "keyword_xray_filename": ", ".join(filename for filename, _ in keyword_payloads),
                 "cerebro_filename": cerebro_filename.strip(),
@@ -331,6 +334,7 @@ class DeckGenerationService:
                 include_recommended_plan=bool(include_recommended_plan),
                 growth_plan_inputs=growth_plan_inputs,
                 category_label=category_label.strip(),
+                rainforest_asin=effective_rainforest_asin,
             )
             title = str(dataset.deck_payload.get("deck_title") or self._build_design_title(title_hint=effective_target_input)).strip()
             result = self._generate_html_deck(
@@ -529,36 +533,48 @@ class DeckGenerationService:
         include_recommended_plan: bool,
         growth_plan_inputs: dict[str, Any] | None = None,
         category_label: str = "",
+        rainforest_asin: str = "",
     ) -> DeckDataset:
-        parsed_target = _parse_target_product_input(target_product_input)
-        if parsed_target["source_type"] not in {"amazon", "website"}:
-            raise RuntimeError("Target product must be an Amazon ASIN/URL or a product website URL.")
-
-        # PR38: Helium 10 Xray competitor CSV is REQUIRED for Amazon targets
-        # (we need the competitor set to render the market summary, share-of-
-        # voice, and competitor landscape) but OPTIONAL when the target is a
-        # Shopify/DTC URL — a brand may not have an Amazon presence yet, and
-        # the deck still has plenty of value with just the target listing's
-        # data scraped from the Shopify product.json endpoint.
-        is_dtc_target = parsed_target["source_type"] == "website"
-        if not competitor_xray_csv_payloads:
-            if not is_dtc_target:
-                raise RuntimeError("Competitor Xray CSV is required.")
-            # DTC mode: synthesize an empty Xray report. The renderer skips
-            # the niche table / distribution donuts when there are no
-            # products, and the deck still includes the target listing,
-            # search behavior (if a keyword CSV is supplied), and the
-            # growth plan synopsis (if growth-plan inputs are supplied).
-            from sales_support_agent.services.helium10 import empty_xray_report
-            xray_report = empty_xray_report(
-                warning=(
-                    "No Helium 10 Xray competitor CSV supplied — running in "
-                    "DTC mode with target-only data. Upload an Xray CSV later "
-                    "to add the market summary and competitor landscape."
-                )
+        # ------------------------------------------------------------------
+        # Digital Shelf path: build xray_report from Rainforest API instead
+        # of a manually uploaded Helium 10 CSV.
+        # ------------------------------------------------------------------
+        rainforest_target_raw: dict[str, Any] | None = None
+        if rainforest_asin:
+            from sales_support_agent.services.rainforest import RainforestClient
+            rf = RainforestClient()
+            xray_report, rainforest_target_raw = rf.build_xray_report(
+                rainforest_asin,
+                competitor_limit=20,
             )
+            # If no explicit target_product_input supplied, use the ASIN
+            if not target_product_input.strip():
+                from sales_support_agent.services.rainforest import _normalize_asin
+                target_product_input = _normalize_asin(rainforest_asin) or rainforest_asin
         else:
-            xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
+            # ------------------------------------------------------------------
+            # Manual CSV path (original flow)
+            # ------------------------------------------------------------------
+            parsed_target = _parse_target_product_input(target_product_input)
+            if parsed_target["source_type"] not in {"amazon", "website"}:
+                raise RuntimeError("Target product must be an Amazon ASIN/URL or a product website URL.")
+
+            is_dtc_target = parsed_target["source_type"] == "website"
+            if not competitor_xray_csv_payloads:
+                if not is_dtc_target:
+                    raise RuntimeError("Competitor Xray CSV is required.")
+                from sales_support_agent.services.helium10 import empty_xray_report
+                xray_report = empty_xray_report(
+                    warning=(
+                        "No Helium 10 Xray competitor CSV supplied — running in "
+                        "DTC mode with target-only data. Upload an Xray CSV later "
+                        "to add the market summary and competitor landscape."
+                    )
+                )
+            else:
+                xray_report = parse_xray_csvs([content for _, content in competitor_xray_csv_payloads])
+
+        parsed_target = _parse_target_product_input(target_product_input)
 
         # When the user uploads a separate Target Xray CSV (single-row export
         # of just the prospect listing), parse it and use that row as the

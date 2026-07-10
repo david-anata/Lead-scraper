@@ -4825,6 +4825,53 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         border-radius: 18px;
         padding: 20px 22px;
       }}
+      .deck-mode-tabs {{
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+      }}
+      .deck-mode-tab {{
+        padding: 8px 18px;
+        border-radius: 999px;
+        border: 2px solid rgba(43, 54, 68, 0.14);
+        background: transparent;
+        font-family: "Montserrat", sans-serif;
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+        color: var(--dark-blue, #2b3644);
+        transition: all 0.15s;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }}
+      .deck-mode-tab.is-active {{
+        background: var(--dark-blue, #2b3644);
+        color: #fff;
+        border-color: var(--dark-blue, #2b3644);
+      }}
+      .deck-mode-tab:not(.is-active):hover {{
+        border-color: var(--dark-blue, #2b3644);
+        background: rgba(43, 54, 68, 0.06);
+      }}
+      .deck-mode-tag {{
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: var(--anata-gold, #bfa889);
+        color: #fff;
+        border-radius: 999px;
+        padding: 2px 7px;
+      }}
+      .deck-mode-tab.is-active .deck-mode-tag {{
+        background: rgba(255, 255, 255, 0.25);
+      }}
+      .intake-badge-green {{
+        background: rgba(34, 197, 94, 0.10);
+        color: rgb(21, 128, 61);
+        border: 1px solid rgba(34, 197, 94, 0.25);
+      }}
       .deck-page-card h2 {{
         margin: 0 0 8px;
         font-family: "Montserrat", sans-serif;
@@ -5633,10 +5680,80 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
 
         <section class="deck-page-card">
           <h2>Sales assets</h2>
-          <p>Upload one or more competitor and keyword CSVs for the niche, provide the prospect product URL or ASIN, and configure the recommended engagement. Case studies and the full service-offering section are embedded automatically.</p>
+          <p>Drop a single ASIN for instant auto-generated decks, or upload Helium 10 CSVs for full control. Case studies and the service-offering section are embedded automatically.</p>
           {deck_ready_notice}
           {context_panel}
-          <form class="lead-form intake-form" id="deck-generator-form">
+
+          <div class="deck-mode-tabs" id="deck-mode-tabs">
+            <button type="button" class="deck-mode-tab is-active" data-mode="digital_shelf" id="tab-digital-shelf">
+              ⚡ Digital Shelf <span class="deck-mode-tag">Auto</span>
+            </button>
+            <button type="button" class="deck-mode-tab" data-mode="manual" id="tab-manual">
+              Manual (Helium 10 CSVs)
+            </button>
+          </div>
+
+          <!-- Digital Shelf form -->
+          <form class="lead-form intake-form" id="deck-digital-shelf-form">
+            {context_hidden}
+            <fieldset class="intake-section intake-target">
+              <legend>1. Target product</legend>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Amazon ASIN or URL</span>
+                  <span class="intake-badge intake-badge-green">Auto-discovers competitors</span>
+                </span>
+                <input type="text" name="asin_or_url" id="ds-asin-input" placeholder="B09XXXXX or https://www.amazon.com/dp/B09XXXXX" autocomplete="off" />
+                <small class="intake-help">Paste any Amazon product ASIN or URL. The system fetches the top competitors from the same BSR category automatically — no Helium 10 CSV required. Revenue figures are estimated from BSR.</small>
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Category label</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <input type="text" name="category_label" placeholder="e.g. fat burner supplement, weight loss" />
+              </label>
+              <label class="intake-label">
+                <span class="intake-label-row">
+                  <span>Mockup URL</span>
+                  <span class="intake-badge">Optional</span>
+                </span>
+                <input type="url" name="creative_mockup_url" placeholder="https://www.canva.com/design/..." />
+              </label>
+            </fieldset>
+
+            <fieldset class="offer-toggle-group">
+              <legend>Growth plan</legend>
+              <label class="checkbox-label">
+                <span>Include growth plan slide</span>
+                <span class="toggle-switch"><input type="checkbox" id="ds-include-growth" name="include_growth_plan" value="true" checked /><span aria-hidden="true"></span></span>
+              </label>
+              <details id="ds-growth-inputs" style="margin-top: 12px;">
+                <summary style="cursor: pointer; font-weight: 600;">Growth plan inputs (defaults shown)</summary>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; margin-top: 12px;">
+                  <label>Conversion rate (%) <input type="number" name="growth_cvr_pct" value="15" step="0.1" min="0.1" max="100" /></label>
+                  <label>Goal monthly sessions <input type="number" name="growth_goal_sessions" placeholder="auto from top-3 avg" min="0" /></label>
+                  <label>Average order value ($) <input type="number" name="growth_aov" placeholder="defaults to target price" step="0.01" min="0" /></label>
+                  <label>Goal multiplier <input type="number" name="growth_goal_multiplier" value="3" step="0.1" min="1" /></label>
+                </div>
+                <p style="margin-top: 12px; font-weight: 600;">Channel mix (must sum to 100)</p>
+                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;">
+                  <label>Organic % <input type="number" name="growth_mix_organic" value="25" step="1" min="0" max="100" /></label>
+                  <label>On-channel % <input type="number" name="growth_mix_on_channel_paid" value="25" step="1" min="0" max="100" /></label>
+                  <label>Off-channel % <input type="number" name="growth_mix_off_channel_paid" value="25" step="1" min="0" max="100" /></label>
+                  <label>Affiliate % <input type="number" name="growth_mix_affiliate" value="15" step="1" min="0" max="100" /></label>
+                  <label>Retargeting % <input type="number" name="growth_mix_retargeting" value="10" step="1" min="0" max="100" /></label>
+                </div>
+              </details>
+            </fieldset>
+
+            <div class="lead-submit">
+              <button type="submit" id="ds-submit-button">GENERATE DECK</button>
+            </div>
+          </form>
+
+          <!-- Manual CSV form -->
+          <form class="lead-form intake-form" id="deck-generator-form" style="display:none;">
             {context_hidden}
             <fieldset class="intake-section intake-target">
               <legend>1. Target product</legend>
@@ -5882,6 +5999,83 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       </div>
     </div>
     <script>
+      // ----------------------------------------------------------------
+      // Digital Shelf mode tabs
+      // ----------------------------------------------------------------
+      const deckModeTabs = document.querySelectorAll(".deck-mode-tab");
+      const deckDigitalShelfForm = document.getElementById("deck-digital-shelf-form");
+      const deckManualForm = document.getElementById("deck-generator-form");
+
+      function _activateDeckMode(mode) {{
+        deckModeTabs.forEach(t => t.classList.toggle("is-active", t.dataset.mode === mode));
+        if (mode === "digital_shelf") {{
+          deckDigitalShelfForm.style.display = "";
+          deckManualForm.style.display = "none";
+        }} else {{
+          deckDigitalShelfForm.style.display = "none";
+          deckManualForm.style.display = "";
+        }}
+      }}
+      deckModeTabs.forEach(t => t.addEventListener("click", () => _activateDeckMode(t.dataset.mode)));
+
+      // ----------------------------------------------------------------
+      // Digital Shelf submit
+      // ----------------------------------------------------------------
+      const dsForm = document.getElementById("deck-digital-shelf-form");
+      const dsStatus = document.getElementById("deck-status");
+      const dsSubmitBtn = document.getElementById("ds-submit-button");
+
+      dsForm?.addEventListener("submit", async (e) => {{
+        e.preventDefault();
+        const asinOrUrl = (document.getElementById("ds-asin-input")?.value || "").trim();
+        if (!asinOrUrl) {{
+          dsStatus.textContent = "Please enter an ASIN or Amazon product URL.";
+          return;
+        }}
+        dsSubmitBtn.disabled = true;
+        dsSubmitBtn.textContent = "DISCOVERING...";
+        dsStatus.textContent = "Fetching product & competitor data from Rainforest API... (~15–30s)";
+
+        const formData = new FormData(dsForm);
+        const body = {{}};
+        for (const [key, val] of formData.entries()) {{
+          if (val !== "" && val !== null) body[key] = val;
+        }}
+        // Convert checkbox booleans
+        body["include_growth_plan"] = document.getElementById("ds-include-growth")?.checked ?? true;
+        body["include_recommended_plan"] = true;
+
+        try {{
+          const resp = await fetch("/admin/api/digital-shelf/generate-deck", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify(body),
+          }});
+          const data = await resp.json();
+          if (resp.ok && data.status === "success") {{
+            const viewUrl = data.data?.view_url || data.view_url || "";
+            const competitors = data.data?.competitor_row_count ?? "?";
+            dsStatus.innerHTML = `Deck ready — <strong>${{competitors}} competitors</strong> discovered. <a href="${{viewUrl}}" target="_blank" rel="noopener">Open deck ↗</a>`;
+            const runListEl = document.getElementById("deck-run-list");
+            if (runListEl) {{
+              fetch("/admin/api/deck-runs").then(r => r.json()).then(d => {{
+                if (d.data?.html) runListEl.innerHTML = d.data.html;
+              }}).catch(() => {{}});
+            }}
+          }} else {{
+            dsStatus.textContent = "Error: " + (data.detail || data.message || "Unknown error.");
+          }}
+        }} catch (err) {{
+          dsStatus.textContent = "Network error: " + err.message;
+        }} finally {{
+          dsSubmitBtn.disabled = false;
+          dsSubmitBtn.textContent = "GENERATE DECK";
+        }}
+      }});
+
+      // ----------------------------------------------------------------
+      // Manual CSV form (existing logic preserved below)
+      // ----------------------------------------------------------------
       const deckForm = document.getElementById("deck-generator-form");
       const deckStatus = document.getElementById("deck-status");
       const deckSubmitButton = document.getElementById("deck-submit-button");
