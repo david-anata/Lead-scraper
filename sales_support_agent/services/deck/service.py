@@ -107,7 +107,6 @@ from sales_support_agent.services.deck.rendering import (  # noqa: F401
     _render_cerebro_rank_summary,
     _render_competitor_landscape_table,
     _render_distribution_card,
-    _render_embedded_resource_tabs,
     _render_emphasis_list_item,
     _render_gallery_card,
     _render_help_badge,
@@ -545,7 +544,6 @@ class DeckGenerationService:
             rf = RainforestClient()
             xray_report, rainforest_target_raw = rf.build_xray_report(
                 rainforest_asin,
-                competitor_limit=20,
             )
             # If no explicit target_product_input supplied, use the ASIN
             if not target_product_input.strip():
@@ -1200,10 +1198,6 @@ class DeckGenerationService:
     </section>"""
         target_brand_display = str(target.get("brand_name") or target.get("brand") or "Prospect brand").strip()
         cover_title = _trim_text(_clean_listing_title(str(target.get("title", "") or title)), 40)
-        resource_embed_html = _render_embedded_resource_tabs(
-            case_study_url=case_study_url,
-            creative_mockup_url=creative_mockup_url,
-        )
 
         # ============================================================
         # PR32: Redesigned deck shell — left rail nav + exec summary +

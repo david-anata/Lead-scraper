@@ -31,9 +31,17 @@ logger = logging.getLogger(__name__)
 
 _RAINFOREST_BASE = "https://api.rainforestapi.com/request"
 _AMAZON_DOMAIN = "amazon.com"
-_DEFAULT_TIMEOUT = 30
-_MAX_CONCURRENT_FETCHES = 8
+# Per-call timeout: a single slow Rainforest request fails fast (the competitor
+# is skipped) instead of pinning a worker for 30s and dragging the whole batch
+# toward the 120s proxy timeout.
+_DEFAULT_TIMEOUT = 20
+# Fetch the competitor set in a single parallel wave (see _DEFAULT_COMPETITOR_LIMIT).
+_MAX_CONCURRENT_FETCHES = 12
 _BSR_ESTIMATE_CAP = 50_000
+# The deck surfaces the top ~10 competitors (niche table [:10], gallery [:4]),
+# so discovering 12 keeps full display coverage while cutting generation time
+# roughly in half versus 20 (one fetch wave instead of three).
+_DEFAULT_COMPETITOR_LIMIT = 12
 
 
 def _bsr_to_units(bsr: float | None) -> int:
@@ -267,7 +275,7 @@ class RainforestClient:
         self,
         asin_or_url: str,
         *,
-        competitor_limit: int = 20,
+        competitor_limit: int = _DEFAULT_COMPETITOR_LIMIT,
     ) -> tuple[Helium10XrayReport, dict[str, Any]]:
         """
         Core Digital Shelf builder.

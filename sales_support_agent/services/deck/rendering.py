@@ -73,23 +73,6 @@ def _render_metric_card(card: dict[str, str]) -> str:
         f"<span class='sub'>{html.escape(card.get('meta', ''))}</span>"
         "</div>"
     )
-def _render_competitor_card(product: XrayProduct, total_revenue: float) -> str:
-    image = f"<img src='{html.escape(product.image_url)}' alt='{html.escape(product.title)}' />" if product.image_url else "<div class='image-fallback'>No image</div>"
-    share = _label_share(product.revenue, total_revenue)
-    return (
-        "<article class='competitor-card'>"
-        f"<div class='competitor-media'>{image}</div>"
-        "<div class='competitor-body'>"
-        f"<h3>{html.escape(_trim_text(product.title, 40))}</h3>"
-        f"<p class='muted'>{html.escape(product.brand)}<br>{html.escape(product.asin)}</p>"
-        f"<p><strong>Revenue</strong><br>{html.escape(product.revenue_label)}</p>"
-        f"<p><strong>Market share</strong><br>{html.escape(share)}</p>"
-        f"<p><strong>BSR</strong><br>{html.escape(product.bsr_label)}</p>"
-        f"<p><strong>Reviews</strong><br>{html.escape(str(product.review_count or 'n/a'))}</p>"
-        f"<p>{html.escape(_build_competitor_gap(product, None))}</p>"
-        "</div>"
-        "</article>"
-    )
 def _render_keyword_row(keyword: KeywordInsight) -> str:
     return (
         "<tr>"

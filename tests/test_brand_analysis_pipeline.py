@@ -36,6 +36,28 @@ except (ModuleNotFoundError, ImportError) as exc:
     DEPS_AVAILABLE = False
 
 
+def setUpModule() -> None:
+    """Restore this module's DB engine before its tests run.
+
+    The engine in ``models.database`` is a shared mutable global. Other test
+    modules (e.g. test_admin_dashboard) call ``create_session_factory`` with a
+    true ``:memory:`` URL and leave the global engine pointed at an ephemeral DB
+    without ``brand_analysis_reports``. These tests read ``get_engine()``
+    directly and hit the endpoint via a TestClient thread, so they need the same
+    file-backed engine that ``main.create_app`` builds at import (a true
+    ``:memory:`` engine would not persist across the TestClient thread). Re-run
+    that exact init so the module is order-independent.
+    """
+    if not DEPS_AVAILABLE:
+        return
+    from sales_support_agent.config import load_settings
+    from sales_support_agent.models.database import create_session_factory, init_database
+
+    settings = load_settings()
+    session_factory = create_session_factory(settings.sales_agent_db_url)
+    init_database(session_factory)
+
+
 def _make_row(brand: str = "TestBrand", stage: str = "new") -> str:
     """Insert a minimal BrandAnalysisReport row and return its id."""
     import uuid
