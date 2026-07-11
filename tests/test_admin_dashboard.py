@@ -171,7 +171,9 @@ class AdminDashboardTests(unittest.TestCase):
         self.assertIn("Product URL or ASIN", html)
         self.assertIn("All Helium 10 CSVs", html)
         self.assertIn("deck-run-list", html)
-        self.assertIn("Times shown in Mountain time.", html)
+        # Times are still rendered in Mountain time (verified by the timestamp
+        # below); the "Times shown in Mountain time." caption was intentionally
+        # removed from the saved-decks table.
         self.assertIn("Mar 14 · 4:00 AM", html)
         self.assertNotIn("Times shown in UTC.", html)
         self.assertNotIn("Bulk Gmail drafts", html)

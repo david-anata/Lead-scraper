@@ -4858,7 +4858,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         font-weight: 700;
         letter-spacing: 0.06em;
         text-transform: uppercase;
-        background: var(--anata-gold, #bfa889);
+        background: var(--brown);
         color: #fff;
         border-radius: 999px;
         padding: 2px 7px;
@@ -5076,10 +5076,36 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         font-size: 16px;
         cursor: pointer;
       }}
+      .lead-form button:hover {{
+        background: var(--dark-blue);
+      }}
+      .lead-form button:active {{
+        transform: translateY(1px);
+      }}
       .lead-form button[disabled] {{
         opacity: 0.68;
         background: var(--brown);
         cursor: wait;
+      }}
+      .lead-form button[disabled]:hover {{
+        background: var(--brown);
+      }}
+      .lead-form input:focus,
+      .lead-form textarea:focus {{
+        outline: none;
+        border-color: var(--light-blue);
+      }}
+      /* Keyboard-focus visibility for every interactive control on the page. */
+      .lead-form button:focus-visible,
+      .lead-form input:focus-visible,
+      .lead-form textarea:focus-visible,
+      .deck-mode-tab:focus-visible,
+      .deck-row-actions a:focus-visible,
+      .deck-row-actions button:focus-visible,
+      .deck-run-filters input:focus-visible,
+      .deck-run-filters select:focus-visible {{
+        outline: 2px solid var(--light-blue);
+        outline-offset: 2px;
       }}
       .offer-toggle-group {{
         grid-column: 1 / -1;
@@ -5294,7 +5320,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       }}
       .deck-pagination-status {{
         font-size: 12px;
-        color: var(--ink-soft, #5b6b7d);
+        color: rgba(43, 54, 68, 0.68);
         font-variant-numeric: tabular-nums;
       }}
       .deck-pagination-controls {{
@@ -5327,7 +5353,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       }}
       .deck-pagination-controls .deck-pagination-ellipsis {{
         padding: 0 4px;
-        color: var(--ink-soft, #5b6b7d);
+        color: rgba(43, 54, 68, 0.68);
         font-size: 12px;
       }}
       .deck-run-table {{
@@ -5373,7 +5399,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       .deck-run-table .deck-cell-created {{ white-space: nowrap; }}
       .deck-run-caption {{
         font-size: 11px;
-        color: var(--ink-soft, #5b6b7d);
+        color: rgba(43, 54, 68, 0.68);
         margin: 0 0 6px 4px;
         letter-spacing: 0.02em;
         text-transform: uppercase;
@@ -5400,6 +5426,22 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         background: var(--dark-blue);
         color: white;
         border-color: var(--dark-blue);
+      }}
+      .deck-row-actions a:hover {{
+        filter: brightness(1.18);
+      }}
+      .deck-row-actions button:not(.deck-delete-button):hover {{
+        background: rgba(43, 54, 68, 0.06);
+        border-color: rgba(43, 54, 68, 0.35);
+      }}
+      .deck-run-list .empty {{
+        margin: 24px 0;
+        text-align: center;
+        color: rgba(43, 54, 68, 0.68);
+        font-size: 14px;
+        padding: 28px 16px;
+        border: 1px dashed rgba(43, 54, 68, 0.20);
+        border-radius: 12px;
       }}
       /* PR52: destructive action — red border, red text, hover fills. */
       .deck-row-actions .deck-delete-button {{
@@ -5440,7 +5482,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         margin: 0 0 18px;
         font-size: 14px;
         line-height: 1.5;
-        color: var(--ink-soft, #5b6b7d);
+        color: rgba(43, 54, 68, 0.68);
       }}
       .deck-confirm-modal .deck-confirm-deck-name {{
         font-weight: 700;
@@ -5702,7 +5744,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
                   <span>Amazon ASIN or URL</span>
                   <span class="intake-badge intake-badge-green">Auto-discovers competitors</span>
                 </span>
-                <input type="text" name="asin_or_url" id="ds-asin-input" placeholder="B09XXXXX or https://www.amazon.com/dp/B09XXXXX" autocomplete="off" />
+                <input type="text" name="asin_or_url" id="ds-asin-input" placeholder="B09XXXXX or https://www.amazon.com/dp/B09XXXXX" autocomplete="off" required />
                 <small class="intake-help">Paste any Amazon product ASIN or URL. The system fetches the top competitors from the same BSR category automatically — no Helium 10 CSV required. Revenue figures are estimated from BSR.</small>
               </label>
               <label class="intake-label">
@@ -5792,7 +5834,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             </fieldset>
 
             <fieldset class="intake-section intake-creative">
-              <legend>4. Creative reference <span class="intake-legend-tag">optional</span></legend>
+              <legend>3. Creative reference <span class="intake-legend-tag">optional</span></legend>
               <label class="intake-label">
                 <span class="intake-label-row">
                   <span>Mockup URL</span>
@@ -6020,6 +6062,10 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
           deckManualForm.style.display = "";
         }}
         if (deckModeHelp) deckModeHelp.textContent = _DECK_MODE_HELP[mode] || "";
+        // Clear any success/error output from the other tab's last action so
+        // a Manual success card doesn't linger under the Digital Shelf form.
+        const _st = document.getElementById("deck-status");
+        if (_st) {{ _st.innerHTML = "Deck status: Ready."; }}
       }}
       deckModeTabs.forEach(t => t.addEventListener("click", () => _activateDeckMode(t.dataset.mode)));
 
@@ -6046,9 +6092,11 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
 
       dsForm?.addEventListener("submit", async (e) => {{
         e.preventDefault();
-        const asinOrUrl = (document.getElementById("ds-asin-input")?.value || "").trim();
+        const asinInput = document.getElementById("ds-asin-input");
+        const asinOrUrl = (asinInput?.value || "").trim();
         if (!asinOrUrl) {{
           dsStatus.textContent = "Please enter an ASIN or Amazon product URL.";
+          asinInput?.focus();
           return;
         }}
         dsSubmitBtn.disabled = true;

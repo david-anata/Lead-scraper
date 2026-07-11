@@ -1408,6 +1408,20 @@ h2.slide-title {
 .channel-card.off_paid { border-left-color: var(--anata-sky); }
 .channel-card.affiliate { border-left-color: var(--anata-rose); }
 .channel-card.retargeting { border-left-color: var(--anata-sage); }
+.channel-card .directional {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(191, 168, 137, 0.18);
+  color: #8a6f3e;
+  border: 1px solid rgba(191, 168, 137, 0.4);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-style: normal;
+}
 .channel-card .head {
   display: flex;
   justify-content: space-between;

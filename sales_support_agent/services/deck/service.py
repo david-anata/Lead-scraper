@@ -1107,6 +1107,14 @@ class DeckGenerationService:
             _render_distribution_card("Fulfillment", xray_report.fulfillment_distribution)
             if xray_report.fulfillment_distribution else ""
         )
+        # Only emit the donut row when at least one donut has data — otherwise
+        # the empty .three-col grid leaves an orphaned margin-top gap (common on
+        # Digital Shelf decks where all distributions are suppressed).
+        _donut_cards = country_donut + size_donut + fulfillment_donut
+        distribution_block = (
+            f'<div class="three-col" style="margin-top:22px">{_donut_cards}</div>'
+            if _donut_cards.strip() else ""
+        )
         niche_keyword = str(payload.get("niche_keyword") or target.get("asin") or "the niche").strip()
         # PR47: category_label is the user-facing broad category. Falls back
         # to niche_keyword for back-compat with payloads built before PR47.
@@ -1681,11 +1689,7 @@ class DeckGenerationService:
         </div>
       </div>
 
-      <div class="three-col" style="margin-top:22px">
-        {country_donut}
-        {size_donut}
-        {fulfillment_donut}
-      </div>
+      {distribution_block}
     </section>
 
     <!-- ===== 02 TARGET LISTING ===== -->
