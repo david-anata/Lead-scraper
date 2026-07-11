@@ -3966,8 +3966,8 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
           .replaceAll("'", "&#39;");
       }}
 
-      function collectOfferPayload() {{
-        return Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).map((editor) => ({{
+      function collectOfferPayload(listEl) {{
+        return Array.from((listEl || deckOfferList)?.querySelectorAll(".offer-editor") || []).map((editor) => ({{
           enabled: Boolean(editor.querySelector(".offer-enabled")?.checked),
           title: editor.querySelector(".offer-title")?.value || "",
           description: editor.querySelector(".offer-description")?.value || "",
@@ -4033,8 +4033,8 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         return wrapper;
       }}
 
-      function syncOfferEditorTitles() {{
-        Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).forEach((editor, index) => {{
+      function syncOfferEditorTitles(listEl) {{
+        Array.from((listEl || deckOfferList)?.querySelectorAll(".offer-editor") || []).forEach((editor, index) => {{
           const titleInput = editor.querySelector(".offer-title");
           const toggle = editor.querySelector(".offer-editor-toggle");
           if (titleInput && toggle) {{
@@ -5764,6 +5764,23 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
             </fieldset>
 
             <fieldset class="offer-toggle-group">
+              <legend>Proposed offers</legend>
+              <label class="checkbox-label">
+                <span>Include proposed offers slide</span>
+                <span class="toggle-switch"><input type="checkbox" id="ds-include-offers" checked /><span aria-hidden="true"></span></span>
+              </label>
+              <div class="offer-builder">
+                <div class="offer-builder-head">
+                  <p>Edit the offer cards directly. These values feed the deck as written here.</p>
+                  <div class="offer-builder-actions">
+                    <button type="button" id="ds-add-offer">ADD OFFER</button>
+                  </div>
+                </div>
+                <div class="offer-editor-list" id="ds-offer-list"></div>
+              </div>
+            </fieldset>
+
+            <fieldset class="offer-toggle-group">
               <legend>Growth plan</legend>
               <label class="checkbox-label">
                 <span>Include growth plan slide</span>
@@ -6090,6 +6107,40 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       const dsStatus = document.getElementById("deck-status");
       const dsSubmitBtn = document.getElementById("ds-submit-button");
 
+      // ---- Digital Shelf offer builder (parity with the Manual tab) ----
+      // Reuses the Manual builder's functions (collectOfferPayload /
+      // buildOfferEditor / toggleOfferEditor / syncOfferEditorTitles), which
+      // are parameterized by list element. The Digital Shelf list is seeded by
+      // cloning the Manual tab's default offer cards so both start identical.
+      const dsOfferList = document.getElementById("ds-offer-list");
+      const dsAddOfferButton = document.getElementById("ds-add-offer");
+      const dsIncludeOffers = document.getElementById("ds-include-offers");
+      // Direct DOM lookup (not the `deckOfferList` const, which is declared
+      // later in this script and would be in the temporal dead zone here).
+      const _manualOfferListForSeed = document.getElementById("deck-offer-list");
+      if (dsOfferList && _manualOfferListForSeed && !dsOfferList.querySelector(".offer-editor")) {{
+        dsOfferList.innerHTML = _manualOfferListForSeed.innerHTML;
+        syncOfferEditorTitles(dsOfferList);
+      }}
+      dsAddOfferButton?.addEventListener("click", () => {{
+        if (!dsOfferList) return;
+        dsOfferList.appendChild(buildOfferEditor(dsOfferList.querySelectorAll(".offer-editor").length));
+        syncOfferEditorTitles(dsOfferList);
+      }});
+      dsOfferList?.addEventListener("click", (event) => {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const toggle = target.closest(".offer-editor-toggle");
+        if (!toggle) return;
+        toggleOfferEditor(toggle.closest(".offer-editor"));
+      }});
+      dsOfferList?.addEventListener("input", (event) => {{
+        const target = event.target;
+        if (target instanceof HTMLElement && target.classList.contains("offer-title")) {{
+          syncOfferEditorTitles(dsOfferList);
+        }}
+      }});
+
       dsForm?.addEventListener("submit", async (e) => {{
         e.preventDefault();
         const asinInput = document.getElementById("ds-asin-input");
@@ -6110,7 +6161,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         }}
         // Convert checkbox booleans
         body["include_growth_plan"] = document.getElementById("ds-include-growth")?.checked ?? true;
-        body["include_recommended_plan"] = true;
+        body["include_recommended_plan"] = dsIncludeOffers?.checked ?? true;
+        body["offer_payload_json"] = JSON.stringify(collectOfferPayload(dsOfferList));
 
         try {{
           const resp = await fetch("/admin/api/digital-shelf/generate-deck", {{
@@ -6517,8 +6569,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
           .replaceAll("'", "&#39;");
       }}
 
-      function collectOfferPayload() {{
-        return Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).map((editor) => ({{
+      function collectOfferPayload(listEl) {{
+        return Array.from((listEl || deckOfferList)?.querySelectorAll(".offer-editor") || []).map((editor) => ({{
           enabled: Boolean(editor.querySelector(".offer-enabled")?.checked),
           title: editor.querySelector(".offer-title")?.value || "",
           description: editor.querySelector(".offer-description")?.value || "",
@@ -6584,8 +6636,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         return wrapper;
       }}
 
-      function syncOfferEditorTitles() {{
-        Array.from(deckOfferList?.querySelectorAll(".offer-editor") || []).forEach((editor, index) => {{
+      function syncOfferEditorTitles(listEl) {{
+        Array.from((listEl || deckOfferList)?.querySelectorAll(".offer-editor") || []).forEach((editor, index) => {{
           const titleInput = editor.querySelector(".offer-title");
           const toggle = editor.querySelector(".offer-editor-toggle");
           if (titleInput && toggle) {{
