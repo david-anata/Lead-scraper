@@ -1410,6 +1410,7 @@ h2.slide-title {
 .channel-card.retargeting { border-left-color: var(--anata-sage); }
 .channel-card .directional {
   display: inline-block;
+  align-self: flex-start;
   margin-top: 6px;
   padding: 2px 8px;
   border-radius: 999px;
