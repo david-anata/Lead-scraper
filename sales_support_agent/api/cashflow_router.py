@@ -4,23 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from sales_support_agent.services.cashflow.alerts import render_risk_alerts_page
 from sales_support_agent.services.cashflow.ap import (
     parse_obligation_form,
     render_ap_edit_page,
     render_ap_new_page,
-    render_upcoming_ap_page,
 )
 from sales_support_agent.services.cashflow.ar import (
     render_ar_edit_page,
     render_ar_new_page,
-    render_expected_ar_page,
 )
-from sales_support_agent.services.cashflow.forecast import render_weekly_forecast_page
 from sales_support_agent.services.cashflow.obligations import (
     create_obligation,
     create_recurring_template,
@@ -35,14 +32,9 @@ from sales_support_agent.services.cashflow.recurring import (
     parse_template_form,
     render_recurring_edit_page,
     render_recurring_new_page,
-    render_recurring_page,
 )
-from sales_support_agent.services.cashflow.scenario import render_scenario_page
 from sales_support_agent.services.cashflow.upload import run_csv_upload
-from sales_support_agent.services.cashflow.upload_page import (
-    render_upload_page,
-    render_upload_result,
-)
+from sales_support_agent.services.cashflow.upload_page import render_upload_result
 from sales_support_agent.services.auth_deps import get_current_user, require_tool
 from sales_support_agent.services.cashflow.cashflow_helpers import _finance_nav_user
 
@@ -67,6 +59,10 @@ router = APIRouter(
 
 def _redirect_login() -> RedirectResponse:
     return RedirectResponse("/admin/login", status_code=303)
+
+
+def _redirect_finance_home(message: str = "Finance now lives on one control page.") -> RedirectResponse:
+    return RedirectResponse(f"/admin/finances?flash={quote(f'ok:{message}')}", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -235,23 +231,7 @@ _forecast_logger = _logging.getLogger(__name__)
 
 @router.get("/forecast", response_class=HTMLResponse)
 async def finance_forecast(request: Request):
-    # Fire-and-forget: expand recurring templates in the background so the
-    # page load is never blocked by template generation.
-    async def _expand_templates():
-        try:
-            created = await asyncio.to_thread(
-                generate_upcoming_from_templates, horizon_days=400, advance_template=True
-            )
-            _forecast_logger.debug(
-                "[forecast] background template expansion: %d obligations created", len(created)
-            )
-        except Exception as exc:
-            _forecast_logger.error(
-                "[forecast] background template expansion failed: %s", exc, exc_info=True
-            )
-
-    asyncio.create_task(_expand_templates())
-    return render_weekly_forecast_page()
+    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +240,7 @@ async def finance_forecast(request: Request):
 
 @router.get("/ap", response_class=HTMLResponse)
 async def ap_list(request: Request, flash: str = ""):
-    return render_upcoming_ap_page(flash=flash)
+    return _redirect_finance_home()
 
 
 @router.get("/ap/new", response_class=HTMLResponse)
@@ -274,7 +254,7 @@ async def ap_new_submit(request: Request):
     kwargs = parse_obligation_form(form)
     try:
         create_obligation(event_type="outflow", **kwargs)
-        return RedirectResponse("/admin/finances/ap?flash=ok:Payable+added", status_code=303)
+        return RedirectResponse("/admin/finances?flash=ok:Payable+added", status_code=303)
     except Exception as exc:
         return render_ap_new_page(flash=f"err:{exc}")
 
@@ -290,7 +270,7 @@ async def ap_edit_submit(request: Request, event_id: str):
     kwargs = parse_obligation_form(form)
     try:
         update_obligation(event_id, **kwargs)
-        return RedirectResponse("/admin/finances/ap?flash=ok:Payable+updated", status_code=303)
+        return RedirectResponse("/admin/finances?flash=ok:Payable+updated", status_code=303)
     except Exception as exc:
         return render_ap_edit_page(event_id, flash=f"err:{exc}")
 
@@ -298,7 +278,7 @@ async def ap_edit_submit(request: Request, event_id: str):
 @router.post("/ap/{event_id}/delete")
 async def ap_delete(request: Request, event_id: str):
     delete_obligation(event_id)
-    return RedirectResponse("/admin/finances/ap?flash=ok:Deleted", status_code=303)
+    return RedirectResponse("/admin/finances?flash=ok:Deleted", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +287,7 @@ async def ap_delete(request: Request, event_id: str):
 
 @router.get("/ar", response_class=HTMLResponse)
 async def ar_list(request: Request, flash: str = ""):
-    return render_expected_ar_page(flash=flash)
+    return _redirect_finance_home()
 
 
 @router.get("/ar/new", response_class=HTMLResponse)
@@ -321,7 +301,7 @@ async def ar_new_submit(request: Request):
     kwargs = parse_obligation_form(form)
     try:
         create_obligation(event_type="inflow", **kwargs)
-        return RedirectResponse("/admin/finances/ar?flash=ok:Receivable+added", status_code=303)
+        return RedirectResponse("/admin/finances?flash=ok:Receivable+added", status_code=303)
     except Exception as exc:
         return render_ar_new_page(flash=f"err:{exc}")
 
@@ -337,7 +317,7 @@ async def ar_edit_submit(request: Request, event_id: str):
     kwargs = parse_obligation_form(form)
     try:
         update_obligation(event_id, **kwargs)
-        return RedirectResponse("/admin/finances/ar?flash=ok:Receivable+updated", status_code=303)
+        return RedirectResponse("/admin/finances?flash=ok:Receivable+updated", status_code=303)
     except Exception as exc:
         return render_ar_edit_page(event_id, flash=f"err:{exc}")
 
@@ -345,7 +325,7 @@ async def ar_edit_submit(request: Request, event_id: str):
 @router.post("/ar/{event_id}/delete")
 async def ar_delete(request: Request, event_id: str):
     delete_obligation(event_id)
-    return RedirectResponse("/admin/finances/ar?flash=ok:Deleted", status_code=303)
+    return RedirectResponse("/admin/finances?flash=ok:Deleted", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +334,7 @@ async def ar_delete(request: Request, event_id: str):
 
 @router.get("/alerts", response_class=HTMLResponse)
 async def finance_alerts(request: Request, flash: str = ""):
-    params = dict(request.query_params)
-    severity = params.get("severity", "all")
-    from sales_support_agent.services.cashflow.alerts_view import render_alerts_view_page
-    return HTMLResponse(render_alerts_view_page(flash=flash, severity_filter=severity))
+    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------
@@ -366,19 +343,12 @@ async def finance_alerts(request: Request, flash: str = ""):
 
 @router.get("/scenario", response_class=HTMLResponse)
 async def scenario_get(request: Request):
-    return render_scenario_page()
+    return _redirect_finance_home()
 
 
 @router.post("/scenario", response_class=HTMLResponse)
 async def scenario_post(request: Request):
-    form = dict(await request.form())
-    adj = {
-        "event_id": form.get("event_id", ""),
-        "new_amount_dollars": form.get("new_amount_dollars") or None,
-        "new_due_date": form.get("new_due_date") or None,
-        "remove": bool(form.get("remove")),
-    }
-    return render_scenario_page(adjustments=[adj] if adj["event_id"] else None)
+    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +357,7 @@ async def scenario_post(request: Request):
 
 @router.get("/upload", response_class=HTMLResponse)
 async def upload_form(request: Request):
-    return render_upload_page()
+    return _redirect_finance_home()
 
 
 @router.post("/upload", response_class=HTMLResponse)
@@ -398,7 +368,7 @@ async def upload_submit(request: Request, csv_file: UploadFile = File(...)):
     result = run_csv_upload(csv_bytes, merge_mode=merge_mode)
     result_html = render_upload_result(result)
     flash = f"ok:{result.summary()}" if result.success else f"err:{'; '.join(result.errors[:2])}"
-    return render_upload_page(result_html=result_html, flash=flash)
+    return await render_cashflow_overview_page(flash=flash, inline_result_html=result_html)
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +389,6 @@ async def sync_clickup(request: Request):
             flash = f"err:ClickUp sync errors: {'; '.join(result.errors[:2])}"
     except Exception as exc:
         flash = f"err:ClickUp sync failed: {exc}"
-    from urllib.parse import quote
     return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
 
 
@@ -429,7 +398,7 @@ async def sync_clickup(request: Request):
 
 @router.get("/recurring", response_class=HTMLResponse)
 async def recurring_list(request: Request, flash: str = ""):
-    return render_recurring_page(flash=flash)
+    return _redirect_finance_home()
 
 
 @router.get("/recurring/new", response_class=HTMLResponse)
@@ -443,7 +412,7 @@ async def recurring_new_submit(request: Request):
     kwargs = parse_template_form(form)
     try:
         create_recurring_template(**kwargs)
-        return RedirectResponse("/admin/finances/recurring?flash=ok:Template+created", status_code=303)
+        return RedirectResponse("/admin/finances?flash=ok:Template+created", status_code=303)
     except Exception as exc:
         return render_recurring_new_page(flash=f"err:{exc}")
 
@@ -459,7 +428,7 @@ async def recurring_edit_submit(request: Request, template_id: str):
     kwargs = parse_template_form(form)
     try:
         update_recurring_template(template_id, **kwargs)
-        return RedirectResponse("/admin/finances/recurring?flash=ok:Template+updated", status_code=303)
+        return RedirectResponse("/admin/finances?flash=ok:Template+updated", status_code=303)
     except Exception as exc:
         return render_recurring_edit_page(template_id, flash=f"err:{exc}")
 
@@ -467,7 +436,7 @@ async def recurring_edit_submit(request: Request, template_id: str):
 @router.post("/recurring/{template_id}/delete")
 async def recurring_delete(request: Request, template_id: str):
     delete_recurring_template(template_id)
-    return RedirectResponse("/admin/finances/recurring?flash=ok:Deleted", status_code=303)
+    return RedirectResponse("/admin/finances?flash=ok:Deleted", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +493,6 @@ async def sync_qbo(request: Request):
     else:
         flash = f"ok:Synced — {' · '.join(parts)}"
 
-    from urllib.parse import quote
     return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
 
 
@@ -532,7 +500,7 @@ async def sync_qbo(request: Request):
 async def recurring_generate(request: Request):
     created = generate_upcoming_from_templates(horizon_days=90)
     return RedirectResponse(
-        f"/admin/finances/recurring?flash=ok:{len(created)}+obligations+generated",
+        f"/admin/finances?flash=ok:{len(created)}+obligations+generated",
         status_code=303,
     )
 
@@ -543,8 +511,7 @@ async def recurring_generate(request: Request):
 
 @router.get("/qbo", response_class=HTMLResponse)
 async def qbo_settings_page(request: Request, flash: str = ""):
-    from sales_support_agent.services.cashflow.qbo_settings import render_qbo_settings_page
-    return HTMLResponse(render_qbo_settings_page(flash=flash))
+    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------
@@ -553,15 +520,13 @@ async def qbo_settings_page(request: Request, flash: str = ""):
 
 @router.get("/reconcile", response_class=HTMLResponse)
 async def reconcile_page(request: Request, flash: str = ""):
-    from sales_support_agent.services.cashflow.reconcile import render_reconcile_page
-    return HTMLResponse(render_reconcile_page(flash=flash))
+    return _redirect_finance_home()
 
 
 @router.post("/reconcile/accept-pattern", response_class=HTMLResponse)
 async def reconcile_accept_pattern(request: Request):
     """Turn a detected recurring pattern into a recurring_template."""
     from sales_support_agent.services.cashflow.trend_detector import accept_pattern_as_template
-    from urllib.parse import quote
     form = dict(await request.form())
     try:
         accept_pattern_as_template(form)
@@ -569,7 +534,7 @@ async def reconcile_accept_pattern(request: Request):
     except Exception as exc:
         flash = f"err:Could not create template: {exc}"
     return RedirectResponse(
-        f"/admin/finances/reconcile?flash={quote(flash)}", status_code=303
+        f"/admin/finances?flash={quote(flash)}", status_code=303
     )
 
 
@@ -578,14 +543,8 @@ async def reconcile_accept_pattern(request: Request):
 # ---------------------------------------------------------------------------
 
 @router.get("/ledger", response_class=HTMLResponse)
-async def ledger_page(request: Request, **kwargs):
-    from sales_support_agent.services.cashflow.ledger import render_ledger_page
-    params = dict(request.query_params)
-    return HTMLResponse(render_ledger_page(
-        from_date=params.get("from"),
-        to_date=params.get("to"),
-        filter_type=params.get("filter", "all"),
-    ))
+async def ledger_page(request: Request):
+    return _redirect_finance_home()
 
 
 @router.get("/ledger/export")
@@ -648,24 +607,7 @@ async def ledger_export(request: Request):
 
 @router.get("/calendar", response_class=HTMLResponse)
 async def calendar_page(request: Request):
-    from sales_support_agent.services.cashflow.calendar_view import render_calendar_page
-    # Kick off template expansion so the current and upcoming months are populated.
-    async def _expand():
-        try:
-            await asyncio.to_thread(
-                generate_upcoming_from_templates, horizon_days=400, advance_template=True
-            )
-        except Exception as exc:
-            _forecast_logger.error("[calendar] template expansion failed: %s", exc, exc_info=True)
-    asyncio.create_task(_expand())
-    params = dict(request.query_params)
-    year = int(params["year"]) if params.get("year") else None
-    month = int(params["month"]) if params.get("month") else None
-    return HTMLResponse(render_calendar_page(
-        year=year,
-        month=month,
-        filter_type=params.get("filter", "all"),
-    ))
+    return _redirect_finance_home()
 
 
 # ---------------------------------------------------------------------------
@@ -682,8 +624,7 @@ async def dismiss_alert(alert_id: str, request: Request):
             INSERT INTO kv_store (key, value, updated_at) VALUES (:key, 'dismissed', :now)
             ON CONFLICT(key) DO UPDATE SET value='dismissed', updated_at=excluded.updated_at
         """), {"key": f"alert_dismissed:{alert_id}", "now": now})
-    from urllib.parse import quote
-    return RedirectResponse(f"/admin/finances/alerts?flash={quote('ok:Alert dismissed')}", status_code=303)
+    return RedirectResponse(f"/admin/finances?flash={quote('ok:Alert dismissed')}", status_code=303)
 
 
 @router.post("/alerts/dismiss-all", response_class=HTMLResponse)
@@ -696,5 +637,4 @@ async def dismiss_all_alerts(request: Request):
             INSERT INTO kv_store (key, value, updated_at) VALUES ('alerts_bulk_dismissed_at', :now, :now)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
         """), {"now": now})
-    from urllib.parse import quote
-    return RedirectResponse(f"/admin/finances/alerts?flash={quote('ok:All alerts dismissed')}", status_code=303)
+    return RedirectResponse(f"/admin/finances?flash={quote('ok:All alerts dismissed')}", status_code=303)
