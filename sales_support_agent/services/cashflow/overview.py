@@ -531,10 +531,67 @@ def compute_finance_overview(
 
 
 # ---------------------------------------------------------------------------
-# Overview page
+# Overview page helpers
 # ---------------------------------------------------------------------------
 
-async def render_cashflow_overview_page(*, flash: str = "") -> str:
+def _row_due_date(row: dict[str, Any]) -> date | None:
+    raw = row.get("due_date")
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _is_chunk_payable(row: dict[str, Any]) -> bool:
+    if row.get("category") == "rent":
+        return True
+    text = " ".join(
+        str(row.get(field, "") or "")
+        for field in ("name", "vendor_or_customer", "notes", "description")
+    ).lower()
+    return "chunk" in text or "partial" in text
+
+
+def _source_label(row: dict[str, Any]) -> str:
+    source = str(row.get("source") or "").strip().lower()
+    if source == "csv":
+        return "CSV"
+    if source.startswith("qbo"):
+        return "QuickBooks"
+    if source == "clickup":
+        return "ClickUp"
+    if source == "manual":
+        return "Manual"
+    return source.replace("_", " ").title() or "System"
+
+
+def _queue_reason(row: dict[str, Any], *, due: date | None, today: date) -> str:
+    parts: list[str] = []
+    if str(row.get("status", "")).lower() == "overdue" or (due and due < today):
+        parts.append("Overdue")
+    elif due:
+        days = (due - today).days
+        if days == 0:
+            parts.append("Due today")
+        elif days == 1:
+            parts.append("Due tomorrow")
+        elif days > 1:
+            parts.append(f"Due in {days} days")
+    if _is_chunk_payable(row):
+        parts.append("Chunk-payable")
+    parts.append(_source_label(row))
+    return " · ".join(parts)
+
+
+async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: str = "") -> str:
     # Load all events
     rows = list_obligations(limit=2000)
 
@@ -667,47 +724,93 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
     except Exception:
         pass
 
-    # Metric cards
+    active_outflow_rows = []
+    for row in rows:
+        if row.get("event_type") != "outflow":
+            continue
+        if str(row.get("status", "")).lower() in {"posted", "matched", "cancelled", "paid"}:
+            continue
+        due = _row_due_date(row)
+        if not due:
+            continue
+        active_outflow_rows.append((due, row))
+
+    overdue_rows = [
+        (due, row)
+        for due, row in active_outflow_rows
+        if due < today and not row.get("matched_to_id")
+    ]
+    soon = today + timedelta(days=14)
+    due_soon_rows = [
+        (due, row)
+        for due, row in active_outflow_rows
+        if today <= due <= soon
+    ]
+    seen_action_ids: set[str] = set()
+    action_rows = []
+    for due, row in overdue_rows + due_soon_rows:
+        row_id = str(row.get("id") or "")
+        if row_id in seen_action_ids:
+            continue
+        seen_action_ids.add(row_id)
+        action_rows.append((due, row))
+    action_rows.sort(key=lambda item: (item[0] >= today, item[0], -int(item[1].get("amount_cents") or 0)))
+
+    due_14_total_cents = sum(int(row.get("amount_cents") or 0) for _, row in action_rows)
+    overdue_total_cents = sum(int(row.get("amount_cents") or 0) for _, row in overdue_rows)
+    safe_to_spend_cents = balance_cents - due_14_total_cents
+
+    posted_outflow_rows = []
+    for row in rows:
+        if row.get("event_type") != "outflow":
+            continue
+        if str(row.get("status", "")).lower() not in {"posted", "matched"}:
+            continue
+        due = _row_due_date(row)
+        if not due:
+            continue
+        posted_outflow_rows.append((due, row))
+    posted_outflow_rows.sort(key=lambda item: (item[0], str(item[1].get("created_at", ""))), reverse=True)
+    recent_posted_rows = posted_outflow_rows[:8]
+
+    qbo_connected = False
+    try:
+        from sales_support_agent.api.qbo_auth_router import _load_tokens
+
+        token_row = _load_tokens()
+        qbo_connected = bool(
+            token_row
+            and token_row.get("access_token")
+            and token_row.get("realm_id")
+        )
+    except Exception:
+        qbo_connected = False
+
     cards_html = f"""
-    <div class="card-grid">
-      <div class="metric-card" style="{'border-left:3px solid #f59e0b' if balance_stale else ''}">
-        <div class="metric-label">Bank Balance</div>
+    <div class="finance-stat-grid">
+      <div class="metric-card finance-stat-card" style="{'border-left:3px solid #f59e0b' if balance_stale else ''}">
+        <div class="metric-label">Cash In Bank</div>
         <div class="metric-value {metrics.balance_class}">{_dollar(metrics.balance_cents)}</div>
         <div class="metric-note" style="{'color:#f59e0b' if balance_stale else ''}">{balance_note}</div>
         {last_sync_html}
       </div>
-      <div class="metric-card">
-        <div class="metric-label">Cash Runway</div>
-        <div class="metric-value {runway_class}">{runway_display}</div>
-        <div class="metric-note">{runway_note}</div>
+      <div class="metric-card finance-stat-card">
+        <div class="metric-label">Safe To Spend</div>
+        <div class="metric-value {'negative' if safe_to_spend_cents < 0 else ''}">{_dollar(safe_to_spend_cents)}</div>
+        <div class="metric-note">Cash minus overdue + next 14 days of bills</div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">4-Week Net</div>
-        <div class="metric-value {metrics.net_class}">{_dollar(metrics.net_4w_cents)}</div>
-        <div class="metric-note">Forecasted net cashflow</div>
+      <div class="metric-card finance-stat-card">
+        <div class="metric-label">Bills Due In 14 Days</div>
+        <div class="metric-value amount-out">{_dollar(due_14_total_cents)}</div>
+        <div class="metric-note">{len(action_rows)} items to review</div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">Due in 14 Days</div>
-        <div class="metric-value {metrics.upcoming_class}">{_dollar(metrics.upcoming_total_cents)}</div>
-        <div class="metric-note">{metrics.upcoming_count} obligations</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Overdue AP</div>
-        <div class="metric-value {metrics.overdue_class}">{metrics.overdue_count}</div>
-        <div class="metric-note">{_dollar(metrics.overdue_total_cents)} outstanding</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-label">Risk Alerts</div>
-        <div class="metric-value {metrics.alerts_class}">
-          {metrics.critical_count + metrics.warning_count}
-        </div>
-        <div class="metric-note">
-          {metrics.critical_count} critical · {metrics.warning_count} warnings
-        </div>
+      <div class="metric-card finance-stat-card">
+        <div class="metric-label">Overdue Balance</div>
+        <div class="metric-value {'negative' if overdue_rows else ''}">{_dollar(overdue_total_cents)}</div>
+        <div class="metric-note">{len(overdue_rows)} overdue items</div>
       </div>
     </div>"""
 
-    # Budget safeguard — going-red banner
     safeguard_html = ""
     if metrics.at_risk_dates:
         first_at_risk = metrics.at_risk_dates[0]
@@ -738,27 +841,167 @@ async def render_cashflow_overview_page(*, flash: str = "") -> str:
       <strong style="color:#16a34a">✓ Budget Safeguard — No Red Weeks in 12-Month Horizon</strong>
     </div>"""
 
-    # Top 3 alerts (including at-risk weeks injected as critical alerts)
-    alert_rows = ""
-    for a in alerts[:3]:
-        badge_cls = f"badge-{a.severity}"
-        alert_rows += f"""
-        <tr>
-          <td><span class="badge {badge_cls}">{html.escape(a.severity.upper())}</span></td>
-          <td>{html.escape(a.title)}</td>
-          <td style="color:#6b7a8d;font-size:12px">{html.escape(a.detail)}</td>
-        </tr>"""
-
-    alerts_table = f"""
-    <table>
-      <thead><tr><th>Level</th><th>Alert</th><th>Detail</th></tr></thead>
-      <tbody>{alert_rows if alert_rows else '<tr><td colspan="3" class="empty-state">No active alerts</td></tr>'}</tbody>
-    </table>""" if alerts else '<div class="empty-state">No risk alerts. Looking good.</div>'
-
     ai_block = f'<div class="ai-summary">{html.escape(metrics.ai_text)}</div>' if metrics.ai_text else ""
 
-    # 8-week rolling cashflow table
-    weekly_table_html = _render_weekly_table(events, today, balance_cents=balance_cents)
+    happening_text = (
+        f"{len(action_rows)} bills need attention in the next 14 days totaling {_dollar(due_14_total_cents)}."
+        if action_rows
+        else "No bills are scheduled in the next 14 days."
+    )
+    if balance_cents:
+        happening_text += f" Current bank snapshot is {_dollar(balance_cents)}."
+    else:
+        happening_text += " Current bank snapshot is missing."
+
+    broken_parts: list[str] = []
+    if not balance_source_label:
+        broken_parts.append("There is no trusted live bank balance yet.")
+    elif balance_stale:
+        broken_parts.append(f"The bank snapshot is stale from {balance_as_of or 'an older upload'}.")
+    if overdue_rows:
+        broken_parts.append(f"{len(overdue_rows)} overdue payables are still open.")
+    if not action_rows:
+        broken_parts.append("The 14-day payables queue is empty, which usually means the data is incomplete.")
+    broken_text = " ".join(broken_parts) if broken_parts else "Nothing major is broken right now. This page is ready for weekly review."
+
+    if overdue_rows and action_rows:
+        top_due, top_row = action_rows[0]
+        next_text = (
+            f"Review the overdue queue first, starting with {html.escape(_display_name(top_row))} "
+            f"for {_dollar(int(top_row.get('amount_cents') or 0))}."
+        )
+    elif action_rows:
+        top_due, top_row = action_rows[0]
+        next_text = (
+            f"Confirm the next payment window, starting with {html.escape(_display_name(top_row))} "
+            f"on {top_due.strftime('%b %d')}."
+        )
+    elif not balance_source_label or balance_stale:
+        next_text = "Upload the latest bank CSV so safe-to-spend reflects real cash."
+    else:
+        next_text = "Refresh finance data and keep this page as the weekly payables control room."
+
+    summary_html = f"""
+    <div class="finance-summary-grid">
+      <section class="finance-summary-card">
+        <div class="finance-summary-label">Happening</div>
+        <p>{happening_text}</p>
+      </section>
+      <section class="finance-summary-card finance-summary-card--warn">
+        <div class="finance-summary-label">Broken</div>
+        <p>{broken_text}</p>
+      </section>
+      <section class="finance-summary-card finance-summary-card--next">
+        <div class="finance-summary-label">Next</div>
+        <p>{next_text}</p>
+      </section>
+    </div>"""
+
+    queue_rows_html = ""
+    for due, row in action_rows[:12]:
+        amount_cents = int(row.get("amount_cents") or 0)
+        due_label = "Overdue" if due < today else due.strftime("%b %d")
+        queue_rows_html += f"""
+          <tr>
+            <td>
+              <div class="queue-vendor">{html.escape(_display_name(row))}</div>
+              <div class="queue-meta">{html.escape(str(row.get('vendor_or_customer') or row.get('category') or ''))}</div>
+            </td>
+            <td>{html.escape(due_label)}</td>
+            <td class="amount-out">{_dollar(amount_cents)}</td>
+            <td>{html.escape(_queue_reason(row, due=due, today=today))}</td>
+            <td><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/{html.escape(str(row.get('id') or ''))}/edit">Review</a></td>
+          </tr>"""
+
+    queue_html = f"""
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2>Payables Action Queue</h2>
+          <p class="page-sub">Overdue plus the next 14 days. This is the page to work from.</p>
+        </div>
+        <a href="#finance-utilities" class="btn btn-secondary btn-sm">Update data</a>
+      </div>
+      {
+        f'''
+      <table class="finance-queue-table">
+        <thead>
+          <tr><th>Vendor</th><th>Window</th><th>Amount</th><th>Why</th><th></th></tr>
+        </thead>
+        <tbody>{queue_rows_html}</tbody>
+      </table>
+      '''
+        if queue_rows_html
+        else '<div class="empty-state">No payables are queued for the next 14 days yet.</div>'
+      }
+    </div>"""
+
+    why_number_html = f"""
+    <div class="finance-side-grid">
+      <section class="card finance-explain-card">
+        <h2>Why This Number</h2>
+        <div class="finance-explain-list">
+          <div><strong>Cash in bank:</strong> {_dollar(balance_cents)} from {html.escape(balance_source_label or 'no connected bank source')}.</div>
+          <div><strong>Reserved for bills:</strong> {_dollar(due_14_total_cents)} across overdue plus the next 14 days.</div>
+          <div><strong>Safe to spend:</strong> {_dollar(safe_to_spend_cents)} after holding that reserve.</div>
+          <div><strong>Freshness:</strong> {html.escape(balance_note)}.</div>
+        </div>
+      </section>
+      <section class="card finance-explain-card" id="finance-utilities">
+        <h2>Utilities</h2>
+        <div class="finance-utility-actions">
+          <a href="#finance-queue" class="btn btn-primary">Review overdue queue</a>
+          <form method="post" action="/admin/finances/sync-qbo">
+            <button type="submit" class="btn btn-secondary">Refresh finance data</button>
+          </form>
+          <a href="/admin/finances/ap/new" class="btn btn-secondary">Add payable</a>
+          <a href="/admin/finances/qbo/connect" class="btn btn-secondary">{'Reconnect QuickBooks' if qbo_connected else 'Connect QuickBooks'}</a>
+        </div>
+        <form class="finance-upload-form" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
+          <div class="finance-upload-head">
+            <strong>Manual bank CSV upload</strong>
+            <span>{'Fallback when bank/QBO is not current.' if not qbo_connected else 'Use this when the posted bank picture is ahead of system sync.'}</span>
+          </div>
+          <div class="finance-upload-grid">
+            <input type="file" name="csv_file" accept=".csv">
+            <select name="merge_mode">
+              <option value="append">Append / merge by transaction ID</option>
+              <option value="replace_range">Replace date range</option>
+            </select>
+            <button type="submit" class="btn btn-secondary">Upload CSV</button>
+          </div>
+        </form>
+        {inline_result_html}
+      </section>
+    </div>"""
+
+    recent_rows_html = "".join(
+        f"""
+          <tr>
+            <td>{html.escape(due.strftime('%b %d, %Y'))}</td>
+            <td>{html.escape(_display_name(row))}</td>
+            <td>{html.escape(_source_label(row))}</td>
+            <td class="amount-out">{_dollar(int(row.get('amount_cents') or 0))}</td>
+          </tr>"""
+        for due, row in recent_posted_rows
+    )
+
+    recent_posted_html = f"""
+    <details class="finance-toggle-card">
+      <summary>Recent posted outflows</summary>
+      {
+        f'''
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Vendor</th><th>Source</th><th>Amount</th></tr>
+        </thead>
+        <tbody>{recent_rows_html}</tbody>
+      </table>
+      '''
+        if recent_rows_html
+        else '<div class="empty-state">No posted outflows are loaded yet.</div>'
+      }
+    </details>"""
 
     chart_html = """
 <!-- Chart.js + date adapter for daily x-axis -->
@@ -1060,38 +1303,17 @@ document.addEventListener('DOMContentLoaded', loadDailyChart);
     body = f"""
     <div>
       <p class="eyebrow" style="margin:0 0 10px;text-transform:uppercase;letter-spacing:.18em;font-size:12px;font-weight:800;color:var(--accent);font-family:'Montserrat',sans-serif;">Finance</p>
-      <h1>Cash overview.</h1>
-      <p class="page-sub" style="margin-top:10px">Cash position · {today.strftime("%B %d, %Y")}</p>
+      <h1>Finance control.</h1>
+      <p class="page-sub" style="margin-top:10px">One page for what must be paid, what cash is safe, and what needs attention next.</p>
       {ai_block}
     </div>
     {safeguard_html}
+    {summary_html}
     {cards_html}
+    <div id="finance-queue"></div>
+    {queue_html}
+    {why_number_html}
     {chart_html}
-    <div class="card">
-      <h2>Risk Alerts</h2>
-      <div style="margin-top:14px">{alerts_table}</div>
-      <div class="action-row">
-        <a href="/admin/finances/alerts" class="btn btn-secondary btn-sm">All Alerts →</a>
-      </div>
-    </div>
-    <div class="card">
-      <h2>8-Week Cashflow</h2>
-      <div style="margin-top:14px">
-        {weekly_table_html if events else '<div class="empty-state">No planned events yet — sync QuickBooks or add recurring templates to populate the forecast.</div>'}
-      </div>
-      <div class="action-row">
-        <a href="/admin/finances/forecast" class="btn btn-secondary btn-sm">Full Forecast →</a>
-      </div>
-    </div>
-    <div class="action-row" style="margin-top:0">
-      <form method="post" action="/admin/finances/sync-qbo" style="display:inline">
-        <button type="submit" class="btn btn-primary">Refresh finance data (QuickBooks + ClickUp)</button>
-      </form>
-      <a href="/admin/finances/ap/new" class="btn btn-secondary">+ Add Payable</a>
-      <a href="/admin/finances/ar/new" class="btn btn-secondary">+ Add Receivable</a>
-      <a href="/admin/finances/recurring" class="btn btn-secondary">Recurring rules</a>
-      <a href="/admin/finances/reconcile" class="btn btn-secondary">Actuals vs Planned</a>
-      <a href="/admin/finances/upload" class="btn btn-secondary btn-sm" style="opacity:0.6" title="Manual CSV upload (fallback)">Upload CSV</a>
-    </div>"""
+    {recent_posted_html}"""
 
     return _page_shell("Finance Overview", "overview", body, flash=flash)

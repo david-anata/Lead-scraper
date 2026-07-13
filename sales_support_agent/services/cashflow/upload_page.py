@@ -68,14 +68,13 @@ def render_upload_result(result) -> str:
         bal_line = f" · Balance: ${bal:,.2f}"
 
     return f"""
-    <div class="card">
+    <div class="card finance-inline-result">
       <h2>Upload Result</h2>
       <div class="{status_cls}">
         {icon} {html.escape(result.summary())}{bal_line}
       </div>
       {error_block}
       <div class="action-row" style="margin-top:16px">
-        <a href="/admin/finances" class="btn btn-secondary btn-sm">← Back to Overview</a>
-        <a href="/admin/finances/forecast" class="btn btn-secondary btn-sm">View Forecast →</a>
+        <a href="/admin/finances" class="btn btn-secondary btn-sm">Refresh page</a>
       </div>
     </div>"""
