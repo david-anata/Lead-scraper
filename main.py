@@ -778,7 +778,12 @@ def validate_settings_on_startup(settings: Settings) -> None:
 def startup() -> None:
     configure_logging()
     settings = load_settings()
+    # Root lead-engine Settings (apollo/slack/heyreach/etc.). On the merged
+    # single-service app this is superseded below by the sales_support_agent
+    # Settings for app.state.settings, but is preserved as
+    # app.state.lead_engine_settings for any lead-engine code that expects it.
     app.state.settings = settings
+    app.state.lead_engine_settings = settings
     app.state.admin_dashboard_last_auto_sync_at = None
     app.state.admin_dashboard_last_auto_sync_result = {
         "status": "idle",
@@ -815,6 +820,25 @@ def startup() -> None:
     except Exception as _e:
         logger.warning("Could not load agent_settings: %s", _e)
         app.state.agent_settings = None
+    # MERGED SINGLE-SERVICE APP: the mounted sales_support_agent core router and
+    # sales_jobs_router read app.state.settings.{internal_api_key,
+    # dashboard_auto_sync_enabled/max_age_minutes, admin_cookie_name,
+    # fulfillment_cs_reports_dir} DIRECTLY — no agent_settings fallback. Point
+    # app.state.settings at the agent Settings so those guards resolve correctly
+    # and FAIL CLOSED (an unset internal key stays "" rather than raising
+    # AttributeError on the root Settings, which lacks these fields). Falls back
+    # to the root Settings only if the agent config failed to load above.
+    if app.state.agent_settings is not None:
+        app.state.settings = app.state.agent_settings
+    # Dashboard-sync state read by the core router's /admin/api/sync-dashboard*
+    # endpoints. sales_support_agent/main.py sets these on its own app.state;
+    # the merged root app must provide them too or those routes 500.
+    app.state.dashboard_sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dashboard-sync")
+    app.state.dashboard_sync_lock = threading.Lock()
+    app.state.dashboard_sync_future = None
+    app.state.dashboard_sync_last_started_at = None
+    app.state.dashboard_sync_last_completed_at = None
+    app.state.dashboard_sync_last_error = ""
     # RBAC: seed the never-lockable super-admin(s) and install the per-tool gate.
     try:
         if _cf_db_url and app.state.agent_settings is not None:
@@ -4532,41 +4556,6 @@ def admin_delete_deck_run_proxy(request: Request, run_id: int) -> JSONResponse:
     return JSONResponse(status_code=response.status_code, content=body)
 
 
-@app.post("/admin/api/digital-shelf/generate-deck")
-async def admin_digital_shelf_generate_deck_proxy(request: Request) -> JSONResponse:
-    """Digital Shelf proxy: forward JSON body to the backend, no file uploads."""
-    admin_settings = load_admin_dashboard_settings()
-    token = request.cookies.get(admin_settings.admin_cookie_name, "")
-    if not validate_admin_session_token(admin_settings, token):
-        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
-    if not admin_settings.sales_support_agent_url:
-        return JSONResponse(status_code=500, content={"detail": "Sales support agent URL not configured."})
-
-    try:
-        body_bytes = await request.body()
-    except Exception:
-        body_bytes = b"{}"
-
-    try:
-        response = requests.post(
-            f"{admin_settings.sales_support_agent_url}/admin/api/digital-shelf/generate-deck",
-            data=body_bytes,
-            headers={
-                "Content-Type": "application/json",
-                "Cookie": f"{admin_settings.admin_cookie_name}={token}",
-            },
-            timeout=120,
-        )
-    except requests.RequestException as exc:
-        return JSONResponse(status_code=502, content={"detail": f"Failed to reach backend: {exc}"})
-
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {"detail": response.text or "Unexpected backend response."}
-    return JSONResponse(status_code=response.status_code, content=payload)
-
-
 @app.post("/admin/api/generate-deck")
 async def admin_generate_deck_proxy(
     request: Request,
@@ -4730,164 +4719,6 @@ async def admin_generate_deck_proxy(
     return JSONResponse(status_code=status_code, content=payload)
 
 
-def _proxy_deck_subpath(
-    request: Request,
-    deck_slug: str,
-    run_id: int,
-    token: str,
-    *,
-    suffix: str = "",
-) -> Response:
-    """Forward a deck request to the backend sales-support-agent service.
-
-    `suffix` is appended after `/decks/{slug}/{run_id}/{token}` — empty for
-    the main deck view, "/story" for the HTML story viewer, "/story.md" for
-    the raw markdown download. Same retry / error / passthrough behavior for
-    all three so the public host doesn't need to know which sub-path the
-    backend supports.
-    """
-    admin_settings = load_admin_dashboard_settings()
-    if not admin_settings.sales_support_agent_url:
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Sales support agent URL is not configured on this service."},
-        )
-    backend_url = (
-        f"{admin_settings.sales_support_agent_url}"
-        f"/decks/{quote(deck_slug, safe='')}/{run_id}/{quote(token, safe='')}"
-        f"{suffix}"
-    )
-    if request.url.query:
-        backend_url = f"{backend_url}?{request.url.query}"
-    attempt_count = 1 + len(DECK_PROXY_RETRY_DELAYS_SECONDS)
-    for attempt in range(1, attempt_count + 1):
-        try:
-            response = requests.get(backend_url, timeout=DECK_PROXY_TIMEOUT_SECONDS)
-        except requests.RequestException as exc:
-            logger.warning(
-                "[DeckProxy] upstream request failed attempt=%s slug=%s run_id=%s suffix=%s url=%s error=%s",
-                attempt,
-                deck_slug,
-                run_id,
-                suffix or "(none)",
-                backend_url,
-                exc,
-            )
-            if attempt < attempt_count:
-                time.sleep(DECK_PROXY_RETRY_DELAYS_SECONDS[attempt - 1])
-                continue
-            return _deck_proxy_error_response()
-
-        if response.status_code in {502, 503, 504}:
-            logger.warning(
-                "[DeckProxy] upstream retryable status attempt=%s slug=%s run_id=%s suffix=%s url=%s status=%s",
-                attempt,
-                deck_slug,
-                run_id,
-                suffix or "(none)",
-                backend_url,
-                response.status_code,
-            )
-            if attempt < attempt_count:
-                time.sleep(DECK_PROXY_RETRY_DELAYS_SECONDS[attempt - 1])
-                continue
-            return _deck_proxy_error_response()
-
-        # Pass through the upstream's Content-Type — backend uses
-        # text/html for /story, text/markdown for /story.md, etc.
-        content_type = response.headers.get("Content-Type", "text/html; charset=utf-8")
-        passthrough_headers = _deck_proxy_headers(content_type)
-        # Preserve Content-Disposition (attachment filename) on /story.md
-        # downloads so the browser triggers a save dialog.
-        upstream_disposition = response.headers.get("Content-Disposition")
-        if upstream_disposition:
-            passthrough_headers["Content-Disposition"] = upstream_disposition
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            media_type=content_type.split(";")[0],
-            headers=passthrough_headers,
-        )
-
-    return _deck_proxy_error_response()
-
-
-@app.get("/decks/{deck_slug}/{run_id}/{token}")
-def public_deck_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
-    return _proxy_deck_subpath(request, deck_slug, run_id, token)
-
-
-@app.get("/decks/{deck_slug}/{run_id}/{token}/story")
-def public_deck_story_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
-    """HTML viewer for the markdown story companion (PR27/PR29)."""
-    return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/story")
-
-
-@app.get("/decks/{deck_slug}/{run_id}/{token}/preview.png")
-def public_deck_preview_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
-    return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/preview.png")
-
-
-@app.get("/decks/{deck_slug}/{run_id}/{token}/story.md")
-def public_deck_story_md_proxy(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
-    """Raw markdown download — backend sets Content-Disposition: attachment."""
-    return _proxy_deck_subpath(request, deck_slug, run_id, token, suffix="/story.md")
-
-
-@app.post("/decks/{deck_slug}/{run_id}/{token}/heartbeat")
-async def public_deck_heartbeat_proxy(
-    request: Request,
-    deck_slug: str,
-    run_id: int,
-    token: str,
-) -> Response:
-    """PR54: forward the deck-engagement heartbeat from the prospect's
-    browser to the backend. Body passed through as-is (JSON). We add
-    X-Forwarded-For and CF headers if present so the backend can capture
-    the real visitor IP / country instead of seeing this proxy's IP."""
-    admin_settings = load_admin_dashboard_settings()
-    if not admin_settings.sales_support_agent_url:
-        return JSONResponse(status_code=500, content={"detail": "Backend URL not configured."})
-    body = await request.body()
-    headers = {
-        "Content-Type": request.headers.get("content-type", "application/json"),
-        # Trust order matches the backend's _extract_client_ip helper.
-        "X-Forwarded-For": (
-            request.headers.get("cf-connecting-ip")
-            or request.headers.get("x-forwarded-for")
-            or (request.client.host if request.client else "")
-            or ""
-        ),
-    }
-    cf_country = request.headers.get("cf-ipcountry")
-    if cf_country:
-        headers["CF-IPCountry"] = cf_country
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip:
-        headers["CF-Connecting-IP"] = cf_ip
-    referer = request.headers.get("referer")
-    if referer:
-        headers["Referer"] = referer
-    user_agent = request.headers.get("user-agent")
-    if user_agent:
-        headers["User-Agent"] = user_agent
-    upstream_url = (
-        f"{admin_settings.sales_support_agent_url}/decks/{deck_slug}/{run_id}/{token}/heartbeat"
-    )
-    try:
-        upstream = requests.post(upstream_url, data=body, headers=headers, timeout=10)
-    except requests.RequestException as exc:
-        return JSONResponse(status_code=502, content={"detail": f"Backend unreachable: {exc}"})
-    try:
-        return JSONResponse(status_code=upstream.status_code, content=upstream.json())
-    except ValueError:
-        return Response(
-            status_code=upstream.status_code,
-            content=upstream.text,
-            media_type="text/plain",
-        )
-
-
 @app.get("/")
 def home() -> RedirectResponse:
     return RedirectResponse(url="/admin/login", status_code=302)
@@ -4994,3 +4825,31 @@ def lead_run_download(run_id: str) -> Response:
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename=\"instantly_upload_{filename_date}.csv\"'},
     )
+
+
+# ===========================================================================
+# MERGED SINGLE-SERVICE APP — mount the sales_support_agent backend routers
+# in-process so agent.anatainc.com serves everything from ONE Render service
+# (removes the cross-service proxy hop and the split env-var set).
+#
+# Registered LAST, after every inline @app route above, on purpose: FastAPI
+# resolves the FIRST matching route, so the inline admin pages/APIs defined
+# above keep winning for the paths they own. The backend routers only fill
+# paths the root app does NOT already define — notably the three cron targets
+# (/api/jobs/stale-leads/run, /api/jobs/gmail-sync/run via the core router;
+# /api/jobs/sales-operator/run via sales_jobs_router), the /api/admin/*
+# data endpoints the dashboard pages fetch, the /decks/* public deck hosting
+# and /admin/api/digital-shelf/generate-deck (whose inline same-path proxies
+# were removed above so these real handlers serve directly), plus webhooks.
+#
+# The core router + sales_jobs_router read app.state.settings.internal_api_key
+# for their internal-key auth; startup() sets app.state.settings to the
+# sales_support_agent Settings so those guards fail CLOSED. The RBAC
+# AccessControlMiddleware installed at module-construction time gates the
+# backend's /admin/* routes exactly as it does the inline ones.
+# ===========================================================================
+from sales_support_agent.api.router import router as _core_api_router  # noqa: E402
+from sales_support_agent.api.sales_jobs_router import router as _sales_jobs_router  # noqa: E402
+
+app.include_router(_core_api_router)
+app.include_router(_sales_jobs_router)

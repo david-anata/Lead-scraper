@@ -54,14 +54,22 @@ class TestHealthEndpointNoDB(unittest.TestCase):
         app.include_router(router)
         self.client = TestClient(app, raise_server_exceptions=False)
         # Patch auth so health endpoint behaves as if user has finance access
-        self._auth_patcher = patch(
-            "sales_support_agent.api.cashflow_router.has_finance_access",
-            return_value=True,
-        )
-        self._auth_patcher.start()
+        self._auth_patchers = [
+            patch(
+                "sales_support_agent.services.auth_deps.get_session_user_from_request",
+                return_value={"email": "finance@example.com"},
+            ),
+            patch(
+                "sales_support_agent.services.auth_deps.get_current_user",
+                return_value={"is_superadmin": False, "permissions": {"finance"}},
+            ),
+        ]
+        for patcher in self._auth_patchers:
+            patcher.start()
 
     def tearDown(self) -> None:
-        self._auth_patcher.stop()
+        for patcher in reversed(self._auth_patchers):
+            patcher.stop()
 
     def test_returns_200(self) -> None:
         resp = self.client.get("/admin/finances/health")
@@ -82,12 +90,14 @@ class TestHealthEndpointNoDB(unittest.TestCase):
 
     def test_auth_guard_redirects_unauthenticated(self) -> None:
         """Unauthenticated request must redirect to login (303)."""
-        self._auth_patcher.stop()
+        self._auth_patchers[0].stop()
+        self._auth_patchers[1].stop()
         try:
             resp = self.client.get("/admin/finances/health", follow_redirects=False)
             self.assertEqual(resp.status_code, 303)
         finally:
-            self._auth_patcher.start()
+            self._auth_patchers[0].start()
+            self._auth_patchers[1].start()
 
 
 # ===========================================================================
@@ -151,18 +161,26 @@ class TestHealthEndpointWithDB(unittest.TestCase):
         self._original_engine = None  # already replaced above
 
         # Patch auth so health endpoint behaves as if user has finance access
-        self._auth_patcher = patch(
-            "sales_support_agent.api.cashflow_router.has_finance_access",
-            return_value=True,
-        )
-        self._auth_patcher.start()
+        self._auth_patchers = [
+            patch(
+                "sales_support_agent.services.auth_deps.get_session_user_from_request",
+                return_value={"email": "finance@example.com"},
+            ),
+            patch(
+                "sales_support_agent.services.auth_deps.get_current_user",
+                return_value={"is_superadmin": False, "permissions": {"finance"}},
+            ),
+        ]
+        for patcher in self._auth_patchers:
+            patcher.start()
 
         app = FastAPI()
         app.include_router(router)
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
-        self._auth_patcher.stop()
+        for patcher in reversed(self._auth_patchers):
+            patcher.stop()
         self._db_mod.engine = None  # reset
 
     def test_returns_200(self) -> None:

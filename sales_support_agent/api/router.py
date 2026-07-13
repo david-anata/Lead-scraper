@@ -18,14 +18,13 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Request, Uploa
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from sqlalchemy import func, inspect, select
 
-from main import (
-    ICPBuildRequest as LeadBuildRequest,
-    enqueue_lead_build,
-    fetch_lead_run_status,
-    get_lead_run_csv,
-    get_missing_required_settings as get_missing_lead_builder_settings,
-    load_settings as load_lead_builder_settings,
-)
+# NOTE: the root `main.py` lead-engine helpers are imported LAZILY inside the
+# handful of functions that use them (see local `from main import ...` below).
+# main.py mounts THIS router in-process for the single-service consolidation, so
+# a module-level `from main import ...` here would create a circular import
+# (main -> router -> main). Deferring to call time keeps both import orders
+# (main:app and sales_support_agent.main:app) working with routes present at
+# import time.
 
 from sales_support_agent.config import get_missing_runtime_settings
 from sales_support_agent.integrations.clickup import ClickUpAPIError, ClickUpClient
@@ -161,6 +160,10 @@ def _validate_runtime(request: Request) -> None:
 
 
 def _lead_builder_status(settings: Optional[object] = None) -> dict[str, object]:
+    from main import (  # lazy: avoid main <-> router circular import
+        load_settings as load_lead_builder_settings,
+        get_missing_required_settings as get_missing_lead_builder_settings,
+    )
     try:
         lead_settings = load_lead_builder_settings()
         missing = get_missing_lead_builder_settings(lead_settings)
@@ -1239,6 +1242,10 @@ async def admin_run_lead_build(request: Request) -> Response:
             },
         )
 
+    from main import (  # lazy: avoid main <-> router circular import
+        ICPBuildRequest as LeadBuildRequest,
+        enqueue_lead_build,
+    )
     payload = await request.json()
     build_request = LeadBuildRequest(**payload)
     if lead_builder_status.get("mode") == "remote":
@@ -1273,6 +1280,7 @@ def admin_lead_run_status(request: Request, run_id: str) -> JSONResponse:
     if not _is_admin_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
+    from main import fetch_lead_run_status  # lazy: avoid main <-> router circular import
     payload = fetch_lead_run_status(run_id)
     if payload is None:
         payload = _fetch_remote_lead_run_status(request, run_id)
@@ -1287,6 +1295,7 @@ def admin_lead_run_download(request: Request, run_id: str) -> Response:
     if not _is_admin_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Admin login required."})
 
+    from main import fetch_lead_run_status, get_lead_run_csv  # lazy: avoid main <-> router circular import
     payload = fetch_lead_run_status(run_id)
     if payload is None:
         remote_response = _download_remote_lead_run(request, run_id)

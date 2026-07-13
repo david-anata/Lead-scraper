@@ -167,6 +167,16 @@ def _page_shell(title: str, active_section: str, body: str, *, flash: str = "") 
     elif flash.startswith("err:"):
         flash_html = f'<div class="flash-error">{_html.escape(flash[4:])}</div>'
 
+    subnav_html = _finance_subnav(active_section)
+    subnav_shell = ""
+    if subnav_html:
+        subnav_shell = f"""
+    <div class="finance-subnav-bar">
+      <div class="finance-subnav-inner">
+        {subnav_html}
+      </div>
+    </div>"""
+
     inline_edit_js = """
 <script>
 function editName(wrapId, currentVal, fieldName) {
@@ -222,11 +232,7 @@ function editName(wrapId, currentVal, fieldName) {
   </head>
   <body>
     {render_agent_nav(active="finance", user=_finance_nav_user.get())}
-    <div class="finance-subnav-bar">
-      <div class="finance-subnav-inner">
-        {_finance_subnav(active_section)}
-      </div>
-    </div>
+    {subnav_shell}
     <div class="shell">
       {flash_html}
       {body}
@@ -236,22 +242,4 @@ function editName(wrapId, currentVal, fieldName) {
 
 
 def _finance_subnav(active: str) -> str:
-    items = [
-        ("Overview", "/admin/finances", "overview"),
-        ("Forecast", "/admin/finances/forecast", "forecast"),
-        ("Payables (AP)", "/admin/finances/ap", "ap"),
-        ("Receivables (AR)", "/admin/finances/ar", "ar"),
-        ("Ledger", "/admin/finances/ledger", "ledger"),
-        ("Calendar", "/admin/finances/calendar", "calendar"),
-        ("Alerts", "/admin/finances/alerts", "alerts"),
-        ("Scenario", "/admin/finances/scenario", "scenario"),
-        ("Upload CSV", "/admin/finances/upload", "upload"),
-        ("Recurring", "/admin/finances/recurring", "recurring"),
-        ("Reconcile", "/admin/finances/reconcile", "reconcile"),
-        ("QuickBooks", "/admin/finances/qbo", "qbo"),
-    ]
-    links = "".join(
-        f'<a href="{href}" class="subnav-link{"" if key != active else " active"}">{_html.escape(label)}</a>'
-        for label, href, key in items
-    )
-    return f'<nav class="subnav">{links}</nav>'
+    return ""
