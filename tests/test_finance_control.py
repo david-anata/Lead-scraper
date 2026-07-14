@@ -9,6 +9,7 @@ from sales_support_agent.services.cashflow.control import (
     build_forecast_paths,
     build_queue,
     calculate_csv_trends,
+    derive_csv_income_projections,
     quick_action_eligibility,
     resolve_cash_snapshot,
 )
@@ -410,3 +411,195 @@ def test_renderer_facade_accepts_resolved_balance_and_exposes_compatible_shape()
     assert len(control["forecast"]["labels"]) == 28
     assert len(control["forecast"]["stress"]) == 28
     assert set(control["smart_brief"]) == {"happening", "broken", "next"}
+
+
+def test_csv_income_projection_aggregates_same_day_and_only_changes_expected():
+    rows = [
+        _bank("a1", 15, amount=40_000, vendor_or_customer="Amazon"),
+        _bank("a2", 15, amount=60_000, vendor_or_customer="Amazon"),
+        _bank("b1", 8, amount=101_000, vendor_or_customer="Amazon"),
+        _bank("c1", 1, amount=99_000, vendor_or_customer="Amazon", account_balance_cents=200_000),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+
+    projection = state["income_projection"]
+    assert projection["status"] == "inferred_review"
+    assert projection["eligible_pattern_count"] == 1
+    assert projection["inferred_projection_count"] == 4
+    assert state["forecast"]["paths"]["committed"][-1]["cash_cents"] == 200_000
+    assert state["forecast"]["paths"]["stress"][-1]["cash_cents"] == 200_000
+    assert state["forecast"]["paths"]["expected"][-1]["cash_cents"] == 399_000
+    assert state["metrics"]["expected_incoming_cents"] == 99_500
+    assert projection["csv_trend_expected_cents"] == 99_500
+    inferred = [item for item in state["queue"]["items"] if item["trend_inferred"]]
+    assert inferred
+    assert inferred[0]["source"] == "csv_trend"
+    assert inferred[0]["read_only"] is True
+    assert inferred[0]["probability_bps"] == 5_000
+    assert inferred[0]["source_evidence"]["median_amount_cents"] == 100_000
+    assert inferred[0]["source_evidence"]["projected_amount_cents"] == 99_500
+    assert inferred[0]["source_evidence"]["occurrence_dates"] == [
+        "2026-06-28",
+        "2026-07-05",
+        "2026-07-12",
+    ]
+
+
+def test_csv_income_projection_supports_daily_processor_cadence():
+    rows = [
+        _bank("p1", 4, amount=50_000, vendor_or_customer="Daily Processor"),
+        _bank("p2", 3, amount=51_000, vendor_or_customer="Daily Processor"),
+        _bank("p3", 2, amount=49_000, vendor_or_customer="Daily Processor"),
+        _bank("p4", 1, amount=50_000, vendor_or_customer="Daily Processor"),
+    ]
+
+    result = derive_csv_income_projections(rows, as_of=AS_OF, horizon_days=5)
+
+    assert result["eligible_pattern_count"] == 1
+    assert [row["due_date"] for row in result["projections"]] == [
+        AS_OF + timedelta(days=1),
+        AS_OF + timedelta(days=2),
+        AS_OF + timedelta(days=3),
+        AS_OF + timedelta(days=4),
+    ]
+
+
+def test_csv_income_projection_suppresses_sparse_stale_unstable_and_transfer_like():
+    cases = [
+        [_bank("s1", 8), _bank("s2", 1)],
+        [_bank("t1", 49), _bank("t2", 42), _bank("t3", 35)],
+        [_bank("u1", 15, amount=20_000), _bank("u2", 8, amount=100_000), _bank("u3", 1, amount=200_000)],
+        [
+            _bank("x1", 15, vendor_or_customer="Internal Transfer"),
+            _bank("x2", 8, vendor_or_customer="Internal Transfer"),
+            _bank("x3", 1, vendor_or_customer="Internal Transfer"),
+        ],
+        [
+            _bank("o1", 15, vendor_or_customer="David Narayan", description="TYPE: TRANSFER FROM SHARE"),
+            _bank("o2", 8, vendor_or_customer="David Narayan", description="FROM SHARE CASHOUT"),
+            _bank("o3", 1, vendor_or_customer="David Narayan", description="BILL PAYMT REVERSAL"),
+        ],
+    ]
+
+    for rows in cases:
+        assert derive_csv_income_projections(rows, as_of=AS_OF)["projections"] == []
+
+
+def test_real_receivable_suppresses_equivalent_csv_projection():
+    rows = [
+        _bank("r1", 15, amount=100_000, vendor_or_customer="Acme"),
+        _bank("r2", 8, amount=101_000, vendor_or_customer="Acme"),
+        _bank("r3", 1, amount=99_000, vendor_or_customer="Acme"),
+        _row(
+            "real-ar",
+            event_type="inflow",
+            vendor_or_customer="Acme",
+            amount_cents=100_000,
+            due_date=AS_OF + timedelta(days=6),
+        ),
+    ]
+
+    result = derive_csv_income_projections(
+        annotate_open_amounts(rows),
+        as_of=AS_OF,
+        horizon_days=14,
+    )
+
+    assert result["status"] == "configured_real"
+    assert all(row["due_date"] != AS_OF + timedelta(days=6) for row in result["projections"])
+
+
+def test_income_readiness_outranks_legacy_cleanup_and_is_explicit():
+    rows = [
+        _bank("income-1", 10, amount=100_000, vendor_or_customer="One Off A"),
+        _bank("income-2", 1, amount=80_000, vendor_or_customer="One Off B", account_balance_cents=200_000),
+        _row("legacy-zero", amount_cents=0),
+    ]
+
+    control = build_finance_control(rows, as_of=AS_OF, floor_cents=100_000)
+
+    assert control["income_projection"]["status"] == "not_configured"
+    assert control["confidence"]["verification_only"] is True
+    assert "forecast income is not configured" in control["confidence"]["reasons"]
+    assert control["recommendations"][0]["action_type"] == "configure_income_forecast"
+    assert any(
+        item["action_type"] == "resolve_missing_amount"
+        for item in control["recommendations"][1:]
+    )
+    assert "Forecast income is not configured" in control["smart_brief"]["broken"]
+
+
+def test_csv_income_projection_preserves_inputs():
+    rows = [
+        _bank("r1", 15, amount=100_000),
+        _bank("r2", 8, amount=101_000),
+        _bank("r3", 1, amount=99_000),
+    ]
+    originals = [dict(row) for row in rows]
+
+    derive_csv_income_projections(rows, as_of=AS_OF)
+
+    assert rows == originals
+
+
+def test_missing_cash_outranks_income_readiness_then_generic_cleanup():
+    rows = [
+        _bank("income-1", 20, vendor_or_customer="One Off A"),
+        _bank("income-2", 10, vendor_or_customer="One Off B"),
+        _row("legacy-zero", amount_cents=0),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+    actions = [item["action_type"] for item in state["recommendations"]]
+
+    assert actions == [
+        "upload_latest_balance",
+        "configure_income_forecast",
+        "resolve_missing_amount",
+    ]
+
+
+def test_csv_income_projection_rejects_discontinuous_recent_history():
+    rows = [
+        _bank("old-1", 180, vendor_or_customer="Amazon"),
+        _bank("old-2", 173, vendor_or_customer="Amazon"),
+        _bank("old-3", 166, vendor_or_customer="Amazon"),
+        _bank("recent", 1, vendor_or_customer="Amazon"),
+    ]
+
+    assert derive_csv_income_projections(rows, as_of=AS_OF)["projections"] == []
+
+
+def test_csv_income_projection_excludes_category_only_refunds_and_reversals():
+    for category in ("refund", "reversal"):
+        rows = [
+            _bank(f"{category}-1", 15, category=category),
+            _bank(f"{category}-2", 8, category=category),
+            _bank(f"{category}-3", 1, category=category),
+        ]
+        assert derive_csv_income_projections(rows, as_of=AS_OF)["projections"] == []
+
+
+def test_csv_income_projection_uses_non_default_summary_window():
+    rows = [
+        _bank("a1", 15, amount=100_000, vendor_or_customer="Amazon"),
+        _bank("a2", 8, amount=101_000, vendor_or_customer="Amazon"),
+        _bank(
+            "a3",
+            1,
+            amount=99_000,
+            vendor_or_customer="Amazon",
+            account_balance_cents=200_000,
+        ),
+    ]
+
+    state = build_finance_control_state(
+        rows,
+        as_of=AS_OF,
+        floor_cents=100_000,
+        summary_days=7,
+    )
+
+    assert state["income_projection"]["csv_trend_expected_cents"] == 49_750
+    assert state["metrics"]["expected_incoming_cents"] == 49_750

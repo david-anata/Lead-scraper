@@ -494,7 +494,184 @@ def _receipt_lags(actuals: Sequence[tuple[Mapping[str, Any], date]]) -> dict[str
     return {party: int(statistics.median(values)) for party, values in sorted(lags.items()) if len(values) >= 3}
 
 
-def assess_confidence(snapshot: Mapping[str, Any], trends: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _transfer_like(row: Mapping[str, Any]) -> bool:
+    evidence = " ".join(
+        str(row.get(field) or "")
+        for field in ("vendor_or_customer", "name", "description", "memo")
+    ).lower()
+    return bool(
+        str(row.get("category") or "").lower() in {"transfer", "refund", "reversal"}
+        or row.get("is_transfer")
+        or any(
+            token in evidence
+            for token in (
+                "type: transfer",
+                "internal transfer",
+                "account transfer",
+                "online transfer",
+                "credit card payment",
+                "card payment",
+                "bill paymt",
+                "from share",
+                "cashout",
+                "refund",
+                "reversal",
+            )
+        )
+    )
+
+
+def derive_csv_income_projections(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    as_of: date,
+    horizon_days: int = 28,
+    summary_days: int = 14,
+) -> dict[str, Any]:
+    """Infer conservative read-only income; never persist or confirm it."""
+    horizon_end = as_of + timedelta(days=max(1, horizon_days) - 1)
+    historical = [
+        (row, row_date)
+        for row in rows
+        if (row_date := _actual_date(row)) is not None
+        and row_date <= as_of
+        and _is_transaction(row)
+        and str(row.get("source") or "").lower() == "csv"
+        and str(row.get("event_type") or "").lower() == "inflow"
+        and str(row.get("status") or "posted").lower() in TRANSACTION_STATUSES
+        and _amount(row.get("amount_cents"))
+        and not _transfer_like(row)
+        and not _is_duplicate(row)
+        and not _needs_match_review(row)
+    ]
+    real_future = [
+        row
+        for row in rows
+        if not _is_transaction(row)
+        and str(row.get("event_type") or "").lower() == "inflow"
+        and _is_active_obligation(row)
+        and not row.get("source_open_disagreement")
+        and (due := _event_date(row)) is not None
+        and as_of <= due <= horizon_end
+        and _amount(row.get("open_amount_cents") or row.get("amount_cents"))
+    ]
+    grouped: dict[str, dict[date, int]] = defaultdict(lambda: defaultdict(int))
+    for row, row_date in historical:
+        party = _party_key(row)
+        if party != "unknown":
+            grouped[party][row_date] += _amount(row.get("amount_cents"))
+
+    projections: list[dict[str, Any]] = []
+    eligible_patterns = 0
+    for party, daily in sorted(grouped.items()):
+        occurrences = sorted(daily.items())
+        if len(occurrences) < 3:
+            continue
+        gaps = [
+            (right[0] - left[0]).days
+            for left, right in zip(occurrences, occurrences[1:])
+        ]
+        cadence = int(statistics.median(gaps))
+        if any(
+            gap > max(2 * cadence, cadence + 7)
+            for gap in gaps[-4:]
+        ):
+            continue
+        median_amount = int(statistics.median(amount for _, amount in occurrences))
+        if not 1 <= cadence <= 45 or not median_amount:
+            continue
+        median_absolute_deviation = int(statistics.median(
+            abs(amount - median_amount) for _, amount in occurrences
+        ))
+        deviation_bps = median_absolute_deviation * 10_000 // median_amount
+        projected_amount = int(statistics.quantiles(
+            [amount for _, amount in occurrences],
+            n=4,
+            method="inclusive",
+        )[0])
+        if not projected_amount:
+            continue
+        last_date = occurrences[-1][0]
+        if deviation_bps > 2_500 or (as_of - last_date).days > max(2 * cadence, 21):
+            continue
+        eligible_patterns += 1
+        next_date = last_date + timedelta(days=cadence)
+        while next_date <= as_of:
+            next_date += timedelta(days=cadence)
+        while next_date <= horizon_end:
+            duplicate = any(
+                (
+                    _party_key(real) == party
+                    and abs((_event_date(real) - next_date).days) <= max(2, cadence // 3)
+                )
+                or (
+                    abs(_amount(real.get("open_amount_cents") or real.get("amount_cents")) - projected_amount)
+                    <= max(100, projected_amount // 10)
+                    and abs((_event_date(real) - next_date).days) <= 2
+                )
+                for real in real_future
+            )
+            if not duplicate:
+                evidence = {
+                    "type": "recurring_csv_income",
+                    "occurrences": len(occurrences),
+                    "occurrence_dates": [day.isoformat() for day, _ in occurrences],
+                    "median_amount_cents": median_amount,
+                    "projected_amount_cents": projected_amount,
+                    "median_cadence_days": cadence,
+                    "last_receipt_date": last_date.isoformat(),
+                    "median_absolute_deviation_bps": deviation_bps,
+                    "probability_bps": 5_000,
+                }
+                projections.append({
+                    "id": f"trend-income:{party}:{next_date.isoformat()}",
+                    "record_kind": "obligation",
+                    "source": "csv_trend",
+                    "source_label": "CSV income trend",
+                    "event_type": "inflow",
+                    "category": "revenue",
+                    "name": party,
+                    "vendor_or_customer": party,
+                    "amount_cents": projected_amount,
+                    "due_date": next_date,
+                    "expected_date": next_date,
+                    "status": "planned",
+                    "confidence": "medium",
+                    "probability_bps": 5_000,
+                    "trend_inferred": True,
+                    "read_only": True,
+                    "source_evidence": evidence,
+                })
+            next_date += timedelta(days=cadence)
+
+    if real_future:
+        status, ready, reason = "configured_real", True, "future income is configured from active receivables"
+    elif projections:
+        status, ready, reason = "inferred_review", True, "future income includes conservative CSV trend projections"
+    elif historical:
+        status, ready, reason = "not_configured", False, "forecast income is not configured"
+    else:
+        status, ready, reason = "no_history", False, "no comparable posted CSV inflows are available"
+    summary_end = as_of + timedelta(days=max(1, summary_days) - 1)
+    csv_trend_expected_cents = sum(
+        _amount(row.get("amount_cents")) * _probability_bps(row) // 10_000
+        for row in projections
+        if (_event_date(row) or date.max) <= summary_end
+    )
+    return {
+        "status": status,
+        "ready": ready,
+        "reason": reason,
+        "historical_inflow_count": len(historical),
+        "real_future_inflow_count": len(real_future),
+        "eligible_pattern_count": eligible_patterns,
+        "inferred_projection_count": len(projections),
+        "csv_trend_expected_cents": csv_trend_expected_cents,
+        "projections": projections,
+    }
+
+
+def assess_confidence(snapshot: Mapping[str, Any], trends: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], income_projection: Mapping[str, Any] | None = None) -> dict[str, Any]:
     reasons: list[str] = []
     settlement_evidence_missing = any(
         not _is_transaction(row) and row.get("settlement_evidence_available") is False
@@ -510,12 +687,24 @@ def assess_confidence(snapshot: Mapping[str, Any], trends: Mapping[str, Any], ro
         reasons.append("less than 28 days of comparable bank history")
     if any(_is_duplicate(row) or _needs_match_review(row) for row in rows):
         reasons.append("unresolved duplicate or match candidates")
+    income_missing = bool(
+        income_projection
+        and income_projection.get("historical_inflow_count")
+        and income_projection.get("status") == "not_configured"
+    )
+    if income_missing:
+        reasons.append("forecast income is not configured")
     level = (
         "low"
-        if not snapshot.get("available") or snapshot.get("stale") or settlement_evidence_missing
+        if not snapshot.get("available") or snapshot.get("stale") or settlement_evidence_missing or income_missing
         else ("medium" if reasons else str(trends.get("confidence") or "medium"))
     )
-    return {"level": level, "verification_only": level == "low", "reasons": reasons}
+    return {
+        "level": level,
+        "verification_only": level == "low",
+        "reasons": reasons,
+        "income_projection": dict(income_projection or {}),
+    }
 
 
 def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window_days: int) -> dict[str, int]:
@@ -666,6 +855,12 @@ def build_queue(
             "pay_priority": _pay_priority(row),
             "flexibility": _flexibility(row),
             "category": str(row.get("category") or "uncategorized"),
+            "source": str(row.get("source") or "manual"),
+            "source_label": str(row.get("source_label") or row.get("source") or "Manual"),
+            "source_evidence": dict(row.get("source_evidence") or {}),
+            "trend_inferred": bool(row.get("trend_inferred")),
+            "probability_bps": _probability_bps(row),
+            "read_only": bool(row.get("read_only")),
             "floor_impact_cents": min(open_amount, max(0, funding_gap_cents)),
             "needs_action": group not in {"this_week", "next_week"},
             "action_label": "Review overdue" if days_until is not None and days_until < 0 else {
@@ -762,6 +957,9 @@ def build_recommendations(state: Mapping[str, Any]) -> list[dict[str, Any]]:
         )
 
     snapshot = state.get("cash_snapshot") or {}
+    income_projection = state.get("income_projection") or {}
+    if income_projection.get("status") == "not_configured":
+        add(2, "configure_income_forecast", None, ["Posted CSV inflows exist, but forward income is not configured."], minimum, minimum, "Expected cash remains incomplete until income is reviewed.", recommendation_confidence="high")
     if not snapshot.get("available"):
         add(1, "upload_latest_balance", None, ["Cash balance is missing."], minimum, minimum, "Recommendations remain unavailable until cash is verified.", recommendation_confidence="high")
     elif snapshot.get("stale"):
@@ -770,7 +968,7 @@ def build_recommendations(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     for item in queue.get("items") or []:
         blocker = item.get("decision_blocker")
         if blocker:
-            add(2 if blocker in {"probable_duplicate", "possible_actual_match"} else 1, f"resolve_{blocker}", item, [str(blocker).replace("_", " ").capitalize()], minimum, minimum, "Resolving evidence may change open cash exposure.")
+            add(2 if blocker in {"probable_duplicate", "possible_actual_match", "missing_amount", "missing_date"} else 1, f"resolve_{blocker}", item, [str(blocker).replace("_", " ").capitalize()], minimum, minimum, "Resolving evidence may change open cash exposure.")
 
     if confidence.get("verification_only"):
         if not candidates:
@@ -832,15 +1030,25 @@ def build_finance_control_state(
     canonical = annotate_open_amounts(rows, settlement_annotations)
     snapshot = resolve_cash_snapshot(rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
     starting_cash = int(snapshot["balance_cents"] or 0)
-    forecast = build_forecast_paths(
+    trends = calculate_csv_trends(rows, as_of=effective_date)
+    income_projection = derive_csv_income_projections(
         canonical,
+        as_of=effective_date,
+        horizon_days=horizon_days,
+        summary_days=summary_days,
+    )
+    projected_rows = annotate_open_amounts([
+        *canonical,
+        *income_projection["projections"],
+    ])
+    forecast = build_forecast_paths(
+        projected_rows,
         as_of=effective_date,
         starting_cash_cents=starting_cash,
         horizon_days=horizon_days,
     )
-    trends = calculate_csv_trends(rows, as_of=effective_date)
-    confidence = assess_confidence(snapshot, trends, canonical)
-    metrics: dict[str, Any] = _summary_metrics(canonical, effective_date, summary_days)
+    confidence = assess_confidence(snapshot, trends, canonical, income_projection)
+    metrics: dict[str, Any] = _summary_metrics(projected_rows, effective_date, summary_days)
     minimum_stress = int(forecast["minimum_stress_cash_cents"])
     metrics.update(
         {
@@ -853,7 +1061,7 @@ def build_finance_control_state(
         }
     )
     queue = build_queue(
-        canonical,
+        projected_rows,
         as_of=effective_date,
         horizon_days=max(summary_days, horizon_days),
         funding_gap_cents=int(metrics.get("funding_gap_cents") or 0),
@@ -864,6 +1072,7 @@ def build_finance_control_state(
         "metrics": metrics,
         "forecast": forecast,
         "trends": trends,
+        "income_projection": income_projection,
         "confidence": confidence,
         "queue": queue,
     }
@@ -984,7 +1193,8 @@ def _smart_brief(state: Mapping[str, Any]) -> dict[str, str]:
     happening = (
         f"Cash is {trends['net_cash_direction']} over 28 days; "
         f"{_money(metrics['confirmed_incoming_cents'])} confirmed in and "
-        f"{_money(metrics['required_outgoing_cents'])} required out are due in 14 days."
+        f"{_money(metrics['expected_incoming_cents'])} expected in, with "
+        f"{_money(metrics['required_outgoing_cents'])} required out due in 14 days."
     )
     blockers = sum(1 for item in queue["items"] if item.get("decision_blocker"))
     if confidence["reasons"]:
@@ -1038,6 +1248,7 @@ __all__ = [
     "build_recommendations",
     "build_trend_metrics",
     "calculate_csv_trends",
+    "derive_csv_income_projections",
     "eligible_quick_actions",
     "quick_action_eligibility",
     "resolve_cash_snapshot",

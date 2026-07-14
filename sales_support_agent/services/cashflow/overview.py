@@ -854,6 +854,44 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
     fallback_cash = fallback["cash_position"]
     brief = _control_value(control, "smart_brief", "brief", default={})
     fallback_brief = fallback["smart_brief"]
+    income_projection = _control_value(control, "income_projection", default={})
+    projection_status = str(
+        _control_value(income_projection, "status", "state", default="") or ""
+    ).strip().lower().replace("-", "_").replace(" ", "_")
+    projection_configured = _control_value(
+        income_projection, "configured", "is_configured", default=_MISSING
+    )
+    projection_unconfigured = (
+        projection_configured is not _MISSING and not bool(projection_configured)
+    ) or projection_status in {
+        "not_configured", "unconfigured", "missing", "setup_incomplete", "not_ready"
+    }
+    csv_trend_expected_cents = max(
+        0,
+        _cents(
+            _control_value(
+                income_projection,
+                "csv_trend_expected_cents",
+                "expected_csv_trend_cents",
+                "expected_14d_cents",
+                "projected_income_cents",
+                default=0,
+            )
+        ),
+    )
+    posted_inflow_count = max(
+        0,
+        int(
+            _control_value(
+                income_projection,
+                "posted_inflow_count",
+                "historical_inflow_count",
+                "posted_inflows",
+                default=0,
+            )
+            or 0
+        ),
+    )
     recommendation = _control_value(
         control, "recommendation", "top_recommendation", "smart_recommendation", default={}
     )
@@ -872,6 +910,11 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
         "brief": {
             key: str(_control_value(brief, key, default=fallback_brief[key]) or fallback_brief[key])
             for key in ("happening", "broken", "next")
+        },
+        "income_projection": {
+            "unconfigured": projection_unconfigured,
+            "csv_trend_expected_cents": csv_trend_expected_cents,
+            "posted_inflow_count": posted_inflow_count,
         },
         "forecast": _control_value(control, "forecast", "cash_trajectory", "forecast_paths", default=fallback["forecast"]),
         "queue": _control_value(control, "queue", "queue_items", "money_queue", default=fallback["queue"]),
@@ -1540,13 +1583,63 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
     )
     state = _normalise_renderer_state(control, fallback)
     cash = state["cash"]
+    income_projection = state["income_projection"]
+    csv_trend_expected_cents = min(
+        cash["incoming_expected_cents"],
+        income_projection["csv_trend_expected_cents"],
+    )
+    dated_expected_cents = max(
+        0, cash["incoming_expected_cents"] - csv_trend_expected_cents
+    )
+    if csv_trend_expected_cents and dated_expected_cents:
+        incoming_expected_note = (
+            f"Expected: {_money(cash['incoming_expected_cents'])} &middot; "
+            f"{_money(csv_trend_expected_cents)} CSV trend &middot; "
+            f"{_money(dated_expected_cents)} dated receivables"
+        )
+    elif csv_trend_expected_cents:
+        incoming_expected_note = (
+            f"Expected: {_money(cash['incoming_expected_cents'])} &middot; "
+            "eligible CSV recurring deposits"
+        )
+    elif cash["incoming_expected_cents"]:
+        incoming_expected_note = (
+            f"Expected: {_money(cash['incoming_expected_cents'])} &middot; "
+            "unconfirmed dated receivables"
+        )
+    else:
+        incoming_expected_note = "Expected: $0 &middot; no eligible projection"
 
+    projection_unconfigured = income_projection["unconfigured"]
     balance_stale = False
     if balance_as_of:
         try:
             balance_stale = (today - date.fromisoformat(balance_as_of[:10])).days > 3
         except ValueError:
             balance_stale = True
+    cash_usable = bool(
+        cash["balance_available"] and balance_as_of and not balance_stale
+    )
+    if projection_unconfigured and cash_usable:
+        history_count = income_projection["posted_inflow_count"]
+        history_detail = (
+            f"{history_count} comparable posted bank inflows are actual history only."
+            if history_count
+            else "Posted bank inflows are actual history only."
+        )
+        smart_broken_html = (
+            '<strong class="finance-readiness-title">Income forecast setup incomplete</strong>'
+            f'<p class="finance-readiness-copy">Forecast income not configured. '
+            f'{html.escape(history_detail)} Eligible recurring deposits are not in Expected yet.</p>'
+        )
+        smart_next_html = (
+            "<p>Review the CSV income projection first. Confirm eligible recurring deposits "
+            "before auditing lower-priority queue cleanup.</p>"
+        )
+    else:
+        smart_broken_html = f"<p>{html.escape(state['brief']['broken'])}</p>"
+        smart_next_html = f"<p>{html.escape(state['brief']['next'])}</p>"
+
     source_label = "Bank CSV" if balance_source == "csv" else "QBO bank" if balance_source else "Bank source"
     if cash["balance_available"]:
         balance_display = _money(cash["cash_on_hand_cents"], exact=True)
@@ -1669,7 +1762,8 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         </article>
         <article class="finance-cash-metric">
           <span>Incoming 14 days</span><strong class="amount-in">{_money(cash['incoming_confirmed_cents'])}</strong>
-          <small>Confirmed &middot; +{_money(cash['incoming_expected_cents'])} expected</small>
+          <small>Confirmed &middot; dated receivables</small>
+          <small class="finance-income-breakdown">{incoming_expected_note}</small>
         </article>
         <article class="finance-cash-metric">
           <span>Required out 14 days</span><strong class="amount-out">{_money(cash['required_out_cents'])}</strong>
@@ -1683,8 +1777,8 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
       <section class="finance-smart-brief smart-only" aria-labelledby="smart-brief-title">
         <h2 id="smart-brief-title" class="sr-only">Smart brief</h2>
         <article><span>Happening</span><p>{html.escape(state['brief']['happening'])}</p></article>
-        <article class="is-broken"><span>Broken</span><p>{html.escape(state['brief']['broken'])}</p></article>
-        <article class="is-next"><span>Next</span><p>{html.escape(state['brief']['next'])}</p><button type="button" class="finance-text-action" data-drawer-review="recommendation">Review recommendation</button></article>
+        <article class="is-broken" data-income-readiness="{'unconfigured' if projection_unconfigured else 'configured'}"><span>Broken</span>{smart_broken_html}</article>
+        <article class="is-next"><span>Next</span>{smart_next_html}<button type="button" class="finance-text-action" data-drawer-review="recommendation">Review recommendation</button></article>
       </section>
 
       <section class="card finance-trajectory" aria-labelledby="trajectory-title">
@@ -1696,6 +1790,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           </div>
           <button class="finance-icon-button" type="button" aria-label="Cash trajectory options">&hellip;</button>
         </div>
+        <p class="finance-trajectory__helper">Expected includes probability-weighted CSV recurring-deposit trends and dated receivables. It is not committed cash.</p>
         <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Actual, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
       </section>
 
@@ -1754,14 +1849,14 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           <article>
             <span>01</span>
             <h3>Update reality</h3>
-            <p>Upload the latest bank CSV for current cash, actual movement, and posted payments or receipts. Refresh ClickUp for planned AP/AR dates, priority, and notes; use QBO open invoices for receivable balances; and use manual entries only for exceptions.</p>
+            <p>Upload the latest bank CSV for current cash and actual history. Eligible recurring deposits can appear only as Expected; the CSV does not create confirmed income. Refresh ClickUp for planned AP/AR dates, priority, and notes; use QBO open invoices for dated receivable balances; and use manual entries only for exceptions.</p>
           </article>
           <article>
             <span>02</span>
             <h3>Read left to right</h3>
             <dl>
               <div><dt>Cash on hand</dt><dd>What the bank says is available now.</dd></div>
-              <div><dt>Incoming</dt><dd>Confirmed collections first; expected stays separate.</dd></div>
+              <div><dt>Incoming</dt><dd>Confirmed means a dated receivable. Expected separately shows weighted CSV trends and unconfirmed dated receivables.</dd></div>
               <div><dt>Required out</dt><dd>Overdue plus bills due in 14 days.</dd></div>
               <div><dt>Safe to commit / Funding gap</dt><dd>What remains after required out and the configured cash floor.</dd></div>
             </dl>
@@ -1804,7 +1899,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
-          <strong>Upload bank CSV or QBO Open Invoices CSV</strong><span>New rows are added; existing transaction IDs are skipped automatically.</span>
+          <strong>Upload bank CSV or QBO Open Invoices CSV</strong><span>Bank CSV creates actual cash history, not confirmed income. Eligible recurring deposits appear only as Expected. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
           <input type="hidden" name="merge_mode" value="append"><button class="btn btn-primary btn-sm" type="submit">Upload and reconcile</button>
         </form>

@@ -54,12 +54,19 @@ def _control_state(*, queue: list[dict] | None = None, balance_cents: int = 498_
     }
 
 
-def _render(rows: list[dict], state: dict, *, balance_cents: int = 498_392) -> str:
+def _render(
+    rows: list[dict],
+    state: dict,
+    *,
+    balance_cents: int = 498_392,
+    balance_as_of: str = BALANCE_AS_OF,
+    balance_source: str = "csv",
+) -> str:
     with (
         patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=rows),
         patch(
             "sales_support_agent.services.cashflow.overview._resolve_current_balance",
-            return_value=(balance_cents, BALANCE_AS_OF, "csv"),
+            return_value=(balance_cents, balance_as_of, balance_source),
         ),
         patch(
             "sales_support_agent.services.cashflow.overview._load_settlement_context",
@@ -72,7 +79,7 @@ def _render(rows: list[dict], state: dict, *, balance_cents: int = 498_392) -> s
     ):
         page = asyncio.run(render_cashflow_overview_page())
     builder.assert_called_once_with(
-        rows, balance_cents, BALANCE_AS_OF,
+        rows, balance_cents, balance_as_of,
         smart_mode=True, settlement_annotations=None,
     )
     return page
@@ -112,6 +119,86 @@ def test_renderer_uses_control_builder_and_v2_scan_order() -> None:
     assert "Committed" in page and "Expected" in page and "Stress" in page
     assert f"{due.strftime('%b %d, %Y')} - 3d late" in page
 
+
+
+def test_unconfigured_income_projection_precedes_generic_queue_cleanup() -> None:
+    state = _control_state(queue=[])
+    state["cash_position"]["incoming_confirmed_cents"] = 0
+    state["cash_position"]["incoming_expected_cents"] = 0
+    state["smart_brief"]["next"] = "Resolve missing amount."
+    state["income_projection"] = {
+        "status": "unconfigured",
+        "posted_inflow_count": 165,
+    }
+
+    page = _render([], state)
+    brief = page[page.index('aria-labelledby="smart-brief-title"'):page.index('aria-labelledby="trajectory-title"')]
+
+    assert 'data-income-readiness="unconfigured"' in brief
+    assert "Income forecast setup incomplete" in brief
+    assert "Forecast income not configured." in brief
+    assert "165 comparable posted bank inflows are actual history only." in brief
+    assert "Review the CSV income projection first." in brief
+    assert "Resolve missing amount." not in brief
+
+
+def test_missing_cash_keeps_cash_verification_ahead_of_income_setup() -> None:
+    state = _control_state(queue=[])
+    state["cash_position"]["balance_available"] = False
+    state["smart_brief"]["broken"] = "Current cash is missing."
+    state["smart_brief"]["next"] = "Upload the latest bank CSV before reviewing anything else."
+    state["income_projection"] = {
+        "status": "unconfigured",
+        "posted_inflow_count": 165,
+    }
+
+    page = _render([], state, balance_as_of="", balance_source="")
+    brief = page[page.index('aria-labelledby="smart-brief-title"'):page.index('aria-labelledby="trajectory-title"')]
+
+    assert "Current cash is missing." in brief
+    assert "Upload the latest bank CSV before reviewing anything else." in brief
+    assert "Income forecast setup incomplete" not in brief
+    assert "Review the CSV income projection first." not in brief
+
+
+def test_stale_cash_keeps_cash_verification_ahead_of_income_setup() -> None:
+    stale_as_of = (TODAY - timedelta(days=4)).isoformat()
+    state = _control_state(queue=[])
+    state["smart_brief"]["broken"] = "Current cash is stale."
+    state["smart_brief"]["next"] = "Upload a current bank CSV before reviewing anything else."
+    state["income_projection"] = {
+        "status": "unconfigured",
+        "posted_inflow_count": 165,
+    }
+
+    page = _render([], state, balance_as_of=stale_as_of)
+    brief = page[page.index('aria-labelledby="smart-brief-title"'):page.index('aria-labelledby="trajectory-title"')]
+
+    assert "Current cash is stale." in brief
+    assert "Upload a current bank CSV before reviewing anything else." in brief
+    assert "Income forecast setup incomplete" not in brief
+    assert "Review the CSV income projection first." not in brief
+
+
+def test_income_card_and_trajectory_keep_income_sources_distinct() -> None:
+    state = _control_state(queue=[])
+    state["income_projection"] = {
+        "status": "configured",
+        "configured": True,
+        "csv_trend_expected_cents": 300_000,
+        "posted_inflow_count": 165,
+    }
+
+    page = _render([], state)
+    incoming = page[page.index("Incoming 14 days"):page.index("Required out 14 days")]
+
+    assert "$8,000" in incoming
+    assert "Confirmed &middot; dated receivables" in incoming
+    assert "Expected: $4,500" in incoming
+    assert "$3,000 CSV trend" in incoming
+    assert "$1,500 dated receivables" in incoming
+    assert "Expected includes probability-weighted CSV recurring-deposit trends and dated receivables." in page
+    assert "It is not committed cash." in page
 
 def test_unified_queue_actions_drawer_modal_and_states_are_present() -> None:
     queue = [
@@ -210,11 +297,14 @@ def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:
     assert "Run the money review in five minutes." in guide
     assert "Scan each workday" in guide
     assert "Mon + Fri" in guide
-    assert "latest bank CSV for current cash" in guide
-    assert "QBO open invoices for receivable balances" in guide
+    assert "latest bank CSV for current cash and actual history" in guide
+    assert "Eligible recurring deposits can appear only as Expected" in guide
+    assert "CSV does not create confirmed income" in guide
+    assert "QBO open invoices for dated receivable balances" in guide
     assert "use manual entries only for exceptions" in guide
     assert "Cash on hand" in guide
-    assert "Confirmed collections first" in guide
+    assert "Confirmed means a dated receivable" in guide
+    assert "weighted CSV trends and unconfirmed dated receivables" in guide
     assert "Overdue plus bills due in 14 days" in guide
     assert "configured cash floor" in guide
     assert "Clear Broken and Needs action first" in guide
