@@ -135,8 +135,32 @@ class TestRunCsvUpload(unittest.TestCase):
                 "balance_cents": 2800000,
                 "as_of_date": "2026-03-05",
                 "source": "csv",
+                "source_id": "TXN-002",
+                "bank_reference": "",
+                "source_row_index": 0,
             },
         )
+
+    def test_latest_balance_uses_first_same_day_row_for_newest_first_csv(self) -> None:
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        rows = list(reversed(_sample_rows()))
+        rows.insert(
+            1,
+            {
+                **rows[0],
+                "Transaction ID": "TXN-003",
+                "Amount": "3000.00",
+                "Account Balance": "31000.00",
+            },
+        )
+        with patch("sales_support_agent.models.database.kv_set_json") as kv_set_json:
+            result = run_csv_upload(_make_csv(rows))
+
+        self.assertEqual(result.latest_balance_cents, 2800000)
+        snapshot = kv_set_json.call_args.args[1]
+        self.assertEqual(snapshot["source_id"], "TXN-002")
+        self.assertEqual(snapshot["source_row_index"], 0)
 
     def test_success_flag(self) -> None:
         from sales_support_agent.services.cashflow.upload import run_csv_upload

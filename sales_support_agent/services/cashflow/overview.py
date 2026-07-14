@@ -27,6 +27,66 @@ from sales_support_agent.services.cashflow.engine import (
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
+def _resolve_current_balance(rows: list[dict[str, Any]]) -> tuple[int, str, str]:
+    """Resolve one canonical current balance for cards, forecasts, and charts."""
+    balance_cents = 0
+    balance_as_of = ""
+    balance_source = ""
+    snapshot_date: date | None = None
+
+    try:
+        from sales_support_agent.models.database import kv_get_json
+
+        snapshot = kv_get_json("balance_snapshot")
+        if snapshot and snapshot.get("balance_cents") is not None:
+            balance_cents = int(snapshot["balance_cents"])
+            balance_as_of = str(snapshot.get("as_of_date", ""))[:10]
+            try:
+                snapshot_date = date.fromisoformat(balance_as_of)
+            except ValueError:
+                snapshot_date = None
+            balance_source = str(snapshot.get("source", ""))
+    except Exception:
+        pass
+
+    csv_rows = [
+        row
+        for row in rows
+        if row.get("source") == "csv" and row.get("account_balance_cents") is not None
+    ]
+    # max() is stable on ties. Bank exports are newest-first, so the first row
+    # for the newest posting date is the closing balance for that date.
+    latest_csv_row = max(
+        csv_rows,
+        key=lambda row: _row_due_date(row) or date.min,
+        default=None,
+    )
+    latest_csv_date = _row_due_date(latest_csv_row) if latest_csv_row else None
+
+    if latest_csv_row and (
+        snapshot_date is None
+        or (latest_csv_date is not None and latest_csv_date > snapshot_date)
+    ):
+        balance_cents = int(latest_csv_row["account_balance_cents"] or 0)
+        balance_as_of = latest_csv_date.isoformat() if latest_csv_date else ""
+        balance_source = "csv"
+        try:
+            from sales_support_agent.models.database import kv_set_json
+
+            kv_set_json(
+                "balance_snapshot",
+                {
+                    "balance_cents": balance_cents,
+                    "as_of_date": balance_as_of,
+                    "source": balance_source,
+                },
+            )
+        except Exception:
+            pass
+
+    return balance_cents, balance_as_of, balance_source
+
+
 def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict:
     """Build day-level chart data for the cashflow bar + balance line chart.
 
@@ -51,14 +111,7 @@ def _build_daily_chart_data(days_back: int = 14, days_forward: int = 42) -> dict
 
     all_rows = list_obligations(limit=5000)
 
-    # Resolve starting balance (latest CSV row with a known balance)
-    balance_cents = 0
-    csv_sorted = sorted(
-        [r for r in all_rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None],
-        key=lambda r: str(r.get("due_date", "")),
-    )
-    if csv_sorted:
-        balance_cents = int(csv_sorted[-1]["account_balance_cents"] or 0)
+    balance_cents, _, _ = _resolve_current_balance(all_rows)
 
     # Per-day buckets
     actual_out_day:  dict = defaultdict(int)
@@ -195,7 +248,7 @@ def _build_chart_data(period_weeks: int = 12) -> dict:
         key=lambda r: str(r.get("due_date", ""))
     )
 
-    starting_balance = int(csv_rows[-1].get("account_balance_cents") or 0) if csv_rows else 0
+    starting_balance, _, _ = _resolve_current_balance(all_rows)
 
     # ── Pre-bucket forward obligations by week-start (Monday) ──────────────
     # This replaces the old N+1 loop that called get_events_for_range() once
@@ -603,43 +656,10 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
     ]
     events = _events_to_dtos(forecast_rows)
 
-    # Balance: read from kv_store snapshot first (fastest, most accurate),
-    # fall back to scanning CSV rows if snapshot not yet written.
-    balance_cents = 0
-    balance_as_of = ""
-    balance_source_label = ""
-    snapshot_date: date | None = None
-
-    try:
-        from sales_support_agent.models.database import kv_get_json
-        snap = kv_get_json("balance_snapshot")
-        if snap and snap.get("balance_cents") is not None:
-            balance_cents = int(snap["balance_cents"])
-            balance_as_of = str(snap.get("as_of_date", ""))[:10]
-            try:
-                snapshot_date = date.fromisoformat(balance_as_of)
-            except ValueError:
-                snapshot_date = None
-            _src = snap.get("source", "")
-            balance_source_label = "CSV" if _src == "csv" else "QBO bank"
-    except Exception:
-        pass
+    balance_cents, balance_as_of, balance_source = _resolve_current_balance(rows)
+    balance_source_label = "CSV" if balance_source == "csv" else "QBO bank" if balance_source else ""
 
     csv_rows = [r for r in rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None]
-
-    latest_csv_row = max(
-        csv_rows,
-        key=lambda row: _row_due_date(row) or date.min,
-        default=None,
-    )
-    latest_csv_date = _row_due_date(latest_csv_row) if latest_csv_row else None
-    if latest_csv_row and (
-        snapshot_date is None
-        or (latest_csv_date is not None and latest_csv_date > snapshot_date)
-    ):
-        balance_cents = int(latest_csv_row["account_balance_cents"] or 0)
-        balance_as_of = latest_csv_date.isoformat() if latest_csv_date else ""
-        balance_source_label = "CSV"
 
     # 4-week summary
     weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=4)

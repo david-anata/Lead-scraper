@@ -49,7 +49,7 @@ class UploadResult:
 def _latest_balance_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Return the balance-bearing row with the newest transaction date."""
     candidates: list[dict[str, Any]] = []
-    for row in rows:
+    for row_index, row in enumerate(rows):
         if row.get("account_balance_cents") is None:
             continue
         raw_date = row.get("due_date")
@@ -64,7 +64,13 @@ def _latest_balance_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
                 continue
         else:
             continue
-        candidates.append({**row, "_balance_date": parsed_date})
+        candidates.append(
+            {
+                **row,
+                "_balance_date": parsed_date,
+                "_source_row_index": row_index,
+            }
+        )
 
     if not candidates:
         return None
@@ -223,6 +229,9 @@ def run_csv_upload(
                 "balance_cents": result.latest_balance_cents,
                 "as_of_date": latest_date,
                 "source": "csv",
+                "source_id": latest_balance_row.get("source_id", ""),
+                "bank_reference": latest_balance_row.get("bank_reference", ""),
+                "source_row_index": latest_balance_row["_source_row_index"],
             })
         except Exception as _e:
             pass  # non-fatal; overview falls back to scanning CSV rows

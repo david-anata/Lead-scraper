@@ -5,12 +5,67 @@ import unittest
 from dataclasses import dataclass
 from datetime import date, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sales_support_agent.services.cashflow.engine import EventDTO, RiskAlert
 from sales_support_agent.services.cashflow.overview import compute_finance_overview
 
 
 _TODAY = date(2026, 4, 7)   # a Monday
+
+
+class TestCanonicalBalance(unittest.TestCase):
+    def test_snapshot_drives_chart_with_multiple_same_day_rows(self) -> None:
+        from sales_support_agent.services.cashflow.overview import _build_daily_chart_data
+
+        rows = [
+            {
+                "source": "csv",
+                "due_date": date(2026, 7, 13),
+                "account_balance_cents": 498_392,
+                "amount_cents": 350_000,
+                "event_type": "outflow",
+                "status": "posted",
+            },
+            {
+                "source": "csv",
+                "due_date": date(2026, 7, 13),
+                "account_balance_cents": 1_401_212,
+                "amount_cents": 300_000,
+                "event_type": "inflow",
+                "status": "posted",
+            },
+        ]
+        canonical_snapshot = {
+            "balance_cents": 498_392,
+            "as_of_date": "2026-07-13",
+            "source": "csv",
+        }
+
+        with (
+            patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=rows),
+            patch("sales_support_agent.models.database.kv_get_json", return_value=canonical_snapshot),
+            patch("sales_support_agent.models.database.kv_set_json") as kv_set_json,
+        ):
+            chart = _build_daily_chart_data()
+
+        self.assertEqual(chart["starting_balance"], 4983.92)
+        kv_set_json.assert_not_called()
+
+    def test_zero_snapshot_is_valid(self) -> None:
+        from sales_support_agent.services.cashflow.overview import _resolve_current_balance
+
+        snapshot = {
+            "balance_cents": 0,
+            "as_of_date": "2026-07-13",
+            "source": "csv",
+        }
+        with patch("sales_support_agent.models.database.kv_get_json", return_value=snapshot):
+            balance, as_of, source = _resolve_current_balance([])
+
+        self.assertEqual(balance, 0)
+        self.assertEqual(as_of, "2026-07-13")
+        self.assertEqual(source, "csv")
 
 
 def _make_week(net_cents: int = 0, inflow_cents: int = 0, outflow_cents: int = 0) -> SimpleNamespace:
