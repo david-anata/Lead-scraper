@@ -1171,7 +1171,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           <p class="page-sub">One page for cash, collections, payments, and the next safest action.</p>
         </div>
         <div class="finance-control__tools">
-          <span class="finance-updated">Updated {html.escape(updated_label)}</span>
+          <span class="finance-updated">Cash updated {html.escape(updated_label)}</span>
           <label class="finance-smart-toggle">
             <span>Smart mode</span>
             <input id="finance-smart-mode" type="checkbox" checked>
@@ -1240,6 +1240,46 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           <p>Update money or add an incoming or payable exception.</p>
           <div><button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Update money</button><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a></div>
         </div>
+      </section>
+
+      <section class="card finance-review-guide" id="finance-review-guide" aria-labelledby="finance-review-guide-title">
+        <div class="finance-review-guide__head">
+          <div>
+            <p class="finance-eyebrow">How to use Finance Control</p>
+            <h2 id="finance-review-guide-title">Run the money review in five minutes.</h2>
+            <p>Scan each workday. Refresh the sources Monday and Friday, and repeat after a large payment, deposit, or source correction.</p>
+          </div>
+          <div class="finance-review-guide__cadence" aria-label="Recommended finance review cadence">
+            <span><strong>Daily</strong> Scan Broken and Next</span>
+            <span><strong>Mon + Fri</strong> Refresh every source</span>
+            <span><strong>Money moved</strong> Update the bank CSV</span>
+          </div>
+        </div>
+
+        <div class="finance-review-guide__steps">
+          <article>
+            <span>01</span>
+            <h3>Update reality</h3>
+            <p>Upload the latest bank CSV for current cash, actual movement, and posted payments or receipts. Refresh ClickUp for planned AP/AR dates, priority, and notes; use QBO open invoices for receivable balances; and use manual entries only for exceptions.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Read left to right</h3>
+            <dl>
+              <div><dt>Cash on hand</dt><dd>What the bank says is available now.</dd></div>
+              <div><dt>Incoming</dt><dd>Confirmed collections first; expected stays separate.</dd></div>
+              <div><dt>Required out</dt><dd>Overdue plus bills due in 14 days.</dd></div>
+              <div><dt>Safe to commit / Funding gap</dt><dd>What remains after required out and the configured cash floor.</dd></div>
+            </dl>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Work and close the loop</h3>
+            <p>Read Happening, Broken, and Next. Clear Broken and Needs action first, then use the <strong>&hellip;</strong> menu to record a partial payment, plan an installment, defer, or confirm a receipt. Refresh once more and make sure the gap or trajectory improves. Finance records the decision; it never moves bank money.</p>
+          </article>
+        </div>
+
+        <p class="finance-review-guide__trust"><strong>Trust check before deciding:</strong> Cash updated is current, no important item has a missing or zero amount, incoming money has a date and confidence, and unpaid remainders stay open until posted bank activity proves they cleared.</p>
       </section>
 
       <aside id="finance-recommendation-drawer" class="finance-drawer" aria-hidden="true" aria-labelledby="finance-drawer-title">

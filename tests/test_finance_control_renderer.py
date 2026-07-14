@@ -165,6 +165,30 @@ def test_empty_queue_copy_keeps_exception_actions_available() -> None:
     assert "Update money" in page
 
 
+def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:
+    page = _render([], _control_state(queue=[]))
+
+    queue_position = page.index('id="finance-queue"')
+    guide_position = page.index('id="finance-review-guide"')
+    drawer_position = page.index('id="finance-recommendation-drawer"')
+    assert queue_position < guide_position < drawer_position
+
+    guide = page[guide_position:drawer_position]
+    assert "Run the money review in five minutes." in guide
+    assert "Scan each workday" in guide
+    assert "Mon + Fri" in guide
+    assert "latest bank CSV for current cash" in guide
+    assert "QBO open invoices for receivable balances" in guide
+    assert "use manual entries only for exceptions" in guide
+    assert "Cash on hand" in guide
+    assert "Confirmed collections first" in guide
+    assert "Overdue plus bills due in 14 days" in guide
+    assert "configured cash floor" in guide
+    assert "Clear Broken and Needs action first" in guide
+    assert "never moves bank money" in guide
+    assert "unpaid remainders stay open" in guide
+
+
 def test_renderer_falls_back_when_control_builder_fails() -> None:
     with (
         patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),
