@@ -21,6 +21,7 @@ from sales_support_agent.api.brand_analysis_router import (
     router as brand_analysis_router,
 )
 from sales_support_agent.api.cashflow_router import router as cashflow_router
+from sales_support_agent.api.qbo_auth_router import router as qbo_auth_router
 from sales_support_agent.api.fulfillment_deck_router import (
     admin_router as fulfillment_deck_admin_router,
     public_router as fulfillment_deck_public_router,
@@ -62,6 +63,8 @@ def create_app() -> FastAPI:
     app.include_router(router)
     app.include_router(auth_router)
     app.include_router(cashflow_router)
+    # OAuth is public by Intuit requirement, while the Finance settings page remains access-controlled.
+    app.include_router(qbo_auth_router, prefix="/admin/finances/qbo")
     app.include_router(advertising_router)
     app.include_router(advertising_public_router)
     app.include_router(brand_analysis_router)

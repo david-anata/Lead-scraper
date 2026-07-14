@@ -96,6 +96,14 @@ class TestQBOAuthRoutes(unittest.TestCase):
         resp = self.client.get("/connect")
         self.assertEqual(resp.status_code, 302)
 
+    def test_production_app_registers_prefixed_oauth_routes(self):
+        """The Render entrypoint must expose the same paths used by Finance UI."""
+        from sales_support_agent.main import app
+
+        paths = {route.path for route in app.routes}
+        self.assertIn("/admin/finances/qbo/connect", paths)
+        self.assertIn("/admin/finances/qbo/callback", paths)
+
     def test_connect_redirects_to_intuit_auth_url(self):
         resp = self.client.get("/connect")
         location = resp.headers.get("location", "")
