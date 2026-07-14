@@ -113,7 +113,7 @@ class TestFlagRisks(unittest.TestCase):
         monday = date(2026, 4, 6)
         events = [_event(event_type="inflow", amount_cents=1000_00, due_date=monday)]
         weeks = aggregate_weeks(events, starting_cash_cents=5000_00, weeks=4, as_of_date=monday)
-        alerts = flag_risks(weeks, events)
+        alerts = flag_risks(weeks, events, as_of_date=monday)
         critical = [a for a in alerts if a.severity == "critical"]
         self.assertEqual(critical, [])
 

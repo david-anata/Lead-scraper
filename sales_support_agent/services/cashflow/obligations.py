@@ -432,7 +432,15 @@ def generate_upcoming_from_templates(
 
     for tmpl in templates:
         next_due_raw = tmpl["next_due_date"]
-        if isinstance(next_due_raw, str):
+        if next_due_raw is None:
+            logger.warning(
+                "Skipping recurring template %s without next_due_date",
+                tmpl.get("id", "unknown"),
+            )
+            continue
+        if isinstance(next_due_raw, datetime):
+            next_due = next_due_raw.date()
+        elif isinstance(next_due_raw, str):
             next_due = date.fromisoformat(next_due_raw[:10])
         else:
             next_due = next_due_raw

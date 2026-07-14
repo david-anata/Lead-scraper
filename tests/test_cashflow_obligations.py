@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
@@ -226,6 +226,70 @@ class TestRecurringTemplates(unittest.TestCase):
         obligations = list_obligations()
         names = [o["name"] for o in obligations]
         self.assertIn("Monthly SaaS", names)
+
+    def test_generate_accepts_postgres_datetime_next_due_date(self) -> None:
+        from sales_support_agent.services.cashflow.obligations import (
+            generate_upcoming_from_templates,
+        )
+
+        template = {
+            "id": "postgres-template",
+            "name": "Postgres Monthly SaaS",
+            "vendor_or_customer": "Example Vendor",
+            "event_type": "outflow",
+            "category": "software",
+            "amount_cents": 10000,
+            "frequency": "monthly",
+            "next_due_date": datetime(2026, 5, 1, tzinfo=timezone.utc),
+            "day_of_month": 1,
+        }
+
+        with (
+            patch(
+                "sales_support_agent.services.cashflow.obligations.list_recurring_templates",
+                return_value=[template],
+            ),
+            patch(
+                "sales_support_agent.services.cashflow.obligations._today",
+                return_value=date(2026, 4, 30),
+            ),
+        ):
+            created = generate_upcoming_from_templates(
+                horizon_days=1,
+                advance_template=False,
+            )
+
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["name"], "Postgres Monthly SaaS")
+        self.assertEqual(str(created[0]["due_date"])[:10], "2026-05-01")
+
+    def test_generate_skips_template_without_next_due_date(self) -> None:
+        from sales_support_agent.services.cashflow.obligations import (
+            generate_upcoming_from_templates,
+        )
+
+        template = {
+            "id": "undated-template",
+            "name": "Undated recurring bill",
+            "vendor_or_customer": "Example Vendor",
+            "event_type": "outflow",
+            "category": "other",
+            "amount_cents": 10000,
+            "frequency": "monthly",
+            "next_due_date": None,
+            "day_of_month": None,
+        }
+
+        with patch(
+            "sales_support_agent.services.cashflow.obligations.list_recurring_templates",
+            return_value=[template],
+        ):
+            created = generate_upcoming_from_templates(
+                horizon_days=90,
+                advance_template=False,
+            )
+
+        self.assertEqual(created, [])
 
     def test_generate_skips_beyond_horizon(self) -> None:
         from sales_support_agent.services.cashflow.obligations import (
