@@ -139,6 +139,63 @@ def _quarantine_legacy_clickup_template_expansions(engine) -> tuple[int, int]:
     return events.rowcount, templates.rowcount
 
 
+def _match_existing_posted_transactions(engine) -> int:
+    """Match previously uploaded bank rows after new ClickUp obligations arrive."""
+    from sqlalchemy import text
+
+    from sales_support_agent.services.cashflow.matcher import auto_match_transactions
+    from sales_support_agent.services.cashflow.obligations import list_obligations
+
+    rows = list_obligations(limit=5000)
+    posted = [
+        row for row in rows
+        if row.get("source") in ("csv", "qbo_bank")
+        and row.get("status") == "posted"
+    ]
+    planned = [
+        row for row in rows
+        if row.get("source") not in ("csv", "qbo_bank")
+        and row.get("status") in ("planned", "pending", "overdue")
+        and int(row.get("amount_cents") or 0) > 0
+    ]
+    if not posted or not planned:
+        return 0
+
+    matches = [
+        match for match in auto_match_transactions(posted, planned)
+        if match.planned_event_id is not None
+    ]
+    if not matches:
+        return 0
+
+    now_str = datetime.utcnow().isoformat()
+    with engine.begin() as conn:
+        for match in matches:
+            conn.execute(
+                text("""
+                    UPDATE cash_events
+                    SET status = 'matched', matched_to_id = :planned_id,
+                        updated_at = :now
+                    WHERE id = :posted_id AND status = 'posted'
+                """),
+                {
+                    "planned_id": match.planned_event_id,
+                    "posted_id": match.csv_event_id,
+                    "now": now_str,
+                },
+            )
+            conn.execute(
+                text("""
+                    UPDATE cash_events
+                    SET status = 'matched', updated_at = :now
+                    WHERE id = :planned_id
+                      AND status IN ('planned', 'pending', 'overdue')
+                """),
+                {"planned_id": match.planned_event_id, "now": now_str},
+            )
+    return len(matches)
+
+
 def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
     """Convert a raw ClickUp task dict to a cash_event-compatible dict."""
     custom_fields = task.get("custom_fields") or []
@@ -278,10 +335,12 @@ def sync_clickup_finance(settings):
                 else:
                     ev_updated += 1
 
+        result.matches_made = _match_existing_posted_transactions(engine)
+
         logger.info(
             "ClickUp finance sync complete: "
-            "events created=%d updated=%d | skipped=%d",
-            ev_created, ev_updated, skipped,
+            "events created=%d updated=%d | skipped=%d | matched=%d",
+            ev_created, ev_updated, skipped, result.matches_made,
         )
         result.rows_inserted = ev_created
         result.rows_skipped_duplicate = ev_updated + skipped
