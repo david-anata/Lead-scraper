@@ -186,7 +186,6 @@ def _fetch_tasks(api_token: str, list_id: str) -> list[dict]:
         params = {
             "include_closed": "true",
             "subtasks": "false",
-            "custom_fields": "true",
             "page": page,
         }
         resp = requests.get(base_url, headers=headers, params=params, timeout=30)
