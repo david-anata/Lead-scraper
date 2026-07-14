@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 def _make_csv(rows: list[dict]) -> bytes:
@@ -119,6 +120,23 @@ class TestRunCsvUpload(unittest.TestCase):
         result = run_csv_upload(csv_bytes)
         # Last row has balance 28000.00 = 2800000 cents
         self.assertEqual(result.latest_balance_cents, 2800000)
+
+    def test_latest_balance_uses_newest_date_for_newest_first_csv(self) -> None:
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        csv_bytes = _make_csv(list(reversed(_sample_rows())))
+        with patch("sales_support_agent.models.database.kv_set_json") as kv_set_json:
+            result = run_csv_upload(csv_bytes)
+
+        self.assertEqual(result.latest_balance_cents, 2800000)
+        kv_set_json.assert_called_once_with(
+            "balance_snapshot",
+            {
+                "balance_cents": 2800000,
+                "as_of_date": "2026-03-05",
+                "source": "csv",
+            },
+        )
 
     def test_success_flag(self) -> None:
         from sales_support_agent.services.cashflow.upload import run_csv_upload

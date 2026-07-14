@@ -6,7 +6,7 @@ import csv
 import io
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
 from sales_support_agent.services.cashflow.matcher import auto_match_transactions
@@ -44,6 +44,31 @@ class UploadResult:
             bal = self.latest_balance_cents / 100
             parts.append(f"balance ${bal:,.2f}")
         return " · ".join(parts)
+
+
+def _latest_balance_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the balance-bearing row with the newest transaction date."""
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("account_balance_cents") is None:
+            continue
+        raw_date = row.get("due_date")
+        if isinstance(raw_date, datetime):
+            parsed_date = raw_date.date()
+        elif isinstance(raw_date, date):
+            parsed_date = raw_date
+        elif isinstance(raw_date, str):
+            try:
+                parsed_date = date.fromisoformat(raw_date[:10])
+            except ValueError:
+                continue
+        else:
+            continue
+        candidates.append({**row, "_balance_date": parsed_date})
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: row["_balance_date"])
 
 
 def run_csv_upload(
@@ -85,11 +110,9 @@ def run_csv_upload(
     if not normalised_rows:
         return result
 
-    # Track the latest balance (last row with a balance value)
-    for row in reversed(normalised_rows):
-        if row.get("account_balance_cents") is not None:
-            result.latest_balance_cents = row["account_balance_cents"]
-            break
+    latest_balance_row = _latest_balance_row(normalised_rows)
+    if latest_balance_row is not None:
+        result.latest_balance_cents = latest_balance_row["account_balance_cents"]
 
     # -- Replace range if requested -----------------------------------------
     if merge_mode == "replace_range":
@@ -192,14 +215,8 @@ def run_csv_upload(
                 new_events.append({"id": event_id, **row})
 
     # -- Persist balance snapshot so pages don't have to scan all CSV rows ---
-    if result.latest_balance_cents is not None:
-        # Find the date of the last row that carries the balance
-        latest_date = ""
-        for row in reversed(normalised_rows):
-            if row.get("account_balance_cents") is not None and row.get("due_date"):
-                raw_d = row["due_date"]
-                latest_date = raw_d.isoformat() if hasattr(raw_d, "isoformat") else str(raw_d)[:10]
-                break
+    if result.latest_balance_cents is not None and latest_balance_row is not None:
+        latest_date = latest_balance_row["_balance_date"].isoformat()
         try:
             from sales_support_agent.models.database import kv_set_json
             kv_set_json("balance_snapshot", {

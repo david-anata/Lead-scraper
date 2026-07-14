@@ -608,6 +608,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
     balance_cents = 0
     balance_as_of = ""
     balance_source_label = ""
+    snapshot_date: date | None = None
 
     try:
         from sales_support_agent.models.database import kv_get_json
@@ -615,6 +616,10 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         if snap and snap.get("balance_cents") is not None:
             balance_cents = int(snap["balance_cents"])
             balance_as_of = str(snap.get("as_of_date", ""))[:10]
+            try:
+                snapshot_date = date.fromisoformat(balance_as_of)
+            except ValueError:
+                snapshot_date = None
             _src = snap.get("source", "")
             balance_source_label = "CSV" if _src == "csv" else "QBO bank"
     except Exception:
@@ -622,17 +627,19 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
 
     csv_rows = [r for r in rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None]
 
-    if balance_cents == 0:
-        # kv_store not populated yet — scan CSV rows as fallback
-        if csv_rows:
-            csv_rows_sorted = sorted(
-                csv_rows,
-                key=lambda r: str(r.get("due_date", "")).ljust(10, "0"),
-                reverse=True,
-            )
-            balance_cents = int(csv_rows_sorted[0]["account_balance_cents"] or 0)
-            balance_as_of = str(csv_rows_sorted[0].get("due_date", ""))[:10]
-            balance_source_label = "CSV"
+    latest_csv_row = max(
+        csv_rows,
+        key=lambda row: _row_due_date(row) or date.min,
+        default=None,
+    )
+    latest_csv_date = _row_due_date(latest_csv_row) if latest_csv_row else None
+    if latest_csv_row and (
+        snapshot_date is None
+        or (latest_csv_date is not None and latest_csv_date > snapshot_date)
+    ):
+        balance_cents = int(latest_csv_row["account_balance_cents"] or 0)
+        balance_as_of = latest_csv_date.isoformat() if latest_csv_date else ""
+        balance_source_label = "CSV"
 
     # 4-week summary
     weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=4)
