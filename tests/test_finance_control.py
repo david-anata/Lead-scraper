@@ -98,6 +98,59 @@ def test_allocations_derive_open_amount_and_reversal_does_not_close_early():
     assert result[0]["open_amount_cents"] == 80_000
 
 
+def test_qbo_open_balance_disagreement_is_resolve_first_and_not_forecast():
+    invoice = _row(
+        "qbo-invoice",
+        source="qbo",
+        event_type="inflow",
+        amount_cents=100_000,
+        source_open_amount_cents=25_000,
+        due_date=AS_OF + timedelta(days=1),
+    )
+
+    annotated = annotate_open_amounts([invoice], [])
+    state = build_finance_control_state(
+        _history(200_000) + [invoice],
+        settlement_annotations=[],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert annotated[0]["amount_cents"] == 100_000
+    assert annotated[0]["local_open_amount_cents"] == 100_000
+    assert annotated[0]["source_open_amount_cents"] == 25_000
+    assert annotated[0]["source_open_disagreement"] is True
+    queue_item = next(item for item in state["queue"]["items"] if item["id"] == "qbo-invoice")
+    assert queue_item["group"] == "resolve_first"
+    assert queue_item["decision_blocker"] == "source_open_disagreement"
+    assert state["metrics"]["confirmed_incoming_cents"] == 0
+    assert state["forecast"]["paths"]["committed"][-1]["cash_cents"] == 200_000
+
+
+def test_qbo_partial_balance_is_forecast_once_allocation_evidence_agrees():
+    invoice = _row(
+        "qbo-invoice",
+        source="qbo",
+        event_type="inflow",
+        amount_cents=100_000,
+        source_open_amount_cents=25_000,
+        due_date=AS_OF + timedelta(days=1),
+    )
+
+    state = build_finance_control_state(
+        _history(200_000) + [invoice],
+        settlement_annotations={"qbo-invoice": 75_000},
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    queue_item = next(item for item in state["queue"]["items"] if item["id"] == "qbo-invoice")
+    assert queue_item["decision_blocker"] is None
+    assert queue_item["open_amount_cents"] == 25_000
+    assert state["metrics"]["confirmed_incoming_cents"] == 25_000
+    assert state["forecast"]["paths"]["committed"][-1]["cash_cents"] == 225_000
+
+
 def test_metrics_reserve_every_bill_due_in_window_and_separate_later_exposure():
     rows = _history(300_000) + [
         _row("confirmed-ar", event_type="inflow", amount_cents=80_000),
@@ -107,7 +160,7 @@ def test_metrics_reserve_every_bill_due_in_window_and_separate_later_exposure():
         _row("later", amount_cents=50_000, due_date=AS_OF + timedelta(days=20)),
     ]
 
-    state = build_finance_control_state(rows, as_of=AS_OF)
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
 
     assert state["metrics"]["cash_on_hand_cents"] == 300_000
     assert state["metrics"]["confirmed_incoming_cents"] == 80_000
@@ -181,11 +234,37 @@ def test_stale_balance_gates_recommendations_to_verification_actions():
     ]
     rows[0]["due_date"] = AS_OF - timedelta(days=10)
 
-    state = build_finance_control_state(rows, as_of=AS_OF, balance_stale_after_days=3)
+    state = build_finance_control_state(
+        rows, as_of=AS_OF, floor_cents=100_000, balance_stale_after_days=3
+    )
 
     assert state["confidence"]["verification_only"] is True
     assert state["recommendations"][0]["action_type"] == "refresh_cash_balance"
     assert all(rec["rank"] <= 2 for rec in state["recommendations"])
+
+
+def test_missing_settlement_evidence_gates_recommendations_to_verification_actions():
+    rows = _history(150_000) + [
+        _row(
+            "bill",
+            event_type="outflow",
+            amount_cents=50_000,
+            due_date=AS_OF,
+            status="planned",
+            settlement_evidence_available=False,
+        )
+    ]
+
+    state = build_finance_control_state(
+        rows,
+        settlement_annotations=None,
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert state["confidence"]["verification_only"] is True
+    assert "settlement evidence is unavailable" in state["confidence"]["reasons"]
+    assert state["recommendations"][0]["action_type"] == "verify_finance_data"
 
 
 def test_ranked_recommendations_collect_then_protect_cash():
@@ -276,6 +355,7 @@ def test_control_state_queue_supports_full_forecast_window():
     state = build_finance_control_state(
         [_row("later", due_date=AS_OF + timedelta(days=21))],
         as_of=AS_OF,
+        floor_cents=100_000,
         horizon_days=28,
         summary_days=14,
     )
@@ -308,7 +388,9 @@ def test_inputs_are_not_mutated():
     rows = [_row("rent", amount_cents=100_000)]
     original = dict(rows[0])
 
-    build_finance_control_state(rows, {"rent": 25_000}, as_of=AS_OF)
+    build_finance_control_state(
+        rows, {"rent": 25_000}, as_of=AS_OF, floor_cents=100_000
+    )
 
     assert rows[0] == original
     assert "open_amount_cents" not in rows[0]

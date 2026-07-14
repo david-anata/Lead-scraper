@@ -142,17 +142,37 @@ async def cashflow_health(request: Request):
         })
 
     # -- Static INSERT coverage check ----------------------------------------
-    def _coverage(module_path: str) -> dict:
+    def _coverage(*module_paths: str) -> dict:
         try:
-            src = _inspect.getsource(_importlib.import_module(module_path))
+            src = "\n".join(
+                _inspect.getsource(_importlib.import_module(module_path))
+                for module_path in module_paths
+            )
             missing = sorted(c for c in REQUIRED_COLUMNS if c not in src)
-            return {"covered": not missing, "missing": missing}
+            return {
+                "covered": not missing,
+                "missing": missing,
+                "modules": list(module_paths),
+            }
         except Exception as exc:
-            return {"covered": False, "error": str(exc)}
+            return {
+                "covered": False,
+                "error": str(exc),
+                "modules": list(module_paths),
+            }
 
-    checks["upload_insert_coverage"]       = _coverage("sales_support_agent.services.cashflow.upload")
+    # Bank CSV parsing lives in upload.py; the canonical staged INSERT lives in imports.py.
+    bank_import_coverage = _coverage("sales_support_agent.services.cashflow.imports")
+    checks["bank_import_insert_coverage"] = bank_import_coverage
+    checks["upload_insert_coverage"] = bank_import_coverage
     checks["clickup_sync_insert_coverage"] = _coverage("sales_support_agent.services.cashflow.clickup_sync")
     checks["obligations_insert_coverage"]  = _coverage("sales_support_agent.services.cashflow.obligations")
+
+    from sales_support_agent.services.cashflow.settings import get_cash_floor_health
+
+    checks["cash_floor_settings"] = get_cash_floor_health()
+    if not checks["cash_floor_settings"]["available"]:
+        overall = "degraded"
 
     if any(
         not v.get("covered", False)
@@ -253,6 +273,29 @@ def _money_to_cents(raw_amount: str) -> int:
     if cents <= 0:
         raise ValueError("Amount must be greater than zero")
     return cents
+
+
+@router.post("/settings/cash-floor", response_class=HTMLResponse)
+async def update_cash_floor(request: Request, cash_floor: str = Form(...)):
+    """Persist the minimum reserve used by every Finance calculation."""
+    from sales_support_agent.services.cashflow.settings import set_cash_floor_cents
+
+    try:
+        cents = _money_to_cents(cash_floor)
+        current_user = get_current_user(request)
+        actor = "finance-operator"
+        if isinstance(current_user, dict):
+            actor = str(
+                current_user.get("email")
+                or current_user.get("name")
+                or actor
+            )
+        await asyncio.to_thread(set_cash_floor_cents, cents, actor=actor)
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    except Exception:
+        return _redirect_finance_error("Cash floor could not be updated")
+    return _redirect_finance_home("Cash floor updated")
 
 
 @router.post("/actions/{event_id}/partial", response_class=HTMLResponse)

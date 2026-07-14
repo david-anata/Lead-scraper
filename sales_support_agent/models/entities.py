@@ -446,6 +446,16 @@ class CashEvent(Base):
     status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
     confidence: Mapped[str] = mapped_column(String(16), default="estimated")  # "confirmed" | "estimated"
 
+    # Provider-reported lifecycle is evidence, not canonical settlement truth.
+    # ``status`` remains derived from allocations / explicit local decisions.
+    source_status: Mapped[str] = mapped_column(
+        String(32), default="", server_default="", index=True
+    )
+    source_open_amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Obligation controls. Transaction rows retain these compatible defaults.
     pay_priority: Mapped[str] = mapped_column(
         String(16), default="review", server_default="review", index=True
@@ -461,6 +471,10 @@ class CashEvent(Base):
 
     # CSV ↔ planned obligation matching
     matched_to_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    match_status: Mapped[str] = mapped_column(
+        String(16), default="", server_default="", index=True
+    )
+    match_candidates_json: Mapped[list] = mapped_column(JSON, default=list)
 
     # ClickUp transition
     clickup_task_id: Mapped[str] = mapped_column(String(64), default="", index=True)
@@ -579,6 +593,34 @@ class FinanceImportRow(Base):
     __table_args__ = (
         Index("uq_finance_import_batch_row", "import_batch_id", "row_number", unique=True),
     )
+
+
+class FinanceSetting(Base):
+    """Persisted operator controls shared by every Finance read model."""
+
+    __tablename__ = "finance_settings"
+
+    scope_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    cash_floor_cents: Mapped[int] = mapped_column(Integer, default=1_000_000)
+    active_actual_source: Mapped[str] = mapped_column(String(32), default="csv")
+    updated_by: Mapped[str] = mapped_column(String(255), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceActionAudit(Base):
+    """Append-only evidence for trust-sensitive Finance mutations."""
+
+    __tablename__ = "finance_action_audit"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    action_type: Mapped[str] = mapped_column(String(64), index=True)
+    entity_type: Mapped[str] = mapped_column(String(64), default="")
+    entity_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    actor: Mapped[str] = mapped_column(String(255), default="system")
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
 class RecurringTemplate(Base):

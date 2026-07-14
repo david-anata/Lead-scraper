@@ -112,6 +112,17 @@ class TestAutoMatchTransactions(unittest.TestCase):
         results = auto_match_transactions(csv_events, planned_events)
         self.assertIsNotNone(results[0].planned_event_id)
 
+    def test_equal_candidates_fail_closed_as_ambiguous(self) -> None:
+        d = date(2026, 4, 7)
+        results = auto_match_transactions(
+            [_csv("c1", "ACME", 100_00, d)],
+            [_planned("p1", "ACME", 100_00, d), _planned("p2", "ACME", 100_00, d)],
+        )
+        self.assertIsNone(results[0].planned_event_id)
+        self.assertEqual(results[0].match_status, "ambiguous")
+        self.assertEqual(results[0].score_bps, 10_000)
+        self.assertEqual(results[0].candidate_ids, ["p1", "p2"])
+
 
 if __name__ == "__main__":
     unittest.main()

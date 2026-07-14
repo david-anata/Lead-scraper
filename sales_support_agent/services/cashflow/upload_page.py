@@ -19,13 +19,9 @@ def render_upload_page(*, result_html: str = "", flash: str = "") -> str:
           <div>
             <label>Bank transactions CSV</label>
             <input type="file" name="csv_file" accept=".csv" style="padding:6px 0">
-          </div>
-          <div>
-            <label>How to merge</label>
-            <select name="merge_mode">
-              <option value="append">Append / merge by transaction ID</option>
-              <option value="replace_range">Replace date range</option>
-            </select>
+            <p style="font-size:12px;color:#6b7a8d;margin:6px 0 0">
+              Files are staged and merged safely. Existing posted transactions are never deleted.
+            </p>
           </div>
         </div>
         <div class="action-row">

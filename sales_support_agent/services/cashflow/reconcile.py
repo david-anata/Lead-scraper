@@ -138,7 +138,7 @@ def render_reconcile_page(*, flash: str = "") -> str:
 
         # Detect trend patterns (AR-first)
         try:
-            patterns = detect_recurring_patterns(min_occurrences=2, lookback_days=120)
+            patterns = detect_recurring_patterns(min_occurrences=3, lookback_days=120)
         except Exception:
             patterns = []
 

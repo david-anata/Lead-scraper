@@ -146,6 +146,8 @@ def test_unified_queue_actions_drawer_modal_and_states_are_present() -> None:
     assert "Finance data could not be loaded." in page
     assert "Import failed. No records were committed." in page
     assert "replace_range" not in page
+    assert 'action="/admin/finances/settings/cash-floor"' in page
+    assert "Save floor" in page
 
 
 def test_money_queue_has_page_size_range_and_navigation_controls() -> None:

@@ -39,15 +39,20 @@ AMOUNT_TOLERANCE_PCT: float = 0.10        # ±10% amount difference allowed
 TIGHT_AMOUNT_TOLERANCE_PCT: float = 0.05  # ±5% when matching by category only
 DATE_WINDOW_DAYS: int = 7                 # ±7 days date window
 VENDOR_SIMILARITY_THRESHOLD: float = 0.55 # Jaccard token similarity
+AUTO_MATCH_MIN_BPS: int = 8_000
+AUTO_MATCH_LEAD_BPS: int = 1_500
 
 
 @dataclass
 class MatchResult:
     """Result of attempting to match one CSV event to a planned event."""
-    csv_event_id: int
-    planned_event_id: int | None    # None → no match found
+    csv_event_id: str
+    planned_event_id: str | None    # None → no match found
     score: float                    # 0.0–1.0 confidence
     reason: str                     # human-readable match explanation
+    score_bps: int = 0
+    match_status: str = "unmatched"
+    candidate_ids: list[str] | None = None
 
 
 def auto_match_transactions(
@@ -77,39 +82,52 @@ def auto_match_transactions(
 
     # Track which planned events have already been claimed so we don't
     # double-match the same obligation to two CSV rows
-    claimed_planned_ids: set[int] = set()
+    claimed_planned_ids: set[str] = set()
 
     for csv_ev in csv_events:
-        best_id: int | None = None
-        best_score: float = 0.0
-        best_reason: str = "no match"
-
         candidates = planned_by_type.get(csv_ev.get("event_type", "outflow"), [])
-
+        scored: list[tuple[int, str, str]] = []
         for planned in candidates:
-            if planned["id"] in claimed_planned_ids:
+            planned_id = str(planned["id"])
+            if planned_id in claimed_planned_ids:
                 continue
+            score_bps, reason = _score_match_bps(csv_ev, planned)
+            if score_bps:
+                scored.append((score_bps, planned_id, reason))
 
-            score, reason = _score_match(csv_ev, planned)
-            if score > best_score:
-                best_score = score
-                best_id = planned["id"]
-                best_reason = reason
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        best_score_bps, best_id, best_reason = scored[0] if scored else (0, None, "no match")
+        runner_up_bps = scored[1][0] if len(scored) > 1 else 0
+        qualifying_ids = [item[1] for item in scored if item[0] >= AUTO_MATCH_MIN_BPS]
 
-        if best_score >= 0.5:  # minimum confidence threshold
-            claimed_planned_ids.add(best_id)  # type: ignore[arg-type]
+        if (
+            best_id is not None
+            and best_score_bps >= AUTO_MATCH_MIN_BPS
+            and (not runner_up_bps or best_score_bps - runner_up_bps >= AUTO_MATCH_LEAD_BPS)
+        ):
+            claimed_planned_ids.add(best_id)
             results.append(MatchResult(
-                csv_event_id=csv_ev["id"],
+                csv_event_id=str(csv_ev["id"]),
                 planned_event_id=best_id,
-                score=best_score,
+                score=best_score_bps / 10_000,
                 reason=best_reason,
+                score_bps=best_score_bps,
+                match_status="matched",
+                candidate_ids=qualifying_ids,
             ))
         else:
+            ambiguous = len(qualifying_ids) > 1 and best_score_bps - runner_up_bps < AUTO_MATCH_LEAD_BPS
             results.append(MatchResult(
-                csv_event_id=csv_ev["id"],
+                csv_event_id=str(csv_ev["id"]),
                 planned_event_id=None,
-                score=best_score,
-                reason="no match found",
+                score=best_score_bps / 10_000,
+                reason=(
+                    f"ambiguous match: top candidates separated by {best_score_bps - runner_up_bps} bps"
+                    if ambiguous else "no match found"
+                ),
+                score_bps=best_score_bps,
+                match_status="ambiguous" if ambiguous else "unmatched",
+                candidate_ids=qualifying_ids,
             ))
 
     return results
@@ -128,6 +146,15 @@ def _score_match(
     Score of 0.0 means the pair fails hard constraints and should not match.
     Score ≥ 0.5 is considered a valid match; ≥ 0.8 is high confidence.
     """
+    score_bps, reason = _score_match_bps(csv_ev, planned)
+    return score_bps / 10_000, reason
+
+
+def _score_match_bps(
+    csv_ev: dict[str, Any],
+    planned: dict[str, Any],
+) -> tuple[int, str]:
+    """Return deterministic integer basis-point match evidence."""
     # ── Hard constraint 1: same event_type ────────────────────────────────
     if csv_ev.get("event_type") != planned.get("event_type"):
         return 0.0, "event_type mismatch"
@@ -159,7 +186,7 @@ def _score_match(
         return 0.0, f"date too far apart ({date_delta} days)"
 
     # ── Soft scoring ───────────────────────────────────────────────────────
-    score = 0.0
+    score_bps = 0
     reasons: list[str] = []
 
     # Vendor similarity
@@ -167,37 +194,45 @@ def _score_match(
         csv_ev.get("vendor_or_customer", "") or csv_ev.get("name", ""),
         planned.get("vendor_or_customer", "") or planned.get("name", ""),
     )
-    if vendor_sim >= VENDOR_SIMILARITY_THRESHOLD:
-        score += 0.5
+    if vendor_sim >= 0.80:
+        score_bps += 3_500
+        reasons.append(f"vendor match ({vendor_sim:.0%})")
+    elif vendor_sim >= VENDOR_SIMILARITY_THRESHOLD:
+        score_bps += 3_000
         reasons.append(f"vendor match ({vendor_sim:.0%})")
     elif vendor_sim >= 0.3:
-        score += 0.2
+        score_bps += 1_500
         reasons.append(f"partial vendor match ({vendor_sim:.0%})")
 
     # Category agreement
     if csv_ev.get("category") == planned.get("category") and csv_ev.get("category") != "uncategorized":
-        score += 0.25
+        score_bps += 1_500
         reasons.append("category match")
 
     # Amount exactness bonus
     if amount_ratio <= 0.01:
-        score += 0.2
+        score_bps += 3_000
         reasons.append("exact amount")
     elif amount_ratio <= 0.05:
-        score += 0.1
+        score_bps += 2_200
         reasons.append("near-exact amount")
+    else:
+        score_bps += 1_200
+        reasons.append("amount within tolerance")
 
     # Date proximity bonus
     if date_delta == 0:
-        score += 0.1
+        score_bps += 2_000
         reasons.append("same date")
     elif date_delta <= 2:
-        score += 0.05
+        score_bps += 1_500
+        reasons.append(f"{date_delta}d date delta")
+    else:
+        score_bps += 500
         reasons.append(f"{date_delta}d date delta")
 
     # Cap at 1.0
-    score = min(score, 1.0)
-    return score, " + ".join(reasons) if reasons else "weak match"
+    return min(score_bps, 10_000), " + ".join(reasons) if reasons else "weak match"
 
 
 def _vendor_similarity(a: str, b: str) -> float:

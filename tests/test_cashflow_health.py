@@ -4,7 +4,7 @@ Self-testing infrastructure for the cashflow module.
 Tests:
   A. Health endpoint — HTTP 200, valid JSON, no auth required
   B. Health endpoint with in-memory DB — status "ok", no missing columns
-  C. Static INSERT SQL coverage — upload.py, clickup_sync.py, obligations.py
+  C. Static INSERT SQL coverage — imports.py, clickup_sync.py, obligations.py
   D. Module import smoke tests — all cashflow modules import cleanly
 
 Run with:
@@ -218,6 +218,37 @@ class TestHealthEndpointWithDB(unittest.TestCase):
             data["checks"]["upload_insert_coverage"]["covered"],
             msg=str(data["checks"]["upload_insert_coverage"]),
         )
+        self.assertEqual(
+            data["checks"]["upload_insert_coverage"]["modules"],
+            ["sales_support_agent.services.cashflow.imports"],
+        )
+
+    def test_cash_floor_setting_is_available(self) -> None:
+        data = self.client.get("/admin/finances/health").json()
+        self.assertEqual(
+            data["checks"]["cash_floor_settings"],
+            {
+                "available": True,
+                "confidence": "confirmed",
+                "cash_floor_cents": 1_000_000,
+            },
+        )
+
+    def test_cash_floor_outage_degrades_health_with_low_confidence(self) -> None:
+        diagnostic = {
+            "available": False,
+            "confidence": "low",
+            "reason": "configured cash floor could not be loaded",
+            "error_type": "OperationalError",
+        }
+        with patch(
+            "sales_support_agent.services.cashflow.settings.get_cash_floor_health",
+            return_value=diagnostic,
+        ):
+            data = self.client.get("/admin/finances/health").json()
+
+        self.assertEqual(data["status"], "degraded")
+        self.assertEqual(data["checks"]["cash_floor_settings"], diagnostic)
 
     def test_clickup_sync_insert_covered(self) -> None:
         data = self.client.get("/admin/finances/health").json()
@@ -238,13 +269,13 @@ class TestHealthEndpointWithDB(unittest.TestCase):
 # C.  Static INSERT SQL coverage (pure — no DB, no server)
 # ===========================================================================
 
-class TestUploadInsertCoverage(unittest.TestCase):
+class TestBankImportInsertCoverage(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.src = _src("sales_support_agent.services.cashflow.upload")
+        cls.src = _src("sales_support_agent.services.cashflow.imports")
 
     def _col(self, col: str) -> None:
-        self.assertIn(col, self.src, msg=f"upload.py INSERT missing: '{col}'")
+        self.assertIn(col, self.src, msg=f"imports.py INSERT missing: '{col}'")
 
     def test_subcategory(self):           self._col("subcategory")
     def test_description(self):           self._col("description")
@@ -260,7 +291,7 @@ class TestUploadInsertCoverage(unittest.TestCase):
 
     def test_all_required_columns(self) -> None:
         missing = sorted(c for c in REQUIRED_COLUMNS if c not in self.src)
-        self.assertEqual(missing, [], msg=f"upload.py missing columns: {missing}")
+        self.assertEqual(missing, [], msg=f"imports.py missing columns: {missing}")
 
 
 class TestClickupSyncInsertCoverage(unittest.TestCase):
@@ -314,6 +345,7 @@ class TestCashflowModuleImports(unittest.TestCase):
 
     MODULES = [
         "sales_support_agent.services.cashflow.upload",
+        "sales_support_agent.services.cashflow.imports",
         "sales_support_agent.services.cashflow.upload_page",
         "sales_support_agent.services.cashflow.clickup_sync",
         "sales_support_agent.services.cashflow.obligations",
@@ -337,6 +369,7 @@ class TestCashflowModuleImports(unittest.TestCase):
             self.fail(f"Import failed for {path}: {exc}")
 
     def test_upload(self):           self._importable("sales_support_agent.services.cashflow.upload")
+    def test_imports(self):          self._importable("sales_support_agent.services.cashflow.imports")
     def test_upload_page(self):      self._importable("sales_support_agent.services.cashflow.upload_page")
     def test_clickup_sync(self):     self._importable("sales_support_agent.services.cashflow.clickup_sync")
     def test_obligations(self):      self._importable("sales_support_agent.services.cashflow.obligations")

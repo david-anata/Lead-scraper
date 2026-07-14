@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
-import uuid
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Optional
@@ -24,9 +25,11 @@ class UploadResult:
     rows_inserted: int = 0
     rows_skipped_duplicate: int = 0
     rows_skipped_invalid: int = 0
+    rows_skipped_review: int = 0
     matches_made: int = 0
     errors: list[str] = field(default_factory=list)
     latest_balance_cents: Optional[int] = None
+    import_batch_id: Optional[str] = None
 
     @property
     def success(self) -> bool:
@@ -38,6 +41,7 @@ class UploadResult:
             f"{self.rows_inserted} inserted",
             f"{self.rows_skipped_duplicate} duplicate",
             f"{self.rows_skipped_invalid} invalid",
+            f"{self.rows_skipped_review} review",
             f"{self.matches_made} auto-matched",
         ]
         if self.latest_balance_cents is not None:
@@ -80,18 +84,19 @@ def _latest_balance_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 def run_csv_upload(
     csv_bytes: bytes,
     *,
-    merge_mode: str = "append",  # "append" | "replace_range"
+    merge_mode: str = "append",
 ) -> UploadResult:
     """
     Parse *csv_bytes*, insert new transactions into cash_events,
     then run auto-match against open planned obligations.
 
-    merge_mode:
-      - "append": skip rows whose source_id already exists
-      - "replace_range": delete existing csv rows in the date range first
+    Imports are append/merge only. Destructive range replacement is rejected.
     """
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
+
+    if merge_mode != "append":
+        raise ValueError("Unsupported merge mode. Finance imports are append/merge only.")
 
     # -- Auto-detect format and delegate ------------------------------------
     if detect_csv_format(csv_bytes) == "qbo_open_invoices":
@@ -104,132 +109,73 @@ def run_csv_upload(
     reader = csv.DictReader(text_io)
 
     normalised_rows: list[dict[str, Any]] = []
+    staged_rows: list[dict[str, Any]] = []
     for raw_row in reader:
         result.rows_read += 1
         try:
             norm = normalize_bank_csv_row(raw_row)
+            if norm.get("due_date") is None:
+                raise ValueError("posting date is missing or invalid")
+            if int(norm.get("amount_cents") or 0) <= 0:
+                raise ValueError("transaction amount must be non-zero")
             normalised_rows.append(norm)
+            staged_rows.append({"raw": raw_row, "normalized": norm})
         except Exception as exc:
             result.rows_skipped_invalid += 1
             result.errors.append(f"Row {result.rows_read}: {exc}")
+            staged_rows.append({"raw": raw_row, "normalized": None, "error": str(exc)})
 
-    if not normalised_rows:
+    if not staged_rows:
         return result
 
     latest_balance_row = _latest_balance_row(normalised_rows)
     if latest_balance_row is not None:
         result.latest_balance_cents = latest_balance_row["account_balance_cents"]
 
-    # -- Replace range if requested -----------------------------------------
-    if merge_mode == "replace_range":
-        dates = [r["due_date"] for r in normalised_rows if r.get("due_date")]
-        if dates:
-            min_date = min(dates)
-            max_date = max(dates)
-            with get_engine().begin() as conn:
-                conn.execute(
-                    text(
-                        "DELETE FROM cash_events "
-                        "WHERE source = 'csv' "
-                        "AND due_date >= :min_d AND due_date <= :max_d"
-                    ),
-                    {
-                        "min_d": min_date.isoformat() if hasattr(min_date, "isoformat") else str(min_date),
-                        "max_d": max_date.isoformat() if hasattr(max_date, "isoformat") else str(max_date),
-                    },
-                )
+    # Stage, classify and post canonical rows/source identities atomically.
+    from sales_support_agent.services.cashflow.imports import stage_and_post_bank_import
 
-    # -- Fetch existing source_ids to detect duplicates ---------------------
-    with get_engine().connect() as conn:
-        existing_ids: set[str] = {
-            row[0]
-            for row in conn.execute(
-                text("SELECT source_id FROM cash_events WHERE source = 'csv'")
-            ).fetchall()
-        }
-
-    # -- Insert new rows (single transaction for all inserts) ---------------
-    now = datetime.utcnow().isoformat()
-    new_events: list[dict[str, Any]] = []
-
-    rows_to_insert = []
-    for row in normalised_rows:
-        source_id = row.get("source_id", "")
-        if source_id in existing_ids:
-            result.rows_skipped_duplicate += 1
-            continue
-        rows_to_insert.append(row)
-
-    if rows_to_insert:
-        with get_engine().begin() as conn:
-            for row in rows_to_insert:
-                source_id = row.get("source_id", "")
-                event_id = str(uuid.uuid4())
-                due_date = row.get("due_date")
-                due_date_str = (
-                    due_date.isoformat()
-                    if hasattr(due_date, "isoformat")
-                    else str(due_date)[:10] if due_date else None
-                )
-                # Auto-label: use vendor_or_customer as the initial friendly_name
-                # so rows don't show "⚠ Unlabeled" immediately after upload.
-                vendor = row.get("vendor_or_customer", "") or ""
-                auto_friendly = vendor[:255] if vendor.strip() else None
-
-                conn.execute(
-                    text("""
-                        INSERT INTO cash_events (
-                            id, source, source_id, event_type, category,
-                            subcategory, description, name, vendor_or_customer,
-                            amount_cents, due_date, status, confidence,
-                            account_balance_cents,
-                            bank_transaction_type, bank_reference,
-                            notes, recurring_rule, clickup_task_id,
-                            friendly_name,
-                            created_at, updated_at
-                        ) VALUES (
-                            :id, 'csv', :source_id, :event_type, :category,
-                            :subcategory, :description, :name, :vendor_or_customer,
-                            :amount_cents, :due_date, 'posted', 'confirmed',
-                            :account_balance_cents,
-                            :bank_transaction_type, :bank_reference,
-                            '', '', '',
-                            :friendly_name,
-                            :now, :now
-                        )
-                    """),
-                    {
-                        "id": event_id,
-                        "source_id": source_id,
-                        "event_type": row.get("event_type", "outflow"),
-                        "category": row.get("category", "other"),
-                        "subcategory": row.get("subcategory", ""),
-                        "description": row.get("description", "") or "",
-                        "name": row.get("name", ""),
-                        "vendor_or_customer": vendor,
-                        "amount_cents": row.get("amount_cents", 0),
-                        "due_date": due_date_str,
-                        "account_balance_cents": row.get("account_balance_cents"),
-                        "bank_transaction_type": row.get("bank_transaction_type", "") or "",
-                        "bank_reference": row.get("bank_reference", "") or "",
-                        "friendly_name": auto_friendly,
-                        "now": now,
-                    },
-                )
-                existing_ids.add(source_id)
-                result.rows_inserted += 1
-                new_events.append({"id": event_id, **row})
+    posted = stage_and_post_bank_import(
+        get_engine(),
+        file_hash=hashlib.sha256(csv_bytes).hexdigest(),
+        rows=staged_rows,
+    )
+    result.import_batch_id = posted.batch_id
+    result.rows_inserted = posted.inserted
+    result.rows_skipped_duplicate = posted.duplicates
+    result.rows_skipped_review = posted.review
+    if posted.review:
+        result.errors.append(
+            f"{posted.review} row(s) need review. No records were committed from this file."
+        )
+    # Invalid rows were already counted during normalization.
+    new_events = posted.new_events
 
     # -- Persist balance snapshot so pages don't have to scan all CSV rows ---
-    if result.latest_balance_cents is not None and latest_balance_row is not None:
+    if (
+        posted.status == "posted"
+        and result.latest_balance_cents is not None
+        and latest_balance_row is not None
+    ):
         latest_date = latest_balance_row["_balance_date"].isoformat()
         try:
             from sales_support_agent.models.database import kv_set_json
+            from sales_support_agent.services.cashflow.identity import assign_bank_identities
+            identified_latest = assign_bank_identities(normalised_rows)
+            latest_identity = next(
+                (
+                    row.get("source_id", "")
+                    for row in identified_latest
+                    if row.get("due_date") == latest_balance_row.get("due_date")
+                    and row.get("account_balance_cents") == latest_balance_row.get("account_balance_cents")
+                ),
+                latest_balance_row.get("source_id", ""),
+            )
             kv_set_json("balance_snapshot", {
                 "balance_cents": result.latest_balance_cents,
                 "as_of_date": latest_date,
                 "source": "csv",
-                "source_id": latest_balance_row.get("source_id", ""),
+                "source_id": latest_identity,
                 "bank_reference": latest_balance_row.get("bank_reference", ""),
                 "source_row_index": latest_balance_row["_source_row_index"],
             })
@@ -238,15 +184,26 @@ def run_csv_upload(
 
     # -- Auto-match against planned obligations -----------------------------
     if new_events:
-        planned = list_obligations(
-            status="planned",
-            from_date=None,
-            to_date=None,
-        )
+        planned = [
+            row for row in list_obligations(limit=5000)
+            if row.get("record_kind") != "transaction"
+            and row.get("status") in ("planned", "pending", "overdue")
+        ]
         match_results = auto_match_transactions(new_events, planned)
 
         for mr in match_results:
             if mr.planned_event_id is None:
+                if getattr(mr, "match_status", "") == "ambiguous":
+                    with get_engine().begin() as conn:
+                        conn.execute(text("""
+                            UPDATE cash_events SET match_status='ambiguous',
+                                match_candidates_json=:candidates, updated_at=:now
+                            WHERE id=:id
+                        """), {
+                            "id": str(mr.csv_event_id),
+                            "candidates": json.dumps(getattr(mr, "candidate_ids", []) or []),
+                            "now": datetime.utcnow(),
+                        })
                 continue
             from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
             with get_engine().begin() as conn:
@@ -266,24 +223,9 @@ def run_csv_upload(
 # ---------------------------------------------------------------------------
 
 def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
-    """Import a QBO Open Invoices Report CSV into cash_events.
-
-    Behaviour:
-    - source='qbo-csv', event_type='inflow', status='planned'|'overdue'
-    - Dedup by source_id — re-uploading updates the outstanding balance and
-      due date instead of inserting a duplicate.
-    - Already-matched or paid invoices are left untouched on re-upload.
-    - Bank CSV and QBO-CSV events never double-count: bank rows are
-      source='csv'/status='posted' (actuals); QBO rows are source='qbo-csv'/
-      status='planned' (expected). The auto-matcher links them when a bank
-      CSV is uploaded later.
-    """
-    from sales_support_agent.models.database import upsert_cash_event
-    from sqlalchemy import text
+    """Stage and atomically post a QBO Open Invoices Report CSV."""
 
     result = UploadResult()
-    now = datetime.utcnow().isoformat()
-
     invoices = normalize_qbo_open_invoices_csv(csv_bytes)
     result.rows_read = len(invoices)
 
@@ -291,47 +233,27 @@ def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
         result.errors.append("No open invoices found — check the file is a QBO Open Invoices Report export.")
         return result
 
-    # Fetch existing qbo-csv source_ids (for dedup / update logic)
-    with engine.connect() as conn:
-        existing: dict[str, str] = {
-            row[0]: row[1]
-            for row in conn.execute(
-                text("SELECT source_id, status FROM cash_events WHERE source = 'qbo-csv'")
-            ).fetchall()
-        }
+    from sales_support_agent.services.cashflow.imports import stage_and_post_qbo_import
 
-    new_events: list[dict[str, Any]] = []
-
-    for row in invoices:
-        source_id = row["source_id"]
-
-        if source_id in existing:
-            # Re-upload: update balance + status, but leave matched/paid alone
-            existing_status = existing[source_id]
-            if existing_status in ("matched", "paid", "cancelled"):
-                result.rows_skipped_duplicate += 1
-                continue
-            # Use shared upsert; fetch the existing row id first
-            with engine.connect() as conn:
-                id_row = conn.execute(
-                    text("SELECT id FROM cash_events WHERE source_id = :source_id AND source = 'qbo-csv'"),
-                    {"source_id": source_id},
-                ).fetchone()
-            if id_row:
-                event_dict = {"id": id_row[0], "source": "qbo-csv", **row}
-                with engine.begin() as conn:
-                    upsert_cash_event(conn, event_dict)
-            result.rows_skipped_duplicate += 1  # counted as update, not new insert
-            continue
-
-        # New invoice — use shared upsert helper
-        event_id = str(uuid.uuid4())
-        event_dict = {"id": event_id, "source": "qbo-csv", **row}
-        with engine.begin() as conn:
-            upsert_cash_event(conn, event_dict)
-        existing[source_id] = row["status"]
-        result.rows_inserted += 1
-        new_events.append({"id": event_id, **row})
+    posted = stage_and_post_qbo_import(
+        engine,
+        file_hash=hashlib.sha256(csv_bytes).hexdigest(),
+        rows=[{"raw": row, "normalized": row} for row in invoices],
+    )
+    result.import_batch_id = posted.batch_id
+    result.rows_inserted = posted.inserted
+    result.rows_skipped_duplicate = posted.duplicates
+    result.rows_skipped_invalid = posted.invalid
+    result.rows_skipped_review = posted.review
+    if posted.invalid:
+        result.errors.append(
+            f"{posted.invalid} invalid QBO invoice row(s). No records were committed from this file."
+        )
+    if posted.review:
+        result.errors.append(
+            f"{posted.review} changed QBO invoice row(s) need review. No records were committed from this file."
+        )
+    new_events = posted.new_events
 
     # Auto-match new QBO invoices against already-posted bank CSV inflows
     # (catches cases where bank CSV was uploaded before the QBO report)

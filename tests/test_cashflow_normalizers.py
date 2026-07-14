@@ -118,17 +118,20 @@ class TestNormalizeClickupTask(unittest.TestCase):
         result = normalize_clickup_task(self._make_task(**{"id": "CU-ABC"}))
         self.assertEqual(result["clickup_task_id"], "CU-ABC")
 
-    def test_open_status_maps_to_planned(self) -> None:
+    def test_open_status_is_source_metadata(self) -> None:
         result = normalize_clickup_task(self._make_task(**{"status": {"status": "open"}}))
-        self.assertEqual(result["status"], "planned")
+        self.assertEqual(result["source_status"], "open")
+        self.assertEqual(result["status"], "overdue")
 
-    def test_done_status_maps_to_paid(self) -> None:
+    def test_done_status_does_not_mark_cash_event_paid(self) -> None:
         result = normalize_clickup_task(self._make_task(**{"status": {"status": "done"}}))
-        self.assertEqual(result["status"], "paid")
+        self.assertEqual(result["source_status"], "done")
+        self.assertEqual(result["status"], "overdue")
 
-    def test_in_progress_maps_to_pending(self) -> None:
+    def test_in_progress_status_does_not_override_due_state(self) -> None:
         result = normalize_clickup_task(self._make_task(**{"status": {"status": "in progress"}}))
-        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["source_status"], "in progress")
+        self.assertEqual(result["status"], "overdue")
 
     def test_confidence_is_estimated(self) -> None:
         result = normalize_clickup_task(self._make_task())

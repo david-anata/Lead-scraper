@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import requests
@@ -70,10 +70,10 @@ def _parse_due_date(ts_ms: Any) -> Optional[date]:
 
 
 def _map_status(clickup_status: str, due: Optional[date], today: date) -> str:
-    if clickup_status.lower() in ("closed", "done", "complete"):
-        return "paid"
     if due and due < today:
         return "overdue"
+    if due and due <= today + timedelta(days=7):
+        return "pending"
     return "planned"
 
 
@@ -207,6 +207,7 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
 
     due = _parse_due_date(task.get("due_date"))
     status = _map_status(task.get("status", {}).get("status", "open"), due, today)
+    source_status = str((task.get("status") or {}).get("status") or "open").lower()
 
     name = task.get("name", "").strip()
     description = task.get("text_content") or task.get("description") or service_val or ""
@@ -231,6 +232,9 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
         "amount_cents": amount_cents,
         "due_date": due,
         "status": status,
+        "source_status": source_status,
+        "source_updated_at": datetime.utcnow(),
+        "preserve_settlement_truth": True,
         "confidence": confidence,
         "recurring_rule": frequency,
         "bank_transaction_type": "",
@@ -306,8 +310,7 @@ def sync_clickup_finance(settings):
 
             for task in tasks:
                 ev = _task_to_event_dict(task, event_type, today)
-                # Skip zero-amount tasks that aren't already marked paid
-                if ev["amount_cents"] == 0 and ev["status"] != "paid":
+                if ev["amount_cents"] == 0:
                     skipped += 1
                     continue
 

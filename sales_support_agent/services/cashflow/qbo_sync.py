@@ -178,7 +178,8 @@ def _invoice_to_event(inv: dict) -> Optional[dict]:
         # Void/deleted — mark as cancelled
         return {
             "qbo_invoice_id": inv_id,
-            "status": "cancelled",
+            "source_status": "cancelled",
+            "source_open_amount_cents": 0,
         }
 
     balance = float(inv.get("Balance", 0) or 0)
@@ -191,7 +192,8 @@ def _invoice_to_event(inv: dict) -> Optional[dict]:
         # Fully paid (balance rounds to zero)
         return {
             "qbo_invoice_id": inv_id,
-            "status": "paid",
+            "source_status": "paid",
+            "source_open_amount_cents": 0,
         }
 
     # Customer name
@@ -231,9 +233,13 @@ def _invoice_to_event(inv: dict) -> Optional[dict]:
         "description": description[:500],
         "name": customer_name or f"Invoice #{doc_num}",
         "vendor_or_customer": customer_name,
-        "amount_cents": balance_cents,
+        "amount_cents": total_cents,
         "due_date": due_date or txn_date,
         "status": "planned",
+        "source_status": "open",
+        "source_open_amount_cents": balance_cents,
+        "source_updated_at": datetime.utcnow(),
+        "preserve_settlement_truth": True,
         "confidence": "confirmed",   # real invoiced amount, not an estimate
         "recurring_rule": "",
         "clickup_task_id": "",
@@ -354,7 +360,7 @@ def sync_qbo_invoices(settings):
 
             # Handle paid / cancelled — these are terminal status-only updates
             # (no "source" key means it's a paid/cancelled stub from _invoice_to_event)
-            terminal_status = parsed.get("status") if "source" not in parsed else None
+            terminal_status = parsed.get("source_status") if "source" not in parsed else None
             if terminal_status in ("paid", "cancelled"):
                 with get_engine().connect() as conn:
                     existing = conn.execute(
@@ -364,8 +370,13 @@ def sync_qbo_invoices(settings):
                 if existing:
                     with get_engine().begin() as conn:
                         conn.execute(
-                            text("UPDATE cash_events SET status=:s, updated_at=:now WHERE id=:id"),
-                            {"s": terminal_status, "now": now_str, "id": event_id},
+                            text("""
+                                UPDATE cash_events SET source_status=:s,
+                                    source_open_amount_cents=:open_amount,
+                                    source_updated_at=:now, updated_at=:now
+                                WHERE id=:id
+                            """),
+                            {"s": terminal_status, "open_amount": parsed.get("source_open_amount_cents"), "now": now_str, "id": event_id},
                         )
                     counts[terminal_status] += 1
                 continue

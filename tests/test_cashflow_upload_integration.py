@@ -4,7 +4,7 @@ Tests:
 - run_csv_upload() with bank CSV bytes
 - run_csv_upload() with QBO Open Invoices bytes
 - Duplicate detection (same source_id not inserted twice)
-- replace_range merge mode
+- destructive replace mode rejection
 - detect_csv_format routing
 - insert_cash_event canonical helper
 - get_events_for_range date-bounded query
@@ -172,15 +172,14 @@ class TestBankCSVUpload(_CashflowIntegrationBase):
         result = run_csv_upload(BANK_CSV_BYTES)
         self.assertTrue(result.success)
 
-    def test_replace_range_removes_existing(self):
+    def test_replace_range_is_rejected_without_mutation(self):
         from sales_support_agent.services.cashflow.upload import run_csv_upload
         # First upload
         run_csv_upload(BANK_CSV_BYTES)
         self.assertEqual(self._row_count(), 3)
-        # Second upload with replace_range should clear and re-insert
-        result2 = run_csv_upload(BANK_CSV_BYTES, merge_mode="replace_range")
+        with self.assertRaisesRegex(ValueError, "append/merge only"):
+            run_csv_upload(BANK_CSV_BYTES, merge_mode="replace_range")
         self.assertEqual(self._row_count(), 3)
-        self.assertEqual(result2.rows_inserted, 3)
 
     def test_upload_result_summary_is_string(self):
         from sales_support_agent.services.cashflow.upload import run_csv_upload
@@ -195,6 +194,101 @@ class TestBankCSVUpload(_CashflowIntegrationBase):
         result = run_csv_upload(header_only)
         self.assertEqual(result.rows_read, 0)
         self.assertEqual(result.rows_inserted, 0)
+
+    def test_upload_posts_staging_and_source_records_atomically(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        result = run_csv_upload(BANK_CSV_BYTES)
+        self.assertIsNotNone(result.import_batch_id)
+        self.assertEqual(self._row_count("finance_import_batches"), 1)
+        self.assertEqual(self._row_count("finance_import_rows"), 3)
+        self.assertEqual(self._row_count("finance_source_records"), 3)
+        with self.engine.connect() as conn:
+            batch = conn.execute(text("""
+                SELECT status, ready_count, duplicate_count, review_count
+                FROM finance_import_batches WHERE id=:id
+            """), {"id": result.import_batch_id}).one()
+        self.assertEqual(tuple(batch), ("posted", 3, 0, 0))
+
+    def test_blank_ids_preserve_multiset_and_reupload_dedupes(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        blank_rows = BANK_CSV_BYTES.replace(b"TXN-001", b"").replace(b"TXN-002", b"").replace(b"TXN-003", b"")
+        first = run_csv_upload(blank_rows)
+        second = run_csv_upload(blank_rows)
+        self.assertEqual(first.rows_inserted, 3)
+        self.assertEqual(second.rows_inserted, 0)
+        self.assertEqual(second.rows_skipped_duplicate, 3)
+        with self.engine.connect() as conn:
+            ids = [row[0] for row in conn.execute(text(
+                "SELECT source_id FROM cash_events WHERE source='csv' ORDER BY source_id"
+            ))]
+        self.assertEqual(len(ids), 3)
+        self.assertTrue(all(source_id.startswith("fp:") for source_id in ids))
+
+    def test_additional_identical_blank_id_occurrence_is_preserved(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        header, first_row, *_ = BANK_CSV_BYTES.decode().strip().splitlines()
+        first_row = first_row.replace("TXN-001", "", 1)
+        run_csv_upload(f"{header}\n{first_row}\n".encode())
+        result = run_csv_upload(f"{header}\n{first_row}\n{first_row}\n".encode())
+        self.assertEqual(result.rows_inserted, 1)
+        self.assertEqual(result.rows_skipped_duplicate, 1)
+
+    def test_changed_payload_for_same_provider_id_is_quarantined(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        run_csv_upload(BANK_CSV_DUPLICATE)
+        changed = BANK_CSV_DUPLICATE.replace(b"-1500.00", b"-1600.00")
+        result = run_csv_upload(changed)
+        self.assertEqual(result.rows_inserted, 0)
+        self.assertEqual(result.rows_skipped_review, 1)
+        with self.engine.connect() as conn:
+            amount = conn.execute(text(
+                "SELECT amount_cents FROM cash_events WHERE source_id='TXN-001'"
+            )).scalar_one()
+        self.assertEqual(amount, 150000)
+
+    def test_invalid_row_blocks_every_ready_row_in_the_batch(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        header, valid, invalid, *_ = BANK_CSV_BYTES.decode().strip().splitlines()
+        invalid = invalid.replace("03/16/2026", "", 1)
+        result = run_csv_upload(f"{header}\n{valid}\n{invalid}\n".encode())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.rows_inserted, 0)
+        self.assertEqual(self._row_count(), 0)
+        with self.engine.connect() as conn:
+            batch = conn.execute(text("""
+                SELECT status, ready_count, invalid_count
+                FROM finance_import_batches WHERE id=:id
+            """), {"id": result.import_batch_id}).one()
+        self.assertEqual(tuple(batch), ("failed", 1, 1))
+
+    def test_review_row_blocks_new_rows_until_the_file_is_resolved(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        run_csv_upload(BANK_CSV_DUPLICATE)
+        header, existing = BANK_CSV_DUPLICATE.decode().strip().splitlines()
+        changed = existing.replace("-1500.00", "-1600.00", 1)
+        new_row = existing.replace("TXN-001", "TXN-004", 1).replace("REF001", "REF004", 1)
+        result = run_csv_upload(f"{header}\n{changed}\n{new_row}\n".encode())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.rows_inserted, 0)
+        self.assertEqual(self._row_count(), 1)
+        with self.engine.connect() as conn:
+            batch = conn.execute(text("""
+                SELECT status, ready_count, review_count
+                FROM finance_import_batches WHERE id=:id
+            """), {"id": result.import_batch_id}).one()
+            new_count = conn.execute(text(
+                "SELECT COUNT(*) FROM cash_events WHERE source_id='TXN-004'"
+            )).scalar_one()
+        self.assertEqual(tuple(batch), ("staged", 1, 1))
+        self.assertEqual(new_count, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +326,71 @@ class TestQBOUpload(_CashflowIntegrationBase):
         result2 = run_csv_upload(QBO_CSV_BYTES)
         self.assertEqual(result2.rows_inserted, 0)
         self.assertEqual(self._row_count(), inserted_first)
+
+    def test_qbo_upload_posts_staging_and_source_records_atomically(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        result = run_csv_upload(QBO_CSV_BYTES)
+
+        self.assertIsNotNone(result.import_batch_id)
+        self.assertEqual(self._row_count("finance_import_batches"), 1)
+        self.assertEqual(self._row_count("finance_import_rows"), 2)
+        self.assertEqual(self._row_count("finance_source_records"), 2)
+        with self.engine.connect() as conn:
+            batch = conn.execute(text("""
+                SELECT source_type, status, ready_count, duplicate_count, review_count
+                FROM finance_import_batches WHERE id=:id
+            """), {"id": result.import_batch_id}).one()
+            source_rows = conn.execute(text("""
+                SELECT source_system, entity_type
+                FROM finance_source_records ORDER BY external_id
+            """)).fetchall()
+            invoices = conn.execute(text("""
+                SELECT amount_cents, source_open_amount_cents, record_kind
+                FROM cash_events WHERE source='qbo-csv' ORDER BY source_id
+            """)).fetchall()
+        self.assertEqual(tuple(batch), ("qbo_csv", "posted", 2, 0, 0))
+        self.assertEqual({tuple(row) for row in source_rows}, {("qbo_csv", "open_invoice")})
+        self.assertEqual(
+            [tuple(row) for row in invoices],
+            [(150_000, 150_000, "obligation"), (75_000, 75_000, "obligation")],
+        )
+
+    def test_changed_qbo_invoice_blocks_new_rows_without_mutating_canonical_data(self):
+        from sales_support_agent.services.cashflow.upload import run_csv_upload
+
+        run_csv_upload(QBO_CSV_BYTES)
+        changed = QBO_CSV_BYTES.replace(b'"1,500.00"', b'"1,250.00"', 1).replace(
+            b"PaymentCo,,,,,,\n",
+            b"Gamma LLC,,,,,,\n"
+            b",03/10/2026,Invoice,INV-003,Net 15,03/25/2026,\"300.00\"\n"
+            b"Total for Gamma LLC,,,,,,\"$300.00\"\n"
+            b"PaymentCo,,,,,,\n",
+            1,
+        )
+
+        result = run_csv_upload(changed)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.rows_inserted, 0)
+        self.assertEqual(result.rows_skipped_review, 1)
+        self.assertEqual(self._row_count(), 2)
+        with self.engine.connect() as conn:
+            amount = conn.execute(text("""
+                SELECT amount_cents FROM cash_events
+                WHERE source='qbo-csv' AND source_id='qbo-ar-INV-001'
+            """)).scalar_one()
+            new_count = conn.execute(text("""
+                SELECT COUNT(*) FROM cash_events
+                WHERE source='qbo-csv' AND source_id='qbo-ar-INV-003'
+            """)).scalar_one()
+            batch = conn.execute(text("""
+                SELECT status, ready_count, duplicate_count, review_count
+                FROM finance_import_batches WHERE id=:id
+            """), {"id": result.import_batch_id}).one()
+        self.assertEqual(amount, 150_000)
+        self.assertEqual(new_count, 0)
+        self.assertEqual(tuple(batch), ("staged", 1, 1, 1))
 
 
 # ---------------------------------------------------------------------------

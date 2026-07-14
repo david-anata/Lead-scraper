@@ -58,14 +58,14 @@ class RecurringPattern:
 
 def detect_recurring_patterns(
     *,
-    min_occurrences: int = 2,
+    min_occurrences: int = 3,
     lookback_days: int = 180,
     amount_cv_max: float = 0.30,
 ) -> list[RecurringPattern]:
     """Detect recurring patterns from posted bank CSV transactions.
 
     Args:
-        min_occurrences:  Minimum appearances to be considered recurring (≥2).
+        min_occurrences:  Minimum appearances to be considered recurring (≥3).
         lookback_days:    How far back in history to mine (default 180 days).
         amount_cv_max:    Patterns with CV above this are still returned but
                           flagged with lower confidence (irregular amounts).
@@ -77,6 +77,7 @@ def detect_recurring_patterns(
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
 
+    min_occurrences = max(3, int(min_occurrences))
     engine = get_engine()
     cutoff = (datetime.utcnow().date() - timedelta(days=lookback_days)).isoformat()
 

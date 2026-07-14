@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import json
+import os
 from dataclasses import dataclass as _dc
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping
@@ -671,6 +673,15 @@ def _money(cents: int, *, exact: bool = False) -> str:
     return f"{sign}${abs(cents) / 100:,.{decimals}f}"
 
 
+def _safe_source_url(value: Any) -> str:
+    url = str(value or "").strip()
+    if url.startswith("/") and not url.startswith("//"):
+        return url
+    if url.startswith(("https://", "http://")):
+        return url
+    return ""
+
+
 def _row_confidence(row: Mapping[str, Any]) -> str:
     return str(row.get("confidence") or "estimated").strip().lower()
 
@@ -957,7 +968,9 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         "direction": direction,
         "impact": str(impact),
         "tabs": tabs,
-        "source_url": str(_control_value(item, "source_url", "url", default=row.get("source_url") or row.get("clickup_url") or "")),
+        "source_url": _safe_source_url(
+            _control_value(item, "source_url", "url", default=row.get("source_url") or row.get("clickup_url") or "")
+        ),
         "quick_actions": list(_control_value(item, "quick_actions", default=[]) or []),
     }
 
@@ -1000,7 +1013,8 @@ def _quick_action_menu(item: dict[str, Any]) -> str:
         f'data-event-id="{html.escape(item["id"], quote=True)}" '
         f'data-party="{html.escape(item["party"], quote=True)}" '
         f'data-amount="{item["amount_cents"] / 100:.2f}" '
-        f'data-direction="{html.escape(item["direction"], quote=True)}">{html.escape(label)}</button>'
+        f'data-direction="{html.escape(item["direction"], quote=True)}" '
+        f'data-source-url="{html.escape(item["source_url"], quote=True)}">{html.escape(label)}</button>'
         for label in labels
     )
     source_link = ""
@@ -1008,7 +1022,7 @@ def _quick_action_menu(item: dict[str, Any]) -> str:
         source_label = "Open invoice or ClickUp source" if item["direction"] == "inflow" else "Open ClickUp source"
         source_link = f'<a role="menuitem" href="{html.escape(item["source_url"], quote=True)}">{source_label}</a>'
     return f"""
-      <details class="finance-row-menu smart-only">
+      <details class="finance-row-menu">
         <summary aria-label="Actions for {html.escape(item['party'], quote=True)}">&hellip;</summary>
         <div class="finance-row-menu__popover" role="menu">{buttons}{source_link}</div>
       </details>"""
@@ -1031,6 +1045,419 @@ def _queue_table_html(queue: Any, today: date) -> tuple[str, dict[str, int]]:
             <td>{_quick_action_menu(item)}</td>
           </tr>""")
     return "".join(rows_html), counts
+
+
+def _normalise_savings_opportunity(item: Any, index: int) -> dict[str, Any]:
+    """Adapt the savings engine view model without reproducing its decisions."""
+    opportunity_key = str(
+        _control_value(item, "opportunity_key", "key", "id", default=f"savings-{index}")
+    )
+    display_name = str(
+        _control_value(
+            item, "display_name", "title", "normalized_merchant", "merchant", default="Cost review"
+        )
+    )
+    reason_codes = list(_control_value(item, "reason_codes", default=[]) or [])
+    reason = str(
+        _control_value(
+            item,
+            "reason",
+            "why",
+            "evidence_summary",
+            "summary",
+            default=", ".join(str(code).replace("_", " ") for code in reason_codes),
+        )
+        or "Posted activity supports a closer review."
+    )
+    confidence = str(
+        _control_value(item, "data_confidence", "confidence_label", "confidence", default="Unknown")
+    ).strip().title()
+    raw_freshness = _control_value(
+        item, "source_freshness", "freshness_label", "freshness", default="Date unavailable"
+    )
+    if isinstance(raw_freshness, Mapping):
+        freshness_date = raw_freshness.get("as_of_date") or raw_freshness.get("latest_date")
+        freshness = f"Bank CSV through {freshness_date}" if freshness_date else "Bank CSV date unavailable"
+    else:
+        freshness = str(raw_freshness)
+    next_expected = _control_value(item, "next_expected_date", "next_charge_date", default=None)
+    if isinstance(next_expected, (date, datetime)):
+        next_expected = next_expected.strftime("%b %d, %Y")
+    elif next_expected:
+        try:
+            next_expected = date.fromisoformat(str(next_expected)[:10]).strftime("%b %d, %Y")
+        except ValueError:
+            next_expected = str(next_expected)
+    else:
+        next_expected = "Not available"
+
+    one_time = _control_value(item, "one_time_potential_cents", "one_time_savings_cents", default=None)
+    monthly = _control_value(item, "monthly_potential_cents", "monthly_savings_cents", default=None)
+    annual = _control_value(
+        item, "annual_gross_potential_cents", "annualized_savings_cents", "annual_potential_cents", default=None
+    )
+    observed_90d = _control_value(
+        item,
+        "observed_90d_potential_cents",
+        "observed_90d_cents",
+        "fee_90d_potential_cents",
+        default=None,
+    )
+    if monthly is not None:
+        potential = f"{_money(_cents(monthly))}/month"
+        horizon = "monthly"
+    elif observed_90d is not None:
+        potential = f"{_money(_cents(observed_90d))}/90 days"
+        horizon = "90-day"
+    elif one_time is not None:
+        potential = f"{_money(_cents(one_time))} one-time"
+        horizon = "one-time"
+    elif annual is not None:
+        potential = f"{_money(_cents(annual))}/year"
+        horizon = "annual"
+    else:
+        potential = "Amount under review"
+        horizon = "unknown"
+
+    evidence = list(_control_value(item, "evidence", "evidence_rows", "transactions", default=[]) or [])
+    evidence_lines: list[str] = []
+    for fact in evidence:
+        if isinstance(fact, Mapping):
+            fact_date = str(fact.get("date") or fact.get("posted_date") or "Date unavailable")[:10]
+            fact_amount = fact.get("amount_cents")
+            fact_label = str(fact.get("description") or fact.get("label") or "Posted outflow")
+            amount_label = f" {_money(_cents(fact_amount), exact=True)}" if fact_amount is not None else ""
+            evidence_lines.append(f"{fact_date}{amount_label} - {fact_label}")
+        else:
+            evidence_lines.append(str(fact))
+    if not evidence_lines:
+        dates = list(_control_value(item, "evidence_dates", default=[]) or [])
+        amounts = list(_control_value(item, "evidence_amounts_cents", default=[]) or [])
+        for fact_index, fact_date in enumerate(dates):
+            amount = amounts[fact_index] if fact_index < len(amounts) else None
+            amount_label = f" {_money(_cents(amount), exact=True)}" if amount is not None else ""
+            evidence_lines.append(f"{str(fact_date)[:10]}{amount_label}")
+
+    limitations = _control_value(item, "limitations", default=[])
+    if isinstance(limitations, str):
+        limitation_text = limitations
+    else:
+        limitation_text = "; ".join(str(value) for value in limitations or [])
+    raw_calculation = _control_value(
+        item,
+        "calculation",
+        "calculation_basis",
+        "formula_explanation",
+        default="Potential supplied by the deterministic savings engine from the posted evidence shown.",
+    )
+    if isinstance(raw_calculation, Mapping):
+        calculation_parts = [f"Rule {raw_calculation.get('formula_id') or 'deterministic savings'}"]
+        baseline = _control_value(item, "baseline_amount_cents", default=None)
+        current = _control_value(item, "current_amount_cents", default=None)
+        if baseline is not None:
+            calculation_parts.append(f"baseline {_money(_cents(baseline), exact=True)}")
+        if current is not None:
+            calculation_parts.append(f"current {_money(_cents(current), exact=True)}")
+        calculation = "; ".join(calculation_parts) + "."
+    else:
+        calculation = str(raw_calculation)
+    cash_effect = _control_value(
+        item, "scenario_28d_floor_improvement_cents", "cash_impact_cents", default=None
+    )
+    source_urls = list(_control_value(item, "source_urls", default=[]) or [])
+    source_url = _safe_source_url(
+        _control_value(item, "source_url", "open_source_url", default=source_urls[0] if source_urls else "")
+    )
+    return {
+        "key": opportunity_key,
+        "display_name": display_name,
+        "reason": reason,
+        "next_expected": str(next_expected),
+        "potential": potential,
+        "horizon": horizon,
+        "one_time_cents": None if one_time is None else _cents(one_time),
+        "monthly_cents": None if monthly is None else _cents(monthly),
+        "annual_cents": None if annual is None else _cents(annual),
+        "observed_90d_cents": None if observed_90d is None else _cents(observed_90d),
+        "confidence": confidence,
+        "freshness": freshness,
+        "evidence": evidence_lines,
+        "calculation": calculation,
+        "cash_effect_cents": None if cash_effect is None else _cents(cash_effect),
+        "limitations": limitation_text or "Contract terms, usage, and replacement costs are not confirmed.",
+        "downside": str(
+            _control_value(
+                item,
+                "downside",
+                default="The cost may support an active workflow; verify necessity and terms before acting.",
+            )
+        ),
+        "source_url": source_url,
+        "protected": bool(_control_value(item, "protected", default=False)),
+        "conflicted": bool(_control_value(item, "conflicted", "has_conflict", default=False)),
+        "included_in_headline": bool(_control_value(item, "included_in_headline", default=True)),
+    }
+
+
+def _load_savings_renderer_state(
+    rows: list[dict[str, Any]],
+    *,
+    today: date,
+    balance_cents: int,
+    balance_as_of: str,
+    floor_cents: int,
+    balance_stale: bool,
+) -> dict[str, Any]:
+    """Call the optional deterministic engine and isolate its failure to this card."""
+    try:
+        from sales_support_agent.services.cashflow import savings as savings_engine
+
+        build_savings_opportunities = getattr(
+            savings_engine,
+            "build_savings_opportunities",
+            getattr(savings_engine, "build_savings_view_model", None),
+        )
+        if build_savings_opportunities is None:
+            raise AttributeError("Savings engine has no compatible builder")
+    except (ImportError, AttributeError):
+        return {"status": "empty", "opportunities": [], "total_count": 0}
+
+    supplied = {
+        "rows": rows,
+        "events": rows,
+        "cash_events": rows,
+        "as_of": today,
+        "today": today,
+        "balance_cents": balance_cents,
+        "balance_as_of": balance_as_of,
+        "cash_floor_cents": floor_cents,
+        "floor_cents": floor_cents,
+        "source_freshness": balance_as_of,
+    }
+    try:
+        signature = inspect.signature(build_savings_opportunities)
+        parameters = signature.parameters
+        kwargs = {name: supplied[name] for name in parameters if name in supplied}
+        positional: list[Any] = []
+        required_positional = [
+            parameter
+            for parameter in parameters.values()
+            if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+            and parameter.default is parameter.empty
+            and parameter.name not in kwargs
+        ]
+        if required_positional:
+            positional.append(rows)
+        result = build_savings_opportunities(*positional, **kwargs)
+    except Exception:
+        return {"status": "error", "opportunities": [], "total_count": 0}
+
+    raw_items = _control_value(result, "opportunities", "items", "rows", default=result)
+    if isinstance(raw_items, Mapping) or raw_items is None:
+        raw_items = []
+    try:
+        iterable = list(raw_items)
+    except TypeError:
+        iterable = []
+    normalised = [
+        _normalise_savings_opportunity(item, index)
+        for index, item in enumerate(iterable)
+        if not bool(_control_value(item, "protected", default=False))
+        and not bool(_control_value(item, "conflicted", "has_conflict", default=False))
+    ]
+    headline = _control_value(result, "headline", default={})
+    total_count = _cents(
+        _control_value(
+            result,
+            "total_count",
+            "count",
+            default=_control_value(headline, "opportunity_count", default=len(normalised)),
+        ),
+        len(normalised),
+    )
+    status = str(_control_value(result, "status", "state", default="ready" if normalised else "empty"))
+    status = status.strip().lower().replace("-", "_")
+    if status not in {"ready", "empty", "loading", "stale", "insufficient_history", "error"}:
+        status = "ready" if normalised else "empty"
+    if balance_stale and normalised and status == "ready":
+        status = "stale"
+    return {
+        "status": status,
+        "opportunities": normalised[:10],
+        "total_count": total_count,
+        "headline": dict(headline) if isinstance(headline, Mapping) else {},
+    }
+
+
+def _savings_release_mode() -> str:
+    """Keep savings read-only and hidden until the production gates pass."""
+    mode = os.getenv("FINANCE_SAVINGS_MODE", "shadow").strip().lower()
+    return mode if mode in {"off", "shadow", "live"} else "shadow"
+
+
+def _savings_section_html(
+    savings: Mapping[str, Any], *, release_mode: str = "live"
+) -> tuple[str, dict[str, Any]]:
+    status = str(savings.get("status") or "empty")
+    opportunities = list(savings.get("opportunities") or [])
+    total_count = max(len(opportunities), _cents(savings.get("total_count"), len(opportunities)))
+    headline = savings.get("headline") if isinstance(savings.get("headline"), Mapping) else {}
+    payloads: dict[str, Any] = {}
+
+    state_copy = ""
+    if release_mode != "live":
+        message = (
+            "Savings checks are disabled."
+            if release_mode == "off"
+            else "Savings checks are validating in shadow mode."
+        )
+        detail = (
+            "Cash control remains available."
+            if release_mode == "off"
+            else "No opportunity will be shown or applied until the production evidence gate passes."
+        )
+        state_copy = f"""
+          <div class="finance-savings-state" role="status">
+            <strong>{html.escape(message)}</strong><p>{html.escape(detail)}</p>
+          </div>"""
+        opportunities = []
+        total_count = 0
+    elif status == "loading":
+        state_copy = """
+          <div class="finance-savings-state" role="status">
+            <div class="finance-savings-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+            <strong>Finding savings opportunities.</strong><p>Checking posted costs and source evidence.</p>
+          </div>"""
+    elif status == "error":
+        state_copy = """
+          <div class="finance-savings-state is-error" role="alert">
+            <strong>Savings review is unavailable.</strong><p>Cash control remains current.</p>
+            <div><button type="button" class="btn btn-secondary btn-sm" data-retry-savings>Retry</button><button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Update money</button></div>
+          </div>"""
+    elif status == "insufficient_history":
+        state_copy = """
+          <div class="finance-savings-state">
+            <strong>More history is needed.</strong><p>Upload at least 90 days with three comparable charges.</p>
+            <button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Update money</button>
+          </div>"""
+    elif status == "stale" and not opportunities:
+        state_copy = """
+          <div class="finance-savings-state is-stale">
+            <strong>Savings estimates need current bank data.</strong><p>Refresh sources before reviewing potential or cash impact.</p>
+            <button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Refresh sources</button>
+          </div>"""
+    elif not opportunities:
+        state_copy = """
+          <div class="finance-savings-state">
+            <strong>No evidence-backed savings opportunities need review.</strong><p>Potential savings stay empty until posted activity supports them.</p>
+            <button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Update money</button>
+          </div>"""
+    else:
+        headline_items = [item for item in opportunities if item.get("included_in_headline", True)]
+        monthly_total = _cents(
+            headline.get("recurring_monthly_potential_cents"),
+            sum(item["monthly_cents"] or 0 for item in headline_items),
+        )
+        one_time_total = _cents(
+            headline.get("one_time_potential_cents"),
+            sum(item["one_time_cents"] or 0 for item in headline_items),
+        )
+        observed_total = _cents(
+            headline.get("fee_90d_potential_cents"),
+            sum(item["observed_90d_cents"] or 0 for item in headline_items),
+        )
+        annual_only_total = sum(
+            item["annual_cents"] or 0 for item in headline_items if item["monthly_cents"] is None
+        )
+        summaries = []
+        if monthly_total:
+            summaries.append(f"Up to {_money(monthly_total)}/month recurring")
+        if one_time_total:
+            summaries.append(f"{_money(one_time_total)} one-time")
+        if observed_total:
+            summaries.append(f"{_money(observed_total)} observed in 90 days")
+        if annual_only_total:
+            summaries.append(f"{_money(annual_only_total)}/year")
+        summary = " <span aria-hidden=\"true\">&middot;</span> ".join(html.escape(value) for value in summaries)
+        if not summary:
+            summary = "Potential amounts require review"
+        rows_html = []
+        for index, item in enumerate(opportunities):
+            row_hidden = " hidden" if index >= 3 else ""
+            rows_html.append(f"""
+              <tr data-savings-extra="{'true' if index >= 3 else 'false'}"{row_hidden}>
+                <td><strong>{html.escape(item['display_name'])}</strong></td>
+                <td>{html.escape(item['reason'])}</td>
+                <td>{html.escape(item['next_expected'])}</td>
+                <td><strong>{html.escape(item['potential'])}</strong><small>Potential &middot; not realized</small></td>
+                <td><span class="badge {'badge-ok' if item['confidence'].lower() == 'high' else 'badge-warning'}">{html.escape(item['confidence'])}</span><small>{html.escape(item['freshness'])}</small></td>
+                <td><button type="button" class="btn btn-secondary btn-sm" data-savings-review="{html.escape(item['key'], quote=True)}">Review</button></td>
+              </tr>""")
+            cash_effect = (
+                "Unavailable until cash is current."
+                if status == "stale"
+                else (
+                    f"The 28-day stress minimum could improve by up to {_money(item['cash_effect_cents'])}. "
+                    "This scenario is not applied to the Finance forecast."
+                    if item["cash_effect_cents"] is not None and item["cash_effect_cents"] > 0
+                    else "No 28-day stress-path improvement is expected at the current charge date. "
+                    "This opportunity is not applied to the Finance forecast."
+                    if item["cash_effect_cents"] == 0
+                    else "Cash impact is not available. This opportunity is not applied to the Finance forecast."
+                )
+            )
+            evidence_text = "; ".join(item["evidence"]) or "No transaction detail was supplied."
+            payloads[item["key"]] = {
+                "eyebrow": "Savings review",
+                "title": item["display_name"],
+                "why": item["reason"],
+                "facts": [
+                    ["Potential", f"{item['potential']} - not yet realized"],
+                    ["Confidence", f"{item['confidence']} - {item['freshness']}"],
+                    ["Evidence", evidence_text],
+                    ["Calculation", item["calculation"]],
+                    ["Cash effect", cash_effect],
+                    ["Limitations", item["limitations"]],
+                    ["Downside", item["downside"]],
+                ],
+                "sourceUrl": item["source_url"],
+                "sourceAction": "" if item["source_url"] else "update-money",
+                "sourceLabel": "Open source" if item["source_url"] else "Open bank source",
+                "note": "Read-only review. Finance does not cancel services or change the forecast.",
+            }
+        stale_notice = (
+            '<div class="finance-savings-notice"><strong>Estimates are stale.</strong> Cash impact is unavailable until sources are refreshed.</div>'
+            if status == "stale" else ""
+        )
+        expansion = ""
+        if len(opportunities) > 3:
+            expansion_label = f"Show {len(opportunities)} of {total_count}" if total_count > len(opportunities) else f"Show all {len(opportunities)}"
+            expansion = f'<button type="button" class="finance-text-action finance-savings-expand" data-expand-savings aria-expanded="false">{html.escape(expansion_label)}</button>'
+        truncated_note = (
+            f'<span>Showing the strongest 10 of {total_count} opportunities.</span>'
+            if total_count > len(opportunities) else ""
+        )
+        state_copy = f"""
+          {stale_notice}
+          <div class="finance-savings-summary"><strong>{total_count} costs worth review</strong><span>{summary}</span></div>
+          <div class="finance-savings-scroll">
+            <table class="finance-savings-table">
+              <thead><tr><th>Opportunity</th><th>Evidence</th><th>Next charge</th><th>Potential savings</th><th>Confidence</th><th><span class="sr-only">Review</span></th></tr></thead>
+              <tbody>{''.join(rows_html)}</tbody>
+            </table>
+          </div>
+          <div class="finance-savings-footer"><span>Estimates are potential until later posted activity verifies a reduction.</span>{truncated_note}{expansion}</div>"""
+
+    section = f"""
+      <section class="card finance-savings" id="finance-savings" aria-labelledby="finance-savings-title" aria-busy="{'true' if status == 'loading' else 'false'}" data-savings-state="{html.escape(status, quote=True)}">
+        <div class="section-head finance-savings__head">
+          <div><p class="finance-eyebrow">Smart savings</p><h2 id="finance-savings-title">Savings opportunities</h2></div>
+          <span class="finance-savings__label smart-only">Potential only</span>
+        </div>
+        <div class="finance-savings__off smart-off-only"><strong>Turn on Smart mode</strong><span>Review evidence-backed cost savings without changing the forecast.</span></div>
+        <div class="finance-savings__smart smart-only">{state_copy}</div>
+      </section>"""
+    return section, payloads
 
 
 def _chart_payload(forecast: Any, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -1084,7 +1511,13 @@ def _load_settlement_context(
                 for row in connection.execute(text("SELECT * FROM payment_installments")).fetchall()
             ]
     except Exception:
-        return rows, None
+        unavailable = []
+        for source_row in rows:
+            row = dict(source_row)
+            if str(row.get("record_kind") or "obligation") != "transaction":
+                row["settlement_evidence_available"] = False
+            unavailable.append(row)
+        return unavailable, None
 
     by_obligation: dict[str, list[dict[str, Any]]] = {}
     for installment in installments:
@@ -1124,10 +1557,34 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
-    fourth_value = "Unavailable" if not cash["balance_available"] else _money(gap or cash["safe_to_commit_cents"])
-    fourth_note = f"Floor: {_money(cash['floor_cents'])}"
-    quality_badge = "Low confidence" if control_error or balance_stale or not cash["balance_available"] else "Current"
+    calculation_unavailable = control_error or not cash["balance_available"]
+    fourth_value = "Unavailable" if calculation_unavailable else _money(gap or cash["safe_to_commit_cents"])
+    fourth_note = "Cash floor unavailable" if control_error else f"Floor: {_money(cash['floor_cents'])}"
+    cash_floor_display = "Unavailable" if control_error else _money(cash["floor_cents"])
+    cash_floor_input = "" if control_error else f'{cash["floor_cents"] / 100:.2f}'
+    quality_badge = (
+        "Low confidence"
+        if control_error or settlement_annotations is None or balance_stale or not cash["balance_available"]
+        else "Current"
+    )
     quality_class = "badge-warning" if quality_badge == "Low confidence" else "badge-ok"
+
+    savings_release_mode = _savings_release_mode()
+    savings = (
+        {"status": "error", "opportunities": [], "total_count": 0}
+        if control_error
+        else _load_savings_renderer_state(
+            rows,
+            today=today,
+            balance_cents=balance_cents,
+            balance_as_of=balance_as_of,
+            floor_cents=cash["floor_cents"],
+            balance_stale=balance_stale or not cash["balance_available"],
+        )
+    )
+    savings_section, savings_payloads = _savings_section_html(
+        savings, release_mode=savings_release_mode
+    )
 
     queue_items = _flatten_queue(state["queue"])
     queue_ids = {str(_control_value(item, "id", "event_id", default="")) for item in queue_items}
@@ -1158,6 +1615,28 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
     rec_downside = str(_control_value(recommendation, "downside", default="The remaining obligation stays open."))
     rec_action = str(_control_value(recommendation, "action_label", default="Create action preview"))
 
+    drawer_payloads = {
+        "recommendation": {
+            "eyebrow": "Smart recommendation",
+            "title": rec_title,
+            "why": rec_why,
+            "facts": [
+                ["Before", f"Minimum stress cash {_money(rec_before)}"],
+                ["After", f"Minimum stress cash {_money(rec_after)}"],
+                ["Depends on", rec_depends],
+                ["Confidence", f"{rec_confidence} - {rec_limitations}"],
+                ["Downside", rec_downside],
+                ["Next action", rec_action],
+            ],
+            "sourceUrl": "",
+            "sourceAction": "",
+            "sourceLabel": "Open source",
+            "note": "Review only. No bank payment is initiated.",
+        },
+        "savings": savings_payloads,
+    }
+    drawer_json = json.dumps(drawer_payloads, separators=(",", ":")).replace("<", "\\u003c")
+
     chart_data = _chart_payload(state["forecast"], fallback["forecast"])
     chart_json = json.dumps(chart_data, separators=(",", ":")).replace("<", "\\u003c")
     updated_label = balance_as_of or "balance not loaded"
@@ -1165,6 +1644,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
 
     body = f"""
     <main class="finance-control" data-smart-mode="on">
+      <div id="finance-page-content" class="finance-control__content">
       <header class="finance-control__header">
         <div>
           <p class="finance-eyebrow">Finance control</p>
@@ -1204,7 +1684,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         <h2 id="smart-brief-title" class="sr-only">Smart brief</h2>
         <article><span>Happening</span><p>{html.escape(state['brief']['happening'])}</p></article>
         <article class="is-broken"><span>Broken</span><p>{html.escape(state['brief']['broken'])}</p></article>
-        <article class="is-next"><span>Next</span><p>{html.escape(state['brief']['next'])}</p><button type="button" class="finance-text-action" data-open-drawer>Review recommendation</button></article>
+        <article class="is-next"><span>Next</span><p>{html.escape(state['brief']['next'])}</p><button type="button" class="finance-text-action" data-drawer-review="recommendation">Review recommendation</button></article>
       </section>
 
       <section class="card finance-trajectory" aria-labelledby="trajectory-title">
@@ -1254,6 +1734,8 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         </div>
       </section>
 
+      {savings_section}
+
       <section class="card finance-review-guide" id="finance-review-guide" aria-labelledby="finance-review-guide-title">
         <div class="finance-review-guide__head">
           <div>
@@ -1293,20 +1775,15 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
 
         <p class="finance-review-guide__trust"><strong>Trust check before deciding:</strong> Cash updated is current, no important item has a missing or zero amount, incoming money has a date and confidence, and unpaid remainders stay open until posted bank activity proves they cleared.</p>
       </section>
+      </div>
 
       <aside id="finance-recommendation-drawer" class="finance-drawer" aria-hidden="true" aria-labelledby="finance-drawer-title">
-        <div class="finance-drawer__scrim" data-close-drawer></div>
-        <div class="finance-drawer__panel" role="dialog" aria-modal="true">
-          <div class="finance-drawer__head"><p class="finance-eyebrow">Smart recommendation</p><button type="button" class="finance-icon-button" data-close-drawer aria-label="Close recommendation">&times;</button></div>
-          <h2 id="finance-drawer-title" data-default-title="{html.escape(rec_title, quote=True)}">{html.escape(rec_title)}</h2>
-          <p id="finance-drawer-why" class="finance-drawer__why" data-default-why="{html.escape(rec_why, quote=True)}"><strong>Why:</strong> {html.escape(rec_why)}</p>
-          <dl class="finance-recommendation-facts">
-            <div><dt>Before</dt><dd>Minimum stress cash {_money(rec_before)}</dd></div>
-            <div><dt>After</dt><dd>Minimum stress cash {_money(rec_after)}</dd></div>
-            <div><dt>Depends on</dt><dd>{html.escape(rec_depends)}</dd></div>
-            <div><dt>Confidence</dt><dd>{html.escape(rec_confidence)} &middot; {html.escape(rec_limitations)}</dd></div>
-            <div><dt>Downside</dt><dd>{html.escape(rec_downside)}</dd></div>
-          </dl>
+        <div class="finance-drawer__scrim" data-close-drawer aria-hidden="true"></div>
+        <div class="finance-drawer__panel" role="dialog" aria-modal="true" tabindex="-1">
+          <div class="finance-drawer__head"><p id="finance-drawer-eyebrow" class="finance-eyebrow">Smart recommendation</p><button type="button" class="finance-icon-button" data-close-drawer aria-label="Close review">&times;</button></div>
+          <h2 id="finance-drawer-title">{html.escape(rec_title)}</h2>
+          <p id="finance-drawer-why" class="finance-drawer__why"><strong>Why:</strong> {html.escape(rec_why)}</p>
+          <dl id="finance-drawer-facts" class="finance-recommendation-facts"></dl>
           <form id="finance-partial-form" class="finance-confirm-form" method="post" hidden>
             <label>Payment amount<input name="amount" inputmode="decimal" required placeholder="0.00"></label>
             <label>Payment date<input name="allocation_date" type="date"></label>
@@ -1319,7 +1796,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
             <input name="idempotency_key" type="hidden">
             <div><button type="button" class="btn btn-secondary" data-close-drawer>Cancel</button><button type="submit" class="btn btn-primary">Confirm installment</button></div>
           </form>
-          <div id="finance-preview-actions" class="finance-drawer__actions"><button type="button" class="btn btn-secondary" data-close-drawer>Close preview</button></div>
+          <div id="finance-preview-actions" class="finance-drawer__actions"><a id="finance-drawer-source" class="btn btn-secondary" href="#" hidden>Open source</a><button type="button" class="btn btn-secondary" data-close-drawer>Close review</button></div>
           <p id="finance-preview-note" class="finance-preview-note">Review details before confirming. No bank payment is initiated.</p>
         </div>
       </aside>
@@ -1332,6 +1809,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           <input type="hidden" name="merge_mode" value="append"><button class="btn btn-primary btn-sm" type="submit">Upload and reconcile</button>
         </form>
         <div class="finance-source-row"><div><strong>ClickUp</strong><span>Connected source for planned AP/AR</span></div><form method="post" action="/admin/finances/sync-clickup"><button class="btn btn-secondary btn-sm" type="submit">Refresh</button></form></div>
+        <div class="finance-source-row"><div><strong>Cash floor</strong><span>Reserve kept after required bills. Current: {cash_floor_display}</span></div><form class="finance-floor-form" method="post" action="/admin/finances/settings/cash-floor"><label class="sr-only" for="finance-cash-floor">Cash floor in dollars</label><input id="finance-cash-floor" name="cash_floor" inputmode="decimal" value="{cash_floor_input}" placeholder="Enter cash floor" required><button class="btn btn-secondary btn-sm" type="submit">Save floor</button></form></div>
         <div class="finance-source-row"><div><strong>Manual exception</strong><span>Add an obligation without changing source records.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a></div></div>
         {inline_result}
       </dialog>
@@ -1339,6 +1817,8 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
       <template id="finance-loading-state"><section class="finance-state-copy"><div class="finance-skeleton-grid"><i></i><i></i><i></i><i></i></div><p>Calculating forecast</p><p>Loading money queue</p></section></template>
       <template id="finance-error-state"><section class="finance-state-copy is-error"><strong>Finance data could not be loaded.</strong><p>Current page data was preserved. Retry the source update.</p></section></template>
       <template id="finance-import-error-state"><section class="finance-state-copy is-error"><strong>Import failed. No records were committed.</strong><p>The failed file, reason, and row-error report will appear here.</p><a href="#">Download row-error report</a></section></template>
+      <p id="finance-live-region" class="sr-only" aria-live="polite"></p>
+      <script id="finance-drawer-payloads" type="application/json">{drawer_json}</script>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -1428,9 +1908,106 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         root.dataset.smartMode = event.target.checked ? 'on' : 'off';
       }});
       const drawer = document.getElementById('finance-recommendation-drawer');
-      function setDrawer(open) {{ drawer.setAttribute('aria-hidden', String(!open)); document.body.classList.toggle('finance-overlay-open', open); }}
-      document.querySelectorAll('[data-open-drawer]').forEach(button => button.addEventListener('click', () => setDrawer(true)));
+      const drawerPanel = drawer.querySelector('.finance-drawer__panel');
+      const pageContent = document.getElementById('finance-page-content');
+      const drawerPayloads = JSON.parse(document.getElementById('finance-drawer-payloads').textContent);
+      const drawerEyebrow = document.getElementById('finance-drawer-eyebrow');
+      const drawerTitle = document.getElementById('finance-drawer-title');
+      const drawerWhy = document.getElementById('finance-drawer-why');
+      const drawerFacts = document.getElementById('finance-drawer-facts');
+      const drawerSource = document.getElementById('finance-drawer-source');
+      const drawerNote = document.getElementById('finance-preview-note');
+      const liveRegion = document.getElementById('finance-live-region');
+      let drawerOpener = null;
+
+      function renderDrawerPayload(payload) {{
+        drawerEyebrow.textContent = payload.eyebrow || 'Review';
+        drawerTitle.textContent = payload.title || 'Review details';
+        drawerWhy.replaceChildren();
+        const whyLabel = document.createElement('strong');
+        whyLabel.textContent = 'Why: ';
+        drawerWhy.append(whyLabel, document.createTextNode(payload.why || 'Review the source evidence.'));
+        drawerFacts.replaceChildren();
+        (payload.facts || []).forEach(fact => {{
+          const row = document.createElement('div');
+          const term = document.createElement('dt');
+          const description = document.createElement('dd');
+          term.textContent = fact[0];
+          description.textContent = fact[1];
+          row.append(term, description);
+          drawerFacts.append(row);
+        }});
+        drawerSource.hidden = !payload.sourceUrl && !payload.sourceAction;
+        drawerSource.textContent = payload.sourceLabel || 'Open source';
+        drawerSource.dataset.sourceAction = payload.sourceAction || '';
+        drawerSource.href = payload.sourceUrl || '#finance-update-modal';
+        drawerNote.textContent = payload.note || 'Review details before confirming. No bank payment is initiated.';
+      }}
+
+      function setDrawer(open, opener = null) {{
+        if (open) {{
+          drawerOpener = opener || document.activeElement;
+          drawer.setAttribute('aria-hidden', 'false');
+          pageContent.inert = true;
+          document.body.classList.add('finance-overlay-open');
+          window.requestAnimationFrame(() => drawer.querySelector('[data-close-drawer]').focus());
+        }} else {{
+          drawer.setAttribute('aria-hidden', 'true');
+          pageContent.inert = false;
+          document.body.classList.remove('finance-overlay-open');
+          const previousOpener = drawerOpener;
+          drawerOpener = null;
+          if (previousOpener && previousOpener.isConnected) previousOpener.focus();
+        }}
+      }}
+
+      function openDrawer(payload, opener) {{
+        document.getElementById('finance-partial-form').hidden = true;
+        document.getElementById('finance-installment-form').hidden = true;
+        document.getElementById('finance-preview-actions').hidden = false;
+        renderDrawerPayload(payload);
+        setDrawer(true, opener);
+      }}
+
+      document.querySelectorAll('[data-drawer-review]').forEach(button => button.addEventListener('click', () => {{
+        const payload = drawerPayloads[button.dataset.drawerReview];
+        if (payload) openDrawer(payload, button);
+      }}));
+      document.querySelectorAll('[data-savings-review]').forEach(button => button.addEventListener('click', () => {{
+        const payload = drawerPayloads.savings[button.dataset.savingsReview];
+        if (payload) openDrawer(payload, button);
+      }}));
       document.querySelectorAll('[data-close-drawer]').forEach(button => button.addEventListener('click', () => setDrawer(false)));
+      drawerSource.addEventListener('click', event => {{
+        if (drawerSource.dataset.sourceAction !== 'update-money') return;
+        event.preventDefault();
+        setDrawer(false);
+        const modal = document.getElementById('finance-update-modal');
+        if (modal.showModal) modal.showModal(); else modal.setAttribute('open', '');
+      }});
+      document.addEventListener('keydown', event => {{
+        if (drawer.getAttribute('aria-hidden') !== 'false') return;
+        if (event.key === 'Escape') {{ event.preventDefault(); setDrawer(false); return; }}
+        if (event.key !== 'Tab') return;
+        const focusable = [...drawerPanel.querySelectorAll('a[href]:not([hidden]), button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), select:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])')]
+          .filter(element => element.offsetParent !== null);
+        if (!focusable.length) {{ event.preventDefault(); drawerPanel.focus(); return; }}
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {{ event.preventDefault(); last.focus(); }}
+        else if (!event.shiftKey && document.activeElement === last) {{ event.preventDefault(); first.focus(); }}
+      }});
+
+      const savingsExpand = document.querySelector('[data-expand-savings]');
+      if (savingsExpand) savingsExpand.addEventListener('click', () => {{
+        const expanded = savingsExpand.getAttribute('aria-expanded') === 'true';
+        document.querySelectorAll('[data-savings-extra="true"]').forEach(row => {{ row.hidden = expanded; }});
+        savingsExpand.setAttribute('aria-expanded', String(!expanded));
+        savingsExpand.textContent = expanded ? savingsExpand.dataset.collapsedLabel : 'Show top 3';
+        if (!expanded) liveRegion.textContent = 'Expanded savings opportunities.';
+      }});
+      if (savingsExpand) savingsExpand.dataset.collapsedLabel = savingsExpand.textContent;
+      document.querySelectorAll('[data-retry-savings]').forEach(button => button.addEventListener('click', () => window.location.reload()));
 
       document.querySelectorAll('[data-open-modal]').forEach(button => button.addEventListener('click', () => {{
         const modal = document.getElementById(button.dataset.openModal);
@@ -1441,21 +2018,30 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         const action = button.dataset.previewAction;
         const eventId = button.dataset.eventId;
         const party = button.dataset.party || 'this item';
-        const title = document.getElementById('finance-drawer-title');
-        const why = document.getElementById('finance-drawer-why');
         const partialForm = document.getElementById('finance-partial-form');
         const installmentForm = document.getElementById('finance-installment-form');
         const previewActions = document.getElementById('finance-preview-actions');
+        const direction = button.dataset.direction === 'inflow' ? 'incoming cash' : 'cash outflow';
+        const amount = '$' + Number(button.dataset.amount || 0).toLocaleString(undefined, {{minimumFractionDigits: 2, maximumFractionDigits: 2}});
+        openDrawer({{
+          eyebrow: 'Money queue review',
+          title: action + ' - ' + party,
+          why: 'Review this item and its cash effect before confirming any Finance record.',
+          facts: [
+            ['Amount', amount],
+            ['Cash direction', direction],
+            ['Action', action],
+            ['Source evidence', 'Use the linked source or posted bank activity to verify this item.'],
+            ['Downside', 'The obligation or expected receipt remains open until evidence confirms otherwise.']
+          ],
+          sourceUrl: button.dataset.sourceUrl || '',
+          sourceAction: '',
+          sourceLabel: button.dataset.sourceUrl ? 'Open source' : '',
+          note: 'Finance records the decision. It does not initiate bank movement.'
+        }}, button);
         partialForm.hidden = true;
         installmentForm.hidden = true;
         previewActions.hidden = false;
-        if (eventId) {{
-          title.textContent = action + ' - ' + party;
-          why.textContent = 'Preview: Review the cash impact and source evidence before confirming.';
-        }} else {{
-          title.textContent = title.dataset.defaultTitle;
-          why.textContent = 'Why: ' + why.dataset.defaultWhy;
-        }}
         if (eventId && action === 'Record partial payment') {{
           partialForm.action = '/admin/finances/actions/' + encodeURIComponent(eventId) + '/partial';
           partialForm.querySelector('[name="amount"]').value = '';
@@ -1473,7 +2059,6 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           previewActions.hidden = true;
         }}
         document.querySelectorAll('.finance-row-menu[open]').forEach(menu => menu.removeAttribute('open'));
-        setDrawer(true);
       }}));
 
       const status = document.getElementById('finance-chart-status');

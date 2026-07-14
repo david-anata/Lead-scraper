@@ -81,6 +81,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(bind=engine)
         _apply_sqlite_compat_migrations(engine)
+        ensure_finance_trust_schema(engine)
         _backfill_legacy_settlements(engine)
         return
 
@@ -96,6 +97,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         Base.metadata.create_all(bind=engine)
     _apply_postgres_compat_migrations(engine)
     _ensure_finance_settlement_tables(engine)
+    ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
 
@@ -122,6 +124,8 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_source_records",
         "finance_import_batches",
         "finance_import_rows",
+        "finance_settings",
+        "finance_action_audit",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
@@ -238,6 +242,70 @@ def _backfill_legacy_settlements(engine: Any) -> None:
             connection.execute(text("""
                 UPDATE cash_events SET status = :status, updated_at = :now WHERE id = :id
             """), {"id": obligation_id, "status": status, "now": datetime.utcnow()})
+
+
+def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
+    """Install only additive Phase 0 Finance schema changes.
+
+    This is intentionally callable by import services because some tests and
+    small deployments initialize the shared engine without ``init_database``.
+    """
+    db_engine = target_engine or get_engine()
+    _register_models()
+    if db_engine.dialect.name == "sqlite":
+        _apply_sqlite_compat_migrations(db_engine)
+    table_names = {
+        "finance_source_records",
+        "finance_import_batches",
+        "finance_import_rows",
+        "finance_settings",
+        "finance_action_audit",
+    }
+    tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
+    if tables:
+        Base.metadata.create_all(bind=db_engine, tables=tables, checkfirst=True)
+
+    inspector = inspect(db_engine)
+    if "cash_events" not in set(inspector.get_table_names()):
+        return
+    if db_engine.dialect.name == "postgresql":
+        with db_engine.begin() as connection:
+            connection.execute(text("""
+                ALTER TABLE cash_events
+                    ADD COLUMN IF NOT EXISTS source_status VARCHAR(32) NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS source_open_amount_cents INTEGER NULL,
+                    ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ NULL,
+                    ADD COLUMN IF NOT EXISTS match_status VARCHAR(16) NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS match_candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb
+            """))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_cash_events_source_status ON cash_events(source_status)"
+            ))
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_cash_events_match_status ON cash_events(match_status)"
+            ))
+        return
+    if db_engine.dialect.name != "sqlite":
+        return
+
+    columns = {column["name"] for column in inspect(db_engine).get_columns("cash_events")}
+    statements = {
+        "source_status": "ALTER TABLE cash_events ADD COLUMN source_status VARCHAR(32) NOT NULL DEFAULT ''",
+        "source_open_amount_cents": "ALTER TABLE cash_events ADD COLUMN source_open_amount_cents INTEGER",
+        "source_updated_at": "ALTER TABLE cash_events ADD COLUMN source_updated_at DATETIME",
+        "match_status": "ALTER TABLE cash_events ADD COLUMN match_status VARCHAR(16) NOT NULL DEFAULT ''",
+        "match_candidates_json": "ALTER TABLE cash_events ADD COLUMN match_candidates_json JSON NOT NULL DEFAULT '[]'",
+    }
+    with db_engine.begin() as connection:
+        for column, statement in statements.items():
+            if column not in columns:
+                connection.execute(text(statement))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_cash_events_source_status ON cash_events(source_status)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_cash_events_match_status ON cash_events(match_status)"
+        ))
 
 
 @contextmanager
@@ -1258,10 +1326,55 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
 _CASH_EVENT_UPSERT_COLS = (
     "id", "source", "source_id", "record_kind", "event_type", "category", "subcategory",
     "description", "name", "vendor_or_customer", "amount_cents", "due_date",
-    "status", "confidence", "pay_priority", "minimum_payment_cents", "flexibility",
+    "status", "confidence", "source_status", "source_open_amount_cents", "source_updated_at",
+    "pay_priority", "minimum_payment_cents", "flexibility",
     "recurring_rule", "clickup_task_id",
-    "bank_transaction_type", "bank_reference", "notes", "friendly_name",
+    "bank_transaction_type", "bank_reference", "match_status", "match_candidates_json",
+    "notes", "friendly_name",
 )
+
+
+def refresh_obligation_status_from_evidence(conn, event_id: str) -> str:
+    """Derive canonical obligation status without trusting provider terminals."""
+    row = conn.execute(text(
+        "SELECT amount_cents, due_date, status, record_kind FROM cash_events WHERE id=:id"
+    ), {"id": event_id}).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown cash event: {event_id}")
+    data = dict(row._mapping)
+    if data.get("record_kind") == "transaction":
+        return str(data.get("status") or "posted")
+
+    allocated = int(conn.execute(text("""
+        SELECT COALESCE(SUM(allocation.amount_cents), 0)
+        FROM settlement_allocations AS allocation
+        WHERE allocation.obligation_event_id=:id
+          AND allocation.reversed_allocation_id IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM settlement_allocations AS reversal
+              WHERE reversal.reversed_allocation_id=allocation.id
+          )
+    """), {"id": event_id}).scalar_one() or 0)
+    face = max(0, int(data.get("amount_cents") or 0))
+    if face > 0 and allocated >= face:
+        status = "paid"
+    elif str(data.get("status") or "").lower() in {"cancelled", "canceled", "void"}:
+        # Explicit local cancellation remains authoritative.
+        status = str(data["status"])
+    else:
+        raw_due = data.get("due_date")
+        try:
+            due_day = raw_due.date() if isinstance(raw_due, datetime) else date.fromisoformat(str(raw_due)[:10])
+        except (AttributeError, TypeError, ValueError):
+            due_day = None
+        today = datetime.utcnow().date()
+        status = "overdue" if due_day and due_day < today else (
+            "pending" if due_day and due_day <= today + timedelta(days=7) else "planned"
+        )
+    conn.execute(text(
+        "UPDATE cash_events SET status=:status, updated_at=:now WHERE id=:id"
+    ), {"status": status, "now": datetime.utcnow(), "id": event_id})
+    return status
 
 
 def upsert_cash_event(conn, event: dict) -> str:
@@ -1278,6 +1391,7 @@ def upsert_cash_event(conn, event: dict) -> str:
     from datetime import date, datetime
 
     now_str = datetime.utcnow().isoformat()
+    preserve_settlement_truth = bool(event.get("preserve_settlement_truth"))
 
     # Normalize due_date to ISO string
     due_date_val = event.get("due_date")
@@ -1303,7 +1417,11 @@ def upsert_cash_event(conn, event: dict) -> str:
                     subcategory=:subcategory, description=:description,
                     name=:name, vendor_or_customer=:vendor_or_customer,
                     amount_cents=:amount_cents, due_date=:due_date,
-                    status=:status, confidence=:confidence,
+                    status=CASE WHEN :preserve_settlement_truth THEN status ELSE :status END,
+                    confidence=:confidence,
+                    source_status=COALESCE(:source_status, source_status),
+                    source_open_amount_cents=:source_open_amount_cents,
+                    source_updated_at=COALESCE(:source_updated_at, source_updated_at),
                     pay_priority=COALESCE(:pay_priority, pay_priority),
                     minimum_payment_cents=COALESCE(:minimum_payment_cents, minimum_payment_cents),
                     flexibility=COALESCE(:flexibility, flexibility),
@@ -1311,6 +1429,8 @@ def upsert_cash_event(conn, event: dict) -> str:
                     clickup_task_id=:clickup_task_id,
                     bank_transaction_type=:bank_transaction_type,
                     bank_reference=:bank_reference,
+                    match_status=COALESCE(:match_status, match_status),
+                    match_candidates_json=COALESCE(:match_candidates_json, match_candidates_json),
                     notes=:notes, friendly_name=:friendly_name,
                     updated_at=:updated_at
                 WHERE id=:id
@@ -1330,6 +1450,10 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "due_date": due_str,
                 "status": event.get("status", "planned"),
                 "confidence": event.get("confidence", "estimated"),
+                "source_status": event.get("source_status"),
+                "source_open_amount_cents": event.get("source_open_amount_cents"),
+                "source_updated_at": event.get("source_updated_at"),
+                "preserve_settlement_truth": preserve_settlement_truth,
                 "pay_priority": event.get("pay_priority"),
                 "minimum_payment_cents": event.get("minimum_payment_cents"),
                 "flexibility": event.get("flexibility"),
@@ -1337,12 +1461,14 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "clickup_task_id": event.get("clickup_task_id", ""),
                 "bank_transaction_type": event.get("bank_transaction_type", ""),
                 "bank_reference": event.get("bank_reference", ""),
+                "match_status": event.get("match_status"),
+                "match_candidates_json": json.dumps(event.get("match_candidates_json")) if event.get("match_candidates_json") is not None else None,
                 "notes": event.get("notes", ""),
                 "friendly_name": event.get("friendly_name"),
                 "updated_at": now_str,
             },
         )
-        return "updated"
+        result = "updated"
     else:
         conn.execute(
             text("""
@@ -1350,17 +1476,21 @@ def upsert_cash_event(conn, event: dict) -> str:
                     id, source, source_id, record_kind, event_type, category,
                     subcategory, description, name, vendor_or_customer,
                     amount_cents, due_date, status, confidence,
+                    source_status, source_open_amount_cents, source_updated_at,
                     pay_priority, minimum_payment_cents, flexibility,
                     recurring_rule, clickup_task_id,
                     bank_transaction_type, bank_reference,
+                    match_status, match_candidates_json,
                     notes, friendly_name, created_at, updated_at
                 ) VALUES (
                     :id, :source, :source_id, :record_kind, :event_type, :category,
                     :subcategory, :description, :name, :vendor_or_customer,
                     :amount_cents, :due_date, :status, :confidence,
+                    :source_status, :source_open_amount_cents, :source_updated_at,
                     :pay_priority, :minimum_payment_cents, :flexibility,
                     :recurring_rule, :clickup_task_id,
                     :bank_transaction_type, :bank_reference,
+                    :match_status, :match_candidates_json,
                     :notes, :friendly_name, :created_at, :updated_at
                 )
             """),
@@ -1379,6 +1509,9 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "due_date": due_str,
                 "status": event.get("status", "planned"),
                 "confidence": event.get("confidence", "estimated"),
+                "source_status": event.get("source_status", ""),
+                "source_open_amount_cents": event.get("source_open_amount_cents"),
+                "source_updated_at": event.get("source_updated_at"),
                 "pay_priority": event.get("pay_priority", "review"),
                 "minimum_payment_cents": event.get("minimum_payment_cents"),
                 "flexibility": event.get("flexibility", "unknown"),
@@ -1386,13 +1519,19 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "clickup_task_id": event.get("clickup_task_id", ""),
                 "bank_transaction_type": event.get("bank_transaction_type", ""),
                 "bank_reference": event.get("bank_reference", ""),
+                "match_status": event.get("match_status", ""),
+                "match_candidates_json": json.dumps(event.get("match_candidates_json") or []),
                 "notes": event.get("notes", ""),
                 "friendly_name": event.get("friendly_name"),
                 "created_at": now_str,
                 "updated_at": now_str,
             },
         )
-        return "created"
+        result = "created"
+
+    if preserve_settlement_truth:
+        refresh_obligation_status_from_evidence(conn, str(event["id"]))
+    return result
 
 
 def insert_cash_event(conn, *, id, source, source_id, event_type, category,
@@ -1403,6 +1542,9 @@ def insert_cash_event(conn, *, id, source, source_id, event_type, category,
                        recurring_rule="", clickup_task_id="", friendly_name=None,
                        record_kind="obligation", pay_priority="review",
                        minimum_payment_cents=None, flexibility="unknown",
+                       source_status="", source_open_amount_cents=None,
+                       source_updated_at=None, match_status="",
+                       match_candidates_json=None,
                        created_at, updated_at):
     """Single canonical INSERT for cash_events. Use this everywhere instead of inline SQL."""
     due_str = due_date.isoformat() if hasattr(due_date, "isoformat") else (str(due_date)[:10] if due_date else None)
@@ -1411,16 +1553,20 @@ def insert_cash_event(conn, *, id, source, source_id, event_type, category,
             id, source, source_id, record_kind, event_type, category,
             subcategory, description, name, vendor_or_customer,
             amount_cents, due_date, status, confidence,
+            source_status, source_open_amount_cents, source_updated_at,
             pay_priority, minimum_payment_cents, flexibility,
             account_balance_cents, bank_transaction_type, bank_reference,
+            match_status, match_candidates_json,
             notes, recurring_rule, clickup_task_id, friendly_name,
             created_at, updated_at
         ) VALUES (
             :id, :source, :source_id, :record_kind, :event_type, :category,
             :subcategory, :description, :name, :vendor_or_customer,
             :amount_cents, :due_date, :status, :confidence,
+            :source_status, :source_open_amount_cents, :source_updated_at,
             :pay_priority, :minimum_payment_cents, :flexibility,
             :account_balance_cents, :bank_transaction_type, :bank_reference,
+            :match_status, :match_candidates_json,
             :notes, :recurring_rule, :clickup_task_id, :friendly_name,
             :created_at, :updated_at
         )
@@ -1430,10 +1576,15 @@ def insert_cash_event(conn, *, id, source, source_id, event_type, category,
         "category": category, "subcategory": subcategory, "description": description,
         "name": name, "vendor_or_customer": vendor_or_customer, "amount_cents": amount_cents,
         "due_date": due_str, "status": status, "confidence": confidence,
+        "source_status": source_status,
+        "source_open_amount_cents": source_open_amount_cents,
+        "source_updated_at": source_updated_at,
         "pay_priority": pay_priority, "minimum_payment_cents": minimum_payment_cents,
         "flexibility": flexibility,
         "account_balance_cents": account_balance_cents,
         "bank_transaction_type": bank_transaction_type, "bank_reference": bank_reference,
+        "match_status": match_status,
+        "match_candidates_json": json.dumps(match_candidates_json or []),
         "notes": notes, "recurring_rule": recurring_rule, "clickup_task_id": clickup_task_id,
         "friendly_name": friendly_name, "created_at": created_at, "updated_at": updated_at,
     })

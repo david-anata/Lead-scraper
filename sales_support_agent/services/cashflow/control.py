@@ -210,16 +210,20 @@ def annotate_open_amounts(
         face = _amount(row.get("amount_cents"))
         embedded = _amount(row.get("settled_amount_cents"))
         settled = allocated.get(event_id, embedded)
-        already_derived = "open_amount_cents" in source_row or "settled_amount_cents" in source_row
-        if (
-            event_id not in allocated
-            and not already_derived
-            and str(row.get("status") or "").lower() in {"paid", "matched"}
-        ):
-            settled = face
+        local_open = max(0, face - settled)
+        source_open_value = row.get("source_open_amount_cents")
+        source_open = None if source_open_value is None else _amount(source_open_value)
         row["id"] = event_id
         row["settled_amount_cents"] = min(face, settled)
-        row["open_amount_cents"] = max(0, face - settled)
+        row["open_amount_cents"] = local_open
+        row["local_open_amount_cents"] = local_open
+        row["source_open_disagreement"] = bool(
+            not _is_transaction(row)
+            and source_open is not None
+            and source_open != local_open
+        )
+        if row["source_open_disagreement"]:
+            row["source_conflict"] = True
         result.append(row)
     return result
 
@@ -333,6 +337,10 @@ def build_forecast_paths(
 
     for row in canonical:
         if not _is_active_obligation(row) or not row.get("open_amount_cents"):
+            continue
+        if row.get("source_open_disagreement"):
+            # Conflicting provider and settlement evidence is not forecastable.
+            # Keep the face/open amount visible in Resolve first instead.
             continue
         event_type = str(row.get("event_type") or "outflow").lower()
         due = _event_date(row)
@@ -488,15 +496,25 @@ def _receipt_lags(actuals: Sequence[tuple[Mapping[str, Any], date]]) -> dict[str
 
 def assess_confidence(snapshot: Mapping[str, Any], trends: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     reasons: list[str] = []
+    settlement_evidence_missing = any(
+        not _is_transaction(row) and row.get("settlement_evidence_available") is False
+        for row in rows
+    )
     if not snapshot.get("available"):
         reasons.append("cash balance is missing")
     elif snapshot.get("stale"):
         reasons.append("cash balance is stale")
+    if settlement_evidence_missing:
+        reasons.append("settlement evidence is unavailable")
     if trends.get("confidence") == "low":
         reasons.append("less than 28 days of comparable bank history")
     if any(_is_duplicate(row) or _needs_match_review(row) for row in rows):
         reasons.append("unresolved duplicate or match candidates")
-    level = "low" if not snapshot.get("available") or snapshot.get("stale") else ("medium" if reasons else str(trends.get("confidence") or "medium"))
+    level = (
+        "low"
+        if not snapshot.get("available") or snapshot.get("stale") or settlement_evidence_missing
+        else ("medium" if reasons else str(trends.get("confidence") or "medium"))
+    )
     return {"level": level, "verification_only": level == "low", "reasons": reasons}
 
 
@@ -505,6 +523,8 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
     confirmed_in = expected_in = required_out = exposure_out = 0
     for row in canonical:
         if not _is_active_obligation(row):
+            continue
+        if row.get("source_open_disagreement"):
             continue
         due = _event_date(row)
         open_amount = _amount(row.get("open_amount_cents"))
@@ -577,6 +597,8 @@ def quick_action_eligibility(
 
 
 def _blocker(row: Mapping[str, Any], *, as_of: date, stale_source_days: int = 7) -> str | None:
+    if row.get("source_open_disagreement"):
+        return "source_open_disagreement"
     if _is_duplicate(row):
         return "probable_duplicate"
     if _needs_match_review(row):
@@ -797,13 +819,16 @@ def build_finance_control_state(
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     *,
     as_of: date | None = None,
-    floor_cents: int = 1_000_000,
+    floor_cents: int | None = None,
     horizon_days: int = 28,
     summary_days: int = 14,
     balance_stale_after_days: int = 3,
 ) -> dict[str, Any]:
     """Build the complete deterministic Finance Control V2 read model."""
+    from sales_support_agent.services.cashflow.settings import resolve_cash_floor_cents
+
     effective_date = as_of or date.today()
+    floor_cents = resolve_cash_floor_cents(floor_cents)
     canonical = annotate_open_amounts(rows, settlement_annotations)
     snapshot = resolve_cash_snapshot(rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
     starting_cash = int(snapshot["balance_cents"] or 0)
@@ -851,7 +876,7 @@ def build_cash_metrics(
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     *,
     as_of: date | None = None,
-    floor_cents: int = 1_000_000,
+    floor_cents: int | None = None,
     horizon_days: int = 28,
     summary_days: int = 14,
     balance_stale_after_days: int = 3,
@@ -876,7 +901,7 @@ def build_finance_control(
     smart_mode: bool = True,
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     as_of: date | None = None,
-    floor_cents: int = 1_000_000,
+    floor_cents: int | None = None,
 ) -> dict[str, Any]:
     """Renderer-friendly facade over :func:`build_finance_control_state`.
 
@@ -890,7 +915,10 @@ def build_finance_control(
         settlement_annotations = balance_cents
         balance_cents = None
 
+    from sales_support_agent.services.cashflow.settings import resolve_cash_floor_cents
+
     effective_date = as_of or date.today()
+    floor_cents = resolve_cash_floor_cents(floor_cents)
     working_rows = list(rows)
     override_date = _as_date(balance_as_of)
     if balance_cents is not None and override_date is not None:

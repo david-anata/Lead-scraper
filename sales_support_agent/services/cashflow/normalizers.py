@@ -18,7 +18,7 @@ import csv
 import io
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -128,6 +128,8 @@ def normalize_bank_csv_row(row: dict[str, str]) -> dict[str, Any]:
         "effective_date": effective_dt,
         "expected_date": None,
         "status": status,
+        "source_status": status,
+        "source_updated_at": due_date,
         "confidence": confidence,
         "bank_transaction_type": txn_subtype,
         "bank_reference": _get("Reference Number"),
@@ -182,8 +184,8 @@ def normalize_clickup_task(task: dict[str, Any]) -> dict[str, Any] | None:
     status_str = ((task.get("status") or {}).get("status") or "").lower()
     event_type = _infer_event_type(task_name, cu_category)
 
-    # Map ClickUp status to our internal status
-    internal_status = _map_clickup_status(status_str)
+    # Provider completion is metadata only; it is not proof that cash moved.
+    internal_status = _due_based_status(due_date)
 
     # Category from description/name + cu_category hint
     category = categorize(task_name, cu_category)
@@ -202,6 +204,9 @@ def normalize_clickup_task(task: dict[str, Any]) -> dict[str, Any] | None:
         "effective_date": None,
         "expected_date": None,
         "status": internal_status,
+        "source_status": status_str,
+        "source_updated_at": datetime.now(timezone.utc),
+        "preserve_settlement_truth": True,
         "confidence": "estimated",   # ClickUp data is manually entered
         "clickup_task_id": task_id,
         "recurring_rule": _cu_detect_recurring(task),
@@ -322,6 +327,18 @@ def _map_clickup_status(status: str) -> str:
         "": "planned",
     }
     return mapping.get(status.lower().strip(), "planned")
+
+
+def _due_based_status(due_date: datetime | None) -> str:
+    if due_date is None:
+        return "planned"
+    today = datetime.now(timezone.utc).date()
+    due = due_date.date()
+    if due < today:
+        return "overdue"
+    if due <= today + timedelta(days=7):
+        return "pending"
+    return "planned"
 
 
 def _cu_find_amount_cents(fields: list[dict[str, Any]]) -> int:
@@ -491,6 +508,10 @@ def normalize_qbo_open_invoices_csv(csv_bytes: bytes) -> list[dict[str, Any]]:
             "amount_cents": amount_cents,
             "due_date": due_dt,
             "status": status,
+            "source_status": status,
+            "source_open_amount_cents": amount_cents,
+            "source_updated_at": datetime.now(timezone.utc),
+            "preserve_settlement_truth": True,
             "confidence": "confirmed",
             "bank_transaction_type": "",
             "bank_reference": "",
