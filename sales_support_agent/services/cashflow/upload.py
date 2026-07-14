@@ -248,23 +248,13 @@ def run_csv_upload(
         for mr in match_results:
             if mr.planned_event_id is None:
                 continue
+            from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
             with get_engine().begin() as conn:
-                conn.execute(
-                    text("""
-                        UPDATE cash_events
-                        SET status = 'matched', matched_to_id = :planned_id, updated_at = :now
-                        WHERE id = :csv_id
-                    """),
-                    {"planned_id": mr.planned_event_id, "csv_id": mr.csv_event_id, "now": now},
-                )
-                # Mark the planned obligation as paid/matched
-                conn.execute(
-                    text("""
-                        UPDATE cash_events
-                        SET status = 'matched', updated_at = :now
-                        WHERE id = :planned_id AND status IN ('planned', 'pending')
-                    """),
-                    {"planned_id": mr.planned_event_id, "now": now},
+                allocate_matched_transaction(
+                    conn,
+                    obligation_event_id=str(mr.planned_event_id),
+                    transaction_event_id=str(mr.csv_event_id),
+                    idempotency_key=f"csv-auto-match:{mr.csv_event_id}:{mr.planned_event_id}",
                 )
             result.matches_made += 1
 
@@ -353,14 +343,13 @@ def _run_qbo_open_invoices_upload(csv_bytes: bytes, *, engine) -> UploadResult:
             for mr in match_results:
                 if mr.planned_event_id is None:
                     continue
+                from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
                 with engine.begin() as conn:
-                    conn.execute(
-                        text("UPDATE cash_events SET status='matched', updated_at=:now WHERE id=:id"),
-                        {"now": now, "id": mr.csv_event_id},
-                    )
-                    conn.execute(
-                        text("UPDATE cash_events SET status='matched', updated_at=:now WHERE id=:id AND status IN ('planned','overdue')"),
-                        {"now": now, "id": mr.planned_event_id},
+                    allocate_matched_transaction(
+                        conn,
+                        obligation_event_id=str(mr.planned_event_id),
+                        transaction_event_id=str(mr.csv_event_id),
+                        idempotency_key=f"qbo-csv-auto-match:{mr.csv_event_id}:{mr.planned_event_id}",
                     )
                 result.matches_made += 1
 

@@ -225,11 +225,32 @@ def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
 
 
 def delete_obligation(event_id: str) -> bool:
-    """Hard-delete a manual obligation. Returns True if a row was removed."""
+    """Delete an unused manual obligation, or soft-cancel one with audit evidence."""
     from sales_support_agent.models.database import get_engine
-    from sqlalchemy import text
+    from sqlalchemy import inspect, text
 
     with get_engine().begin() as conn:
+        tables = set(inspect(conn).get_table_names())
+        evidence = 0
+        if {"settlement_allocations", "payment_installments"}.issubset(tables):
+            evidence = conn.execute(
+                text("""
+                    SELECT
+                      (SELECT COUNT(*) FROM settlement_allocations WHERE obligation_event_id = :id)
+                      + (SELECT COUNT(*) FROM payment_installments WHERE obligation_event_id = :id)
+                """),
+                {"id": event_id},
+            ).scalar_one()
+        if evidence:
+            result = conn.execute(
+                text("""
+                    UPDATE cash_events
+                    SET status = 'cancelled', updated_at = :now
+                    WHERE id = :id AND source = 'manual'
+                """),
+                {"id": event_id, "now": datetime.utcnow().isoformat()},
+            )
+            return result.rowcount > 0
         result = conn.execute(
             text("DELETE FROM cash_events WHERE id = :id AND source = 'manual'"),
             {"id": event_id},

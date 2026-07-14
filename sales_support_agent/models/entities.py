@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sales_support_agent.models.database import Base
@@ -422,6 +422,9 @@ class CashEvent(Base):
     source_id: Mapped[str] = mapped_column(String(255), default="", index=True)
 
     # Classification
+    record_kind: Mapped[str] = mapped_column(
+        String(16), default="obligation", server_default="obligation", index=True
+    )
     event_type: Mapped[str] = mapped_column(String(16), index=True)   # "inflow" | "outflow"
     category: Mapped[str] = mapped_column(String(64), default="uncategorized", index=True)
     subcategory: Mapped[str] = mapped_column(String(64), default="")
@@ -442,6 +445,15 @@ class CashEvent(Base):
     # Lifecycle
     status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
     confidence: Mapped[str] = mapped_column(String(16), default="estimated")  # "confirmed" | "estimated"
+
+    # Obligation controls. Transaction rows retain these compatible defaults.
+    pay_priority: Mapped[str] = mapped_column(
+        String(16), default="review", server_default="review", index=True
+    )
+    minimum_payment_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    flexibility: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", index=True
+    )
 
     # Recurring linkage
     recurring_template_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -469,6 +481,103 @@ class CashEvent(Base):
     __table_args__ = (
         Index("ix_cash_events_due_date_status", "due_date", "status"),
         Index("ix_cash_events_source_source_id", "source", "source_id"),
+    )
+
+
+class PaymentInstallment(Base):
+    """A durable payment slice planned against one obligation."""
+
+    __tablename__ = "payment_installments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    obligation_event_id: Mapped[str] = mapped_column(ForeignKey("cash_events.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="planned", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class SettlementAllocation(Base):
+    """Append-only evidence assigning actual cash movement to an obligation."""
+
+    __tablename__ = "settlement_allocations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    obligation_event_id: Mapped[str] = mapped_column(ForeignKey("cash_events.id"), index=True)
+    transaction_event_id: Mapped[Optional[str]] = mapped_column(ForeignKey("cash_events.id"), nullable=True, index=True)
+    installment_id: Mapped[Optional[str]] = mapped_column(ForeignKey("payment_installments.id"), nullable=True, index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    allocation_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    confidence: Mapped[str] = mapped_column(String(16), default="confirmed")
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    reversed_allocation_id: Mapped[Optional[str]] = mapped_column(ForeignKey("settlement_allocations.id"), nullable=True, unique=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceSourceRecord(Base):
+    """Stable source identity and hashes for a canonical cash event."""
+
+    __tablename__ = "finance_source_records"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cash_event_id: Mapped[str] = mapped_column(ForeignKey("cash_events.id"), index=True)
+    source_system: Mapped[str] = mapped_column(String(64))
+    scope_key: Mapped[str] = mapped_column(String(255), default="")
+    entity_type: Mapped[str] = mapped_column(String(64))
+    external_id: Mapped[str] = mapped_column(String(255))
+    payload_hash: Mapped[str] = mapped_column(String(128), default="")
+    soft_fingerprint: Mapped[str] = mapped_column(String(255), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "uq_finance_source_identity",
+            "source_system",
+            "scope_key",
+            "entity_type",
+            "external_id",
+            unique=True,
+        ),
+    )
+
+
+class FinanceImportBatch(Base):
+    """One atomic finance import staged before canonical records are written."""
+
+    __tablename__ = "finance_import_batches"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_type: Mapped[str] = mapped_column(String(64), index=True)
+    file_hash: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="staged", index=True)
+    ready_count: Mapped[int] = mapped_column(Integer, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
+    review_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceImportRow(Base):
+    """Staged source row and its deterministic import classification."""
+
+    __tablename__ = "finance_import_rows"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    import_batch_id: Mapped[str] = mapped_column(ForeignKey("finance_import_batches.id"), index=True)
+    row_number: Mapped[int] = mapped_column(Integer)
+    raw_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    normalized_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    classification: Mapped[str] = mapped_column(String(16), index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (
+        Index("uq_finance_import_batch_row", "import_batch_id", "row_number", unique=True),
     )
 
 

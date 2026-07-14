@@ -409,6 +409,7 @@ def sync_qbo_bank_transactions(
             try:
                 from sales_support_agent.services.cashflow.matcher import auto_match_transactions
                 from sales_support_agent.services.cashflow.obligations import list_obligations
+                from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
 
                 posted = [r for r in list_obligations(status="posted") if r.get("source") == "qbo_bank"]
                 planned_open = list_obligations(status="planned")
@@ -421,21 +422,11 @@ def sync_qbo_bank_transactions(
                         if mr.planned_event_id is None:
                             continue
                         with engine.begin() as conn:
-                            conn.execute(
-                                text("""
-                                    UPDATE cash_events
-                                    SET status='matched', matched_to_id=:pid, updated_at=:now
-                                    WHERE id=:cid
-                                """),
-                                {"pid": mr.planned_event_id, "cid": mr.csv_event_id, "now": now_str},
-                            )
-                            conn.execute(
-                                text("""
-                                    UPDATE cash_events
-                                    SET status='matched', updated_at=:now
-                                    WHERE id=:pid AND status IN ('planned', 'pending', 'overdue')
-                                """),
-                                {"pid": mr.planned_event_id, "now": now_str},
+                            allocate_matched_transaction(
+                                conn,
+                                obligation_event_id=str(mr.planned_event_id),
+                                transaction_event_id=str(mr.csv_event_id),
+                                idempotency_key=f"qbo-auto-match:{mr.csv_event_id}:{mr.planned_event_id}",
                             )
                         matched_count += 1
                     logger.info("QBO bank sync: auto-matched %d/%d transactions", matched_count, len(posted))

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import html
-import os
+import json
 from dataclasses import dataclass as _dc
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Mapping
 
 from sales_support_agent.services.cashflow.cashflow_helpers import (
     _dollar,
@@ -644,703 +644,740 @@ def _queue_reason(row: dict[str, Any], *, due: date | None, today: date) -> str:
     return " · ".join(parts)
 
 
-async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: str = "") -> str:
-    # Load all events
-    rows = list_obligations(limit=2000)
+_MISSING = object()
+_SETTLED_STATUSES = {"posted", "matched", "cancelled", "paid"}
 
-    # Exclude already-settled rows from the forecast — they're already baked
-    # into balance_cents from the latest CSV upload and would double-count.
-    forecast_rows = [
-        r for r in rows
-        if r.get("status") not in ("posted", "matched", "cancelled", "paid")
+
+def _control_value(value: Any, *names: str, default: Any = None) -> Any:
+    """Read the first present field from a control dict or dataclass."""
+    for name in names:
+        if isinstance(value, Mapping) and name in value:
+            return value[name]
+        if value is not None and hasattr(value, name):
+            return getattr(value, name)
+    return default
+
+
+def _cents(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _money(cents: int, *, exact: bool = False) -> str:
+    sign = "-" if cents < 0 else ""
+    decimals = 2 if exact else 0
+    return f"{sign}${abs(cents) / 100:,.{decimals}f}"
+
+
+def _row_confidence(row: Mapping[str, Any]) -> str:
+    return str(row.get("confidence") or "estimated").strip().lower()
+
+
+def _fallback_chart(
+    rows: list[dict[str, Any]], balance_cents: int, today: date, floor_cents: int
+) -> dict[str, Any]:
+    day_rows: dict[date, list[dict[str, Any]]] = {}
+    for row in rows:
+        due = _row_due_date(row)
+        if due is not None:
+            day_rows.setdefault(due, []).append(row)
+
+    labels: list[str] = []
+    committed: list[int] = []
+    expected: list[int] = []
+    stress: list[int] = []
+    running_committed = running_expected = running_stress = balance_cents
+    for offset in range(29):
+        current = today + timedelta(days=offset)
+        labels.append(current.strftime("%b %d"))
+        if offset:
+            for row in day_rows.get(current, []):
+                if str(row.get("status") or "").lower() in _SETTLED_STATUSES:
+                    continue
+                amount = _cents(row.get("open_amount_cents"), _cents(row.get("amount_cents")))
+                if row.get("event_type") == "inflow":
+                    running_expected += amount
+                    if _row_confidence(row) == "confirmed":
+                        running_committed += amount
+                        running_stress += amount
+                else:
+                    running_committed -= amount
+                    running_expected -= amount
+                    flexibility = str(row.get("flexibility") or "unknown")
+                    if flexibility not in {"chunkable", "deferrable"} or row.get("installment_id"):
+                        running_stress -= amount
+        committed.append(running_committed)
+        expected.append(running_expected)
+        stress.append(running_stress)
+    return {
+        "labels": labels,
+        "actual": [balance_cents] + [None] * 28,
+        "committed": committed,
+        "expected": expected,
+        "stress": stress,
+        "floor": floor_cents,
+    }
+
+
+def _fallback_finance_control(
+    rows: list[dict[str, Any]], balance_cents: int, balance_as_of: str, today: date
+) -> dict[str, Any]:
+    floor_cents = 1_000_000
+    soon = today + timedelta(days=14)
+    active = [
+        row for row in rows
+        if str(row.get("status") or "planned").lower() not in _SETTLED_STATUSES
     ]
-    events = _events_to_dtos(forecast_rows)
-
-    balance_cents, balance_as_of, balance_source = _resolve_current_balance(rows)
-    balance_source_label = "CSV" if balance_source == "csv" else "QBO bank" if balance_source else ""
-
-    csv_rows = [r for r in rows if r.get("source") == "csv" and r.get("account_balance_cents") is not None]
-
-    # 4-week summary
-    weeks = aggregate_weeks(events, starting_cash_cents=balance_cents, weeks=4)
-    alerts = flag_risks(weeks, events)
-
-    today = datetime.utcnow().date()
-
-    # AI summary
-    ai_text = ""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if api_key and weeks:
-        from sales_support_agent.services.cashflow.ai_summary import generate_cashflow_summary
-        result = await asyncio.to_thread(generate_cashflow_summary, weeks, alerts, balance_cents, api_key=api_key)
-        ai_text = result.text
-
-    # (QBO bank transactions don't carry a running balance — no fallback needed here)
-
-    # Compute metrics using the extracted function
-    metrics = compute_finance_overview(
-        events,
-        alerts,
-        weeks,
-        balance_cents,
-        today=today,
-        ai_text=ai_text,
-        all_rows=rows,
-        min_balance_cents=1_000_000,  # $10,000 floor
+    incoming = [
+        row for row in active
+        if row.get("event_type") == "inflow"
+        and (due := _row_due_date(row)) is not None
+        and due <= soon
+    ]
+    outgoing = [
+        row for row in active
+        if row.get("event_type") == "outflow"
+        and (due := _row_due_date(row)) is not None
+        and due <= soon
+    ]
+    confirmed_in = sum(
+        _cents(row.get("open_amount_cents"), _cents(row.get("amount_cents")))
+        for row in incoming if _row_confidence(row) == "confirmed"
     )
+    expected_in = sum(
+        _cents(row.get("open_amount_cents"), _cents(row.get("amount_cents")))
+        for row in incoming if _row_confidence(row) != "confirmed"
+    )
+    required_out = sum(
+        _cents(row.get("scheduled_amount_cents"), _cents(row.get("amount_cents")))
+        for row in outgoing
+    )
+    exposure_out = sum(
+        _cents(row.get("open_amount_cents"), _cents(row.get("amount_cents")))
+        for row in active
+        if row.get("event_type") == "outflow" and row not in outgoing
+    )
+    balance_available = bool(balance_as_of)
+    minimum_stress = balance_cents + confirmed_in - required_out
+    funding_gap = max(0, floor_cents - minimum_stress) if balance_available else 0
+    safe_to_commit = max(0, minimum_stress - floor_cents) if balance_available else 0
+    overdue = [row for row in active if (due := _row_due_date(row)) is not None and due < today]
+    missing_dates = [row for row in active if _row_due_date(row) is None]
 
-    # Runway card formatting
-    runway_class = ""
-    runway_note = "Until $10k floor"
-    if metrics.runway_days < 30:
-        runway_class = "negative"
-        runway_note = "⚠ Critical — under 30 days"
-    elif metrics.runway_days < 60:
-        runway_class = "negative"
-        runway_note = "⚠ Warning — under 60 days"
-    elif metrics.runway_days >= 365:
-        runway_note = "12+ months — looking good"
-    runway_display = f"{metrics.runway_days}d" if metrics.runway_days < 365 else "365d+"
+    happening = (
+        f"{_money(confirmed_in)} confirmed income and {_money(required_out)} required out "
+        "are in the next 14 days."
+    )
+    broken_parts = []
+    if not balance_available:
+        broken_parts.append("The current bank balance needs an update.")
+    if missing_dates:
+        broken_parts.append(f"{len(missing_dates)} money items need dates.")
+    if overdue:
+        broken_parts.append(f"{len(overdue)} items are overdue.")
+    broken = " ".join(broken_parts) or "No material blockers are detected in the selected window."
+    if not balance_available:
+        next_action = "Upload the latest bank CSV before making a payment decision."
+    elif overdue:
+        next_action = f"Review {_display_name(overdue[0])} before scheduling the next cash action."
+    elif missing_dates:
+        next_action = f"Confirm the date for {_display_name(missing_dates[0])}."
+    else:
+        next_action = "No urgent action is required; refresh sources before the next review."
 
-    # Balance staleness — warn if the snapshot is more than 3 days old
+    return {
+        "cash_position": {
+            "cash_on_hand_cents": balance_cents,
+            "balance_available": balance_available,
+            "incoming_confirmed_cents": confirmed_in,
+            "incoming_expected_cents": expected_in,
+            "required_out_cents": required_out,
+            "exposure_out_cents": exposure_out,
+            "safe_to_commit_cents": safe_to_commit,
+            "funding_gap_cents": funding_gap,
+            "floor_cents": floor_cents,
+        },
+        "smart_brief": {"happening": happening, "broken": broken, "next": next_action},
+        "forecast": _fallback_chart(rows, balance_cents, today, floor_cents),
+        "queue": rows,
+        "recommendation": {
+            "title": next_action,
+            "why": broken,
+            "before_minimum_cash_cents": minimum_stress,
+            "after_minimum_cash_cents": max(minimum_stress, floor_cents) if funding_gap else minimum_stress,
+            "depends_on": "Confirmed income only; expected trend income is excluded.",
+            "confidence": "Low" if not balance_available else "Medium",
+            "limitations": "Refresh source data before confirming any write.",
+            "downside": "The open obligation remains visible until settlement is confirmed.",
+            "action_label": "Create action preview",
+        },
+    }
+
+
+def _build_renderer_state(
+    rows: list[dict[str, Any]], balance_cents: int, balance_as_of: str, today: date,
+    settlement_annotations: list[dict[str, Any]] | None = None,
+) -> tuple[Any, dict[str, Any], bool]:
+    """Load the canonical control builder, retaining a safe local read fallback."""
+    fallback = _fallback_finance_control(rows, balance_cents, balance_as_of, today)
+    try:
+        from sales_support_agent.services.cashflow.control import build_finance_control
+
+        control = build_finance_control(
+            rows, balance_cents, balance_as_of, smart_mode=True,
+            settlement_annotations=settlement_annotations,
+        )
+        if control is not None:
+            return control, fallback, False
+    except (ImportError, AttributeError):
+        pass
+    except Exception:
+        return fallback, fallback, True
+    return fallback, fallback, False
+
+
+def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    cash = _control_value(control, "cash_position", "cash_metrics", "metrics", default=control)
+    fallback_cash = fallback["cash_position"]
+    brief = _control_value(control, "smart_brief", "brief", default={})
+    fallback_brief = fallback["smart_brief"]
+    recommendation = _control_value(
+        control, "recommendation", "top_recommendation", "smart_recommendation", default={}
+    )
+    return {
+        "cash": {
+            "cash_on_hand_cents": _cents(_control_value(cash, "cash_on_hand_cents", "balance_cents", default=fallback_cash["cash_on_hand_cents"])),
+            "balance_available": bool(_control_value(cash, "balance_available", "has_balance", default=fallback_cash["balance_available"])),
+            "incoming_confirmed_cents": _cents(_control_value(cash, "incoming_confirmed_cents", "confirmed_incoming_cents", default=fallback_cash["incoming_confirmed_cents"])),
+            "incoming_expected_cents": _cents(_control_value(cash, "incoming_expected_cents", "expected_incoming_cents", default=fallback_cash["incoming_expected_cents"])),
+            "required_out_cents": _cents(_control_value(cash, "required_out_cents", "required_outgoing_cents", "outgoing_cents", default=fallback_cash["required_out_cents"])),
+            "exposure_out_cents": _cents(_control_value(cash, "exposure_out_cents", "outgoing_exposure_cents", default=fallback_cash["exposure_out_cents"])),
+            "safe_to_commit_cents": max(0, _cents(_control_value(cash, "safe_to_commit_cents", default=fallback_cash["safe_to_commit_cents"]))),
+            "funding_gap_cents": max(0, _cents(_control_value(cash, "funding_gap_cents", default=fallback_cash["funding_gap_cents"]))),
+            "floor_cents": _cents(_control_value(cash, "floor_cents", "minimum_cash_floor_cents", default=fallback_cash["floor_cents"])),
+        },
+        "brief": {
+            key: str(_control_value(brief, key, default=fallback_brief[key]) or fallback_brief[key])
+            for key in ("happening", "broken", "next")
+        },
+        "forecast": _control_value(control, "forecast", "cash_trajectory", "forecast_paths", default=fallback["forecast"]),
+        "queue": _control_value(control, "queue", "queue_items", "money_queue", default=fallback["queue"]),
+        "recommendation": recommendation or fallback["recommendation"],
+    }
+
+
+def _flatten_queue(queue: Any) -> list[Any]:
+    items = _control_value(queue, "items", "rows", default=_MISSING)
+    if items is not _MISSING:
+        return list(items or [])
+    if isinstance(queue, Mapping):
+        flattened: list[Any] = []
+        seen: set[str] = set()
+        for group_items in queue.values():
+            if not isinstance(group_items, (list, tuple)):
+                continue
+            for item in group_items:
+                item_id = str(_control_value(item, "id", "event_id", default=id(item)))
+                if item_id not in seen:
+                    flattened.append(item)
+                    seen.add(item_id)
+        return flattened
+    return list(queue or [])
+
+
+def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
+    row = _control_value(item, "row", "event", "obligation", default=item)
+    if not isinstance(row, Mapping):
+        row = vars(row) if hasattr(row, "__dict__") else {}
+    direction = str(_control_value(item, "event_type", "direction", default=row.get("event_type") or "outflow"))
+    status = str(_control_value(item, "status", default=row.get("status") or "planned")).lower()
+    due_raw = _control_value(item, "due_date", "date", default=row.get("due_date"))
+    due = _row_due_date({"due_date": due_raw})
+    amount_cents = _cents(
+        _control_value(item, "open_amount_cents", "amount_cents", default=row.get("open_amount_cents") or row.get("amount_cents"))
+    )
+    party = str(_control_value(item, "party", "name", "vendor_or_customer", default=_display_name(dict(row))))
+    action = _control_value(item, "action_label", "action", "recommended_action", default="")
+    if not action:
+        if status in {"posted", "matched"}:
+            action = "Review actual"
+        elif due is None:
+            action = "Confirm date"
+        elif direction == "inflow" and due < today:
+            action = "Collect now"
+        elif direction == "inflow":
+            action = "Track receipt"
+        elif row.get("matched_to_id"):
+            action = "Resolve match"
+        elif due < today:
+            action = "Review payment"
+        elif _is_chunk_payable(dict(row)):
+            action = "Protect cash"
+        else:
+            action = "Pay now"
+    timing = _control_value(item, "timing", "timing_label", default="")
+    if not timing:
+        if due is None:
+            timing = "Date missing"
+        elif due < today:
+            late = (today - due).days
+            timing = f"{due.strftime('%b %d, %Y')} - {late}d late"
+        else:
+            confidence = _row_confidence(row)
+            suffix = f" - {confidence}" if direction == "inflow" else ""
+            timing = f"{due.strftime('%b %d, %Y')}{suffix}"
+    impact = _control_value(item, "cash_impact", "impact", "cash_impact_label", default="")
+    if not impact:
+        if due is None:
+            impact = "Excluded until dated"
+        elif direction == "inflow":
+            impact = f"+{_money(amount_cents)} if received"
+        else:
+            impact = f"-{_money(amount_cents)} from cash"
+    needs_action = bool(
+        _control_value(item, "needs_action", default=False)
+        or due is None or (due is not None and due < today)
+        or status in {"conflict", "duplicate", "review"}
+    )
+    tabs = ["incoming" if direction == "inflow" else "payables"]
+    if needs_action:
+        tabs.append("needs-action")
+    if status in {"posted", "matched", "paid"}:
+        tabs.append("recent")
+    return {
+        "id": str(_control_value(item, "id", "event_id", default=row.get("id") or "")),
+        "action": str(action),
+        "party": party,
+        "meta": str(row.get("vendor_or_customer") or row.get("category") or _source_label(dict(row))),
+        "timing": str(timing),
+        "amount_cents": amount_cents,
+        "direction": direction,
+        "impact": str(impact),
+        "tabs": tabs,
+        "source_url": str(_control_value(item, "source_url", "url", default=row.get("source_url") or row.get("clickup_url") or "")),
+        "quick_actions": list(_control_value(item, "quick_actions", default=[]) or []),
+    }
+
+
+def _quick_action_menu(item: dict[str, Any]) -> str:
+    action_labels = {
+        "preview_cash_impact": "Preview cash impact",
+        "record_partial_payment": "Record partial payment",
+        "split_into_installments": "Split into installments",
+        "defer_or_change_date": "Defer / change date",
+        "match_bank_transaction": "Match bank transaction",
+        "mark_paid": "Mark paid",
+        "flag_duplicate": "Flag duplicate",
+        "confirm_expected_date": "Confirm expected date",
+        "mark_received": "Mark received",
+        "match_bank_deposit": "Match bank deposit",
+        "change_confidence": "Change confidence",
+        "assign_follow_up": "Assign follow-up",
+    }
+    eligible = [
+        action_labels.get(str(action.get("action_type") or ""))
+        for action in item["quick_actions"]
+        if isinstance(action, Mapping) and action.get("eligible", True)
+    ]
+    eligible = [label for label in eligible if label]
+    if eligible:
+        labels = tuple(eligible)
+    elif item["direction"] == "inflow":
+        labels = (
+            "Confirm expected date", "Mark received", "Match bank deposit",
+            "Change confidence", "Assign follow-up",
+        )
+    else:
+        labels = (
+            "Preview cash impact", "Record partial payment", "Split into installments",
+            "Defer / change date", "Match bank transaction", "Mark paid", "Flag duplicate",
+        )
+    buttons = "".join(
+        f'<button type="button" role="menuitem" data-preview-action="{html.escape(label, quote=True)}" '
+        f'data-event-id="{html.escape(item["id"], quote=True)}" '
+        f'data-party="{html.escape(item["party"], quote=True)}" '
+        f'data-amount="{item["amount_cents"] / 100:.2f}" '
+        f'data-direction="{html.escape(item["direction"], quote=True)}">{html.escape(label)}</button>'
+        for label in labels
+    )
+    source_link = ""
+    if item["source_url"]:
+        source_label = "Open invoice or ClickUp source" if item["direction"] == "inflow" else "Open ClickUp source"
+        source_link = f'<a role="menuitem" href="{html.escape(item["source_url"], quote=True)}">{source_label}</a>'
+    return f"""
+      <details class="finance-row-menu smart-only">
+        <summary aria-label="Actions for {html.escape(item['party'], quote=True)}">&hellip;</summary>
+        <div class="finance-row-menu__popover" role="menu">{buttons}{source_link}</div>
+      </details>"""
+
+
+def _queue_table_html(queue: Any, today: date) -> tuple[str, dict[str, int]]:
+    items = [_queue_item_data(item, today) for item in _flatten_queue(queue)]
+    counts = {key: 0 for key in ("needs-action", "incoming", "payables", "recent")}
+    rows_html = []
+    for item in items:
+        for tab in item["tabs"]:
+            counts[tab] += 1
+        rows_html.append(f"""
+          <tr data-queue-tabs="{','.join(item['tabs'])}">
+            <td><strong>{html.escape(item['action'])}</strong></td>
+            <td><div class="queue-vendor">{html.escape(item['party'])}</div><div class="queue-meta">{html.escape(item['meta'])}</div></td>
+            <td>{html.escape(item['timing'])}</td>
+            <td class="{'amount-in' if item['direction'] == 'inflow' else 'amount-out'}">{'+' if item['direction'] == 'inflow' else '-'}{_money(item['amount_cents'])}</td>
+            <td>{html.escape(item['impact'])}</td>
+            <td>{_quick_action_menu(item)}</td>
+          </tr>""")
+    return "".join(rows_html), counts
+
+
+def _chart_payload(forecast: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    points = _control_value(forecast, "points", "days", default=None)
+    if points:
+        labels = [str(_control_value(point, "label", "date", default=""))[:10] for point in points]
+        def point_series(*names: str) -> list[Any]:
+            return [_control_value(point, *names, default=None) for point in points]
+        raw = {
+            "labels": labels,
+            "actual": point_series("actual_cents", "actual_balance_cents"),
+            "committed": point_series("committed_cents", "committed_balance_cents"),
+            "expected": point_series("expected_cents", "expected_balance_cents"),
+            "stress": point_series("stress_cents", "stress_balance_cents"),
+            "floor": _control_value(forecast, "floor_cents", default=fallback["floor"]),
+        }
+    else:
+        raw = {
+            "labels": _control_value(forecast, "labels", "dates", default=fallback["labels"]),
+            "actual": _control_value(forecast, "actual", "actual_cents", default=fallback["actual"]),
+            "committed": _control_value(forecast, "committed", "committed_cents", default=fallback["committed"]),
+            "expected": _control_value(forecast, "expected", "expected_cents", default=fallback["expected"]),
+            "stress": _control_value(forecast, "stress", "stress_cents", default=fallback["stress"]),
+            "floor": _control_value(forecast, "floor_cents", "floor", default=fallback["floor"]),
+        }
+    return {
+        "labels": list(raw["labels"] or []),
+        "actual": [None if value is None else _cents(value) / 100 for value in raw["actual"] or []],
+        "committed": [None if value is None else _cents(value) / 100 for value in raw["committed"] or []],
+        "expected": [None if value is None else _cents(value) / 100 for value in raw["expected"] or []],
+        "stress": [None if value is None else _cents(value) / 100 for value in raw["stress"] or []],
+        "floor": _cents(raw["floor"]) / 100,
+    }
+
+
+def _load_settlement_context(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+    """Attach durable installments and load append-only settlement evidence."""
+    try:
+        from sqlalchemy import text
+        from sales_support_agent.models.database import get_engine
+
+        with get_engine().connect() as connection:
+            allocations = [
+                dict(row._mapping)
+                for row in connection.execute(text("SELECT * FROM settlement_allocations")).fetchall()
+            ]
+            installments = [
+                dict(row._mapping)
+                for row in connection.execute(text("SELECT * FROM payment_installments")).fetchall()
+            ]
+    except Exception:
+        return rows, None
+
+    by_obligation: dict[str, list[dict[str, Any]]] = {}
+    for installment in installments:
+        by_obligation.setdefault(str(installment["obligation_event_id"]), []).append(installment)
+    enriched = []
+    for source_row in rows:
+        row = dict(source_row)
+        row["payment_installments"] = by_obligation.get(str(row.get("id") or ""), [])
+        enriched.append(row)
+    return enriched, allocations
+
+
+async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: str = "") -> str:
+    rows = list_obligations(limit=2000)
+    rows, settlement_annotations = _load_settlement_context(rows)
+    balance_cents, balance_as_of, balance_source = _resolve_current_balance(rows)
+    today = date.today()
+    control, fallback, control_error = _build_renderer_state(
+        rows, balance_cents, balance_as_of, today, settlement_annotations
+    )
+    state = _normalise_renderer_state(control, fallback)
+    cash = state["cash"]
+
     balance_stale = False
     if balance_as_of:
         try:
-            days_old = (today - date.fromisoformat(balance_as_of)).days
-            if days_old > 3:
-                balance_stale = True
-        except Exception:
-            pass
-
-    if balance_source_label and balance_as_of:
-        try:
-            _d = date.fromisoformat(balance_as_of)
-            _age = (today - _d).days
-            _age_str = "today" if _age == 0 else f"{_age}d ago"
-        except Exception:
-            _age_str = balance_as_of
-        balance_note = f"From {balance_source_label} · {_age_str}"
-        if balance_stale:
-            balance_note += " ⚠"
-    elif csv_rows:
-        balance_note = "From latest CSV upload"
+            balance_stale = (today - date.fromisoformat(balance_as_of[:10])).days > 3
+        except ValueError:
+            balance_stale = True
+    source_label = "Bank CSV" if balance_source == "csv" else "QBO bank" if balance_source else "Bank source"
+    if cash["balance_available"]:
+        balance_display = _money(cash["cash_on_hand_cents"], exact=True)
+        balance_note = f"{source_label} &middot; {html.escape(balance_as_of or 'date unavailable')}"
     else:
-        balance_note = "No bank data — upload CSV or connect QBO"
+        balance_display = "Needs update"
+        balance_note = "Upload the latest bank CSV"
 
-    # Last sync info
-    last_sync_html = ""
-    try:
-        from sales_support_agent.models.database import kv_get_json
-        ls = kv_get_json("last_sync")
-        if ls and ls.get("synced_at"):
-            _synced = datetime.fromisoformat(ls["synced_at"])
-            _mins = int((datetime.utcnow() - _synced).total_seconds() / 60)
-            if _mins < 60:
-                _sync_age = f"{_mins}m ago"
-            elif _mins < 1440:
-                _sync_age = f"{_mins // 60}h ago"
-            else:
-                _sync_age = f"{_mins // 1440}d ago"
-            _lbl = ls.get("label", "")
-            last_sync_html = (
-                f'<div style="font-size:0.7rem;color:#9ca3af;margin-top:6px">'
-                f'Last sync: <strong style="color:#6b7280">{_sync_age}</strong>'
-                f'{" · " + _lbl if _lbl else ""}'
-                f'</div>'
-            )
-    except Exception:
-        pass
+    gap = cash["funding_gap_cents"]
+    fourth_label = "Funding gap" if gap else "Safe to commit"
+    fourth_value = "Unavailable" if not cash["balance_available"] else _money(gap or cash["safe_to_commit_cents"])
+    fourth_note = f"Floor: {_money(cash['floor_cents'])}"
+    quality_badge = "Low confidence" if control_error or balance_stale or not cash["balance_available"] else "Current"
+    quality_class = "badge-warning" if quality_badge == "Low confidence" else "badge-ok"
 
-    active_outflow_rows = []
+    queue_items = _flatten_queue(state["queue"])
+    queue_ids = {str(_control_value(item, "id", "event_id", default="")) for item in queue_items}
+    recent_cutoff = today - timedelta(days=30)
     for row in rows:
-        if row.get("event_type") != "outflow":
-            continue
-        if str(row.get("status", "")).lower() in {"posted", "matched", "cancelled", "paid"}:
-            continue
         due = _row_due_date(row)
-        if not due:
-            continue
-        active_outflow_rows.append((due, row))
-
-    overdue_rows = [
-        (due, row)
-        for due, row in active_outflow_rows
-        if due < today and not row.get("matched_to_id")
-    ]
-    soon = today + timedelta(days=14)
-    due_soon_rows = [
-        (due, row)
-        for due, row in active_outflow_rows
-        if today <= due <= soon
-    ]
-    seen_action_ids: set[str] = set()
-    action_rows = []
-    for due, row in overdue_rows + due_soon_rows:
         row_id = str(row.get("id") or "")
-        if row_id in seen_action_ids:
-            continue
-        seen_action_ids.add(row_id)
-        action_rows.append((due, row))
-    action_rows.sort(key=lambda item: (item[0] >= today, item[0], -int(item[1].get("amount_cents") or 0)))
+        if (
+            str(row.get("status") or "").lower() in {"posted", "matched", "paid"}
+            and due is not None
+            and recent_cutoff <= due <= today
+            and row_id not in queue_ids
+        ):
+            queue_items.append(row)
+            queue_ids.add(row_id)
+    queue_rows_html, counts = _queue_table_html(queue_items, today)
+    empty_hidden = " hidden" if counts["needs-action"] else ""
+    queue_table_hidden = "" if queue_rows_html else " hidden"
 
-    due_14_total_cents = sum(int(row.get("amount_cents") or 0) for _, row in action_rows)
-    overdue_total_cents = sum(int(row.get("amount_cents") or 0) for _, row in overdue_rows)
-    safe_to_spend_cents = balance_cents - due_14_total_cents
+    recommendation = state["recommendation"]
+    rec_title = str(_control_value(recommendation, "title", "action", "summary", default=state["brief"]["next"]))
+    rec_why = str(_control_value(recommendation, "why", "explanation", default=state["brief"]["broken"]))
+    rec_before = _cents(_control_value(recommendation, "before_minimum_cash_cents", "before_cents", default=balance_cents))
+    rec_after = _cents(_control_value(recommendation, "after_minimum_cash_cents", "after_cents", default=rec_before))
+    rec_depends = str(_control_value(recommendation, "depends_on", "dependencies", default="Confirmed income only."))
+    rec_confidence = str(_control_value(recommendation, "confidence", default=quality_badge))
+    rec_limitations = str(_control_value(recommendation, "limitations", "confidence_reason", default="Recalculate after source changes."))
+    rec_downside = str(_control_value(recommendation, "downside", default="The remaining obligation stays open."))
+    rec_action = str(_control_value(recommendation, "action_label", default="Create action preview"))
 
-    posted_outflow_rows = []
-    for row in rows:
-        if row.get("event_type") != "outflow":
-            continue
-        if str(row.get("status", "")).lower() not in {"posted", "matched"}:
-            continue
-        due = _row_due_date(row)
-        if not due:
-            continue
-        posted_outflow_rows.append((due, row))
-    posted_outflow_rows.sort(key=lambda item: (item[0], str(item[1].get("created_at", ""))), reverse=True)
-    recent_posted_rows = posted_outflow_rows[:8]
-
-    qbo_connected = False
-    try:
-        from sales_support_agent.api.qbo_auth_router import _load_tokens
-
-        token_row = _load_tokens()
-        qbo_connected = bool(
-            token_row
-            and token_row.get("access_token")
-            and token_row.get("realm_id")
-        )
-    except Exception:
-        qbo_connected = False
-
-    cards_html = f"""
-    <div class="finance-stat-grid">
-      <div class="metric-card finance-stat-card" style="{'border-left:3px solid #f59e0b' if balance_stale else ''}">
-        <div class="metric-label">Cash In Bank</div>
-        <div class="metric-value {metrics.balance_class}">{_dollar(metrics.balance_cents)}</div>
-        <div class="metric-note" style="{'color:#f59e0b' if balance_stale else ''}">{balance_note}</div>
-        {last_sync_html}
-      </div>
-      <div class="metric-card finance-stat-card">
-        <div class="metric-label">Safe To Spend</div>
-        <div class="metric-value {'negative' if safe_to_spend_cents < 0 else ''}">{_dollar(safe_to_spend_cents)}</div>
-        <div class="metric-note">Cash minus overdue + next 14 days of bills</div>
-      </div>
-      <div class="metric-card finance-stat-card">
-        <div class="metric-label">Bills Due In 14 Days</div>
-        <div class="metric-value amount-out">{_dollar(due_14_total_cents)}</div>
-        <div class="metric-note">{len(action_rows)} items to review</div>
-      </div>
-      <div class="metric-card finance-stat-card">
-        <div class="metric-label">Overdue Balance</div>
-        <div class="metric-value {'negative' if overdue_rows else ''}">{_dollar(overdue_total_cents)}</div>
-        <div class="metric-note">{len(overdue_rows)} overdue items</div>
-      </div>
-    </div>"""
-
-    safeguard_html = ""
-    if metrics.at_risk_dates:
-        first_at_risk = metrics.at_risk_dates[0]
-        days_to_risk = (first_at_risk - today).days
-        risk_weeks_str = ", ".join(d.strftime("%b %d") for d in metrics.at_risk_dates[:5])
-        if len(metrics.at_risk_dates) > 5:
-            risk_weeks_str += f" (+{len(metrics.at_risk_dates) - 5} more)"
-        banner_color = "#fee2e2" if days_to_risk < 14 else "#fef3c7"
-        icon_color = "#dc2626" if days_to_risk < 14 else "#d97706"
-        safeguard_html = f"""
-    <div style="background:{banner_color};border-left:4px solid {icon_color};border-radius:8px;padding:12px 16px;margin-bottom:1rem">
-      <div style="display:flex;align-items:flex-start;gap:10px">
-        <span style="font-size:1.4rem">⚠️</span>
-        <div>
-          <strong style="color:{icon_color}">Budget Safeguard — Balance Going Below $10,000</strong>
-          <p style="margin:4px 0 0;font-size:0.875rem;color:#374151">
-            Projected balance drops below the $10,000 safety floor starting <strong>week of {first_at_risk.strftime("%B %d")}</strong>
-            ({days_to_risk} days away).
-            At-risk weeks: {html.escape(risk_weeks_str)}.
-            Review your <a href="/admin/finances/forecast" style="color:{icon_color}">forecast</a> to identify which expenses to defer.
-          </p>
-        </div>
-      </div>
-    </div>"""
-    elif metrics.balance_cents > 0 and metrics.runway_days >= 365:
-        safeguard_html = """
-    <div style="background:#dcfce7;border-left:4px solid #16a34a;border-radius:8px;padding:10px 16px;margin-bottom:1rem">
-      <strong style="color:#16a34a">✓ Budget Safeguard — No Red Weeks in 12-Month Horizon</strong>
-    </div>"""
-
-    ai_block = f'<div class="ai-summary">{html.escape(metrics.ai_text)}</div>' if metrics.ai_text else ""
-
-    happening_text = (
-        f"{len(action_rows)} bills need attention in the next 14 days totaling {_dollar(due_14_total_cents)}."
-        if action_rows
-        else "No bills are scheduled in the next 14 days."
-    )
-    if balance_cents:
-        happening_text += f" Current bank snapshot is {_dollar(balance_cents)}."
-    else:
-        happening_text += " Current bank snapshot is missing."
-
-    broken_parts: list[str] = []
-    if not balance_source_label:
-        broken_parts.append("There is no trusted live bank balance yet.")
-    elif balance_stale:
-        broken_parts.append(f"The bank snapshot is stale from {balance_as_of or 'an older upload'}.")
-    if overdue_rows:
-        broken_parts.append(f"{len(overdue_rows)} overdue payables are still open.")
-    if not action_rows:
-        broken_parts.append("The 14-day payables queue is empty, which usually means the data is incomplete.")
-    broken_text = " ".join(broken_parts) if broken_parts else "Nothing major is broken right now. This page is ready for weekly review."
-
-    if overdue_rows and action_rows:
-        top_due, top_row = action_rows[0]
-        next_text = (
-            f"Review the overdue queue first, starting with {html.escape(_display_name(top_row))} "
-            f"for {_dollar(int(top_row.get('amount_cents') or 0))}."
-        )
-    elif action_rows:
-        top_due, top_row = action_rows[0]
-        next_text = (
-            f"Confirm the next payment window, starting with {html.escape(_display_name(top_row))} "
-            f"on {top_due.strftime('%b %d')}."
-        )
-    elif not balance_source_label or balance_stale:
-        next_text = "Upload the latest bank CSV so safe-to-spend reflects real cash."
-    else:
-        next_text = "Refresh finance data and keep this page as the weekly payables control room."
-
-    summary_html = f"""
-    <div class="finance-summary-grid">
-      <section class="finance-summary-card">
-        <div class="finance-summary-label">Happening</div>
-        <p>{happening_text}</p>
-      </section>
-      <section class="finance-summary-card finance-summary-card--warn">
-        <div class="finance-summary-label">Broken</div>
-        <p>{broken_text}</p>
-      </section>
-      <section class="finance-summary-card finance-summary-card--next">
-        <div class="finance-summary-label">Next</div>
-        <p>{next_text}</p>
-      </section>
-    </div>"""
-
-    queue_rows_html = ""
-    for due, row in action_rows[:12]:
-        amount_cents = int(row.get("amount_cents") or 0)
-        due_label = "Overdue" if due < today else due.strftime("%b %d")
-        queue_rows_html += f"""
-          <tr>
-            <td>
-              <div class="queue-vendor">{html.escape(_display_name(row))}</div>
-              <div class="queue-meta">{html.escape(str(row.get('vendor_or_customer') or row.get('category') or ''))}</div>
-            </td>
-            <td>{html.escape(due_label)}</td>
-            <td class="amount-out">{_dollar(amount_cents)}</td>
-            <td>{html.escape(_queue_reason(row, due=due, today=today))}</td>
-            <td><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/{html.escape(str(row.get('id') or ''))}/edit">Review</a></td>
-          </tr>"""
-
-    queue_html = f"""
-    <div class="card">
-      <div class="section-head">
-        <div>
-          <h2>Payables Action Queue</h2>
-          <p class="page-sub">Overdue plus the next 14 days. This is the page to work from.</p>
-        </div>
-        <a href="#finance-utilities" class="btn btn-secondary btn-sm">Update data</a>
-      </div>
-      {
-        f'''
-      <table class="finance-queue-table">
-        <thead>
-          <tr><th>Vendor</th><th>Window</th><th>Amount</th><th>Why</th><th></th></tr>
-        </thead>
-        <tbody>{queue_rows_html}</tbody>
-      </table>
-      '''
-        if queue_rows_html
-        else '<div class="empty-state">No payables are queued for the next 14 days yet.</div>'
-      }
-    </div>"""
-
-    why_number_html = f"""
-    <div class="finance-side-grid">
-      <section class="card finance-explain-card">
-        <h2>Why This Number</h2>
-        <div class="finance-explain-list">
-          <div><strong>Cash in bank:</strong> {_dollar(balance_cents)} from {html.escape(balance_source_label or 'no connected bank source')}.</div>
-          <div><strong>Reserved for bills:</strong> {_dollar(due_14_total_cents)} across overdue plus the next 14 days.</div>
-          <div><strong>Safe to spend:</strong> {_dollar(safe_to_spend_cents)} after holding that reserve.</div>
-          <div><strong>Freshness:</strong> {html.escape(balance_note)}.</div>
-        </div>
-      </section>
-      <section class="card finance-explain-card" id="finance-utilities">
-        <h2>Utilities</h2>
-        <div class="finance-utility-actions">
-          <a href="#finance-queue" class="btn btn-primary">Review overdue queue</a>
-          <form method="post" action="/admin/finances/sync-qbo">
-            <button type="submit" class="btn btn-secondary">Refresh finance data</button>
-          </form>
-          <a href="/admin/finances/ap/new" class="btn btn-secondary">Add payable</a>
-          <a href="/admin/finances/qbo/connect" class="btn btn-secondary">{'Reconnect QuickBooks' if qbo_connected else 'Connect QuickBooks'}</a>
-        </div>
-        <form class="finance-upload-form" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
-          <div class="finance-upload-head">
-            <strong>Manual bank CSV upload</strong>
-            <span>{'Fallback when bank/QBO is not current.' if not qbo_connected else 'Use this when the posted bank picture is ahead of system sync.'}</span>
-          </div>
-          <div class="finance-upload-grid">
-            <input type="file" name="csv_file" accept=".csv">
-            <select name="merge_mode">
-              <option value="append">Append / merge by transaction ID</option>
-              <option value="replace_range">Replace date range</option>
-            </select>
-            <button type="submit" class="btn btn-secondary">Upload CSV</button>
-          </div>
-        </form>
-        {inline_result_html}
-      </section>
-    </div>"""
-
-    recent_rows_html = "".join(
-        f"""
-          <tr>
-            <td>{html.escape(due.strftime('%b %d, %Y'))}</td>
-            <td>{html.escape(_display_name(row))}</td>
-            <td>{html.escape(_source_label(row))}</td>
-            <td class="amount-out">{_dollar(int(row.get('amount_cents') or 0))}</td>
-          </tr>"""
-        for due, row in recent_posted_rows
-    )
-
-    recent_posted_html = f"""
-    <details class="finance-toggle-card">
-      <summary>Recent posted outflows</summary>
-      {
-        f'''
-      <table>
-        <thead>
-          <tr><th>Date</th><th>Vendor</th><th>Source</th><th>Amount</th></tr>
-        </thead>
-        <tbody>{recent_rows_html}</tbody>
-      </table>
-      '''
-        if recent_rows_html
-        else '<div class="empty-state">No posted outflows are loaded yet.</div>'
-      }
-    </details>"""
-
-    chart_html = """
-<!-- Chart.js + date adapter for daily x-axis -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
-<div class="card" style="margin-bottom:1rem">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
-    <div>
-      <h2 style="margin:0 0 2px">Cash Flow — Daily View</h2>
-      <p style="color:#6b7280;font-size:0.8rem;margin:0">
-        Last 14 days (actuals) · Next 42 days (forecast) &nbsp;·&nbsp;
-        Balance: <strong id="chart-balance" style="color:#0D9488">loading…</strong>
-      </p>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <span style="font-size:0.75rem;color:#6b7280;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <span style="display:inline-flex;align-items:center;gap:3px">
-          <span style="display:inline-block;width:10px;height:10px;background:rgba(220,38,38,0.18);border:1px solid rgba(220,38,38,0.45);border-radius:2px"></span>Planned out
-        </span>
-        <span style="display:inline-flex;align-items:center;gap:3px">
-          <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,0.18);border:1px solid rgba(22,163,74,0.45);border-radius:2px"></span>Planned in
-        </span>
-        <span style="display:inline-flex;align-items:center;gap:3px">
-          <span style="display:inline-block;width:10px;height:10px;background:rgba(220,38,38,0.82);border-radius:2px"></span>Actual out
-        </span>
-        <span style="display:inline-flex;align-items:center;gap:3px">
-          <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,0.82);border-radius:2px"></span>Actual in
-        </span>
-        <span style="display:inline-flex;align-items:center;gap:3px">
-          <span style="display:inline-block;width:10px;height:3px;background:#0D9488;border-radius:2px"></span>Balance
-        </span>
-        <span style="display:inline-flex;align-items:center;gap:3px">
-          <span style="display:inline-block;width:10px;height:3px;background:#2563EB;border-radius:2px;opacity:0.6;border-top:1px dashed #2563EB"></span>Projected
-        </span>
-      </span>
-    </div>
-  </div>
-  <div style="height:340px;position:relative">
-    <canvas id="cashflowChart"></canvas>
-    <!-- Hover detail card — must be inside position:relative container so absolute coords align with caretX/Y -->
-    <div id="chart-tooltip-card" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.13);padding:12px 14px;min-width:220px;max-width:300px;font-size:0.82rem;pointer-events:none"></div>
-  </div>
-</div>
-
-<script>
-let _chartData = null;
-let cashflowChart = null;
-
-function fmt$(v) {
-  return '$' + Math.abs(v || 0).toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0});
-}
-function fmtFull$(v) {
-  return '$' + (v || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-}
-
-function loadDailyChart() {
-  fetch('/admin/finances/chart-data-daily')
-    .then(r => r.json())
-    .then(data => {
-      _chartData = data;
-      document.getElementById('chart-balance').textContent = fmtFull$(data.starting_balance);
-
-      const ctx = document.getElementById('cashflowChart').getContext('2d');
-      if (cashflowChart) cashflowChart.destroy();
-
-      // Annotate today with a vertical line via plugin
-      const todayLine = {
-        id: 'todayLine',
-        afterDraw(chart) {
-          const idx = data.cutoff_index;
-          const meta = chart.getDatasetMeta(0);
-          if (!meta.data[idx]) return;
-          const x = meta.data[idx].x;
-          const {top, bottom} = chart.chartArea;
-          const ctx2 = chart.ctx;
-          ctx2.save();
-          ctx2.beginPath();
-          ctx2.strokeStyle = 'rgba(15,23,42,0.25)';
-          ctx2.lineWidth = 1.5;
-          ctx2.setLineDash([4, 3]);
-          ctx2.moveTo(x, top);
-          ctx2.lineTo(x, bottom);
-          ctx2.stroke();
-          ctx2.fillStyle = 'rgba(15,23,42,0.7)';
-          ctx2.font = '10px system-ui';
-          ctx2.fillText('Today', x + 3, top + 12);
-          ctx2.restore();
-        }
-      };
-
-      cashflowChart = new Chart(ctx, {
-        type: 'bar',
-        plugins: [todayLine],
-        data: {
-          labels: data.labels,
-          datasets: [
-            // ---- PLANNED (rendered first = behind actuals) ---------------
-            {
-              label: 'Planned Expenses',
-              data: data.planned_out,     // negative values, ALL dates
-              backgroundColor: 'rgba(220,38,38,0.18)',
-              borderColor: 'rgba(220,38,38,0.45)',
-              borderWidth: 1,
-              borderRadius: 3,
-              stack: 'planned',
-              order: 3,
-            },
-            {
-              label: 'Planned Income',
-              data: data.planned_in,      // positive values, ALL dates
-              backgroundColor: 'rgba(22,163,74,0.18)',
-              borderColor: 'rgba(22,163,74,0.45)',
-              borderWidth: 1,
-              borderRadius: 3,
-              stack: 'planned',
-              order: 3,
-            },
-            // ---- ACTUALS (rendered second = in front of planned) ---------
-            {
-              label: 'Actual Expenses',
-              data: data.actual_out,      // negative values, past only
-              backgroundColor: 'rgba(220,38,38,0.82)',
-              borderRadius: 3,
-              stack: 'actual',
-              order: 2,
-            },
-            {
-              label: 'Actual Income',
-              data: data.actual_in,       // positive values, past only
-              backgroundColor: 'rgba(22,163,74,0.82)',
-              borderRadius: 3,
-              stack: 'actual',
-              order: 2,
-            },
-            // ---- BALANCE LINES ------------------------------------------
-            {
-              type: 'line',
-              label: 'Cash Balance',
-              data: data.balance_actual,
-              borderColor: '#0D9488',
-              backgroundColor: 'rgba(13,148,136,0.06)',
-              borderWidth: 2.5,
-              tension: 0.35,
-              fill: true,
-              spanGaps: false,
-              pointRadius: 2,
-              pointHoverRadius: 5,
-              yAxisID: 'y1',
-              order: 1,
-            },
-            {
-              type: 'line',
-              label: 'Projected Balance',
-              data: data.balance_projected,
-              borderColor: '#2563EB',
-              backgroundColor: 'transparent',
-              borderWidth: 2,
-              borderDash: [6, 3],
-              tension: 0.35,
-              fill: false,
-              spanGaps: false,
-              pointRadius: 0,
-              pointHoverRadius: 4,
-              yAxisID: 'y1',
-              order: 1,
-            },
-            {
-              type: 'line',
-              label: '$10k Safety Floor',
-              data: data.labels.map(() => data.threshold),
-              borderColor: 'rgba(156,163,175,0.6)',
-              backgroundColor: 'transparent',
-              borderWidth: 1,
-              borderDash: [3, 4],
-              pointRadius: 0,
-              yAxisID: 'y1',
-              order: 1,
-            },
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode: 'index', intersect: false },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              enabled: false,   // we use custom hover card below
-              external(context) {
-                const card = document.getElementById('chart-tooltip-card');
-                if (context.tooltip.opacity === 0) { card.style.display='none'; return; }
-                const idx = context.tooltip.dataPoints[0]?.dataIndex;
-                if (idx == null || !data.tooltips[idx]) { card.style.display='none'; return; }
-
-                const tip = data.tooltips[idx];
-                const isPast = idx <= data.cutoff_index;
-                const label = data.labels[idx];
-
-                // Separate actual (posted/matched) from planned
-                const actualOut   = tip.items.filter(i => i.dir==='out' && i.is_actual).sort((a,b) => b.amount-a.amount);
-                const actualIn    = tip.items.filter(i => i.dir==='in'  && i.is_actual).sort((a,b) => b.amount-a.amount);
-                const plannedOut  = tip.items.filter(i => i.dir==='out' && !i.is_actual).sort((a,b) => b.amount-a.amount);
-                const plannedIn   = tip.items.filter(i => i.dir==='in'  && !i.is_actual).sort((a,b) => b.amount-a.amount);
-
-                const totalActualOut  = actualOut.reduce((s,i)  => s+i.amount, 0);
-                const totalActualIn   = actualIn.reduce((s,i)   => s+i.amount, 0);
-                const totalPlannedOut = plannedOut.reduce((s,i) => s+i.amount, 0);
-                const totalPlannedIn  = plannedIn.reduce((s,i)  => s+i.amount, 0);
-
-                const itemRows = (items, color) => items.slice(0,5).map(i =>
-                  `<tr>
-                    <td style="color:#6b7280;padding:1px 6px 1px 0;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.name||i.category}</td>
-                    <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap">${fmt$(i.amount)}</td>
-                  </tr>`
-                ).join('') + (items.length>5 ? `<tr><td colspan="2" style="color:#9ca3af;font-size:0.72rem">+${items.length-5} more</td></tr>` : '');
-
-                const section = (label, outItems, inItems, outTotal, inTotal, accent) => {
-                  if (!outItems.length && !inItems.length) return '';
-                  return `
-                    <div style="border-top:1px solid #f3f4f6;margin-top:6px;padding-top:5px">
-                      <div style="font-size:0.68rem;font-weight:700;color:${accent};letter-spacing:.04em;text-transform:uppercase;margin-bottom:3px">${label}</div>
-                      ${outItems.length ? `
-                        <div style="color:#dc2626;font-size:0.72rem;font-weight:600;margin-bottom:1px">▼ Out — ${fmt$(outTotal)}</div>
-                        <table style="width:100%;font-size:0.75rem;margin-bottom:3px">${itemRows(outItems,'#dc2626')}</table>` : ''}
-                      ${inItems.length ? `
-                        <div style="color:#16a34a;font-size:0.72rem;font-weight:600;margin-bottom:1px">▲ In — ${fmt$(inTotal)}</div>
-                        <table style="width:100%;font-size:0.75rem">${itemRows(inItems,'#16a34a')}</table>` : ''}
-                    </div>`;
-                };
-
-                const hasActual  = actualOut.length  || actualIn.length;
-                const hasPlanned = plannedOut.length || plannedIn.length;
-
-                card.innerHTML = `
-                  <div style="font-weight:700;font-size:0.875rem;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center">
-                    <span>${label}</span>
-                    <span style="font-size:0.7rem;font-weight:500;color:#9ca3af">${isPast ? 'Historical' : 'Forecast'}</span>
-                  </div>
-                  ${hasActual  ? section('✓ Actual',  actualOut,  actualIn,  totalActualOut,  totalActualIn,  '#0D9488') : ''}
-                  ${hasPlanned ? section('⟳ Planned', plannedOut, plannedIn, totalPlannedOut, totalPlannedIn, '#6366f1') : ''}
-                  ${!hasActual && !hasPlanned ? '<div style="color:#9ca3af;font-size:0.8rem;padding-top:4px">No transactions</div>' : ''}
-                `;
-
-                // Position card — caretX/Y are canvas-relative pixels; card is
-                // inside the same position:relative container so coords align directly.
-                const chartW = context.chart.width;
-                const x = context.tooltip.caretX;
-                const cardW = 240;
-                const left = (x + cardW + 12) > chartW ? x - cardW - 8 : x + 12;
-                const top  = Math.max(0, context.tooltip.caretY - 20);
-                card.style.left = left + 'px';
-                card.style.top  = top + 'px';
-                card.style.display = 'block';
-              }
-            }
-          },
-          scales: {
-            x: {
-              stacked: true,
-              ticks: {
-                maxTicksLimit: 14,
-                maxRotation: 45,
-                font: { size: 10 },
-                color: '#9ca3af',
-              },
-              grid: { display: false },
-            },
-            y: {
-              // Bar axis — daily flows
-              stacked: true,
-              position: 'left',
-              ticks: {
-                callback: v => fmt$(v),
-                font: { size: 10 },
-                color: '#9ca3af',
-                maxTicksLimit: 6,
-              },
-              grid: { color: 'rgba(0,0,0,0.04)' },
-            },
-            y1: {
-              // Line axis — running balance
-              position: 'right',
-              ticks: {
-                callback: v => '$' + (v/1000).toFixed(0) + 'k',
-                font: { size: 10 },
-                color: '#0D9488',
-                maxTicksLimit: 6,
-              },
-              grid: { drawOnChartArea: false },
-            },
-          }
-        }
-      });
-    });
-}
-document.addEventListener('DOMContentLoaded', loadDailyChart);
-</script>"""
+    chart_data = _chart_payload(state["forecast"], fallback["forecast"])
+    chart_json = json.dumps(chart_data, separators=(",", ":")).replace("<", "\\u003c")
+    updated_label = balance_as_of or "balance not loaded"
+    inline_result = inline_result_html or ""
 
     body = f"""
-    <div>
-      <p class="eyebrow" style="margin:0 0 10px;text-transform:uppercase;letter-spacing:.18em;font-size:12px;font-weight:800;color:var(--accent);font-family:'Montserrat',sans-serif;">Finance</p>
-      <h1>Finance control.</h1>
-      <p class="page-sub" style="margin-top:10px">One page for what must be paid, what cash is safe, and what needs attention next.</p>
-      {ai_block}
-    </div>
-    {safeguard_html}
-    {summary_html}
-    {cards_html}
-    <div id="finance-queue"></div>
-    {queue_html}
-    {why_number_html}
-    {chart_html}
-    {recent_posted_html}"""
+    <main class="finance-control" data-smart-mode="on">
+      <header class="finance-control__header">
+        <div>
+          <p class="finance-eyebrow">Finance control</p>
+          <h1>Cash decisions, in one scan.</h1>
+          <p class="page-sub">One page for cash, collections, payments, and the next safest action.</p>
+        </div>
+        <div class="finance-control__tools">
+          <span class="finance-updated">Updated {html.escape(updated_label)}</span>
+          <label class="finance-smart-toggle">
+            <span>Smart mode</span>
+            <input id="finance-smart-mode" type="checkbox" checked>
+            <span class="finance-smart-toggle__track" aria-hidden="true"></span>
+          </label>
+          <button class="btn btn-primary" type="button" data-open-modal="finance-update-modal">Update money</button>
+        </div>
+      </header>
 
-    return _page_shell("Finance Overview", "overview", body, flash=flash)
+      <section class="finance-cash-strip" aria-label="Cash position">
+        <article class="finance-cash-metric{' is-stale' if balance_stale or not cash['balance_available'] else ''}">
+          <div class="finance-metric-head"><span>Cash on hand</span><span class="badge {quality_class}">{quality_badge}</span></div>
+          <strong>{balance_display}</strong><small>{balance_note}</small>
+        </article>
+        <article class="finance-cash-metric">
+          <span>Incoming 14 days</span><strong class="amount-in">{_money(cash['incoming_confirmed_cents'])}</strong>
+          <small>Confirmed &middot; +{_money(cash['incoming_expected_cents'])} expected</small>
+        </article>
+        <article class="finance-cash-metric">
+          <span>Required out 14 days</span><strong class="amount-out">{_money(cash['required_out_cents'])}</strong>
+          <small>Required &middot; +{_money(cash['exposure_out_cents'])} exposure</small>
+        </article>
+        <article class="finance-cash-metric {'is-gap' if gap else 'is-safe'}">
+          <span>{fourth_label}</span><strong>{fourth_value}</strong><small>{fourth_note}</small>
+        </article>
+      </section>
+
+      <section class="finance-smart-brief smart-only" aria-labelledby="smart-brief-title">
+        <h2 id="smart-brief-title" class="sr-only">Smart brief</h2>
+        <article><span>Happening</span><p>{html.escape(state['brief']['happening'])}</p></article>
+        <article class="is-broken"><span>Broken</span><p>{html.escape(state['brief']['broken'])}</p></article>
+        <article class="is-next"><span>Next</span><p>{html.escape(state['brief']['next'])}</p><button type="button" class="finance-text-action" data-open-drawer>Review recommendation</button></article>
+      </section>
+
+      <section class="card finance-trajectory" aria-labelledby="trajectory-title">
+        <div class="section-head finance-trajectory__head">
+          <div><p class="finance-eyebrow">28 day control window</p><h2 id="trajectory-title">Cash trajectory</h2></div>
+          <div class="finance-chart-legend" aria-label="Chart legend">
+            <span class="is-actual">Actual</span><span class="is-committed">Committed</span>
+            <span class="is-expected">Expected</span><span class="is-stress">Stress</span>
+          </div>
+          <button class="finance-icon-button" type="button" aria-label="Cash trajectory options">&hellip;</button>
+        </div>
+        <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Actual, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
+      </section>
+
+      <section class="card finance-money-queue" id="finance-queue" aria-labelledby="money-queue-title">
+        <div class="section-head">
+          <div><p class="finance-eyebrow">Operator queue</p><h2 id="money-queue-title">Money queue</h2></div>
+          <label class="finance-window-select">Show:<select aria-label="Queue window"><option>14 days</option><option>28 days</option><option>All</option></select></label>
+        </div>
+        <div class="finance-queue-tabs" role="tablist" aria-label="Money queue filters">
+          <button type="button" role="tab" aria-selected="true" data-queue-filter="needs-action">Needs action <span>{counts['needs-action']}</span></button>
+          <button type="button" role="tab" aria-selected="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
+          <button type="button" role="tab" aria-selected="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
+          <button type="button" role="tab" aria-selected="false" data-queue-filter="recent">Recent <span>{counts['recent']}</span></button>
+        </div>
+        <div class="finance-queue-scroll"{queue_table_hidden}>
+          <table class="finance-queue-table">
+            <thead><tr><th>Action</th><th>Party</th><th>Timing</th><th>Amount</th><th>Cash impact</th><th><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody>{queue_rows_html}</tbody>
+          </table>
+        </div>
+        <div id="finance-queue-empty" class="finance-empty-state"{empty_hidden}>
+          <strong>No money decisions require attention in the selected window.</strong>
+          <p>Update money or add an incoming or payable exception.</p>
+          <div><button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Update money</button><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a></div>
+        </div>
+      </section>
+
+      <aside id="finance-recommendation-drawer" class="finance-drawer" aria-hidden="true" aria-labelledby="finance-drawer-title">
+        <div class="finance-drawer__scrim" data-close-drawer></div>
+        <div class="finance-drawer__panel" role="dialog" aria-modal="true">
+          <div class="finance-drawer__head"><p class="finance-eyebrow">Smart recommendation</p><button type="button" class="finance-icon-button" data-close-drawer aria-label="Close recommendation">&times;</button></div>
+          <h2 id="finance-drawer-title" data-default-title="{html.escape(rec_title, quote=True)}">{html.escape(rec_title)}</h2>
+          <p id="finance-drawer-why" class="finance-drawer__why" data-default-why="{html.escape(rec_why, quote=True)}"><strong>Why:</strong> {html.escape(rec_why)}</p>
+          <dl class="finance-recommendation-facts">
+            <div><dt>Before</dt><dd>Minimum stress cash {_money(rec_before)}</dd></div>
+            <div><dt>After</dt><dd>Minimum stress cash {_money(rec_after)}</dd></div>
+            <div><dt>Depends on</dt><dd>{html.escape(rec_depends)}</dd></div>
+            <div><dt>Confidence</dt><dd>{html.escape(rec_confidence)} &middot; {html.escape(rec_limitations)}</dd></div>
+            <div><dt>Downside</dt><dd>{html.escape(rec_downside)}</dd></div>
+          </dl>
+          <form id="finance-partial-form" class="finance-confirm-form" method="post" hidden>
+            <label>Payment amount<input name="amount" inputmode="decimal" required placeholder="0.00"></label>
+            <label>Payment date<input name="allocation_date" type="date"></label>
+            <input name="idempotency_key" type="hidden">
+            <div><button type="button" class="btn btn-secondary" data-close-drawer>Cancel</button><button type="submit" class="btn btn-primary">Confirm partial payment</button></div>
+          </form>
+          <form id="finance-installment-form" class="finance-confirm-form" method="post" hidden>
+            <label>Installment amount<input name="amount" inputmode="decimal" required placeholder="0.00"></label>
+            <label>Due date<input name="due_date" type="date" required></label>
+            <input name="idempotency_key" type="hidden">
+            <div><button type="button" class="btn btn-secondary" data-close-drawer>Cancel</button><button type="submit" class="btn btn-primary">Confirm installment</button></div>
+          </form>
+          <div id="finance-preview-actions" class="finance-drawer__actions"><button type="button" class="btn btn-secondary" data-close-drawer>Close preview</button></div>
+          <p id="finance-preview-note" class="finance-preview-note">Review details before confirming. No bank payment is initiated.</p>
+        </div>
+      </aside>
+
+      <dialog id="finance-update-modal" class="finance-modal">
+        <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
+        <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
+          <strong>Upload bank CSV or QBO Open Invoices CSV</strong><span>New rows are added; existing transaction IDs are skipped automatically.</span>
+          <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
+          <input type="hidden" name="merge_mode" value="append"><button class="btn btn-primary btn-sm" type="submit">Upload and reconcile</button>
+        </form>
+        <div class="finance-source-row"><div><strong>ClickUp</strong><span>Connected source for planned AP/AR</span></div><form method="post" action="/admin/finances/sync-clickup"><button class="btn btn-secondary btn-sm" type="submit">Refresh</button></form></div>
+        <div class="finance-source-row"><div><strong>Manual exception</strong><span>Add an obligation without changing source records.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a></div></div>
+        {inline_result}
+      </dialog>
+
+      <template id="finance-loading-state"><section class="finance-state-copy"><div class="finance-skeleton-grid"><i></i><i></i><i></i><i></i></div><p>Calculating forecast</p><p>Loading money queue</p></section></template>
+      <template id="finance-error-state"><section class="finance-state-copy is-error"><strong>Finance data could not be loaded.</strong><p>Current page data was preserved. Retry the source update.</p></section></template>
+      <template id="finance-import-error-state"><section class="finance-state-copy is-error"><strong>Import failed. No records were committed.</strong><p>The failed file, reason, and row-error report will appear here.</p><a href="#">Download row-error report</a></section></template>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+    (() => {{
+      const root = document.querySelector('.finance-control');
+      const chartData = {chart_json};
+      const queueEmpty = document.getElementById('finance-queue-empty');
+      const queueRows = [...document.querySelectorAll('[data-queue-tabs]')];
+
+      function filterQueue(filter) {{
+        let visible = 0;
+        queueRows.forEach(row => {{
+          const show = row.dataset.queueTabs.split(',').includes(filter);
+          row.hidden = !show;
+          if (show) visible += 1;
+        }});
+        queueEmpty.hidden = visible !== 0;
+        document.querySelectorAll('[data-queue-filter]').forEach(button => {{
+          button.setAttribute('aria-selected', String(button.dataset.queueFilter === filter));
+        }});
+      }}
+      document.querySelectorAll('[data-queue-filter]').forEach(button => button.addEventListener('click', () => filterQueue(button.dataset.queueFilter)));
+      filterQueue('needs-action');
+
+      document.getElementById('finance-smart-mode').addEventListener('change', event => {{
+        root.dataset.smartMode = event.target.checked ? 'on' : 'off';
+      }});
+      const drawer = document.getElementById('finance-recommendation-drawer');
+      function setDrawer(open) {{ drawer.setAttribute('aria-hidden', String(!open)); document.body.classList.toggle('finance-overlay-open', open); }}
+      document.querySelectorAll('[data-open-drawer]').forEach(button => button.addEventListener('click', () => setDrawer(true)));
+      document.querySelectorAll('[data-close-drawer]').forEach(button => button.addEventListener('click', () => setDrawer(false)));
+
+      document.querySelectorAll('[data-open-modal]').forEach(button => button.addEventListener('click', () => {{
+        const modal = document.getElementById(button.dataset.openModal);
+        if (modal.showModal) modal.showModal(); else modal.setAttribute('open', '');
+      }}));
+      document.querySelectorAll('[data-close-modal]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
+      document.querySelectorAll('[data-preview-action]').forEach(button => button.addEventListener('click', () => {{
+        const action = button.dataset.previewAction;
+        const eventId = button.dataset.eventId;
+        const party = button.dataset.party || 'this item';
+        const title = document.getElementById('finance-drawer-title');
+        const why = document.getElementById('finance-drawer-why');
+        const partialForm = document.getElementById('finance-partial-form');
+        const installmentForm = document.getElementById('finance-installment-form');
+        const previewActions = document.getElementById('finance-preview-actions');
+        partialForm.hidden = true;
+        installmentForm.hidden = true;
+        previewActions.hidden = false;
+        if (eventId) {{
+          title.textContent = action + ' - ' + party;
+          why.textContent = 'Preview: Review the cash impact and source evidence before confirming.';
+        }} else {{
+          title.textContent = title.dataset.defaultTitle;
+          why.textContent = 'Why: ' + why.dataset.defaultWhy;
+        }}
+        if (eventId && action === 'Record partial payment') {{
+          partialForm.action = '/admin/finances/actions/' + encodeURIComponent(eventId) + '/partial';
+          partialForm.querySelector('[name="amount"]').value = '';
+          partialForm.querySelector('[name="amount"]').placeholder = 'Up to ' + button.dataset.amount;
+          partialForm.querySelector('[name="idempotency_key"]').value = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : String(Date.now());
+          partialForm.hidden = false;
+          previewActions.hidden = true;
+        }}
+        if (eventId && action === 'Split into installments') {{
+          installmentForm.action = '/admin/finances/actions/' + encodeURIComponent(eventId) + '/installment';
+          installmentForm.querySelector('[name="amount"]').value = '';
+          installmentForm.querySelector('[name="amount"]').placeholder = 'Up to ' + button.dataset.amount;
+          installmentForm.querySelector('[name="idempotency_key"]').value = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : String(Date.now());
+          installmentForm.hidden = false;
+          previewActions.hidden = true;
+        }}
+        document.querySelectorAll('.finance-row-menu[open]').forEach(menu => menu.removeAttribute('open'));
+        setDrawer(true);
+      }}));
+
+      const status = document.getElementById('finance-chart-status');
+      if (!window.Chart || !chartData.labels.length) {{ status.textContent = 'Forecast unavailable. Refresh finance data.'; return; }}
+      new Chart(document.getElementById('finance-control-chart'), {{
+        type: 'line',
+        data: {{ labels: chartData.labels, datasets: [
+          {{label:'Actual',data:chartData.actual,borderColor:'#2b3644',borderWidth:3,pointRadius:0,spanGaps:true}},
+          {{label:'Committed',data:chartData.committed,borderColor:'#4f84c4',borderWidth:2.5,pointRadius:0,tension:.24}},
+          {{label:'Expected',data:chartData.expected,borderColor:'#0f766e',borderWidth:2,borderDash:[7,4],pointRadius:0,tension:.24}},
+          {{label:'Stress',data:chartData.stress,borderColor:'#b91c1c',borderWidth:2,borderDash:[3,4],pointRadius:0,tension:.18}},
+          {{label:'Floor',data:chartData.labels.map(() => chartData.floor),borderColor:'rgba(161,98,7,.55)',borderWidth:1,borderDash:[2,4],pointRadius:0}}
+        ]}},
+        options: {{responsive:true,maintainAspectRatio:false,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{display:false}}}},scales:{{x:{{grid:{{display:false}},ticks:{{maxTicksLimit:8,color:'#7b8492',font:{{size:10}}}}}},y:{{grid:{{color:'rgba(43,54,68,.06)'}},ticks:{{maxTicksLimit:5,color:'#7b8492',callback:value => '$'+Math.round(value/1000)+'k'}}}}}}}}
+      }});
+      status.hidden = true;
+    }})();
+    </script>"""
+    return _page_shell("Finance Control", "overview", body, flash=flash)

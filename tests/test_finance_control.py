@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+from sales_support_agent.services.cashflow.control import (
+    annotate_open_amounts,
+    build_finance_control_state,
+    build_finance_control,
+    build_forecast_paths,
+    build_queue,
+    calculate_csv_trends,
+    quick_action_eligibility,
+    resolve_cash_snapshot,
+)
+
+
+AS_OF = date(2026, 7, 13)
+
+
+def _row(event_id: str, **overrides):
+    row = {
+        "id": event_id,
+        "record_kind": "obligation",
+        "source": "manual",
+        "event_type": "outflow",
+        "category": "software",
+        "name": event_id,
+        "vendor_or_customer": event_id,
+        "amount_cents": 100_00,
+        "due_date": AS_OF,
+        "status": "planned",
+        "confidence": "confirmed",
+        "pay_priority": "should_pay",
+        "flexibility": "fixed",
+    }
+    row.update(overrides)
+    return row
+
+
+def _bank(event_id: str, days_ago: int, amount: int = 100_00, **overrides):
+    row = {
+        "id": event_id,
+        "record_kind": "transaction",
+        "source": "csv",
+        "source_id": event_id,
+        "event_type": "inflow",
+        "category": "revenue",
+        "vendor_or_customer": "Acme",
+        "amount_cents": amount,
+        "due_date": AS_OF - timedelta(days=days_ago),
+        "status": "posted",
+        "confidence": "confirmed",
+    }
+    row.update(overrides)
+    return row
+
+
+def _history(balance_cents: int = 200_000):
+    rows = []
+    for index, days_ago in enumerate((0, 7, 14, 21, 28, 35, 42, 49, 56)):
+        rows.append(
+            _bank(
+                f"bank-{index}",
+                days_ago,
+                amount=30_000 + index * 100,
+                account_balance_cents=balance_cents if index == 0 else None,
+                event_type="inflow" if index % 2 == 0 else "outflow",
+            )
+        )
+    return rows
+
+
+def test_zero_balance_is_available_and_newest_first_same_day_wins():
+    rows = [
+        _bank("closing", 0, account_balance_cents=0),
+        _bank("earlier-same-day", 0, account_balance_cents=99_999),
+        _bank("older", 1, account_balance_cents=80_000),
+    ]
+
+    snapshot = resolve_cash_snapshot(rows, as_of=AS_OF)
+
+    assert snapshot["available"] is True
+    assert snapshot["balance_cents"] == 0
+    assert snapshot["as_of_date"] == AS_OF.isoformat()
+
+
+def test_allocations_derive_open_amount_and_reversal_does_not_close_early():
+    rows = [_row("rent", amount_cents=100_000, status="paid")]
+    allocations = [
+        {"id": "a1", "obligation_event_id": "rent", "amount_cents": 40_000},
+        {"id": "r1", "obligation_event_id": "rent", "amount_cents": -40_000, "reversed_allocation_id": "a1"},
+        {"id": "a2", "obligation_event_id": "rent", "amount_cents": 20_000},
+    ]
+
+    result = annotate_open_amounts(rows, allocations)
+
+    assert result[0]["settled_amount_cents"] == 20_000
+    assert result[0]["open_amount_cents"] == 80_000
+
+
+def test_metrics_reserve_every_bill_due_in_window_and_separate_later_exposure():
+    rows = _history(300_000) + [
+        _row("confirmed-ar", event_type="inflow", amount_cents=80_000),
+        _row("expected-ar", event_type="inflow", amount_cents=60_000, confidence="medium"),
+        _row("payroll", amount_cents=90_000, pay_priority="must_pay"),
+        _row("software", amount_cents=30_000, pay_priority="can_hold", flexibility="deferrable"),
+        _row("later", amount_cents=50_000, due_date=AS_OF + timedelta(days=20)),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF)
+
+    assert state["metrics"]["cash_on_hand_cents"] == 300_000
+    assert state["metrics"]["confirmed_incoming_cents"] == 80_000
+    assert state["metrics"]["expected_incoming_cents"] == 30_000
+    assert state["metrics"]["required_outgoing_cents"] == 120_000
+    assert state["metrics"]["outgoing_exposure_cents"] == 50_000
+
+
+def test_forecast_paths_treat_confirmed_expected_and_flexible_cash_differently():
+    rows = [
+        _row("confirmed", event_type="inflow", amount_cents=100_000, due_date=AS_OF + timedelta(days=1)),
+        _row("trend", event_type="inflow", amount_cents=100_000, confidence="medium", probability_bps=5_000, trend_inferred=True),
+        _row("must", amount_cents=80_000, pay_priority="must_pay"),
+        _row(
+            "chunk",
+            amount_cents=60_000,
+            flexibility="chunkable",
+            pay_priority="can_hold",
+            payment_installments=[{"amount_cents": 20_000, "due_date": AS_OF, "status": "planned"}],
+        ),
+    ]
+
+    result = build_forecast_paths(rows, as_of=AS_OF, starting_cash_cents=100_000)
+
+    assert result["paths"]["committed"][-1]["cash_cents"] == 100_000
+    assert result["paths"]["expected"][-1]["cash_cents"] == 110_000
+    assert result["paths"]["stress"][-1]["cash_cents"] == 100_000
+
+
+def test_installment_schedule_is_capped_at_open_amount():
+    rows = [
+        _row(
+            "chunk",
+            amount_cents=100_000,
+            flexibility="chunkable",
+            pay_priority="can_hold",
+            payment_installments=[
+                {"amount_cents": 80_000, "due_date": AS_OF},
+                {"amount_cents": 80_000, "due_date": AS_OF + timedelta(days=1)},
+            ],
+        )
+    ]
+
+    result = build_forecast_paths(rows, {"chunk": 25_000}, as_of=AS_OF, starting_cash_cents=200_000)
+
+    assert result["paths"]["committed"][-1]["cash_cents"] == 125_000
+    assert result["paths"]["stress"][-1]["cash_cents"] == 125_000
+
+
+def test_csv_trends_exclude_transfer_duplicate_and_require_three_for_recurrence():
+    rows = [
+        _bank("r1", 42, vendor_or_customer="Acme", amount=50_000),
+        _bank("r2", 21, vendor_or_customer="Acme", amount=51_000),
+        _bank("r3", 0, vendor_or_customer="Acme", amount=49_000),
+        _bank("transfer", 5, amount=999_000, category="transfer"),
+        _bank("duplicate", 4, amount=999_000, probable_duplicate=True),
+    ]
+
+    trends = calculate_csv_trends(rows, as_of=AS_OF)
+
+    assert trends["transaction_count"] == 3
+    assert trends["excluded_count"] == 2
+    assert trends["net_56_cents"] == 150_000
+    assert trends["recurring_patterns"][0]["occurrences"] == 3
+    assert trends["recurring_patterns"][0]["median_cadence_days"] == 21
+
+
+def test_stale_balance_gates_recommendations_to_verification_actions():
+    rows = _history() + [
+        _row("must", amount_cents=50_000, pay_priority="must_pay", due_date=AS_OF),
+    ]
+    rows[0]["due_date"] = AS_OF - timedelta(days=10)
+
+    state = build_finance_control_state(rows, as_of=AS_OF, balance_stale_after_days=3)
+
+    assert state["confidence"]["verification_only"] is True
+    assert state["recommendations"][0]["action_type"] == "refresh_cash_balance"
+    assert all(rec["rank"] <= 2 for rec in state["recommendations"])
+
+
+def test_ranked_recommendations_collect_then_protect_cash():
+    rows = _history(150_000) + [
+        _row("must", amount_cents=90_000, pay_priority="must_pay", due_date=AS_OF),
+        _row("receipt", event_type="inflow", amount_cents=40_000, due_date=AS_OF + timedelta(days=2)),
+        _row(
+            "flex",
+            amount_cents=30_000,
+            pay_priority="can_hold",
+            flexibility="chunkable",
+            payment_installments=[{"amount_cents": 30_000, "due_date": AS_OF}],
+        ),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+
+    action_types = [item["action_type"] for item in state["recommendations"]]
+    assert state["metrics"]["funding_gap_cents"] == 70_000
+    assert action_types == ["collect_confirmed_income", "split_or_defer_payable"]
+    assert state["recommendations"][0]["before_minimum_cash_cents"] < state["recommendations"][0]["after_minimum_cash_cents"]
+
+
+def test_safe_to_commit_and_funding_gap_are_never_negative():
+    safe = build_finance_control_state(_history(200_000), as_of=AS_OF, floor_cents=100_000)
+    gap = build_finance_control_state(_history(50_000), as_of=AS_OF, floor_cents=100_000)
+
+    assert safe["metrics"]["safe_to_commit_cents"] == 100_000
+    assert safe["metrics"]["funding_gap_cents"] == 0
+    assert gap["metrics"]["safe_to_commit_cents"] == 0
+    assert gap["metrics"]["funding_gap_cents"] == 50_000
+
+
+def test_quick_actions_respect_must_pay_and_flexibility_rules():
+    must_actions = {item["action_type"] for item in quick_action_eligibility(_row("must", pay_priority="must_pay", flexibility="chunkable"))}
+    flexible_actions = {item["action_type"] for item in quick_action_eligibility(_row("flex", pay_priority="can_hold", flexibility="chunkable"))}
+    incoming_actions = {item["action_type"] for item in quick_action_eligibility(_row("ar", event_type="inflow", confidence="estimated"))}
+
+    assert "split_into_installments" in must_actions
+    assert "defer_or_change_date" not in must_actions
+    assert {"split_into_installments", "defer_or_change_date"} <= flexible_actions
+    assert {"mark_received", "match_bank_deposit", "assign_follow_up"} <= incoming_actions
+    assert all(item["preview_required"] for item in quick_action_eligibility(_row("flex")))
+
+
+def test_legacy_clickup_notes_drive_chunkable_actions_and_priority():
+    row = _row(
+        "legacy-rent",
+        notes="priority:can_hold | chunk payable; partial payments accepted",
+        flexibility="unknown",
+        pay_priority="review",
+    )
+
+    actions = {item["action_type"] for item in quick_action_eligibility(row)}
+    queue = build_queue([row], as_of=AS_OF, funding_gap_cents=50_000)
+
+    assert "split_into_installments" in actions
+    assert "defer_or_change_date" in actions
+    assert queue["items"][0]["pay_priority"] == "can_hold"
+    assert queue["items"][0]["flexibility"] == "chunkable"
+
+
+def test_queue_group_order_sorting_and_no_silent_truncation():
+    rows = [
+        _row("duplicate", probable_duplicate=True, due_date=None),
+        _row("collect", event_type="inflow", due_date=AS_OF - timedelta(days=3)),
+        _row("tax", category="tax", pay_priority="must_pay", due_date=AS_OF + timedelta(days=1)),
+        _row("payroll", category="payroll", pay_priority="must_pay", due_date=AS_OF + timedelta(days=1)),
+        _row("protect", flexibility="deferrable", pay_priority="can_hold", due_date=AS_OF + timedelta(days=4)),
+        _row("week", due_date=AS_OF + timedelta(days=6)),
+        _row("next-a", due_date=AS_OF + timedelta(days=9)),
+        _row("next-b", due_date=AS_OF + timedelta(days=10)),
+    ]
+
+    queue = build_queue(rows, as_of=AS_OF, horizon_days=14, funding_gap_cents=20_000)
+
+    assert [group["key"] for group in queue["groups"]] == [
+        "resolve_first", "collect_now", "pay_now", "protect_cash", "this_week", "next_week"
+    ]
+    assert [item["id"] for item in queue["groups"][2]["items"]] == []  # funding gap suppresses Pay now
+    assert queue["groups"][-1]["collapsed"] is True
+    assert queue["groups"][-1]["count"] == 2
+    assert len(queue["groups"][-1]["items"]) == 2
+    assert queue["truncated"] is False
+
+
+def test_queue_pay_now_sorts_operational_category_before_amount():
+    rows = [
+        _row("tax", category="tax", amount_cents=500_000, pay_priority="must_pay", due_date=AS_OF),
+        _row("payroll", category="payroll", amount_cents=10_000, pay_priority="must_pay", due_date=AS_OF),
+    ]
+
+    queue = build_queue(rows, as_of=AS_OF, funding_gap_cents=0)
+
+    assert [item["id"] for item in queue["groups"][2]["items"]] == ["payroll", "tax"]
+
+
+def test_missing_amount_and_date_are_resolve_first_blockers():
+    queue = build_queue(
+        [_row("missing-amount", amount_cents=0), _row("missing-date", due_date=None)],
+        as_of=AS_OF,
+    )
+
+    blockers = {item["decision_blocker"] for item in queue["groups"][0]["items"]}
+    assert blockers == {"missing_amount", "missing_date"}
+
+
+def test_inputs_are_not_mutated():
+    rows = [_row("rent", amount_cents=100_000)]
+    original = dict(rows[0])
+
+    build_finance_control_state(rows, {"rent": 25_000}, as_of=AS_OF)
+
+    assert rows[0] == original
+    assert "open_amount_cents" not in rows[0]
+
+
+def test_renderer_facade_accepts_resolved_balance_and_exposes_compatible_shape():
+    control = build_finance_control(
+        _history(99_999),
+        0,
+        AS_OF.isoformat(),
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert control["cash_position"]["cash_on_hand_cents"] == 0
+    assert control["cash_position"]["balance_available"] is True
+    assert len(control["forecast"]["labels"]) == 28
+    assert len(control["forecast"]["stress"]) == 28
+    assert set(control["smart_brief"]) == {"happening", "broken", "next"}

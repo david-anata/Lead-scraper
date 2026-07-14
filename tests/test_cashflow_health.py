@@ -130,6 +130,7 @@ class TestHealthEndpointWithDB(unittest.TestCase):
                     id                      TEXT    PRIMARY KEY,
                     source                  TEXT    NOT NULL DEFAULT 'manual',
                     source_id               TEXT    NOT NULL DEFAULT '',
+                    record_kind             TEXT    NOT NULL DEFAULT 'obligation',
                     event_type              TEXT    NOT NULL DEFAULT 'outflow',
                     category                TEXT    NOT NULL DEFAULT 'uncategorized',
                     subcategory             TEXT    NOT NULL DEFAULT '',
@@ -142,6 +143,9 @@ class TestHealthEndpointWithDB(unittest.TestCase):
                     expected_date           TEXT,
                     status                  TEXT    NOT NULL DEFAULT 'planned',
                     confidence              TEXT    NOT NULL DEFAULT 'estimated',
+                    pay_priority            TEXT    NOT NULL DEFAULT 'review',
+                    minimum_payment_cents   INTEGER,
+                    flexibility             TEXT    NOT NULL DEFAULT 'unknown',
                     recurring_template_id   TEXT,
                     recurring_rule          TEXT    NOT NULL DEFAULT '',
                     matched_to_id           TEXT,
@@ -154,6 +158,11 @@ class TestHealthEndpointWithDB(unittest.TestCase):
                     updated_at              TEXT    NOT NULL DEFAULT ''
                 )
             """))
+            for table_name in (
+                "payment_installments", "settlement_allocations", "finance_source_records",
+                "finance_import_batches", "finance_import_rows",
+            ):
+                conn.execute(text(f"CREATE TABLE {table_name} (id TEXT PRIMARY KEY)"))
 
         import sales_support_agent.models.database as _db_mod
         _db_mod.engine = engine
@@ -193,6 +202,7 @@ class TestHealthEndpointWithDB(unittest.TestCase):
     def test_no_missing_columns(self) -> None:
         data = self.client.get("/admin/finances/health").json()
         self.assertEqual(data.get("missing_columns"), [])
+        self.assertEqual(data.get("missing_v2_columns"), [])
 
     def test_table_exists_check_true(self) -> None:
         data = self.client.get("/admin/finances/health").json()

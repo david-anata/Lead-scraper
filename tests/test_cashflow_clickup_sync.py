@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine, text
 
+from sales_support_agent.models.database import create_session_factory, init_database, upsert_cash_event
 from sales_support_agent.services.cashflow.clickup_sync import (
     _fetch_tasks,
     _match_existing_posted_transactions,
@@ -108,20 +109,34 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
         self.assertTrue(templates["manual-template"])
 
     def test_existing_posted_bank_row_matches_new_clickup_obligation(self) -> None:
-        engine = create_engine("sqlite:///:memory:")
+        factory = create_session_factory("sqlite:///:memory:")
+        init_database(factory)
+        engine = factory.kw["bind"]
         with engine.begin() as conn:
-            conn.execute(text("""
-                CREATE TABLE cash_events (
-                    id TEXT PRIMARY KEY,
-                    status TEXT,
-                    matched_to_id TEXT,
-                    updated_at TEXT
-                )
-            """))
-            conn.execute(text("""
-                INSERT INTO cash_events (id, status)
-                VALUES ('bank-row', 'posted'), ('clickup-row', 'overdue')
-            """))
+            upsert_cash_event(conn, {
+                "id": "bank-row",
+                "source": "csv",
+                "source_id": "bank-row",
+                "record_kind": "transaction",
+                "event_type": "outflow",
+                "vendor_or_customer": "VON",
+                "amount_cents": 110000,
+                "due_date": date(2026, 7, 6),
+                "category": "fulfillment",
+                "status": "posted",
+            })
+            upsert_cash_event(conn, {
+                "id": "clickup-row",
+                "source": "clickup",
+                "source_id": "clickup-row",
+                "record_kind": "obligation",
+                "event_type": "outflow",
+                "vendor_or_customer": "Fulfillment Pay - Von",
+                "amount_cents": 110000,
+                "due_date": date(2026, 7, 6),
+                "category": "fulfillment",
+                "status": "overdue",
+            })
 
         rows = [
             {
@@ -161,7 +176,12 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
             ).one()
         self.assertEqual(bank.status, "matched")
         self.assertEqual(bank.matched_to_id, "clickup-row")
-        self.assertEqual(planned.status, "matched")
+        self.assertEqual(planned.status, "paid")
+        with engine.connect() as conn:
+            allocation_count = conn.execute(
+                text("SELECT COUNT(*) FROM settlement_allocations")
+            ).scalar_one()
+        self.assertEqual(allocation_count, 1)
 
     def test_recurring_task_is_upserted_once_as_a_cash_event(self) -> None:
         settings = MagicMock(

@@ -141,10 +141,9 @@ def _quarantine_legacy_clickup_template_expansions(engine) -> tuple[int, int]:
 
 def _match_existing_posted_transactions(engine) -> int:
     """Match previously uploaded bank rows after new ClickUp obligations arrive."""
-    from sqlalchemy import text
-
     from sales_support_agent.services.cashflow.matcher import auto_match_transactions
     from sales_support_agent.services.cashflow.obligations import list_obligations
+    from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
 
     rows = list_obligations(limit=5000)
     posted = [
@@ -168,30 +167,13 @@ def _match_existing_posted_transactions(engine) -> int:
     if not matches:
         return 0
 
-    now_str = datetime.utcnow().isoformat()
     with engine.begin() as conn:
         for match in matches:
-            conn.execute(
-                text("""
-                    UPDATE cash_events
-                    SET status = 'matched', matched_to_id = :planned_id,
-                        updated_at = :now
-                    WHERE id = :posted_id AND status = 'posted'
-                """),
-                {
-                    "planned_id": match.planned_event_id,
-                    "posted_id": match.csv_event_id,
-                    "now": now_str,
-                },
-            )
-            conn.execute(
-                text("""
-                    UPDATE cash_events
-                    SET status = 'matched', updated_at = :now
-                    WHERE id = :planned_id
-                      AND status IN ('planned', 'pending', 'overdue')
-                """),
-                {"planned_id": match.planned_event_id, "now": now_str},
+            allocate_matched_transaction(
+                conn,
+                obligation_event_id=str(match.planned_event_id),
+                transaction_event_id=str(match.csv_event_id),
+                idempotency_key=f"clickup-auto-match:{match.csv_event_id}:{match.planned_event_id}",
             )
     return len(matches)
 

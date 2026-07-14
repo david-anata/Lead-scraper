@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -65,6 +66,10 @@ def _redirect_finance_home(message: str = "Finance now lives on one control page
     return RedirectResponse(f"/admin/finances?flash={quote(f'ok:{message}')}", status_code=303)
 
 
+def _redirect_finance_error(message: str) -> RedirectResponse:
+    return RedirectResponse(f"/admin/finances?flash={quote(f'err:{message}')}", status_code=303)
+
+
 # ---------------------------------------------------------------------------
 # Health check — no auth, used for post-deploy self-testing
 # ---------------------------------------------------------------------------
@@ -92,6 +97,7 @@ async def cashflow_health(request: Request):
     checks: dict = {}
     db_columns: list = []
     missing_columns: list = []
+    missing_v2_columns: list = []
     overall = "ok"
 
     # -- Live DB check -------------------------------------------------------
@@ -107,12 +113,27 @@ async def cashflow_health(request: Request):
             db_columns = sorted(c["name"] for c in insp.get_columns("cash_events"))
             missing_columns = sorted(REQUIRED_COLUMNS - set(db_columns))
             checks["all_required_columns_present"] = len(missing_columns) == 0
+            missing_v2_columns = sorted(
+                {"record_kind", "pay_priority", "minimum_payment_cents", "flexibility"}
+                - set(db_columns)
+            )
+            checks["finance_v2_columns_present"] = not missing_v2_columns
         else:
             checks["all_required_columns_present"] = False
+            checks["finance_v2_columns_present"] = False
             missing_columns = sorted(REQUIRED_COLUMNS)
+            missing_v2_columns = [
+                "flexibility", "minimum_payment_cents", "pay_priority", "record_kind"
+            ]
             overall = "degraded"
 
-        if missing_columns:
+        finance_v2_tables = {
+            "payment_installments", "settlement_allocations", "finance_source_records",
+            "finance_import_batches", "finance_import_rows",
+        }
+        checks["finance_v2_tables_present"] = finance_v2_tables.issubset(tables)
+
+        if missing_columns or missing_v2_columns or not checks["finance_v2_tables_present"]:
             overall = "degraded"
 
     except Exception as exc:
@@ -144,6 +165,7 @@ async def cashflow_health(request: Request):
         "status": overall,
         "db_columns": db_columns,
         "missing_columns": missing_columns,
+        "missing_v2_columns": missing_v2_columns,
         "checks": checks,
     })
 
@@ -219,6 +241,75 @@ async def patch_event(event_id: str, request: Request):
             return JSONResponse({"error": "not found"}, status_code=404)
 
     return JSONResponse({"ok": True})
+
+
+def _money_to_cents(raw_amount: str) -> int:
+    """Parse an operator-entered dollar amount without float rounding."""
+    try:
+        amount = Decimal(str(raw_amount).replace("$", "").replace(",", "").strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("Enter a valid positive amount") from exc
+    cents = int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if cents <= 0:
+        raise ValueError("Amount must be greater than zero")
+    return cents
+
+
+@router.post("/actions/{event_id}/partial", response_class=HTMLResponse)
+async def record_partial_payment(
+    request: Request,
+    event_id: str,
+    amount: str = Form(...),
+    allocation_date: str = Form(""),
+    idempotency_key: str = Form(""),
+):
+    """Record explicitly confirmed settlement evidence for part of an obligation."""
+    from sales_support_agent.services.cashflow.settlements import create_settlement_allocation
+
+    try:
+        cents = _money_to_cents(amount)
+        if not idempotency_key.strip():
+            raise ValueError("Confirmation token is missing; reopen the preview and try again")
+        settled_on = datetime.fromisoformat(allocation_date).date() if allocation_date else None
+        create_settlement_allocation(
+            obligation_event_id=event_id,
+            amount_cents=cents,
+            allocation_date=settled_on,
+            source="manual_operator",
+            confidence="confirmed",
+            notes="Confirmed from Finance Control",
+            idempotency_key=idempotency_key,
+        )
+        return _redirect_finance_home("Partial payment recorded; remaining balance recalculated.")
+    except Exception as exc:
+        return _redirect_finance_error(f"Could not record partial payment: {exc}")
+
+
+@router.post("/actions/{event_id}/installment", response_class=HTMLResponse)
+async def schedule_installment(
+    request: Request,
+    event_id: str,
+    amount: str = Form(...),
+    due_date: str = Form(...),
+    idempotency_key: str = Form(""),
+):
+    """Create one explicitly confirmed installment without changing the face amount."""
+    from sales_support_agent.services.cashflow.settlements import create_payment_installment
+
+    try:
+        cents = _money_to_cents(amount)
+        if not idempotency_key.strip():
+            raise ValueError("Confirmation token is missing; reopen the preview and try again")
+        scheduled_for = datetime.fromisoformat(due_date).date()
+        create_payment_installment(
+            obligation_event_id=event_id,
+            amount_cents=cents,
+            due_date=scheduled_for,
+            idempotency_key=idempotency_key,
+        )
+        return _redirect_finance_home("Installment scheduled; cash paths recalculated.")
+    except Exception as exc:
+        return _redirect_finance_error(f"Could not schedule installment: {exc}")
 
 
 # ---------------------------------------------------------------------------

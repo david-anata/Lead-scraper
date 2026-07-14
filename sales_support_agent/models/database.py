@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -80,6 +81,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(bind=engine)
         _apply_sqlite_compat_migrations(engine)
+        _backfill_legacy_settlements(engine)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -93,6 +95,8 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if not inspector.get_table_names():
         Base.metadata.create_all(bind=engine)
     _apply_postgres_compat_migrations(engine)
+    _ensure_finance_settlement_tables(engine)
+    _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
 
 
@@ -107,6 +111,133 @@ def _ensure_hr_tables(engine: Any) -> None:
     hr_tables = [t for name, t in Base.metadata.tables.items() if name.startswith("hr_")]
     if hr_tables:
         Base.metadata.create_all(bind=engine, tables=hr_tables, checkfirst=True)
+
+
+def _ensure_finance_settlement_tables(engine: Any) -> None:
+    """Create the additive Finance V2 tables on persistent databases."""
+
+    table_names = {
+        "payment_installments",
+        "settlement_allocations",
+        "finance_source_records",
+        "finance_import_batches",
+        "finance_import_rows",
+    }
+    tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
+    if tables:
+        Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
+
+
+def _backfill_legacy_settlements(engine: Any) -> None:
+    """Convert legacy matched bank rows into amount-based, idempotent evidence."""
+    with engine.begin() as connection:
+        matches = connection.execute(text("""
+            SELECT
+                actual.id AS transaction_id,
+                actual.amount_cents AS transaction_amount_cents,
+                COALESCE(actual.effective_date, actual.due_date, actual.updated_at) AS allocation_date,
+                obligation.id AS obligation_id,
+                obligation.amount_cents AS obligation_amount_cents,
+                obligation.due_date AS obligation_due_date,
+                obligation.status AS obligation_status
+            FROM cash_events AS actual
+            JOIN cash_events AS obligation ON obligation.id = actual.matched_to_id
+            WHERE actual.source IN ('csv', 'qbo_bank')
+              AND actual.matched_to_id IS NOT NULL
+              AND actual.status = 'matched'
+        """)).fetchall()
+
+        for match in matches:
+            row = dict(match._mapping)
+            key = f"legacy-match:{row['transaction_id']}:{row['obligation_id']}"
+            if connection.execute(text("""
+                SELECT 1 FROM settlement_allocations WHERE idempotency_key = :key
+            """), {"key": key}).fetchone() is not None:
+                continue
+            obligation_settled = int(connection.execute(text("""
+                SELECT COALESCE(SUM(allocation.amount_cents), 0)
+                FROM settlement_allocations AS allocation
+                WHERE allocation.obligation_event_id = :id
+                  AND allocation.reversed_allocation_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM settlement_allocations AS reversal
+                      WHERE reversal.reversed_allocation_id = allocation.id
+                  )
+            """), {"id": row["obligation_id"]}).scalar_one() or 0)
+            transaction_used = int(connection.execute(text("""
+                SELECT COALESCE(SUM(allocation.amount_cents), 0)
+                FROM settlement_allocations AS allocation
+                WHERE allocation.transaction_event_id = :id
+                  AND allocation.reversed_allocation_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM settlement_allocations AS reversal
+                      WHERE reversal.reversed_allocation_id = allocation.id
+                  )
+            """), {"id": row["transaction_id"]}).scalar_one() or 0)
+            amount_cents = min(
+                max(int(row["transaction_amount_cents"] or 0) - transaction_used, 0),
+                max(int(row["obligation_amount_cents"] or 0) - obligation_settled, 0),
+            )
+            if amount_cents <= 0:
+                continue
+            connection.execute(text("""
+                INSERT INTO settlement_allocations (
+                    id, obligation_event_id, transaction_event_id, installment_id,
+                    amount_cents, allocation_date, source, confidence,
+                    idempotency_key, reversed_allocation_id, notes, created_at
+                ) VALUES (
+                    :id, :obligation_id, :transaction_id, NULL,
+                    :amount_cents, :allocation_date, 'legacy_match', 'confirmed',
+                    :idempotency_key, NULL, 'Backfilled from legacy matched_to_id', :created_at
+                )
+                ON CONFLICT (idempotency_key) DO NOTHING
+            """), {
+                "id": str(uuid5(NAMESPACE_URL, key)),
+                "obligation_id": row["obligation_id"],
+                "transaction_id": row["transaction_id"],
+                "amount_cents": amount_cents,
+                "allocation_date": row["allocation_date"] or datetime.utcnow(),
+                "idempotency_key": key,
+                "created_at": datetime.utcnow(),
+            })
+
+        obligation_ids = {str(dict(match._mapping)["obligation_id"]) for match in matches}
+        for obligation_id in obligation_ids:
+            obligation = connection.execute(text("""
+                SELECT amount_cents, due_date, status FROM cash_events WHERE id = :id
+            """), {"id": obligation_id}).fetchone()
+            if obligation is None:
+                continue
+            settled = int(connection.execute(text("""
+                SELECT COALESCE(SUM(allocation.amount_cents), 0)
+                FROM settlement_allocations AS allocation
+                WHERE allocation.obligation_event_id = :id
+                  AND allocation.reversed_allocation_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM settlement_allocations AS reversal
+                      WHERE reversal.reversed_allocation_id = allocation.id
+                  )
+            """), {"id": obligation_id}).scalar_one() or 0)
+            data = dict(obligation._mapping)
+            if settled >= int(data["amount_cents"] or 0) or data["status"] not in {"paid", "matched"}:
+                continue
+            due_value = data["due_date"]
+            if isinstance(due_value, datetime):
+                due_day = due_value.date()
+            elif isinstance(due_value, date):
+                due_day = due_value
+            else:
+                try:
+                    due_day = date.fromisoformat(str(due_value)[:10])
+                except (TypeError, ValueError):
+                    due_day = None
+            today = datetime.utcnow().date()
+            status = "overdue" if due_day and due_day < today else (
+                "pending" if due_day and due_day <= today + timedelta(days=7) else "planned"
+            )
+            connection.execute(text("""
+                UPDATE cash_events SET status = :status, updated_at = :now WHERE id = :id
+            """), {"id": obligation_id, "status": status, "now": datetime.utcnow()})
 
 
 @contextmanager
@@ -185,6 +316,7 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "client_id": "ALTER TABLE audit_runs ADD COLUMN client_id VARCHAR(64)",
         },
         "cash_events": {
+            "record_kind":          "ALTER TABLE cash_events ADD COLUMN record_kind VARCHAR(16) NOT NULL DEFAULT 'obligation'",
             "subcategory":           "ALTER TABLE cash_events ADD COLUMN subcategory VARCHAR(64) NOT NULL DEFAULT ''",
             "description":           "ALTER TABLE cash_events ADD COLUMN description TEXT NOT NULL DEFAULT ''",
             "bank_transaction_type": "ALTER TABLE cash_events ADD COLUMN bank_transaction_type VARCHAR(32) NOT NULL DEFAULT ''",
@@ -198,6 +330,9 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "recurring_template_id": "ALTER TABLE cash_events ADD COLUMN recurring_template_id TEXT",
             "matched_to_id":         "ALTER TABLE cash_events ADD COLUMN matched_to_id TEXT",
             "friendly_name":         "ALTER TABLE cash_events ADD COLUMN friendly_name TEXT",
+            "pay_priority":          "ALTER TABLE cash_events ADD COLUMN pay_priority VARCHAR(16) NOT NULL DEFAULT 'review'",
+            "minimum_payment_cents": "ALTER TABLE cash_events ADD COLUMN minimum_payment_cents INTEGER",
+            "flexibility":           "ALTER TABLE cash_events ADD COLUMN flexibility VARCHAR(16) NOT NULL DEFAULT 'unknown'",
         },
     }
 
@@ -210,6 +345,35 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                 if column_name in existing_columns:
                     continue
                 connection.execute(text(statement))
+
+        if "cash_events" in existing_tables:
+            connection.execute(text("""
+                UPDATE cash_events
+                SET record_kind = 'transaction'
+                WHERE source IN ('csv', 'qbo_bank')
+                   OR status = 'posted'
+                   OR account_balance_cents IS NOT NULL
+            """))
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS set_cash_event_transaction_kind_insert
+                AFTER INSERT ON cash_events
+                WHEN NEW.source IN ('csv', 'qbo_bank')
+                  OR NEW.status = 'posted'
+                  OR NEW.account_balance_cents IS NOT NULL
+                BEGIN
+                    UPDATE cash_events SET record_kind = 'transaction' WHERE id = NEW.id;
+                END
+            """))
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS set_cash_event_transaction_kind_update
+                AFTER UPDATE OF source, status, account_balance_cents ON cash_events
+                WHEN NEW.source IN ('csv', 'qbo_bank')
+                  OR NEW.status = 'posted'
+                  OR NEW.account_balance_cents IS NOT NULL
+                BEGIN
+                    UPDATE cash_events SET record_kind = 'transaction' WHERE id = NEW.id;
+                END
+            """))
 
         # QuickBooks OAuth tables for SQLite deployments
         connection.execute(text("""
@@ -287,6 +451,9 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_due_date ON cash_events(due_date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_source ON cash_events(source)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_events_status ON cash_events(status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_record_kind ON cash_events(record_kind)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_pay_priority ON cash_events(pay_priority)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_flexibility ON cash_events(flexibility)"))
 
 
 def _apply_postgres_compat_migrations(engine: Any) -> None:
@@ -446,6 +613,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     id                      TEXT         PRIMARY KEY,
                     source                  VARCHAR(32)  NOT NULL DEFAULT 'manual',
                     source_id               VARCHAR(255) NOT NULL DEFAULT '',
+                    record_kind             VARCHAR(16)  NOT NULL DEFAULT 'obligation',
                     event_type              VARCHAR(16)  NOT NULL DEFAULT 'outflow',
                     category                VARCHAR(64)  NOT NULL DEFAULT 'uncategorized',
                     subcategory             VARCHAR(64)  NOT NULL DEFAULT '',
@@ -458,6 +626,9 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     expected_date           TIMESTAMPTZ  NULL,
                     status                  VARCHAR(32)  NOT NULL DEFAULT 'planned',
                     confidence              VARCHAR(16)  NOT NULL DEFAULT 'estimated',
+                    pay_priority            VARCHAR(16)  NOT NULL DEFAULT 'review',
+                    minimum_payment_cents   INTEGER      NULL,
+                    flexibility             VARCHAR(16)  NOT NULL DEFAULT 'unknown',
                     recurring_template_id   TEXT         NULL,
                     recurring_rule          VARCHAR(64)  NOT NULL DEFAULT '',
                     matched_to_id           TEXT         NULL,
@@ -545,6 +716,7 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
             text(
                 """
                 ALTER TABLE cash_events
+                    ADD COLUMN IF NOT EXISTS record_kind          VARCHAR(16)  NOT NULL DEFAULT 'obligation',
                     ADD COLUMN IF NOT EXISTS subcategory           VARCHAR(64)  NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS description           TEXT         NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS bank_transaction_type VARCHAR(32)  NOT NULL DEFAULT '',
@@ -556,10 +728,42 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     ADD COLUMN IF NOT EXISTS effective_date        TIMESTAMPTZ  NULL,
                     ADD COLUMN IF NOT EXISTS expected_date         TIMESTAMPTZ  NULL,
                     ADD COLUMN IF NOT EXISTS recurring_template_id TEXT         NULL,
-                    ADD COLUMN IF NOT EXISTS matched_to_id         TEXT         NULL
+                    ADD COLUMN IF NOT EXISTS matched_to_id         TEXT         NULL,
+                    ADD COLUMN IF NOT EXISTS pay_priority          VARCHAR(16)  NOT NULL DEFAULT 'review',
+                    ADD COLUMN IF NOT EXISTS minimum_payment_cents INTEGER      NULL,
+                    ADD COLUMN IF NOT EXISTS flexibility           VARCHAR(16)  NOT NULL DEFAULT 'unknown'
                 """
             )
         )
+        connection.execute(text("""
+            UPDATE cash_events
+            SET record_kind = 'transaction'
+            WHERE source IN ('csv', 'qbo_bank')
+               OR status = 'posted'
+               OR account_balance_cents IS NOT NULL
+        """))
+        connection.execute(text("""
+            CREATE OR REPLACE FUNCTION set_cash_event_record_kind()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF NEW.source IN ('csv', 'qbo_bank')
+                   OR NEW.status = 'posted'
+                   OR NEW.account_balance_cents IS NOT NULL THEN
+                    NEW.record_kind := 'transaction';
+                ELSIF NEW.record_kind IS NULL OR NEW.record_kind = '' THEN
+                    NEW.record_kind := 'obligation';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        """))
+        connection.execute(text("DROP TRIGGER IF EXISTS set_cash_event_record_kind_trigger ON cash_events"))
+        connection.execute(text("""
+            CREATE TRIGGER set_cash_event_record_kind_trigger
+            BEFORE INSERT OR UPDATE
+            ON cash_events
+            FOR EACH ROW EXECUTE FUNCTION set_cash_event_record_kind()
+        """))
         # Indexes for the most common cashflow queries
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_due_date ON cash_events (due_date)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_status ON cash_events (status)"))
@@ -569,6 +773,9 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_source_source_id ON cash_events (source, source_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_matched_to_id ON cash_events (matched_to_id)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_clickup_task_id ON cash_events (clickup_task_id)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_record_kind ON cash_events (record_kind)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_pay_priority ON cash_events (pay_priority)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_flexibility ON cash_events (flexibility)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_is_active ON recurring_templates (is_active)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_next_due_date ON recurring_templates (next_due_date)"))
         # friendly_name column — additive migration for existing Postgres deployments
@@ -1049,9 +1256,10 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
 
 # Canonical column order for cash_events upsert
 _CASH_EVENT_UPSERT_COLS = (
-    "id", "source", "source_id", "event_type", "category", "subcategory",
+    "id", "source", "source_id", "record_kind", "event_type", "category", "subcategory",
     "description", "name", "vendor_or_customer", "amount_cents", "due_date",
-    "status", "confidence", "recurring_rule", "clickup_task_id",
+    "status", "confidence", "pay_priority", "minimum_payment_cents", "flexibility",
+    "recurring_rule", "clickup_task_id",
     "bank_transaction_type", "bank_reference", "notes", "friendly_name",
 )
 
@@ -1090,11 +1298,15 @@ def upsert_cash_event(conn, event: dict) -> str:
             text("""
                 UPDATE cash_events SET
                     source=:source, source_id=:source_id,
+                    record_kind=COALESCE(:record_kind, record_kind),
                     event_type=:event_type, category=:category,
                     subcategory=:subcategory, description=:description,
                     name=:name, vendor_or_customer=:vendor_or_customer,
                     amount_cents=:amount_cents, due_date=:due_date,
                     status=:status, confidence=:confidence,
+                    pay_priority=COALESCE(:pay_priority, pay_priority),
+                    minimum_payment_cents=COALESCE(:minimum_payment_cents, minimum_payment_cents),
+                    flexibility=COALESCE(:flexibility, flexibility),
                     recurring_rule=:recurring_rule,
                     clickup_task_id=:clickup_task_id,
                     bank_transaction_type=:bank_transaction_type,
@@ -1107,6 +1319,7 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "id": event["id"],
                 "source": event.get("source", ""),
                 "source_id": event.get("source_id", event["id"]),
+                "record_kind": event.get("record_kind"),
                 "event_type": event.get("event_type", "outflow"),
                 "category": event.get("category", "other"),
                 "subcategory": event.get("subcategory", ""),
@@ -1117,6 +1330,9 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "due_date": due_str,
                 "status": event.get("status", "planned"),
                 "confidence": event.get("confidence", "estimated"),
+                "pay_priority": event.get("pay_priority"),
+                "minimum_payment_cents": event.get("minimum_payment_cents"),
+                "flexibility": event.get("flexibility"),
                 "recurring_rule": event.get("recurring_rule", ""),
                 "clickup_task_id": event.get("clickup_task_id", ""),
                 "bank_transaction_type": event.get("bank_transaction_type", ""),
@@ -1131,16 +1347,18 @@ def upsert_cash_event(conn, event: dict) -> str:
         conn.execute(
             text("""
                 INSERT INTO cash_events (
-                    id, source, source_id, event_type, category,
+                    id, source, source_id, record_kind, event_type, category,
                     subcategory, description, name, vendor_or_customer,
                     amount_cents, due_date, status, confidence,
+                    pay_priority, minimum_payment_cents, flexibility,
                     recurring_rule, clickup_task_id,
                     bank_transaction_type, bank_reference,
                     notes, friendly_name, created_at, updated_at
                 ) VALUES (
-                    :id, :source, :source_id, :event_type, :category,
+                    :id, :source, :source_id, :record_kind, :event_type, :category,
                     :subcategory, :description, :name, :vendor_or_customer,
                     :amount_cents, :due_date, :status, :confidence,
+                    :pay_priority, :minimum_payment_cents, :flexibility,
                     :recurring_rule, :clickup_task_id,
                     :bank_transaction_type, :bank_reference,
                     :notes, :friendly_name, :created_at, :updated_at
@@ -1150,6 +1368,7 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "id": event["id"],
                 "source": event.get("source", ""),
                 "source_id": event.get("source_id", event["id"]),
+                "record_kind": event.get("record_kind", "obligation"),
                 "event_type": event.get("event_type", "outflow"),
                 "category": event.get("category", "other"),
                 "subcategory": event.get("subcategory", ""),
@@ -1160,6 +1379,9 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "due_date": due_str,
                 "status": event.get("status", "planned"),
                 "confidence": event.get("confidence", "estimated"),
+                "pay_priority": event.get("pay_priority", "review"),
+                "minimum_payment_cents": event.get("minimum_payment_cents"),
+                "flexibility": event.get("flexibility", "unknown"),
                 "recurring_rule": event.get("recurring_rule", ""),
                 "clickup_task_id": event.get("clickup_task_id", ""),
                 "bank_transaction_type": event.get("bank_transaction_type", ""),
@@ -1179,30 +1401,37 @@ def insert_cash_event(conn, *, id, source, source_id, event_type, category,
                        confidence="estimated", account_balance_cents=None,
                        bank_transaction_type="", bank_reference="", notes="",
                        recurring_rule="", clickup_task_id="", friendly_name=None,
+                       record_kind="obligation", pay_priority="review",
+                       minimum_payment_cents=None, flexibility="unknown",
                        created_at, updated_at):
     """Single canonical INSERT for cash_events. Use this everywhere instead of inline SQL."""
     due_str = due_date.isoformat() if hasattr(due_date, "isoformat") else (str(due_date)[:10] if due_date else None)
     conn.execute(text("""
         INSERT INTO cash_events (
-            id, source, source_id, event_type, category,
+            id, source, source_id, record_kind, event_type, category,
             subcategory, description, name, vendor_or_customer,
             amount_cents, due_date, status, confidence,
+            pay_priority, minimum_payment_cents, flexibility,
             account_balance_cents, bank_transaction_type, bank_reference,
             notes, recurring_rule, clickup_task_id, friendly_name,
             created_at, updated_at
         ) VALUES (
-            :id, :source, :source_id, :event_type, :category,
+            :id, :source, :source_id, :record_kind, :event_type, :category,
             :subcategory, :description, :name, :vendor_or_customer,
             :amount_cents, :due_date, :status, :confidence,
+            :pay_priority, :minimum_payment_cents, :flexibility,
             :account_balance_cents, :bank_transaction_type, :bank_reference,
             :notes, :recurring_rule, :clickup_task_id, :friendly_name,
             :created_at, :updated_at
         )
     """), {
-        "id": id, "source": source, "source_id": source_id, "event_type": event_type,
+        "id": id, "source": source, "source_id": source_id, "record_kind": record_kind,
+        "event_type": event_type,
         "category": category, "subcategory": subcategory, "description": description,
         "name": name, "vendor_or_customer": vendor_or_customer, "amount_cents": amount_cents,
         "due_date": due_str, "status": status, "confidence": confidence,
+        "pay_priority": pay_priority, "minimum_payment_cents": minimum_payment_cents,
+        "flexibility": flexibility,
         "account_balance_cents": account_balance_cents,
         "bank_transaction_type": bank_transaction_type, "bank_reference": bank_reference,
         "notes": notes, "recurring_rule": recurring_rule, "clickup_task_id": clickup_task_id,
