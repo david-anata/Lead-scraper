@@ -40,6 +40,7 @@ def _control_state(*, queue: list[dict] | None = None, balance_cents: int = 498_
             "floor_cents": 1_000_000,
         },
         "queue": {"items": queue or []},
+        "trust_gate": {"ready": True, "summary": "Finance sources are current."},
         "recommendation": {
             "title": "Split rent into installments",
             "why": "The full payment breaches the cash floor.",
@@ -73,6 +74,10 @@ def _render(
             return_value=(rows, None),
         ),
         patch(
+            "sales_support_agent.services.cashflow.overview._load_finance_control_inputs",
+            return_value=(None, None),
+        ),
+        patch(
             "sales_support_agent.services.cashflow.control.build_finance_control",
             return_value=state,
         ) as builder,
@@ -81,6 +86,7 @@ def _render(
     builder.assert_called_once_with(
         rows, balance_cents, balance_as_of,
         smart_mode=True, settlement_annotations=None,
+        income_decisions=None, source_connections=None,
     )
     return page
 
@@ -199,6 +205,190 @@ def test_income_card_and_trajectory_keep_income_sources_distinct() -> None:
     assert "$1,500 dated receivables" in incoming
     assert "Expected includes probability-weighted CSV recurring-deposit trends and dated receivables." in page
     assert "It is not committed cash." in page
+
+
+def test_source_readiness_and_failed_trust_gate_precede_cash_decisions() -> None:
+    state = _control_state(queue=[{
+        "id": "rent-1", "event_type": "outflow", "party": "Studio Rent",
+        "due_date": (TODAY + timedelta(days=1)).isoformat(), "open_amount_cents": 500_000,
+        "action_label": "Pay now", "quick_actions": [
+            {"action_type": "preview_cash_impact"}, {"action_type": "defer_or_change_date"},
+            {"action_type": "mark_paid"},
+        ],
+    }])
+    state["source_status"] = [
+        {"source": "csv", "status": "ready", "detail": "Through today"},
+        {"source": "clickup", "status": "stale", "detail": "Last sync failed"},
+        {"source": "qbo", "status": "ready", "detail": "Open invoices current"},
+    ]
+    state["trust_gate"] = {
+        "ready": False,
+        "summary": "ClickUp plans are stale.",
+        "failures": ["Planned AP and AR dates are not current."],
+        "next_action": "Refresh ClickUp before making a cash decision.",
+    }
+    state["data_quality"] = {
+        "quarantined_count": 2,
+        "actionable_zero_obligation_count": 1,
+    }
+
+    page = _render([], state)
+
+    positions = [
+        page.index("Finance source readiness"),
+        page.index('data-trust-ready="false"'),
+        page.index('aria-label="Cash position"'),
+    ]
+    assert positions == sorted(positions)
+    for label in ("Bank CSV", "ClickUp", "QBO"):
+        assert label in page
+    brief = page[page.index('aria-labelledby="smart-brief-title"'):page.index('aria-labelledby="trajectory-title"')]
+    assert "Cash decisions are paused while finance source readiness is restored." in brief
+    assert "Planned AP and AR dates are not current." in brief
+    assert "Refresh ClickUp before making a cash decision." in brief
+    assert "Review next action" in brief
+    assert "Split rent into installments" not in page
+    for label in ("Pay now", "Protect cash", "Defer / change date", "Mark paid"):
+        assert label not in page
+    assert "Review evidence" in page
+    assert 'data-preview-action="Preview cash impact"' in page
+    assert "CFO payment advice is unavailable until the trust gate passes." in page
+
+
+def test_missing_trust_contract_fails_closed_and_reports_unavailable_cfo() -> None:
+    state = _control_state(queue=[{
+        "id": "rent-1", "event_type": "outflow", "party": "Studio Rent",
+        "due_date": (TODAY + timedelta(days=1)).isoformat(), "open_amount_cents": 500_000,
+        "action_label": "Protect cash",
+    }])
+    state.pop("trust_gate")
+
+    page = _render([], state)
+
+    assert 'data-trust-ready="false"' in page
+    assert "CFO decision support unavailable" in page
+    assert "Source readiness was not verified." in page
+    assert "CFO payment advice is unavailable until the trust gate passes." in page
+    assert "Protect cash" not in page
+    assert "Pay now" not in page
+    assert "Review evidence" in page
+
+
+def test_renderer_fallback_fails_closed_and_source_statuses_are_not_ready() -> None:
+    with (
+        patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),
+        patch("sales_support_agent.services.cashflow.overview._resolve_current_balance", return_value=(0, "", "")),
+        patch("sales_support_agent.services.cashflow.overview._load_settlement_context", return_value=([], None)),
+        patch("sales_support_agent.services.cashflow.control.build_finance_control", side_effect=RuntimeError("control unavailable")),
+    ):
+        page = asyncio.run(render_cashflow_overview_page())
+
+    assert 'data-trust-ready="false"' in page
+    assert "CFO decision support unavailable" in page
+    assert "CFO payment advice is unavailable until the trust gate passes." in page
+    assert "Bank CSV</strong><small>Status not reported.</small></div>\n            <span>Not reported</span>" in page
+    assert "ClickUp</strong><small>Status not reported.</small></div>\n            <span>Ready</span>" not in page
+
+
+def test_disconnected_or_failed_source_status_never_claims_ready() -> None:
+    state = _control_state(queue=[])
+    state["source_status"] = [
+        {"source": "csv", "status": "disconnected", "detail": "Connection unavailable"},
+        {"source": "clickup", "status": "ready", "ready": False, "detail": "Authorization failed"},
+    ]
+
+    page = _render([], state)
+
+    assert "Connection unavailable</small></div>\n            <span>Disconnected</span>" in page
+    assert "Authorization failed</small></div>\n            <span>Needs attention</span>" in page
+    assert "Authorization failed</small></div>\n            <span>Ready</span>" not in page
+
+
+def test_income_review_drawer_lists_pattern_evidence_and_decision_forms() -> None:
+    state = _control_state(queue=[])
+    state["income_projection"] = {
+        "status": "inferred_review",
+        "patterns": [{
+            "pattern_key": "0123456789abcdef",
+            "party": "Acme retainers",
+            "decision": "review",
+            "evidence": {
+                "occurrence_dates": ["2026-05-01", "2026-06-01", "2026-07-01"],
+                "median_cadence_days": 30,
+                "projected_amount_cents": 320_000,
+                "probability_bps": 5_000,
+            },
+        }],
+    }
+
+    page = _render([], state)
+    incoming = page[page.index("Incoming 14 days"):page.index("Required out 14 days")]
+
+    assert "Confirmed" in incoming
+    assert "Expected" in incoming
+    assert "Needs review" in incoming
+    assert "$3,200" in incoming
+    assert "Review income patterns" in incoming
+    assert 'id="finance-income-review-drawer"' in page
+    assert "May 01, 2026, Jun 01, 2026, Jul 01, 2026" in page
+    assert "Every 30 days" in page
+    assert "$3,200.00" in page
+    assert "50%" in page
+    action = 'action="/admin/finances/income-patterns/0123456789abcdef/decision"'
+    assert page.count(action) == 3
+    for value in ("track_expected", "one_time", "exclude"):
+        assert f'name="decision" value="{value}"' in page
+    for label in ("Track as expected", "One-time", "Exclude"):
+        assert label in page
+
+
+def test_inferred_queue_rows_expose_explain_action() -> None:
+    queue = [{
+        "id": "trend-income-1",
+        "event_type": "inflow",
+        "party": "Acme",
+        "due_date": (TODAY + timedelta(days=2)).isoformat(),
+        "open_amount_cents": 250_000,
+        "trend_inferred": True,
+    }]
+
+    page = _render([], _control_state(queue=queue))
+
+    assert 'data-preview-action="Explain"' in page
+
+
+def test_income_review_drawer_has_loading_empty_and_error_safe_copy() -> None:
+    expected = {
+        "loading": "Income pattern review is loading.",
+        "ready": "No income patterns need review.",
+        "error": "Income pattern review is unavailable.",
+    }
+    for status, copy in expected.items():
+        state = _control_state(queue=[])
+        state["income_projection"] = {"status": status, "patterns": []}
+        assert copy in _render([], state)
+
+
+def test_renderer_passes_loaded_decisions_and_connections_to_control() -> None:
+    decisions = [{"pattern_key": "0123456789abcdef", "decision": "exclude"}]
+    connections = [{"source": "qbo", "status": "ready"}]
+    state = _control_state(queue=[])
+    with (
+        patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),
+        patch("sales_support_agent.services.cashflow.overview._resolve_current_balance", return_value=(498_392, BALANCE_AS_OF, "csv")),
+        patch("sales_support_agent.services.cashflow.overview._load_settlement_context", return_value=([], None)),
+        patch("sales_support_agent.services.cashflow.overview._load_finance_control_inputs", return_value=(decisions, connections)),
+        patch("sales_support_agent.services.cashflow.control.build_finance_control", return_value=state) as builder,
+    ):
+        asyncio.run(render_cashflow_overview_page(settings=object()))
+
+    builder.assert_called_once_with(
+        [], 498_392, BALANCE_AS_OF,
+        smart_mode=True,
+        settlement_annotations=None,
+        income_decisions=decisions,
+        source_connections=connections,
+    )
 
 def test_unified_queue_actions_drawer_modal_and_states_are_present() -> None:
     queue = [

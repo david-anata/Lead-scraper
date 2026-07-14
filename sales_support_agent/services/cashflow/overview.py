@@ -827,19 +827,178 @@ def _fallback_finance_control(
     }
 
 
+def _status_key(value: Any) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _trust_action_copy(value: Any) -> str:
+    raw = str(value or "").strip()
+    key = _status_key(raw)
+    known = {
+        "upload_latest_balance": "Upload the latest bank CSV before making a cash decision.",
+        "refresh_cash_balance": "Refresh the bank CSV before making a cash decision.",
+        "resolve_finance_data": "Resolve missing or conflicting finance evidence first.",
+        "review_income_patterns": "Review inferred income patterns before making a cash decision.",
+        "configure_income_forecast": "Configure forecast income before making a cash decision.",
+        "review_cash_plan": "Review the refreshed cash plan.",
+    }
+    if key in known:
+        return known[key]
+    return raw if " " in raw else raw.replace("_", " ").capitalize() + "."
+
+
+def _normalise_source_statuses(control: Any) -> list[dict[str, str]]:
+    raw_statuses = _control_value(control, "source_status", "source_statuses", default=[])
+    if isinstance(raw_statuses, Mapping):
+        raw_statuses = [
+            {"source": source, **(dict(value) if isinstance(value, Mapping) else {"status": value})}
+            for source, value in raw_statuses.items()
+        ]
+    try:
+        supplied = list(raw_statuses or [])
+    except TypeError:
+        supplied = []
+
+    aliases = {
+        "bank": "bank_csv", "bank_csv": "bank_csv", "csv": "bank_csv",
+        "clickup": "clickup", "qbo": "qbo", "quickbooks": "qbo",
+        "qbo_open_invoices": "qbo",
+    }
+    labels = {"bank_csv": "Bank CSV", "clickup": "ClickUp", "qbo": "QBO"}
+    by_source: dict[str, dict[str, str]] = {}
+    for item in supplied:
+        source = _status_key(_control_value(item, "source", "key", "name", default=""))
+        canonical = aliases.get(source)
+        if not canonical:
+            continue
+        status = _status_key(_control_value(item, "status", "state", "readiness", default="unknown"))
+        is_ready = _control_value(item, "ready", "is_ready", default=_MISSING)
+        if is_ready is not _MISSING:
+            # An explicit failed connection must never inherit a stale "ready" label.
+            status = "ready" if bool(is_ready) else "not_ready"
+        detail = str(
+            _control_value(
+                item, "detail", "message", "summary", "freshness", "as_of", "as_of_date",
+                "latest_date", default="Status not reported.",
+            )
+            or "Status not reported."
+        )
+        by_source[canonical] = {
+            "key": canonical,
+            "label": labels[canonical],
+            "status": status or "unknown",
+            "detail": detail,
+        }
+    return [
+        by_source.get(
+            key,
+            {"key": key, "label": labels[key], "status": "unknown", "detail": "Status not reported."},
+        )
+        for key in ("bank_csv", "clickup", "qbo")
+    ]
+
+
+def _normalise_income_patterns(income_projection: Any) -> list[dict[str, Any]]:
+    raw_patterns = _control_value(income_projection, "patterns", "income_patterns", default=[])
+    try:
+        patterns = list(raw_patterns or [])
+    except TypeError:
+        patterns = []
+    normalised = []
+    for index, pattern in enumerate(patterns):
+        evidence = _control_value(pattern, "evidence", "source_evidence", default={})
+        pattern_key = str(
+            _control_value(pattern, "pattern_key", "key", "id", default=f"pattern-{index}")
+        )
+        raw_dates = _control_value(
+            pattern, "dates", "observed_dates", "evidence_dates", "posting_dates",
+            default=_control_value(evidence, "occurrence_dates", "dates", default=[]),
+        )
+        if isinstance(raw_dates, str):
+            dates = [raw_dates]
+        else:
+            try:
+                dates = list(raw_dates or [])
+            except TypeError:
+                dates = []
+        date_labels = []
+        for raw_date in dates:
+            if isinstance(raw_date, Mapping):
+                raw_date = _control_value(raw_date, "date", "posted_date", default="")
+            if isinstance(raw_date, (date, datetime)):
+                date_labels.append(raw_date.strftime("%b %d, %Y"))
+                continue
+            try:
+                date_labels.append(date.fromisoformat(str(raw_date)[:10]).strftime("%b %d, %Y"))
+            except ValueError:
+                if raw_date:
+                    date_labels.append(str(raw_date))
+        probability = _control_value(
+            pattern, "probability", "confidence_probability",
+            default=_control_value(evidence, "probability", "probability_bps", default=0),
+        )
+        try:
+            probability_number = float(probability or 0)
+        except (TypeError, ValueError):
+            probability_number = 0
+        if _control_value(evidence, "probability_bps", default=_MISSING) is not _MISSING:
+            probability_number /= 100
+        elif 0 < probability_number <= 1:
+            probability_number *= 100
+        decision = _status_key(_control_value(pattern, "decision", "status", default="needs_review"))
+        normalised.append({
+            "key": pattern_key,
+            "label": str(
+                _control_value(
+                    pattern, "display_name", "counterparty", "party", "description",
+                    default="Recurring deposit pattern",
+                )
+            ),
+            "dates": date_labels,
+            "cadence": str(_control_value(
+                pattern, "cadence", "cadence_label",
+                default=(
+                    f"Every {_control_value(evidence, 'median_cadence_days')} days"
+                    if _control_value(evidence, "median_cadence_days", default=None)
+                    else "Cadence unavailable"
+                ),
+            )),
+            "amount_cents": max(0, _cents(_control_value(
+                pattern, "conservative_amount_cents", "conservative_cents", "amount_cents",
+                default=_control_value(evidence, "projected_amount_cents", default=0),
+            ))),
+            "probability": max(0, min(100, round(probability_number))),
+            "decision": decision or "needs_review",
+        })
+    return normalised
+
+
 def _build_renderer_state(
     rows: list[dict[str, Any]], balance_cents: int, balance_as_of: str, today: date,
     settlement_annotations: list[dict[str, Any]] | None = None,
+    income_decisions: Any = None,
+    source_connections: Any = None,
 ) -> tuple[Any, dict[str, Any], bool]:
     """Load the canonical control builder, retaining a safe local read fallback."""
     fallback = _fallback_finance_control(rows, balance_cents, balance_as_of, today)
     try:
         from sales_support_agent.services.cashflow.control import build_finance_control
 
-        control = build_finance_control(
-            rows, balance_cents, balance_as_of, smart_mode=True,
-            settlement_annotations=settlement_annotations,
+        supplied = {
+            "smart_mode": True,
+            "settlement_annotations": settlement_annotations,
+            "income_decisions": income_decisions,
+            "source_connections": source_connections,
+        }
+        signature = inspect.signature(build_finance_control)
+        accepts_kwargs = any(
+            parameter.kind == parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
         )
+        kwargs = supplied if accepts_kwargs else {
+            key: value for key, value in supplied.items() if key in signature.parameters
+        }
+        control = build_finance_control(rows, balance_cents, balance_as_of, **kwargs)
         if control is not None:
             return control, fallback, False
     except (ImportError, AttributeError):
@@ -895,6 +1054,67 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
     recommendation = _control_value(
         control, "recommendation", "top_recommendation", "smart_recommendation", default={}
     )
+    patterns = _normalise_income_patterns(income_projection)
+    trust_gate = _control_value(control, "trust_gate", default=_MISSING)
+    trust_ready_raw = _control_value(trust_gate, "ready", "is_ready", "passed", default=_MISSING)
+    trust_status = _status_key(_control_value(trust_gate, "status", "state", default=""))
+    if trust_ready_raw is _MISSING:
+        trust_ready = None if trust_gate is _MISSING else trust_status in {"ready", "passed", "ok", "healthy"}
+    else:
+        trust_ready = bool(trust_ready_raw)
+    raw_trust_issues = _control_value(
+        trust_gate, "failures", "issues", "blockers", "reasons", default=[]
+    )
+    if isinstance(raw_trust_issues, str):
+        trust_issues = [raw_trust_issues]
+    else:
+        try:
+            trust_issues = [
+                str(_control_value(issue, "message", "label", "summary", default=issue))
+                for issue in list(raw_trust_issues or [])
+            ]
+        except TypeError:
+            trust_issues = []
+    trust_issues = [issue for issue in trust_issues if issue]
+    default_trust_summary = (
+        "; ".join(trust_issues).capitalize() + "."
+        if trust_issues
+        else "Source trust is ready." if trust_ready else "Source trust has not been verified."
+    )
+    data_quality = _control_value(control, "data_quality", default={})
+    quality_counts = _control_value(data_quality, "counts", default={})
+    quarantined_count = max(0, _cents(_control_value(
+        data_quality, "quarantined_count",
+        default=_control_value(quality_counts, "quarantined", default=0),
+    )))
+    missing_amount_count = max(0, _cents(_control_value(
+        data_quality, "actionable_zero_obligation_count", "missing_amount_count",
+        default=_control_value(quality_counts, "actionable_zero_obligations", default=0),
+    )))
+    default_quality_summary = (
+        f"{quarantined_count} records excluded; {missing_amount_count} open items need amounts."
+        if quarantined_count or missing_amount_count
+        else "No data quality exceptions were reported."
+    )
+    raw_quality_issues = _control_value(data_quality, "issues", "warnings", "failures", default=[])
+    if isinstance(raw_quality_issues, str):
+        quality_issues = [raw_quality_issues]
+    else:
+        try:
+            quality_issues = [
+                str(_control_value(issue, "message", "label", "summary", default=issue))
+                for issue in list(raw_quality_issues or [])
+            ]
+        except TypeError:
+            quality_issues = []
+    needs_review_raw = _control_value(
+        income_projection, "needs_review_cents", "review_amount_cents", default=_MISSING
+    )
+    needs_review_cents = (
+        sum(pattern["amount_cents"] for pattern in patterns if pattern["decision"] in {"needs_review", "review", "pending", "inferred"})
+        if needs_review_raw is _MISSING
+        else max(0, _cents(needs_review_raw))
+    )
     return {
         "cash": {
             "cash_on_hand_cents": _cents(_control_value(cash, "cash_on_hand_cents", "balance_cents", default=fallback_cash["cash_on_hand_cents"])),
@@ -913,8 +1133,32 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
         },
         "income_projection": {
             "unconfigured": projection_unconfigured,
+            "status": projection_status or ("unconfigured" if projection_unconfigured else "ready"),
             "csv_trend_expected_cents": csv_trend_expected_cents,
             "posted_inflow_count": posted_inflow_count,
+            "needs_review_cents": needs_review_cents,
+            "patterns": patterns,
+        },
+        "source_status": _normalise_source_statuses(control),
+        "trust_gate": {
+            "ready": trust_ready,
+            "status": trust_status or ("unknown" if trust_ready is None else "ready" if trust_ready else "not_ready"),
+            "summary": str(_control_value(
+                trust_gate, "summary", "message", "reason",
+                default=default_trust_summary,
+            )),
+            "next_action": _trust_action_copy(_control_value(
+                trust_gate, "next_action", "action", "next",
+                default="Refresh the required source and resolve its data issues.",
+            )),
+            "issues": trust_issues,
+        },
+        "data_quality": {
+            "status": _status_key(_control_value(data_quality, "status", "state", default="unknown")),
+            "summary": str(_control_value(
+                data_quality, "summary", "message", default=default_quality_summary
+            )),
+            "issues": [issue for issue in quality_issues if issue],
         },
         "forecast": _control_value(control, "forecast", "cash_trajectory", "forecast_paths", default=fallback["forecast"]),
         "queue": _control_value(control, "queue", "queue_items", "money_queue", default=fallback["queue"]),
@@ -995,6 +1239,14 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         or due is None or (due is not None and due < today)
         or status in {"conflict", "duplicate", "review"}
     )
+    inferred = bool(
+        _control_value(item, "inferred", "is_inferred", "trend_inferred", default=False)
+        or row.get("inferred")
+        or row.get("is_inferred")
+        or row.get("trend_inferred")
+        or _status_key(row.get("origin")) in {"inferred", "income_pattern", "recurring_pattern"}
+        or _status_key(row.get("source")) == "inferred"
+    )
     tabs = ["incoming" if direction == "inflow" else "payables"]
     if needs_action:
         tabs.append("needs-action")
@@ -1015,10 +1267,11 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
             _control_value(item, "source_url", "url", default=row.get("source_url") or row.get("clickup_url") or "")
         ),
         "quick_actions": list(_control_value(item, "quick_actions", default=[]) or []),
+        "inferred": inferred,
     }
 
 
-def _quick_action_menu(item: dict[str, Any]) -> str:
+def _quick_action_menu(item: dict[str, Any], *, decision_actions_allowed: bool) -> str:
     action_labels = {
         "preview_cash_impact": "Preview cash impact",
         "record_partial_payment": "Record partial payment",
@@ -1051,6 +1304,15 @@ def _quick_action_menu(item: dict[str, Any]) -> str:
             "Preview cash impact", "Record partial payment", "Split into installments",
             "Defer / change date", "Match bank transaction", "Mark paid", "Flag duplicate",
         )
+    if item["inferred"] and "Explain" not in labels:
+        labels = ("Explain", *labels)
+    if not decision_actions_allowed:
+        # Keep evidence and reconciliation work available, but never offer CFO
+        # payment decisions until an explicit trust pass is present.
+        labels = tuple(label for label in labels if label in {
+            "Explain", "Preview cash impact", "Match bank transaction",
+            "Match bank deposit", "Flag duplicate", "Assign follow-up",
+        })
     buttons = "".join(
         f'<button type="button" role="menuitem" data-preview-action="{html.escape(label, quote=True)}" '
         f'data-event-id="{html.escape(item["id"], quote=True)}" '
@@ -1071,11 +1333,15 @@ def _quick_action_menu(item: dict[str, Any]) -> str:
       </details>"""
 
 
-def _queue_table_html(queue: Any, today: date) -> tuple[str, dict[str, int]]:
+def _queue_table_html(
+    queue: Any, today: date, *, decision_actions_allowed: bool,
+) -> tuple[str, dict[str, int]]:
     items = [_queue_item_data(item, today) for item in _flatten_queue(queue)]
     counts = {key: 0 for key in ("needs-action", "incoming", "payables", "recent")}
     rows_html = []
     for item in items:
+        if not decision_actions_allowed:
+            item["action"] = "Review evidence"
         for tab in item["tabs"]:
             counts[tab] += 1
         rows_html.append(f"""
@@ -1085,7 +1351,7 @@ def _queue_table_html(queue: Any, today: date) -> tuple[str, dict[str, int]]:
             <td>{html.escape(item['timing'])}</td>
             <td class="{'amount-in' if item['direction'] == 'inflow' else 'amount-out'}">{'+' if item['direction'] == 'inflow' else '-'}{_money(item['amount_cents'])}</td>
             <td>{html.escape(item['impact'])}</td>
-            <td>{_quick_action_menu(item)}</td>
+            <td>{_quick_action_menu(item, decision_actions_allowed=decision_actions_allowed)}</td>
           </tr>""")
     return "".join(rows_html), counts
 
@@ -1503,6 +1769,100 @@ def _savings_section_html(
     return section, payloads
 
 
+def _source_readiness_html(source_statuses: list[dict[str, str]]) -> str:
+    ready_statuses = {"ready", "current", "connected", "healthy", "synced", "ok"}
+    loading_statuses = {"loading", "syncing", "pending"}
+    rows = []
+    for source in source_statuses:
+        status = source["status"]
+        if status in ready_statuses:
+            state_class, state_label = "is-ready", "Ready"
+        elif status in loading_statuses:
+            state_class, state_label = "is-loading", "Loading"
+        elif status in {"unknown", "unconfigured", "not_configured", "disconnected"}:
+            state_class, state_label = "is-unknown", (
+                "Disconnected" if status == "disconnected" else "Not reported"
+            )
+        else:
+            state_class, state_label = "is-blocked", "Needs attention"
+        rows.append(f"""
+          <article class="finance-source-readiness__item {state_class}" data-finance-source="{html.escape(source['key'], quote=True)}">
+            <span class="finance-source-readiness__mark" aria-hidden="true"></span>
+            <div><strong>{html.escape(source['label'])}</strong><small>{html.escape(source['detail'])}</small></div>
+            <span>{state_label}</span>
+          </article>""")
+    return "".join(rows)
+
+
+def _income_review_drawer_html(income_projection: Mapping[str, Any]) -> str:
+    status = str(income_projection.get("status") or "ready")
+    patterns = list(income_projection.get("patterns") or [])
+    if status in {"loading", "pending"}:
+        content = """
+          <div class="finance-income-review-state" role="status" aria-busy="true">
+            <div class="finance-savings-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+            <strong>Income pattern review is loading.</strong>
+            <p>Existing Confirmed and Expected totals remain unchanged.</p>
+          </div>"""
+    elif status in {"error", "unavailable", "failed"}:
+        content = """
+          <div class="finance-income-review-state is-error" role="alert">
+            <strong>Income pattern review is unavailable.</strong>
+            <p>No inferred income was promoted. Refresh finance sources and try again.</p>
+          </div>"""
+    elif not patterns:
+        content = """
+          <div class="finance-income-review-state">
+            <strong>No income patterns need review.</strong>
+            <p>Recurring deposits appear here only when posted bank history supports a conservative pattern.</p>
+          </div>"""
+    else:
+        pattern_cards = []
+        for pattern in patterns:
+            key = pattern["key"].lower()
+            valid_key = len(key) == 16 and all(character in "0123456789abcdef" for character in key)
+            dates = ", ".join(pattern["dates"][-4:]) or "Dates unavailable"
+            decision_label = pattern["decision"].replace("_", " ").title()
+            if valid_key:
+                action = f"/admin/finances/income-patterns/{key}/decision"
+                forms = "".join(
+                    f'<form method="post" action="{action}"><input type="hidden" name="decision" value="{value}"><button type="submit" class="btn {button_class} btn-sm">{label}</button></form>'
+                    for value, label, button_class in (
+                        ("track_expected", "Track as expected", "btn-primary"),
+                        ("one_time", "One-time", "btn-secondary"),
+                        ("exclude", "Exclude", "btn-secondary"),
+                    )
+                )
+            else:
+                forms = '<p class="finance-income-pattern__unavailable">Decision controls unavailable for this pattern.</p>'
+            pattern_cards.append(f"""
+              <article class="finance-income-pattern">
+                <div class="finance-income-pattern__head">
+                  <div><p class="finance-eyebrow">Inferred deposit</p><h3>{html.escape(pattern['label'])}</h3></div>
+                  <span class="badge badge-warning">{html.escape(decision_label)}</span>
+                </div>
+                <dl>
+                  <div><dt>Posting dates</dt><dd>{html.escape(dates)}</dd></div>
+                  <div><dt>Cadence</dt><dd>{html.escape(pattern['cadence'])}</dd></div>
+                  <div><dt>Conservative amount</dt><dd>{_money(pattern['amount_cents'], exact=True)}</dd></div>
+                  <div><dt>Probability</dt><dd>{pattern['probability']}%</dd></div>
+                </dl>
+                <div class="finance-income-pattern__actions" aria-label="Decision for {html.escape(pattern['label'], quote=True)}">{forms}</div>
+              </article>""")
+        content = "".join(pattern_cards)
+    return f"""
+      <aside id="finance-income-review-drawer" class="finance-drawer finance-income-drawer" aria-hidden="true" aria-labelledby="finance-income-review-title">
+        <div class="finance-drawer__scrim" data-close-income-review aria-hidden="true"></div>
+        <div class="finance-drawer__panel" role="dialog" aria-modal="true" tabindex="-1">
+          <div class="finance-drawer__head"><p class="finance-eyebrow">Income review</p><button type="button" class="finance-icon-button" data-close-income-review aria-label="Close income review">&times;</button></div>
+          <h2 id="finance-income-review-title">Review inferred income patterns</h2>
+          <p class="finance-drawer__why"><strong>Needs review:</strong> Bank history can suggest Expected income, but it never creates Confirmed income.</p>
+          <div class="finance-income-patterns">{content}</div>
+          <p class="finance-preview-note">Decisions affect forecast classification only. They do not move money or create a receivable.</p>
+        </div>
+      </aside>"""
+
+
 def _chart_payload(forecast: Any, fallback: dict[str, Any]) -> dict[str, Any]:
     points = _control_value(forecast, "points", "days", default=None)
     if points:
@@ -1573,13 +1933,42 @@ def _load_settlement_context(
     return enriched, allocations
 
 
-async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: str = "") -> str:
+def _load_finance_control_inputs(settings: Any = None) -> tuple[Any, Any]:
+    """Load persisted operator decisions and connection readiness for the control engine."""
+    from sales_support_agent.services.cashflow.income_decisions import (
+        load_finance_source_connections,
+        load_income_pattern_decisions,
+    )
+
+    if settings is None:
+        from sales_support_agent.config import load_settings
+
+        settings = load_settings()
+    return load_income_pattern_decisions(), load_finance_source_connections(settings)
+
+
+async def render_cashflow_overview_page(
+    *, flash: str = "", inline_result_html: str = "", settings: Any = None
+) -> str:
     rows = list_obligations(limit=2000)
     rows, settlement_annotations = _load_settlement_context(rows)
     balance_cents, balance_as_of, balance_source = _resolve_current_balance(rows)
+    try:
+        income_decisions, source_connections = _load_finance_control_inputs(settings)
+    except (ImportError, AttributeError):
+        # Supports a rolling deploy while the integration helpers arrive.
+        income_decisions, source_connections = None, None
+    except Exception:
+        income_decisions, source_connections = None, {"status": "error"}
     today = date.today()
     control, fallback, control_error = _build_renderer_state(
-        rows, balance_cents, balance_as_of, today, settlement_annotations
+        rows,
+        balance_cents,
+        balance_as_of,
+        today,
+        settlement_annotations,
+        income_decisions,
+        source_connections,
     )
     state = _normalise_renderer_state(control, fallback)
     cash = state["cash"]
@@ -1620,7 +2009,26 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
     cash_usable = bool(
         cash["balance_available"] and balance_as_of and not balance_stale
     )
-    if projection_unconfigured and cash_usable:
+    trust_gate = state["trust_gate"]
+    trust_ready = trust_gate["ready"]
+    # CFO recommendations are opt-in: any absent, errored, or failed contract
+    # leaves evidence visible but disables decision controls.
+    decision_actions_allowed = trust_ready is True and not control_error
+    trust_blocking = not decision_actions_allowed
+    data_quality = state["data_quality"]
+    if trust_blocking:
+        trust_issue = trust_gate["issues"][0] if trust_gate["issues"] else trust_gate["summary"]
+        state["brief"] = {
+            "happening": "Cash decisions are paused while finance source readiness is restored.",
+            "broken": trust_issue,
+            "next": trust_gate["next_action"],
+        }
+        smart_broken_html = (
+            '<strong class="finance-readiness-title">Trust check failed</strong>'
+            f'<p class="finance-readiness-copy">{html.escape(trust_issue)}</p>'
+        )
+        smart_next_html = f"<p>{html.escape(trust_gate['next_action'])}</p>"
+    elif projection_unconfigured and cash_usable:
         history_count = income_projection["posted_inflow_count"]
         history_detail = (
             f"{history_count} comparable posted bank inflows are actual history only."
@@ -1661,6 +2069,36 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         else "Current"
     )
     quality_class = "badge-warning" if quality_badge == "Low confidence" else "badge-ok"
+    source_readiness_html = _source_readiness_html(state["source_status"])
+    if decision_actions_allowed:
+        trust_state, trust_title = "ready", "Ready for cash decisions"
+        trust_summary = trust_gate["summary"]
+    elif trust_ready is False:
+        trust_state, trust_title = "blocked", "Cash decisions paused"
+        trust_summary = trust_gate["summary"]
+    else:
+        trust_state, trust_title = "blocked", "CFO decision support unavailable"
+        trust_summary = "Source readiness was not verified. Cash data is visible for review only."
+    trust_issues_html = "".join(
+        f"<li>{html.escape(issue)}</li>" for issue in trust_gate["issues"]
+    )
+    trust_next_html = (
+        f'<p><strong>Next:</strong> {html.escape(trust_gate["next_action"])}</p>'
+        if trust_blocking else ""
+    )
+    trust_block_html = f"""
+      <section class="finance-trust-gate is-{trust_state}" data-trust-ready="{'false' if trust_blocking else 'true' if trust_ready is True else 'unknown'}" aria-labelledby="finance-trust-title">
+        <div class="finance-trust-gate__status" aria-hidden="true"></div>
+        <div class="finance-trust-gate__body">
+          <p class="finance-eyebrow">Decision trust</p>
+          <h2 id="finance-trust-title">{trust_title}</h2>
+          <p>{html.escape(trust_summary)}</p>
+          {f'<ul>{trust_issues_html}</ul>' if trust_issues_html else ''}
+          {trust_next_html}
+        </div>
+        <div class="finance-trust-gate__quality"><span>Data quality</span><strong>{html.escape(data_quality['summary'])}</strong></div>
+        <button class="btn {'btn-primary' if trust_blocking else 'btn-secondary'} btn-sm" type="button" data-open-modal="finance-update-modal">{'Resolve source readiness' if trust_blocking else 'Review sources'}</button>
+      </section>"""
 
     savings_release_mode = _savings_release_mode()
     savings = (
@@ -1693,9 +2131,12 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         ):
             queue_items.append(row)
             queue_ids.add(row_id)
-    queue_rows_html, counts = _queue_table_html(queue_items, today)
+    queue_rows_html, counts = _queue_table_html(
+        queue_items, today, decision_actions_allowed=decision_actions_allowed,
+    )
     empty_hidden = " hidden" if counts["needs-action"] else ""
     queue_table_hidden = "" if queue_rows_html else " hidden"
+    income_review_drawer = _income_review_drawer_html(income_projection)
 
     recommendation = state["recommendation"]
     rec_title = str(_control_value(recommendation, "title", "action", "summary", default=state["brief"]["next"]))
@@ -1708,8 +2149,26 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
     rec_downside = str(_control_value(recommendation, "downside", default="The remaining obligation stays open."))
     rec_action = str(_control_value(recommendation, "action_label", default="Create action preview"))
 
-    drawer_payloads = {
-        "recommendation": {
+    if trust_blocking:
+        recommendation_payload = {
+            "eyebrow": "Source readiness",
+            "title": "Restore finance source trust",
+            "why": trust_gate["summary"],
+            "facts": [
+                ["Decision state", "Cash recommendations are paused"],
+                ["Data quality", data_quality["summary"]],
+                ["Next action", trust_gate["next_action"]],
+                ["After refresh", "Recalculate before making any cash decision"],
+            ],
+            "sourceUrl": "",
+            "sourceAction": "update-money",
+            "sourceLabel": "Review finance sources",
+            "note": "Readiness guidance only. CFO payment advice is unavailable until the trust gate passes.",
+        }
+        rec_title = recommendation_payload["title"]
+        rec_why = recommendation_payload["why"]
+    else:
+        recommendation_payload = {
             "eyebrow": "Smart recommendation",
             "title": rec_title,
             "why": rec_why,
@@ -1725,7 +2184,10 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
             "sourceAction": "",
             "sourceLabel": "Open source",
             "note": "Review only. No bank payment is initiated.",
-        },
+        }
+
+    drawer_payloads = {
+        "recommendation": recommendation_payload,
         "savings": savings_payloads,
     }
     drawer_json = json.dumps(drawer_payloads, separators=(",", ":")).replace("<", "\\u003c")
@@ -1755,15 +2217,26 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         </div>
       </header>
 
+      <section class="finance-source-readiness" aria-label="Finance source readiness">
+        <div class="finance-source-readiness__label"><span>Source readiness</span><small>Bank truth, work plan, receivables</small></div>
+        {source_readiness_html}
+      </section>
+
+      {trust_block_html}
+
       <section class="finance-cash-strip" aria-label="Cash position">
         <article class="finance-cash-metric{' is-stale' if balance_stale or not cash['balance_available'] else ''}">
           <div class="finance-metric-head"><span>Cash on hand</span><span class="badge {quality_class}">{quality_badge}</span></div>
           <strong>{balance_display}</strong><small>{balance_note}</small>
         </article>
-        <article class="finance-cash-metric">
-          <span>Incoming 14 days</span><strong class="amount-in">{_money(cash['incoming_confirmed_cents'])}</strong>
+        <article class="finance-cash-metric finance-income-metric">
+          <span>Incoming 14 days</span>
+          <div class="finance-income-line is-confirmed"><span>Confirmed</span><strong class="amount-in">{_money(cash['incoming_confirmed_cents'])}</strong></div>
           <small>Confirmed &middot; dated receivables</small>
+          <div class="finance-income-line"><span>Expected</span><strong>{_money(cash['incoming_expected_cents'])}</strong></div>
           <small class="finance-income-breakdown">{incoming_expected_note}</small>
+          <div class="finance-income-line is-review"><span>Needs review</span><strong>{_money(income_projection['needs_review_cents'])}</strong></div>
+          <button type="button" class="finance-text-action" data-open-income-review>Review income patterns</button>
         </article>
         <article class="finance-cash-metric">
           <span>Required out 14 days</span><strong class="amount-out">{_money(cash['required_out_cents'])}</strong>
@@ -1778,7 +2251,7 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         <h2 id="smart-brief-title" class="sr-only">Smart brief</h2>
         <article><span>Happening</span><p>{html.escape(state['brief']['happening'])}</p></article>
         <article class="is-broken" data-income-readiness="{'unconfigured' if projection_unconfigured else 'configured'}"><span>Broken</span>{smart_broken_html}</article>
-        <article class="is-next"><span>Next</span>{smart_next_html}<button type="button" class="finance-text-action" data-drawer-review="recommendation">Review recommendation</button></article>
+        <article class="is-next"><span>Next</span>{smart_next_html}<button type="button" class="finance-text-action" data-drawer-review="recommendation">{'Review next action' if trust_blocking else 'Review recommendation'}</button></article>
       </section>
 
       <section class="card finance-trajectory" aria-labelledby="trajectory-title">
@@ -1895,6 +2368,8 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           <p id="finance-preview-note" class="finance-preview-note">Review details before confirming. No bank payment is initiated.</p>
         </div>
       </aside>
+
+      {income_review_drawer}
 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
@@ -2013,7 +2488,10 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
       const drawerSource = document.getElementById('finance-drawer-source');
       const drawerNote = document.getElementById('finance-preview-note');
       const liveRegion = document.getElementById('finance-live-region');
+      const incomeDrawer = document.getElementById('finance-income-review-drawer');
+      const incomeDrawerPanel = incomeDrawer.querySelector('.finance-drawer__panel');
       let drawerOpener = null;
+      let incomeDrawerOpener = null;
 
       function renderDrawerPayload(payload) {{
         drawerEyebrow.textContent = payload.eyebrow || 'Review';
@@ -2056,6 +2534,23 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         }}
       }}
 
+      function setIncomeDrawer(open, opener = null) {{
+        if (open) {{
+          incomeDrawerOpener = opener || document.activeElement;
+          incomeDrawer.setAttribute('aria-hidden', 'false');
+          pageContent.inert = true;
+          document.body.classList.add('finance-overlay-open');
+          window.requestAnimationFrame(() => incomeDrawer.querySelector('[data-close-income-review]').focus());
+        }} else {{
+          incomeDrawer.setAttribute('aria-hidden', 'true');
+          pageContent.inert = false;
+          document.body.classList.remove('finance-overlay-open');
+          const previousOpener = incomeDrawerOpener;
+          incomeDrawerOpener = null;
+          if (previousOpener && previousOpener.isConnected) previousOpener.focus();
+        }}
+      }}
+
       function openDrawer(payload, opener) {{
         document.getElementById('finance-partial-form').hidden = true;
         document.getElementById('finance-installment-form').hidden = true;
@@ -2073,6 +2568,8 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         if (payload) openDrawer(payload, button);
       }}));
       document.querySelectorAll('[data-close-drawer]').forEach(button => button.addEventListener('click', () => setDrawer(false)));
+      document.querySelectorAll('[data-open-income-review]').forEach(button => button.addEventListener('click', () => setIncomeDrawer(true, button)));
+      document.querySelectorAll('[data-close-income-review]').forEach(button => button.addEventListener('click', () => setIncomeDrawer(false)));
       drawerSource.addEventListener('click', event => {{
         if (drawerSource.dataset.sourceAction !== 'update-money') return;
         event.preventDefault();
@@ -2087,6 +2584,18 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
         const focusable = [...drawerPanel.querySelectorAll('a[href]:not([hidden]), button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), select:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])')]
           .filter(element => element.offsetParent !== null);
         if (!focusable.length) {{ event.preventDefault(); drawerPanel.focus(); return; }}
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {{ event.preventDefault(); last.focus(); }}
+        else if (!event.shiftKey && document.activeElement === last) {{ event.preventDefault(); first.focus(); }}
+      }});
+      document.addEventListener('keydown', event => {{
+        if (incomeDrawer.getAttribute('aria-hidden') !== 'false') return;
+        if (event.key === 'Escape') {{ event.preventDefault(); setIncomeDrawer(false); return; }}
+        if (event.key !== 'Tab') return;
+        const focusable = [...incomeDrawerPanel.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+          .filter(element => element.offsetParent !== null);
+        if (!focusable.length) {{ event.preventDefault(); incomeDrawerPanel.focus(); return; }}
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
         if (event.shiftKey && document.activeElement === first) {{ event.preventDefault(); last.focus(); }}

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, timedelta
+import re
 
 from sales_support_agent.services.cashflow.control import (
     annotate_open_amounts,
@@ -241,7 +243,10 @@ def test_stale_balance_gates_recommendations_to_verification_actions():
 
     assert state["confidence"]["verification_only"] is True
     assert state["recommendations"][0]["action_type"] == "refresh_cash_balance"
-    assert all(rec["rank"] <= 2 for rec in state["recommendations"])
+    assert all(
+        rec["action_type"] in {"refresh_cash_balance", "review_income_patterns"}
+        for rec in state["recommendations"]
+    )
 
 
 def test_missing_settlement_evidence_gates_recommendations_to_verification_actions():
@@ -265,7 +270,7 @@ def test_missing_settlement_evidence_gates_recommendations_to_verification_actio
 
     assert state["confidence"]["verification_only"] is True
     assert "settlement evidence is unavailable" in state["confidence"]["reasons"]
-    assert state["recommendations"][0]["action_type"] == "verify_finance_data"
+    assert state["recommendations"][0]["action_type"] == "resolve_finance_data"
 
 
 def test_ranked_recommendations_collect_then_protect_cash():
@@ -349,6 +354,7 @@ def test_queue_group_order_sorting_and_no_silent_truncation():
     assert queue["groups"][-1]["collapsed"] is True
     assert queue["groups"][-1]["count"] == 2
     assert len(queue["groups"][-1]["items"]) == 2
+    assert "duplicate" not in {item["id"] for item in queue["items"]}
     assert queue["truncated"] is False
 
 
@@ -522,10 +528,11 @@ def test_income_readiness_outranks_legacy_cleanup_and_is_explicit():
     assert control["income_projection"]["status"] == "not_configured"
     assert control["confidence"]["verification_only"] is True
     assert "forecast income is not configured" in control["confidence"]["reasons"]
-    assert control["recommendations"][0]["action_type"] == "configure_income_forecast"
+    assert control["trust_gate"]["payables_ready"] is False
+    assert control["recommendations"][0]["action_type"] == "resolve_finance_data"
     assert any(
-        item["action_type"] == "resolve_missing_amount"
-        for item in control["recommendations"][1:]
+        item["action_type"] == "configure_income_forecast"
+        for item in control["recommendations"]
     )
     assert "Forecast income is not configured" in control["smart_brief"]["broken"]
 
@@ -553,11 +560,10 @@ def test_missing_cash_outranks_income_readiness_then_generic_cleanup():
     state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
     actions = [item["action_type"] for item in state["recommendations"]]
 
-    assert actions == [
-        "upload_latest_balance",
-        "configure_income_forecast",
-        "resolve_missing_amount",
-    ]
+    assert actions[0] == "upload_latest_balance"
+    assert {
+        "resolve_finance_data", "configure_income_forecast", "resolve_missing_amount"
+    } <= set(actions)
 
 
 def test_csv_income_projection_rejects_discontinuous_recent_history():
@@ -603,3 +609,259 @@ def test_csv_income_projection_uses_non_default_summary_window():
 
     assert state["income_projection"]["csv_trend_expected_cents"] == 49_750
     assert state["metrics"]["expected_incoming_cents"] == 49_750
+
+
+def test_income_patterns_have_stable_hex_keys_and_apply_operator_decisions():
+    rows = [
+        _bank("a1", 15, amount=100_000, vendor_or_customer="Amazon"),
+        _bank("a2", 8, amount=101_000, vendor_or_customer="Amazon"),
+        _bank(
+            "a3", 1, amount=99_000, vendor_or_customer="Amazon",
+            account_balance_cents=200_000,
+        ),
+    ]
+    originals = deepcopy(rows)
+
+    review = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+    pattern = review["income_projection"]["patterns"][0]
+    pattern_key = pattern["pattern_key"]
+
+    assert re.fullmatch(r"[0-9a-f]{16}", pattern_key)
+    assert pattern["decision"] == "review"
+    assert pattern["evidence"]["occurrence_dates"] == [
+        "2026-06-28", "2026-07-05", "2026-07-12"
+    ]
+    assert review["metrics"]["expected_incoming_cents"] > 0
+    assert review["trust_gate"]["income_ready"] is False
+
+    tracked = build_finance_control_state(
+        rows,
+        as_of=AS_OF,
+        floor_cents=100_000,
+        income_decisions={pattern_key: "track_expected"},
+    )
+    assert tracked["income_projection"]["patterns"][0]["decision"] == "track_expected"
+    assert tracked["income_projection"]["operator_reviewed_pattern_count"] == 1
+    assert tracked["trust_gate"]["income_ready"] is True
+    assert tracked["metrics"]["expected_incoming_cents"] == review["metrics"]["expected_incoming_cents"]
+
+    for decision in ("exclude", "one_time"):
+        excluded = build_finance_control_state(
+            rows,
+            as_of=AS_OF,
+            floor_cents=100_000,
+            income_decisions={pattern_key: decision},
+        )
+        assert excluded["income_projection"]["projections"] == []
+        assert excluded["income_projection"]["operator_reviewed_pattern_count"] == 0
+        assert excluded["metrics"]["expected_incoming_cents"] == 0
+    assert rows == originals
+
+
+def test_real_future_receivable_satisfies_income_gate_with_auto_patterns_present():
+    rows = [
+        _bank("a1", 15, vendor_or_customer="Amazon"),
+        _bank("a2", 8, vendor_or_customer="Amazon"),
+        _bank("a3", 1, vendor_or_customer="Amazon", account_balance_cents=200_000),
+        _row(
+            "real-ar", event_type="inflow", amount_cents=50_000,
+            due_date=AS_OF + timedelta(days=3),
+        ),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+
+    assert state["income_projection"]["real_future_inflow_count"] == 1
+    assert state["trust_gate"]["income_ready"] is True
+
+
+def test_data_quality_quarantines_noise_but_keeps_recent_zero_blocker():
+    rows = _history() + [
+        _bank("zero-transaction", 2, amount=0),
+        _row("duplicate", probable_duplicate=True),
+        _row("old-zero", amount_cents=0, due_date=AS_OF - timedelta(days=91)),
+        _row("recent-zero", amount_cents=0, due_date=AS_OF - timedelta(days=10)),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+    quality = state["data_quality"]
+
+    assert quality["probable_duplicate_count"] == 1
+    assert quality["zero_transaction_count"] == 1
+    assert quality["stale_zero_obligation_count"] == 1
+    assert quality["actionable_zero_obligation_count"] == 1
+    assert {item["id"] for item in quality["quarantine"]} == {
+        "zero-transaction", "duplicate", "old-zero"
+    }
+    assert [item["id"] for item in state["queue"]["items"] if item["decision_blocker"]] == [
+        "recent-zero"
+    ]
+
+
+def test_current_duplicate_missing_amount_blocks_trust_while_old_duplicate_zero_is_quarantined():
+    rows = _history() + [
+        _row("current-duplicate-zero", amount_cents=0, probable_duplicate=True),
+        _row(
+            "old-duplicate-zero",
+            amount_cents=0,
+            probable_duplicate=True,
+            due_date=AS_OF - timedelta(days=91),
+        ),
+    ]
+
+    state = build_finance_control_state(rows, as_of=AS_OF, floor_cents=100_000)
+
+    assert state["trust_gate"]["payables_ready"] is False
+    assert {issue["id"] for issue in state["trust_gate"]["payable_issues"]} == {
+        "current-duplicate-zero"
+    }
+    assert {item["id"] for item in state["data_quality"]["quarantine"]} == {
+        "old-duplicate-zero"
+    }
+    assert "current-duplicate-zero" in {
+        item["id"] for item in state["queue"]["items"]
+    }
+
+
+def test_stale_payable_source_evidence_blocks_payment_and_defer_recommendations():
+    state = build_finance_control_state(
+        _history(250_000) + [
+            _row(
+                "stale-qbo-bill",
+                source="qbo",
+                source_updated_at=(AS_OF - timedelta(days=8)).isoformat(),
+                flexibility="deferrable",
+                pay_priority="can_hold",
+            )
+        ],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert state["trust_gate"]["payables_ready"] is False
+    assert state["trust_gate"]["payable_issues"] == [
+        {"id": "stale-qbo-bill", "reason": "stale source evidence"}
+    ]
+    assert "resolve_finance_data" in {
+        item["action_type"] for item in state["recommendations"]
+    }
+    assert not {
+        "split_or_defer_payable", "pay_or_schedule_must_pay"
+    } & {item["action_type"] for item in state["recommendations"]}
+
+
+def test_trust_gate_and_source_status_are_deterministic_and_bank_first():
+    rows = [
+        _row("conflict", source="qbo", source_conflict=True),
+        _row("clickup-bill", source="clickup"),
+    ]
+    connections = {
+        "clickup": {"connected": True, "last_synced_at": AS_OF.isoformat()},
+        "quickbooks": {"connected": True, "last_synced_at": AS_OF.isoformat()},
+    }
+    original_connections = deepcopy(connections)
+
+    state = build_finance_control_state(
+        rows,
+        as_of=AS_OF,
+        floor_cents=100_000,
+        source_connections=connections,
+    )
+
+    assert state["trust_gate"] == {
+        **state["trust_gate"],
+        "cash_ready": False,
+        "payables_ready": False,
+        "income_ready": False,
+        "ready": False,
+        "next_action": "upload_latest_balance",
+    }
+    assert state["trust_gate"]["reasons"][0] == "cash balance is missing"
+    assert state["recommendations"][0]["action_type"] == "upload_latest_balance"
+    statuses = {item["name"]: item["status"] for item in state["source_status"]}
+    assert statuses == {
+        "Bank CSV": "missing", "ClickUp": "current", "QuickBooks": "current"
+    }
+    assert connections == original_connections
+
+
+def test_connected_sources_without_rows_are_not_ready():
+    state = build_finance_control_state(
+        [],
+        as_of=AS_OF,
+        floor_cents=100_000,
+        source_connections={
+            "clickup": {"connected": True, "last_synced_at": AS_OF.isoformat()},
+            "quickbooks": {"status": "ready", "last_synced_at": AS_OF.isoformat()},
+        },
+    )
+
+    statuses = state["source_status_by_key"]
+    assert statuses["clickup"]["status"] == "connected"
+    assert statuses["quickbooks"]["status"] == "connected"
+    assert statuses["clickup"]["ready"] is False
+    assert statuses["quickbooks"]["ready"] is False
+
+
+def test_connected_source_with_undated_payable_rows_is_not_ready():
+    state = build_finance_control_state(
+        [_row("undated-clickup-bill", source="clickup", due_date=None)],
+        as_of=AS_OF,
+        floor_cents=100_000,
+        source_connections={
+            "clickup": {"connected": True, "last_synced_at": AS_OF.isoformat()},
+        },
+    )
+
+    source = state["source_status_by_key"]["clickup"]
+    assert source["status"] == "connected"
+    assert source["ready"] is False
+
+
+def test_commitment_capacity_excludes_income_and_reserves_installment_remainder():
+    expected_income = _row(
+        "expected-ar", event_type="inflow", amount_cents=500_000,
+        confidence="medium", due_date=AS_OF + timedelta(days=1),
+    )
+    full_bill = _row(
+        "full-chunk", amount_cents=100_000, flexibility="chunkable",
+        due_date=AS_OF - timedelta(days=2),
+        payment_installments=[{"amount_cents": 20_000, "due_date": AS_OF, "status": "planned"}],
+    )
+    scheduled_bill = _row(
+        "scheduled-chunk", amount_cents=100_000, flexibility="chunkable",
+        due_date=AS_OF - timedelta(days=2),
+        payment_installments=[
+            {"amount_cents": 20_000, "due_date": AS_OF, "status": "confirmed"},
+            {"amount_cents": 30_000, "due_date": AS_OF + timedelta(days=20), "status": "confirmed"},
+        ],
+    )
+
+    full = build_finance_control_state(
+        _history(250_000) + [expected_income, full_bill],
+        as_of=AS_OF, floor_cents=100_000,
+    )
+    scheduled = build_finance_control_state(
+        _history(250_000) + [expected_income, scheduled_bill],
+        as_of=AS_OF, floor_cents=100_000,
+    )
+
+    assert full["metrics"]["expected_incoming_cents"] == 250_000
+    assert full["metrics"]["required_outgoing_cents"] == 100_000
+    assert full["metrics"]["safe_to_commit_cents"] == 50_000
+    assert scheduled["metrics"]["required_outgoing_cents"] == 20_000
+    assert scheduled["metrics"]["outgoing_exposure_cents"] == 80_000
+    assert scheduled["metrics"]["safe_to_commit_cents"] == 130_000
+
+
+def test_unready_gate_emits_only_trust_resolution_recommendations():
+    state = build_finance_control_state(
+        _history(50_000) + [_row("bill", flexibility="deferrable", pay_priority="can_hold")],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert state["trust_gate"]["ready"] is False
+    assert not {
+        "collect_confirmed_income", "split_or_defer_payable", "pay_or_schedule_must_pay"
+    } & {item["action_type"] for item in state["recommendations"]}

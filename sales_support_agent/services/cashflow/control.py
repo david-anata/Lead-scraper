@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import statistics
+from hashlib import sha256
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
@@ -17,6 +18,7 @@ from typing import Any, Iterable, Mapping, Sequence
 ACTIVE_STATUSES = {"planned", "pending", "overdue", "open", "due"}
 TERMINAL_STATUSES = {"paid", "matched", "cancelled", "canceled", "void"}
 TRANSACTION_STATUSES = {"posted", "matched"}
+INCOME_DECISIONS = {"review", "track_expected", "exclude", "one_time"}
 GROUP_ORDER = (
     "resolve_first",
     "collect_now",
@@ -132,12 +134,16 @@ def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     return True
 
 
-def _is_duplicate(row: Mapping[str, Any]) -> bool:
+def _is_probable_duplicate(row: Mapping[str, Any]) -> bool:
     return bool(
         row.get("probable_duplicate")
         or row.get("is_duplicate")
-        or str(row.get("classification") or "").lower() in {"duplicate", "conflict"}
+        or str(row.get("classification") or "").lower() == "duplicate"
     )
+
+
+def _is_duplicate(row: Mapping[str, Any]) -> bool:
+    return _is_probable_duplicate(row) or str(row.get("classification") or "").lower() == "conflict"
 
 
 def _needs_match_review(row: Mapping[str, Any]) -> bool:
@@ -521,12 +527,280 @@ def _transfer_like(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _income_decision_map(
+    decisions: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None,
+) -> dict[str, str]:
+    if not decisions:
+        return {}
+    result: dict[str, str] = {}
+    if isinstance(decisions, Mapping):
+        items = decisions.get("decisions")
+        if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+            iterable: Iterable[Any] = items
+        else:
+            iterable = (
+                {"pattern_key": key, "decision": value}
+                if not isinstance(value, Mapping)
+                else {"pattern_key": key, **value}
+                for key, value in decisions.items()
+            )
+    else:
+        iterable = decisions
+    for item in iterable:
+        if not isinstance(item, Mapping):
+            continue
+        key = str(item.get("pattern_key") or item.get("key") or "").strip()
+        decision = str(item.get("decision") or "").strip().lower()
+        if key and decision in INCOME_DECISIONS:
+            result[key] = decision
+    return result
+
+
+def _quarantine_reason(row: Mapping[str, Any], *, as_of: date) -> str | None:
+    if _is_probable_duplicate(row):
+        # A recent, active payable with no amount is not harmless duplicate noise.
+        # Keep it visible so its missing amount can block payment decisions.
+        row_date = _event_date(row) or _actual_date(row)
+        if (
+            not _is_transaction(row)
+            and _is_active_obligation(row)
+            and not _amount(row.get("amount_cents"))
+            and row_date is not None
+            and (as_of - row_date).days <= 90
+        ):
+            return None
+        return "probable_duplicate"
+    if _amount(row.get("amount_cents")):
+        return None
+    if _is_transaction(row):
+        return "zero_transaction"
+    row_date = _event_date(row) or _actual_date(row)
+    if row_date is not None and (as_of - row_date).days > 90:
+        return "stale_zero_obligation"
+    return None
+
+
+def _partition_data_quality(
+    rows: Sequence[Mapping[str, Any]], *, as_of: date
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    visible: list[Mapping[str, Any]] = []
+    quarantined: list[dict[str, str]] = []
+    counts = {
+        "total": len(rows),
+        "visible": 0,
+        "quarantined": 0,
+        "probable_duplicates": 0,
+        "zero_transactions": 0,
+        "stale_zero_obligations": 0,
+        "actionable_zero_obligations": 0,
+    }
+    reason_to_count = {
+        "probable_duplicate": "probable_duplicates",
+        "zero_transaction": "zero_transactions",
+        "stale_zero_obligation": "stale_zero_obligations",
+    }
+    for index, row in enumerate(rows):
+        reason = _quarantine_reason(row, as_of=as_of)
+        if reason:
+            quarantined.append({"id": _row_id(row, index), "reason": reason})
+            counts[reason_to_count[reason]] += 1
+            continue
+        visible.append(row)
+        if not _is_transaction(row) and not _amount(row.get("amount_cents")):
+            counts["actionable_zero_obligations"] += 1
+    counts["visible"] = len(visible)
+    counts["quarantined"] = len(quarantined)
+    return visible, {
+        "counts": counts,
+        "total_count": counts["total"],
+        "visible_count": counts["visible"],
+        "quarantined_count": counts["quarantined"],
+        "probable_duplicate_count": counts["probable_duplicates"],
+        "zero_transaction_count": counts["zero_transactions"],
+        "stale_zero_obligation_count": counts["stale_zero_obligations"],
+        "actionable_zero_obligation_count": counts["actionable_zero_obligations"],
+        "quarantine": quarantined,
+    }
+
+
+def _connection_for(
+    source_connections: Mapping[str, Any] | None, aliases: Sequence[str]
+) -> Mapping[str, Any]:
+    if not isinstance(source_connections, Mapping):
+        return {}
+    normalized = {
+        re.sub(r"[^a-z0-9]+", "", str(key).lower()): value
+        for key, value in source_connections.items()
+    }
+    for alias in aliases:
+        value = normalized.get(re.sub(r"[^a-z0-9]+", "", alias.lower()))
+        if isinstance(value, Mapping):
+            return value
+        if isinstance(value, bool):
+            return {"connected": value}
+    return {}
+
+
+def _build_source_status(
+    rows: Sequence[Mapping[str, Any]],
+    snapshot: Mapping[str, Any],
+    *,
+    as_of: date,
+    source_connections: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    definitions = (
+        ("bank_csv", "Bank CSV", ("csv", "bank_csv", "bank csv"), {"csv"}),
+        ("clickup", "ClickUp", ("clickup",), {"clickup"}),
+        ("quickbooks", "QuickBooks", ("quickbooks", "qbo"), {"quickbooks", "qbo"}),
+    )
+    result: list[dict[str, Any]] = []
+    for key, name, aliases, row_sources in definitions:
+        source_rows = [
+            row for row in rows if str(row.get("source") or "").lower() in row_sources
+        ]
+        connection = _connection_for(source_connections, aliases)
+        explicit_status = str(connection.get("status") or "").strip().lower()
+        connected = connection.get("connected")
+        updated = _as_date(
+            connection.get("last_synced_at")
+            or connection.get("last_success_at")
+            or connection.get("updated_at")
+        )
+        if key == "bank_csv":
+            status = "missing" if not snapshot.get("available") else (
+                "stale" if snapshot.get("stale") else "current"
+            )
+            ready = status == "current"
+            latest_date = snapshot.get("as_of_date")
+        else:
+            row_dates = [
+                parsed
+                for row in source_rows
+                if (parsed := _as_date(row.get("source_updated_at") or row.get("updated_at") or _event_date(row)))
+            ]
+            latest = updated or max(row_dates, default=None)
+            stale = bool(
+                explicit_status == "stale"
+                or any(row.get("source_stale") for row in source_rows)
+                or (latest is not None and (as_of - latest).days > 7)
+            )
+            if connected is False or explicit_status in {"disconnected", "not_connected"}:
+                status, ready = "disconnected", False
+            elif explicit_status in {"error", "failed"}:
+                status, ready = "error", False
+            elif stale:
+                status, ready = "stale", False
+            elif not source_rows or not any(_event_date(row) is not None for row in source_rows):
+                # A healthy connection alone does not establish that payable data
+                # was actually received and dated for operational use.
+                status, ready = "connected", False
+            elif source_rows:
+                status, ready = "current", True
+            else:
+                status, ready = "not_connected", False
+            latest_date = latest.isoformat() if latest else None
+        result.append(
+            {
+                "key": key,
+                "name": name,
+                "status": status,
+                "ready": ready,
+                "row_count": len(source_rows),
+                "latest_date": latest_date,
+            }
+        )
+    return result
+
+
+def _build_trust_gate(
+    snapshot: Mapping[str, Any],
+    canonical: Sequence[Mapping[str, Any]],
+    income_projection: Mapping[str, Any],
+    *,
+    as_of: date,
+) -> dict[str, Any]:
+    cash_ready = bool(snapshot.get("available") and not snapshot.get("stale"))
+    payable_issues: list[tuple[str, str]] = []
+    for row in canonical:
+        if not _is_active_obligation(row):
+            continue
+        row_id = str(row.get("id") or "unknown")
+        if not _amount(row.get("amount_cents")):
+            payable_issues.append((row_id, "missing amount"))
+        elif (
+            row.get("source_open_disagreement")
+            or row.get("source_conflict")
+            or str(row.get("classification") or "").lower() == "conflict"
+        ):
+            payable_issues.append((row_id, "source conflict"))
+        elif _needs_match_review(row):
+            payable_issues.append((row_id, "ambiguous match"))
+        elif row.get("settlement_evidence_available") is False:
+            payable_issues.append((row_id, "missing settlement evidence"))
+        elif _event_date(row) is None:
+            payable_issues.append((row_id, "missing date"))
+        elif _payable_source_is_stale(row, as_of=as_of):
+            payable_issues.append((row_id, "stale source evidence"))
+    payables_ready = not payable_issues
+    income_ready = bool(income_projection.get("ready"))
+    reasons: list[str] = []
+    if not snapshot.get("available"):
+        reasons.append("cash balance is missing")
+        next_action = "upload_latest_balance"
+    elif snapshot.get("stale"):
+        reasons.append("cash balance is stale")
+        next_action = "refresh_cash_balance"
+    else:
+        next_action = ""
+    if payable_issues:
+        reasons.append(
+            f"{len(payable_issues)} active obligation(s) have missing or conflicting evidence"
+        )
+        if not next_action:
+            next_action = "resolve_finance_data"
+    if not income_ready:
+        reasons.append(str(income_projection.get("reason") or "income evidence is not ready"))
+        if not next_action:
+            next_action = (
+                "review_income_patterns"
+                if income_projection.get("review_pattern_count")
+                else "configure_income_forecast"
+            )
+    ready = cash_ready and payables_ready and income_ready
+    return {
+        "cash_ready": cash_ready,
+        "payables_ready": payables_ready,
+        "income_ready": income_ready,
+        "ready": ready,
+        "reasons": reasons,
+        "next_action": next_action or "review_cash_plan",
+        "payable_issues": [
+            {"id": row_id, "reason": reason} for row_id, reason in payable_issues
+        ],
+    }
+
+
+def _payable_source_is_stale(
+    row: Mapping[str, Any], *, as_of: date, stale_source_days: int = 7
+) -> bool:
+    if row.get("source_stale"):
+        return True
+    source = str(row.get("source") or "").lower()
+    updated = _as_date(row.get("source_updated_at") or row.get("updated_at"))
+    return (
+        source in {"clickup", "qbo", "quickbooks"}
+        and updated is not None
+        and (as_of - updated).days > stale_source_days
+    )
+
+
 def derive_csv_income_projections(
     rows: Sequence[Mapping[str, Any]],
     *,
     as_of: date,
     horizon_days: int = 28,
     summary_days: int = 14,
+    income_decisions: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Infer conservative read-only income; never persist or confirm it."""
     horizon_end = as_of + timedelta(days=max(1, horizon_days) - 1)
@@ -561,7 +835,9 @@ def derive_csv_income_projections(
         if party != "unknown":
             grouped[party][row_date] += _amount(row.get("amount_cents"))
 
+    decisions = _income_decision_map(income_decisions)
     projections: list[dict[str, Any]] = []
+    patterns: list[dict[str, Any]] = []
     eligible_patterns = 0
     for party, daily in sorted(grouped.items()):
         occurrences = sorted(daily.items())
@@ -595,6 +871,27 @@ def derive_csv_income_projections(
         if deviation_bps > 2_500 or (as_of - last_date).days > max(2 * cadence, 21):
             continue
         eligible_patterns += 1
+        pattern_key = sha256(f"csv-income|{party}".encode("utf-8")).hexdigest()[:16]
+        decision = decisions.get(pattern_key, decisions.get(party, "review"))
+        evidence = {
+            "type": "recurring_csv_income",
+            "occurrences": len(occurrences),
+            "occurrence_dates": [day.isoformat() for day, _ in occurrences],
+            "median_amount_cents": median_amount,
+            "projected_amount_cents": projected_amount,
+            "median_cadence_days": cadence,
+            "last_receipt_date": last_date.isoformat(),
+            "median_absolute_deviation_bps": deviation_bps,
+            "probability_bps": 5_000,
+        }
+        pattern = {
+            "pattern_key": pattern_key,
+            "party": party,
+            "decision": decision,
+            "operator_reviewed": decision == "track_expected",
+            "evidence": evidence,
+            "projected_dates": [],
+        }
         next_date = last_date + timedelta(days=cadence)
         while next_date <= as_of:
             next_date += timedelta(days=cadence)
@@ -611,18 +908,7 @@ def derive_csv_income_projections(
                 )
                 for real in real_future
             )
-            if not duplicate:
-                evidence = {
-                    "type": "recurring_csv_income",
-                    "occurrences": len(occurrences),
-                    "occurrence_dates": [day.isoformat() for day, _ in occurrences],
-                    "median_amount_cents": median_amount,
-                    "projected_amount_cents": projected_amount,
-                    "median_cadence_days": cadence,
-                    "last_receipt_date": last_date.isoformat(),
-                    "median_absolute_deviation_bps": deviation_bps,
-                    "probability_bps": 5_000,
-                }
+            if not duplicate and decision in {"review", "track_expected"}:
                 projections.append({
                     "id": f"trend-income:{party}:{next_date.isoformat()}",
                     "record_kind": "obligation",
@@ -639,15 +925,23 @@ def derive_csv_income_projections(
                     "confidence": "medium",
                     "probability_bps": 5_000,
                     "trend_inferred": True,
+                    "pattern_key": pattern_key,
+                    "income_decision": decision,
+                    "operator_reviewed": decision == "track_expected",
                     "read_only": True,
                     "source_evidence": evidence,
                 })
+                pattern["projected_dates"].append(next_date.isoformat())
             next_date += timedelta(days=cadence)
+        pattern["projection_count"] = len(pattern["projected_dates"])
+        patterns.append(pattern)
 
     if real_future:
         status, ready, reason = "configured_real", True, "future income is configured from active receivables"
-    elif projections:
-        status, ready, reason = "inferred_review", True, "future income includes conservative CSV trend projections"
+    elif any(pattern["decision"] == "review" for pattern in patterns):
+        status, ready, reason = "inferred_review", False, "recurring income patterns require operator review"
+    elif any(pattern["decision"] == "track_expected" for pattern in patterns):
+        status, ready, reason = "configured_expected", True, "operator-reviewed recurring income is tracked as Expected"
     elif historical:
         status, ready, reason = "not_configured", False, "forecast income is not configured"
     else:
@@ -665,9 +959,14 @@ def derive_csv_income_projections(
         "historical_inflow_count": len(historical),
         "real_future_inflow_count": len(real_future),
         "eligible_pattern_count": eligible_patterns,
+        "operator_reviewed_pattern_count": sum(
+            pattern["decision"] == "track_expected" for pattern in patterns
+        ),
+        "review_pattern_count": sum(pattern["decision"] == "review" for pattern in patterns),
         "inferred_projection_count": len(projections),
         "csv_trend_expected_cents": csv_trend_expected_cents,
         "projections": projections,
+        "patterns": patterns,
     }
 
 
@@ -725,11 +1024,31 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
             else:
                 expected_in += open_amount * _probability_bps(row) // 10_000
         else:
-            # The operator rule is deliberately conservative: every open bill
-            # overdue or due through day 14 is reserved in full. Chunkability
-            # changes the recommended action, not the stated obligation.
             if due is not None and due <= end:
-                required_out += open_amount
+                items = row.get("payment_installments") or row.get("installments") or []
+                confirmed_installments = [
+                    item
+                    for item in items if isinstance(item, Mapping)
+                    and str(item.get("status") or "").lower() not in TERMINAL_STATUSES
+                    and (
+                        row.get("installments_confirmed") is True
+                        or item.get("confirmed") is True
+                        or str(item.get("confidence") or "").lower() == "confirmed"
+                        or str(item.get("status") or "").lower() in {"confirmed", "scheduled", "approved"}
+                    )
+                ] if isinstance(items, Sequence) else []
+                if due < as_of and _flexibility(row) == "chunkable" and confirmed_installments:
+                    scheduled_in_window = sum(
+                        _amount(item.get("amount_cents"))
+                        for item in confirmed_installments
+                        if (installment_due := _as_date(item.get("due_date"))) is not None
+                        and installment_due <= end
+                    )
+                    reserved = min(open_amount, scheduled_in_window)
+                    required_out += reserved
+                    exposure_out += open_amount - reserved
+                else:
+                    required_out += open_amount
             else:
                 exposure_out += open_amount
     return {
@@ -788,8 +1107,10 @@ def quick_action_eligibility(
 def _blocker(row: Mapping[str, Any], *, as_of: date, stale_source_days: int = 7) -> str | None:
     if row.get("source_open_disagreement"):
         return "source_open_disagreement"
-    if _is_duplicate(row):
+    if _is_probable_duplicate(row):
         return "probable_duplicate"
+    if row.get("source_conflict") or str(row.get("classification") or "").lower() == "conflict":
+        return "source_conflict"
     if _needs_match_review(row):
         return "possible_actual_match"
     if _amount(row.get("amount_cents")) == 0:
@@ -811,7 +1132,8 @@ def build_queue(
     funding_gap_cents: int = 0,
 ) -> dict[str, Any]:
     """Build complete ordered queue groups without truncating collapsed rows."""
-    canonical = annotate_open_amounts(rows, settlement_annotations)
+    visible_rows, _ = _partition_data_quality(rows, as_of=as_of)
+    canonical = annotate_open_amounts(visible_rows, settlement_annotations)
     groups: dict[str, list[dict[str, Any]]] = {key: [] for key in GROUP_ORDER}
     for row in canonical:
         blocker = _blocker(row, as_of=as_of)
@@ -958,19 +1280,47 @@ def build_recommendations(state: Mapping[str, Any]) -> list[dict[str, Any]]:
 
     snapshot = state.get("cash_snapshot") or {}
     income_projection = state.get("income_projection") or {}
-    if income_projection.get("status") == "not_configured":
-        add(2, "configure_income_forecast", None, ["Posted CSV inflows exist, but forward income is not configured."], minimum, minimum, "Expected cash remains incomplete until income is reviewed.", recommendation_confidence="high")
+    trust_gate = state.get("trust_gate") or {}
     if not snapshot.get("available"):
         add(1, "upload_latest_balance", None, ["Cash balance is missing."], minimum, minimum, "Recommendations remain unavailable until cash is verified.", recommendation_confidence="high")
     elif snapshot.get("stale"):
         add(1, "refresh_cash_balance", None, [f"Cash balance is {snapshot.get('age_days')} days old."], minimum, minimum, "Payment decisions use stale cash until refreshed.", recommendation_confidence="high")
 
+    if not trust_gate.get("payables_ready", True):
+        add(
+            2,
+            "resolve_finance_data",
+            None,
+            ["Active obligations have missing or conflicting evidence."],
+            minimum,
+            minimum,
+            "Payment and defer actions remain suppressed until obligation evidence is resolved.",
+            recommendation_confidence="high",
+        )
+
+    if not trust_gate.get("income_ready", income_projection.get("ready", False)):
+        action = (
+            "review_income_patterns"
+            if income_projection.get("review_pattern_count")
+            else "configure_income_forecast"
+        )
+        add(
+            3,
+            action,
+            None,
+            [str(income_projection.get("reason") or "Income evidence is not ready.")],
+            minimum,
+            minimum,
+            "Expected cash remains incomplete until income evidence is resolved.",
+            recommendation_confidence="high",
+        )
+
     for item in queue.get("items") or []:
         blocker = item.get("decision_blocker")
         if blocker:
-            add(2 if blocker in {"probable_duplicate", "possible_actual_match", "missing_amount", "missing_date"} else 1, f"resolve_{blocker}", item, [str(blocker).replace("_", " ").capitalize()], minimum, minimum, "Resolving evidence may change open cash exposure.")
+            add(4, f"resolve_{blocker}", item, [str(blocker).replace("_", " ").capitalize()], minimum, minimum, "Resolving evidence may change open cash exposure.")
 
-    if confidence.get("verification_only"):
+    if not trust_gate.get("ready", not confidence.get("verification_only")):
         if not candidates:
             add(1, "verify_finance_data", None, limitations or ["Finance confidence is low."], minimum, minimum, "Action recommendations stay suppressed.")
         return _rank(candidates)
@@ -1016,6 +1366,8 @@ def build_finance_control_state(
     rows: Sequence[Mapping[str, Any]],
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     *,
+    income_decisions: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    source_connections: Mapping[str, Any] | None = None,
     as_of: date | None = None,
     floor_cents: int | None = None,
     horizon_days: int = 28,
@@ -1027,15 +1379,18 @@ def build_finance_control_state(
 
     effective_date = as_of or date.today()
     floor_cents = resolve_cash_floor_cents(floor_cents)
-    canonical = annotate_open_amounts(rows, settlement_annotations)
-    snapshot = resolve_cash_snapshot(rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
+    visible_rows, data_quality = _partition_data_quality(rows, as_of=effective_date)
+    canonical = annotate_open_amounts(visible_rows, settlement_annotations)
+    balance_rows = [row for row in rows if not _is_probable_duplicate(row)]
+    snapshot = resolve_cash_snapshot(balance_rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
     starting_cash = int(snapshot["balance_cents"] or 0)
-    trends = calculate_csv_trends(rows, as_of=effective_date)
+    trends = calculate_csv_trends(visible_rows, as_of=effective_date)
     income_projection = derive_csv_income_projections(
         canonical,
         as_of=effective_date,
         horizon_days=horizon_days,
         summary_days=summary_days,
+        income_decisions=income_decisions,
     )
     projected_rows = annotate_open_amounts([
         *canonical,
@@ -1050,14 +1405,16 @@ def build_finance_control_state(
     confidence = assess_confidence(snapshot, trends, canonical, income_projection)
     metrics: dict[str, Any] = _summary_metrics(projected_rows, effective_date, summary_days)
     minimum_stress = int(forecast["minimum_stress_cash_cents"])
+    cash_after_required = starting_cash - metrics["required_outgoing_cents"]
     metrics.update(
         {
             "cash_on_hand_cents": snapshot["balance_cents"],
             "cash_available": bool(snapshot["available"]),
             "floor_cents": int(floor_cents),
             "minimum_stress_cash_cents": minimum_stress if snapshot["available"] else None,
-            "safe_to_commit_cents": max(0, minimum_stress - floor_cents) if snapshot["available"] else None,
-            "funding_gap_cents": max(0, floor_cents - minimum_stress) if snapshot["available"] else None,
+            "cash_after_required_outgoing_cents": cash_after_required if snapshot["available"] else None,
+            "safe_to_commit_cents": max(0, cash_after_required - floor_cents) if snapshot["available"] else None,
+            "funding_gap_cents": max(0, floor_cents - cash_after_required) if snapshot["available"] else None,
         }
     )
     queue = build_queue(
@@ -1066,6 +1423,20 @@ def build_finance_control_state(
         horizon_days=max(summary_days, horizon_days),
         funding_gap_cents=int(metrics.get("funding_gap_cents") or 0),
     )
+    trust_gate = _build_trust_gate(
+        snapshot, canonical, income_projection, as_of=effective_date
+    )
+    confidence = {
+        **confidence,
+        "verification_only": not trust_gate["ready"],
+        "reasons": list(dict.fromkeys([*trust_gate["reasons"], *confidence["reasons"]])),
+    }
+    source_status = _build_source_status(
+        rows,
+        snapshot,
+        as_of=effective_date,
+        source_connections=source_connections,
+    )
     state: dict[str, Any] = {
         "as_of_date": effective_date.isoformat(),
         "cash_snapshot": snapshot,
@@ -1073,6 +1444,10 @@ def build_finance_control_state(
         "forecast": forecast,
         "trends": trends,
         "income_projection": income_projection,
+        "data_quality": data_quality,
+        "source_status": source_status,
+        "source_status_by_key": {item["key"]: item for item in source_status},
+        "trust_gate": trust_gate,
         "confidence": confidence,
         "queue": queue,
     }
@@ -1084,6 +1459,8 @@ def build_cash_metrics(
     rows: Sequence[Mapping[str, Any]],
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     *,
+    income_decisions: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    source_connections: Mapping[str, Any] | None = None,
     as_of: date | None = None,
     floor_cents: int | None = None,
     horizon_days: int = 28,
@@ -1094,6 +1471,8 @@ def build_cash_metrics(
     return build_finance_control_state(
         rows,
         settlement_annotations,
+        income_decisions=income_decisions,
+        source_connections=source_connections,
         as_of=as_of,
         floor_cents=floor_cents,
         horizon_days=horizon_days,
@@ -1109,6 +1488,8 @@ def build_finance_control(
     *,
     smart_mode: bool = True,
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    income_decisions: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
+    source_connections: Mapping[str, Any] | None = None,
     as_of: date | None = None,
     floor_cents: int | None = None,
 ) -> dict[str, Any]:
@@ -1153,6 +1534,8 @@ def build_finance_control(
     state = build_finance_control_state(
         working_rows,
         settlement_annotations,
+        income_decisions=income_decisions,
+        source_connections=source_connections,
         as_of=effective_date,
         floor_cents=floor_cents,
     )

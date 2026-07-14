@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -296,6 +297,50 @@ async def update_cash_floor(request: Request, cash_floor: str = Form(...)):
     except Exception:
         return _redirect_finance_error("Cash floor could not be updated")
     return _redirect_finance_home("Cash floor updated")
+
+
+@router.post("/income-patterns/{pattern_key}/decision", response_class=HTMLResponse)
+async def update_income_pattern_decision(
+    request: Request,
+    pattern_key: str,
+    decision: str = Form(...),
+):
+    """Persist an operator decision without creating or mutating cash events."""
+    from sales_support_agent.services.cashflow.income_decisions import (
+        record_income_pattern_decision,
+    )
+
+    current_user = get_current_user(request)
+    actor = "finance-operator"
+    if isinstance(current_user, dict):
+        actor = str(current_user.get("email") or current_user.get("name") or actor)
+
+    form = await request.form()
+    evidence: dict[str, object] = {}
+    for field, raw_value in form.multi_items():
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if field == "evidence":
+            evidence["note"] = value
+        elif field.startswith("evidence_") and len(field) > len("evidence_"):
+            evidence[field[len("evidence_"):]] = value
+
+    try:
+        request_id = request.headers.get("Idempotency-Key") or uuid4().hex
+        await asyncio.to_thread(
+            record_income_pattern_decision,
+            pattern_key,
+            decision,
+            actor,
+            evidence,
+            request_id=request_id,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    except Exception:
+        return _redirect_finance_error("Income pattern decision could not be recorded")
+    return _redirect_finance_home("Income pattern decision recorded")
 
 
 @router.post("/actions/{event_id}/partial", response_class=HTMLResponse)
