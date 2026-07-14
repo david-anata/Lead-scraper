@@ -272,6 +272,17 @@ def test_queue_group_order_sorting_and_no_silent_truncation():
     assert queue["truncated"] is False
 
 
+def test_control_state_queue_supports_full_forecast_window():
+    state = build_finance_control_state(
+        [_row("later", due_date=AS_OF + timedelta(days=21))],
+        as_of=AS_OF,
+        horizon_days=28,
+        summary_days=14,
+    )
+
+    assert [item["id"] for item in state["queue"]["items"]] == ["later"]
+
+
 def test_queue_pay_now_sorts_operational_category_before_amount():
     rows = [
         _row("tax", category="tax", amount_cents=500_000, pay_priority="must_pay", due_date=AS_OF),

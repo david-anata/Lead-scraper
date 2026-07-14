@@ -830,7 +830,7 @@ def build_finance_control_state(
     queue = build_queue(
         canonical,
         as_of=effective_date,
-        horizon_days=summary_days,
+        horizon_days=max(summary_days, horizon_days),
         funding_gap_cents=int(metrics.get("funding_gap_cents") or 0),
     )
     state: dict[str, Any] = {

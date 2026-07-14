@@ -952,6 +952,7 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         "party": party,
         "meta": str(row.get("vendor_or_customer") or row.get("category") or _source_label(dict(row))),
         "timing": str(timing),
+        "due_date": due.isoformat() if due else "",
         "amount_cents": amount_cents,
         "direction": direction,
         "impact": str(impact),
@@ -1021,7 +1022,7 @@ def _queue_table_html(queue: Any, today: date) -> tuple[str, dict[str, int]]:
         for tab in item["tabs"]:
             counts[tab] += 1
         rows_html.append(f"""
-          <tr data-queue-tabs="{','.join(item['tabs'])}">
+          <tr data-queue-tabs="{','.join(item['tabs'])}" data-queue-date="{html.escape(item['due_date'], quote=True)}">
             <td><strong>{html.escape(item['action'])}</strong></td>
             <td><div class="queue-vendor">{html.escape(item['party'])}</div><div class="queue-meta">{html.escape(item['meta'])}</div></td>
             <td>{html.escape(item['timing'])}</td>
@@ -1221,16 +1222,19 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
       <section class="card finance-money-queue" id="finance-queue" aria-labelledby="money-queue-title">
         <div class="section-head">
           <div><p class="finance-eyebrow">Operator queue</p><h2 id="money-queue-title">Money queue</h2></div>
-          <label class="finance-window-select">Show:<select aria-label="Queue window"><option>14 days</option><option>28 days</option><option>All</option></select></label>
+          <div class="finance-queue-controls">
+            <label class="finance-window-select">Window:<select id="finance-queue-window" aria-label="Queue window"><option value="14">14 days</option><option value="28">28 days</option></select></label>
+            <label class="finance-window-select">Rows:<select id="finance-queue-page-size" aria-label="Rows per page"><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label>
+          </div>
         </div>
-        <div class="finance-queue-tabs" role="tablist" aria-label="Money queue filters">
-          <button type="button" role="tab" aria-selected="true" data-queue-filter="needs-action">Needs action <span>{counts['needs-action']}</span></button>
-          <button type="button" role="tab" aria-selected="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
-          <button type="button" role="tab" aria-selected="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
-          <button type="button" role="tab" aria-selected="false" data-queue-filter="recent">Recent <span>{counts['recent']}</span></button>
+        <div class="finance-queue-tabs" role="group" aria-label="Money queue filters">
+          <button type="button" aria-pressed="true" data-queue-filter="needs-action">Needs action <span>{counts['needs-action']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="recent">Recent <span>{counts['recent']}</span></button>
         </div>
         <div class="finance-queue-scroll"{queue_table_hidden}>
-          <table class="finance-queue-table">
+          <table class="finance-queue-table" aria-describedby="finance-queue-range">
             <thead><tr><th>Action</th><th>Party</th><th>Timing</th><th>Amount</th><th>Cash impact</th><th><span class="sr-only">Actions</span></th></tr></thead>
             <tbody>{queue_rows_html}</tbody>
           </table>
@@ -1239,6 +1243,14 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
           <strong>No money decisions require attention in the selected window.</strong>
           <p>Update money or add an incoming or payable exception.</p>
           <div><button type="button" class="btn btn-secondary btn-sm" data-open-modal="finance-update-modal">Update money</button><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a></div>
+        </div>
+        <div id="finance-queue-pagination" class="finance-queue-pagination"{queue_table_hidden}>
+          <span id="finance-queue-range" aria-live="polite">0 results</span>
+          <nav aria-label="Money queue pages">
+            <button id="finance-queue-previous" type="button">Previous</button>
+            <span id="finance-queue-page-summary" aria-live="polite">Page 1 of 1</span>
+            <button id="finance-queue-next" type="button">Next</button>
+          </nav>
         </div>
       </section>
 
@@ -1335,22 +1347,82 @@ async def render_cashflow_overview_page(*, flash: str = "", inline_result_html: 
       const root = document.querySelector('.finance-control');
       const chartData = {chart_json};
       const queueEmpty = document.getElementById('finance-queue-empty');
+      const queueScroll = document.querySelector('.finance-queue-scroll');
       const queueRows = [...document.querySelectorAll('[data-queue-tabs]')];
+      const queueWindow = document.getElementById('finance-queue-window');
+      const queuePageSize = document.getElementById('finance-queue-page-size');
+      const queuePagination = document.getElementById('finance-queue-pagination');
+      const queueRange = document.getElementById('finance-queue-range');
+      const queuePageSummary = document.getElementById('finance-queue-page-summary');
+      const queuePrevious = document.getElementById('finance-queue-previous');
+      const queueNext = document.getElementById('finance-queue-next');
+      const queueToday = new Date('{today.isoformat()}T00:00:00');
+      let activeQueueFilter = 'needs-action';
+      let activeQueuePage = 1;
 
-      function filterQueue(filter) {{
-        let visible = 0;
-        queueRows.forEach(row => {{
-          const show = row.dataset.queueTabs.split(',').includes(filter);
-          row.hidden = !show;
-          if (show) visible += 1;
-        }});
-        queueEmpty.hidden = visible !== 0;
+      function rowMatchesWindow(row, filter) {{
+        if (!row.dataset.queueDate) return true;
+        const due = new Date(row.dataset.queueDate + 'T00:00:00');
+        const difference = Math.round((due - queueToday) / 86400000);
+        const days = Number(queueWindow.value);
+        return filter === 'recent'
+          ? difference <= 0 && difference >= -days
+          : difference <= days;
+      }}
+
+      function matchingQueueRows(filter) {{
+        return queueRows.filter(row =>
+          row.dataset.queueTabs.split(',').includes(filter) && rowMatchesWindow(row, filter)
+        );
+      }}
+
+      function updateQueueCounts() {{
         document.querySelectorAll('[data-queue-filter]').forEach(button => {{
-          button.setAttribute('aria-selected', String(button.dataset.queueFilter === filter));
+          const total = matchingQueueRows(button.dataset.queueFilter).length;
+          button.querySelector('span').textContent = String(total);
         }});
       }}
-      document.querySelectorAll('[data-queue-filter]').forEach(button => button.addEventListener('click', () => filterQueue(button.dataset.queueFilter)));
-      filterQueue('needs-action');
+
+      function renderQueuePage() {{
+        const matches = matchingQueueRows(activeQueueFilter);
+        const pageSize = Number(queuePageSize.value);
+        const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
+        activeQueuePage = Math.min(activeQueuePage, pageCount);
+        const start = (activeQueuePage - 1) * pageSize;
+        const end = Math.min(start + pageSize, matches.length);
+        const visibleRows = new Set(matches.slice(start, end));
+
+        queueRows.forEach(row => {{ row.hidden = !visibleRows.has(row); }});
+        queueEmpty.hidden = matches.length !== 0;
+        queueScroll.hidden = matches.length === 0;
+        queuePagination.hidden = matches.length === 0;
+        queueRange.textContent = matches.length ? `${{start + 1}}-${{end}} of ${{matches.length}} results` : '0 results';
+        queuePageSummary.textContent = `Page ${{activeQueuePage}} of ${{pageCount}}`;
+        queuePrevious.disabled = activeQueuePage <= 1;
+        queueNext.disabled = activeQueuePage >= pageCount;
+        document.querySelectorAll('[data-queue-filter]').forEach(button => {{
+          button.setAttribute('aria-pressed', String(button.dataset.queueFilter === activeQueueFilter));
+        }});
+      }}
+
+      function resetQueue(filter = activeQueueFilter) {{
+        activeQueueFilter = filter;
+        activeQueuePage = 1;
+        updateQueueCounts();
+        renderQueuePage();
+      }}
+
+      document.querySelectorAll('[data-queue-filter]').forEach(button => button.addEventListener('click', () => resetQueue(button.dataset.queueFilter)));
+      queueWindow.addEventListener('change', () => resetQueue());
+      queuePageSize.addEventListener('change', () => resetQueue());
+      queuePrevious.addEventListener('click', () => {{
+        if (activeQueuePage > 1) {{ activeQueuePage -= 1; renderQueuePage(); document.getElementById('finance-queue').scrollIntoView({{block:'start'}}); }}
+      }});
+      queueNext.addEventListener('click', () => {{
+        const pageCount = Math.max(1, Math.ceil(matchingQueueRows(activeQueueFilter).length / Number(queuePageSize.value)));
+        if (activeQueuePage < pageCount) {{ activeQueuePage += 1; renderQueuePage(); document.getElementById('finance-queue').scrollIntoView({{block:'start'}}); }}
+      }});
+      resetQueue();
 
       document.getElementById('finance-smart-mode').addEventListener('change', event => {{
         root.dataset.smartMode = event.target.checked ? 'on' : 'off';

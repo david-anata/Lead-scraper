@@ -148,6 +148,37 @@ def test_unified_queue_actions_drawer_modal_and_states_are_present() -> None:
     assert "replace_range" not in page
 
 
+def test_money_queue_has_page_size_range_and_navigation_controls() -> None:
+    queue = [
+        {
+            "id": f"bill-{index}",
+            "event_type": "outflow",
+            "party": f"Vendor {index}",
+            "due_date": (TODAY + timedelta(days=index % 20)).isoformat(),
+            "open_amount_cents": 10_000 + index,
+            "needs_action": True,
+        }
+        for index in range(12)
+    ]
+    page = _render([], _control_state(queue=queue))
+
+    assert 'id="finance-queue-window"' in page
+    assert 'id="finance-queue-page-size"' in page
+    assert '<option value="25" selected>25</option>' in page
+    assert '<option value="50">50</option>' in page
+    assert '<option value="100">100</option>' in page
+    assert 'role="group" aria-label="Money queue filters"' in page
+    assert 'aria-pressed="true" data-queue-filter="needs-action"' in page
+    assert 'role="tab"' not in page
+    assert 'id="finance-queue-range"' in page
+    assert 'id="finance-queue-previous"' in page
+    assert 'id="finance-queue-page-summary"' in page
+    assert 'id="finance-queue-next"' in page
+    assert 'data-queue-date="' in page
+    assert "renderQueuePage" in page
+    assert "activeQueuePage = 1" in page
+
+
 def test_zero_cash_snapshot_is_rendered_as_real_cash() -> None:
     page = _render([], _control_state(balance_cents=0), balance_cents=0)
 

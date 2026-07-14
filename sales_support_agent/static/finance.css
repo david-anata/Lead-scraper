@@ -818,6 +818,8 @@ input:focus, select:focus, textarea:focus {
 }
 
 .finance-window-select select { width: auto; min-width: 108px; padding: 7px 28px 7px 11px; border-radius: 12px; font-size: 12px; }
+.finance-queue-controls { display: flex; align-items: center; gap: 14px; }
+.finance-queue-controls .finance-window-select:last-child select { min-width: 78px; }
 
 .finance-queue-tabs {
   display: flex;
@@ -841,7 +843,7 @@ input:focus, select:focus, textarea:focus {
 }
 
 .finance-queue-tabs button span { display: inline-grid; min-width: 18px; height: 18px; margin-left: 5px; place-items: center; background: rgba(43, 54, 68, .08); border-radius: 999px; font-size: 9px; }
-.finance-queue-tabs button[aria-selected="true"] { color: var(--anata-ink); background: var(--anata-paper); box-shadow: 0 3px 10px rgba(43, 54, 68, .1); }
+.finance-queue-tabs button[aria-pressed="true"] { color: var(--anata-ink); background: var(--anata-paper); box-shadow: 0 3px 10px rgba(43, 54, 68, .1); }
 .finance-queue-scroll { overflow: visible; }
 
 .finance-queue-table { table-layout: fixed; }
@@ -854,6 +856,33 @@ input:focus, select:focus, textarea:focus {
 .finance-queue-table td { padding: 11px 12px; font-size: 12px; line-height: 1.35; }
 .finance-queue-table td:first-child strong { color: var(--anata-ink); font-family: "Montserrat", sans-serif; font-size: 11px; }
 .finance-queue-table td:nth-child(4) { white-space: nowrap; }
+
+.finance-queue-pagination {
+  padding: 16px 2px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  font: 700 11px/1.3 "Montserrat", sans-serif;
+}
+
+.finance-queue-pagination nav { display: flex; align-items: center; gap: 10px; }
+.finance-queue-pagination nav span { min-width: 88px; text-align: center; }
+.finance-queue-pagination button {
+  min-height: 34px;
+  padding: 0 13px;
+  color: var(--anata-ink);
+  background: rgba(255, 255, 255, .72);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: 700 10px/1 "Montserrat", sans-serif;
+  cursor: pointer;
+}
+
+.finance-queue-pagination button:hover:not(:disabled) { background: var(--anata-paper); border-color: rgba(79, 132, 196, .38); }
+.finance-queue-pagination button:disabled { color: rgba(123, 132, 146, .55); cursor: not-allowed; opacity: .6; }
 
 .finance-row-menu { position: relative; display: inline-block; }
 .finance-row-menu summary { width: 32px; height: 32px; display: grid; place-items: center; list-style: none; color: var(--anata-ink); border: 1px solid transparent; border-radius: 50%; font-size: 18px; cursor: pointer; }
