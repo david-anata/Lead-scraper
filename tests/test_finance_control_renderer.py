@@ -189,6 +189,16 @@ def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:
     assert "unpaid remainders stay open" in guide
 
 
+def test_finance_stylesheet_is_cache_busted_by_release() -> None:
+    with patch(
+        "sales_support_agent.services.cashflow.cashflow_helpers._finance_css_version",
+        return_value="release-123",
+    ):
+        page = _render([], _control_state(queue=[]))
+
+    assert 'href="/static/finance.css?v=release-123"' in page
+
+
 def test_renderer_falls_back_when_control_builder_fails() -> None:
     with (
         patch("sales_support_agent.services.cashflow.overview.list_obligations", return_value=[]),

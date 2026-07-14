@@ -7,8 +7,10 @@ circular dependencies.  overview.py re-exports everything defined here.
 from __future__ import annotations
 
 import html as _html
+import os
 from contextvars import ContextVar
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Optional
 
 _finance_nav_user: ContextVar[Optional[dict]] = ContextVar("_finance_nav_user", default=None)
@@ -158,6 +160,17 @@ def _name_cell(row: dict) -> str:
 # Page shell
 # ---------------------------------------------------------------------------
 
+def _finance_css_version() -> str:
+    """Return a release-specific cache key for the Finance stylesheet."""
+    render_commit = os.getenv("RENDER_GIT_COMMIT", "").strip()
+    if render_commit:
+        return render_commit[:12]
+    try:
+        stylesheet = Path(__file__).resolve().parents[2] / "static" / "finance.css"
+        return str(stylesheet.stat().st_mtime_ns)
+    except OSError:
+        return "1"
+
 def _page_shell(title: str, active_section: str, body: str, *, flash: str = "") -> str:
     from sales_support_agent.services.admin_nav import render_agent_nav, render_agent_nav_styles
 
@@ -215,6 +228,8 @@ function editName(wrapId, currentVal, fieldName) {
 }
 </script>"""
 
+    finance_css_version = _finance_css_version()
+
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -227,7 +242,7 @@ function editName(wrapId, currentVal, fieldName) {
     <style>
       {render_agent_nav_styles()}
     </style>
-    <link rel="stylesheet" href="/static/finance.css">
+    <link rel="stylesheet" href="/static/finance.css?v={_html.escape(finance_css_version, quote=True)}">
     {inline_edit_js}
   </head>
   <body>
