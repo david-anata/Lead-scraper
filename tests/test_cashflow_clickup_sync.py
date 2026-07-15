@@ -77,7 +77,7 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
 
         self.assertEqual(event["status"], "completed")
         self.assertEqual(event["source_status"], "complete")
-        self.assertEqual(event["source_open_amount_cents"], 0)
+        self.assertIsNone(event["source_open_amount_cents"])
         self.assertTrue(event["apply_source_lifecycle"])
         self.assertNotEqual(event["status"], "paid")
 

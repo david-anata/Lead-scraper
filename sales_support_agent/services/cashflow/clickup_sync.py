@@ -337,7 +337,9 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
         "due_date": due,
         "status": status,
         "source_status": source_status,
-        "source_open_amount_cents": 0 if status == "completed" else amount_cents,
+        # ClickUp completion says work is complete, not that a financial
+        # balance is zero. Bank evidence remains responsible for settlement.
+        "source_open_amount_cents": None if status == "completed" else amount_cents,
         "source_updated_at": _source_timestamp(task),
         "preserve_settlement_truth": True,
         "apply_source_lifecycle": True,
