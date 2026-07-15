@@ -586,6 +586,8 @@ def health(request: Request) -> ApiMessage:
             "finance_savings_clickup_review_configured": bool(
                 (os.getenv("CLICKUP_FINANCE_REVIEW_LIST_ID", "") or "").strip()
             ),
+            "finance_smart_cfo_configured": bool(settings.openai_api_key),
+            "finance_smart_cfo_model": settings.openai_model if settings.openai_api_key else "",
             "slack_configured": bool(settings.slack_bot_token and settings.slack_channel_id),
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
             "deck_generator_configured": brand_package_path.exists(),

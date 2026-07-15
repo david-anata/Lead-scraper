@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
 from uuid import uuid4
+
+import requests
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -349,6 +352,25 @@ async def update_income_pattern_decision(
     except Exception:
         return _redirect_finance_error("Income pattern decision could not be recorded")
     return _redirect_finance_home("Income pattern decision recorded")
+
+
+@router.post("/smart-review", response_class=HTMLResponse)
+async def run_smart_cfo_review(request: Request):
+    """Generate advisory-only Smart CFO recommendations from the full ledger."""
+    from sales_support_agent.services.cashflow.smart_cfo import run_smart_cfo
+
+    try:
+        result = await asyncio.to_thread(run_smart_cfo, request.app.state.settings)
+    except requests.RequestException:
+        return _redirect_finance_error("Smart review could not reach OpenAI; no finance data changed")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return _redirect_finance_error("Smart review returned invalid advice; no finance data changed")
+    except Exception:
+        return _redirect_finance_error("Smart review could not be completed; no finance data changed")
+    if result.get("status") == "not_configured":
+        return _redirect_finance_error("Smart review needs OPENAI_API_KEY on the production service")
+    adjective = "reused" if result.get("cached") else "completed"
+    return _redirect_finance_home(f"Smart review {adjective} across {result.get('record_count', 0)} finance records")
 
 
 @router.post("/savings/{opportunity_key}/review", response_class=HTMLResponse)

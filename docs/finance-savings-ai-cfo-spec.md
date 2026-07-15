@@ -1,6 +1,24 @@
 # Finance Savings and AI CFO
 
-Status: Build-ready next phase
+Status: Smart CFO advisory foundation shipped
+
+## Smart CFO Contract
+
+Smart mode is not a ClickUp workflow. It is an explicit, cached LLM review of
+the complete canonical Finance ledger. The system builds deterministic rollups
+from every persisted transaction and obligation, then asks the model for at
+most five concise recommendations across savings, collections, cash risk, and
+data quality.
+
+- The model may only cite record IDs supplied in the ledger packet.
+- It cannot set cash, change the forecast, create a payable, close a task, or
+  perform any source mutation.
+- It runs only when the operator chooses **Run Smart review** and reuses the
+  result while the ledger is unchanged.
+- A missing `OPENAI_API_KEY` disables only Smart CFO advice, not Finance.
+
+ClickUp, QBO, and CSV remain inputs. ClickUp is optional and never a gate for
+Smart CFO recommendations.
 
 ## Plain English Summary
 

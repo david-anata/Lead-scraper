@@ -27,6 +27,7 @@ from sales_support_agent.services.cashflow.engine import (
     flag_risks,
 )
 from sales_support_agent.services.cashflow.obligations import list_obligations
+from sales_support_agent.services.cashflow.smart_cfo import load_smart_cfo_analysis
 
 
 def _resolve_current_balance(rows: list[dict[str, Any]]) -> tuple[int, str, str]:
@@ -1815,6 +1816,37 @@ def _savings_section_html(
     return section, payloads
 
 
+def _smart_cfo_section_html(analysis: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Render LLM advice separately from deterministic savings evidence."""
+    status = str(analysis.get("status") or "empty")
+    recommendations = list(analysis.get("recommendations") or [])
+    payloads: dict[str, Any] = {}
+    if status == "not_configured":
+        content = '<div class="finance-savings-state is-error"><strong>Smart review needs an OpenAI key.</strong><p>Cash and source calculations still work. Add OPENAI_API_KEY to the production service, then run the review.</p></div>'
+    elif not recommendations:
+        content = '''<div class="finance-savings-state"><strong>Run a Smart review when you want a CFO read.</strong><p>It evaluates the complete current ledger rollup, not a sample, and never changes cash or source records.</p><form method="post" action="/admin/finances/smart-review"><button class="btn btn-primary btn-sm" type="submit">Run Smart review</button></form></div>'''
+    else:
+        rows = []
+        for index, item in enumerate(recommendations):
+            key = f"cfo-{index}"
+            payloads[key] = {
+                "eyebrow": f"Smart CFO · {item.get('category', 'review').replace('_', ' ')}",
+                "title": item.get("title", "Review recommendation"),
+                "why": item.get("reason", "Review the transaction evidence."),
+                "facts": [
+                    ["Priority", item.get("priority", "medium").title()],
+                    ["Next action", item.get("next_action", "Review the source evidence.")],
+                    ["Question", item.get("operator_question", "What needs to be confirmed?")],
+                    ["Evidence", ", ".join(item.get("record_ids") or [])],
+                ],
+                "sourceUrl": "", "sourceAction": "", "sourceLabel": "", "note": "LLM advice only. It does not modify cash, forecast, bank data, or source records.",
+            }
+            rows.append(f'''<tr><td><span class="badge badge-warning">{html.escape(str(item.get("priority") or "medium").title())}</span></td><td><strong>{html.escape(str(item.get("title") or "Review recommendation"))}</strong><small>{html.escape(str(item.get("reason") or ""))}</small></td><td>{html.escape(str(item.get("next_action") or ""))}</td><td><button type="button" class="btn btn-secondary btn-sm" data-drawer-review="{key}">Review</button></td></tr>''')
+        created = html.escape(str(analysis.get("created_at") or "just now")[:16].replace("T", " "))
+        content = f'''<div class="finance-savings-summary"><strong>{len(recommendations)} evidence-backed actions</strong><span>Full ledger rollup · {html.escape(str(analysis.get("record_count") or 0))} records · {created}</span></div><p class="finance-smart-cfo__summary">{html.escape(str(analysis.get("summary") or ""))}</p><table class="finance-savings-table finance-smart-cfo__table"><thead><tr><th>Priority</th><th>Recommendation</th><th>Next action</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table><div class="finance-savings-footer"><span>Advice is cached until Finance records change.</span><form method="post" action="/admin/finances/smart-review"><button class="finance-text-action" type="submit">Re-run on current ledger</button></form></div>'''
+    return f'''<section class="card finance-savings finance-smart-cfo smart-only" id="finance-smart-cfo" aria-labelledby="finance-smart-cfo-title"><div class="section-head finance-savings__head"><div><p class="finance-eyebrow">Smart CFO</p><h2 id="finance-smart-cfo-title">What deserves attention</h2></div><span class="finance-savings__label">Advice only</span></div>{content}</section>''', payloads
+
+
 def _source_readiness_html(
     source_statuses: list[dict[str, str]],
     reconciliation_shadow: Mapping[str, Any] | None = None,
@@ -2223,6 +2255,10 @@ async def render_cashflow_overview_page(
     savings_section, savings_payloads = _savings_section_html(
         savings, release_mode=savings_release_mode
     )
+    try:
+        smart_cfo_section, smart_cfo_payloads = _smart_cfo_section_html(load_smart_cfo_analysis())
+    except Exception:
+        smart_cfo_section, smart_cfo_payloads = _smart_cfo_section_html({"status": "empty"})
 
     queue_items = _flatten_queue(state["queue"])
     queue_ids = {str(_control_value(item, "id", "event_id", default="")) for item in queue_items}
@@ -2296,6 +2332,7 @@ async def render_cashflow_overview_page(
     drawer_payloads = {
         "recommendation": recommendation_payload,
         "savings": savings_payloads,
+        "smart_cfo": smart_cfo_payloads,
     }
     drawer_json = json.dumps(drawer_payloads, separators=(",", ":")).replace("<", "\\u003c")
 
@@ -2411,6 +2448,7 @@ async def render_cashflow_overview_page(
       </section>
 
       {savings_section}
+      {smart_cfo_section}
 
       <section class="card finance-review-guide" id="finance-review-guide" aria-labelledby="finance-review-guide-title">
         <div class="finance-review-guide__head">
