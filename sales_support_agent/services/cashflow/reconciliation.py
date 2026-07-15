@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 
 _RECURRING_RULES = {"weekly", "biweekly", "monthly", "quarterly", "annual"}
 _TERMINAL_STATUSES = {"completed", "paid", "matched", "cancelled", "canceled", "void"}
+_CADENCE_DAYS = {"weekly": 7, "biweekly": 14, "monthly": 31, "quarterly": 93, "annual": 366}
 
 
 def _as_date(value: Any) -> date | None:
@@ -89,6 +90,7 @@ def build_reconciliation_shadow(
         series[key].append(row)
 
     candidates: list[dict[str, Any]] = []
+    review_records: list[dict[str, Any]] = []
     series_summaries: list[dict[str, Any]] = []
     for key, occurrences in series.items():
         ordered = sorted(occurrences, key=lambda item: (item["_shadow_due_date"], item["id"]))
@@ -115,21 +117,36 @@ def build_reconciliation_shadow(
                 continue
             if occurrence["_shadow_due_date"] >= latest_active["_shadow_due_date"]:
                 continue
-            candidates.append(
-                {
-                    "id": occurrence["id"],
-                    "series_key": key,
-                    "name": str(occurrence.get("name") or occurrence.get("vendor_or_customer") or "Unnamed occurrence"),
-                    "due_date": occurrence["_shadow_due_date"].isoformat(),
-                    "amount_cents": max(0, int(occurrence.get("amount_cents") or 0)),
+            rule = str(occurrence.get("recurring_rule") or "").lower()
+            cadence_days = _CADENCE_DAYS[rule]
+            gap_days = (latest_active["_shadow_due_date"] - occurrence["_shadow_due_date"]).days
+            record = {
+                "id": occurrence["id"],
+                "series_key": key,
+                "name": str(occurrence.get("name") or occurrence.get("vendor_or_customer") or "Unnamed occurrence"),
+                "due_date": occurrence["_shadow_due_date"].isoformat(),
+                "amount_cents": max(0, int(occurrence.get("amount_cents") or 0)),
+                "later_occurrence_id": latest_active["id"],
+                "later_due_date": latest_active["_shadow_due_date"].isoformat(),
+                "gap_days": gap_days,
+            }
+            # A skipped period is not evidence the old obligation was resolved.
+            # It stays reserved and explicit until an operator reviews it.
+            if gap_days <= round(cadence_days * 1.5):
+                candidates.append({
+                    **record,
                     "candidate_state": "candidate_superseded",
-                    "reason": "A later open occurrence exists in the same ClickUp recurring series.",
-                    "later_occurrence_id": latest_active["id"],
-                    "later_due_date": latest_active["_shadow_due_date"].isoformat(),
-                }
-            )
+                    "reason": "The next ClickUp occurrence is within the expected recurrence window.",
+                })
+            else:
+                review_records.append({
+                    **record,
+                    "candidate_state": "supersession_needs_review",
+                    "reason": "A later occurrence exists, but the gap skips an expected recurrence period.",
+                })
 
     candidate_cents = sum(item["amount_cents"] for item in candidates)
+    review_cents = sum(item["amount_cents"] for item in review_records)
     input_rows = [
         {
             "id": str(row.get("id") or ""),
@@ -156,16 +173,19 @@ def build_reconciliation_shadow(
         "recurring_series_count": len(series_summaries),
         "candidate_superseded_count": len(candidates),
         "candidate_superseded_cents": candidate_cents,
-        "requires_operator_review": bool(candidates),
+        "supersession_review_count": len(review_records),
+        "supersession_review_cents": review_cents,
+        "requires_operator_review": bool(candidates or review_records),
         "summary": (
-            f"{len(candidates)} recurring occurrence(s) may be historical; "
-            "cash calculations are unchanged."
-            if candidates
+            f"{len(candidates)} recurring occurrence(s) are likely historical and "
+            f"{len(review_records)} need review; cash calculations are unchanged."
+            if candidates or review_records
             else "No recurring ClickUp occurrences need supersession review."
         ),
         "input_hash": input_hash,
         "series": sorted(series_summaries, key=lambda item: item["series_key"]),
         "candidates": sorted(candidates, key=lambda item: (item["due_date"], item["id"])),
+        "review_records": sorted(review_records, key=lambda item: (item["due_date"], item["id"])),
     }
 
 
@@ -188,7 +208,8 @@ def persist_reconciliation_shadow(
         key: report.get(key)
         for key in (
             "mode", "as_of_date", "recurring_series_count", "candidate_superseded_count",
-            "candidate_superseded_cents", "requires_operator_review", "summary", "input_hash",
+            "candidate_superseded_cents", "supersession_review_count", "supersession_review_cents",
+            "requires_operator_review", "summary", "input_hash",
         )
     }
     with engine.begin() as conn:

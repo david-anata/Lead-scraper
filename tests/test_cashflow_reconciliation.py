@@ -34,7 +34,7 @@ def test_shadow_identifies_older_open_recurring_occurrence_without_releasing_it(
     report = build_reconciliation_shadow(
         [
             _clickup_row("payroll-jun", "Payroll 5th", date(2026, 6, 5)),
-            _clickup_row("payroll-jul", "Payroll 5th", date(2026, 7, 5)),
+            _clickup_row("payroll-jul", "Payroll 5th", date(2026, 6, 19)),
         ],
         as_of=date(2026, 7, 15),
     )
@@ -44,6 +44,20 @@ def test_shadow_identifies_older_open_recurring_occurrence_without_releasing_it(
     assert report["candidate_superseded_cents"] == 500_000
     assert report["candidates"][0]["id"] == "payroll-jun"
     assert report["candidates"][0]["later_occurrence_id"] == "payroll-jul"
+
+
+def test_shadow_keeps_skipped_recurring_period_in_review() -> None:
+    report = build_reconciliation_shadow(
+        [
+            _clickup_row("benefits-jun", "Select Benefits", date(2026, 6, 4)),
+            _clickup_row("benefits-aug", "Select Benefits", date(2026, 8, 4)),
+        ],
+        as_of=date(2026, 8, 5),
+    )
+
+    assert report["candidate_superseded_count"] == 0
+    assert report["supersession_review_count"] == 1
+    assert report["review_records"][0]["candidate_state"] == "supersession_needs_review"
 
 
 def test_shadow_does_not_mark_terminal_or_nonrecurring_rows_as_superseded() -> None:
@@ -73,6 +87,7 @@ def test_source_readiness_exposes_shadow_delta_without_changing_finance_values()
             "mode": "shadow",
             "candidate_superseded_count": 2,
             "candidate_superseded_cents": 750_000,
+            "supersession_review_count": 0,
         },
     )
 
@@ -85,11 +100,13 @@ def test_reconciliation_review_names_candidates_without_offering_a_release_actio
     rendered = _reconciliation_shadow_html({
         "mode": "shadow",
         "candidate_superseded_count": 1,
+        "supersession_review_count": 0,
         "candidates": [{
             "name": "Payroll 5th",
             "due_date": "2026-06-05",
             "later_due_date": "2026-07-05",
             "amount_cents": 500_000,
+            "candidate_state": "candidate_superseded",
         }],
     })
 
@@ -108,7 +125,7 @@ def test_finance_control_exposes_shadow_report_without_changing_required_cash() 
             "account_balance_cents": None,
         },
         {
-            **_clickup_row("payroll-jul", "Payroll 5th", date(2026, 7, 5)),
+            **_clickup_row("payroll-jul", "Payroll 5th", date(2026, 6, 19)),
             "account_balance_cents": None,
         },
         {
@@ -136,7 +153,7 @@ def test_shadow_report_persistence_is_idempotent_and_does_not_touch_cash_events(
     report = build_reconciliation_shadow(
         [
             _clickup_row("payroll-jun", "Payroll 5th", date(2026, 6, 5)),
-            _clickup_row("payroll-jul", "Payroll 5th", date(2026, 7, 5)),
+            _clickup_row("payroll-jul", "Payroll 5th", date(2026, 6, 19)),
         ],
         as_of=date(2026, 7, 15),
     )
