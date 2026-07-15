@@ -45,7 +45,6 @@ async def _set_finance_nav_user(request: Request) -> None:
     _finance_nav_user.set(get_current_user(request))
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
-from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_transactions
 
 
 router = APIRouter(
@@ -624,7 +623,12 @@ async def recurring_delete(request: Request, template_id: str):
 
 @router.post("/sync-qbo", response_class=HTMLResponse)
 async def sync_qbo(request: Request):
-    """Full finance sync: ClickUp templates → template expansion → QBO invoices → QBO bank."""
+    """Compatibility sync using Finance Control's canonical source policy.
+
+    Cash on hand is only refreshed from the bank CSV.  QBO contributes dated
+    receivables, while ClickUp contributes planned work.  This endpoint remains
+    for old links but must not silently reintroduce QBO bank transactions.
+    """
     settings = (
         getattr(request.app.state, "agent_settings", None)
         or getattr(request.app.state, "admin_dashboard_settings", None)
@@ -633,7 +637,7 @@ async def sync_qbo(request: Request):
     parts: list[str] = []
     errors: list[str] = []
 
-    # 1. ClickUp sync → recurring templates
+    # 1. ClickUp planned AP/AR.
     try:
         from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
         cu = await asyncio.to_thread(sync_clickup_finance, settings)
@@ -642,30 +646,13 @@ async def sync_qbo(request: Request):
     except Exception as exc:
         errors.append(f"ClickUp: {exc}")
 
-    # 2. Template expansion → fill 400-day horizon
-    try:
-        expanded = await asyncio.to_thread(
-            generate_upcoming_from_templates, horizon_days=400, advance_template=True,
-        )
-        parts.append(f"{len(expanded)} events")
-    except Exception as exc:
-        errors.append(f"Templates: {exc}")
-
-    # 3. QBO invoice sync (AR planned events)
+    # 2. QBO dated receivables. No QBO bank sync: CSV remains cash truth.
     try:
         inv = await asyncio.to_thread(sync_qbo_invoices, settings)
         parts.append(f"Invoices {inv.rows_inserted} new")
         errors.extend(inv.errors[:1])
     except Exception as exc:
         errors.append(f"Invoices: {exc}")
-
-    # 4. QBO bank sync (posted actuals — replaces manual CSV upload)
-    try:
-        bank = await asyncio.to_thread(sync_qbo_bank_transactions, settings)
-        parts.append(f"Bank {bank.rows_inserted} new")
-        errors.extend(bank.errors[:1])
-    except Exception as exc:
-        errors.append(f"Bank: {exc}")
 
     if errors:
         flash = f"err:Sync issues: {'; '.join(errors[:2])}"
