@@ -1810,20 +1810,13 @@ def _source_readiness_html(
             <span>{state_label}</span>
           </article>""")
     shadow = reconciliation_shadow or {}
-    candidate_count = max(0, _cents(shadow.get("candidate_superseded_count")))
     review_count = max(0, _cents(shadow.get("supersession_review_count")))
     if str(shadow.get("mode") or "") == "shadow":
-        candidate_cents = max(0, _cents(shadow.get("candidate_superseded_cents")))
-        if candidate_count or review_count:
+        if review_count:
             state_class, state_label = "is-blocked", "Review"
-            detail_parts = []
-            if candidate_count:
-                detail_parts.append(f"{candidate_count} likely historical")
-            if review_count:
-                detail_parts.append(f"{review_count} need review")
             detail = (
-                f"{', '.join(detail_parts)} recurring occurrence(s). "
-                f"Potential release: {_money(candidate_cents)}. Cash is unchanged."
+                f"{review_count} recurring occurrence(s) need settlement evidence. "
+                "Cash is unchanged."
             )
         else:
             state_class, state_label = "is-ready", "Clear"
@@ -1842,10 +1835,8 @@ def _reconciliation_shadow_html(shadow: Mapping[str, Any] | None) -> str:
     shadow = shadow or {}
     if str(shadow.get("mode") or "") != "shadow":
         return ""
-    candidates = list(shadow.get("candidates") or [])
     review_records = list(shadow.get("review_records") or [])
-    records = [*candidates, *review_records][:8]
-    count = max(0, _cents(shadow.get("candidate_superseded_count")))
+    records = review_records[:8]
     review_count = max(0, _cents(shadow.get("supersession_review_count")))
     if not records:
         return """
@@ -1857,21 +1848,21 @@ def _reconciliation_shadow_html(shadow: Mapping[str, Any] | None) -> str:
         f"<tr><td>{html.escape(str(candidate.get('name') or 'Unnamed occurrence'))}</td>"
         f"<td>{html.escape(str(candidate.get('due_date') or 'date unavailable'))}</td>"
         f"<td>{html.escape(str(candidate.get('later_due_date') or 'date unavailable'))}</td>"
-        f"<td>{html.escape('Likely historical' if candidate.get('candidate_state') == 'candidate_superseded' else 'Review gap')}</td>"
+        f"<td>{html.escape('Review continuity' if candidate.get('candidate_state') == 'recurrence_continuity_review' else 'Review gap')}</td>"
         f"<td>{_money(_cents(candidate.get('amount_cents')))}</td></tr>"
         for candidate in records
     )
     suffix = (
         f" Showing the first {len(records)}."
-        if count + review_count > len(records) else ""
+        if review_count > len(records) else ""
     )
     return f"""
       <section class="finance-reconciliation-review" aria-labelledby="finance-reconciliation-title">
         <div><strong id="finance-reconciliation-title">Recurring ClickUp review</strong>
-          <span>{count} likely historical; {review_count} have a skipped recurrence gap and need review. Cash is unchanged.{suffix}</span></div>
+          <span>{review_count} recurrence(s) need settlement evidence. A newer scheduled task never clears an older payable. Cash is unchanged.{suffix}</span></div>
         <table><thead><tr><th>Occurrence</th><th>Older due</th><th>Newer due</th><th>Assessment</th><th>Amount</th></tr></thead>
         <tbody>{rows}</tbody></table>
-        <small>Review the source task and bank evidence before any occurrence is released from required cash.</small>
+        <small>Only a closed ClickUp occurrence or matching bank settlement can release required cash.</small>
       </section>"""
 
 

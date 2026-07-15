@@ -14,7 +14,14 @@ from sales_support_agent.services.cashflow.overview import (
 from sales_support_agent.services.cashflow.control import build_finance_control_state
 
 
-def _clickup_row(identifier: str, name: str, due_date: date, *, status: str = "overdue") -> dict:
+def _clickup_row(
+    identifier: str,
+    name: str,
+    due_date: date,
+    *,
+    status: str = "overdue",
+    recurring_rule: str = "biweekly",
+) -> dict:
     return {
         "id": identifier,
         "source": "clickup",
@@ -25,12 +32,12 @@ def _clickup_row(identifier: str, name: str, due_date: date, *, status: str = "o
         "vendor_or_customer": name,
         "amount_cents": 500_000,
         "due_date": due_date,
-        "recurring_rule": "biweekly",
+        "recurring_rule": recurring_rule,
         "status": status,
     }
 
 
-def test_shadow_identifies_older_open_recurring_occurrence_without_releasing_it() -> None:
+def test_shadow_marks_older_open_recurring_occurrence_for_evidence_review() -> None:
     report = build_reconciliation_shadow(
         [
             _clickup_row("payroll-jun", "Payroll 5th", date(2026, 6, 5)),
@@ -40,10 +47,26 @@ def test_shadow_identifies_older_open_recurring_occurrence_without_releasing_it(
     )
 
     assert report["mode"] == "shadow"
-    assert report["candidate_superseded_count"] == 1
-    assert report["candidate_superseded_cents"] == 500_000
-    assert report["candidates"][0]["id"] == "payroll-jun"
-    assert report["candidates"][0]["later_occurrence_id"] == "payroll-jul"
+    assert report["candidate_superseded_count"] == 0
+    assert report["supersession_review_count"] == 1
+    assert report["review_records"][0]["id"] == "payroll-jun"
+    assert report["review_records"][0]["later_occurrence_id"] == "payroll-jul"
+    assert report["review_records"][0]["candidate_state"] == "recurrence_continuity_review"
+
+
+def test_shadow_does_not_treat_a_future_recurring_successor_as_payment_proof() -> None:
+    report = build_reconciliation_shadow(
+        [
+            _clickup_row("benefits-jul", "Select Benefits", date(2026, 7, 4), recurring_rule="monthly"),
+            _clickup_row("benefits-aug", "Select Benefits", date(2026, 8, 4), recurring_rule="monthly"),
+        ],
+        as_of=date(2026, 7, 15),
+    )
+
+    assert report["candidate_superseded_count"] == 0
+    assert report["supersession_review_count"] == 1
+    assert report["review_records"][0]["id"] == "benefits-jul"
+    assert report["review_records"][0]["candidate_state"] == "recurrence_continuity_review"
 
 
 def test_shadow_keeps_skipped_recurring_period_in_review() -> None:
@@ -85,28 +108,28 @@ def test_source_readiness_exposes_shadow_delta_without_changing_finance_values()
         [],
         {
             "mode": "shadow",
-            "candidate_superseded_count": 2,
-            "candidate_superseded_cents": 750_000,
-            "supersession_review_count": 0,
+            "candidate_superseded_count": 0,
+            "candidate_superseded_cents": 0,
+            "supersession_review_count": 2,
         },
     )
 
     assert "Reconciliation" in rendered
     assert "Cash is unchanged" in rendered
-    assert "$7,500" in rendered
+    assert "settlement evidence" in rendered
 
 
 def test_reconciliation_review_names_candidates_without_offering_a_release_action() -> None:
     rendered = _reconciliation_shadow_html({
         "mode": "shadow",
-        "candidate_superseded_count": 1,
-        "supersession_review_count": 0,
-        "candidates": [{
+        "candidate_superseded_count": 0,
+        "supersession_review_count": 1,
+        "review_records": [{
             "name": "Payroll 5th",
             "due_date": "2026-06-05",
             "later_due_date": "2026-07-05",
             "amount_cents": 500_000,
-            "candidate_state": "candidate_superseded",
+            "candidate_state": "recurrence_continuity_review",
         }],
     })
 
@@ -114,8 +137,8 @@ def test_reconciliation_review_names_candidates_without_offering_a_release_actio
     assert "2026-06-05" in rendered
     assert "2026-07-05" in rendered
     assert "$5,000" in rendered
-    assert "released" in rendered
-    assert "Clear" not in rendered
+    assert "settlement" in rendered
+    assert "Review continuity" in rendered
 
 
 def test_finance_control_exposes_shadow_report_without_changing_required_cash() -> None:
@@ -143,7 +166,8 @@ def test_finance_control_exposes_shadow_report_without_changing_required_cash() 
     state = build_finance_control_state(rows, as_of=date(2026, 7, 15))
 
     assert state["metrics"]["required_outgoing_cents"] == 1_000_000
-    assert state["reconciliation_shadow"]["candidate_superseded_count"] == 1
+    assert state["reconciliation_shadow"]["candidate_superseded_count"] == 0
+    assert state["reconciliation_shadow"]["supersession_review_count"] == 1
 
 
 def test_shadow_report_persistence_is_idempotent_and_does_not_touch_cash_events() -> None:

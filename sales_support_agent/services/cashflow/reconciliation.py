@@ -89,6 +89,9 @@ def build_reconciliation_shadow(
         row["_shadow_series_key"] = key
         series[key].append(row)
 
+    # Recurrence continuity is a review signal, not settlement evidence. Keep
+    # this compatibility list empty until a later promotion phase has explicit
+    # bank/closed-task proof for each occurrence.
     candidates: list[dict[str, Any]] = []
     review_records: list[dict[str, Any]] = []
     series_summaries: list[dict[str, Any]] = []
@@ -130,20 +133,21 @@ def build_reconciliation_shadow(
                 "later_due_date": latest_active["_shadow_due_date"].isoformat(),
                 "gap_days": gap_days,
             }
-            # A skipped period is not evidence the old obligation was resolved.
-            # It stays reserved and explicit until an operator reviews it.
+            # A future (or merely newer) scheduled task does not prove the old
+            # one was paid. It only makes the old recurrence worth reviewing.
+            # Bank settlement or a closed source occurrence remains mandatory
+            # before a forecast reservation can be released.
             if gap_days <= round(cadence_days * 1.5):
-                candidates.append({
-                    **record,
-                    "candidate_state": "candidate_superseded",
-                    "reason": "The next ClickUp occurrence is within the expected recurrence window.",
-                })
+                state = "recurrence_continuity_review"
+                reason = "A later scheduled occurrence is within the recurrence window; payment evidence is still required."
             else:
-                review_records.append({
-                    **record,
-                    "candidate_state": "supersession_needs_review",
-                    "reason": "A later occurrence exists, but the gap skips an expected recurrence period.",
-                })
+                state = "supersession_needs_review"
+                reason = "A later occurrence exists, but the gap skips an expected recurrence period."
+            review_records.append({
+                **record,
+                "candidate_state": state,
+                "reason": reason,
+            })
 
     candidate_cents = sum(item["amount_cents"] for item in candidates)
     review_cents = sum(item["amount_cents"] for item in review_records)
@@ -177,9 +181,9 @@ def build_reconciliation_shadow(
         "supersession_review_cents": review_cents,
         "requires_operator_review": bool(candidates or review_records),
         "summary": (
-            f"{len(candidates)} recurring occurrence(s) are likely historical and "
-            f"{len(review_records)} need review; cash calculations are unchanged."
-            if candidates or review_records
+            f"{len(review_records)} recurring occurrence(s) need settlement evidence; "
+            "cash calculations are unchanged."
+            if review_records
             else "No recurring ClickUp occurrences need supersession review."
         ),
         "input_hash": input_hash,
