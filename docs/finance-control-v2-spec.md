@@ -32,6 +32,12 @@ Smart suggestions are deterministic, explainable, preview-only, and shown behind
 - **ClickUp** supplies planned AP/AR, dates, priority, and notes.
 - **QuickBooks Online** supplies open invoices and, when connected, bank/invoice records.
 
+ClickUp completion is operational evidence, not payment proof. A completed
+ClickUp obligation stays in the audit trail as **Completed in ClickUp**. It
+leaves required cash only after a bank CSV snapshot dated after the completion;
+otherwise it stays reserved in **Needs action** until bank evidence catches up.
+Only a posted bank allocation can mark an obligation settled.
+
 Manual bank CSV history is sufficient to detect burn, volatility, recurring deposits, and recurring expenses. Trend-inferred future income is always labeled Expected. It is never treated as confirmed cash until an operator or documented AR source confirms it.
 
 ### Why this matters
