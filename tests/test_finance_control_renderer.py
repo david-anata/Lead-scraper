@@ -475,6 +475,14 @@ def test_empty_queue_copy_keeps_exception_actions_available() -> None:
     assert "Update money" in page
 
 
+def test_update_money_keeps_qbo_receivables_separate_from_cash_truth() -> None:
+    page = _render([], _control_state(queue=[]))
+
+    assert 'action="/admin/finances/sync-qbo-invoices"' in page
+    assert "Refresh receivables" in page
+    assert "Bank CSV remains the source of cash on hand." in page
+
+
 def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:
     page = _render([], _control_state(queue=[]))
 

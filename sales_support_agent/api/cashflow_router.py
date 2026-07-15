@@ -675,6 +675,26 @@ async def sync_qbo(request: Request):
     return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
 
 
+@router.post("/sync-qbo-invoices", response_class=HTMLResponse)
+async def sync_qbo_invoices_only(request: Request):
+    """Refresh QBO receivables without changing the bank-CSV cash position."""
+    settings = (
+        getattr(request.app.state, "agent_settings", None)
+        or getattr(request.app.state, "admin_dashboard_settings", None)
+        or request.app.state.settings
+    )
+    try:
+        result = await asyncio.to_thread(sync_qbo_invoices, settings)
+    except Exception as exc:
+        return _redirect_finance_error(f"QuickBooks receivables sync failed: {exc}")
+
+    if result.errors:
+        return _redirect_finance_error(f"QuickBooks receivables sync: {result.errors[0]}")
+    return _redirect_finance_home(
+        f"QuickBooks receivables refreshed: {result.rows_inserted} new, {result.rows_skipped_duplicate} unchanged."
+    )
+
+
 @router.post("/recurring/generate", response_class=HTMLResponse)
 async def recurring_generate(request: Request):
     created = generate_upcoming_from_templates(horizon_days=90)
