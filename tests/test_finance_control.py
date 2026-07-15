@@ -865,3 +865,21 @@ def test_unready_gate_emits_only_trust_resolution_recommendations():
     assert not {
         "collect_confirmed_income", "split_or_defer_payable", "pay_or_schedule_must_pay"
     } & {item["action_type"] for item in state["recommendations"]}
+
+
+def test_source_missing_clickup_payable_stays_reserved_and_blocks_trust():
+    state = build_finance_control_state(
+        _history(250_000) + [_row(
+            "moved-clickup-bill", source="clickup", source_status="source_missing",
+            amount_cents=500_000, due_date=AS_OF + timedelta(days=1),
+        )],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert state["metrics"]["required_outgoing_cents"] == 500_000
+    assert state["trust_gate"]["payables_ready"] is False
+    assert state["trust_gate"]["payable_issues"] == [
+        {"id": "moved-clickup-bill", "reason": "missing from ClickUp source"}
+    ]
+    assert state["queue"]["items"][0]["decision_blocker"] == "source_missing"

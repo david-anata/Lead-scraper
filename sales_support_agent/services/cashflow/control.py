@@ -733,6 +733,8 @@ def _build_trust_gate(
             or str(row.get("classification") or "").lower() == "conflict"
         ):
             payable_issues.append((row_id, "source conflict"))
+        elif str(row.get("source_status") or "").lower() == "source_missing":
+            payable_issues.append((row_id, "missing from ClickUp source"))
         elif _needs_match_review(row):
             payable_issues.append((row_id, "ambiguous match"))
         elif row.get("settlement_evidence_available") is False:
@@ -1105,6 +1107,8 @@ def quick_action_eligibility(
 
 
 def _blocker(row: Mapping[str, Any], *, as_of: date, stale_source_days: int = 7) -> str | None:
+    if str(row.get("source_status") or "").lower() == "source_missing":
+        return "source_missing"
     if row.get("source_open_disagreement"):
         return "source_open_disagreement"
     if _is_probable_duplicate(row):

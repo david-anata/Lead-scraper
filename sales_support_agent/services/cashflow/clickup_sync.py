@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import requests
+from sqlalchemy import bindparam, text
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +207,81 @@ def _match_existing_posted_transactions(engine) -> int:
     return len(matches)
 
 
+def _record_successful_list_snapshot(engine, event_type: str, task_ids: set[str]) -> int:
+    """Flag a source-missing task only after two successful list snapshots.
+
+    A ClickUp task can briefly disappear while it is moved, archived, or while
+    a list request is incomplete.  The first absence is recorded only; the
+    second consecutive successful snapshot keeps the cash reservation and
+    requires an operator to resolve its evidence.
+    """
+    key = f"clickup_finance_snapshot:{event_type}"
+    now = datetime.utcnow().isoformat()
+    with engine.begin() as conn:
+        previous_row = conn.execute(
+            text("SELECT value FROM kv_store WHERE key=:key"), {"key": key}
+        ).fetchone()
+        try:
+            previous = json.loads(previous_row[0]) if previous_row else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            previous = {}
+        prior_seen = {str(task_id) for task_id in previous.get("task_ids", [])}
+        prior_missing = {
+            str(task_id): int(count or 0)
+            for task_id, count in (previous.get("missing_counts") or {}).items()
+        }
+
+        # The first successful snapshot establishes the baseline. Do not turn
+        # pre-existing historical records into exceptions during a rollout.
+        if not prior_seen:
+            conn.execute(text("""
+                INSERT INTO kv_store (key, value, updated_at)
+                VALUES (:key, :value, :updated_at)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """), {
+                "key": key,
+                "value": json.dumps({"task_ids": sorted(task_ids), "missing_counts": {}}),
+                "updated_at": now,
+            })
+            return 0
+
+        rows = conn.execute(text("""
+            SELECT id, source_id
+            FROM cash_events
+            WHERE source='clickup' AND event_type=:event_type
+        """), {"event_type": event_type}).fetchall()
+        missing_counts: dict[str, int] = {}
+        flagged_ids: list[str] = []
+        for row in rows:
+            event_id, task_id = str(row[0]), str(row[1] or "")
+            if not task_id or task_id in task_ids:
+                continue
+            absence_count = prior_missing.get(task_id, 0) + 1
+            missing_counts[task_id] = absence_count
+            if absence_count >= 2:
+                flagged_ids.append(event_id)
+
+        if flagged_ids:
+            conn.execute(text("""
+                UPDATE cash_events
+                SET source_status='source_missing', updated_at=:updated_at
+                WHERE id IN :ids
+            """).bindparams(bindparam("ids", expanding=True)), {
+                "ids": flagged_ids,
+                "updated_at": now,
+            })
+        conn.execute(text("""
+            INSERT INTO kv_store (key, value, updated_at)
+            VALUES (:key, :value, :updated_at)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """), {
+            "key": key,
+            "value": json.dumps({"task_ids": sorted(task_ids), "missing_counts": missing_counts}),
+            "updated_at": now,
+        })
+    return len(flagged_ids)
+
+
 def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
     """Convert a raw ClickUp task dict to a cash_event-compatible dict."""
     custom_fields = task.get("custom_fields") or []
@@ -348,6 +425,15 @@ def sync_clickup_finance(settings):
                     ev_created += 1
                 else:
                     ev_updated += 1
+
+            missing = _record_successful_list_snapshot(
+                engine, event_type, {str(task.get("id") or "") for task in tasks if task.get("id")}
+            )
+            if missing:
+                logger.warning(
+                    "ClickUp %s list has %d task(s) absent from two successful snapshots",
+                    event_type, missing,
+                )
 
         result.matches_made = _match_existing_posted_transactions(engine)
 

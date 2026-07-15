@@ -11,6 +11,7 @@ from sales_support_agent.services.cashflow.clickup_sync import (
     _fetch_tasks,
     _match_existing_posted_transactions,
     _quarantine_legacy_clickup_template_expansions,
+    _record_successful_list_snapshot,
     _task_to_event_dict,
     sync_clickup_finance,
 )
@@ -129,6 +130,26 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
         self.assertEqual(queue["count"], 1)
         self.assertEqual(queue["items"][0]["status"], "completed")
         self.assertEqual(queue["items"][0]["action_label"], "Completed in ClickUp")
+
+    def test_missing_task_requires_two_successful_snapshots_before_flagging(self) -> None:
+        factory = create_session_factory("sqlite:///:memory:")
+        init_database(factory)
+        engine = factory.kw["bind"]
+        with engine.begin() as conn:
+            upsert_cash_event(conn, {
+                "id": "clickup-missing", "source": "clickup", "source_id": "missing-task",
+                "record_kind": "obligation", "event_type": "outflow", "amount_cents": 500000,
+                "due_date": date(2026, 7, 20), "status": "planned", "source_status": "open",
+            })
+
+        self.assertEqual(_record_successful_list_snapshot(engine, "outflow", {"current-task"}), 0)
+        self.assertEqual(_record_successful_list_snapshot(engine, "outflow", {"current-task"}), 0)
+        self.assertEqual(_record_successful_list_snapshot(engine, "outflow", {"current-task"}), 1)
+        with engine.connect() as conn:
+            self.assertEqual(
+                conn.execute(text("SELECT source_status FROM cash_events WHERE id='clickup-missing'")).scalar_one(),
+                "source_missing",
+            )
 
     def test_quarantine_cancels_generated_rows_and_deactivates_templates(self) -> None:
         engine = create_engine("sqlite:///:memory:")
