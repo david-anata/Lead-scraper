@@ -126,7 +126,11 @@ def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     if _is_transaction(row):
         return False
     status = str(row.get("status") or "planned").lower()
-    if status in {"cancelled", "canceled", "void", "completed"}:
+    if status == "completed":
+        # Operational completion can release a forecast only after a newer
+        # bank snapshot has had a chance to confirm the resulting cash state.
+        return bool(row.get("completion_requires_bank_evidence"))
+    if status in {"cancelled", "canceled", "void"}:
         return False
     # Allocation-derived open balance wins over a stale legacy paid flag.
     if status in {"paid", "matched"}:
@@ -260,6 +264,30 @@ def resolve_cash_snapshot(
         "stale": age_days > stale_after_days,
         "age_days": age_days,
     }
+
+
+def _annotate_clickup_completion_evidence(
+    rows: Sequence[Mapping[str, Any]], snapshot: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Keep a recent ClickUp completion reserved until bank evidence is newer."""
+    bank_date = _as_date(snapshot.get("as_of_date"))
+    result: list[dict[str, Any]] = []
+    for source_row in rows:
+        row = dict(source_row)
+        if (
+            str(row.get("source") or "").lower() == "clickup"
+            and str(row.get("status") or "").lower() == "completed"
+        ):
+            completed_date = _as_date(row.get("source_updated_at"))
+            row["completion_requires_bank_evidence"] = bool(
+                not snapshot.get("available")
+                or snapshot.get("stale")
+                or completed_date is None
+                or bank_date is None
+                or bank_date <= completed_date
+            )
+        result.append(row)
+    return result
 
 
 def _probability_bps(row: Mapping[str, Any]) -> int:
@@ -735,6 +763,8 @@ def _build_trust_gate(
             payable_issues.append((row_id, "source conflict"))
         elif str(row.get("source_status") or "").lower() == "source_missing":
             payable_issues.append((row_id, "missing from ClickUp source"))
+        elif row.get("completion_requires_bank_evidence"):
+            payable_issues.append((row_id, "ClickUp completion is newer than bank evidence"))
         elif _needs_match_review(row):
             payable_issues.append((row_id, "ambiguous match"))
         elif row.get("settlement_evidence_available") is False:
@@ -1109,6 +1139,8 @@ def quick_action_eligibility(
 def _blocker(row: Mapping[str, Any], *, as_of: date, stale_source_days: int = 7) -> str | None:
     if str(row.get("source_status") or "").lower() == "source_missing":
         return "source_missing"
+    if row.get("completion_requires_bank_evidence"):
+        return "completion_requires_bank_evidence"
     if row.get("source_open_disagreement"):
         return "source_open_disagreement"
     if _is_probable_duplicate(row):
@@ -1140,7 +1172,10 @@ def build_queue(
     canonical = annotate_open_amounts(visible_rows, settlement_annotations)
     groups: dict[str, list[dict[str, Any]]] = {key: [] for key in GROUP_ORDER}
     for row in canonical:
-        if str(row.get("status") or "").lower() == "completed":
+        if (
+            str(row.get("status") or "").lower() == "completed"
+            and not row.get("completion_requires_bank_evidence")
+        ):
             # Retain operational completion for audit, never as a future cash need.
             due = _event_date(row)
             open_amount = _amount(row.get("open_amount_cents"))
@@ -1168,6 +1203,7 @@ def build_queue(
                 "needs_action": False,
                 "action_label": "Completed in ClickUp",
                 "status": "completed",
+                "completion_requires_bank_evidence": False,
                 "quick_actions": [{"action_type": "preview_cash_impact", "eligible": True, "preview_required": True, "confirmation_required": True}],
             }
             groups.setdefault("completed", []).append(item)
@@ -1230,6 +1266,7 @@ def build_queue(
                 "next_week": "Plan next week",
             }[group],
             "quick_actions": quick_action_eligibility(row, as_of=as_of),
+            "completion_requires_bank_evidence": bool(row.get("completion_requires_bank_evidence")),
         }
         groups[group].append(item)
 
@@ -1420,9 +1457,10 @@ def build_finance_control_state(
     effective_date = as_of or date.today()
     floor_cents = resolve_cash_floor_cents(floor_cents)
     visible_rows, data_quality = _partition_data_quality(rows, as_of=effective_date)
-    canonical = annotate_open_amounts(visible_rows, settlement_annotations)
     balance_rows = [row for row in rows if not _is_probable_duplicate(row)]
     snapshot = resolve_cash_snapshot(balance_rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
+    visible_rows = _annotate_clickup_completion_evidence(visible_rows, snapshot)
+    canonical = annotate_open_amounts(visible_rows, settlement_annotations)
     starting_cash = int(snapshot["balance_cents"] or 0)
     trends = calculate_csv_trends(visible_rows, as_of=effective_date)
     income_projection = derive_csv_income_projections(

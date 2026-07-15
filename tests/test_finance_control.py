@@ -883,3 +883,40 @@ def test_source_missing_clickup_payable_stays_reserved_and_blocks_trust():
         {"id": "moved-clickup-bill", "reason": "missing from ClickUp source"}
     ]
     assert state["queue"]["items"][0]["decision_blocker"] == "source_missing"
+
+
+def test_recent_clickup_completion_stays_reserved_until_newer_bank_snapshot():
+    state = build_finance_control_state(
+        _history(250_000) + [_row(
+            "just-completed", source="clickup", status="completed",
+            source_updated_at=AS_OF.isoformat(), amount_cents=500_000,
+            due_date=AS_OF + timedelta(days=1),
+        )],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    item = next(item for item in state["queue"]["items"] if item["id"] == "just-completed")
+    assert state["metrics"]["required_outgoing_cents"] == 500_000
+    assert item["group"] == "resolve_first"
+    assert item["decision_blocker"] == "completion_requires_bank_evidence"
+    assert state["trust_gate"]["payable_issues"] == [
+        {"id": "just-completed", "reason": "ClickUp completion is newer than bank evidence"}
+    ]
+
+
+def test_completed_clickup_task_releases_only_after_newer_bank_snapshot():
+    state = build_finance_control_state(
+        _history(250_000) + [_row(
+            "bank-covered-completion", source="clickup", status="completed",
+            source_updated_at=(AS_OF - timedelta(days=1)).isoformat(), amount_cents=500_000,
+            due_date=AS_OF + timedelta(days=1),
+        )],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    item = next(item for item in state["queue"]["items"] if item["id"] == "bank-covered-completion")
+    assert state["metrics"]["required_outgoing_cents"] == 0
+    assert item["group"] == "completed"
+    assert item["completion_requires_bank_evidence"] is False

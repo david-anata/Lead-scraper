@@ -1191,6 +1191,10 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         row = vars(row) if hasattr(row, "__dict__") else {}
     direction = str(_control_value(item, "event_type", "direction", default=row.get("event_type") or "outflow"))
     status = str(_control_value(item, "status", default=row.get("status") or "planned")).lower()
+    completion_requires_bank_evidence = bool(_control_value(
+        item, "completion_requires_bank_evidence",
+        default=row.get("completion_requires_bank_evidence"),
+    ))
     due_raw = _control_value(item, "due_date", "date", default=row.get("due_date"))
     due = _row_due_date({"due_date": due_raw})
     amount_cents = _cents(
@@ -1234,6 +1238,8 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     if not impact:
         if due is None:
             impact = "Excluded until dated"
+        elif status == "completed" and completion_requires_bank_evidence:
+            impact = f"-{_money(amount_cents)} held pending bank evidence"
         elif status == "completed":
             impact = "$0 reserved; bank proof pending"
         elif direction == "inflow":
@@ -1254,7 +1260,7 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         or _status_key(row.get("source")) == "inferred"
     )
     tabs = ["incoming" if direction == "inflow" else "payables"]
-    if status == "completed":
+    if status == "completed" and not completion_requires_bank_evidence:
         tabs = ["completed"]
     if needs_action:
         tabs.append("needs-action")
