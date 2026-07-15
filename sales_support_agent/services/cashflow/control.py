@@ -16,7 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 ACTIVE_STATUSES = {"planned", "pending", "overdue", "open", "due"}
-TERMINAL_STATUSES = {"paid", "matched", "cancelled", "canceled", "void"}
+TERMINAL_STATUSES = {"paid", "matched", "cancelled", "canceled", "void", "completed"}
 TRANSACTION_STATUSES = {"posted", "matched"}
 INCOME_DECISIONS = {"review", "track_expected", "exclude", "one_time"}
 GROUP_ORDER = (
@@ -126,7 +126,7 @@ def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     if _is_transaction(row):
         return False
     status = str(row.get("status") or "planned").lower()
-    if status in {"cancelled", "canceled", "void"}:
+    if status in {"cancelled", "canceled", "void", "completed"}:
         return False
     # Allocation-derived open balance wins over a stale legacy paid flag.
     if status in {"paid", "matched"}:
@@ -1136,6 +1136,38 @@ def build_queue(
     canonical = annotate_open_amounts(visible_rows, settlement_annotations)
     groups: dict[str, list[dict[str, Any]]] = {key: [] for key in GROUP_ORDER}
     for row in canonical:
+        if str(row.get("status") or "").lower() == "completed":
+            # Retain operational completion for audit, never as a future cash need.
+            due = _event_date(row)
+            open_amount = _amount(row.get("open_amount_cents"))
+            item = {
+                "id": row["id"],
+                "group": "completed",
+                "event_type": str(row.get("event_type") or "outflow"),
+                "confidence": str(row.get("confidence") or "estimated"),
+                "party": str(row.get("vendor_or_customer") or row.get("name") or row.get("description") or ""),
+                "due_date": due.isoformat() if due else None,
+                "days_until_due": (due - as_of).days if due else None,
+                "overdue_days": 0,
+                "open_amount_cents": open_amount,
+                "decision_blocker": None,
+                "pay_priority": _pay_priority(row),
+                "flexibility": _flexibility(row),
+                "category": str(row.get("category") or "uncategorized"),
+                "source": str(row.get("source") or "manual"),
+                "source_label": str(row.get("source_label") or row.get("source") or "Manual"),
+                "source_evidence": dict(row.get("source_evidence") or {}),
+                "trend_inferred": bool(row.get("trend_inferred")),
+                "probability_bps": _probability_bps(row),
+                "read_only": True,
+                "floor_impact_cents": 0,
+                "needs_action": False,
+                "action_label": "Completed in ClickUp",
+                "status": "completed",
+                "quick_actions": [{"action_type": "preview_cash_impact", "eligible": True, "preview_required": True, "confirmation_required": True}],
+            }
+            groups.setdefault("completed", []).append(item)
+            continue
         blocker = _blocker(row, as_of=as_of)
         if not blocker and (not _is_active_obligation(row) or not row.get("open_amount_cents")):
             continue
@@ -1224,6 +1256,10 @@ def build_queue(
                 "items": items,
             }
         )
+    completed_items = sorted(groups.get("completed", []), key=lambda item: (
+        item["due_date"] or "9999-12-31", str(item["id"])
+    ))
+    all_items.extend(completed_items)
     return {"groups": result_groups, "items": all_items, "count": len(all_items), "truncated": False}
 
 

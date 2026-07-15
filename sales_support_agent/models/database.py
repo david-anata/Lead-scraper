@@ -1358,7 +1358,7 @@ def refresh_obligation_status_from_evidence(conn, event_id: str) -> str:
     face = max(0, int(data.get("amount_cents") or 0))
     if face > 0 and allocated >= face:
         status = "paid"
-    elif str(data.get("status") or "").lower() in {"cancelled", "canceled", "void"}:
+    elif str(data.get("status") or "").lower() in {"cancelled", "canceled", "void", "completed"}:
         # Explicit local cancellation remains authoritative.
         status = str(data["status"])
     else:
@@ -1392,6 +1392,7 @@ def upsert_cash_event(conn, event: dict) -> str:
 
     now_str = datetime.utcnow().isoformat()
     preserve_settlement_truth = bool(event.get("preserve_settlement_truth"))
+    apply_source_lifecycle = bool(event.get("apply_source_lifecycle"))
 
     # Normalize due_date to ISO string
     due_date_val = event.get("due_date")
@@ -1417,7 +1418,11 @@ def upsert_cash_event(conn, event: dict) -> str:
                     subcategory=:subcategory, description=:description,
                     name=:name, vendor_or_customer=:vendor_or_customer,
                     amount_cents=:amount_cents, due_date=:due_date,
-                    status=CASE WHEN :preserve_settlement_truth THEN status ELSE :status END,
+                    status=CASE
+                        WHEN :apply_source_lifecycle AND status NOT IN ('paid', 'matched') THEN :status
+                        WHEN :preserve_settlement_truth THEN status
+                        ELSE :status
+                    END,
                     confidence=:confidence,
                     source_status=COALESCE(:source_status, source_status),
                     source_open_amount_cents=:source_open_amount_cents,
@@ -1454,6 +1459,7 @@ def upsert_cash_event(conn, event: dict) -> str:
                 "source_open_amount_cents": event.get("source_open_amount_cents"),
                 "source_updated_at": event.get("source_updated_at"),
                 "preserve_settlement_truth": preserve_settlement_truth,
+                "apply_source_lifecycle": apply_source_lifecycle,
                 "pay_priority": event.get("pay_priority"),
                 "minimum_payment_cents": event.get("minimum_payment_cents"),
                 "flexibility": event.get("flexibility"),
@@ -1529,7 +1535,7 @@ def upsert_cash_event(conn, event: dict) -> str:
         )
         result = "created"
 
-    if preserve_settlement_truth:
+    if preserve_settlement_truth and not apply_source_lifecycle:
         refresh_obligation_status_from_evidence(conn, str(event["id"]))
     return result
 

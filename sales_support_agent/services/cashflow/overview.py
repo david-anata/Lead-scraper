@@ -1199,7 +1199,9 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     party = str(_control_value(item, "party", "name", "vendor_or_customer", default=_display_name(dict(row))))
     action = _control_value(item, "action_label", "action", "recommended_action", default="")
     if not action:
-        if status in {"posted", "matched"}:
+        if status == "completed":
+            action = "Completed in ClickUp"
+        elif status in {"posted", "matched"}:
             action = "Review actual"
         elif due is None:
             action = "Confirm date"
@@ -1219,6 +1221,8 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     if not timing:
         if due is None:
             timing = "Date missing"
+        elif status == "completed":
+            timing = "Completed in ClickUp - bank proof pending"
         elif due < today:
             late = (today - due).days
             timing = f"{due.strftime('%b %d, %Y')} - {late}d late"
@@ -1230,6 +1234,8 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     if not impact:
         if due is None:
             impact = "Excluded until dated"
+        elif status == "completed":
+            impact = "$0 reserved; bank proof pending"
         elif direction == "inflow":
             impact = f"+{_money(amount_cents)} if received"
         else:
@@ -1248,6 +1254,8 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         or _status_key(row.get("source")) == "inferred"
     )
     tabs = ["incoming" if direction == "inflow" else "payables"]
+    if status == "completed":
+        tabs = ["completed"]
     if needs_action:
         tabs.append("needs-action")
     if status in {"posted", "matched", "paid"}:
@@ -1337,7 +1345,7 @@ def _queue_table_html(
     queue: Any, today: date, *, decision_actions_allowed: bool,
 ) -> tuple[str, dict[str, int]]:
     items = [_queue_item_data(item, today) for item in _flatten_queue(queue)]
-    counts = {key: 0 for key in ("needs-action", "incoming", "payables", "recent")}
+    counts = {key: 0 for key in ("needs-action", "incoming", "payables", "completed", "recent")}
     rows_html = []
     for item in items:
         if not decision_actions_allowed:
@@ -2279,6 +2287,7 @@ async def render_cashflow_overview_page(
           <button type="button" aria-pressed="true" data-queue-filter="needs-action">Needs action <span>{counts['needs-action']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="completed">Completed <span>{counts['completed']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="recent">Recent <span>{counts['recent']}</span></button>
         </div>
         <div class="finance-queue-scroll"{queue_table_hidden}>
@@ -2416,7 +2425,9 @@ async def render_cashflow_overview_page(
         const due = new Date(row.dataset.queueDate + 'T00:00:00');
         const difference = Math.round((due - queueToday) / 86400000);
         const days = Number(queueWindow.value);
-        return filter === 'recent'
+        return filter === 'completed'
+          ? true
+          : filter === 'recent'
           ? difference <= 0 && difference >= -days
           : difference <= days;
       }}

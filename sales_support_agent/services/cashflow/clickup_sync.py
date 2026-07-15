@@ -69,7 +69,34 @@ def _parse_due_date(ts_ms: Any) -> Optional[date]:
         return None
 
 
-def _map_status(clickup_status: str, due: Optional[date], today: date) -> str:
+def _is_closed_task(task: dict) -> bool:
+    """Use ClickUp's canonical status type before falling back to its label."""
+    status = task.get("status") or {}
+    if not isinstance(status, dict):
+        return False
+    if str(status.get("type") or "").lower() == "closed":
+        return True
+    # Older ClickUp responses and imported fixtures do not always include type.
+    return str(status.get("status") or "").strip().lower() in {
+        "closed", "complete", "completed", "done",
+    }
+
+
+def _source_timestamp(task: dict) -> datetime:
+    for value in (task.get("date_closed"), task.get("date_updated")):
+        if not value:
+            continue
+        try:
+            return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).replace(tzinfo=None)
+        except (TypeError, ValueError, OSError):
+            continue
+    return datetime.utcnow()
+
+
+def _map_status(task: dict, due: Optional[date], today: date) -> str:
+    if _is_closed_task(task):
+        # Completion is operational evidence, not proof that cash left the bank.
+        return "completed"
     if due and due < today:
         return "overdue"
     if due and due <= today + timedelta(days=7):
@@ -148,12 +175,12 @@ def _match_existing_posted_transactions(engine) -> int:
     rows = list_obligations(limit=5000)
     posted = [
         row for row in rows
-        if row.get("source") in ("csv", "qbo_bank")
+        if row.get("source") == "csv"
         and row.get("status") == "posted"
     ]
     planned = [
         row for row in rows
-        if row.get("source") not in ("csv", "qbo_bank")
+        if row.get("source") != "csv"
         and row.get("status") in ("planned", "pending", "overdue")
         and int(row.get("amount_cents") or 0) > 0
     ]
@@ -206,7 +233,7 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
     pay_priority = PRIORITY_MAP.get(priority_name, "review")
 
     due = _parse_due_date(task.get("due_date"))
-    status = _map_status(task.get("status", {}).get("status", "open"), due, today)
+    status = _map_status(task, due, today)
     source_status = str((task.get("status") or {}).get("status") or "open").lower()
 
     name = task.get("name", "").strip()
@@ -233,8 +260,10 @@ def _task_to_event_dict(task: dict, event_type: str, today: date) -> dict:
         "due_date": due,
         "status": status,
         "source_status": source_status,
-        "source_updated_at": datetime.utcnow(),
+        "source_open_amount_cents": 0 if status == "completed" else amount_cents,
+        "source_updated_at": _source_timestamp(task),
         "preserve_settlement_truth": True,
+        "apply_source_lifecycle": True,
         "confidence": confidence,
         "recurring_rule": frequency,
         "bank_transaction_type": "",
