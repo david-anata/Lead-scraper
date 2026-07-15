@@ -1249,6 +1249,15 @@ input:focus, select:focus, textarea:focus {
 .finance-source-row > div:first-child { display: grid; gap: 3px; }
 .finance-source-row strong { font: 700 12px/1.3 "Montserrat", sans-serif; }
 .finance-source-row span { color: var(--muted); font-size: 11px; }
+.finance-reconciliation-review { margin: 12px 0; padding: 13px 14px; border: 1px solid rgba(185, 28, 28, .22); border-radius: 14px; background: #fff9f8; display: grid; gap: 10px; }
+.finance-reconciliation-review.is-clear { border-color: rgba(15, 118, 110, .2); background: #f5fbf9; }
+.finance-reconciliation-review > div { display: grid; gap: 3px; }
+.finance-reconciliation-review strong { font: 700 12px/1.3 "Montserrat", sans-serif; color: var(--ink); }
+.finance-reconciliation-review span, .finance-reconciliation-review small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.finance-reconciliation-review table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.finance-reconciliation-review th { color: var(--muted); font: 700 9px/1.2 "Montserrat", sans-serif; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+.finance-reconciliation-review th, .finance-reconciliation-review td { padding: 7px 5px; border-bottom: 1px solid var(--line); }
+.finance-reconciliation-review td:last-child, .finance-reconciliation-review th:last-child { text-align: right; }
 .finance-floor-form { display: flex; align-items: center; gap: 8px; }
 .finance-floor-form input { width: 116px; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font: inherit; }
 

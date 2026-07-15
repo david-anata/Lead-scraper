@@ -7,7 +7,10 @@ from sales_support_agent.services.cashflow.reconciliation import (
     persist_reconciliation_shadow,
 )
 from sales_support_agent.models.database import init_database, create_session_factory
-from sales_support_agent.services.cashflow.overview import _source_readiness_html
+from sales_support_agent.services.cashflow.overview import (
+    _reconciliation_shadow_html,
+    _source_readiness_html,
+)
 from sales_support_agent.services.cashflow.control import build_finance_control_state
 
 
@@ -76,6 +79,26 @@ def test_source_readiness_exposes_shadow_delta_without_changing_finance_values()
     assert "Reconciliation" in rendered
     assert "Cash is unchanged" in rendered
     assert "$7,500" in rendered
+
+
+def test_reconciliation_review_names_candidates_without_offering_a_release_action() -> None:
+    rendered = _reconciliation_shadow_html({
+        "mode": "shadow",
+        "candidate_superseded_count": 1,
+        "candidates": [{
+            "name": "Payroll 5th",
+            "due_date": "2026-06-05",
+            "later_due_date": "2026-07-05",
+            "amount_cents": 500_000,
+        }],
+    })
+
+    assert "Payroll 5th" in rendered
+    assert "2026-06-05" in rendered
+    assert "2026-07-05" in rendered
+    assert "$5,000" in rendered
+    assert "released" in rendered
+    assert "Clear" not in rendered
 
 
 def test_finance_control_exposes_shadow_report_without_changing_required_cash() -> None:

@@ -1831,6 +1831,40 @@ def _source_readiness_html(
     return "".join(rows)
 
 
+def _reconciliation_shadow_html(shadow: Mapping[str, Any] | None) -> str:
+    """Render the small, review-only recurrence delta in Update Money."""
+    shadow = shadow or {}
+    if str(shadow.get("mode") or "") != "shadow":
+        return ""
+    candidates = list(shadow.get("candidates") or [])[:8]
+    count = max(0, _cents(shadow.get("candidate_superseded_count")))
+    if not candidates:
+        return """
+          <section class="finance-reconciliation-review is-clear" aria-label="Recurring ClickUp reconciliation">
+            <strong>Recurring ClickUp review</strong>
+            <span>No historical recurring occurrences need review.</span>
+          </section>"""
+    rows = "".join(
+        f"<tr><td>{html.escape(str(candidate.get('name') or 'Unnamed occurrence'))}</td>"
+        f"<td>{html.escape(str(candidate.get('due_date') or 'date unavailable'))}</td>"
+        f"<td>{html.escape(str(candidate.get('later_due_date') or 'date unavailable'))}</td>"
+        f"<td>{_money(_cents(candidate.get('amount_cents')))}</td></tr>"
+        for candidate in candidates
+    )
+    suffix = (
+        f" Showing the first {len(candidates)}."
+        if count > len(candidates) else ""
+    )
+    return f"""
+      <section class="finance-reconciliation-review" aria-labelledby="finance-reconciliation-title">
+        <div><strong id="finance-reconciliation-title">Recurring ClickUp review</strong>
+          <span>{count} historical occurrence(s) may be overstating cash. Cash is unchanged.{suffix}</span></div>
+        <table><thead><tr><th>Occurrence</th><th>Older due</th><th>Newer due</th><th>Amount</th></tr></thead>
+        <tbody>{rows}</tbody></table>
+        <small>Review the source task and bank evidence before any occurrence is released from required cash.</small>
+      </section>"""
+
+
 def _income_review_drawer_html(income_projection: Mapping[str, Any]) -> str:
     status = str(income_projection.get("status") or "ready")
     patterns = list(income_projection.get("patterns") or [])
@@ -2110,6 +2144,7 @@ async def render_cashflow_overview_page(
     source_readiness_html = _source_readiness_html(
         state["source_status"], reconciliation_shadow
     )
+    reconciliation_shadow_html = _reconciliation_shadow_html(reconciliation_shadow)
     if decision_actions_allowed:
         trust_state, trust_title = "ready", "Ready for cash decisions"
         trust_summary = trust_gate["summary"]
@@ -2420,6 +2455,7 @@ async def render_cashflow_overview_page(
           <input type="hidden" name="merge_mode" value="append"><button class="btn btn-primary btn-sm" type="submit">Upload and reconcile</button>
         </form>
         <div class="finance-source-row"><div><strong>ClickUp</strong><span>Connected source for planned AP/AR</span></div><form method="post" action="/admin/finances/sync-clickup"><button class="btn btn-secondary btn-sm" type="submit">Refresh</button></form></div>
+        {reconciliation_shadow_html}
         <div class="finance-source-row"><div><strong>QuickBooks</strong><span>Use the production company for dated receivables. Bank CSV remains the source of cash on hand.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/qbo/connect">Connect</a><form method="post" action="/admin/finances/sync-qbo-invoices" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh receivables</button></form><form method="post" action="/admin/finances/qbo/disconnect" style="display:inline" onsubmit="return confirm('Disconnect QuickBooks? Synced records remain, but no new QBO data will be pulled.');"><button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form></div></div>
         <div class="finance-source-row"><div><strong>Cash floor</strong><span>Reserve kept after required bills. Current: {cash_floor_display}</span></div><form class="finance-floor-form" method="post" action="/admin/finances/settings/cash-floor"><label class="sr-only" for="finance-cash-floor">Cash floor in dollars</label><input id="finance-cash-floor" name="cash_floor" inputmode="decimal" value="{cash_floor_input}" placeholder="Enter cash floor" required><button class="btn btn-secondary btn-sm" type="submit">Save floor</button></form></div>
         <div class="finance-source-row"><div><strong>Manual exception</strong><span>Add an obligation without changing source records.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a></div></div>
