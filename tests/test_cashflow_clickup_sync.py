@@ -82,9 +82,34 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
         self.assertTrue(event["apply_source_lifecycle"])
         self.assertNotEqual(event["status"], "paid")
 
+    def test_done_status_type_is_treated_as_closed_without_a_label_match(self) -> None:
+        event = _task_to_event_dict(
+            self._finance_task(
+                status={"status": "Finance processed", "type": "done"},
+                date_closed=None,
+            ),
+            "outflow",
+            date(2026, 7, 15),
+        )
+
+        self.assertEqual(event["status"], "completed")
+        self.assertIsNone(event["source_open_amount_cents"])
+
+    def test_date_closed_is_terminal_when_workspace_status_is_custom(self) -> None:
+        event = _task_to_event_dict(
+            self._finance_task(status={"status": "Processed", "type": "custom"}),
+            "outflow",
+            date(2026, 7, 15),
+        )
+
+        self.assertEqual(event["status"], "completed")
+        self.assertIsNone(event["source_open_amount_cents"])
+
     def test_open_task_still_uses_due_date_lifecycle(self) -> None:
         event = _task_to_event_dict(
-            self._finance_task(status={"status": "Open", "type": "open"}),
+            self._finance_task(
+                status={"status": "Open", "type": "open"}, date_closed=None
+            ),
             "outflow",
             date(2026, 7, 15),
         )

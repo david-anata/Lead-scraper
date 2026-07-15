@@ -73,15 +73,24 @@ def _parse_due_date(ts_ms: Any) -> Optional[date]:
 
 
 def _is_closed_task(task: dict) -> bool:
-    """Use ClickUp's canonical status type before falling back to its label."""
+    """Recognize ClickUp's terminal representations before lifecycle mapping.
+
+    ClickUp list configurations expose terminal work through different status
+    labels and, in some workspaces, through ``type=done``. A persisted
+    ``date_closed`` is also canonical provider evidence. This is operational
+    completion only: it removes the task from planned AP/AR while bank data
+    remains the authority for actual cash movement.
+    """
     status = task.get("status") or {}
+    if task.get("date_closed"):
+        return True
     if not isinstance(status, dict):
         return False
-    if str(status.get("type") or "").lower() == "closed":
+    if str(status.get("type") or "").lower() in {"closed", "done"}:
         return True
     # Older ClickUp responses and imported fixtures do not always include type.
     return str(status.get("status") or "").strip().lower() in {
-        "closed", "complete", "completed", "done",
+        "closed", "complete", "completed", "done", "paid", "cancelled", "canceled", "void",
     }
 
 
