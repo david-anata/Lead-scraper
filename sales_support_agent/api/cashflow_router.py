@@ -102,10 +102,12 @@ async def cashflow_health(request: Request):
 
     # -- Live DB check -------------------------------------------------------
     try:
-        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.database import ensure_finance_trust_schema, get_engine
         from sqlalchemy import inspect as _sainsp
 
-        insp = _sainsp(get_engine())
+        db_engine = get_engine()
+        ensure_finance_trust_schema(db_engine)
+        insp = _sainsp(db_engine)
         tables = set(insp.get_table_names())
         checks["cash_events_table_exists"] = "cash_events" in tables
 
@@ -132,8 +134,15 @@ async def cashflow_health(request: Request):
             "finance_import_batches", "finance_import_rows",
         }
         checks["finance_v2_tables_present"] = finance_v2_tables.issubset(tables)
+        savings_review_tables = {"finance_savings_reviews", "finance_savings_review_events"}
+        checks["savings_review_tables_present"] = savings_review_tables.issubset(tables)
 
-        if missing_columns or missing_v2_columns or not checks["finance_v2_tables_present"]:
+        if (
+            missing_columns
+            or missing_v2_columns
+            or not checks["finance_v2_tables_present"]
+            or not checks["savings_review_tables_present"]
+        ):
             overall = "degraded"
 
     except Exception as exc:

@@ -212,6 +212,10 @@ class TestHealthEndpointWithDB(unittest.TestCase):
         data = self.client.get("/admin/finances/health").json()
         self.assertTrue(data["checks"]["all_required_columns_present"])
 
+    def test_savings_review_tables_are_available(self) -> None:
+        data = self.client.get("/admin/finances/health").json()
+        self.assertTrue(data["checks"]["savings_review_tables_present"])
+
     def test_upload_insert_covered(self) -> None:
         data = self.client.get("/admin/finances/health").json()
         self.assertTrue(
