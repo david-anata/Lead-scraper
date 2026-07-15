@@ -693,6 +693,15 @@ async def qbo_settings_page(request: Request, flash: str = ""):
     return _redirect_finance_home()
 
 
+@router.post("/qbo/disconnect", response_class=HTMLResponse)
+async def qbo_disconnect(request: Request):
+    """Clear the current QBO authorization from the one-page Finance control."""
+    from sales_support_agent.api.qbo_auth_router import _do_disconnect
+
+    _do_disconnect()
+    return _redirect_finance_home("QuickBooks disconnected. Reconnect the intended company when ready.")
+
+
 # ---------------------------------------------------------------------------
 # Reconcile — Actuals vs Planned + trend suggestions
 # ---------------------------------------------------------------------------

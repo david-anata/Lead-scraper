@@ -103,6 +103,7 @@ class TestQBOAuthRoutes(unittest.TestCase):
         paths = {route.path for route in app.routes}
         self.assertIn("/admin/finances/qbo/connect", paths)
         self.assertIn("/admin/finances/qbo/callback", paths)
+        self.assertIn("/admin/finances/qbo/disconnect", paths)
 
     def test_connect_redirects_to_intuit_auth_url(self):
         resp = self.client.get("/connect")
