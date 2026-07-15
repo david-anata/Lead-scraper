@@ -583,6 +583,9 @@ def health(request: Request) -> ApiMessage:
             "render_git_commit": os.getenv("RENDER_GIT_COMMIT", "").strip() or "unknown",
             "render_git_branch": os.getenv("RENDER_GIT_BRANCH", "").strip() or "unknown",
             "clickup_configured": bool(settings.clickup_api_token and settings.clickup_list_id),
+            "finance_savings_clickup_review_configured": bool(
+                (os.getenv("CLICKUP_FINANCE_REVIEW_LIST_ID", "") or "").strip()
+            ),
             "slack_configured": bool(settings.slack_bot_token and settings.slack_channel_id),
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
             "deck_generator_configured": brand_package_path.exists(),
