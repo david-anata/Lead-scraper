@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import defaultdict
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
-
-import requests
 
 from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.obligations import list_obligations
@@ -74,33 +73,22 @@ def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None
 
 
 def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
-    """Run or reuse a structured OpenAI analysis for the full persisted ledger."""
+    """Run or reuse a structured Anthropic analysis for the full persisted ledger."""
     rows = list_obligations(limit=10_000)
     packet = build_ledger_packet(rows)
     packet_hash = _packet_hash(packet)
     cached = kv_get_json(_CACHE_KEY) or {}
     if not force and cached.get("packet_hash") == packet_hash and cached.get("prompt_version") == PROMPT_VERSION:
         return {**cached, "cached": True}
-    if not str(getattr(settings, "openai_api_key", "") or "").strip():
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
         return {
             "status": "not_configured", "packet_hash": packet_hash, "prompt_version": PROMPT_VERSION,
             "record_count": packet["record_count"], "recommendations": [], "cached": False,
         }
 
-    payload = {
-        "model": str(getattr(settings, "openai_model", "gpt-4o-mini") or "gpt-4o-mini"),
-        "input": [
-            {"role": "developer", "content": [{"type": "input_text", "text": _instructions()}]},
-            {"role": "user", "content": [{"type": "input_text", "text": json.dumps(packet, separators=(",", ":"))}]},
-        ],
-        "text": {"format": {"type": "json_schema", "name": "finance_smart_cfo", "strict": True, "schema": _schema()}},
-    }
-    response = requests.post(
-        "https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-        json=payload, timeout=45,
-    )
-    response.raise_for_status()
-    result = _parse_response(response.json())
+    model = os.getenv("FINANCE_SMART_CFO_MODEL", "claude-sonnet-4-20250514").strip() or "claude-sonnet-4-20250514"
+    result = _call_anthropic(api_key, model, packet)
     analysis = _validate_analysis(result, packet)
     stored = {
         "status": "ready", "packet_hash": packet_hash, "prompt_version": PROMPT_VERSION,
@@ -109,6 +97,23 @@ def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
     }
     kv_set_json(_CACHE_KEY, stored)
     return stored
+
+
+def _call_anthropic(api_key: str, model: str, packet: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Use Anthropic's installed SDK; JSON parsing is validated before display."""
+    import anthropic
+
+    message = anthropic.Anthropic(api_key=api_key).messages.create(
+        model=model,
+        max_tokens=1600,
+        system=_instructions() + " Return JSON only, matching this schema: " + json.dumps(_schema(), separators=(",", ":")),
+        messages=[{"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+    )
+    text = message.content[0].text if message.content else ""
+    value = json.loads(text)
+    if not isinstance(value, Mapping):
+        raise ValueError("Smart CFO returned an invalid analysis")
+    return value
 
 
 def load_smart_cfo_analysis() -> dict[str, Any]:
@@ -150,20 +155,6 @@ def _schema() -> dict[str, Any]:
         }, "required": ["category", "priority", "title", "reason", "next_action", "operator_question", "record_ids"],
     }
     return {"type": "object", "additionalProperties": False, "properties": {"summary": {"type": "string"}, "recommendations": {"type": "array", "items": item}}, "required": ["summary", "recommendations"]}
-
-
-def _parse_response(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-    text = str(payload.get("output_text") or "")
-    if not text:
-        for output in payload.get("output", []) or []:
-            for content in output.get("content", []) or []:
-                if content.get("type") in {"output_text", "text"}:
-                    text = str(content.get("text") or "")
-                    break
-    value = json.loads(text)
-    if not isinstance(value, Mapping):
-        raise ValueError("Smart CFO returned an invalid analysis")
-    return value
 
 
 def _validate_analysis(value: Mapping[str, Any], packet: Mapping[str, Any]) -> dict[str, Any]:

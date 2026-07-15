@@ -15,7 +15,7 @@ data quality.
   perform any source mutation.
 - It runs only when the operator chooses **Run Smart review** and reuses the
   result while the ledger is unchanged.
-- A missing `OPENAI_API_KEY` disables only Smart CFO advice, not Finance.
+- A missing `ANTHROPIC_API_KEY` disables only Smart CFO advice, not Finance.
 
 ClickUp, QBO, and CSV remain inputs. ClickUp is optional and never a gate for
 Smart CFO recommendations.

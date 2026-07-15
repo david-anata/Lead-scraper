@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -32,19 +30,17 @@ def test_smart_cfo_caches_exact_ledger_analysis(monkeypatch):
     monkeypatch.setattr(smart_cfo, "kv_get_json", lambda key: store.get(key))
     monkeypatch.setattr(smart_cfo, "kv_set_json", lambda key, value: store.__setitem__(key, value))
 
-    class Response:
-        def raise_for_status(self): pass
-        def json(self): return {"output_text": json.dumps({"summary": "Review Tool Co.", "recommendations": [{"category": "savings", "priority": "medium", "title": "Review Tool Co", "reason": "Two posted software charges recur.", "next_action": "Confirm owner and renewal date.", "operator_question": "Is this still used?", "record_ids": ["bank-1", "bank-2"]}]})}
-
-    monkeypatch.setattr(smart_cfo.requests, "post", lambda *args, **kwargs: calls.append(kwargs) or Response())
-    settings = type("Settings", (), {"openai_api_key": "key", "openai_model": "gpt-test"})()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    monkeypatch.setenv("FINANCE_SMART_CFO_MODEL", "claude-test")
+    monkeypatch.setattr(smart_cfo, "_call_anthropic", lambda key, model, packet: calls.append((key, model, packet)) or {"summary": "Review Tool Co.", "recommendations": [{"category": "savings", "priority": "medium", "title": "Review Tool Co", "reason": "Two posted software charges recur.", "next_action": "Confirm owner and renewal date.", "operator_question": "Is this still used?", "record_ids": ["bank-1", "bank-2"]}]})
+    settings = object()
     first = smart_cfo.run_smart_cfo(settings)
     second = smart_cfo.run_smart_cfo(settings)
     assert first["status"] == "ready"
     assert first["recommendations"][0]["record_ids"] == ["bank-1", "bank-2"]
     assert second["cached"] is True
     assert len(calls) == 1
-    assert calls[0]["json"]["model"] == "gpt-test"
+    assert calls[0][1] == "claude-test"
 
 
 def test_unsupported_llm_evidence_is_removed(monkeypatch):
@@ -56,13 +52,14 @@ def test_unsupported_llm_evidence_is_removed(monkeypatch):
 def test_missing_key_does_not_call_llm(monkeypatch):
     monkeypatch.setattr(smart_cfo, "list_obligations", lambda limit: _rows())
     monkeypatch.setattr(smart_cfo, "kv_get_json", lambda key: None)
-    result = smart_cfo.run_smart_cfo(type("Settings", (), {"openai_api_key": "", "openai_model": ""})())
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = smart_cfo.run_smart_cfo(object())
     assert result["status"] == "not_configured"
 
 
 def test_smart_review_route_is_advisory_and_reports_ledger_scope(monkeypatch):
     app = FastAPI()
-    app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1, "openai_api_key": "key", "openai_model": "test"})()
+    app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1})()
     app.include_router(cashflow_router)
     monkeypatch.setattr("sales_support_agent.services.auth_deps.get_session_user_from_request", lambda request: {"email": "qa@example.com"})
     monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: {"email": "qa@example.com", "permissions": {"finance"}})
