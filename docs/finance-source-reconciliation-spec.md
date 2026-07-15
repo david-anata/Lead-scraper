@@ -32,11 +32,12 @@ commitment is active, fulfilled, cancelled, superseded, uncertain, or settled.
 - A Bank CSV row is the only actual cash and payment-settlement proof.
 - A manual exception is explicit operator evidence, never an invisible override.
 
-The system will stop treating every historical ClickUp row as a separate open
-bill. Repeated payroll, rent, loan, and subscription work is grouped into an
-obligation series. Each task instance is either the active occurrence, a
-completed occurrence, a cancelled occurrence, or a superseded historical
-occurrence. Only active occurrences reserve forecast cash.
+The system will stop treating duplicate ClickUp rows as separate open bills.
+Repeated payroll, rent, loan, and subscription work is grouped into an
+obligation series, but a later recurring task is only a review signal. Each
+task instance remains an open commitment until a closed source occurrence or a
+matching posted-bank settlement proves it is no longer payable. Only exact
+same-occurrence duplicates are quarantined from the cash calculation.
 
 ### What the operator will notice
 
@@ -220,17 +221,19 @@ the amount is identical.
    labels to `cancelled`; do not infer from an arbitrary status label alone.
 4. Build `series_key` from a configured source field when available. Otherwise use
    normalized direction, vendor, amount band, category, and recurrence cadence.
-5. For a series, retain only the newest open/expected occurrence as `active` for
-   a future period. Earlier occurrences become `superseded` when a later instance
-   proves they are historical, unless they have an unpaid outstanding balance or
-   conflicting payment evidence.
-6. A closed occurrence moves to `completed_pending_evidence` until either:
+5. A newer recurring occurrence never proves an earlier occurrence was paid.
+   It produces a continuity review only. Earlier open occurrences remain reserved
+   until a ClickUp closure or matching posted-bank settlement supplies evidence.
+6. Exact duplicate ClickUp occurrences (same source direction, date, normalized
+   counterparty, amount, and recurrence rule) are quarantined as probable
+   duplicates. The newest source record is retained; no source record is deleted.
+7. A closed occurrence moves to `completed_pending_evidence` until either:
    - a matched Bank CSV transaction proves settlement, or
    - a later Bank CSV closing snapshot exists and a policy explicitly permits the
      operator to release the reservation.
-7. An occurrence absent from two successful snapshots becomes `source_missing`.
+8. An occurrence absent from two successful snapshots becomes `source_missing`.
    It remains reserved, but only the individual exception blocks trust.
-8. Reopened ClickUp tasks reactivate their occurrence unless bank settlement is
+9. Reopened ClickUp tasks reactivate their occurrence unless bank settlement is
    already fully allocated; that conflict goes to the exception list.
 
 ### Bank matching rules
@@ -328,4 +331,3 @@ the production-connected environment:
   invoices. Its OAuth connection alone does not prove its selected company is correct.
 - Historical data can be migrated safely only in shadow mode with a visible delta;
   a one-time destructive cleanup is not acceptable.
-

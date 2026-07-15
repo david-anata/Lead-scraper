@@ -142,6 +142,8 @@ def _is_probable_duplicate(row: Mapping[str, Any]) -> bool:
     return bool(
         row.get("probable_duplicate")
         or row.get("is_duplicate")
+        or str(row.get("source_status") or "").lower() == "probable_duplicate"
+        or str(row.get("match_status") or "").lower() == "duplicate"
         or str(row.get("classification") or "").lower() == "duplicate"
     )
 

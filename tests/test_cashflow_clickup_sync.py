@@ -11,6 +11,7 @@ from sales_support_agent.services.cashflow.clickup_sync import (
     _fetch_tasks,
     _match_existing_posted_transactions,
     _quarantine_legacy_clickup_template_expansions,
+    _quarantine_probable_clickup_duplicates,
     _record_successful_list_snapshot,
     _task_to_event_dict,
     sync_clickup_finance,
@@ -282,6 +283,37 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
             ).scalar_one()
         self.assertEqual(allocation_count, 1)
 
+    def test_exact_same_day_clickup_tasks_are_quarantined_as_probable_duplicates(self) -> None:
+        factory = create_session_factory("sqlite:///:memory:")
+        init_database(factory)
+        engine = factory.kw["bind"]
+        with engine.begin() as conn:
+            for event_id, source_id, updated_at in (
+                ("clickup-old", "task-old", "2026-07-15T08:00:00"),
+                ("clickup-new", "task-new", "2026-07-15T09:00:00"),
+            ):
+                upsert_cash_event(conn, {
+                    "id": event_id, "source": "clickup", "source_id": source_id,
+                    "record_kind": "obligation", "event_type": "outflow",
+                    "vendor_or_customer": "Fulfillment Pay - Von",
+                    "name": "Fulfillment Pay - Von", "amount_cents": 110000,
+                    "due_date": date(2026, 6, 22), "category": "fulfillment",
+                    "status": "overdue", "source_status": "open",
+                    "source_updated_at": updated_at, "recurring_rule": "weekly",
+                })
+
+        self.assertEqual(_quarantine_probable_clickup_duplicates(engine), 1)
+        with engine.connect() as conn:
+            statuses = {
+                row.id: (row.source_status, row.match_status)
+                for row in conn.execute(text("""
+                    SELECT id, source_status, match_status
+                    FROM cash_events ORDER BY id
+                """))
+            }
+        self.assertEqual(statuses["clickup-old"], ("probable_duplicate", "duplicate"))
+        self.assertEqual(statuses["clickup-new"], ("open", ""))
+
     def test_recurring_task_is_upserted_once_as_a_cash_event(self) -> None:
         settings = MagicMock(
             clickup_api_token="pk_test",
@@ -312,6 +344,10 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
             ),
             patch(
                 "sales_support_agent.services.cashflow.clickup_sync._match_existing_posted_transactions",
+                return_value=0,
+            ),
+            patch(
+                "sales_support_agent.services.cashflow.clickup_sync._quarantine_probable_clickup_duplicates",
                 return_value=0,
             ),
             patch(

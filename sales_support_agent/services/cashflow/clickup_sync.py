@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -169,7 +170,7 @@ def _quarantine_legacy_clickup_template_expansions(engine) -> tuple[int, int]:
 
 
 def _match_existing_posted_transactions(engine) -> int:
-    """Match previously uploaded bank rows after new ClickUp obligations arrive."""
+    """Match posted bank evidence after new ClickUp obligations arrive."""
     from sales_support_agent.services.cashflow.matcher import auto_match_transactions
     from sales_support_agent.services.cashflow.obligations import list_obligations
     from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
@@ -177,13 +178,15 @@ def _match_existing_posted_transactions(engine) -> int:
     rows = list_obligations(limit=5000)
     posted = [
         row for row in rows
-        if row.get("source") == "csv"
+        if row.get("source") in {"csv", "qbo_bank"}
         and row.get("status") == "posted"
     ]
     planned = [
         row for row in rows
         if row.get("source") != "csv"
         and row.get("status") in ("planned", "pending", "overdue")
+        and str(row.get("source_status") or "").lower() != "probable_duplicate"
+        and str(row.get("match_status") or "").lower() != "duplicate"
         and int(row.get("amount_cents") or 0) > 0
     ]
     if not posted or not planned:
@@ -205,6 +208,81 @@ def _match_existing_posted_transactions(engine) -> int:
                 idempotency_key=f"clickup-auto-match:{match.csv_event_id}:{match.planned_event_id}",
             )
     return len(matches)
+
+
+def _duplicate_occurrence_key(row: Any) -> tuple[str, str, str, int, str] | None:
+    """Return a narrow key for two ClickUp tasks representing one occurrence.
+
+    A recurring task is its own payable. We only quarantine an exact same-day,
+    same-direction, same-amount, same-party duplicate; adjacent monthly tasks
+    are never collapsed. This avoids the historical template-expansion issue
+    without silently dropping legitimate recurrence obligations.
+    """
+    event_type = str(row.get("event_type") or "").lower()
+    due_date = str(row.get("due_date") or "")[:10]
+    amount = int(row.get("amount_cents") or 0)
+    party = re.sub(r"[^a-z0-9]+", " ", str(
+        row.get("vendor_or_customer") or row.get("name") or ""
+    ).lower())
+    party = " ".join(party.split())
+    rule = str(row.get("recurring_rule") or "").lower()
+    if not event_type or not due_date or not amount or not party:
+        return None
+    return event_type, due_date, party, amount, rule
+
+
+def _quarantine_probable_clickup_duplicates(engine) -> int:
+    """Hide exact duplicate ClickUp occurrences from cash, preserving audit data.
+
+    The original tasks stay intact in ClickUp and the rows remain in the local
+    ledger. Only their Finance classification changes to a non-cash duplicate
+    until an operator decides otherwise.
+    """
+    marker = "quarantined:probable-clickup-duplicate"
+    now = datetime.utcnow().isoformat()
+    with engine.begin() as conn:
+        rows = [dict(row._mapping) for row in conn.execute(text("""
+            SELECT id, event_type, due_date, amount_cents, vendor_or_customer,
+                   name, recurring_rule, source_updated_at, source_id
+            FROM cash_events
+            WHERE source='clickup'
+              AND record_kind='obligation'
+              AND status NOT IN ('paid', 'matched', 'completed', 'cancelled', 'canceled', 'void')
+        """))]
+        groups: dict[tuple[str, str, str, int, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            key = _duplicate_occurrence_key(row)
+            if key is not None:
+                groups.setdefault(key, []).append(row)
+
+        duplicate_ids: list[str] = []
+        for occurrences in groups.values():
+            if len(occurrences) < 2:
+                continue
+            # Keep the most recently updated source task deterministically.
+            keeper = max(
+                occurrences,
+                key=lambda row: (str(row.get("source_updated_at") or ""), str(row.get("source_id") or ""), str(row["id"])),
+            )
+            duplicate_ids.extend(str(row["id"]) for row in occurrences if row["id"] != keeper["id"])
+        if duplicate_ids:
+            conn.execute(text("""
+                UPDATE cash_events
+                SET source_status='probable_duplicate', match_status='duplicate',
+                    notes=CASE
+                        WHEN COALESCE(notes, '') = '' THEN :marker
+                        WHEN notes NOT LIKE :marker_like THEN notes || '|' || :marker
+                        ELSE notes
+                    END,
+                    updated_at=:now
+                WHERE id IN :ids
+            """).bindparams(bindparam("ids", expanding=True)), {
+                "ids": duplicate_ids,
+                "marker": marker,
+                "marker_like": f"%{marker}%",
+                "now": now,
+            })
+    return len(duplicate_ids)
 
 
 def _record_successful_list_snapshot(engine, event_type: str, task_ids: set[str]) -> int:
@@ -380,7 +458,7 @@ def sync_clickup_finance(settings):
             return result
 
         today = datetime.utcnow().date()
-        ev_created = ev_updated = skipped = source_exceptions = 0
+        ev_created = ev_updated = skipped = source_exceptions = successful_lists = 0
 
         list_configs = [
             (settings.clickup_ap_list_id, "outflow"),
@@ -416,6 +494,8 @@ def sync_clickup_finance(settings):
                 result.errors.append(f"Failed to fetch list {list_id}: {exc}")
                 continue
 
+            successful_lists += 1
+
             for task in tasks:
                 ev = _task_to_event_dict(task, event_type, today)
                 if ev["amount_cents"] == 0:
@@ -438,6 +518,10 @@ def sync_clickup_finance(settings):
                     event_type, missing,
                 )
 
+        duplicate_count = (
+            _quarantine_probable_clickup_duplicates(engine)
+            if successful_lists else 0
+        )
         result.matches_made = _match_existing_posted_transactions(engine)
         # Persist an immutable, shadow-only recurrence report after successful
         # source upserts. This audit path never changes cash-event lifecycle.
@@ -458,8 +542,8 @@ def sync_clickup_finance(settings):
 
         logger.info(
             "ClickUp finance sync complete: "
-            "events created=%d updated=%d | skipped=%d | matched=%d",
-            ev_created, ev_updated, skipped, result.matches_made,
+            "events created=%d updated=%d | skipped=%d | duplicates=%d | matched=%d",
+            ev_created, ev_updated, skipped, duplicate_count, result.matches_made,
         )
         result.rows_inserted = ev_created
         result.rows_skipped_duplicate = ev_updated + skipped

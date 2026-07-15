@@ -190,6 +190,8 @@ def run_csv_upload(
             row for row in list_obligations(limit=5000)
             if row.get("record_kind") != "transaction"
             and row.get("status") in ("planned", "pending", "overdue")
+            and str(row.get("source_status") or "").lower() != "probable_duplicate"
+            and str(row.get("match_status") or "").lower() != "duplicate"
         ]
         match_results = auto_match_transactions(new_events, planned)
 

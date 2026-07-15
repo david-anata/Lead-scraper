@@ -78,6 +78,11 @@ def build_reconciliation_shadow(
             continue
         if str(row.get("record_kind") or "obligation").lower() == "transaction":
             continue
+        if (
+            str(row.get("source_status") or "").lower() == "probable_duplicate"
+            or str(row.get("match_status") or "").lower() == "duplicate"
+        ):
+            continue
         key = _series_key(row)
         if not key:
             continue

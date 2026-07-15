@@ -69,6 +69,23 @@ def test_shadow_does_not_treat_a_future_recurring_successor_as_payment_proof() -
     assert report["review_records"][0]["candidate_state"] == "recurrence_continuity_review"
 
 
+def test_shadow_omits_quarantined_clickup_duplicate() -> None:
+    report = build_reconciliation_shadow(
+        [
+            {
+                **_clickup_row("von-old", "Fulfillment Pay - Von", date(2026, 6, 22)),
+                "source_status": "probable_duplicate",
+                "match_status": "duplicate",
+            },
+            _clickup_row("von-current", "Fulfillment Pay - Von", date(2026, 7, 20)),
+        ],
+        as_of=date(2026, 7, 15),
+    )
+
+    assert report["supersession_review_count"] == 0
+    assert report["review_records"] == []
+
+
 def test_shadow_keeps_skipped_recurring_period_in_review() -> None:
     report = build_reconciliation_shadow(
         [
