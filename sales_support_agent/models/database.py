@@ -127,6 +127,8 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_settings",
         "finance_action_audit",
         "finance_reconciliation_reports",
+        "finance_savings_reviews",
+        "finance_savings_review_events",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
@@ -262,6 +264,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "finance_settings",
         "finance_action_audit",
         "finance_reconciliation_reports",
+        "finance_savings_reviews",
+        "finance_savings_review_events",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:

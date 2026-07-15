@@ -107,15 +107,14 @@ def _render(savings: dict) -> str:
         return asyncio.run(render_cashflow_overview_page())
 
 
-def test_savings_release_gate_defaults_to_shadow() -> None:
+def test_savings_release_gate_defaults_to_live() -> None:
     with patch.dict("os.environ", {}, clear=True):
         page = _render_with_release_default(
             {"status": "ready", "opportunities": [_opportunity(0)], "total_count": 1}
         )
 
-    assert "Savings checks are validating in shadow mode." in page
-    assert 'data-savings-review="save-0"' not in page
-    assert "No opportunity will be shown or applied" in page
+    assert "Savings checks are validating in shadow mode." not in page
+    assert 'data-savings-review="save-0"' in page
 
 
 def test_cash_floor_load_failure_hides_safe_to_commit_and_savings() -> None:
@@ -257,7 +256,8 @@ def test_smart_off_placeholder_and_read_only_drawer_accessibility_are_wired() ->
     assert "previousOpener.focus()" in page
     assert "drawerFacts.replaceChildren()" in page
     assert 'id="finance-drawer-source"' in page
-    assert "Read-only review. Finance does not cancel services or change the forecast." in page
+    assert "Potential only. Finance records review decisions but never cancels a service or changes the forecast." in page
+    assert "Create ClickUp review task" in page
     assert 'id="finance-live-region"' in page
 
 

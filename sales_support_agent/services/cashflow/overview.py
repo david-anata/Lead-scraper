@@ -1494,7 +1494,13 @@ def _normalise_savings_opportunity(item: Any, index: int) -> dict[str, Any]:
     )
     return {
         "key": opportunity_key,
+        "opportunity_key": opportunity_key,
+        "evidence_hash": str(_control_value(item, "evidence_hash", default="")),
         "display_name": display_name,
+        "normalized_merchant": str(_control_value(item, "normalized_merchant", default="")),
+        "cadence": str(_control_value(item, "cadence", default="")),
+        "baseline_amount_cents": _control_value(item, "baseline_amount_cents", default=None),
+        "monthly_potential_cents": monthly,
         "reason": reason,
         "next_expected": str(next_expected),
         "potential": potential,
@@ -1573,6 +1579,18 @@ def _load_savings_renderer_state(
         if required_positional:
             positional.append(rows)
         result = build_savings_opportunities(*positional, **kwargs)
+        try:
+            from sales_support_agent.services.cashflow.savings_reviews import (
+                load_savings_reviews,
+                merge_savings_reviews,
+            )
+            result = merge_savings_reviews(
+                result, load_savings_reviews(), events=rows, as_of=today
+            )
+        except RuntimeError:
+            # The deterministic card also runs in isolated render/test contexts
+            # before the shared Finance database has been initialized.
+            pass
     except Exception:
         return {"status": "error", "opportunities": [], "total_count": 0}
 
@@ -1614,9 +1632,9 @@ def _load_savings_renderer_state(
 
 
 def _savings_release_mode() -> str:
-    """Keep savings read-only and hidden until the production gates pass."""
-    mode = os.getenv("FINANCE_SAVINGS_MODE", "shadow").strip().lower()
-    return mode if mode in {"off", "shadow", "live"} else "shadow"
+    """Run conservative savings review by default; operators can still disable it."""
+    mode = os.getenv("FINANCE_SAVINGS_MODE", "live").strip().lower()
+    return mode if mode in {"off", "shadow", "live"} else "live"
 
 
 def _savings_section_html(
@@ -1747,7 +1765,20 @@ def _savings_section_html(
                 "sourceUrl": item["source_url"],
                 "sourceAction": "" if item["source_url"] else "update-money",
                 "sourceLabel": "Open source" if item["source_url"] else "Open bank source",
-                "note": "Read-only review. Finance does not cancel services or change the forecast.",
+                "savings": {
+                    "opportunity_key": item.get("opportunity_key") or item["key"],
+                    "evidence_hash": item.get("evidence_hash") or item["key"],
+                    "display_name": item["display_name"],
+                    "normalized_merchant": item.get("normalized_merchant") or item["display_name"],
+                    "cadence": item.get("cadence") or "unknown",
+                    "monthly_potential_cents": item.get("monthly_potential_cents") or item["monthly_cents"],
+                    "baseline_amount_cents": item.get("baseline_amount_cents"),
+                    "realization_ready": bool(item.get("realization_ready")),
+                    "reason": item["reason"],
+                    "limitations": item["limitations"],
+                    "evidence_dates": item["evidence"],
+                },
+                "note": "Potential only. Finance records review decisions but never cancels a service or changes the forecast.",
             }
         stale_notice = (
             '<div class="finance-savings-notice"><strong>Estimates are stale.</strong> Cash impact is unavailable until sources are refreshed.</div>'
@@ -2567,6 +2598,7 @@ async def render_cashflow_overview_page(
       const drawerWhy = document.getElementById('finance-drawer-why');
       const drawerFacts = document.getElementById('finance-drawer-facts');
       const drawerSource = document.getElementById('finance-drawer-source');
+      const drawerActions = document.getElementById('finance-preview-actions');
       const drawerNote = document.getElementById('finance-preview-note');
       const liveRegion = document.getElementById('finance-live-region');
       const incomeDrawer = document.getElementById('finance-income-review-drawer');
@@ -2596,6 +2628,41 @@ async def render_cashflow_overview_page(
         drawerSource.dataset.sourceAction = payload.sourceAction || '';
         drawerSource.href = payload.sourceUrl || '#finance-update-modal';
         drawerNote.textContent = payload.note || 'Review details before confirming. No bank payment is initiated.';
+      }}
+
+      function savingsActionForm(payload, action, label, confirmation) {{
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/admin/finances/savings/' + encodeURIComponent(payload.savings.opportunity_key) + '/review';
+        form.className = 'finance-confirm-form';
+        const hidden = {{
+          action,
+          evidence_hash: payload.savings.evidence_hash,
+          opportunity_json: JSON.stringify(payload.savings),
+        }};
+        Object.entries(hidden).forEach(([name, value]) => {{
+          const input = document.createElement('input'); input.type = 'hidden'; input.name = name; input.value = value; form.append(input);
+        }});
+        const note = document.createElement('p'); note.textContent = confirmation; form.append(note);
+        const buttons = document.createElement('div');
+        const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn btn-secondary'; cancel.textContent = 'Cancel'; cancel.addEventListener('click', () => openDrawer(payload, drawerOpener));
+        const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'btn btn-primary'; submit.textContent = label;
+        buttons.append(cancel, submit); form.append(buttons); return form;
+      }}
+
+      function renderSavingsActions(payload) {{
+        drawerActions.replaceChildren();
+        const create = (label, action, confirmation) => {{
+          const button = document.createElement('button'); button.type = 'button'; button.className = 'btn btn-secondary'; button.textContent = label;
+          button.addEventListener('click', () => {{
+            drawerActions.replaceChildren(savingsActionForm(payload, action, label, confirmation));
+          }});
+          drawerActions.append(button);
+        }};
+        create('Keep for 90 days', 'keep', 'This hides this unchanged evidence for 90 days. It does not change cash or the forecast.');
+        create('Dismiss for 90 days', 'dismiss', 'This hides this unchanged evidence for 90 days. It does not cancel or change the source charge.');
+        create('Create ClickUp review task', 'follow_up', 'This creates one review task in the dedicated Finance review list. It does not create an AP/AR payable or change cash.');
+        if (payload.savings.realization_ready) create('Confirm bank-verified saving', 'confirm_realized', 'A later posted bank charge is materially lower than the baseline. Confirm only after verifying this is a durable saving.');
       }}
 
       function setDrawer(open, opener = null) {{
@@ -2637,6 +2704,7 @@ async def render_cashflow_overview_page(
         document.getElementById('finance-installment-form').hidden = true;
         document.getElementById('finance-preview-actions').hidden = false;
         renderDrawerPayload(payload);
+        if (payload.savings) renderSavingsActions(payload); else drawerActions.replaceChildren(drawerSource, (() => {{ const close = document.createElement('button'); close.type='button'; close.className='btn btn-secondary'; close.dataset.closeDrawer=''; close.textContent='Close review'; close.addEventListener('click', () => setDrawer(false)); return close; }})());
         setDrawer(true, opener);
       }}
 

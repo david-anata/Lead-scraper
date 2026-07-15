@@ -646,6 +646,52 @@ class FinanceReconciliationReport(Base):
     )
 
 
+class FinanceSavingsReview(Base):
+    """Current operator state for one deterministic savings opportunity."""
+
+    __tablename__ = "finance_savings_reviews"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    opportunity_key: Mapped[str] = mapped_column(String(64), index=True)
+    evidence_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    state: Mapped[str] = mapped_column(String(32), default="reviewing", index=True)
+    display_name: Mapped[str] = mapped_column(String(255), default="")
+    normalized_merchant: Mapped[str] = mapped_column(String(255), default="", index=True)
+    cadence: Mapped[str] = mapped_column(String(32), default="")
+    potential_monthly_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    baseline_amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    suppress_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    clickup_task_id: Mapped[str] = mapped_column(String(64), default="")
+    clickup_task_url: Mapped[str] = mapped_column(String(1024), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(255), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("uq_finance_savings_review_scope_opportunity", "scope_key", "opportunity_key", unique=True),
+    )
+
+
+class FinanceSavingsReviewEvent(Base):
+    """Append-only audit log for savings review decisions and verification."""
+
+    __tablename__ = "finance_savings_review_events"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    review_id: Mapped[str] = mapped_column(ForeignKey("finance_savings_reviews.id"), index=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    prior_state: Mapped[str] = mapped_column(String(32), default="")
+    next_state: Mapped[str] = mapped_column(String(32), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="system")
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class RecurringTemplate(Base):
     """Defines a repeating financial obligation.  Each template generates new
     CashEvent rows (source="recurring") one period ahead on each app boot or

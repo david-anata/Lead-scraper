@@ -342,6 +342,57 @@ async def update_income_pattern_decision(
     return _redirect_finance_home("Income pattern decision recorded")
 
 
+@router.post("/savings/{opportunity_key}/review", response_class=HTMLResponse)
+async def record_savings_review_action(
+    request: Request,
+    opportunity_key: str,
+    action: str = Form(...),
+    evidence_hash: str = Form(...),
+    opportunity_json: str = Form(...),
+    reason: str = Form(""),
+):
+    """Store a confirmed savings disposition without mutating cash facts."""
+    import json
+    from sales_support_agent.services.cashflow.savings_reviews import (
+        create_clickup_savings_review_task,
+        record_savings_review,
+    )
+
+    current_user = get_current_user(request)
+    actor = "finance-operator"
+    if isinstance(current_user, dict):
+        actor = str(current_user.get("email") or current_user.get("name") or actor)
+    try:
+        opportunity = json.loads(opportunity_json)
+        if not isinstance(opportunity, dict):
+            raise ValueError("Savings evidence is invalid; refresh Finance and try again")
+        if opportunity.get("opportunity_key") != opportunity_key or opportunity.get("evidence_hash") != evidence_hash:
+            raise ValueError("Savings evidence is stale; refresh Finance and try again")
+        task = None
+        if action == "follow_up":
+            task = await asyncio.to_thread(create_clickup_savings_review_task, opportunity)
+        result = await asyncio.to_thread(
+            record_savings_review,
+            opportunity,
+            action,
+            actor,
+            reason=reason,
+            request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
+            clickup_task=task,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    except Exception:
+        return _redirect_finance_error("Savings review could not be recorded")
+    messages = {
+        "keep": "Savings opportunity kept for 90 days.",
+        "dismiss": "Savings opportunity dismissed for 90 days.",
+        "follow_up": "Savings review task created; Finance will wait for bank evidence before counting a saving.",
+        "confirm_realized": "Bank-verified savings recorded.",
+    }
+    return _redirect_finance_home(messages.get(action, "Savings review recorded."))
+
+
 @router.post("/actions/{event_id}/partial", response_class=HTMLResponse)
 async def record_partial_payment(
     request: Request,

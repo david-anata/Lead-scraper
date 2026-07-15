@@ -203,7 +203,7 @@ The failure is isolated to this section. It never hides or invalidates cash and 
 
 Phase 0 production gate: no Savings opportunity is displayed until these checks pass against a copy of production data.
 
-Rollout control: `FINANCE_SAVINGS_MODE` defaults to `shadow`. Use `off` to disable the check entirely and `live` only after the production-copy reconciliation and one staged production upload pass. Shadow mode runs the evidence engine but never sends opportunity payloads to the operator UI.
+Rollout control: `FINANCE_SAVINGS_MODE` defaults to `live` after the production-copy reconciliation. Use `off` to disable the check entirely or `shadow` for a future ruleset trial. Live mode remains conservative: candidates need posted CSV evidence, actions never alter the forecast, and realized savings require a later materially lower posted bank charge plus operator confirmation.
 
 #### Phase 1A: Read-only Savings radar
 
