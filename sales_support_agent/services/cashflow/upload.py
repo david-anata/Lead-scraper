@@ -27,6 +27,7 @@ class UploadResult:
     rows_skipped_invalid: int = 0
     rows_skipped_review: int = 0
     matches_made: int = 0
+    source_exceptions: int = 0
     errors: list[str] = field(default_factory=list)
     latest_balance_cents: Optional[int] = None
     import_batch_id: Optional[str] = None
@@ -43,6 +44,7 @@ class UploadResult:
             f"{self.rows_skipped_invalid} invalid",
             f"{self.rows_skipped_review} review",
             f"{self.matches_made} auto-matched",
+            f"{self.source_exceptions} source exceptions",
         ]
         if self.latest_balance_cents is not None:
             bal = self.latest_balance_cents / 100

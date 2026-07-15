@@ -563,6 +563,8 @@ async def sync_clickup(request: Request):
     try:
         result = await asyncio.to_thread(sync_clickup_finance, settings)
         flash = f"ok:Synced from ClickUp — {result.rows_inserted} added · {result.rows_skipped_duplicate} updated/skipped"
+        if result.source_exceptions:
+            flash += f" · {result.source_exceptions} source exception(s) need review"
         if result.errors:
             flash = f"err:ClickUp sync errors: {'; '.join(result.errors[:2])}"
     except Exception as exc:

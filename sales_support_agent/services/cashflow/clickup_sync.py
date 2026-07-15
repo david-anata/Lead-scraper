@@ -380,7 +380,7 @@ def sync_clickup_finance(settings):
             return result
 
         today = datetime.utcnow().date()
-        ev_created = ev_updated = skipped = 0
+        ev_created = ev_updated = skipped = source_exceptions = 0
 
         list_configs = [
             (settings.clickup_ap_list_id, "outflow"),
@@ -431,6 +431,7 @@ def sync_clickup_finance(settings):
             missing = _record_successful_list_snapshot(
                 engine, event_type, {str(task.get("id") or "") for task in tasks if task.get("id")}
             )
+            source_exceptions += missing
             if missing:
                 logger.warning(
                     "ClickUp %s list has %d task(s) absent from two successful snapshots",
@@ -446,6 +447,7 @@ def sync_clickup_finance(settings):
         )
         result.rows_inserted = ev_created
         result.rows_skipped_duplicate = ev_updated + skipped
+        result.source_exceptions = source_exceptions
 
     except Exception as exc:
         logger.error("ClickUp sync error: %s", exc)

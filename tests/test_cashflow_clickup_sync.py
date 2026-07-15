@@ -315,6 +315,10 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
                 return_value=0,
             ),
             patch(
+                "sales_support_agent.services.cashflow.clickup_sync._record_successful_list_snapshot",
+                return_value=0,
+            ),
+            patch(
                 "sales_support_agent.services.cashflow.clickup_sync._upsert_event",
                 return_value="created",
             ) as upsert_event,
