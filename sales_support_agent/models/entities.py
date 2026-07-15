@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sales_support_agent.models.database import Base
@@ -621,6 +621,29 @@ class FinanceActionAudit(Base):
     actor: Mapped[str] = mapped_column(String(255), default="system")
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceReconciliationReport(Base):
+    """Immutable shadow-reconciliation result used before forecast promotion."""
+
+    __tablename__ = "finance_reconciliation_reports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    as_of_date: Mapped[date] = mapped_column(Date, index=True)
+    input_hash: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="complete", index=True)
+    summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    report_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "uq_finance_reconciliation_report_input",
+            "scope_key", "as_of_date", "input_hash", unique=True,
+        ),
+        Index("ix_finance_reconciliation_report_latest", "scope_key", "created_at"),
+    )
 
 
 class RecurringTemplate(Base):

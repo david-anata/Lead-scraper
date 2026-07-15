@@ -439,6 +439,22 @@ def sync_clickup_finance(settings):
                 )
 
         result.matches_made = _match_existing_posted_transactions(engine)
+        # Persist an immutable, shadow-only recurrence report after successful
+        # source upserts. This audit path never changes cash-event lifecycle.
+        if ev_created or ev_updated:
+            try:
+                from sales_support_agent.services.cashflow.obligations import list_obligations
+                from sales_support_agent.services.cashflow.reconciliation import (
+                    build_reconciliation_shadow,
+                    persist_reconciliation_shadow,
+                )
+
+                report = build_reconciliation_shadow(list_obligations(limit=5000), as_of=today)
+                persist_reconciliation_shadow(engine, report)
+            except Exception:
+                # Reconciliation is an audit sidecar. A report-write failure
+                # must not invalidate an otherwise successful source refresh.
+                logger.exception("Could not persist ClickUp reconciliation shadow report")
 
         logger.info(
             "ClickUp finance sync complete: "

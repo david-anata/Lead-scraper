@@ -1,6 +1,12 @@
 from datetime import date
 
-from sales_support_agent.services.cashflow.reconciliation import build_reconciliation_shadow
+from sqlalchemy import create_engine, text
+
+from sales_support_agent.services.cashflow.reconciliation import (
+    build_reconciliation_shadow,
+    persist_reconciliation_shadow,
+)
+from sales_support_agent.models.database import init_database, create_session_factory
 from sales_support_agent.services.cashflow.overview import _source_readiness_html
 from sales_support_agent.services.cashflow.control import build_finance_control_state
 
@@ -98,3 +104,24 @@ def test_finance_control_exposes_shadow_report_without_changing_required_cash() 
 
     assert state["metrics"]["required_outgoing_cents"] == 1_000_000
     assert state["reconciliation_shadow"]["candidate_superseded_count"] == 1
+
+
+def test_shadow_report_persistence_is_idempotent_and_does_not_touch_cash_events() -> None:
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    engine = factory.kw["bind"]
+    report = build_reconciliation_shadow(
+        [
+            _clickup_row("payroll-jun", "Payroll 5th", date(2026, 6, 5)),
+            _clickup_row("payroll-jul", "Payroll 5th", date(2026, 7, 5)),
+        ],
+        as_of=date(2026, 7, 15),
+    )
+
+    first_id = persist_reconciliation_shadow(engine, report)
+    second_id = persist_reconciliation_shadow(engine, report)
+
+    assert first_id == second_id
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM finance_reconciliation_reports")).scalar_one() == 1
+        assert conn.execute(text("SELECT COUNT(*) FROM cash_events")).scalar_one() == 0
