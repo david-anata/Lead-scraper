@@ -1140,6 +1140,7 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
             "patterns": patterns,
         },
         "source_status": _normalise_source_statuses(control),
+        "reconciliation_shadow": _control_value(control, "reconciliation_shadow", default={}),
         "trust_gate": {
             "ready": trust_ready,
             "status": trust_status or ("unknown" if trust_ready is None else "ready" if trust_ready else "not_ready"),
@@ -1783,7 +1784,10 @@ def _savings_section_html(
     return section, payloads
 
 
-def _source_readiness_html(source_statuses: list[dict[str, str]]) -> str:
+def _source_readiness_html(
+    source_statuses: list[dict[str, str]],
+    reconciliation_shadow: Mapping[str, Any] | None = None,
+) -> str:
     ready_statuses = {"ready", "current", "connected", "healthy", "synced", "ok"}
     loading_statuses = {"loading", "syncing", "pending"}
     rows = []
@@ -1803,6 +1807,25 @@ def _source_readiness_html(source_statuses: list[dict[str, str]]) -> str:
           <article class="finance-source-readiness__item {state_class}" data-finance-source="{html.escape(source['key'], quote=True)}">
             <span class="finance-source-readiness__mark" aria-hidden="true"></span>
             <div><strong>{html.escape(source['label'])}</strong><small>{html.escape(source['detail'])}</small></div>
+            <span>{state_label}</span>
+          </article>""")
+    shadow = reconciliation_shadow or {}
+    candidate_count = max(0, _cents(shadow.get("candidate_superseded_count")))
+    if str(shadow.get("mode") or "") == "shadow":
+        candidate_cents = max(0, _cents(shadow.get("candidate_superseded_cents")))
+        if candidate_count:
+            state_class, state_label = "is-blocked", "Review"
+            detail = (
+                f"{candidate_count} historical recurring occurrence(s) may be overstating cash by "
+                f"{_money(candidate_cents)}. Cash is unchanged."
+            )
+        else:
+            state_class, state_label = "is-ready", "Clear"
+            detail = "No recurring ClickUp history needs supersession review."
+        rows.append(f"""
+          <article class="finance-source-readiness__item {state_class}" data-finance-source="reconciliation-shadow">
+            <span class="finance-source-readiness__mark" aria-hidden="true"></span>
+            <div><strong>Reconciliation</strong><small>{html.escape(detail)}</small></div>
             <span>{state_label}</span>
           </article>""")
     return "".join(rows)
@@ -2083,7 +2106,10 @@ async def render_cashflow_overview_page(
         else "Current"
     )
     quality_class = "badge-warning" if quality_badge == "Low confidence" else "badge-ok"
-    source_readiness_html = _source_readiness_html(state["source_status"])
+    reconciliation_shadow = state.get("reconciliation_shadow") or {}
+    source_readiness_html = _source_readiness_html(
+        state["source_status"], reconciliation_shadow
+    )
     if decision_actions_allowed:
         trust_state, trust_title = "ready", "Ready for cash decisions"
         trust_summary = trust_gate["summary"]

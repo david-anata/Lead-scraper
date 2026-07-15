@@ -1453,6 +1453,7 @@ def build_finance_control_state(
 ) -> dict[str, Any]:
     """Build the complete deterministic Finance Control V2 read model."""
     from sales_support_agent.services.cashflow.settings import resolve_cash_floor_cents
+    from sales_support_agent.services.cashflow.reconciliation import build_reconciliation_shadow
 
     effective_date = as_of or date.today()
     floor_cents = resolve_cash_floor_cents(floor_cents)
@@ -1528,6 +1529,9 @@ def build_finance_control_state(
         "trust_gate": trust_gate,
         "confidence": confidence,
         "queue": queue,
+        # Shadow-only until a record-level backfill delta has been reviewed.
+        # It intentionally cannot alter cash metrics or queue membership.
+        "reconciliation_shadow": build_reconciliation_shadow(rows, as_of=effective_date),
     }
     state["recommendations"] = build_recommendations(state)
     return state
