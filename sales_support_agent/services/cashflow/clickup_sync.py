@@ -231,7 +231,9 @@ def _duplicate_occurrence_key(row: Any) -> tuple[str, str, str, int, str] | None
     return event_type, due_date, party, amount, rule
 
 
-def _quarantine_probable_clickup_duplicates(engine) -> int:
+def _quarantine_probable_clickup_duplicates(
+    engine, *, event_types: set[str] | None = None
+) -> int:
     """Hide exact duplicate ClickUp occurrences from cash, preserving audit data.
 
     The original tasks stay intact in ClickUp and the rows remain in the local
@@ -241,14 +243,22 @@ def _quarantine_probable_clickup_duplicates(engine) -> int:
     marker = "quarantined:probable-clickup-duplicate"
     now = datetime.utcnow().isoformat()
     with engine.begin() as conn:
-        rows = [dict(row._mapping) for row in conn.execute(text("""
+        query = text("""
             SELECT id, event_type, due_date, amount_cents, vendor_or_customer,
                    name, recurring_rule, source_updated_at, source_id
             FROM cash_events
             WHERE source='clickup'
               AND record_kind='obligation'
               AND status NOT IN ('paid', 'matched', 'completed', 'cancelled', 'canceled', 'void')
-        """))]
+        """)
+        if event_types:
+            query = text(f"{query.text} AND event_type IN :event_types").bindparams(
+                bindparam("event_types", expanding=True)
+            )
+            source_rows = conn.execute(query, {"event_types": sorted(event_types)})
+        else:
+            source_rows = conn.execute(query)
+        rows = [dict(row._mapping) for row in source_rows]
         groups: dict[tuple[str, str, str, int, str], list[dict[str, Any]]] = {}
         for row in rows:
             key = _duplicate_occurrence_key(row)
@@ -459,6 +469,7 @@ def sync_clickup_finance(settings):
 
         today = datetime.utcnow().date()
         ev_created = ev_updated = skipped = source_exceptions = successful_lists = 0
+        successful_event_types: set[str] = set()
 
         list_configs = [
             (settings.clickup_ap_list_id, "outflow"),
@@ -495,6 +506,7 @@ def sync_clickup_finance(settings):
                 continue
 
             successful_lists += 1
+            successful_event_types.add(event_type)
 
             for task in tasks:
                 ev = _task_to_event_dict(task, event_type, today)
@@ -519,7 +531,9 @@ def sync_clickup_finance(settings):
                 )
 
         duplicate_count = (
-            _quarantine_probable_clickup_duplicates(engine)
+            _quarantine_probable_clickup_duplicates(
+                engine, event_types=successful_event_types
+            )
             if successful_lists else 0
         )
         result.matches_made = _match_existing_posted_transactions(engine)
