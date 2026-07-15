@@ -507,12 +507,17 @@ def health(request: Request) -> ApiMessage:
                 "sales_agent_db_url_configured": bool(str(getattr(settings, "sales_agent_db_url", "") or "").strip()),
             }
             inspector = inspect(bind)
+            existing_tables = set(inspector.get_table_names())
             existing_columns = {
                 column["name"]
                 for column in inspector.get_columns("lead_mirrors")
             }
             latest_sync_at = session.execute(select(func.max(LeadMirror.last_sync_at))).scalar_one_or_none()
             ticket1_details = {
+                "finance_savings_review_schema_ready": {
+                    "finance_savings_reviews",
+                    "finance_savings_review_events",
+                }.issubset(existing_tables),
                 "lead_mirror_ticket1_columns_present": {
                     "status_key": "status_key" in existing_columns,
                     "is_closed": "is_closed" in existing_columns,
