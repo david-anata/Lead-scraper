@@ -19,7 +19,7 @@ from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
-PROMPT_VERSION = "smart-cfo-v1"
+PROMPT_VERSION = "smart-cfo-v2"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -184,7 +184,9 @@ def _instructions() -> str:
 Return concise decisions for savings, collections, cash_risk, or data_quality. Do not invent a dollar amount,
 merchant, date, status, or source record. Only use amounts and record_ids present in the packet. A recommendation
 is advice only: do not say a payment was made, a bill is resolved, or cash changed. Prefer no recommendation over
-weak evidence. Each item needs a practical next_action and a short operator_question when a human fact is required."""
+weak evidence. When the packet has records, return 1 to 5 recommendations: choose a data_quality action if the
+evidence is too weak for a cash or savings decision. Each item needs a practical next_action and a short
+operator_question when a human fact is required."""
 
 
 def _schema() -> dict[str, Any]:
@@ -197,7 +199,7 @@ def _schema() -> dict[str, Any]:
             "operator_question": {"type": "string"}, "record_ids": {"type": "array", "items": {"type": "string"}},
         }, "required": ["category", "priority", "title", "reason", "next_action", "operator_question", "record_ids"],
     }
-    return {"type": "object", "additionalProperties": False, "properties": {"summary": {"type": "string"}, "recommendations": {"type": "array", "items": item}}, "required": ["summary", "recommendations"]}
+    return {"type": "object", "additionalProperties": False, "properties": {"summary": {"type": "string"}, "recommendations": {"type": "array", "minItems": 1, "items": item}}, "required": ["summary", "recommendations"]}
 
 
 def _validate_analysis(value: Mapping[str, Any], packet: Mapping[str, Any]) -> dict[str, Any]:

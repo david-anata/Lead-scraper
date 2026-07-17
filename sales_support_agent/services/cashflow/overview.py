@@ -1823,6 +1823,8 @@ def _smart_cfo_section_html(analysis: Mapping[str, Any]) -> tuple[str, dict[str,
     payloads: dict[str, Any] = {}
     if status == "not_configured":
         content = '<div class="finance-savings-state is-error"><strong>Smart review needs an Anthropic key.</strong><p>Cash and source calculations still work. Add ANTHROPIC_API_KEY to the production service, then run the review.</p></div>'
+    elif status == "ready" and not recommendations:
+        content = f'''<div class="finance-savings-state"><strong>Smart review found no eligible actions.</strong><p>{html.escape(str(analysis.get("summary") or "The current ledger did not support a recommendation."))}</p><span>Full ledger rollup · {html.escape(str(analysis.get("record_count") or 0))} records</span><form method="post" action="/admin/finances/smart-review"><button class="btn btn-secondary btn-sm" type="submit">Re-run on current ledger</button></form></div>'''
     elif not recommendations:
         content = '''<div class="finance-savings-state"><strong>Run a Smart review when you want a CFO read.</strong><p>It evaluates the complete current ledger rollup, not a sample, and never changes cash or source records.</p><form method="post" action="/admin/finances/smart-review"><button class="btn btn-primary btn-sm" type="submit">Run Smart review</button></form></div>'''
     else:

@@ -74,6 +74,10 @@ def test_response_extractor_prefers_anthropic_tool_use_input():
     assert smart_cfo._extract_response_value(Message())["summary"] == "x"
 
 
+def test_structured_advice_requires_an_evidence_backed_action():
+    assert smart_cfo._schema()["properties"]["recommendations"]["minItems"] == 1
+
+
 def test_provider_error_is_safe_and_does_not_expose_provider_detail(monkeypatch):
     class BrokenMessages:
         def create(self, **kwargs):
