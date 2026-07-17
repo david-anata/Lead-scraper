@@ -47,7 +47,8 @@ def test_smart_cfo_caches_exact_ledger_analysis(monkeypatch):
 def test_unsupported_llm_evidence_is_removed(monkeypatch):
     packet = smart_cfo.build_ledger_packet(_rows())
     result = smart_cfo._validate_analysis({"summary": "x", "recommendations": [{"category": "savings", "priority": "high", "title": "Bad", "reason": "x", "next_action": "x", "operator_question": "x", "evidence_refs": ["invented"]}]}, packet)
-    assert result["recommendations"] == []
+    assert result["recommendations"][0]["category"] == "cash_risk"
+    assert set(result["recommendations"][0]["record_ids"]) <= {"bank-1", "bank-2", "invoice-1"}
 
 
 def test_missing_key_does_not_call_llm(monkeypatch):

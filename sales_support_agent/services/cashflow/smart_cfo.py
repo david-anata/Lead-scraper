@@ -19,7 +19,7 @@ from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
-PROMPT_VERSION = "smart-cfo-v3"
+PROMPT_VERSION = "smart-cfo-v4"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -219,7 +219,41 @@ def _validate_analysis(value: Mapping[str, Any], packet: Mapping[str, Any]) -> d
         if not all(fields.values()) or fields["category"] not in {"savings", "collections", "cash_risk", "data_quality"}:
             continue
         results.append({**fields, "record_ids": ids})
-    return {"summary": str(value.get("summary") or "Review the evidence-backed actions below.").strip()[:500], "recommendations": results}
+    summary = str(value.get("summary") or "Review the evidence-backed actions below.").strip()[:500]
+    if not results and packet["record_count"]:
+        results = _fallback_recommendations(packet)
+        summary = f"{summary} Model evidence references could not be verified, so Finance is showing a conservative ledger-backed review action instead."[:500]
+    return {"summary": summary, "recommendations": results}
+
+
+def _fallback_recommendations(packet: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Keep the operator moving when LLM prose cannot cite the ledger exactly."""
+    rollups = list(packet["merchant_rollups"])
+    cancelled = [item for item in rollups if str(item["status"]).lower() in {"cancelled", "canceled"}]
+    overdue_outflows = [item for item in rollups if str(item["event_type"]).lower() == "outflow" and str(item["status"]).lower() in {"overdue", "open"}]
+    candidates = cancelled or overdue_outflows or rollups
+    candidates.sort(key=lambda item: (-abs(int(item["amount_cents"])), item["merchant"].casefold()))
+    selected = candidates[:5]
+    ids = sorted({record_id for item in selected for record_id in item["record_ids"]})
+    if not ids:
+        return []
+    if cancelled:
+        return [{
+            "category": "data_quality", "priority": "high",
+            "title": "Reconcile cancelled finance occurrences",
+            "reason": f"{len(selected)} high-value cancelled rollup(s) still shape the ledger view and may be stale schedule history.",
+            "next_action": "Review the source records and confirm which occurrences should remain excluded from future cash decisions.",
+            "operator_question": "Are these cancelled occurrences historical only, or should the recurring plan be corrected?",
+            "record_ids": ids,
+        }]
+    return [{
+        "category": "cash_risk", "priority": "high",
+        "title": "Verify the largest unresolved cash obligations",
+        "reason": f"{len(selected)} high-value obligation rollup(s) need source evidence before committing cash.",
+        "next_action": "Review the source record, posted bank evidence, and remaining unpaid balance for each occurrence.",
+        "operator_question": "Which obligations are still open and require a payment plan this week?",
+        "record_ids": ids,
+    }]
 
 
 def _llm_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
