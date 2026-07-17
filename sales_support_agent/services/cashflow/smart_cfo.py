@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from collections import defaultdict
 from datetime import date, datetime
@@ -21,6 +22,13 @@ from sales_support_agent.services.cashflow.obligations import list_obligations
 PROMPT_VERSION = "smart-cfo-v1"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
+_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
+logger = logging.getLogger(__name__)
+
+
+class SmartCfoProviderError(RuntimeError):
+    """Raised when Anthropic cannot complete an advisory-only request."""
 
 
 def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None = None) -> dict[str, Any]:
@@ -87,7 +95,7 @@ def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
             "record_count": packet["record_count"], "recommendations": [], "cached": False,
         }
 
-    model = os.getenv("FINANCE_SMART_CFO_MODEL", "claude-sonnet-4-20250514").strip() or "claude-sonnet-4-20250514"
+    model = os.getenv("FINANCE_SMART_CFO_MODEL", _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
     result = _call_anthropic(api_key, model, packet)
     analysis = _validate_analysis(result, packet)
     stored = {
@@ -103,16 +111,34 @@ def _call_anthropic(api_key: str, model: str, packet: Mapping[str, Any]) -> Mapp
     """Use Anthropic's installed SDK; JSON parsing is validated before display."""
     import anthropic
 
-    message = anthropic.Anthropic(api_key=api_key).messages.create(
-        model=model,
-        max_tokens=1600,
-        system=_instructions() + " Return JSON only, matching this schema: " + json.dumps(_schema(), separators=(",", ":")),
-        messages=[{"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
-    )
+    try:
+        message = anthropic.Anthropic(api_key=api_key).messages.create(
+            model=model,
+            max_tokens=1600,
+            system=_instructions() + " Return JSON only, matching this schema: " + json.dumps(_schema(), separators=(",", ":")),
+            messages=[{"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+        )
+    except Exception as exc:
+        logger.warning("Smart CFO Anthropic request failed for model %s: %s", model, type(exc).__name__)
+        raise SmartCfoProviderError("Anthropic Smart CFO request failed") from exc
     text = message.content[0].text if message.content else ""
-    value = json.loads(text)
+    value = _parse_response_json(text)
     if not isinstance(value, Mapping):
         raise ValueError("Smart CFO returned an invalid analysis")
+    return value
+
+
+def _parse_response_json(text: str) -> Mapping[str, Any]:
+    """Accept the JSON-only contract even when a provider wraps it in fences."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        value = json.loads(text[start:end + 1])
+    if not isinstance(value, Mapping):
+        raise ValueError("Smart CFO returned a non-object response")
     return value
 
 

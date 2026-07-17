@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
@@ -46,6 +47,9 @@ async def _set_finance_nav_user(request: Request) -> None:
     _finance_nav_user.set(get_current_user(request))
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -355,13 +359,17 @@ async def update_income_pattern_decision(
 @router.post("/smart-review", response_class=HTMLResponse)
 async def run_smart_cfo_review(request: Request):
     """Generate advisory-only Smart CFO recommendations from the full ledger."""
-    from sales_support_agent.services.cashflow.smart_cfo import run_smart_cfo
+    from sales_support_agent.services.cashflow.smart_cfo import SmartCfoProviderError, run_smart_cfo
 
     try:
         result = await asyncio.to_thread(run_smart_cfo, request.app.state.settings)
     except (TypeError, ValueError, json.JSONDecodeError):
         return _redirect_finance_error("Smart review returned invalid advice; no finance data changed")
+    except SmartCfoProviderError:
+        logger.exception("Smart CFO provider request failed")
+        return _redirect_finance_error("Smart review provider request failed. Check the configured Anthropic model; no finance data changed")
     except Exception:
+        logger.exception("Smart CFO review failed")
         return _redirect_finance_error("Smart review could not be completed; no finance data changed")
     if result.get("status") == "not_configured":
         return _redirect_finance_error("Smart review needs ANTHROPIC_API_KEY on the production service")

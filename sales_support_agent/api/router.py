@@ -587,7 +587,7 @@ def health(request: Request) -> ApiMessage:
                 (os.getenv("CLICKUP_FINANCE_REVIEW_LIST_ID", "") or "").strip()
             ),
             "finance_smart_cfo_configured": bool(os.getenv("ANTHROPIC_API_KEY", "").strip()),
-            "finance_smart_cfo_model": os.getenv("FINANCE_SMART_CFO_MODEL", "claude-sonnet-4-20250514") if os.getenv("ANTHROPIC_API_KEY", "").strip() else "",
+            "finance_smart_cfo_model": os.getenv("FINANCE_SMART_CFO_MODEL", "claude-haiku-4-5-20251001") if os.getenv("ANTHROPIC_API_KEY", "").strip() else "",
             "slack_configured": bool(settings.slack_bot_token and settings.slack_channel_id),
             "discovery_snapshot_path": str(settings.discovery_snapshot_path),
             "deck_generator_configured": brand_package_path.exists(),

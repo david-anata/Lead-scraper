@@ -57,6 +57,29 @@ def test_missing_key_does_not_call_llm(monkeypatch):
     assert result["status"] == "not_configured"
 
 
+def test_response_parser_accepts_json_wrapped_in_a_code_fence():
+    value = smart_cfo._parse_response_json("```json\n{\"summary\": \"x\", \"recommendations\": []}\n```")
+    assert value["summary"] == "x"
+
+
+def test_provider_error_is_safe_and_does_not_expose_provider_detail(monkeypatch):
+    class BrokenMessages:
+        def create(self, **kwargs):
+            raise RuntimeError("provider detail")
+
+    class BrokenClient:
+        messages = BrokenMessages()
+
+    class BrokenAnthropic:
+        @staticmethod
+        def Anthropic(api_key):
+            return BrokenClient()
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", BrokenAnthropic)
+    with pytest.raises(smart_cfo.SmartCfoProviderError, match="Anthropic Smart CFO request failed"):
+        smart_cfo._call_anthropic("key", "claude-test", {"merchant_rollups": []})
+
+
 def test_smart_review_route_is_advisory_and_reports_ledger_scope(monkeypatch):
     app = FastAPI()
     app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1})()
