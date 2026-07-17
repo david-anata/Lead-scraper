@@ -3,6 +3,7 @@ from datetime import date
 from sales_support_agent.services.cashflow.qbo_bank_sync import (
     _bill_payment_to_event,
     _check_to_event,
+    _qbo_query_all,
 )
 
 
@@ -53,3 +54,29 @@ def test_check_can_use_payee_reference_when_vendor_reference_is_absent():
 
 def test_vendor_settlement_without_a_nontrivial_amount_is_ignored():
     assert _bill_payment_to_event({"Id": "zero", "TxnDate": "2026-07-17", "TotalAmt": 0}) is None
+
+
+def test_qbo_actuals_query_paginates_beyond_the_provider_page_limit(monkeypatch):
+    pages = [
+        [{"Id": str(index)} for index in range(1_000)],
+        [{"Id": "1000"}],
+    ]
+    queries = []
+
+    def fake_query(_base, _realm, _token, query):
+        queries.append(query)
+        return pages.pop(0)
+
+    monkeypatch.setattr(
+        "sales_support_agent.services.cashflow.qbo_bank_sync._qbo_query", fake_query
+    )
+    rows = _qbo_query_all(
+        "https://qbo.example", "realm", "token",
+        "SELECT * FROM Payment WHERE TxnDate >= '2026-01-01' MAXRESULTS 1000",
+    )
+
+    assert len(rows) == 1_001
+    assert queries == [
+        "SELECT * FROM Payment WHERE TxnDate >= '2026-01-01' STARTPOSITION 1 MAXRESULTS 1000",
+        "SELECT * FROM Payment WHERE TxnDate >= '2026-01-01' STARTPOSITION 1001 MAXRESULTS 1000",
+    ]
