@@ -9,10 +9,12 @@ of downloading a bank CSV and uploading it through the UI.
 What this module syncs
 -----------------------
 1.  ``Purchase``      → outflow, status=``posted``
-      Covers checks, ACH debits, credit-card charges, cash purchases.
-2.  ``Deposit``       → inflow, status=``posted``
+      Covers ACH debits, credit-card charges, and cash purchases.
+2.  ``BillPayment`` and ``Check`` → outflow, status=``posted``
+      Covers the vendor-payment paths that settle A/P in QuickBooks.
+3.  ``Deposit``       → inflow, status=``posted``
       Covers bank deposits and customer payment deposits.
-3.  ``Payment``       → inflow, status=``posted``
+4.  ``Payment``       → inflow, status=``posted``
       A/R payments received from customers (separate from Deposits).
 
 Auto-match on sync
@@ -249,6 +251,66 @@ def _payment_to_event(pay: dict) -> Optional[dict]:
     }
 
 
+def _vendor_payment_to_event(payment: dict, *, entity_type: str) -> Optional[dict]:
+    """Convert a QBO vendor settlement into posted outflow evidence.
+
+    BillPayment and Check are separate QBO entities. Both can settle a
+    ClickUp payable, so they must reach the matcher with the vendor, amount,
+    and posting date intact. Transfers remain deliberately excluded: moving
+    money between accounts is not operating spend.
+    """
+    qbo_id = str(payment.get("Id", ""))
+    if not qbo_id:
+        return None
+    total = _dollars_to_cents(payment.get("TotalAmt", 0))
+    if total < MIN_AMOUNT_CENTS:
+        return None
+
+    txn_date = _parse_date(payment.get("TxnDate"))
+    vendor_ref = payment.get("VendorRef") or payment.get("PayeeRef") or payment.get("EntityRef") or {}
+    vendor = str(vendor_ref.get("name", "") or "").strip()
+    memo = str(payment.get("PrivateNote", "") or payment.get("Memo", "") or "").strip()
+    description = memo
+    if not description:
+        for line in payment.get("Line", []) or []:
+            description = str(line.get("Description", "") or "").strip()
+            if description:
+                break
+    name = vendor or description or f"QBO {entity_type} #{qbo_id}"
+    notes = f"QBO {entity_type}"
+    if memo:
+        notes += f" | {memo[:440]}"
+    entity_key = entity_type.lower().replace(" ", "-")
+    return {
+        "id": f"qbo-{entity_key}-{qbo_id}",
+        "source": "qbo_bank",
+        "source_id": f"{entity_key}-{qbo_id}",
+        "event_type": "outflow",
+        "category": _infer_category(name),
+        "subcategory": "",
+        "description": description[:500],
+        "name": name[:255],
+        "vendor_or_customer": vendor[:255],
+        "amount_cents": total,
+        "due_date": txn_date,
+        "status": "posted",
+        "confidence": "confirmed",
+        "recurring_rule": "",
+        "clickup_task_id": "",
+        "bank_transaction_type": entity_type[:32],
+        "bank_reference": qbo_id[:128],
+        "notes": notes[:500],
+    }
+
+
+def _bill_payment_to_event(payment: dict) -> Optional[dict]:
+    return _vendor_payment_to_event(payment, entity_type="BillPayment")
+
+
+def _check_to_event(check: dict) -> Optional[dict]:
+    return _vendor_payment_to_event(check, entity_type="Check")
+
+
 # ---------------------------------------------------------------------------
 # Category inference (reuse keywords from clickup_sync)
 # ---------------------------------------------------------------------------
@@ -283,7 +345,7 @@ def sync_qbo_bank_transactions(
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     run_auto_match: bool = True,
 ) -> "UploadResult":  # noqa: F821
-    """Pull recent QBO Purchase, Deposit, and Payment transactions into cash_events.
+    """Pull recent QBO posted cash activity into cash_events.
 
     Token resolution follows the same two-path approach as ``qbo_sync.py``:
     DB tokens (web OAuth flow) take priority; env-var fallback for legacy.
@@ -367,6 +429,16 @@ def sync_qbo_bank_transactions(
                 "Deposit",
                 f"SELECT * FROM Deposit WHERE TxnDate >= '{since}' MAXRESULTS 1000",
                 _deposit_to_event,
+            ),
+            (
+                "BillPayment",
+                f"SELECT * FROM BillPayment WHERE TxnDate >= '{since}' MAXRESULTS 1000",
+                _bill_payment_to_event,
+            ),
+            (
+                "Check",
+                f"SELECT * FROM Check WHERE TxnDate >= '{since}' MAXRESULTS 1000",
+                _check_to_event,
             ),
             (
                 "Payment",
