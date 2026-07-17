@@ -2,7 +2,7 @@ from datetime import date
 
 from sales_support_agent.services.cashflow.qbo_bank_sync import (
     _bill_payment_to_event,
-    _check_to_event,
+    _qbo_entity_queries,
     _qbo_query_all,
 )
 
@@ -38,18 +38,11 @@ def test_bill_payment_keeps_vendor_amount_and_date_for_settlement_matching():
     }
 
 
-def test_check_can_use_payee_reference_when_vendor_reference_is_absent():
-    event = _check_to_event({
-        "Id": "check-456",
-        "TxnDate": "2026-07-16",
-        "TotalAmt": 174,
-        "PayeeRef": {"name": "Rocky Mountain Power"},
-    })
+def test_qbo_actuals_uses_queryable_entities_and_keeps_checks_under_purchase():
+    entities = [name for name, _query, _converter in _qbo_entity_queries("2026-01-01")]
 
-    assert event is not None
-    assert event["vendor_or_customer"] == "Rocky Mountain Power"
-    assert event["amount_cents"] == 17_400
-    assert event["bank_transaction_type"] == "Check"
+    assert entities == ["Purchase", "Deposit", "BillPayment", "Payment"]
+    assert "Check" not in entities
 
 
 def test_vendor_settlement_without_a_nontrivial_amount_is_ignored():
