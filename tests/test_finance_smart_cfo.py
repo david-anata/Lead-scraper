@@ -166,3 +166,32 @@ def test_qbo_actuals_refresh_is_visible_without_replacing_csv_cash_truth(monkeyp
     assert response.status_code == 303
     assert called["lookback_days"] == 365
     assert "QuickBooks%20actuals%20refreshed%3A%2012%20imported" in response.headers["location"]
+
+
+def test_connected_sources_refreshes_clickup_and_both_qbo_paths_without_csv(monkeypatch):
+    app = FastAPI()
+    app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1})()
+    app.include_router(cashflow_router)
+    monkeypatch.setattr("sales_support_agent.services.auth_deps.get_session_user_from_request", lambda request: {"email": "qa@example.com"})
+    monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: {"email": "qa@example.com", "permissions": {"finance"}})
+    result = type("Result", (), {"rows_inserted": 12, "rows_skipped_duplicate": 8, "errors": []})()
+    called = []
+    monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.sync_clickup_finance",
+        lambda settings: called.append("clickup") or result,
+    )
+    monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.sync_qbo_invoices",
+        lambda settings: called.append("receivables") or result,
+    )
+    monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.sync_qbo_bank_transactions",
+        lambda settings, lookback_days: called.append(("actuals", lookback_days)) or result,
+    )
+
+    response = TestClient(app, follow_redirects=False).post("/admin/finances/sync-connected-sources")
+
+    assert response.status_code == 303
+    assert called == ["clickup", "receivables", ("actuals", 365)]
+    assert "Connected%20sources%20refreshed" in response.headers["location"]
+    assert "Bank%20CSV%20was%20not%20changed" in response.headers["location"]

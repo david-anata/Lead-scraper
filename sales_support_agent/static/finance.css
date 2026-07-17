@@ -1249,6 +1249,10 @@ input:focus, select:focus, textarea:focus {
 .finance-source-row > div:first-child { display: grid; gap: 3px; }
 .finance-source-row strong { font: 700 12px/1.3 "Montserrat", sans-serif; }
 .finance-source-row span { color: var(--muted); font-size: 11px; }
+.finance-source-row--primary { margin-top: 12px; padding: 14px; border: 1px solid rgba(13, 124, 119, .18); border-radius: 14px; background: rgba(13, 124, 119, .045); }
+.finance-source-advanced { margin-top: 2px; border-bottom: 1px solid var(--line); }
+.finance-source-advanced summary { padding: 15px 0; color: var(--muted); cursor: pointer; font: 700 11px/1.3 "Montserrat", sans-serif; }
+.finance-source-advanced[open] summary { color: var(--ink); }
 .finance-reconciliation-review { margin: 12px 0; padding: 13px 14px; border: 1px solid rgba(185, 28, 28, .22); border-radius: 14px; background: #fff9f8; display: grid; gap: 10px; }
 .finance-reconciliation-review.is-clear { border-color: rgba(15, 118, 110, .2); background: #f5fbf9; }
 .finance-reconciliation-review > div { display: grid; gap: 3px; }
