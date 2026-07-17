@@ -39,6 +39,7 @@ incremental because the upsert logic is idempotent.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -60,6 +61,9 @@ DEFAULT_LOOKBACK_DAYS = 90
 # QBO API helpers (mirrors qbo_sync.py — kept local to avoid circular import)
 # ---------------------------------------------------------------------------
 
+_QBO_PAGE_SIZE = 1_000
+
+
 def _qbo_query(base_url: str, realm_id: str, access_token: str, sql: str) -> list[dict]:
     url = f"{base_url}/{realm_id}/query"
     resp = requests.get(
@@ -75,6 +79,30 @@ def _qbo_query(base_url: str, realm_id: str, access_token: str, sql: str) -> lis
         if isinstance(val, list):
             return val
     return []
+
+
+def _qbo_query_all(base_url: str, realm_id: str, access_token: str, sql: str) -> list[dict]:
+    """Read every page for a QBO query instead of silently stopping at 1,000.
+
+    The Finance reconciliation uses a year of posted activity. A company can
+    exceed QBO's maximum response page, particularly for customer payments.
+    Pagination is therefore a correctness requirement, not a performance
+    optimization.
+    """
+    base_sql = re.sub(r"\s+(?:STARTPOSITION|MAXRESULTS)\s+\d+", "", sql, flags=re.IGNORECASE).strip()
+    rows: list[dict] = []
+    start_position = 1
+    while True:
+        page = _qbo_query(
+            base_url,
+            realm_id,
+            access_token,
+            f"{base_sql} STARTPOSITION {start_position} MAXRESULTS {_QBO_PAGE_SIZE}",
+        )
+        rows.extend(page)
+        if len(page) < _QBO_PAGE_SIZE:
+            return rows
+        start_position += _QBO_PAGE_SIZE
 
 
 def _parse_date(s: Any) -> Optional[date]:
@@ -452,7 +480,7 @@ def sync_qbo_bank_transactions(
 
         for entity_name, sql, converter in converters:
             try:
-                rows = _qbo_query(base_url, realm_id, access_token, sql)
+                rows = _qbo_query_all(base_url, realm_id, access_token, sql)
                 logger.info("QBO bank sync: fetched %d %s rows", len(rows), entity_name)
             except Exception as exc:
                 logger.error("QBO bank sync: %s query failed: %s", entity_name, exc)
