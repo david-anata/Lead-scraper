@@ -63,6 +63,50 @@ def _series_key(row: Mapping[str, Any]) -> str | None:
     )
 
 
+def _base_series_key(row: Mapping[str, Any]) -> str:
+    """Return the recurrence identity without requiring ClickUp cadence metadata."""
+    party = _normalise_party(row.get("vendor_or_customer") or row.get("name"))
+    return ":".join(
+        (
+            str(row.get("event_type") or "outflow").lower(),
+            str(row.get("category") or "other").lower(),
+            party,
+            str(max(0, int(row.get("amount_cents") or 0))),
+        )
+    )
+
+
+def _infer_recurring_rule(occurrences: Sequence[Mapping[str, Any]]) -> str | None:
+    """Infer cadence only from a sustained, regular source history.
+
+    ClickUp recurrence metadata is not guaranteed to accompany every task
+    instance.  We infer a rule only with at least three dated occurrences and
+    two supporting intervals; one-off repeated invoices must stay untouched.
+    """
+    dates = sorted({_as_date(row.get("due_date")) for row in occurrences} - {None})
+    if len(dates) < 3:
+        return None
+    intervals = [
+        (later - earlier).days
+        for earlier, later in zip(dates, dates[1:])
+        if (later - earlier).days > 0
+    ]
+    if len(intervals) < 2:
+        return None
+    candidates = {
+        "weekly": (5, 9),
+        "biweekly": (10, 19),
+        "monthly": (24, 38),
+        "quarterly": (75, 110),
+        "annual": (330, 400),
+    }
+    for rule, (lower, upper) in candidates.items():
+        supporting_intervals = sum(lower <= interval <= upper for interval in intervals)
+        if supporting_intervals >= 2 and supporting_intervals * 2 >= len(intervals):
+            return rule
+    return None
+
+
 def build_reconciliation_shadow(
     rows: Sequence[Mapping[str, Any]], *, as_of: date
 ) -> dict[str, Any]:
@@ -74,7 +118,7 @@ def build_reconciliation_shadow(
     honestly be forecast as an upcoming bill.  The record remains visible for
     reconciliation and still needs bank evidence before it is considered paid.
     """
-    series: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    source_rows: list[dict[str, Any]] = []
     for index, source_row in enumerate(rows):
         row = dict(source_row)
         if str(row.get("source") or "").lower() != "clickup":
@@ -86,16 +130,38 @@ def build_reconciliation_shadow(
             or str(row.get("match_status") or "").lower() == "duplicate"
         ):
             continue
-        key = _series_key(row)
-        if not key:
-            continue
         due = _as_date(row.get("due_date"))
         if due is None:
             continue
         row["id"] = str(row.get("id") or index)
         row["_shadow_due_date"] = due
-        row["_shadow_series_key"] = key
-        series[key].append(row)
+        source_rows.append(row)
+
+    # Preserve explicit cadence whenever it exists. For the remaining source
+    # rows, infer only sustained periodic behavior, then apply the same safe
+    # reconciliation overlay as an explicit recurring task would receive.
+    inferred_by_base: dict[str, str] = {}
+    rows_without_rule: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source_rows:
+        if str(row.get("recurring_rule") or "").lower() not in _RECURRING_RULES:
+            rows_without_rule[_base_series_key(row)].append(row)
+    for base_key, occurrences in rows_without_rule.items():
+        inferred_rule = _infer_recurring_rule(occurrences)
+        if inferred_rule:
+            inferred_by_base[base_key] = inferred_rule
+
+    series: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in source_rows:
+        if str(row.get("recurring_rule") or "").lower() not in _RECURRING_RULES:
+            inferred_rule = inferred_by_base.get(_base_series_key(row))
+            if not inferred_rule:
+                continue
+            row["recurring_rule"] = inferred_rule
+            row["recurrence_inferred"] = True
+        key = _series_key(row)
+        if key:
+            row["_shadow_series_key"] = key
+            series[key].append(row)
 
     # These are forecast exclusions, not settlement allocations.  Keeping them
     # separate makes it impossible for a UI read to silently mark a bill paid.
@@ -139,6 +205,7 @@ def build_reconciliation_shadow(
                 "later_occurrence_id": latest_active["id"],
                 "later_due_date": latest_active["_shadow_due_date"].isoformat(),
                 "gap_days": gap_days,
+                "recurrence_inferred": bool(occurrence.get("recurrence_inferred")),
             }
             # A later scheduled task does not prove the old one was paid.  It
             # does prove that this is historical schedule residue rather than a
