@@ -138,6 +138,17 @@ def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     return True
 
 
+def _is_forward_cash_obligation(row: Mapping[str, Any]) -> bool:
+    """Return whether an obligation belongs in the forward cash calculation.
+
+    Historical recurring ClickUp residue is not evidence that a payment was
+    made, but it is also not an upcoming cash requirement.  It stays in the
+    reconciliation queue until allocated to a posted transaction or corrected
+    by an operator.
+    """
+    return _is_active_obligation(row) and not bool(row.get("historical_reconciliation_pending"))
+
+
 def _is_probable_duplicate(row: Mapping[str, Any]) -> bool:
     return bool(
         row.get("probable_duplicate")
@@ -372,7 +383,7 @@ def build_forecast_paths(
     changes: dict[str, dict[date, int]] = {name: defaultdict(int) for name in ("committed", "expected", "stress")}
 
     for row in canonical:
-        if not _is_active_obligation(row) or not row.get("open_amount_cents"):
+        if not _is_forward_cash_obligation(row) or not row.get("open_amount_cents"):
             continue
         if row.get("source_open_disagreement"):
             # Conflicting provider and settlement evidence is not forecastable.
@@ -752,7 +763,7 @@ def _build_trust_gate(
     cash_ready = bool(snapshot.get("available") and not snapshot.get("stale"))
     payable_issues: list[tuple[str, str]] = []
     for row in canonical:
-        if not _is_active_obligation(row):
+        if not _is_forward_cash_obligation(row):
             continue
         row_id = str(row.get("id") or "unknown")
         if not _amount(row.get("amount_cents")):
@@ -1044,7 +1055,7 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
     end = as_of + timedelta(days=window_days - 1)
     confirmed_in = expected_in = required_out = exposure_out = 0
     for row in canonical:
-        if not _is_active_obligation(row):
+        if not _is_forward_cash_obligation(row):
             continue
         if row.get("source_open_disagreement"):
             continue
@@ -1173,7 +1184,43 @@ def build_queue(
     visible_rows, _ = _partition_data_quality(rows, as_of=as_of)
     canonical = annotate_open_amounts(visible_rows, settlement_annotations)
     groups: dict[str, list[dict[str, Any]]] = {key: [] for key in GROUP_ORDER}
+    historical_items: list[dict[str, Any]] = []
     for row in canonical:
+        if row.get("historical_reconciliation_pending"):
+            due = _event_date(row)
+            open_amount = _amount(row.get("open_amount_cents"))
+            item = {
+                "id": row["id"],
+                "group": "reconcile_history",
+                "event_type": str(row.get("event_type") or "outflow"),
+                "confidence": str(row.get("confidence") or "estimated"),
+                "party": str(row.get("vendor_or_customer") or row.get("name") or row.get("description") or ""),
+                "due_date": due.isoformat() if due else None,
+                "days_until_due": (due - as_of).days if due else None,
+                "overdue_days": max(0, (as_of - due).days) if due else 0,
+                "open_amount_cents": open_amount,
+                "decision_blocker": "historical_reconciliation",
+                "pay_priority": _pay_priority(row),
+                "flexibility": _flexibility(row),
+                "category": str(row.get("category") or "uncategorized"),
+                "source": str(row.get("source") or "manual"),
+                "source_label": str(row.get("source_label") or row.get("source") or "Manual"),
+                "source_evidence": dict(row.get("source_evidence") or {}),
+                "trend_inferred": bool(row.get("trend_inferred")),
+                "probability_bps": _probability_bps(row),
+                "read_only": True,
+                "floor_impact_cents": 0,
+                "needs_action": False,
+                "action_label": "Reconcile history",
+                "status": "reconciliation",
+                "historical_reconciliation_pending": True,
+                "quick_actions": [
+                    {"action_type": "preview_cash_impact", "eligible": True, "preview_required": True, "confirmation_required": True},
+                    {"action_type": "match_bank_transaction", "eligible": True, "preview_required": True, "confirmation_required": True},
+                ],
+            }
+            historical_items.append(item)
+            continue
         if (
             str(row.get("status") or "").lower() == "completed"
             and not row.get("completion_requires_bank_evidence")
@@ -1303,6 +1350,7 @@ def build_queue(
         item["due_date"] or "9999-12-31", str(item["id"])
     ))
     all_items.extend(completed_items)
+    all_items.extend(sorted(historical_items, key=sort_key))
     return {"groups": result_groups, "items": all_items, "count": len(all_items), "truncated": False}
 
 
@@ -1464,6 +1512,18 @@ def build_finance_control_state(
     snapshot = resolve_cash_snapshot(balance_rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
     visible_rows = _annotate_clickup_completion_evidence(visible_rows, snapshot)
     canonical = annotate_open_amounts(visible_rows, settlement_annotations)
+    reconciliation_shadow = build_reconciliation_shadow(canonical, as_of=effective_date)
+    historical_reconciliation_ids = {
+        str(item) for item in reconciliation_shadow.get("forecast_excluded_ids") or []
+    }
+    if historical_reconciliation_ids:
+        canonical = [
+            {
+                **row,
+                "historical_reconciliation_pending": str(row.get("id") or "") in historical_reconciliation_ids,
+            }
+            for row in canonical
+        ]
     starting_cash = int(snapshot["balance_cents"] or 0)
     trends = calculate_csv_trends(visible_rows, as_of=effective_date)
     income_projection = derive_csv_income_projections(
@@ -1531,9 +1591,7 @@ def build_finance_control_state(
         "trust_gate": trust_gate,
         "confidence": confidence,
         "queue": queue,
-        # Shadow-only until a record-level backfill delta has been reviewed.
-        # It intentionally cannot alter cash metrics or queue membership.
-        "reconciliation_shadow": build_reconciliation_shadow(rows, as_of=effective_date),
+        "reconciliation_shadow": reconciliation_shadow,
     }
     state["recommendations"] = build_recommendations(state)
     return state

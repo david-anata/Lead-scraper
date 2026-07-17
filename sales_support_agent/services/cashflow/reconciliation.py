@@ -1,9 +1,11 @@
 """Non-destructive source reconciliation for Finance Control.
 
-The Finance page must not reclassify historical provider records during a read.
-This module therefore produces a conservative *shadow* view first.  It tells an
-operator which recurring ClickUp occurrences look historical, while leaving the
-current cash calculation untouched until the backfill is reviewed.
+Recurring source schedules often retain old occurrences after the money has
+already moved.  Those rows must remain auditable, but an old unknown occurrence
+cannot be allowed to reserve future cash forever.  This module therefore
+produces a read-model overlay: historical recurrence rows are excluded from the
+forward forecast and surfaced in a dedicated reconciliation queue until bank
+evidence or an operator allocation settles them.
 """
 
 from __future__ import annotations
@@ -66,10 +68,11 @@ def build_reconciliation_shadow(
 ) -> dict[str, Any]:
     """Report potentially stale ClickUp recurrence without changing Finance state.
 
-    A prior recurring occurrence is a *candidate* only when a newer occurrence
-    in the exact same series exists. It remains an exception instead of being
-    released automatically because a missed payroll/rent payment can look the
-    same as a completed occurrence in provider history.
+    A prior recurring occurrence is an audit exception when a newer occurrence
+    in the exact same series exists.  It is not treated as paid.  It is simply
+    excluded from *forward* cash decisions because an historical unknown cannot
+    honestly be forecast as an upcoming bill.  The record remains visible for
+    reconciliation and still needs bank evidence before it is considered paid.
     """
     series: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for index, source_row in enumerate(rows):
@@ -94,9 +97,8 @@ def build_reconciliation_shadow(
         row["_shadow_series_key"] = key
         series[key].append(row)
 
-    # Recurrence continuity is a review signal, not settlement evidence. Keep
-    # this compatibility list empty until a later promotion phase has explicit
-    # bank/closed-task proof for each occurrence.
+    # These are forecast exclusions, not settlement allocations.  Keeping them
+    # separate makes it impossible for a UI read to silently mark a bill paid.
     candidates: list[dict[str, Any]] = []
     review_records: list[dict[str, Any]] = []
     series_summaries: list[dict[str, Any]] = []
@@ -138,10 +140,9 @@ def build_reconciliation_shadow(
                 "later_due_date": latest_active["_shadow_due_date"].isoformat(),
                 "gap_days": gap_days,
             }
-            # A future (or merely newer) scheduled task does not prove the old
-            # one was paid. It only makes the old recurrence worth reviewing.
-            # Bank settlement or a closed source occurrence remains mandatory
-            # before a forecast reservation can be released.
+            # A later scheduled task does not prove the old one was paid.  It
+            # does prove that this is historical schedule residue rather than a
+            # future obligation, so do not let it poison a forward forecast.
             if gap_days <= round(cadence_days * 1.5):
                 state = "recurrence_continuity_review"
                 reason = "A later scheduled occurrence is within the recurrence window; payment evidence is still required."
@@ -152,7 +153,17 @@ def build_reconciliation_shadow(
                 **record,
                 "candidate_state": state,
                 "reason": reason,
+                "forecast_treatment": (
+                    "excluded_historical" if occurrence["_shadow_due_date"] < as_of
+                    else "review_only"
+                ),
             })
+            if occurrence["_shadow_due_date"] < as_of:
+                candidates.append({
+                    **record,
+                    "candidate_state": state,
+                    "forecast_treatment": "excluded_historical",
+                })
 
     candidate_cents = sum(item["amount_cents"] for item in candidates)
     review_cents = sum(item["amount_cents"] for item in review_records)
@@ -182,12 +193,13 @@ def build_reconciliation_shadow(
         "recurring_series_count": len(series_summaries),
         "candidate_superseded_count": len(candidates),
         "candidate_superseded_cents": candidate_cents,
+        "forecast_excluded_ids": sorted(item["id"] for item in candidates),
         "supersession_review_count": len(review_records),
         "supersession_review_cents": review_cents,
         "requires_operator_review": bool(candidates or review_records),
         "summary": (
-            f"{len(review_records)} recurring occurrence(s) need settlement evidence; "
-            "cash calculations are unchanged."
+            f"{len(candidates)} historical recurring occurrence(s) are excluded from forward cash "
+            f"pending settlement evidence; {len(review_records)} occurrence(s) remain in reconciliation."
             if review_records
             else "No recurring ClickUp occurrences need supersession review."
         ),

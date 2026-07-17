@@ -78,6 +78,15 @@ class TestAutoMatchTransactions(unittest.TestCase):
         results = auto_match_transactions(csv_events, planned_events)
         self.assertIsNotNone(results[0].planned_event_id)
 
+    def test_chunkable_partial_payment_matches_only_with_strong_evidence(self) -> None:
+        d = date(2026, 4, 7)
+        transaction = _csv("c1", "ACME RENT", 40_00, d)
+        obligation = _planned("p1", "ACME RENT", 100_00, d)
+        obligation["flexibility"] = "chunkable"
+        results = auto_match_transactions([transaction], [obligation])
+        self.assertEqual(results[0].planned_event_id, "p1")
+        self.assertIn("partial payment", results[0].reason)
+
     def test_no_double_match(self) -> None:
         d = date(2026, 4, 7)
         csv_events = [

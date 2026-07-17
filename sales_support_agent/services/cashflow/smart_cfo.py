@@ -83,10 +83,116 @@ def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None
     }
 
 
+def _load_settlement_annotations() -> list[dict[str, Any]]:
+    """Read allocation evidence without making Smart CFO responsible for it."""
+    try:
+        from sqlalchemy import text
+        from sales_support_agent.models.database import get_engine
+
+        with get_engine().connect() as connection:
+            return [dict(row._mapping) for row in connection.execute(
+                text("SELECT * FROM settlement_allocations")
+            ).fetchall()]
+    except Exception:
+        # Finance Control will mark the packet as verification-only when the
+        # settlement ledger is unavailable. The model must not invent around it.
+        return []
+
+
+def _aging_summary(
+    rows: Iterable[Mapping[str, Any]], *, as_of: date, event_type: str
+) -> dict[str, Any]:
+    buckets = {"current": 0, "1_30": 0, "31_60": 0, "61_90": 0, "90_plus": 0}
+    parties: dict[str, int] = defaultdict(int)
+    total = 0
+    for row in rows:
+        if str(row.get("event_type") or "").lower() != event_type:
+            continue
+        if (
+            str(row.get("record_kind") or "").lower() == "transaction"
+            or str(row.get("source") or "").lower() in {"csv", "qbo_bank"}
+            or str(row.get("status") or "").lower() in {"posted", "matched"}
+        ):
+            continue
+        if row.get("historical_reconciliation_pending"):
+            continue
+        amount = max(0, int(row.get("open_amount_cents") or 0))
+        if not amount:
+            continue
+        due = _event_date(row)
+        days = max(0, (as_of - due).days) if due else 0
+        bucket = "current" if days == 0 else "1_30" if days <= 30 else "31_60" if days <= 60 else "61_90" if days <= 90 else "90_plus"
+        buckets[bucket] += amount
+        party = str(row.get("vendor_or_customer") or row.get("name") or "Unassigned").strip()
+        parties[party] += amount
+        total += amount
+    ranked = [
+        {"party": party, "amount_cents": amount, "share_bps": amount * 10_000 // total if total else 0}
+        for party, amount in sorted(parties.items(), key=lambda item: (-item[1], item[0].casefold()))[:5]
+    ]
+    return {"total_cents": total, "buckets_cents": buckets, "top_parties": ranked}
+
+
+def build_finance_packet(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    settlement_annotations: Iterable[Mapping[str, Any]] | None = None,
+    as_of: date | None = None,
+) -> dict[str, Any]:
+    """Build the CFO packet from the same reconciled read model as the page."""
+    from sales_support_agent.services.cashflow.control import (
+        annotate_open_amounts,
+        build_finance_control_state,
+    )
+
+    today = as_of or date.today()
+    source_rows = [dict(row) for row in rows]
+    allocations = list(settlement_annotations or [])
+    state = build_finance_control_state(
+        source_rows, allocations, as_of=today,
+    )
+    historical_ids = {
+        str(item) for item in state["reconciliation_shadow"].get("forecast_excluded_ids") or []
+    }
+    canonical = annotate_open_amounts(source_rows, allocations)
+    canonical = [
+        {**row, "historical_reconciliation_pending": str(row.get("id") or "") in historical_ids}
+        for row in canonical
+    ]
+    packet = build_ledger_packet(canonical, as_of=today)
+    metrics = state["metrics"]
+    forecast = state["forecast"]
+    packet["analytical_summary"] = {
+        "cash": {
+            "cash_on_hand_cents": metrics.get("cash_on_hand_cents"),
+            "safe_to_commit_cents": metrics.get("safe_to_commit_cents"),
+            "funding_gap_cents": metrics.get("funding_gap_cents"),
+            "floor_cents": metrics.get("floor_cents"),
+        },
+        "forecast": {
+            "minimum_committed_cash_cents": forecast.get("minimum_committed_cash_cents"),
+            "minimum_expected_cash_cents": forecast.get("minimum_expected_cash_cents"),
+            "minimum_stress_cash_cents": forecast.get("minimum_stress_cash_cents"),
+        },
+        "receivables": _aging_summary(canonical, as_of=today, event_type="inflow"),
+        "payables": _aging_summary(canonical, as_of=today, event_type="outflow"),
+        "reconciliation": {
+            "historical_excluded_count": len(historical_ids),
+            "review_count": state["reconciliation_shadow"].get("supersession_review_count", 0),
+        },
+        "trust": {
+            "ready": bool(state["trust_gate"].get("ready")),
+            "issues": list(state["trust_gate"].get("issues") or []),
+            "next_action": state["trust_gate"].get("next_action"),
+        },
+    }
+    return packet
+
+
 def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
     """Run or reuse a structured Anthropic analysis for the full persisted ledger."""
     rows = list_obligations(limit=10_000)
-    packet = build_ledger_packet(rows)
+    packet = build_finance_packet(rows, settlement_annotations=_load_settlement_annotations())
     packet_hash = _packet_hash(packet)
     cached = kv_get_json(_CACHE_KEY) or {}
     if not force and cached.get("packet_hash") == packet_hash and cached.get("prompt_version") == PROMPT_VERSION:
@@ -183,12 +289,12 @@ def _packet_hash(packet: Mapping[str, Any]) -> str:
 
 
 def _instructions() -> str:
-    return """You are the Smart CFO for an operator, not a bookkeeper. Analyze every supplied ledger rollup.
-Return concise decisions for savings, collections, cash_risk, or data_quality. Do not invent a dollar amount,
-merchant, date, status, or source record. Only use amounts and evidence_refs present in the packet. A recommendation
-is advice only: do not say a payment was made, a bill is resolved, or cash changed. Prefer no recommendation over
-weak evidence. When the packet has records, return 1 to 5 recommendations: choose a data_quality action if the
-evidence is too weak for a cash or savings decision. Each item needs a practical next_action and a short
+    return """You are the Smart CFO for an operator, not a bookkeeper. Analyze the supplied reconciled finance packet.
+Use the analytical_summary for cash, aging, forecast, concentration, and trust context; use merchant_rollups only as
+the evidence trail. Return concise decisions for savings, collections, cash_risk, or data_quality. Do not invent a
+dollar amount, merchant, date, status, source record, payment, or saving. A recommendation is advice only: do not say
+a bill was paid, cash changed, or an allocation is complete. When trust.ready is false, return only data_quality
+recommendations. Prefer no recommendation over weak evidence. Each item needs a practical next_action and a short
 operator_question when a human fact is required. Cite only the compact evidence_refs supplied with each rollup."""
 
 

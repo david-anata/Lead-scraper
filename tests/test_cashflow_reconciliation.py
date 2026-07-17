@@ -37,7 +37,7 @@ def _clickup_row(
     }
 
 
-def test_shadow_marks_older_open_recurring_occurrence_for_evidence_review() -> None:
+def test_shadow_marks_older_open_recurring_occurrence_for_reconciliation_without_claiming_payment() -> None:
     report = build_reconciliation_shadow(
         [
             _clickup_row("payroll-jun", "Payroll 5th", date(2026, 6, 5)),
@@ -47,14 +47,15 @@ def test_shadow_marks_older_open_recurring_occurrence_for_evidence_review() -> N
     )
 
     assert report["mode"] == "shadow"
-    assert report["candidate_superseded_count"] == 0
+    assert report["candidate_superseded_count"] == 1
+    assert report["forecast_excluded_ids"] == ["payroll-jun"]
     assert report["supersession_review_count"] == 1
     assert report["review_records"][0]["id"] == "payroll-jun"
     assert report["review_records"][0]["later_occurrence_id"] == "payroll-jul"
     assert report["review_records"][0]["candidate_state"] == "recurrence_continuity_review"
 
 
-def test_shadow_does_not_treat_a_future_recurring_successor_as_payment_proof() -> None:
+def test_shadow_excludes_historical_schedule_residue_without_treating_it_as_payment_proof() -> None:
     report = build_reconciliation_shadow(
         [
             _clickup_row("benefits-jul", "Select Benefits", date(2026, 7, 4), recurring_rule="monthly"),
@@ -63,7 +64,8 @@ def test_shadow_does_not_treat_a_future_recurring_successor_as_payment_proof() -
         as_of=date(2026, 7, 15),
     )
 
-    assert report["candidate_superseded_count"] == 0
+    assert report["candidate_superseded_count"] == 1
+    assert report["forecast_excluded_ids"] == ["benefits-jul"]
     assert report["supersession_review_count"] == 1
     assert report["review_records"][0]["id"] == "benefits-jul"
     assert report["review_records"][0]["candidate_state"] == "recurrence_continuity_review"
@@ -95,7 +97,7 @@ def test_shadow_keeps_skipped_recurring_period_in_review() -> None:
         as_of=date(2026, 8, 5),
     )
 
-    assert report["candidate_superseded_count"] == 0
+    assert report["candidate_superseded_count"] == 1
     assert report["supersession_review_count"] == 1
     assert report["review_records"][0]["candidate_state"] == "supersession_needs_review"
 
@@ -120,7 +122,7 @@ def test_shadow_does_not_mark_terminal_or_nonrecurring_rows_as_superseded() -> N
     assert report["candidate_superseded_count"] == 0
 
 
-def test_source_readiness_exposes_shadow_delta_without_changing_finance_values() -> None:
+def test_source_readiness_exposes_reconciliation_delta_without_claiming_settlement() -> None:
     rendered = _source_readiness_html(
         [],
         {
@@ -132,7 +134,6 @@ def test_source_readiness_exposes_shadow_delta_without_changing_finance_values()
     )
 
     assert "Reconciliation" in rendered
-    assert "Cash is unchanged" in rendered
     assert "settlement evidence" in rendered
 
 
@@ -158,7 +159,7 @@ def test_reconciliation_review_names_candidates_without_offering_a_release_actio
     assert "Review continuity" in rendered
 
 
-def test_finance_control_exposes_shadow_report_without_changing_required_cash() -> None:
+def test_finance_control_excludes_historical_recurring_residue_from_required_cash() -> None:
     rows = [
         {
             **_clickup_row("payroll-jun", "Payroll 5th", date(2026, 6, 5)),
@@ -182,9 +183,12 @@ def test_finance_control_exposes_shadow_report_without_changing_required_cash() 
 
     state = build_finance_control_state(rows, as_of=date(2026, 7, 15))
 
-    assert state["metrics"]["required_outgoing_cents"] == 1_000_000
-    assert state["reconciliation_shadow"]["candidate_superseded_count"] == 0
+    assert state["metrics"]["required_outgoing_cents"] == 500_000
+    assert state["reconciliation_shadow"]["candidate_superseded_count"] == 1
     assert state["reconciliation_shadow"]["supersession_review_count"] == 1
+    historical = next(item for item in state["queue"]["items"] if item["id"] == "payroll-jun")
+    assert historical["group"] == "reconcile_history"
+    assert historical["open_amount_cents"] == 500_000
 
 
 def test_shadow_report_persistence_is_idempotent_and_does_not_touch_cash_events() -> None:
