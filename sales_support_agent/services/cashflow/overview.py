@@ -2234,6 +2234,17 @@ async def render_cashflow_overview_page(
     trust_issues_html = "".join(
         f"<li>{html.escape(issue)}</li>" for issue in trust_gate["issues"]
     )
+    source_readiness_summary = (
+        "Resolve source details" if trust_blocking else "View source details"
+    )
+    source_readiness_panel = f"""
+      <details class="finance-source-summary"{' open' if trust_blocking else ''}>
+        <summary><span>Sources</span><strong>{source_readiness_summary}</strong></summary>
+        <div class="finance-source-readiness" aria-label="Finance source readiness">
+          <div class="finance-source-readiness__label"><span>Source readiness</span><small>Bank truth, work plan, receivables</small></div>
+          {source_readiness_html}
+        </div>
+      </details>"""
     trust_next_html = (
         f'<p><strong>Next:</strong> {html.escape(trust_gate["next_action"])}</p>'
         if trust_blocking else ""
@@ -2250,6 +2261,7 @@ async def render_cashflow_overview_page(
         </div>
         <div class="finance-trust-gate__quality"><span>Data quality</span><strong>{html.escape(data_quality['summary'])}</strong></div>
         <button class="btn {'btn-primary' if trust_blocking else 'btn-secondary'} btn-sm" type="button" data-open-modal="finance-update-modal">{'Resolve source readiness' if trust_blocking else 'Review sources'}</button>
+        {source_readiness_panel}
       </section>"""
 
     savings_release_mode = _savings_release_mode()
@@ -2360,24 +2372,19 @@ async def render_cashflow_overview_page(
       <header class="finance-control__header">
         <div>
           <p class="finance-eyebrow">Finance control</p>
-          <h1>Cash decisions, in one scan.</h1>
-          <p class="page-sub">One page for cash, collections, payments, and the next safest action.</p>
+          <h1>Today’s cash decision.</h1>
+          <p class="page-sub">Current cash, the next 14 days, and the one action that matters first.</p>
         </div>
         <div class="finance-control__tools">
           <span class="finance-updated">Cash updated {html.escape(updated_label)}</span>
           <label class="finance-smart-toggle">
-            <span>Smart mode</span>
+            <span>Show guidance</span>
             <input id="finance-smart-mode" type="checkbox" checked>
             <span class="finance-smart-toggle__track" aria-hidden="true"></span>
           </label>
           <button class="btn btn-primary" type="button" data-open-modal="finance-update-modal">Update money</button>
         </div>
       </header>
-
-      <section class="finance-source-readiness" aria-label="Finance source readiness">
-        <div class="finance-source-readiness__label"><span>Source readiness</span><small>Bank truth, work plan, receivables</small></div>
-        {source_readiness_html}
-      </section>
 
       {trust_block_html}
 
@@ -2411,22 +2418,9 @@ async def render_cashflow_overview_page(
         <article class="is-next"><span>Next</span>{smart_next_html}<button type="button" class="finance-text-action" data-drawer-review="recommendation">{'Review next action' if trust_blocking else 'Review recommendation'}</button></article>
       </section>
 
-      <section class="card finance-trajectory" aria-labelledby="trajectory-title">
-        <div class="section-head finance-trajectory__head">
-          <div><p class="finance-eyebrow">28 day control window</p><h2 id="trajectory-title">Cash trajectory</h2></div>
-          <div class="finance-chart-legend" aria-label="Chart legend">
-            <span class="is-actual">Actual</span><span class="is-committed">Committed</span>
-            <span class="is-expected">Expected</span><span class="is-stress">Stress</span>
-          </div>
-          <button class="finance-icon-button" type="button" aria-label="Cash trajectory options">&hellip;</button>
-        </div>
-        <p class="finance-trajectory__helper">Expected includes probability-weighted CSV recurring-deposit trends and dated receivables. It is not committed cash.</p>
-        <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Actual, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
-      </section>
-
       <section class="card finance-money-queue" id="finance-queue" aria-labelledby="money-queue-title">
         <div class="section-head">
-          <div><p class="finance-eyebrow">Operator queue</p><h2 id="money-queue-title">Money queue</h2></div>
+          <div><p class="finance-eyebrow">Current decisions</p><h2 id="money-queue-title">Money queue</h2><p class="finance-queue-helper">Work this list first. Historical reconciliation stays in its own filter.</p></div>
           <div class="finance-queue-controls">
             <label class="finance-window-select">Window:<select id="finance-queue-window" aria-label="Queue window"><option value="14">14 days</option><option value="28">28 days</option></select></label>
             <label class="finance-window-select">Rows:<select id="finance-queue-page-size" aria-label="Rows per page"><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label>
@@ -2437,7 +2431,7 @@ async def render_cashflow_overview_page(
           <button type="button" aria-pressed="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="completed">Completed <span>{counts['completed']}</span></button>
-          <button type="button" aria-pressed="false" data-queue-filter="reconciliation">Reconciliation <span>{counts['reconciliation']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="reconciliation">Review history <span>{counts['reconciliation']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="recent">Recent <span>{counts['recent']}</span></button>
         </div>
         <div class="finance-queue-scroll"{queue_table_hidden}>
@@ -2459,6 +2453,19 @@ async def render_cashflow_overview_page(
             <button id="finance-queue-next" type="button">Next</button>
           </nav>
         </div>
+      </section>
+
+      <section class="card finance-trajectory" aria-labelledby="trajectory-title">
+        <div class="section-head finance-trajectory__head">
+          <div><p class="finance-eyebrow">Supporting forecast</p><h2 id="trajectory-title">Cash trajectory</h2></div>
+          <div class="finance-chart-legend" aria-label="Chart legend">
+            <span class="is-actual">Actual</span><span class="is-committed">Committed</span>
+            <span class="is-expected">Expected</span><span class="is-stress">Stress</span>
+          </div>
+          <button class="finance-icon-button" type="button" aria-label="Cash trajectory options">&hellip;</button>
+        </div>
+        <p class="finance-trajectory__helper">Use this to validate the decision above. Expected includes probability-weighted CSV recurring-deposit trends and dated receivables; it is not committed cash.</p>
+        <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Actual, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
       </section>
 
       {savings_section}

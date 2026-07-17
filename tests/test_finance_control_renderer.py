@@ -116,7 +116,7 @@ def test_renderer_uses_control_builder_and_v2_scan_order() -> None:
     ]
     page = _render([], _control_state(queue=queue))
 
-    expected_order = ["Cash on hand", "Happening", "Cash trajectory", "Money queue"]
+    expected_order = ["Cash on hand", "Happening", "Money queue", "Cash trajectory"]
     positions = [page.index(label) for label in expected_order]
     assert positions == sorted(positions)
     assert "Incoming 14 days" in page
@@ -203,8 +203,8 @@ def test_income_card_and_trajectory_keep_income_sources_distinct() -> None:
     assert "Expected: $4,500" in incoming
     assert "$3,000 CSV trend" in incoming
     assert "$1,500 dated receivables" in incoming
-    assert "Expected includes probability-weighted CSV recurring-deposit trends and dated receivables." in page
-    assert "It is not committed cash." in page
+    assert "Use this to validate the decision above. Expected includes probability-weighted CSV recurring-deposit trends and dated receivables" in page
+    assert "it is not committed cash." in page
 
 
 def test_source_readiness_and_failed_trust_gate_precede_cash_decisions() -> None:
@@ -235,8 +235,8 @@ def test_source_readiness_and_failed_trust_gate_precede_cash_decisions() -> None
     page = _render([], state)
 
     positions = [
-        page.index("Finance source readiness"),
         page.index('data-trust-ready="false"'),
+        page.index("Finance source readiness"),
         page.index('aria-label="Cash position"'),
     ]
     assert positions == sorted(positions)
@@ -487,6 +487,18 @@ def test_update_money_offers_one_connected_refresh_without_changing_csv_cash_tru
     assert "Bank CSV remains cash-on-hand truth." in page
     assert 'action="/admin/finances/sync-qbo-actuals"' in page
     assert "Refresh actuals only" in page
+
+
+def test_finance_control_prioritizes_one_decision_then_current_work() -> None:
+    page = _render([], _control_state(queue=[]))
+
+    assert "Today’s cash decision." in page
+    assert "Show guidance" in page
+    assert 'class="finance-source-summary"' in page
+    assert "View source details" in page
+    assert "Work this list first. Historical reconciliation stays in its own filter." in page
+    assert "Review history" in page
+    assert page.index('id="finance-queue"') < page.index('id="trajectory-title"')
 
 
 def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:
