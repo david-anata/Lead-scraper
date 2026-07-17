@@ -20,6 +20,7 @@ def test_packet_rolls_up_every_event_and_keeps_record_evidence():
     packet = smart_cfo.build_ledger_packet(_rows())
     assert packet["record_count"] == 3
     assert {record_id for rollup in packet["merchant_rollups"] for record_id in rollup["record_ids"]} == {"bank-1", "bank-2", "invoice-1"}
+    assert {rollup["evidence_ref"] for rollup in packet["merchant_rollups"]} == {"r1", "r2"}
     assert packet["totals_cents"]["outflow:posted"] == 24_000
 
 
@@ -32,7 +33,7 @@ def test_smart_cfo_caches_exact_ledger_analysis(monkeypatch):
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
     monkeypatch.setenv("FINANCE_SMART_CFO_MODEL", "claude-test")
-    monkeypatch.setattr(smart_cfo, "_call_anthropic", lambda key, model, packet: calls.append((key, model, packet)) or {"summary": "Review Tool Co.", "recommendations": [{"category": "savings", "priority": "medium", "title": "Review Tool Co", "reason": "Two posted software charges recur.", "next_action": "Confirm owner and renewal date.", "operator_question": "Is this still used?", "record_ids": ["bank-1", "bank-2"]}]})
+    monkeypatch.setattr(smart_cfo, "_call_anthropic", lambda key, model, packet: calls.append((key, model, packet)) or {"summary": "Review Tool Co.", "recommendations": [{"category": "savings", "priority": "medium", "title": "Review Tool Co", "reason": "Two posted software charges recur.", "next_action": "Confirm owner and renewal date.", "operator_question": "Is this still used?", "evidence_refs": ["r2"]}]})
     settings = object()
     first = smart_cfo.run_smart_cfo(settings)
     second = smart_cfo.run_smart_cfo(settings)
@@ -45,7 +46,7 @@ def test_smart_cfo_caches_exact_ledger_analysis(monkeypatch):
 
 def test_unsupported_llm_evidence_is_removed(monkeypatch):
     packet = smart_cfo.build_ledger_packet(_rows())
-    result = smart_cfo._validate_analysis({"summary": "x", "recommendations": [{"category": "savings", "priority": "high", "title": "Bad", "reason": "x", "next_action": "x", "operator_question": "x", "record_ids": ["invented"]}]}, packet)
+    result = smart_cfo._validate_analysis({"summary": "x", "recommendations": [{"category": "savings", "priority": "high", "title": "Bad", "reason": "x", "next_action": "x", "operator_question": "x", "evidence_refs": ["invented"]}]}, packet)
     assert result["recommendations"] == []
 
 
@@ -75,7 +76,15 @@ def test_response_extractor_prefers_anthropic_tool_use_input():
 
 
 def test_structured_advice_requires_an_evidence_backed_action():
-    assert smart_cfo._schema()["properties"]["recommendations"]["minItems"] == 1
+    schema = smart_cfo._schema()
+    assert schema["properties"]["recommendations"]["minItems"] == 1
+    assert schema["properties"]["recommendations"]["items"]["properties"]["evidence_refs"]["minItems"] == 1
+
+
+def test_llm_packet_uses_compact_evidence_references_only():
+    llm_packet = smart_cfo._llm_packet(smart_cfo.build_ledger_packet(_rows()))
+    assert "record_ids" not in llm_packet["merchant_rollups"][0]
+    assert llm_packet["merchant_rollups"][0]["evidence_ref"] == "r1"
 
 
 def test_provider_error_is_safe_and_does_not_expose_provider_detail(monkeypatch):

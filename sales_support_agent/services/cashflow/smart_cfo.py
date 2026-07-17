@@ -19,7 +19,7 @@ from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
-PROMPT_VERSION = "smart-cfo-v2"
+PROMPT_VERSION = "smart-cfo-v3"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -70,6 +70,9 @@ def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None
         group["record_ids"] = sorted(set(group["record_ids"]))
         rollups.append(group)
     rollups.sort(key=lambda item: (item["event_type"], -abs(item["amount_cents"]), item["merchant"].casefold()))
+    for index, group in enumerate(rollups, start=1):
+        # Compact refs make evidence citation reliable without exposing a long ID list to the model.
+        group["evidence_ref"] = f"r{index}"
     return {
         "packet_version": PROMPT_VERSION,
         "as_of": today.isoformat(),
@@ -116,7 +119,7 @@ def _call_anthropic(api_key: str, model: str, packet: Mapping[str, Any]) -> Mapp
             model=model,
             max_tokens=1600,
             system=_instructions(),
-            messages=[{"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+            messages=[{"role": "user", "content": json.dumps(_llm_packet(packet), separators=(",", ":"))}],
             tools=[{
                 "name": "submit_finance_advice",
                 "description": "Submit evidence-bound Smart CFO advice for the supplied finance ledger.",
@@ -182,11 +185,11 @@ def _packet_hash(packet: Mapping[str, Any]) -> str:
 def _instructions() -> str:
     return """You are the Smart CFO for an operator, not a bookkeeper. Analyze every supplied ledger rollup.
 Return concise decisions for savings, collections, cash_risk, or data_quality. Do not invent a dollar amount,
-merchant, date, status, or source record. Only use amounts and record_ids present in the packet. A recommendation
+merchant, date, status, or source record. Only use amounts and evidence_refs present in the packet. A recommendation
 is advice only: do not say a payment was made, a bill is resolved, or cash changed. Prefer no recommendation over
 weak evidence. When the packet has records, return 1 to 5 recommendations: choose a data_quality action if the
 evidence is too weak for a cash or savings decision. Each item needs a practical next_action and a short
-operator_question when a human fact is required."""
+operator_question when a human fact is required. Cite only the compact evidence_refs supplied with each rollup."""
 
 
 def _schema() -> dict[str, Any]:
@@ -196,23 +199,34 @@ def _schema() -> dict[str, Any]:
             "category": {"type": "string", "enum": ["savings", "collections", "cash_risk", "data_quality"]},
             "priority": {"type": "string", "enum": ["high", "medium", "low"]},
             "title": {"type": "string"}, "reason": {"type": "string"}, "next_action": {"type": "string"},
-            "operator_question": {"type": "string"}, "record_ids": {"type": "array", "items": {"type": "string"}},
-        }, "required": ["category", "priority", "title", "reason", "next_action", "operator_question", "record_ids"],
+            "operator_question": {"type": "string"}, "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        }, "required": ["category", "priority", "title", "reason", "next_action", "operator_question", "evidence_refs"],
     }
     return {"type": "object", "additionalProperties": False, "properties": {"summary": {"type": "string"}, "recommendations": {"type": "array", "minItems": 1, "items": item}}, "required": ["summary", "recommendations"]}
 
 
 def _validate_analysis(value: Mapping[str, Any], packet: Mapping[str, Any]) -> dict[str, Any]:
-    allowed_ids = {record_id for rollup in packet["merchant_rollups"] for record_id in rollup["record_ids"]}
+    evidence = {str(rollup["evidence_ref"]): rollup["record_ids"] for rollup in packet["merchant_rollups"]}
     results = []
     for item in list(value.get("recommendations") or [])[:_MAX_RECOMMENDATIONS]:
         if not isinstance(item, Mapping):
             continue
-        ids = [str(record_id) for record_id in item.get("record_ids") or []]
-        if not ids or not set(ids).issubset(allowed_ids):
+        refs = [str(ref) for ref in item.get("evidence_refs") or []]
+        if not refs or not set(refs).issubset(evidence):
             continue
+        ids = sorted({record_id for ref in refs for record_id in evidence[ref]})
         fields = {name: str(item.get(name) or "").strip() for name in ("category", "priority", "title", "reason", "next_action", "operator_question")}
         if not all(fields.values()) or fields["category"] not in {"savings", "collections", "cash_risk", "data_quality"}:
             continue
         results.append({**fields, "record_ids": ids})
     return {"summary": str(value.get("summary") or "Review the evidence-backed actions below.").strip()[:500], "recommendations": results}
+
+
+def _llm_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Send complete rollup facts, with compact evidence refs instead of opaque record IDs."""
+    rollup_fields = ("evidence_ref", "merchant", "category", "event_type", "status", "count", "amount_cents", "first_date", "last_date", "sources")
+    return {
+        **{key: value for key, value in packet.items() if key != "merchant_rollups"},
+        "merchant_rollups": [{key: rollup[key] for key in rollup_fields} for rollup in packet["merchant_rollups"]],
+        "evidence_reference_rule": "Use only evidence_refs from merchant_rollups. Do not use record IDs.",
+    }
