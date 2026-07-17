@@ -9,9 +9,9 @@ of downloading a bank CSV and uploading it through the UI.
 What this module syncs
 -----------------------
 1.  ``Purchase``      → outflow, status=``posted``
-      Covers ACH debits, credit-card charges, and cash purchases.
-2.  ``BillPayment`` and ``Check`` → outflow, status=``posted``
-      Covers the vendor-payment paths that settle A/P in QuickBooks.
+      Covers ACH debits, checks, credit-card charges, and cash purchases.
+2.  ``BillPayment`` → outflow, status=``posted``
+      Covers vendor bill payments that settle A/P in QuickBooks.
 3.  ``Deposit``       → inflow, status=``posted``
       Covers bank deposits and customer payment deposits.
 4.  ``Payment``       → inflow, status=``posted``
@@ -282,10 +282,11 @@ def _payment_to_event(pay: dict) -> Optional[dict]:
 def _vendor_payment_to_event(payment: dict, *, entity_type: str) -> Optional[dict]:
     """Convert a QBO vendor settlement into posted outflow evidence.
 
-    BillPayment and Check are separate QBO entities. Both can settle a
-    ClickUp payable, so they must reach the matcher with the vendor, amount,
-    and posting date intact. Transfers remain deliberately excluded: moving
-    money between accounts is not operating spend.
+    BillPayment can settle a ClickUp payable, so it must reach the matcher
+    with the vendor, amount, and posting date intact. QBO represents ordinary
+    checks as Purchase records, which are already imported above. Transfers
+    remain deliberately excluded: moving money between accounts is not
+    operating spend.
     """
     qbo_id = str(payment.get("Id", ""))
     if not qbo_id:
@@ -335,10 +336,6 @@ def _bill_payment_to_event(payment: dict) -> Optional[dict]:
     return _vendor_payment_to_event(payment, entity_type="BillPayment")
 
 
-def _check_to_event(check: dict) -> Optional[dict]:
-    return _vendor_payment_to_event(check, entity_type="Check")
-
-
 # ---------------------------------------------------------------------------
 # Category inference (reuse keywords from clickup_sync)
 # ---------------------------------------------------------------------------
@@ -361,6 +358,32 @@ def _infer_category(name: str) -> str:
         if any(kw in name_lower for kw in keywords):
             return category
     return "other"
+
+
+def _qbo_entity_queries(since: str) -> list[tuple[str, str, Any]]:
+    """Return only transaction entities queryable by the QBO API."""
+    return [
+        (
+            "Purchase",
+            f"SELECT * FROM Purchase WHERE TxnDate >= '{since}' MAXRESULTS 1000",
+            _purchase_to_event,
+        ),
+        (
+            "Deposit",
+            f"SELECT * FROM Deposit WHERE TxnDate >= '{since}' MAXRESULTS 1000",
+            _deposit_to_event,
+        ),
+        (
+            "BillPayment",
+            f"SELECT * FROM BillPayment WHERE TxnDate >= '{since}' MAXRESULTS 1000",
+            _bill_payment_to_event,
+        ),
+        (
+            "Payment",
+            f"SELECT * FROM Payment WHERE TxnDate >= '{since}' MAXRESULTS 1000",
+            _payment_to_event,
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -447,33 +470,7 @@ def sync_qbo_bank_transactions(
         since = (datetime.utcnow().date() - timedelta(days=lookback_days)).isoformat()
 
         # ---- Fetch each entity type -------------------------------------
-        converters: list[tuple[str, str, Any]] = [
-            (
-                "Purchase",
-                f"SELECT * FROM Purchase WHERE TxnDate >= '{since}' MAXRESULTS 1000",
-                _purchase_to_event,
-            ),
-            (
-                "Deposit",
-                f"SELECT * FROM Deposit WHERE TxnDate >= '{since}' MAXRESULTS 1000",
-                _deposit_to_event,
-            ),
-            (
-                "BillPayment",
-                f"SELECT * FROM BillPayment WHERE TxnDate >= '{since}' MAXRESULTS 1000",
-                _bill_payment_to_event,
-            ),
-            (
-                "Check",
-                f"SELECT * FROM Check WHERE TxnDate >= '{since}' MAXRESULTS 1000",
-                _check_to_event,
-            ),
-            (
-                "Payment",
-                f"SELECT * FROM Payment WHERE TxnDate >= '{since}' MAXRESULTS 1000",
-                _payment_to_event,
-            ),
-        ]
+        converters = _qbo_entity_queries(since)
 
         engine = get_engine()
         now_str = datetime.utcnow().isoformat()
