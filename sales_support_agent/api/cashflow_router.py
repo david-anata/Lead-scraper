@@ -46,6 +46,7 @@ from sales_support_agent.services.cashflow.cashflow_helpers import _finance_nav_
 async def _set_finance_nav_user(request: Request) -> None:
     _finance_nav_user.set(get_current_user(request))
 from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
+from sales_support_agent.services.cashflow.qbo_bank_sync import sync_qbo_bank_transactions
 from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 
 
@@ -768,6 +769,30 @@ async def sync_qbo_invoices_only(request: Request):
         return _redirect_finance_error(f"QuickBooks receivables sync: {result.errors[0]}")
     return _redirect_finance_home(
         f"QuickBooks receivables refreshed: {result.rows_inserted} new, {result.rows_skipped_duplicate} unchanged."
+    )
+
+
+@router.post("/sync-qbo-actuals", response_class=HTMLResponse)
+async def sync_qbo_actuals(request: Request):
+    """Refresh posted QBO activity for settlement matching, not cash balance."""
+    settings = (
+        getattr(request.app.state, "agent_settings", None)
+        or getattr(request.app.state, "admin_dashboard_settings", None)
+        or request.app.state.settings
+    )
+    try:
+        # Historical reconciliation needs more than the short startup window.
+        result = await asyncio.to_thread(
+            sync_qbo_bank_transactions, settings, lookback_days=365
+        )
+    except Exception as exc:
+        return _redirect_finance_error(f"QuickBooks actuals sync failed: {exc}")
+
+    if result.errors:
+        return _redirect_finance_error(f"QuickBooks actuals sync: {result.errors[0]}")
+    return _redirect_finance_home(
+        f"QuickBooks actuals refreshed: {result.rows_inserted} imported, "
+        f"{result.rows_skipped_duplicate} unchanged. Bank CSV remains cash-on-hand truth."
     )
 
 

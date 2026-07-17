@@ -1197,6 +1197,10 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         item, "completion_requires_bank_evidence",
         default=row.get("completion_requires_bank_evidence"),
     ))
+    historical_reconciliation_pending = bool(_control_value(
+        item, "historical_reconciliation_pending",
+        default=row.get("historical_reconciliation_pending"),
+    ))
     due_raw = _control_value(item, "due_date", "date", default=row.get("due_date"))
     due = _row_due_date({"due_date": due_raw})
     amount_cents = _cents(
@@ -1205,7 +1209,9 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     party = str(_control_value(item, "party", "name", "vendor_or_customer", default=_display_name(dict(row))))
     action = _control_value(item, "action_label", "action", "recommended_action", default="")
     if not action:
-        if status == "completed":
+        if historical_reconciliation_pending:
+            action = "Reconcile history"
+        elif status == "completed":
             action = "Completed in ClickUp"
         elif status in {"posted", "matched"}:
             action = "Review actual"
@@ -1227,6 +1233,8 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     if not timing:
         if due is None:
             timing = "Date missing"
+        elif historical_reconciliation_pending:
+            timing = "Historical occurrence - no forward cash impact"
         elif status == "completed":
             timing = "Completed in ClickUp - bank proof pending"
         elif due < today:
@@ -1240,6 +1248,8 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
     if not impact:
         if due is None:
             impact = "Excluded until dated"
+        elif historical_reconciliation_pending:
+            impact = "$0 forward cash; bank allocation needed"
         elif status == "completed" and completion_requires_bank_evidence:
             impact = f"-{_money(amount_cents)} held pending bank evidence"
         elif status == "completed":
@@ -1248,7 +1258,7 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
             impact = f"+{_money(amount_cents)} if received"
         else:
             impact = f"-{_money(amount_cents)} from cash"
-    needs_action = bool(
+    needs_action = not historical_reconciliation_pending and bool(
         _control_value(item, "needs_action", default=False)
         or due is None or (due is not None and due < today)
         or status in {"conflict", "duplicate", "review"}
@@ -1261,7 +1271,7 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         or _status_key(row.get("origin")) in {"inferred", "income_pattern", "recurring_pattern"}
         or _status_key(row.get("source")) == "inferred"
     )
-    tabs = ["incoming" if direction == "inflow" else "payables"]
+    tabs = ["reconciliation"] if historical_reconciliation_pending else ["incoming" if direction == "inflow" else "payables"]
     if status == "completed" and not completion_requires_bank_evidence:
         tabs = ["completed"]
     if needs_action:
@@ -1353,7 +1363,7 @@ def _queue_table_html(
     queue: Any, today: date, *, decision_actions_allowed: bool,
 ) -> tuple[str, dict[str, int]]:
     items = [_queue_item_data(item, today) for item in _flatten_queue(queue)]
-    counts = {key: 0 for key in ("needs-action", "incoming", "payables", "completed", "recent")}
+    counts = {key: 0 for key in ("needs-action", "incoming", "payables", "completed", "reconciliation", "recent")}
     rows_html = []
     for item in items:
         if not decision_actions_allowed:
@@ -1879,9 +1889,10 @@ def _source_readiness_html(
     if str(shadow.get("mode") or "") == "shadow":
         if review_count:
             state_class, state_label = "is-blocked", "Review"
+            excluded = max(0, _cents(shadow.get("candidate_superseded_count")))
             detail = (
                 f"{review_count} recurring occurrence(s) need settlement evidence. "
-                "Cash is unchanged."
+                f"{excluded} historical occurrence(s) are excluded from forward cash."
             )
         else:
             state_class, state_label = "is-ready", "Clear"
@@ -1924,10 +1935,10 @@ def _reconciliation_shadow_html(shadow: Mapping[str, Any] | None) -> str:
     return f"""
       <section class="finance-reconciliation-review" aria-labelledby="finance-reconciliation-title">
         <div><strong id="finance-reconciliation-title">Recurring ClickUp review</strong>
-          <span>{review_count} recurrence(s) need settlement evidence. A newer scheduled task never clears an older payable. Cash is unchanged.{suffix}</span></div>
+          <span>{review_count} recurrence(s) need settlement evidence. Historical occurrences are excluded from forward cash, but are not marked paid.{suffix}</span></div>
         <table><thead><tr><th>Occurrence</th><th>Older due</th><th>Newer due</th><th>Assessment</th><th>Amount</th></tr></thead>
         <tbody>{rows}</tbody></table>
-        <small>Only a closed ClickUp occurrence or matching bank settlement can release required cash.</small>
+        <small>Match a bank transaction or correct the source before recording a payment. Historical schedule residue never reserves forward cash.</small>
       </section>"""
 
 
@@ -2426,6 +2437,7 @@ async def render_cashflow_overview_page(
           <button type="button" aria-pressed="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="completed">Completed <span>{counts['completed']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="reconciliation">Reconciliation <span>{counts['reconciliation']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="recent">Recent <span>{counts['recent']}</span></button>
         </div>
         <div class="finance-queue-scroll"{queue_table_hidden}>
@@ -2528,7 +2540,7 @@ async def render_cashflow_overview_page(
         </form>
         <div class="finance-source-row"><div><strong>ClickUp</strong><span>Connected source for planned AP/AR</span></div><form method="post" action="/admin/finances/sync-clickup"><button class="btn btn-secondary btn-sm" type="submit">Refresh</button></form></div>
         {reconciliation_shadow_html}
-        <div class="finance-source-row"><div><strong>QuickBooks</strong><span>Use the production company for dated receivables. Bank CSV remains the source of cash on hand.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/qbo/connect">Connect</a><form method="post" action="/admin/finances/sync-qbo-invoices" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh receivables</button></form><form method="post" action="/admin/finances/qbo/disconnect" style="display:inline" onsubmit="return confirm('Disconnect QuickBooks? Synced records remain, but no new QBO data will be pulled.');"><button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form></div></div>
+        <div class="finance-source-row"><div><strong>QuickBooks</strong><span>Refresh invoices for collections and actuals for payment matching. Bank CSV remains cash-on-hand truth.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/qbo/connect">Connect</a><form method="post" action="/admin/finances/sync-qbo-invoices" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh receivables</button></form><form method="post" action="/admin/finances/sync-qbo-actuals" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh actuals</button></form><form method="post" action="/admin/finances/qbo/disconnect" style="display:inline" onsubmit="return confirm('Disconnect QuickBooks? Synced records remain, but no new QBO data will be pulled.');"><button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form></div></div>
         <div class="finance-source-row"><div><strong>Cash floor</strong><span>Reserve kept after required bills. Current: {cash_floor_display}</span></div><form class="finance-floor-form" method="post" action="/admin/finances/settings/cash-floor"><label class="sr-only" for="finance-cash-floor">Cash floor in dollars</label><input id="finance-cash-floor" name="cash_floor" inputmode="decimal" value="{cash_floor_input}" placeholder="Enter cash floor" required><button class="btn btn-secondary btn-sm" type="submit">Save floor</button></form></div>
         <div class="finance-source-row"><div><strong>Manual exception</strong><span>Add an obligation without changing source records.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a></div></div>
         {inline_result}

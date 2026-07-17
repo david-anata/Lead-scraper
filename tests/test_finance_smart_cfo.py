@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,6 +24,21 @@ def test_packet_rolls_up_every_event_and_keeps_record_evidence():
     assert {record_id for rollup in packet["merchant_rollups"] for record_id in rollup["record_ids"]} == {"bank-1", "bank-2", "invoice-1"}
     assert {rollup["evidence_ref"] for rollup in packet["merchant_rollups"]} == {"r1", "r2"}
     assert packet["totals_cents"]["outflow:posted"] == 24_000
+
+
+def test_finance_packet_contains_reconciled_cfo_analysis_not_only_rollups():
+    rows = _rows() + [{
+        "id": "balance", "source": "csv", "record_kind": "transaction",
+        "event_type": "inflow", "status": "posted", "category": "transfer",
+        "amount_cents": 0, "account_balance_cents": 200_000,
+        "due_date": "2026-07-15",
+    }]
+    packet = smart_cfo.build_finance_packet(rows, settlement_annotations=[], as_of=date(2026, 7, 15))
+    summary = packet["analytical_summary"]
+    assert summary["cash"]["cash_on_hand_cents"] == 200_000
+    assert summary["receivables"]["total_cents"] == 55_000
+    assert summary["payables"]["total_cents"] == 0
+    assert {"cash", "forecast", "receivables", "payables", "reconciliation", "trust"} <= set(summary)
 
 
 def test_smart_cfo_caches_exact_ledger_analysis(monkeypatch):
@@ -116,3 +133,21 @@ def test_smart_review_route_is_advisory_and_reports_ledger_scope(monkeypatch):
     response = TestClient(app, follow_redirects=False).post("/admin/finances/smart-review")
     assert response.status_code == 303
     assert "Smart%20review%20completed%20across%2042" in response.headers["location"]
+
+
+def test_qbo_actuals_refresh_is_visible_without_replacing_csv_cash_truth(monkeypatch):
+    app = FastAPI()
+    app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1})()
+    app.include_router(cashflow_router)
+    monkeypatch.setattr("sales_support_agent.services.auth_deps.get_session_user_from_request", lambda request: {"email": "qa@example.com"})
+    monkeypatch.setattr("sales_support_agent.services.auth_deps.get_current_user", lambda request: {"email": "qa@example.com", "permissions": {"finance"}})
+    result = type("Result", (), {"rows_inserted": 12, "rows_skipped_duplicate": 8, "errors": []})()
+    called = {}
+    monkeypatch.setattr(
+        "sales_support_agent.api.cashflow_router.sync_qbo_bank_transactions",
+        lambda settings, lookback_days: called.update({"lookback_days": lookback_days}) or result,
+    )
+    response = TestClient(app, follow_redirects=False).post("/admin/finances/sync-qbo-actuals")
+    assert response.status_code == 303
+    assert called["lookback_days"] == 365
+    assert "QuickBooks%20actuals%20refreshed%3A%2012%20imported" in response.headers["location"]

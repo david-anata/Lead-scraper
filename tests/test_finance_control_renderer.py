@@ -480,7 +480,9 @@ def test_update_money_keeps_qbo_receivables_separate_from_cash_truth() -> None:
 
     assert 'action="/admin/finances/sync-qbo-invoices"' in page
     assert "Refresh receivables" in page
-    assert "Bank CSV remains the source of cash on hand." in page
+    assert "Bank CSV remains cash-on-hand truth." in page
+    assert 'action="/admin/finances/sync-qbo-actuals"' in page
+    assert "Refresh actuals" in page
 
 
 def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:

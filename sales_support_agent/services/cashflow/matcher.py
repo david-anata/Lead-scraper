@@ -13,7 +13,8 @@ Match scoring
 -------------
 A match requires ALL three of:
     1. Same event_type (both inflow or both outflow)
-    2. Amount within ±AMOUNT_TOLERANCE_PCT of each other
+    2. Amount within ±AMOUNT_TOLERANCE_PCT of each other, or an explicitly
+       high-confidence partial payment against a larger obligation
     3. Dates within ±DATE_WINDOW_DAYS of each other
 
 AND at least one of:
@@ -171,6 +172,20 @@ def _score_match_bps(
         amount_ratio = abs(csv_amt - pln_amt) / pln_amt
         amount_ok = amount_ratio <= AMOUNT_TOLERANCE_PCT
 
+    # A smaller posted transaction can be a real chunk payment.  Do not treat
+    # it as an automatic match until the vendor and date evidence later earn a
+    # materially higher score than a normal whole-bill match.
+    planned_notes = " ".join(str(planned.get(field) or "") for field in ("notes", "description", "flexibility")).lower()
+    partial_allowed = any(token in planned_notes for token in ("chunk", "partial", "installment"))
+    partial_payment = bool(
+        pln_amt > 0
+        and 0 < csv_amt < pln_amt
+        and not amount_ok
+        and partial_allowed
+    )
+    if partial_payment:
+        amount_ok = True
+
     if not amount_ok:
         return 0.0, f"amount mismatch ({amount_ratio:.0%} difference)"
 
@@ -209,8 +224,15 @@ def _score_match_bps(
         score_bps += 1_500
         reasons.append("category match")
 
-    # Amount exactness bonus
-    if amount_ratio <= 0.01:
+    # Amount exactness bonus. A partial is intentionally eligible only with an
+    # exact/strong vendor match plus close date and category evidence.
+    if partial_payment:
+        if vendor_sim >= 0.80 and csv_ev.get("category") == planned.get("category") and date_delta <= 2:
+            score_bps += 3_000
+            reasons.append("partial payment with strong vendor/date evidence")
+        else:
+            return 0, "partial payment lacks strong vendor/date evidence"
+    elif amount_ratio <= 0.01:
         score_bps += 3_000
         reasons.append("exact amount")
     elif amount_ratio <= 0.05:
