@@ -23,6 +23,7 @@ PROMPT_VERSION = "smart-cfo-v4"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_NON_CASH_TERMINAL_STATUSES = {"cancelled", "canceled", "void"}
 
 logger = logging.getLogger(__name__)
 
@@ -32,16 +33,24 @@ class SmartCfoProviderError(RuntimeError):
 
 
 def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None = None) -> dict[str, Any]:
-    """Build a stable, complete merchant rollup from every canonical event."""
+    """Build a stable merchant rollup from finance events with cash meaning.
+
+    Cancelled and void source rows remain in the system's audit trail, but are
+    not cash events and must not become artificial CFO risk or savings advice.
+    """
     today = as_of or date.today()
     groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     totals = defaultdict(int)
     record_count = 0
+    excluded_terminal_count = 0
     for raw in rows:
         row = dict(raw)
-        record_count += 1
         event_type = str(row.get("event_type") or "unknown").lower()
         status = str(row.get("status") or "unknown").lower()
+        if status in _NON_CASH_TERMINAL_STATUSES:
+            excluded_terminal_count += 1
+            continue
+        record_count += 1
         source = str(row.get("source") or "unknown").lower()
         merchant = str(row.get("vendor_or_customer") or row.get("name") or row.get("description") or "Unassigned").strip()[:120]
         category = str(row.get("category") or "uncategorized").strip()[:64]
@@ -80,6 +89,7 @@ def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None
         "rollup_count": len(rollups),
         "totals_cents": dict(sorted(totals.items())),
         "merchant_rollups": rollups,
+        "excluded_terminal_count": excluded_terminal_count,
     }
 
 

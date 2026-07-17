@@ -26,6 +26,21 @@ def test_packet_rolls_up_every_event_and_keeps_record_evidence():
     assert packet["totals_cents"]["outflow:posted"] == 24_000
 
 
+def test_packet_excludes_cancelled_history_from_cfo_evidence_without_losing_the_audit_count():
+    packet = smart_cfo.build_ledger_packet(_rows() + [{
+        "id": "cancelled-rent", "source": "clickup", "event_type": "outflow",
+        "status": "cancelled", "vendor_or_customer": "Studio Rent",
+        "category": "rent", "amount_cents": 4_000_000, "due_date": "2026-07-01",
+    }])
+
+    assert packet["record_count"] == 3
+    assert packet["excluded_terminal_count"] == 1
+    assert "outflow:cancelled" not in packet["totals_cents"]
+    assert "cancelled-rent" not in {
+        record_id for rollup in packet["merchant_rollups"] for record_id in rollup["record_ids"]
+    }
+
+
 def test_finance_packet_contains_reconciled_cfo_analysis_not_only_rollups():
     rows = _rows() + [{
         "id": "balance", "source": "csv", "record_kind": "transaction",
