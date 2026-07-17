@@ -115,17 +115,34 @@ def _call_anthropic(api_key: str, model: str, packet: Mapping[str, Any]) -> Mapp
         message = anthropic.Anthropic(api_key=api_key).messages.create(
             model=model,
             max_tokens=1600,
-            system=_instructions() + " Return JSON only, matching this schema: " + json.dumps(_schema(), separators=(",", ":")),
+            system=_instructions(),
             messages=[{"role": "user", "content": json.dumps(packet, separators=(",", ":"))}],
+            tools=[{
+                "name": "submit_finance_advice",
+                "description": "Submit evidence-bound Smart CFO advice for the supplied finance ledger.",
+                "input_schema": _schema(),
+            }],
+            tool_choice={"type": "tool", "name": "submit_finance_advice"},
         )
     except Exception as exc:
         logger.warning("Smart CFO Anthropic request failed for model %s: %s", model, type(exc).__name__)
         raise SmartCfoProviderError("Anthropic Smart CFO request failed") from exc
-    text = message.content[0].text if message.content else ""
-    value = _parse_response_json(text)
+    value = _extract_response_value(message)
     if not isinstance(value, Mapping):
         raise ValueError("Smart CFO returned an invalid analysis")
     return value
+
+
+def _extract_response_value(message: Any) -> Mapping[str, Any]:
+    """Prefer Anthropic tool-use input; accept text as a provider compatibility fallback."""
+    for block in list(getattr(message, "content", None) or []):
+        if getattr(block, "type", "") == "tool_use" and getattr(block, "name", "") == "submit_finance_advice":
+            value = getattr(block, "input", None)
+            if isinstance(value, Mapping):
+                return value
+            raise ValueError("Smart CFO tool response had invalid input")
+    text_blocks = [str(getattr(block, "text", "") or "") for block in list(getattr(message, "content", None) or [])]
+    return _parse_response_json("\n".join(part for part in text_blocks if part))
 
 
 def _parse_response_json(text: str) -> Mapping[str, Any]:

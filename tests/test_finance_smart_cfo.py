@@ -62,6 +62,18 @@ def test_response_parser_accepts_json_wrapped_in_a_code_fence():
     assert value["summary"] == "x"
 
 
+def test_response_extractor_prefers_anthropic_tool_use_input():
+    class ToolBlock:
+        type = "tool_use"
+        name = "submit_finance_advice"
+        input = {"summary": "x", "recommendations": []}
+
+    class Message:
+        content = [ToolBlock()]
+
+    assert smart_cfo._extract_response_value(Message())["summary"] == "x"
+
+
 def test_provider_error_is_safe_and_does_not_expose_provider_detail(monkeypatch):
     class BrokenMessages:
         def create(self, **kwargs):

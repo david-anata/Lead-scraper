@@ -364,6 +364,7 @@ async def run_smart_cfo_review(request: Request):
     try:
         result = await asyncio.to_thread(run_smart_cfo, request.app.state.settings)
     except (TypeError, ValueError, json.JSONDecodeError):
+        logger.exception("Smart CFO returned invalid advice")
         return _redirect_finance_error("Smart review returned invalid advice; no finance data changed")
     except SmartCfoProviderError:
         logger.exception("Smart CFO provider request failed")
