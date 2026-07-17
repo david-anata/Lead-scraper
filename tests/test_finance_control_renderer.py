@@ -475,14 +475,18 @@ def test_empty_queue_copy_keeps_exception_actions_available() -> None:
     assert "Update money" in page
 
 
-def test_update_money_keeps_qbo_receivables_separate_from_cash_truth() -> None:
+def test_update_money_offers_one_connected_refresh_without_changing_csv_cash_truth() -> None:
     page = _render([], _control_state(queue=[]))
 
+    assert 'action="/admin/finances/sync-connected-sources"' in page
+    assert "Refresh connected sources" in page
+    assert "Bank CSV is not changed." in page
+    assert '<details class="finance-source-advanced">' in page
     assert 'action="/admin/finances/sync-qbo-invoices"' in page
-    assert "Refresh receivables" in page
+    assert "Refresh receivables only" in page
     assert "Bank CSV remains cash-on-hand truth." in page
     assert 'action="/admin/finances/sync-qbo-actuals"' in page
-    assert "Refresh actuals" in page
+    assert "Refresh actuals only" in page
 
 
 def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:

@@ -711,14 +711,8 @@ async def recurring_delete(request: Request, template_id: str):
 # QBO invoice sync
 # ---------------------------------------------------------------------------
 
-@router.post("/sync-qbo", response_class=HTMLResponse)
-async def sync_qbo(request: Request):
-    """Compatibility sync using Finance Control's canonical source policy.
-
-    Cash on hand is only refreshed from the bank CSV.  QBO contributes dated
-    receivables, while ClickUp contributes planned work.  This endpoint remains
-    for old links but must not silently reintroduce QBO bank transactions.
-    """
+async def _refresh_connected_finance_sources(request: Request) -> RedirectResponse:
+    """Refresh all connected non-CSV Finance sources in source-of-truth order."""
     settings = (
         getattr(request.app.state, "agent_settings", None)
         or getattr(request.app.state, "admin_dashboard_settings", None)
@@ -727,29 +721,54 @@ async def sync_qbo(request: Request):
     parts: list[str] = []
     errors: list[str] = []
 
-    # 1. ClickUp planned AP/AR.
     try:
-        from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
-        cu = await asyncio.to_thread(sync_clickup_finance, settings)
-        parts.append(f"ClickUp {cu.rows_inserted} new")
-        errors.extend(cu.errors[:1])
+        result = await asyncio.to_thread(sync_clickup_finance, settings)
+        parts.append(
+            f"ClickUp {result.rows_inserted} new, {result.rows_skipped_duplicate} unchanged"
+        )
+        errors.extend(f"ClickUp: {error}" for error in result.errors[:1])
     except Exception as exc:
         errors.append(f"ClickUp: {exc}")
 
-    # 2. QBO dated receivables. No QBO bank sync: CSV remains cash truth.
     try:
-        inv = await asyncio.to_thread(sync_qbo_invoices, settings)
-        parts.append(f"Invoices {inv.rows_inserted} new")
-        errors.extend(inv.errors[:1])
+        result = await asyncio.to_thread(sync_qbo_invoices, settings)
+        parts.append(
+            f"QBO receivables {result.rows_inserted} new, {result.rows_skipped_duplicate} unchanged"
+        )
+        errors.extend(f"QBO receivables: {error}" for error in result.errors[:1])
     except Exception as exc:
-        errors.append(f"Invoices: {exc}")
+        errors.append(f"QBO receivables: {exc}")
 
+    try:
+        result = await asyncio.to_thread(
+            sync_qbo_bank_transactions, settings, lookback_days=365
+        )
+        parts.append(
+            f"QBO actuals {result.rows_inserted} imported, {result.rows_skipped_duplicate} unchanged"
+        )
+        errors.extend(f"QBO actuals: {error}" for error in result.errors[:1])
+    except Exception as exc:
+        errors.append(f"QBO actuals: {exc}")
+
+    summary = " · ".join(parts) or "No connected source completed"
     if errors:
-        flash = f"err:Sync issues: {'; '.join(errors[:2])}"
-    else:
-        flash = f"ok:Synced — {' · '.join(parts)}"
+        return _redirect_finance_error(
+            f"Connected refresh completed with issues: {summary}. {'; '.join(errors[:2])}"
+        )
+    return _redirect_finance_home(
+        f"Connected sources refreshed: {summary}. Bank CSV was not changed."
+    )
 
-    return RedirectResponse(f"/admin/finances?flash={quote(flash)}", status_code=303)
+
+@router.post("/sync-connected-sources", response_class=HTMLResponse)
+async def sync_connected_sources(request: Request):
+    """One-click refresh for ClickUp plus both QuickBooks data paths."""
+    return await _refresh_connected_finance_sources(request)
+
+@router.post("/sync-qbo", response_class=HTMLResponse)
+async def sync_qbo(request: Request):
+    """Compatibility alias for the canonical connected-sources refresh."""
+    return await _refresh_connected_finance_sources(request)
 
 
 @router.post("/sync-qbo-invoices", response_class=HTMLResponse)
