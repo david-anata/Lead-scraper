@@ -102,6 +102,35 @@ def test_shadow_keeps_skipped_recurring_period_in_review() -> None:
     assert report["review_records"][0]["candidate_state"] == "supersession_needs_review"
 
 
+def test_shadow_infers_sustained_clickup_recurrence_when_cadence_metadata_is_missing() -> None:
+    report = build_reconciliation_shadow(
+        [
+            _clickup_row("payroll-mar", "Payroll 5th", date(2026, 3, 5), recurring_rule=""),
+            _clickup_row("payroll-mar-2", "Payroll 5th", date(2026, 3, 19), recurring_rule=""),
+            _clickup_row("payroll-apr", "Payroll 5th", date(2026, 4, 2), recurring_rule=""),
+            _clickup_row("payroll-apr-2", "Payroll 5th", date(2026, 4, 16), recurring_rule=""),
+        ],
+        as_of=date(2026, 4, 20),
+    )
+
+    assert report["candidate_superseded_count"] == 3
+    assert report["forecast_excluded_ids"] == ["payroll-apr", "payroll-mar", "payroll-mar-2"]
+    assert all(item["recurrence_inferred"] for item in report["review_records"])
+
+
+def test_shadow_does_not_infer_a_recurring_schedule_from_two_similar_bills() -> None:
+    report = build_reconciliation_shadow(
+        [
+            _clickup_row("one", "Special vendor charge", date(2026, 6, 1), recurring_rule=""),
+            _clickup_row("two", "Special vendor charge", date(2026, 6, 15), recurring_rule=""),
+        ],
+        as_of=date(2026, 6, 20),
+    )
+
+    assert report["candidate_superseded_count"] == 0
+    assert report["review_records"] == []
+
+
 def test_shadow_does_not_mark_terminal_or_nonrecurring_rows_as_superseded() -> None:
     report = build_reconciliation_shadow(
         [
