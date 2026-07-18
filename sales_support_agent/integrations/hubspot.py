@@ -450,6 +450,34 @@ class HubSpotClient:
             },
         )
 
+    def create_contact_note(
+        self,
+        *,
+        contact_id: str,
+        body: str,
+        timestamp_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a CRM note associated with a contact (POST /crm/v3/objects/notes).
+
+        Association typeId 202 = note → contact (HUBSPOT_DEFINED). Mirrors
+        create_note above, which targets deals (typeId 214).
+        """
+        import time as _time
+        return self._request(
+            "POST",
+            "/crm/v3/objects/notes",
+            json_body={
+                "properties": {
+                    "hs_note_body": body,
+                    "hs_timestamp": str(timestamp_ms or int(_time.time() * 1000)),
+                },
+                "associations": [{
+                    "to": {"id": contact_id},
+                    "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 202}],
+                }],
+            },
+        )
+
     def create_task(
         self,
         *,
