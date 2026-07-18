@@ -2,6 +2,7 @@ from datetime import date
 
 from sales_support_agent.services.cashflow.qbo_bank_sync import (
     _bill_payment_to_event,
+    _planned_events_for_matching,
     _qbo_entity_queries,
     _qbo_query_all,
 )
@@ -47,6 +48,16 @@ def test_qbo_actuals_uses_queryable_entities_and_keeps_checks_under_purchase():
 
 def test_vendor_settlement_without_a_nontrivial_amount_is_ignored():
     assert _bill_payment_to_event({"Id": "zero", "TxnDate": "2026-07-17", "TotalAmt": 0}) is None
+
+
+def test_qbo_actuals_can_match_a_completed_clickup_obligation():
+    eligible = _planned_events_for_matching([
+        {"id": "completed", "source": "clickup", "status": "completed", "amount_cents": 110_000},
+        {"id": "posted", "source": "qbo_bank", "record_kind": "transaction", "status": "posted", "amount_cents": 110_000},
+        {"id": "duplicate", "source": "clickup", "status": "completed", "source_status": "probable_duplicate", "amount_cents": 110_000},
+    ])
+
+    assert [row["id"] for row in eligible] == ["completed"]
 
 
 def test_qbo_actuals_query_paginates_beyond_the_provider_page_limit(monkeypatch):

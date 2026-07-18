@@ -386,6 +386,21 @@ def _qbo_entity_queries(since: str) -> list[tuple[str, str, Any]]:
     ]
 
 
+def _planned_events_for_matching(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only open obligations that a posted QBO actual may settle."""
+    return [
+        row for row in rows
+        if row.get("record_kind") != "transaction"
+        # ClickUp completion is operational status, not payment status. Keep
+        # it eligible so a matching QBO actual can supply the settlement
+        # evidence and close the loop.
+        and str(row.get("status") or "").lower() in {"planned", "pending", "overdue", "completed"}
+        and str(row.get("source_status") or "").lower() != "probable_duplicate"
+        and str(row.get("match_status") or "").lower() != "duplicate"
+        and int(row.get("amount_cents") or 0) > 0
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Main sync function
 # ---------------------------------------------------------------------------
@@ -509,14 +524,7 @@ def sync_qbo_bank_transactions(
                 from sales_support_agent.services.cashflow.settlements import allocate_matched_transaction
 
                 posted = [r for r in list_obligations(status="posted") if r.get("source") == "qbo_bank"]
-                planned_open = [
-                    row for row in list_obligations(limit=5000)
-                    if row.get("record_kind") != "transaction"
-                    and str(row.get("status") or "").lower() in {"planned", "pending", "overdue"}
-                    and str(row.get("source_status") or "").lower() != "probable_duplicate"
-                    and str(row.get("match_status") or "").lower() != "duplicate"
-                    and int(row.get("amount_cents") or 0) > 0
-                ]
+                planned_open = _planned_events_for_matching(list_obligations(limit=5000))
 
                 if posted and planned_open:
                     now_str = datetime.utcnow().isoformat()
