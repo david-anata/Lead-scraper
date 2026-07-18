@@ -193,7 +193,10 @@ def _match_existing_posted_transactions(engine) -> int:
     planned = [
         row for row in rows
         if row.get("source") != "csv"
-        and row.get("status") in ("planned", "pending", "overdue")
+        # A ClickUp task being marked complete means the work is complete, not
+        # that its bill is settled. Keep it eligible for a strong bank match so
+        # a later source refresh can automatically attach posted evidence.
+        and row.get("status") in ("planned", "pending", "overdue", "completed")
         and str(row.get("source_status") or "").lower() != "probable_duplicate"
         and str(row.get("match_status") or "").lower() != "duplicate"
         and int(row.get("amount_cents") or 0) > 0

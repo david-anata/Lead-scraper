@@ -233,7 +233,7 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
         self.assertFalse(templates["clickup-tmpl-task-1"])
         self.assertTrue(templates["manual-template"])
 
-    def test_existing_posted_bank_row_matches_new_clickup_obligation(self) -> None:
+    def test_existing_posted_bank_row_matches_completed_clickup_obligation(self) -> None:
         factory = create_session_factory("sqlite:///:memory:")
         init_database(factory)
         engine = factory.kw["bind"]
@@ -260,7 +260,7 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
                 "amount_cents": 110000,
                 "due_date": date(2026, 7, 6),
                 "category": "fulfillment",
-                "status": "overdue",
+                "status": "completed",
             })
 
         rows = [
@@ -277,7 +277,7 @@ class ClickUpFinanceSyncTests(unittest.TestCase):
             {
                 "id": "clickup-row",
                 "source": "clickup",
-                "status": "overdue",
+                "status": "completed",
                 "event_type": "outflow",
                 "vendor_or_customer": "Fulfillment Pay - Von",
                 "amount_cents": 110000,
