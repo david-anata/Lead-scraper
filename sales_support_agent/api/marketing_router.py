@@ -115,7 +115,7 @@ def _record_hubspot_lead(settings, *, email: str, asin: str, view_url: str, sour
     not confirmed to exist in the portal) and attach the run details as a note.
     On a duplicate-email 409, reuse the existing contact id HubSpot reports."""
     client = HubSpotClient(settings)
-    if not client.is_configured():
+    if not client.is_configured:  # property, not a method (hubspot.py:98)
         logger.warning("[marketing_intake] HubSpot not configured; skipping contact for %s", email)
         return
     contact_id = ""
