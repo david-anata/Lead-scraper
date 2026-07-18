@@ -2098,7 +2098,9 @@ def _load_finance_control_inputs(settings: Any = None) -> tuple[Any, Any]:
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
-    rows = list_obligations(limit=2000)
+    # Finance Control and Smart CFO must evaluate the identical canonical
+    # ledger. A smaller UI-only limit can hide a trust blocker from the page.
+    rows = list_obligations(limit=10_000)
     rows, settlement_annotations = _load_settlement_context(rows)
     balance_cents, balance_as_of, balance_source = _resolve_current_balance(rows)
     try:
