@@ -988,9 +988,11 @@ def derive_csv_income_projections(
     elif any(pattern["decision"] == "track_expected" for pattern in patterns):
         status, ready, reason = "configured_expected", True, "operator-reviewed recurring income is tracked as Expected"
     elif historical:
-        status, ready, reason = "not_configured", False, "forecast income is not configured"
+        # A lack of a conservative recurring pattern is a valid $0 Expected forecast,
+        # not an operator setup failure. Only an inferred pattern awaiting review blocks.
+        status, ready, reason = "no_eligible_pattern", True, "no eligible recurring income pattern was found"
     else:
-        status, ready, reason = "no_history", False, "no comparable posted CSV inflows are available"
+        status, ready, reason = "no_history", True, "no comparable posted CSV inflows are available"
     summary_end = as_of + timedelta(days=max(1, summary_days) - 1)
     csv_trend_expected_cents = sum(
         _amount(row.get("amount_cents")) * _probability_bps(row) // 10_000
@@ -1033,8 +1035,7 @@ def assess_confidence(snapshot: Mapping[str, Any], trends: Mapping[str, Any], ro
         reasons.append("unresolved duplicate or match candidates")
     income_missing = bool(
         income_projection
-        and income_projection.get("historical_inflow_count")
-        and income_projection.get("status") == "not_configured"
+        and income_projection.get("status") == "inferred_review"
     )
     if income_missing:
         reasons.append("forecast income is not configured")

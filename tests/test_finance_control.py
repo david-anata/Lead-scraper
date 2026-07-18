@@ -516,7 +516,7 @@ def test_real_receivable_suppresses_equivalent_csv_projection():
     assert all(row["due_date"] != AS_OF + timedelta(days=6) for row in result["projections"])
 
 
-def test_income_readiness_outranks_legacy_cleanup_and_is_explicit():
+def test_no_eligible_income_pattern_is_not_a_decision_blocker():
     rows = [
         _bank("income-1", 10, amount=100_000, vendor_or_customer="One Off A"),
         _bank("income-2", 1, amount=80_000, vendor_or_customer="One Off B", account_balance_cents=200_000),
@@ -525,16 +525,14 @@ def test_income_readiness_outranks_legacy_cleanup_and_is_explicit():
 
     control = build_finance_control(rows, as_of=AS_OF, floor_cents=100_000)
 
-    assert control["income_projection"]["status"] == "not_configured"
-    assert control["confidence"]["verification_only"] is True
-    assert "forecast income is not configured" in control["confidence"]["reasons"]
-    assert control["trust_gate"]["payables_ready"] is False
-    assert control["recommendations"][0]["action_type"] == "resolve_finance_data"
-    assert any(
+    assert control["income_projection"]["status"] == "no_eligible_pattern"
+    assert control["income_projection"]["ready"] is True
+    assert "forecast income is not configured" not in control["confidence"]["reasons"]
+    assert control["trust_gate"]["income_ready"] is True
+    assert not any(
         item["action_type"] == "configure_income_forecast"
         for item in control["recommendations"]
     )
-    assert "Forecast income is not configured" in control["smart_brief"]["broken"]
 
 
 def test_csv_income_projection_preserves_inputs():
@@ -550,7 +548,7 @@ def test_csv_income_projection_preserves_inputs():
     assert rows == originals
 
 
-def test_missing_cash_outranks_income_readiness_then_generic_cleanup():
+def test_missing_cash_outranks_cleanup_when_no_income_pattern_is_eligible():
     rows = [
         _bank("income-1", 20, vendor_or_customer="One Off A"),
         _bank("income-2", 10, vendor_or_customer="One Off B"),
@@ -561,9 +559,8 @@ def test_missing_cash_outranks_income_readiness_then_generic_cleanup():
     actions = [item["action_type"] for item in state["recommendations"]]
 
     assert actions[0] == "upload_latest_balance"
-    assert {
-        "resolve_finance_data", "configure_income_forecast", "resolve_missing_amount"
-    } <= set(actions)
+    assert {"resolve_finance_data", "resolve_missing_amount"} <= set(actions)
+    assert "configure_income_forecast" not in actions
 
 
 def test_csv_income_projection_rejects_discontinuous_recent_history():
@@ -772,7 +769,7 @@ def test_trust_gate_and_source_status_are_deterministic_and_bank_first():
         **state["trust_gate"],
         "cash_ready": False,
         "payables_ready": False,
-        "income_ready": False,
+        "income_ready": True,
         "ready": False,
         "next_action": "upload_latest_balance",
     }
