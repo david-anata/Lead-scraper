@@ -249,6 +249,41 @@ def _invoice_to_event(inv: dict) -> Optional[dict]:
     }
 
 
+def _reconcile_invoice_balance_evidence(event_id: str, source_open_cents: int, *, note: str) -> bool:
+    """Turn authoritative QBO invoice balance into an auditable AR allocation.
+
+    This closes the receivable forecast only.  It deliberately has no bank
+    transaction ID, so cash-on-hand remains sourced exclusively from bank CSV
+    or QBO bank actuals.
+    """
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services.cashflow.settlements import (
+        create_settlement_allocation,
+        get_settled_amount_cents,
+    )
+    from sqlalchemy import text
+
+    with get_engine().connect() as conn:
+        row = conn.execute(text("SELECT amount_cents FROM cash_events WHERE id=:id"), {"id": event_id}).fetchone()
+    if row is None:
+        return False
+    face = max(0, int(row[0] or 0))
+    target_settled = max(0, face - max(0, int(source_open_cents)))
+    settled = get_settled_amount_cents(event_id)
+    if target_settled <= settled:
+        return False
+    create_settlement_allocation(
+        obligation_event_id=event_id,
+        amount_cents=target_settled - settled,
+        allocation_date=datetime.utcnow().date(),
+        source="qbo_invoice_balance",
+        confidence="confirmed",
+        idempotency_key=f"qbo-invoice-balance:{event_id}:{target_settled}",
+        notes=note,
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Main sync function
 # ---------------------------------------------------------------------------
@@ -378,6 +413,10 @@ def sync_qbo_invoices(settings):
                             """),
                             {"s": terminal_status, "open_amount": parsed.get("source_open_amount_cents"), "now": now_str, "id": event_id},
                         )
+                    if terminal_status == "paid":
+                        _reconcile_invoice_balance_evidence(
+                            event_id, 0, note="QBO reports invoice paid",
+                        )
                     counts[terminal_status] += 1
                 continue
 
@@ -385,6 +424,11 @@ def sync_qbo_invoices(settings):
             parsed["id"] = event_id
             with get_engine().begin() as conn:
                 upsert_result = upsert_cash_event(conn, parsed)
+            _reconcile_invoice_balance_evidence(
+                event_id,
+                int(parsed["source_open_amount_cents"]),
+                note="QBO reports current invoice balance",
+            )
             if upsert_result == "created":
                 counts["created"] += 1
             else:
