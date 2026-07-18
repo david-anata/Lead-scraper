@@ -133,6 +133,28 @@ def _load_settlement_annotations() -> list[dict[str, Any]]:
         return []
 
 
+def _attach_payment_installments(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Give Smart CFO the same installment evidence used by the control page."""
+    source_rows = [dict(row) for row in rows]
+    try:
+        from sqlalchemy import text
+        from sales_support_agent.models.database import get_engine
+
+        with get_engine().connect() as connection:
+            installments = [dict(row._mapping) for row in connection.execute(
+                text("SELECT * FROM payment_installments")
+            ).fetchall()]
+    except Exception:
+        return source_rows
+    by_obligation: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for installment in installments:
+        by_obligation[str(installment.get("obligation_event_id") or "")].append(installment)
+    return [
+        {**row, "payment_installments": by_obligation.get(str(row.get("id") or ""), [])}
+        for row in source_rows
+    ]
+
+
 def _aging_summary(
     rows: Iterable[Mapping[str, Any]], *, as_of: date, event_type: str
 ) -> dict[str, Any]:
@@ -227,7 +249,7 @@ def build_finance_packet(
 
 def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
     """Run or reuse a structured Anthropic analysis for the full persisted ledger."""
-    rows = list_obligations(limit=10_000)
+    rows = _attach_payment_installments(list_obligations(limit=10_000))
     packet = build_finance_packet(rows, settlement_annotations=_load_settlement_annotations())
     packet_hash = _packet_hash(packet)
     cached = kv_get_json(_CACHE_KEY) or {}
