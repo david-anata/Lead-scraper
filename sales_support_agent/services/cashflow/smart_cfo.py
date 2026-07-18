@@ -12,18 +12,19 @@ import json
 import logging
 import os
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping
 
 from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
-PROMPT_VERSION = "smart-cfo-v4"
+PROMPT_VERSION = "smart-cfo-v5"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _NON_CASH_TERMINAL_STATUSES = {"cancelled", "canceled", "void"}
+_OPERATING_LOOKBACK_DAYS = 90
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class SmartCfoProviderError(RuntimeError):
 
 
 def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None = None) -> dict[str, Any]:
-    """Build a stable merchant rollup from finance events with cash meaning.
+    """Build a current operating-period rollup from finance events with cash meaning.
 
     Cancelled and void source rows remain in the system's audit trail, but are
     not cash events and must not become artificial CFO risk or savings advice.
@@ -41,14 +42,20 @@ def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None
     today = as_of or date.today()
     groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     totals = defaultdict(int)
+    source_record_count = 0
     record_count = 0
     excluded_terminal_count = 0
+    excluded_out_of_scope_count = 0
     for raw in rows:
         row = dict(raw)
+        source_record_count += 1
         event_type = str(row.get("event_type") or "unknown").lower()
         status = str(row.get("status") or "unknown").lower()
         if status in _NON_CASH_TERMINAL_STATUSES:
             excluded_terminal_count += 1
+            continue
+        if not _is_current_operating_record(row, as_of=today):
+            excluded_out_of_scope_count += 1
             continue
         record_count += 1
         source = str(row.get("source") or "unknown").lower()
@@ -85,12 +92,29 @@ def build_ledger_packet(rows: Iterable[Mapping[str, Any]], *, as_of: date | None
     return {
         "packet_version": PROMPT_VERSION,
         "as_of": today.isoformat(),
+        "operating_lookback_days": _OPERATING_LOOKBACK_DAYS,
+        "source_record_count": source_record_count,
         "record_count": record_count,
         "rollup_count": len(rollups),
         "totals_cents": dict(sorted(totals.items())),
         "merchant_rollups": rollups,
         "excluded_terminal_count": excluded_terminal_count,
+        "excluded_out_of_scope_count": excluded_out_of_scope_count,
     }
+
+
+def _is_current_operating_record(row: Mapping[str, Any], *, as_of: date) -> bool:
+    """Keep CFO advice tied to live cash decisions instead of lifetime history.
+
+    Open obligations remain material regardless of age because they can still
+    require collection or settlement. Posted bank activity is useful for
+    operating analysis only inside the recent trend window.
+    """
+    status = str(row.get("status") or "").lower()
+    if str(row.get("record_kind") or "").lower() == "transaction" or str(row.get("source") or "").lower() in {"csv", "qbo_bank"}:
+        occurred = _event_date(row)
+        return occurred is not None and occurred >= as_of - timedelta(days=_OPERATING_LOOKBACK_DAYS - 1)
+    return status not in {"paid", "matched"}
 
 
 def _load_settlement_annotations() -> list[dict[str, Any]]:

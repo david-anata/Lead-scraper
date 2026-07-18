@@ -41,6 +41,28 @@ def test_packet_excludes_cancelled_history_from_cfo_evidence_without_losing_the_
     }
 
 
+def test_packet_excludes_old_posted_history_but_keeps_open_obligations():
+    packet = smart_cfo.build_ledger_packet(_rows() + [
+        {
+            "id": "old-bank", "source": "csv", "record_kind": "transaction",
+            "event_type": "outflow", "status": "posted", "vendor_or_customer": "Old Tool",
+            "category": "software", "amount_cents": 999_000, "due_date": "2025-01-01",
+        },
+        {
+            "id": "old-open-invoice", "source": "qbo", "event_type": "inflow",
+            "status": "overdue", "vendor_or_customer": "Old Customer", "category": "receivable",
+            "amount_cents": 77_000, "due_date": "2025-01-01",
+        },
+    ], as_of=date(2026, 7, 15))
+
+    included_ids = {
+        record_id for rollup in packet["merchant_rollups"] for record_id in rollup["record_ids"]
+    }
+    assert "old-bank" not in included_ids
+    assert "old-open-invoice" in included_ids
+    assert packet["excluded_out_of_scope_count"] == 1
+
+
 def test_finance_packet_contains_reconciled_cfo_analysis_not_only_rollups():
     rows = _rows() + [{
         "id": "balance", "source": "csv", "record_kind": "transaction",
