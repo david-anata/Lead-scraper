@@ -19,7 +19,7 @@ from sales_support_agent.models.database import kv_get_json, kv_set_json
 from sales_support_agent.services.cashflow.obligations import list_obligations
 
 
-PROMPT_VERSION = "smart-cfo-v5"
+PROMPT_VERSION = "smart-cfo-v6"
 _CACHE_KEY = "finance_smart_cfo_analysis"
 _MAX_RECOMMENDATIONS = 5
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -217,7 +217,9 @@ def build_finance_packet(
         "trust": {
             "ready": bool(state["trust_gate"].get("ready")),
             "issues": list(state["trust_gate"].get("issues") or []),
+            "reasons": list(state["trust_gate"].get("reasons") or []),
             "next_action": state["trust_gate"].get("next_action"),
+            "payable_issues": list(state["trust_gate"].get("payable_issues") or []),
         },
     }
     return packet
@@ -231,6 +233,13 @@ def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
     cached = kv_get_json(_CACHE_KEY) or {}
     if not force and cached.get("packet_hash") == packet_hash and cached.get("prompt_version") == PROMPT_VERSION:
         return {**cached, "cached": True}
+    # Do not let the model narrate cash conclusions when the deterministic
+    # control layer has already withheld trust. The operator needs exact
+    # evidence resolution, not an AI interpretation of incomplete records.
+    if not packet["analytical_summary"]["trust"]["ready"]:
+        stored = _unready_trust_analysis(packet, packet_hash)
+        kv_set_json(_CACHE_KEY, stored)
+        return stored
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         return {
@@ -248,6 +257,33 @@ def run_smart_cfo(settings: Any, *, force: bool = False) -> dict[str, Any]:
     }
     kv_set_json(_CACHE_KEY, stored)
     return stored
+
+
+def _unready_trust_analysis(packet: Mapping[str, Any], packet_hash: str) -> dict[str, Any]:
+    """Return a deterministic hold state when Finance Control evidence is incomplete."""
+    trust = packet["analytical_summary"]["trust"]
+    reasons = [str(reason).strip() for reason in trust.get("reasons") or [] if str(reason).strip()]
+    issues = [item for item in trust.get("payable_issues") or [] if isinstance(item, Mapping)]
+    record_ids = sorted({str(item.get("id")) for item in issues if item.get("id")})
+    reason = "; ".join(reasons) or "Finance source evidence is incomplete."
+    return {
+        "status": "ready",
+        "packet_hash": packet_hash,
+        "prompt_version": PROMPT_VERSION,
+        "record_count": packet["record_count"],
+        "created_at": datetime.utcnow().isoformat(),
+        "summary": f"Cash recommendations are paused because {reason}. Resolve the listed source evidence before relying on Finance Control.",
+        "recommendations": [{
+            "category": "data_quality",
+            "priority": "high",
+            "title": "Resolve finance evidence before cash decisions",
+            "reason": reason,
+            "next_action": str(trust.get("next_action") or "Resolve the listed source evidence."),
+            "operator_question": "Which listed obligations have posted bank or source evidence that can resolve the blocker?",
+            "record_ids": record_ids,
+        }],
+        "cached": False,
+    }
 
 
 def _call_anthropic(api_key: str, model: str, packet: Mapping[str, Any]) -> Mapping[str, Any]:

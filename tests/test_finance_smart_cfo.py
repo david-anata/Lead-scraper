@@ -18,6 +18,12 @@ def _rows():
     ]
 
 
+def _trusted_packet():
+    packet = smart_cfo.build_ledger_packet(_rows())
+    packet["analytical_summary"] = {"trust": {"ready": True}}
+    return packet
+
+
 def test_packet_rolls_up_every_event_and_keeps_record_evidence():
     packet = smart_cfo.build_ledger_packet(_rows())
     assert packet["record_count"] == 3
@@ -82,6 +88,7 @@ def test_smart_cfo_caches_exact_ledger_analysis(monkeypatch):
     store = {}
     calls = []
     monkeypatch.setattr(smart_cfo, "list_obligations", lambda limit: _rows())
+    monkeypatch.setattr(smart_cfo, "build_finance_packet", lambda *args, **kwargs: _trusted_packet())
     monkeypatch.setattr(smart_cfo, "kv_get_json", lambda key: store.get(key))
     monkeypatch.setattr(smart_cfo, "kv_set_json", lambda key, value: store.__setitem__(key, value))
 
@@ -107,10 +114,36 @@ def test_unsupported_llm_evidence_is_removed(monkeypatch):
 
 def test_missing_key_does_not_call_llm(monkeypatch):
     monkeypatch.setattr(smart_cfo, "list_obligations", lambda limit: _rows())
+    monkeypatch.setattr(smart_cfo, "build_finance_packet", lambda *args, **kwargs: _trusted_packet())
     monkeypatch.setattr(smart_cfo, "kv_get_json", lambda key: None)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     result = smart_cfo.run_smart_cfo(object())
     assert result["status"] == "not_configured"
+
+
+def test_unready_trust_gate_returns_deterministic_evidence_hold_without_calling_llm(monkeypatch):
+    packet = {
+        "record_count": 3,
+        "analytical_summary": {"trust": {
+            "ready": False,
+            "reasons": ["1 active obligation(s) have missing or conflicting evidence"],
+            "next_action": "resolve_finance_data",
+            "payable_issues": [{"id": "clickup-completed-1", "reason": "ClickUp completion is newer than bank evidence"}],
+        }},
+    }
+    store = {}
+    monkeypatch.setattr(smart_cfo, "list_obligations", lambda limit: [])
+    monkeypatch.setattr(smart_cfo, "build_finance_packet", lambda *args, **kwargs: packet)
+    monkeypatch.setattr(smart_cfo, "kv_get_json", lambda key: store.get(key))
+    monkeypatch.setattr(smart_cfo, "kv_set_json", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    monkeypatch.setattr(smart_cfo, "_call_anthropic", lambda *args: pytest.fail("LLM must not run while trust is paused"))
+
+    result = smart_cfo.run_smart_cfo(object(), force=True)
+
+    assert result["recommendations"][0]["category"] == "data_quality"
+    assert result["recommendations"][0]["record_ids"] == ["clickup-completed-1"]
+    assert "paused" in result["summary"]
 
 
 def test_response_parser_accepts_json_wrapped_in_a_code_fence():
