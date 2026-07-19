@@ -615,10 +615,82 @@ async def marketing_site_intake_create(
     return JSONResponse(status_code=201, content=payload)
 
 
+# Digital shelf: cap competitor product pulls and the overall build time so a
+# slow Rainforest day cannot pin a worker (the shelf simply stays "pending"
+# until the next status poll after completion, or lands "empty" on failure).
+_SHELF_COMPETITOR_LIMIT = 8
+_SHELF_MAX_ITEMS = 6
+_SHELF_TIMEOUT_SECONDS = 90
+
+
+def _write_shelf(app, intake_run_id: int, shelf: dict[str, Any]) -> None:
+    """Merge-write summary_json.shelf without clobbering token/needs/identity."""
+    with session_scope(app.state.session_factory) as session:
+        run = session.get(AutomationRun, intake_run_id)
+        if run is None:
+            return
+        run.summary_json = {**(run.summary_json or {}), "shelf": shelf}
+        session.add(run)
+
+
+def _build_shelf(app, intake_run_id: int, asin: str) -> None:
+    """Background digital-shelf builder for ASIN intakes.
+
+    Reuses the deck pipeline's competitor collection
+    (RainforestClient.build_xray_report: bestsellers by category with keyword
+    fallback, parallel product pulls). Only real Rainforest rows are stored;
+    an empty result or any failure lands status "empty", never invented data.
+    """
+    from sales_support_agent.services.rainforest import RainforestClient
+
+    try:
+        _write_shelf(app, intake_run_id, {"status": "pending"})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                RainforestClient().build_xray_report,
+                asin,
+                competitor_limit=_SHELF_COMPETITOR_LIMIT,
+            )
+            xray_report, _target_raw = future.result(timeout=_SHELF_TIMEOUT_SECONDS)
+
+        target = str(asin).strip().upper()
+        products = [p for p in xray_report.products if (p.asin or "").upper() != target]
+        competitors = [
+            {
+                "asin": str(p.asin or ""),
+                "title": str(p.title or ""),
+                "brand": str(p.brand or ""),
+                "price": str(p.price_label or ""),
+                "rating": p.rating_label if p.rating is not None else "",
+                "ratings_total": str(p.review_count) if p.review_count is not None else "",
+                "image": str(p.image_url or ""),
+            }
+            for p in products[:_SHELF_MAX_ITEMS]
+        ]
+
+        prices = [p.price for p in products if p.price]
+        ratings = [p.rating for p in products if p.rating]
+        shelf: dict[str, Any] = {
+            "status": "ready" if competitors else "empty",
+            "competitors": competitors,
+            "count": len(products),
+            "avg_price": f"${sum(prices) / len(prices):.2f}" if prices else "",
+            "avg_rating": f"{sum(ratings) / len(ratings):.1f}" if ratings else "",
+        }
+        _write_shelf(app, intake_run_id, shelf)
+    except Exception:  # noqa: BLE001
+        logger.exception("[marketing_intake] shelf build failed for run %s", intake_run_id)
+        try:
+            _write_shelf(app, intake_run_id, {"status": "empty"})
+        except Exception:  # noqa: BLE001
+            logger.exception("[marketing_intake] shelf failure write failed for run %s", intake_run_id)
+
+
 @router.post("/intake/{intake_id}/needs")
 async def marketing_site_intake_needs(
     intake_id: int,
     request: Request,
+    background_tasks: BackgroundTasks,
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> JSONResponse:
     denied = _enforce_marketing_intake_key(request, x_internal_api_key)
@@ -641,7 +713,13 @@ async def marketing_site_intake_needs(
         run, error = _load_site_intake(session, intake_id, str(body.get("token", "") or ""))
         if error is not None:
             return error
-        run.summary_json = {**(run.summary_json or {}), "needs": needs}
+        summary = {**(run.summary_json or {}), "needs": needs}
+        kind = str(summary.get("kind", "") or "")
+        asin = str(summary.get("asin", "") or "")
+        if kind == "asin" and asin and not summary.get("shelf"):
+            summary["shelf"] = {"status": "pending"}
+            background_tasks.add_task(_build_shelf, request.app, run.id, asin)
+        run.summary_json = summary
         session.add(run)
     return JSONResponse(content={"status": "ok"})
 
@@ -748,5 +826,6 @@ def marketing_site_intake_status(
                 "ratings_total": str(summary.get("ratings_total", "") or ""),
                 "brand_read": str(summary.get("brand_read", "") or ""),
                 "needs": [str(n) for n in (summary.get("needs") or [])],
+                "shelf": summary.get("shelf") or None,
             }
         )

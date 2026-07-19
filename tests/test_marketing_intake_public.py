@@ -96,11 +96,12 @@ class MarketingIntakeTests(unittest.TestCase):
 
     def test_needs_stored_and_filtered(self) -> None:
         data = self._create()
-        resp = self.client.post(
+        with mock.patch.object(M, "_build_shelf"):
+            resp = self.client.post(
             f"/api/public/marketing/intake/{data['intake_id']}/needs",
-            json={"token": data["token"], "needs": ["analytics", "advertising", "bogus"]},
-            headers=HEADERS,
-        )
+                json={"token": data["token"], "needs": ["analytics", "advertising", "bogus"]},
+                headers=HEADERS,
+            )
         self.assertEqual(resp.status_code, 200, resp.text)
         status = self.client.get(
             f"/api/public/marketing/intake/{data['intake_id']}",
@@ -108,6 +109,40 @@ class MarketingIntakeTests(unittest.TestCase):
             headers=HEADERS,
         ).json()
         self.assertEqual(status["needs"], ["analytics", "advertising"])
+
+    def test_needs_on_asin_intake_sets_shelf_pending(self) -> None:
+        data = self._create()
+        with mock.patch.object(M, "_build_shelf") as build:
+            resp = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/needs",
+                json={"token": data["token"], "needs": ["analytics"]},
+                headers=HEADERS,
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        build.assert_called_once()
+        status = self.client.get(
+            f"/api/public/marketing/intake/{data['intake_id']}",
+            params={"token": data["token"]},
+            headers=HEADERS,
+        ).json()
+        self.assertEqual(status["shelf"], {"status": "pending"})
+
+    def test_needs_on_store_intake_has_no_shelf(self) -> None:
+        data = self._create(kind="store", identifier="testbrand.com")
+        with mock.patch.object(M, "_build_shelf") as build:
+            resp = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/needs",
+                json={"token": data["token"], "needs": ["analytics"]},
+                headers=HEADERS,
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        build.assert_not_called()
+        status = self.client.get(
+            f"/api/public/marketing/intake/{data['intake_id']}",
+            params={"token": data["token"]},
+            headers=HEADERS,
+        ).json()
+        self.assertIsNone(status["shelf"])
 
     def test_needs_wrong_token_403(self) -> None:
         data = self._create()
