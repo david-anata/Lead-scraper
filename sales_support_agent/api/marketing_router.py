@@ -47,7 +47,7 @@ _KNOWN_NEEDS = {"analytics", "advertising", "strategy", "catalog", "creative", "
 _SERVICES_NEEDS = {"advertising", "strategy", "catalog", "creative", "fulfillment"}
 
 # Hard ceiling on the cheap identity lookups so the intake endpoint stays fast.
-_IDENTITY_TIMEOUT_SECONDS = 10
+_IDENTITY_TIMEOUT_SECONDS = 25
 
 
 def _enforce_marketing_intake_key(request: Request, provided: Optional[str]) -> Optional[JSONResponse]:
@@ -179,6 +179,8 @@ def _run_analysis_and_deliver(
     settings = app.state.settings
     view_url = ""
     error_message = ""
+    deck_title = ""
+    competitor_rows = 0
     try:
         from sales_support_agent.services.deck.formatting import DEFAULT_SERVICE_TABS, _normalize_offers
 
@@ -195,6 +197,14 @@ def _run_analysis_and_deliver(
                 trigger=trigger,
             )
             view_url = result.view_url
+            deck_title = (result.design_title or "").strip()
+            competitor_rows = int(result.competitor_row_count or 0)
+            logger.info(
+                "[marketing_intake] deck done for %s: competitors=%s title=%r",
+                asin,
+                competitor_rows,
+                deck_title,
+            )
     except Exception as exc:  # noqa: BLE001 — must never crash the server thread
         error_message = str(exc)
         logger.error("[marketing_intake] deck generation failed for %s: %s", asin, exc, exc_info=True)
@@ -209,7 +219,18 @@ def _run_analysis_and_deliver(
                     status="success" if view_url else "failed",
                     # Merge so the site-intake summary (token, needs, brand
                     # identity) survives the deck-completion update.
-                    summary={**(run.summary_json or {}), "view_url": view_url, "error": error_message},
+                    summary={
+                        **(run.summary_json or {}),
+                        "view_url": view_url,
+                        "error": error_message,
+                        "competitor_row_count": competitor_rows,
+                        # Backfill identity from the finished deck when the cheap lookup missed.
+                        **(
+                            {"product_title": deck_title}
+                            if deck_title and not (run.summary_json or {}).get("product_title")
+                            else {}
+                        ),
+                    },
                 )
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] failed to update intake run %s", intake_run_id)
