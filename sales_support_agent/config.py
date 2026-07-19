@@ -127,6 +127,8 @@ class Settings:
     lead_build_url: str
     sales_agent_db_url: str
     internal_api_key: str
+    marketing_site_intake_key: str
+    marketing_booking_url: str
     discovery_snapshot_path: Path
     fulfillment_cs_reports_dir: Path
     website_ops_root: Path
@@ -497,6 +499,8 @@ def load_settings() -> Settings:
         lead_build_url=os.getenv("LEAD_BUILD_URL", "").strip().rstrip("/"),
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
+        marketing_site_intake_key=os.getenv("MARKETING_SITE_INTAKE_KEY", "").strip(),
+        marketing_booking_url=os.getenv("MARKETING_BOOKING_URL", "").strip(),
         discovery_snapshot_path=Path(
             os.getenv("CLICKUP_DISCOVERY_SNAPSHOT_PATH", "runtime/clickup_schema_snapshot.json").strip()
             or "runtime/clickup_schema_snapshot.json"
