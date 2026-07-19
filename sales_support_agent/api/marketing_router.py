@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import re
 import secrets
 from datetime import datetime, time as dt_time
@@ -60,6 +61,12 @@ def _enforce_marketing_intake_key(request: Request, provided: Optional[str]) -> 
     if str(provided or "").strip() != configured:
         return JSONResponse(status_code=401, content={"detail": "Invalid intake key."})
     return None
+
+
+def _daily_gate_enabled() -> bool:
+    """One-per-email-per-day gate. OFF by default during the testing phase (David 2026-07-19);
+    re-enable at launch by setting MARKETING_DAILY_GATE=1 on the service."""
+    return os.getenv("MARKETING_DAILY_GATE", "").strip() in {"1", "true", "yes"}
 
 
 def _today_intakes_for_email(
@@ -274,7 +281,7 @@ async def marketing_analysis_intake(
         return JSONResponse(status_code=400, content={"detail": "A valid email is required."})
 
     with session_scope(request.app.state.session_factory) as session:
-        if _today_intakes_for_email(session, email):
+        if _daily_gate_enabled() and _today_intakes_for_email(session, email):
             return JSONResponse(status_code=429, content={"reason": "daily_limit"})
         intake_run = AuditService(session).start_run(
             INTAKE_RUN_TYPE,
@@ -344,6 +351,12 @@ def _asin_identity(identifier: str) -> dict[str, str]:
         identity["brand_name"] = str(product.get("brand", "") or "").strip()
         identity["product_title"] = str(product.get("title", "") or "").strip()
         identity["product_image"] = str(((product.get("main_image") or {}).get("link", "")) or "").strip()
+        # Real numbers from the same call, no extra cost: the page's proof-of-look.
+        buybox = product.get("buybox_winner") or {}
+        price = (buybox.get("price") or {}).get("raw", "") or ""
+        identity["price"] = str(price).strip()
+        identity["rating"] = str(product.get("rating", "") or "").strip()
+        identity["ratings_total"] = str(product.get("ratings_total", "") or "").strip()
     except Exception as exc:  # noqa: BLE001 — identity is best-effort, never blocks intake
         logger.warning("[marketing_intake] Rainforest identity lookup failed for %s: %s", asin, exc)
     return identity
@@ -521,6 +534,9 @@ async def marketing_site_intake_create(
             "brand_name": identity.get("brand_name", ""),
             "product_title": identity.get("product_title", ""),
             "product_image": identity.get("product_image", ""),
+            "price": identity.get("price", ""),
+            "rating": identity.get("rating", ""),
+            "ratings_total": identity.get("ratings_total", ""),
             "asin": identity.get("asin", ""),
             "domain": identity.get("domain", ""),
             "needs": [],
@@ -534,6 +550,9 @@ async def marketing_site_intake_create(
         "brand_name": identity.get("brand_name", ""),
         "product_title": identity.get("product_title", ""),
         "product_image": identity.get("product_image", ""),
+        "price": identity.get("price", ""),
+        "rating": identity.get("rating", ""),
+        "ratings_total": identity.get("ratings_total", ""),
     }
     # dtc_domain: for kind=asin the deck pipeline has no brand-website field to
     # reuse and we do not scrape search engines, so it is only present for
@@ -600,7 +619,7 @@ async def marketing_site_intake_unlock(
         run, error = _load_site_intake(session, intake_id, str(body.get("token", "") or ""))
         if error is not None:
             return error
-        if _today_intakes_for_email(session, email):
+        if _daily_gate_enabled() and _today_intakes_for_email(session, email):
             return JSONResponse(status_code=429, content={"reason": "daily_limit"})
         summary = run.summary_json or {}
         kind = str(summary.get("kind", "") or "")
@@ -671,6 +690,9 @@ def marketing_site_intake_status(
                 "brand_name": str(summary.get("brand_name", "") or ""),
                 "product_title": str(summary.get("product_title", "") or ""),
                 "product_image": str(summary.get("product_image", "") or ""),
+                "price": str(summary.get("price", "") or ""),
+                "rating": str(summary.get("rating", "") or ""),
+                "ratings_total": str(summary.get("ratings_total", "") or ""),
                 "needs": [str(n) for n in (summary.get("needs") or [])],
             }
         )

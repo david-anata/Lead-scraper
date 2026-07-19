@@ -119,6 +119,10 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
 
     def test_unlock_daily_gate_and_closers(self) -> None:
+        import os as _os
+
+        _os.environ["MARKETING_DAILY_GATE"] = "1"
+        self.addCleanup(lambda: _os.environ.pop("MARKETING_DAILY_GATE", None))
         data = self._create()
         self.client.post(
             f"/api/public/marketing/intake/{data['intake_id']}/needs",
