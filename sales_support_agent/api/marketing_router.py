@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import json
 import os
 import re
 import secrets
@@ -330,6 +331,55 @@ def marketing_analysis_status(
 # ---------------------------------------------------------------------------
 
 
+def _compose_brand_read(identity: dict[str, str], kind: str) -> str:
+    """Write the 'someone actually looked' paragraph from REAL fetched fields only.
+    Anata voice: second person, calm operator, no em dashes, no invented facts.
+    Best-effort: empty string on any failure; never blocks the intake."""
+    title = identity.get("product_title", "").strip()
+    brand = identity.get("brand_name", "").strip()
+    if not title and not brand:
+        return ""
+    facts = {
+        "brand": brand,
+        "product_title": title,
+        "price": identity.get("price", "").strip(),
+        "rating": identity.get("rating", "").strip(),
+        "ratings_total": identity.get("ratings_total", "").strip(),
+        "kind": kind,
+        "store_domain": identity.get("domain", "").strip(),
+    }
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=220,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "You write for Anata, an ecommerce operations partner. Using ONLY the facts "
+                        "below, write 2 to 3 sentences addressed to this brand about their own "
+                        "product and position, the way a sharp operator would open a strategy deck. "
+                        "Rules: second person (you, your). Calm, specific, warm, zero hype. Never "
+                        "use an em dash. Do not invent numbers, categories, or claims beyond what "
+                        "the facts support; you may describe what the product plainly is from its "
+                        "title. Do not mention Anata or sell anything. Return ONLY the sentences.\n\n"
+                        f"FACTS: {json.dumps(facts)}"
+                    ),
+                }
+            ],
+        )
+        text = (msg.content[0].text if msg.content else "").strip()
+        if "\u2014" in text or "\u2013" in text.replace("-", ""):
+            text = text.replace("\u2014", ",").replace("\u2013", ",")
+        return text[:600]
+    except Exception:
+        logger.debug("[marketing_intake] brand read composition failed", exc_info=True)
+        return ""
+
+
 def _asin_identity(identifier: str) -> dict[str, str]:
     """Cheap identity lookup for an ASIN/Amazon URL: ONE Rainforest product
     fetch (title, image, brand) with a hard timeout, graceful empties on any
@@ -528,9 +578,11 @@ async def marketing_site_intake_create(
             trigger="marketing_site",
             metadata={"kind": kind, "identifier": identifier, "source": source},
         )
+        brand_read = _compose_brand_read(identity, kind)
         run.summary_json = {
             "token": token,
             "kind": kind,
+            "brand_read": brand_read,
             "brand_name": identity.get("brand_name", ""),
             "product_title": identity.get("product_title", ""),
             "product_image": identity.get("product_image", ""),
@@ -553,6 +605,7 @@ async def marketing_site_intake_create(
         "price": identity.get("price", ""),
         "rating": identity.get("rating", ""),
         "ratings_total": identity.get("ratings_total", ""),
+        "brand_read": brand_read,
     }
     # dtc_domain: for kind=asin the deck pipeline has no brand-website field to
     # reuse and we do not scrape search engines, so it is only present for
@@ -693,6 +746,7 @@ def marketing_site_intake_status(
                 "price": str(summary.get("price", "") or ""),
                 "rating": str(summary.get("rating", "") or ""),
                 "ratings_total": str(summary.get("ratings_total", "") or ""),
+                "brand_read": str(summary.get("brand_read", "") or ""),
                 "needs": [str(n) for n in (summary.get("needs") or [])],
             }
         )
