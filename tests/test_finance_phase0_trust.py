@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from sales_support_agent.models.database import create_session_factory, init_database, upsert_cash_event
 from sales_support_agent.services.cashflow.control import build_finance_control_state
-from sales_support_agent.services.cashflow.qbo_sync import _invoice_to_event, _reconcile_invoice_balance_evidence
+from sales_support_agent.services.cashflow.qbo_sync import _invoice_to_event, _query_all, _reconcile_invoice_balance_evidence
 from sales_support_agent.services.cashflow.settings import get_cash_floor_cents, set_cash_floor_cents
 
 
@@ -29,6 +29,24 @@ def test_qbo_keeps_face_and_source_open_amount_separate() -> None:
     assert event["source_open_amount_cents"] == 25_000
     assert event["source_status"] == "open"
     assert event["preserve_settlement_truth"] is True
+
+
+def test_qbo_invoice_query_paginates_beyond_provider_limit(monkeypatch) -> None:
+    pages = [[{"Id": str(index)} for index in range(1_000)], [{"Id": "1000"}]]
+    queries = []
+
+    def fake_query(_base, _realm, _token, query):
+        queries.append(query)
+        return pages.pop(0)
+
+    monkeypatch.setattr("sales_support_agent.services.cashflow.qbo_sync._query", fake_query)
+    rows = _query_all("https://qbo.example", "realm", "token", "SELECT * FROM Invoice")
+
+    assert len(rows) == 1_001
+    assert queries == [
+        "SELECT * FROM Invoice STARTPOSITION 1 MAXRESULTS 1000",
+        "SELECT * FROM Invoice STARTPOSITION 1001 MAXRESULTS 1000",
+    ]
 
 
 def test_qbo_invoice_balance_creates_source_allocation_without_bank_cash() -> None:

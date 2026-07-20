@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import uuid
 from datetime import date, datetime
 from typing import Any, Optional
@@ -153,6 +154,27 @@ def _query(base_url: str, realm_id: str, access_token: str, sql: str) -> list[di
         if isinstance(val, list):
             return val
     return []
+
+
+def _query_all(base_url: str, realm_id: str, access_token: str, sql: str) -> list[dict]:
+    """Read all QBO query pages so large AR ledgers are not silently truncated."""
+    page_size = 1_000
+    base_sql = re.sub(
+        r"\s+(?:STARTPOSITION|MAXRESULTS)\s+\d+", "", sql, flags=re.IGNORECASE
+    ).strip()
+    rows: list[dict] = []
+    start_position = 1
+    while True:
+        page = _query(
+            base_url,
+            realm_id,
+            access_token,
+            f"{base_sql} STARTPOSITION {start_position} MAXRESULTS {page_size}",
+        )
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        start_position += page_size
 
 
 def _parse_qbo_date(s: Any) -> Optional[date]:
@@ -367,9 +389,9 @@ def sync_qbo_invoices(settings):
 
         # -- Fetch invoices -------------------------------------------------------
         try:
-            invoices = _query(
+            invoices = _query_all(
                 base_url, realm_id, access_token,
-                "SELECT * FROM Invoice MAXRESULTS 1000",
+                "SELECT * FROM Invoice",
             )
         except Exception as exc:
             logger.error("QBO Invoice query failed: %s", exc)

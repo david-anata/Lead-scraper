@@ -9,6 +9,7 @@ from sales_support_agent.services.cashflow.control import (
     build_finance_control_state,
     build_finance_control,
     build_forecast_paths,
+    build_collections_summary,
     build_queue,
     calculate_csv_trends,
     derive_csv_income_projections,
@@ -152,6 +153,55 @@ def test_qbo_partial_balance_is_forecast_once_allocation_evidence_agrees():
     assert queue_item["open_amount_cents"] == 25_000
     assert state["metrics"]["confirmed_incoming_cents"] == 25_000
     assert state["forecast"]["paths"]["committed"][-1]["cash_cents"] == 225_000
+
+
+def test_collections_summary_surfaces_only_evidence_safe_qbo_receivables():
+    overdue = _row(
+        "qbo-inv-overdue",
+        source="qbo",
+        source_id="qbo-inv-overdue",
+        event_type="inflow",
+        amount_cents=100_000,
+        source_open_amount_cents=40_000,
+        due_date=AS_OF - timedelta(days=4),
+        description="Invoice #INV-42",
+    )
+    due_soon = _row(
+        "qbo-inv-soon",
+        source="qbo",
+        source_id="qbo-inv-soon",
+        event_type="inflow",
+        amount_cents=75_000,
+        source_open_amount_cents=75_000,
+        due_date=AS_OF + timedelta(days=2),
+        description="Invoice #INV-43",
+    )
+    conflict = _row(
+        "qbo-inv-conflict",
+        source="qbo",
+        event_type="inflow",
+        amount_cents=50_000,
+        source_open_amount_cents=10_000,
+        due_date=AS_OF - timedelta(days=1),
+    )
+    canonical = annotate_open_amounts(
+        [overdue, due_soon, conflict], {"qbo-inv-overdue": 60_000}
+    )
+
+    collections = build_collections_summary(
+        canonical, as_of=AS_OF, horizon_days=14, funding_gap_cents=80_000
+    )
+
+    assert [item["id"] for item in collections["targets"]] == [
+        "qbo-inv-overdue", "qbo-inv-soon"
+    ]
+    assert collections["targets"][0]["invoice_reference"] == "Invoice #INV-42"
+    assert collections["overdue_open_cents"] == 40_000
+    assert collections["collectible_14d_cents"] == 115_000
+    assert collections["gap_cover_cents"] == 80_000
+    assert collections["remaining_gap_after_collections_cents"] == 0
+    assert collections["review_count"] == 1
+    assert collections["review_cents"] == 50_000
 
 
 def test_metrics_reserve_every_bill_due_in_window_and_separate_later_exposure():

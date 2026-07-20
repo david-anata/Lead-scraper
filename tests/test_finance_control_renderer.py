@@ -207,6 +207,46 @@ def test_income_card_and_trajectory_keep_income_sources_distinct() -> None:
     assert "it is not committed cash." in page
 
 
+def test_collections_block_distinguishes_overdue_receivables_from_cash_on_hand() -> None:
+    state = _control_state(queue=[])
+    state["collections"] = {
+        "overdue_count": 1,
+        "overdue_open_cents": 250_000,
+        "collectible_14d_cents": 800_000,
+        "gap_cover_cents": 601_608,
+        "remaining_gap_after_collections_cents": 0,
+        "review_count": 1,
+        "targets": [{
+            "id": "qbo-inv-42",
+            "party": "Acme",
+            "invoice_reference": "Invoice #INV-42",
+            "timing": "4d overdue",
+            "open_amount_cents": 250_000,
+            "action_label": "Review collection",
+        }],
+    }
+
+    page = _render([], state)
+    collections = page[page.index('aria-labelledby="collections-title"'):page.index('aria-labelledby="smart-brief-title"')]
+
+    assert "Cash to collect" in collections
+    assert "This is potential income, not cash on hand." in collections
+    assert "Overdue open" in collections
+    assert "$2,500" in collections
+    assert "Collectible in 14 days" in collections
+    assert "Invoice #INV-42" in collections
+    assert "Review collection" in collections
+    assert "of the funding gap could be covered" in collections
+    assert 'data-open-collections' in collections
+
+
+def test_collections_empty_state_does_not_invent_receivables() -> None:
+    page = _render([], _control_state(queue=[]))
+
+    assert "No evidence-safe QBO receivables need collection in the next 14 days." in page
+    assert "Expected CSV trends remain separate from receivables." in page
+
+
 def test_source_readiness_and_failed_trust_gate_precede_cash_decisions() -> None:
     state = _control_state(queue=[{
         "id": "rent-1", "event_type": "outflow", "party": "Studio Rent",

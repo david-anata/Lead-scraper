@@ -1116,6 +1116,38 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
         if needs_review_raw is _MISSING
         else max(0, _cents(needs_review_raw))
     )
+    collections_raw = _control_value(control, "collections", "receivables", default={})
+    # ``dict.items`` is a method, not legacy collections data. Preserve the
+    # renderer's compatibility with pre-collections control payloads.
+    raw_collection_targets = (
+        collections_raw.get("targets", [])
+        if isinstance(collections_raw, Mapping)
+        else _control_value(collections_raw, "targets", default=[])
+    )
+    collections_targets: list[dict[str, Any]] = []
+    for target in list(raw_collection_targets or []):
+        due = _row_due_date({"due_date": _control_value(target, "due_date", "date", default="")})
+        collections_targets.append({
+            "id": str(_control_value(target, "id", "event_id", default="")),
+            "party": str(_control_value(target, "party", "customer", "name", default="Customer")),
+            "invoice_reference": str(_control_value(target, "invoice_reference", "reference", default="Invoice reference unavailable")),
+            "due_date": due.isoformat() if due else "",
+            "days_overdue": max(0, _cents(_control_value(target, "days_overdue", default=0))),
+            "timing": str(_control_value(target, "timing", default="Date unavailable")),
+            "open_amount_cents": max(0, _cents(_control_value(target, "open_amount_cents", "amount_cents", default=0))),
+            "action_label": str(_control_value(target, "action_label", default="Review collection")),
+        })
+    collections = {
+        "targets": collections_targets,
+        "total_count": max(0, _cents(_control_value(collections_raw, "total_count", "count", default=len(collections_targets)))),
+        "overdue_count": max(0, _cents(_control_value(collections_raw, "overdue_count", default=0))),
+        "overdue_open_cents": max(0, _cents(_control_value(collections_raw, "overdue_open_cents", default=0))),
+        "collectible_14d_cents": max(0, _cents(_control_value(collections_raw, "collectible_14d_cents", "confirmed_cents", default=0))),
+        "gap_cover_cents": max(0, _cents(_control_value(collections_raw, "gap_cover_cents", default=0))),
+        "remaining_gap_after_collections_cents": max(0, _cents(_control_value(collections_raw, "remaining_gap_after_collections_cents", default=0))),
+        "review_count": max(0, _cents(_control_value(collections_raw, "review_count", default=0))),
+        "review_cents": max(0, _cents(_control_value(collections_raw, "review_cents", default=0))),
+    }
     return {
         "cash": {
             "cash_on_hand_cents": _cents(_control_value(cash, "cash_on_hand_cents", "balance_cents", default=fallback_cash["cash_on_hand_cents"])),
@@ -1140,6 +1172,7 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
             "needs_review_cents": needs_review_cents,
             "patterns": patterns,
         },
+        "collections": collections,
         "source_status": _normalise_source_statuses(control),
         "reconciliation_shadow": _control_value(control, "reconciliation_shadow", default={}),
         "trust_gate": {
@@ -1371,7 +1404,7 @@ def _queue_table_html(
         for tab in item["tabs"]:
             counts[tab] += 1
         rows_html.append(f"""
-          <tr data-queue-tabs="{','.join(item['tabs'])}" data-queue-date="{html.escape(item['due_date'], quote=True)}">
+          <tr data-queue-id="{html.escape(item['id'], quote=True)}" data-queue-tabs="{','.join(item['tabs'])}" data-queue-date="{html.escape(item['due_date'], quote=True)}">
             <td><strong>{html.escape(item['action'])}</strong></td>
             <td><div class="queue-vendor">{html.escape(item['party'])}</div><div class="queue-meta">{html.escape(item['meta'])}</div></td>
             <td>{html.escape(item['timing'])}</td>
@@ -1380,6 +1413,71 @@ def _queue_table_html(
             <td>{_quick_action_menu(item, decision_actions_allowed=decision_actions_allowed)}</td>
           </tr>""")
     return "".join(rows_html), counts
+
+
+def _collections_html(collections: Mapping[str, Any], *, funding_gap_cents: int) -> str:
+    """Render the small collections decision surface from canonical QBO evidence."""
+    targets = list(collections.get("targets") or [])
+    overdue_count = int(collections.get("overdue_count") or 0)
+    overdue_open = int(collections.get("overdue_open_cents") or 0)
+    collectible = int(collections.get("collectible_14d_cents") or 0)
+    gap_cover = int(collections.get("gap_cover_cents") or 0)
+    remaining_gap = int(collections.get("remaining_gap_after_collections_cents") or 0)
+    review_count = int(collections.get("review_count") or 0)
+
+    if targets:
+        rows = "".join(
+            f"""
+              <tr>
+                <td><strong>{html.escape(str(item['party']))}</strong><small>{html.escape(str(item['invoice_reference']))}</small></td>
+                <td>{html.escape(str(item['timing']))}</td>
+                <td class="amount-in">{_money(int(item['open_amount_cents']))}</td>
+                <td><button type="button" class="finance-text-action" data-open-collections data-collection-id="{html.escape(str(item['id']), quote=True)}">{html.escape(str(item['action_label']))}</button></td>
+              </tr>"""
+            for item in targets
+        )
+        list_html = f"""
+          <div class="finance-collections__table-wrap">
+            <table class="finance-collections__table">
+              <thead><tr><th>Customer</th><th>Timing</th><th>Open balance</th><th><span class="sr-only">Collection action</span></th></tr></thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>"""
+    else:
+        list_html = """
+          <div class="finance-collections__empty">
+            <strong>No evidence-safe QBO receivables need collection in the next 14 days.</strong>
+            <p>Refresh QuickBooks if an expected invoice is missing. Expected CSV trends remain separate from receivables.</p>
+          </div>"""
+
+    coverage_copy = (
+        f"{_money(gap_cover)} of the funding gap could be covered if these invoices are received."
+        if funding_gap_cents and collectible
+        else "No funding gap is currently dependent on collections."
+    )
+    remaining_copy = (
+        f"{_money(remaining_gap)} remains after all confirmed receivables." if funding_gap_cents and remaining_gap
+        else "Confirmed receivables fully cover the displayed funding gap." if funding_gap_cents
+        else ""
+    )
+    review_copy = (
+        f"{review_count} QBO receivable{'s' if review_count != 1 else ''} is excluded pending evidence review."
+        if review_count else "Only invoices whose QBO balance agrees with settlement evidence are shown."
+    )
+    return f"""
+      <section class="card finance-collections" aria-labelledby="collections-title">
+        <div class="section-head finance-collections__head">
+          <div><p class="finance-eyebrow">Collections</p><h2 id="collections-title">Cash to collect</h2><p>Confirmed QBO receivables due in the next 14 days. This is potential income, not cash on hand.</p></div>
+          <button type="button" class="btn btn-secondary btn-sm" data-open-collections>View collections queue</button>
+        </div>
+        <div class="finance-collections__metrics">
+          <div><span>Overdue open</span><strong class="{'amount-out' if overdue_open else ''}">{_money(overdue_open)}</strong><small>{overdue_count} overdue invoice{'s' if overdue_count != 1 else ''}</small></div>
+          <div><span>Collectible in 14 days</span><strong class="amount-in">{_money(collectible)}</strong><small>QBO balance and settlement evidence agree</small></div>
+          <div><span>Collection impact</span><strong>{_money(gap_cover)}</strong><small>{html.escape(coverage_copy)}</small>{f'<em>{html.escape(remaining_copy)}</em>' if remaining_copy else ''}</div>
+        </div>
+        {list_html}
+        <p class="finance-collections__note">{html.escape(review_copy)}</p>
+      </section>"""
 
 
 def _normalise_savings_opportunity(item: Any, index: int) -> dict[str, Any]:
@@ -2123,6 +2221,7 @@ async def render_cashflow_overview_page(
     state = _normalise_renderer_state(control, fallback)
     cash = state["cash"]
     income_projection = state["income_projection"]
+    collections = state["collections"]
     csv_trend_expected_cents = min(
         cash["incoming_expected_cents"],
         income_projection["csv_trend_expected_cents"],
@@ -2247,6 +2346,9 @@ async def render_cashflow_overview_page(
           {source_readiness_html}
         </div>
       </details>"""
+    collections_html = _collections_html(
+        collections, funding_gap_cents=int(cash["funding_gap_cents"] or 0)
+    )
     trust_next_html = (
         f'<p><strong>Next:</strong> {html.escape(trust_gate["next_action"])}</p>'
         if trust_blocking else ""
@@ -2413,6 +2515,8 @@ async def render_cashflow_overview_page(
         </article>
       </section>
 
+      {collections_html}
+
       <section class="finance-smart-brief smart-only" aria-labelledby="smart-brief-title">
         <h2 id="smart-brief-title" class="sr-only">Smart brief</h2>
         <article><span>Happening</span><p>{html.escape(state['brief']['happening'])}</p></article>
@@ -2464,7 +2568,6 @@ async def render_cashflow_overview_page(
             <span class="is-actual">Actual</span><span class="is-committed">Committed</span>
             <span class="is-expected">Expected</span><span class="is-stress">Stress</span>
           </div>
-          <button class="finance-icon-button" type="button" aria-label="Cash trajectory options">&hellip;</button>
         </div>
         <p class="finance-trajectory__helper">Use this to validate the decision above. Expected includes probability-weighted CSV recurring-deposit trends and dated receivables; it is not committed cash.</p>
         <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Actual, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
@@ -2636,6 +2739,13 @@ async def render_cashflow_overview_page(
       }}
 
       document.querySelectorAll('[data-queue-filter]').forEach(button => button.addEventListener('click', () => resetQueue(button.dataset.queueFilter)));
+      document.querySelectorAll('[data-open-collections]').forEach(button => button.addEventListener('click', () => {{
+        resetQueue('incoming');
+        const itemId = button.dataset.collectionId;
+        const target = itemId ? document.querySelector('[data-queue-id="' + CSS.escape(itemId) + '"]') : null;
+        document.getElementById('finance-queue').scrollIntoView({{block:'start', behavior:'smooth'}});
+        if (target && !target.hidden) target.querySelector('button, summary, a')?.focus({{preventScroll:true}});
+      }}));
       queueWindow.addEventListener('change', () => resetQueue());
       queuePageSize.addEventListener('change', () => resetQueue());
       queuePrevious.addEventListener('click', () => {{

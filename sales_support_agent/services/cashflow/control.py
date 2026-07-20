@@ -1105,6 +1105,108 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
     }
 
 
+def _invoice_reference(row: Mapping[str, Any]) -> str:
+    """Return a human-readable invoice reference without inventing one."""
+    for value in (
+        row.get("invoice_number"),
+        row.get("doc_number"),
+        row.get("reference_number"),
+    ):
+        if value:
+            return f"Invoice #{str(value).strip()}"
+    description = str(row.get("description") or "")
+    match = re.search(r"\bInvoice\s*#?\s*([^\s—|]+)", description, flags=re.IGNORECASE)
+    if match:
+        return f"Invoice #{match.group(1)}"
+    return "Invoice reference unavailable"
+
+
+def build_collections_summary(
+    canonical: Sequence[Mapping[str, Any]],
+    *,
+    as_of: date,
+    horizon_days: int,
+    funding_gap_cents: int,
+) -> dict[str, Any]:
+    """Build the compact, evidence-safe receivables view for Finance Control.
+
+    QBO is authoritative for an invoice's remaining balance. A row can be
+    surfaced as a collection target only when the ledger's settlement evidence
+    agrees with that remaining balance. Disagreements stay visible as review
+    items, but never inflate collectible cash.
+    """
+    horizon_end = as_of + timedelta(days=max(1, horizon_days))
+    targets: list[dict[str, Any]] = []
+    review_count = 0
+    review_cents = 0
+
+    for row in canonical:
+        if str(row.get("event_type") or "").lower() != "inflow":
+            continue
+        if str(row.get("source") or "").lower() not in {"qbo", "quickbooks"}:
+            continue
+        if not _is_forward_cash_obligation(row):
+            continue
+        due = _event_date(row)
+        open_amount = _amount(row.get("open_amount_cents"))
+        if due is None or not open_amount:
+            continue
+        if due > horizon_end:
+            continue
+        if row.get("source_open_disagreement") or row.get("source_conflict"):
+            review_count += 1
+            review_cents += open_amount
+            continue
+        if str(row.get("confidence") or "").lower() != "confirmed" or row.get("trend_inferred"):
+            review_count += 1
+            review_cents += open_amount
+            continue
+
+        days_overdue = max(0, (as_of - due).days)
+        timing = (
+            f"{days_overdue}d overdue"
+            if days_overdue
+            else "Due today"
+            if due == as_of
+            else f"Due {due.isoformat()}"
+        )
+        targets.append({
+            "id": str(row.get("id") or ""),
+            "party": str(row.get("vendor_or_customer") or row.get("name") or "Customer"),
+            "invoice_reference": _invoice_reference(row),
+            "due_date": due.isoformat(),
+            "days_overdue": days_overdue,
+            "timing": timing,
+            "open_amount_cents": open_amount,
+            "source": "QBO",
+            "collection_state": "overdue" if days_overdue else "due_soon",
+            "action_label": "Review collection" if days_overdue else "Track receipt",
+        })
+
+    targets.sort(key=lambda item: (
+        0 if item["days_overdue"] else 1,
+        -int(item["days_overdue"]),
+        -int(item["open_amount_cents"]),
+        item["due_date"],
+        item["id"],
+    ))
+    overdue = [item for item in targets if item["days_overdue"]]
+    overdue_open = sum(item["open_amount_cents"] for item in overdue)
+    collectible = sum(item["open_amount_cents"] for item in targets)
+    gap_cover = min(max(0, funding_gap_cents), collectible)
+    return {
+        "targets": targets[:5],
+        "total_count": len(targets),
+        "overdue_count": len(overdue),
+        "overdue_open_cents": overdue_open,
+        "collectible_14d_cents": collectible,
+        "gap_cover_cents": gap_cover,
+        "remaining_gap_after_collections_cents": max(0, funding_gap_cents - collectible),
+        "review_count": review_count,
+        "review_cents": review_cents,
+    }
+
+
 def quick_action_eligibility(
     row: Mapping[str, Any],
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
@@ -1565,6 +1667,12 @@ def build_finance_control_state(
         horizon_days=max(summary_days, horizon_days),
         funding_gap_cents=int(metrics.get("funding_gap_cents") or 0),
     )
+    collections = build_collections_summary(
+        canonical,
+        as_of=effective_date,
+        horizon_days=summary_days,
+        funding_gap_cents=int(metrics.get("funding_gap_cents") or 0),
+    )
     trust_gate = _build_trust_gate(
         snapshot, canonical, income_projection, as_of=effective_date
     )
@@ -1592,6 +1700,7 @@ def build_finance_control_state(
         "trust_gate": trust_gate,
         "confidence": confidence,
         "queue": queue,
+        "collections": collections,
         "reconciliation_shadow": reconciliation_shadow,
     }
     state["recommendations"] = build_recommendations(state)
