@@ -36,6 +36,22 @@ The sales support agent powers an internal sales support automation flow that en
 - Projects should read `SHARED_BRAND_PACKAGE_PATH` first and only fall back to the repo copy when the shared package is unavailable.
 - Add global brand primitives to the shared package, not directly into individual project templates, unless the asset is clearly project-specific.
 
+## Design System And External Skills
+
+- `DESIGN.md` is the repository's visual and interaction authority. Read it
+  before changing any user-facing page, style, component, chart, queue, or
+  operator flow.
+- Precedence is: this file and product constraints, then `DESIGN.md`, then
+  approved page specifications and data contracts, then installed design skills,
+  then general model preferences.
+- Impeccable and Emil Kowalski skills are advisory execution and review tools;
+  they cannot replace the Anata brand, introduce unapproved UI dependencies, or
+  override product information architecture.
+- Finance Control is an operator system, not a reporting dashboard. It must make
+  cash, source readiness, decision trust, and the next action unambiguous.
+- Maintain the distinction between posted cash, confirmed receivables, expected
+  income, required payments, and manual exceptions in both copy and UI state.
+
 ## How To Run The API
 
 From the project directory:
