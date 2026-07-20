@@ -87,6 +87,20 @@ class TestAutoMatchTransactions(unittest.TestCase):
         self.assertEqual(results[0].planned_event_id, "p1")
         self.assertIn("partial payment", results[0].reason)
 
+    def test_chunkable_obligation_accepts_multiple_independently_evidenced_partials(self) -> None:
+        d = date(2026, 4, 7)
+        transactions = [
+            _csv("c1", "ACME RENT", 40_00, d),
+            _csv("c2", "ACME RENT", 40_00, d),
+        ]
+        obligation = _planned("p1", "ACME RENT", 100_00, d)
+        obligation["flexibility"] = "chunk payable"
+
+        results = auto_match_transactions(transactions, [obligation])
+
+        self.assertEqual([result.planned_event_id for result in results], ["p1", "p1"])
+        self.assertTrue(all("partial payment" in result.reason for result in results))
+
     def test_no_double_match(self) -> None:
         d = date(2026, 4, 7)
         csv_events = [

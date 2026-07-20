@@ -453,7 +453,8 @@ def test_unified_queue_actions_drawer_modal_and_states_are_present() -> None:
 
     for tab in ("Needs action", "Incoming", "Payables", "Recent"):
         assert tab in page
-    assert "Mark received" in page
+    assert "Preview cash impact" in page
+    assert "Mark received" not in page
     assert "Record partial payment" in page
     assert 'id="finance-recommendation-drawer"' in page
     assert 'id="finance-update-modal"' in page

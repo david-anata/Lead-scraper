@@ -155,6 +155,65 @@ def test_qbo_partial_balance_is_forecast_once_allocation_evidence_agrees():
     assert state["forecast"]["paths"]["committed"][-1]["cash_cents"] == 225_000
 
 
+def test_qbo_api_and_open_invoices_csv_do_not_double_count_the_same_receivable():
+    api_invoice = _row(
+        "qbo-inv-42",
+        source="qbo",
+        source_id="qbo-42",
+        event_type="inflow",
+        amount_cents=100_000,
+        source_open_amount_cents=25_000,
+        vendor_or_customer="Acme",
+        description="Invoice #INV-42",
+        due_date=AS_OF + timedelta(days=1),
+    )
+    csv_invoice = _row(
+        "qbo-csv-42",
+        source="qbo-csv",
+        source_id="qbo-ar-INV-42",
+        event_type="inflow",
+        amount_cents=25_000,
+        source_open_amount_cents=25_000,
+        vendor_or_customer="Acme",
+        description="Invoice #INV-42",
+        due_date=AS_OF + timedelta(days=1),
+    )
+
+    state = build_finance_control_state(
+        _history(200_000) + [api_invoice, csv_invoice],
+        settlement_annotations={"qbo-inv-42": 75_000},
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert state["metrics"]["confirmed_incoming_cents"] == 25_000
+    assert state["collections"]["collectible_14d_cents"] == 25_000
+    assert state["data_quality"]["cross_source_receivable_duplicates"] == 1
+
+
+def test_qbo_open_invoices_csv_is_visible_in_collections_without_api_data():
+    csv_invoice = _row(
+        "qbo-csv-43",
+        source="qbo-csv",
+        source_id="qbo-ar-INV-43",
+        event_type="inflow",
+        amount_cents=25_000,
+        source_open_amount_cents=25_000,
+        vendor_or_customer="Acme",
+        description="Invoice #INV-43",
+        due_date=AS_OF - timedelta(days=2),
+    )
+
+    state = build_finance_control_state(
+        _history(200_000) + [csv_invoice],
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    assert state["collections"]["overdue_open_cents"] == 25_000
+    assert state["collections"]["targets"][0]["invoice_reference"] == "Invoice #INV-43"
+
+
 def test_collections_summary_surfaces_only_evidence_safe_qbo_receivables():
     overdue = _row(
         "qbo-inv-overdue",
@@ -827,7 +886,10 @@ def test_trust_gate_and_source_status_are_deterministic_and_bank_first():
     assert state["recommendations"][0]["action_type"] == "upload_latest_balance"
     statuses = {item["name"]: item["status"] for item in state["source_status"]}
     assert statuses == {
-        "Bank CSV": "missing", "ClickUp": "current", "QuickBooks": "current"
+        "Bank CSV": "missing",
+        "ClickUp": "current",
+        "QBO receivables": "current",
+        "QBO payment evidence": "connected",
     }
     assert connections == original_connections
 
@@ -845,9 +907,11 @@ def test_connected_sources_without_rows_are_not_ready():
 
     statuses = state["source_status_by_key"]
     assert statuses["clickup"]["status"] == "connected"
-    assert statuses["quickbooks"]["status"] == "connected"
+    assert statuses["qbo_receivables"]["status"] == "connected"
+    assert statuses["qbo_actuals"]["status"] == "connected"
     assert statuses["clickup"]["ready"] is False
-    assert statuses["quickbooks"]["ready"] is False
+    assert statuses["qbo_receivables"]["ready"] is False
+    assert statuses["qbo_actuals"]["ready"] is False
 
 
 def test_connected_source_with_undated_payable_rows_is_not_ready():
@@ -861,8 +925,8 @@ def test_connected_source_with_undated_payable_rows_is_not_ready():
     )
 
     source = state["source_status_by_key"]["clickup"]
-    assert source["status"] == "connected"
-    assert source["ready"] is False
+    assert source["status"] == "current"
+    assert source["ready"] is True
 
 
 def test_commitment_capacity_excludes_income_and_reserves_installment_remainder():
@@ -932,7 +996,7 @@ def test_source_missing_clickup_payable_stays_reserved_and_blocks_trust():
     assert state["queue"]["items"][0]["decision_blocker"] == "source_missing"
 
 
-def test_recent_clickup_completion_stays_reserved_until_newer_bank_snapshot():
+def test_completed_clickup_task_stays_reserved_without_settlement_evidence():
     state = build_finance_control_state(
         _history(250_000) + [_row(
             "just-completed", source="clickup", status="completed",
@@ -948,11 +1012,11 @@ def test_recent_clickup_completion_stays_reserved_until_newer_bank_snapshot():
     assert item["group"] == "resolve_first"
     assert item["decision_blocker"] == "completion_requires_bank_evidence"
     assert state["trust_gate"]["payable_issues"] == [
-        {"id": "just-completed", "reason": "ClickUp completion is newer than bank evidence"}
+        {"id": "just-completed", "reason": "ClickUp completion lacks settlement evidence"}
     ]
 
 
-def test_completed_clickup_task_releases_only_after_newer_bank_snapshot():
+def test_completed_clickup_task_does_not_release_from_a_newer_bank_snapshot_alone():
     state = build_finance_control_state(
         _history(250_000) + [_row(
             "bank-covered-completion", source="clickup", status="completed",
@@ -964,6 +1028,24 @@ def test_completed_clickup_task_releases_only_after_newer_bank_snapshot():
     )
 
     item = next(item for item in state["queue"]["items"] if item["id"] == "bank-covered-completion")
+    assert state["metrics"]["required_outgoing_cents"] == 500_000
+    assert item["group"] == "resolve_first"
+    assert item["completion_requires_bank_evidence"] is True
+
+
+def test_completed_clickup_task_releases_after_settlement_allocation():
+    state = build_finance_control_state(
+        _history(250_000) + [_row(
+            "settled-completion", source="clickup", status="completed",
+            source_updated_at=AS_OF.isoformat(), amount_cents=500_000,
+            due_date=AS_OF + timedelta(days=1),
+        )],
+        settlement_annotations={"settled-completion": 500_000},
+        as_of=AS_OF,
+        floor_cents=100_000,
+    )
+
+    item = next(item for item in state["queue"]["items"] if item["id"] == "settled-completion")
     assert state["metrics"]["required_outgoing_cents"] == 0
     assert item["group"] == "completed"
     assert item["completion_requires_bank_evidence"] is False

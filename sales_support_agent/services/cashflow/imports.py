@@ -318,8 +318,10 @@ def stage_and_post_qbo_import(
     """Stage and atomically post a QBO Open Invoices CSV import.
 
     Existing canonical obligations are append-only. An identical report is
-    idempotent; a changed payload for the same invoice is quarantined for
-    operator review and blocks every new row in that file from posting.
+    idempotent. A lower reported open balance is authoritative settlement
+    evidence and is reconciled without changing the original invoice face;
+    increases still require review because they can mean an invoice was edited
+    or a prior source import was incomplete.
     """
     from sales_support_agent.models.database import (
         ensure_finance_trust_schema,
@@ -356,11 +358,18 @@ def stage_and_post_qbo_import(
 
         existing = {
             (str(row.source_system), str(row.scope_key), str(row.entity_type), str(row.external_id)):
-                {"cash_event_id": str(row.cash_event_id), "payload_hash": str(row.payload_hash or "")}
+                {
+                    "cash_event_id": str(row.cash_event_id),
+                    "payload_hash": str(row.payload_hash or ""),
+                    "amount_cents": int(row.amount_cents or 0),
+                    "vendor_or_customer": str(row.vendor_or_customer or ""),
+                }
             for row in conn.execute(text("""
-                SELECT source_system, scope_key, entity_type, external_id,
-                       cash_event_id, payload_hash
-                FROM finance_source_records
+                SELECT record.source_system, record.scope_key, record.entity_type,
+                       record.external_id, record.cash_event_id, record.payload_hash,
+                       event.amount_cents, event.vendor_or_customer
+                FROM finance_source_records AS record
+                JOIN cash_events AS event ON event.id = record.cash_event_id
                 WHERE source_system='qbo_csv' AND scope_key=:scope_key
             """), {"scope_key": scope_key})
         }
@@ -384,6 +393,11 @@ def stage_and_post_qbo_import(
                 if prior:
                     if prior["payload_hash"] == identity["payload_hash"]:
                         classification, reason = "duplicate", "same source identity and payload"
+                    elif (
+                        int(normalized.get("amount_cents") or 0) <= prior["amount_cents"]
+                        and str(normalized.get("vendor_or_customer") or "") == prior["vendor_or_customer"]
+                    ):
+                        classification, reason = "reconcile", "reported open balance decreased"
                     else:
                         classification, reason = "review", "source identity payload changed"
                 elif key in seen:
@@ -437,6 +451,7 @@ def stage_and_post_qbo_import(
                 "classification": item["classification"], "reason": item["reason"],
             })
 
+        balance_updates: list[tuple[str, int]] = []
         if not blocked:
             for item in classified:
                 normalized = item["normalized"]
@@ -454,6 +469,37 @@ def stage_and_post_qbo_import(
                         "record_kind": "obligation",
                     })
                     result.new_events.append({"id": event_id, **normalized})
+                elif item["classification"] == "reconcile":
+                    prior = existing[(
+                        str(identity["source_system"]), str(identity["scope_key"]),
+                        str(identity["entity_type"]), str(identity["external_id"]),
+                    )]
+                    event_id = prior["cash_event_id"]
+                    due = normalized.get("due_date")
+                    conn.execute(text("""
+                        UPDATE cash_events
+                        SET due_date=:due_date,
+                            source_open_amount_cents=:open_amount,
+                            source_updated_at=:now, updated_at=:now
+                        WHERE id=:id
+                    """), {
+                        "id": event_id,
+                        "due_date": due.isoformat() if hasattr(due, "isoformat") else due,
+                        "open_amount": int(normalized.get("amount_cents") or 0),
+                        "now": now,
+                    })
+                    conn.execute(text("""
+                        UPDATE finance_source_records
+                        SET payload_hash=:payload_hash, soft_fingerprint=:fingerprint,
+                            updated_at=:now
+                        WHERE source_system='qbo_csv' AND scope_key=:scope_key
+                          AND entity_type='open_invoice' AND external_id=:external_id
+                    """), {
+                        "scope_key": scope_key, "external_id": identity["external_id"],
+                        "payload_hash": identity["payload_hash"],
+                        "fingerprint": identity["soft_fingerprint"], "now": now,
+                    })
+                    balance_updates.append((event_id, int(normalized.get("amount_cents") or 0)))
                 else:
                     continue
                 conn.execute(text("""
@@ -501,4 +547,16 @@ def stage_and_post_qbo_import(
                 "invalid": result.invalid,
             }), "now": now,
         })
+    # Run allocation writes after the source-record transaction commits. This
+    # makes the lower QBO balance a durable, idempotent settlement signal while
+    # keeping cash-on-hand exclusively sourced from bank evidence.
+    if balance_updates:
+        from sales_support_agent.services.cashflow.qbo_sync import _reconcile_invoice_balance_evidence
+
+        for event_id, open_balance in balance_updates:
+            _reconcile_invoice_balance_evidence(
+                event_id,
+                open_balance,
+                note="QBO Open Invoices CSV reports current invoice balance",
+            )
     return result

@@ -862,10 +862,17 @@ def _normalise_source_statuses(control: Any) -> list[dict[str, str]]:
 
     aliases = {
         "bank": "bank_csv", "bank_csv": "bank_csv", "csv": "bank_csv",
-        "clickup": "clickup", "qbo": "qbo", "quickbooks": "qbo",
-        "qbo_open_invoices": "qbo",
+        "clickup": "clickup",
+        "qbo": "qbo_receivables", "quickbooks": "qbo_receivables",
+        "qbo_open_invoices": "qbo_receivables", "qbo_receivables": "qbo_receivables",
+        "qbo_actuals": "qbo_actuals", "qbo_payment_evidence": "qbo_actuals",
     }
-    labels = {"bank_csv": "Bank CSV", "clickup": "ClickUp", "qbo": "QBO"}
+    labels = {
+        "bank_csv": "Bank CSV",
+        "clickup": "ClickUp",
+        "qbo_receivables": "QBO receivables",
+        "qbo_actuals": "QBO payment evidence",
+    }
     by_source: dict[str, dict[str, str]] = {}
     for item in supplied:
         source = _status_key(_control_value(item, "source", "key", "name", default=""))
@@ -895,7 +902,7 @@ def _normalise_source_statuses(control: Any) -> list[dict[str, str]]:
             key,
             {"key": key, "label": labels[key], "status": "unknown", "detail": "Status not reported."},
         )
-        for key in ("bank_csv", "clickup", "qbo")
+        for key in ("bank_csv", "clickup", "qbo_receivables", "qbo_actuals")
     ]
 
 
@@ -1309,6 +1316,12 @@ def _queue_item_data(item: Any, today: date) -> dict[str, Any]:
         tabs = ["completed"]
     if needs_action:
         tabs.append("needs-action")
+    if (
+        direction == "inflow"
+        and _status_key(row.get("source")) in {"qbo", "quickbooks", "qbo_csv"}
+        and status not in {"paid", "matched", "cancelled", "canceled", "void"}
+    ):
+        tabs.append("collections")
     if status in {"posted", "matched", "paid"}:
         tabs.append("recent")
     return {
@@ -1345,33 +1358,29 @@ def _quick_action_menu(item: dict[str, Any], *, decision_actions_allowed: bool) 
         "change_confidence": "Change confidence",
         "assign_follow_up": "Assign follow-up",
     }
+    implemented_labels = {
+        "Preview cash impact",
+        "Record partial payment",
+        "Split into installments",
+    }
     eligible = [
         action_labels.get(str(action.get("action_type") or ""))
         for action in item["quick_actions"]
         if isinstance(action, Mapping) and action.get("eligible", True)
     ]
-    eligible = [label for label in eligible if label]
+    eligible = [label for label in eligible if label in implemented_labels]
     if eligible:
         labels = tuple(eligible)
     elif item["direction"] == "inflow":
-        labels = (
-            "Confirm expected date", "Mark received", "Match bank deposit",
-            "Change confidence", "Assign follow-up",
-        )
+        labels = ("Preview cash impact",)
     else:
-        labels = (
-            "Preview cash impact", "Record partial payment", "Split into installments",
-            "Defer / change date", "Match bank transaction", "Mark paid", "Flag duplicate",
-        )
+        labels = ("Preview cash impact", "Record partial payment", "Split into installments")
     if item["inferred"] and "Explain" not in labels:
         labels = ("Explain", *labels)
     if not decision_actions_allowed:
         # Keep evidence and reconciliation work available, but never offer CFO
         # payment decisions until an explicit trust pass is present.
-        labels = tuple(label for label in labels if label in {
-            "Explain", "Preview cash impact", "Match bank transaction",
-            "Match bank deposit", "Flag duplicate", "Assign follow-up",
-        })
+        labels = tuple(label for label in labels if label in {"Explain", "Preview cash impact"})
     buttons = "".join(
         f'<button type="button" role="menuitem" data-preview-action="{html.escape(label, quote=True)}" '
         f'data-event-id="{html.escape(item["id"], quote=True)}" '
@@ -1396,7 +1405,7 @@ def _queue_table_html(
     queue: Any, today: date, *, decision_actions_allowed: bool,
 ) -> tuple[str, dict[str, int]]:
     items = [_queue_item_data(item, today) for item in _flatten_queue(queue)]
-    counts = {key: 0 for key in ("needs-action", "incoming", "payables", "completed", "reconciliation", "recent")}
+    counts = {key: 0 for key in ("needs-action", "collections", "incoming", "payables", "completed", "reconciliation", "recent")}
     rows_html = []
     for item in items:
         if not decision_actions_allowed:
@@ -1424,6 +1433,7 @@ def _collections_html(collections: Mapping[str, Any], *, funding_gap_cents: int)
     gap_cover = int(collections.get("gap_cover_cents") or 0)
     remaining_gap = int(collections.get("remaining_gap_after_collections_cents") or 0)
     review_count = int(collections.get("review_count") or 0)
+    total_count = int(collections.get("total_count") or 0)
 
     if targets:
         rows = "".join(
@@ -1467,7 +1477,7 @@ def _collections_html(collections: Mapping[str, Any], *, funding_gap_cents: int)
     return f"""
       <section class="card finance-collections" aria-labelledby="collections-title">
         <div class="section-head finance-collections__head">
-          <div><p class="finance-eyebrow">Collections</p><h2 id="collections-title">Cash to collect</h2><p>Confirmed QBO receivables due in the next 14 days. This is potential income, not cash on hand.</p></div>
+          <div><p class="finance-eyebrow">Collections</p><h2 id="collections-title">Cash to collect</h2><p>Confirmed QBO receivables due in the next 14 days. This is potential income, not cash on hand. Showing {min(len(targets), total_count)} of {total_count}.</p></div>
           <button type="button" class="btn btn-secondary btn-sm" data-open-collections>View collections queue</button>
         </div>
         <div class="finance-collections__metrics">
@@ -2342,7 +2352,7 @@ async def render_cashflow_overview_page(
       <details class="finance-source-summary"{' open' if trust_blocking else ''}>
         <summary><span>Sources</span><strong>{source_readiness_summary}</strong></summary>
         <div class="finance-source-readiness" aria-label="Finance source readiness">
-          <div class="finance-source-readiness__label"><span>Source readiness</span><small>Bank truth, work plan, receivables</small></div>
+          <div class="finance-source-readiness__label"><span>Source readiness</span><small>Bank truth, work plan, receivables, payment evidence</small></div>
           {source_readiness_html}
         </div>
       </details>"""
@@ -2534,6 +2544,7 @@ async def render_cashflow_overview_page(
         </div>
         <div class="finance-queue-tabs" role="group" aria-label="Money queue filters">
           <button type="button" aria-pressed="true" data-queue-filter="needs-action">Needs action <span>{counts['needs-action']}</span></button>
+          <button type="button" aria-pressed="false" data-queue-filter="collections">Collections <span>{counts['collections']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="incoming">Incoming <span>{counts['incoming']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="payables">Payables <span>{counts['payables']}</span></button>
           <button type="button" aria-pressed="false" data-queue-filter="completed">Completed <span>{counts['completed']}</span></button>
@@ -2565,12 +2576,12 @@ async def render_cashflow_overview_page(
         <div class="section-head finance-trajectory__head">
           <div><p class="finance-eyebrow">Supporting forecast</p><h2 id="trajectory-title">Cash trajectory</h2></div>
           <div class="finance-chart-legend" aria-label="Chart legend">
-            <span class="is-actual">Actual</span><span class="is-committed">Committed</span>
+            <span class="is-actual">Current cash</span><span class="is-committed">Committed</span>
             <span class="is-expected">Expected</span><span class="is-stress">Stress</span>
           </div>
         </div>
         <p class="finance-trajectory__helper">Use this to validate the decision above. Expected includes probability-weighted CSV recurring-deposit trends and dated receivables; it is not committed cash.</p>
-        <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Actual, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
+        <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Current cash, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
       </section>
 
       {savings_section}
@@ -2740,9 +2751,13 @@ async def render_cashflow_overview_page(
 
       document.querySelectorAll('[data-queue-filter]').forEach(button => button.addEventListener('click', () => resetQueue(button.dataset.queueFilter)));
       document.querySelectorAll('[data-open-collections]').forEach(button => button.addEventListener('click', () => {{
-        resetQueue('incoming');
         const itemId = button.dataset.collectionId;
+        const matches = matchingQueueRows('collections');
         const target = itemId ? document.querySelector('[data-queue-id="' + CSS.escape(itemId) + '"]') : null;
+        activeQueueFilter = 'collections';
+        activeQueuePage = target ? Math.floor(matches.indexOf(target) / Number(queuePageSize.value)) + 1 : 1;
+        updateQueueCounts();
+        renderQueuePage();
         document.getElementById('finance-queue').scrollIntoView({{block:'start', behavior:'smooth'}});
         if (target && !target.hidden) target.querySelector('button, summary, a')?.focus({{preventScroll:true}});
       }}));
@@ -2990,7 +3005,7 @@ async def render_cashflow_overview_page(
       new Chart(document.getElementById('finance-control-chart'), {{
         type: 'line',
         data: {{ labels: chartData.labels, datasets: [
-          {{label:'Actual',data:chartData.actual,borderColor:'#2b3644',borderWidth:3,pointRadius:0,spanGaps:true}},
+          {{label:'Current cash',data:chartData.actual,borderColor:'#2b3644',borderWidth:0,pointRadius:4,showLine:false,spanGaps:false}},
           {{label:'Committed',data:chartData.committed,borderColor:'#4f84c4',borderWidth:2.5,pointRadius:0,tension:.24}},
           {{label:'Expected',data:chartData.expected,borderColor:'#0f766e',borderWidth:2,borderDash:[7,4],pointRadius:0,tension:.24}},
           {{label:'Stress',data:chartData.stress,borderColor:'#b91c1c',borderWidth:2,borderDash:[3,4],pointRadius:0,tension:.18}},

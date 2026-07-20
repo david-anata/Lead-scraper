@@ -282,8 +282,12 @@ def resolve_cash_snapshot(
 def _annotate_clickup_completion_evidence(
     rows: Sequence[Mapping[str, Any]], snapshot: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """Keep a recent ClickUp completion reserved until bank evidence is newer."""
-    bank_date = _as_date(snapshot.get("as_of_date"))
+    """Require settlement evidence before a completed ClickUp bill can release cash.
+
+    A newer bank balance is only a snapshot of cash; it does not identify which
+    payable was settled. The allocation-derived open balance is checked after
+    canonicalization and is the only signal that can release the reservation.
+    """
     result: list[dict[str, Any]] = []
     for source_row in rows:
         row = dict(source_row)
@@ -291,14 +295,7 @@ def _annotate_clickup_completion_evidence(
             str(row.get("source") or "").lower() == "clickup"
             and str(row.get("status") or "").lower() == "completed"
         ):
-            completed_date = _as_date(row.get("source_updated_at"))
-            row["completion_requires_bank_evidence"] = bool(
-                not snapshot.get("available")
-                or snapshot.get("stale")
-                or completed_date is None
-                or bank_date is None
-                or bank_date <= completed_date
-            )
+            row["completion_requires_bank_evidence"] = True
         result.append(row)
     return result
 
@@ -692,7 +689,8 @@ def _build_source_status(
     definitions = (
         ("bank_csv", "Bank CSV", ("csv", "bank_csv", "bank csv"), {"csv"}),
         ("clickup", "ClickUp", ("clickup",), {"clickup"}),
-        ("quickbooks", "QuickBooks", ("quickbooks", "qbo"), {"quickbooks", "qbo"}),
+        ("qbo_receivables", "QBO receivables", ("quickbooks", "qbo", "qbo_receivables"), {"quickbooks", "qbo", "qbo-csv"}),
+        ("qbo_actuals", "QBO payment evidence", ("quickbooks", "qbo", "qbo_actuals"), {"qbo_bank"}),
     )
     result: list[dict[str, Any]] = []
     for key, name, aliases, row_sources in definitions:
@@ -702,6 +700,10 @@ def _build_source_status(
         connection = _connection_for(source_connections, aliases)
         explicit_status = str(connection.get("status") or "").strip().lower()
         connected = connection.get("connected")
+        # OAuth integrations commonly report a ready status without a separate
+        # boolean. Treat that as connected, but never as evidence that data was
+        # actually fetched.
+        is_connected = connected is True or explicit_status in {"connected", "ready", "current"}
         updated = _as_date(
             connection.get("last_synced_at")
             or connection.get("last_success_at")
@@ -717,7 +719,7 @@ def _build_source_status(
             row_dates = [
                 parsed
                 for row in source_rows
-                if (parsed := _as_date(row.get("source_updated_at") or row.get("updated_at") or _event_date(row)))
+                if (parsed := _as_date(row.get("source_updated_at") or row.get("updated_at")))
             ]
             latest = updated or max(row_dates, default=None)
             stale = bool(
@@ -731,14 +733,12 @@ def _build_source_status(
                 status, ready = "error", False
             elif stale:
                 status, ready = "stale", False
-            elif not source_rows or not any(_event_date(row) is not None for row in source_rows):
-                # A healthy connection alone does not establish that payable data
-                # was actually received and dated for operational use.
-                status, ready = "connected", False
-            elif source_rows:
+            elif source_rows and latest is not None:
                 status, ready = "current", True
+            elif source_rows:
+                status, ready = "unverified", False
             else:
-                status, ready = "not_connected", False
+                status, ready = ("connected", False) if is_connected else ("not_connected", False)
             latest_date = latest.isoformat() if latest else None
         result.append(
             {
@@ -777,7 +777,7 @@ def _build_trust_gate(
         elif str(row.get("source_status") or "").lower() == "source_missing":
             payable_issues.append((row_id, "missing from ClickUp source"))
         elif row.get("completion_requires_bank_evidence"):
-            payable_issues.append((row_id, "ClickUp completion is newer than bank evidence"))
+            payable_issues.append((row_id, "ClickUp completion lacks settlement evidence"))
         elif _needs_match_review(row):
             payable_issues.append((row_id, "ambiguous match"))
         elif row.get("settlement_evidence_available") is False:
@@ -1121,6 +1121,60 @@ def _invoice_reference(row: Mapping[str, Any]) -> str:
     return "Invoice reference unavailable"
 
 
+def _receivable_identity(row: Mapping[str, Any]) -> tuple[str, str] | None:
+    """Return a conservative cross-source identity for an open receivable."""
+    reference = _invoice_reference(row)
+    if reference == "Invoice reference unavailable":
+        source_id = str(row.get("source_id") or "")
+        if source_id.lower().startswith("qbo-ar-"):
+            reference = f"Invoice #{source_id[7:]}"
+        else:
+            return None
+    reference_key = re.sub(r"[^a-z0-9]+", "", reference.lower())
+    party_key = re.sub(
+        r"[^a-z0-9]+", " ",
+        str(row.get("vendor_or_customer") or row.get("name") or "").lower(),
+    ).strip()
+    return (reference_key, party_key)
+
+
+def _deduplicate_cross_source_receivables(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Keep one receivable when QBO API and its Open Invoices CSV overlap.
+
+    The API balance is the preferred live source. A CSV fallback is removed only
+    when invoice reference, customer, and open balance agree, so an ambiguous
+    row remains visible for reconciliation rather than silently reducing AR.
+    """
+    api_rows: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for row in rows:
+        if (
+            str(row.get("event_type") or "").lower() == "inflow"
+            and str(row.get("source") or "").lower() in {"qbo", "quickbooks"}
+            and _is_forward_cash_obligation(row)
+        ):
+            identity = _receivable_identity(row)
+            if identity is not None:
+                api_rows[identity] = row
+
+    retained: list[dict[str, Any]] = []
+    excluded = 0
+    for source_row in rows:
+        row = dict(source_row)
+        is_csv_receivable = (
+            str(row.get("event_type") or "").lower() == "inflow"
+            and str(row.get("source") or "").lower() == "qbo-csv"
+        )
+        identity = _receivable_identity(row) if is_csv_receivable else None
+        api_row = api_rows.get(identity) if identity is not None else None
+        if api_row is not None and _amount(api_row.get("open_amount_cents")) == _amount(row.get("open_amount_cents")):
+            excluded += 1
+            continue
+        retained.append(row)
+    return retained, excluded
+
+
 def build_collections_summary(
     canonical: Sequence[Mapping[str, Any]],
     *,
@@ -1135,7 +1189,9 @@ def build_collections_summary(
     agrees with that remaining balance. Disagreements stay visible as review
     items, but never inflate collectible cash.
     """
-    horizon_end = as_of + timedelta(days=max(1, horizon_days))
+    # Finance Control uses an inclusive window: today plus the next
+    # ``horizon_days - 1`` calendar days everywhere on the page.
+    horizon_end = as_of + timedelta(days=max(1, horizon_days) - 1)
     targets: list[dict[str, Any]] = []
     review_count = 0
     review_cents = 0
@@ -1143,7 +1199,7 @@ def build_collections_summary(
     for row in canonical:
         if str(row.get("event_type") or "").lower() != "inflow":
             continue
-        if str(row.get("source") or "").lower() not in {"qbo", "quickbooks"}:
+        if str(row.get("source") or "").lower() not in {"qbo", "quickbooks", "qbo-csv"}:
             continue
         if not _is_forward_cash_obligation(row):
             continue
@@ -1164,7 +1220,7 @@ def build_collections_summary(
 
         days_overdue = max(0, (as_of - due).days)
         timing = (
-            f"{days_overdue}d overdue"
+            f"{days_overdue}d overdue · Due {due.isoformat()}"
             if days_overdue
             else "Due today"
             if due == as_of
@@ -1615,6 +1671,20 @@ def build_finance_control_state(
     snapshot = resolve_cash_snapshot(balance_rows, as_of=effective_date, stale_after_days=balance_stale_after_days)
     visible_rows = _annotate_clickup_completion_evidence(visible_rows, snapshot)
     canonical = annotate_open_amounts(visible_rows, settlement_annotations)
+    for row in canonical:
+        if (
+            str(row.get("source") or "").lower() == "clickup"
+            and str(row.get("status") or "").lower() == "completed"
+        ):
+            # Settlement allocations, not the task lifecycle or a later bank
+            # balance snapshot, determine whether this cash requirement is gone.
+            row["completion_requires_bank_evidence"] = bool(
+                _amount(row.get("open_amount_cents")) > 0
+            )
+    canonical, cross_source_receivable_duplicates = _deduplicate_cross_source_receivables(canonical)
+    if cross_source_receivable_duplicates:
+        data_quality["cross_source_receivable_duplicates"] = cross_source_receivable_duplicates
+        data_quality["quarantined_count"] = int(data_quality.get("quarantined_count") or 0) + cross_source_receivable_duplicates
     reconciliation_shadow = build_reconciliation_shadow(canonical, as_of=effective_date)
     historical_reconciliation_ids = {
         str(item) for item in reconciliation_shadow.get("forecast_excluded_ids") or []

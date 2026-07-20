@@ -56,6 +56,28 @@ class MatchResult:
     candidate_ids: list[str] | None = None
 
 
+def _is_explicit_chunk_payment(
+    transaction: dict[str, Any], planned: dict[str, Any]
+) -> bool:
+    """Return whether a smaller posted transaction can settle this bill in parts.
+
+    Reusing an obligation for multiple automatic matches is unsafe for ordinary
+    bills. It is allowed only when the obligation explicitly permits chunk or
+    installment payments and the transaction is smaller than its face amount.
+    The settlement allocator remains responsible for enforcing the remaining
+    open balance.
+    """
+    planned_amount = int(planned.get("amount_cents") or 0)
+    transaction_amount = int(transaction.get("amount_cents") or 0)
+    if not (planned_amount > 0 and 0 < transaction_amount < planned_amount):
+        return False
+    planned_notes = " ".join(
+        str(planned.get(field) or "")
+        for field in ("notes", "description", "flexibility")
+    ).lower()
+    return any(token in planned_notes for token in ("chunk", "partial", "installment"))
+
+
 def auto_match_transactions(
     csv_events: list[dict[str, Any]],
     planned_events: list[dict[str, Any]],
@@ -90,7 +112,9 @@ def auto_match_transactions(
         scored: list[tuple[int, str, str]] = []
         for planned in candidates:
             planned_id = str(planned["id"])
-            if planned_id in claimed_planned_ids:
+            # Ordinary bills remain one-to-one. Explicitly chunk-payable bills
+            # may be matched to several separately posted partial payments.
+            if planned_id in claimed_planned_ids and not _is_explicit_chunk_payment(csv_ev, planned):
                 continue
             score_bps, reason = _score_match_bps(csv_ev, planned)
             if score_bps:
@@ -106,7 +130,9 @@ def auto_match_transactions(
             and best_score_bps >= AUTO_MATCH_MIN_BPS
             and (not runner_up_bps or best_score_bps - runner_up_bps >= AUTO_MATCH_LEAD_BPS)
         ):
-            claimed_planned_ids.add(best_id)
+            matched_plan = next(planned for planned in candidates if str(planned["id"]) == best_id)
+            if not _is_explicit_chunk_payment(csv_ev, matched_plan):
+                claimed_planned_ids.add(best_id)
             results.append(MatchResult(
                 csv_event_id=str(csv_ev["id"]),
                 planned_event_id=best_id,
@@ -175,14 +201,7 @@ def _score_match_bps(
     # A smaller posted transaction can be a real chunk payment.  Do not treat
     # it as an automatic match until the vendor and date evidence later earn a
     # materially higher score than a normal whole-bill match.
-    planned_notes = " ".join(str(planned.get(field) or "") for field in ("notes", "description", "flexibility")).lower()
-    partial_allowed = any(token in planned_notes for token in ("chunk", "partial", "installment"))
-    partial_payment = bool(
-        pln_amt > 0
-        and 0 < csv_amt < pln_amt
-        and not amount_ok
-        and partial_allowed
-    )
+    partial_payment = _is_explicit_chunk_payment(csv_ev, planned) and not amount_ok
     if partial_payment:
         amount_ok = True
 

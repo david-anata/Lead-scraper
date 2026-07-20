@@ -356,7 +356,7 @@ class TestQBOUpload(_CashflowIntegrationBase):
             [(150_000, 150_000, "obligation"), (75_000, 75_000, "obligation")],
         )
 
-    def test_changed_qbo_invoice_blocks_new_rows_without_mutating_canonical_data(self):
+    def test_lower_qbo_open_balance_reconciles_and_allows_new_rows(self):
         from sales_support_agent.services.cashflow.upload import run_csv_upload
 
         run_csv_upload(QBO_CSV_BYTES)
@@ -371,14 +371,24 @@ class TestQBOUpload(_CashflowIntegrationBase):
 
         result = run_csv_upload(changed)
 
-        self.assertFalse(result.success)
-        self.assertEqual(result.rows_inserted, 0)
-        self.assertEqual(result.rows_skipped_review, 1)
-        self.assertEqual(self._row_count(), 2)
+        self.assertTrue(result.success)
+        self.assertEqual(result.rows_inserted, 1)
+        self.assertEqual(result.rows_skipped_review, 0)
+        self.assertEqual(self._row_count(), 3)
         with self.engine.connect() as conn:
             amount = conn.execute(text("""
                 SELECT amount_cents FROM cash_events
                 WHERE source='qbo-csv' AND source_id='qbo-ar-INV-001'
+            """)).scalar_one()
+            source_open = conn.execute(text("""
+                SELECT source_open_amount_cents FROM cash_events
+                WHERE source='qbo-csv' AND source_id='qbo-ar-INV-001'
+            """)).scalar_one()
+            settled = conn.execute(text("""
+                SELECT COALESCE(SUM(amount_cents), 0) FROM settlement_allocations
+                WHERE obligation_event_id=(
+                    SELECT id FROM cash_events WHERE source='qbo-csv' AND source_id='qbo-ar-INV-001'
+                )
             """)).scalar_one()
             new_count = conn.execute(text("""
                 SELECT COUNT(*) FROM cash_events
@@ -389,8 +399,10 @@ class TestQBOUpload(_CashflowIntegrationBase):
                 FROM finance_import_batches WHERE id=:id
             """), {"id": result.import_batch_id}).one()
         self.assertEqual(amount, 150_000)
-        self.assertEqual(new_count, 0)
-        self.assertEqual(tuple(batch), ("staged", 1, 1, 1))
+        self.assertEqual(source_open, 125_000)
+        self.assertEqual(settled, 25_000)
+        self.assertEqual(new_count, 1)
+        self.assertEqual(tuple(batch), ("posted", 1, 1, 0))
 
 
 # ---------------------------------------------------------------------------
