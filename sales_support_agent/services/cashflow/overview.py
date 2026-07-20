@@ -1138,6 +1138,7 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
             "id": str(_control_value(target, "id", "event_id", default="")),
             "party": str(_control_value(target, "party", "customer", "name", default="Customer")),
             "invoice_reference": str(_control_value(target, "invoice_reference", "reference", default="Invoice reference unavailable")),
+            "evidence_label": str(_control_value(target, "evidence_label", default="Receivable source")),
             "due_date": due.isoformat() if due else "",
             "days_overdue": max(0, _cents(_control_value(target, "days_overdue", default=0))),
             "timing": str(_control_value(target, "timing", default="Date unavailable")),
@@ -1149,11 +1150,14 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
         "total_count": max(0, _cents(_control_value(collections_raw, "total_count", "count", default=len(collections_targets)))),
         "overdue_count": max(0, _cents(_control_value(collections_raw, "overdue_count", default=0))),
         "overdue_open_cents": max(0, _cents(_control_value(collections_raw, "overdue_open_cents", default=0))),
+        "due_soon_count": max(0, _cents(_control_value(collections_raw, "due_soon_count", default=0))),
+        "due_soon_open_cents": max(0, _cents(_control_value(collections_raw, "due_soon_open_cents", default=0))),
         "collectible_14d_cents": max(0, _cents(_control_value(collections_raw, "collectible_14d_cents", "confirmed_cents", default=0))),
         "gap_cover_cents": max(0, _cents(_control_value(collections_raw, "gap_cover_cents", default=0))),
         "remaining_gap_after_collections_cents": max(0, _cents(_control_value(collections_raw, "remaining_gap_after_collections_cents", default=0))),
         "review_count": max(0, _cents(_control_value(collections_raw, "review_count", default=0))),
         "review_cents": max(0, _cents(_control_value(collections_raw, "review_cents", default=0))),
+        "next_collection": _control_value(collections_raw, "next_collection", default=None),
     }
     return {
         "cash": {
@@ -1429,17 +1433,20 @@ def _collections_html(collections: Mapping[str, Any], *, funding_gap_cents: int)
     targets = list(collections.get("targets") or [])
     overdue_count = int(collections.get("overdue_count") or 0)
     overdue_open = int(collections.get("overdue_open_cents") or 0)
+    due_soon_count = int(collections.get("due_soon_count") or 0)
+    due_soon_open = int(collections.get("due_soon_open_cents") or 0)
     collectible = int(collections.get("collectible_14d_cents") or 0)
     gap_cover = int(collections.get("gap_cover_cents") or 0)
     remaining_gap = int(collections.get("remaining_gap_after_collections_cents") or 0)
     review_count = int(collections.get("review_count") or 0)
     total_count = int(collections.get("total_count") or 0)
+    next_collection = collections.get("next_collection") or None
 
     if targets:
         rows = "".join(
             f"""
               <tr>
-                <td><strong>{html.escape(str(item['party']))}</strong><small>{html.escape(str(item['invoice_reference']))}</small></td>
+                <td><strong>{html.escape(str(item['party']))}</strong><small>{html.escape(str(item['invoice_reference']))} · {html.escape(str(item['evidence_label']))}</small></td>
                 <td>{html.escape(str(item['timing']))}</td>
                 <td class="amount-in">{_money(int(item['open_amount_cents']))}</td>
                 <td><button type="button" class="finance-text-action" data-open-collections data-collection-id="{html.escape(str(item['id']), quote=True)}">{html.escape(str(item['action_label']))}</button></td>
@@ -1474,17 +1481,27 @@ def _collections_html(collections: Mapping[str, Any], *, funding_gap_cents: int)
         f"{review_count} QBO receivable{'s' if review_count != 1 else ''} is excluded pending evidence review."
         if review_count else "Only invoices whose QBO balance agrees with settlement evidence are shown."
     )
+    next_copy = ""
+    if isinstance(next_collection, Mapping):
+        next_copy = (
+            f"Work first: {next_collection.get('party') or 'Customer'} · "
+            f"{next_collection.get('invoice_reference') or 'Invoice'} · "
+            f"{next_collection.get('timing') or 'Timing unavailable'} · "
+            f"{_money(int(next_collection.get('open_amount_cents') or 0))}."
+        )
     return f"""
       <section class="card finance-collections" aria-labelledby="collections-title">
         <div class="section-head finance-collections__head">
-          <div><p class="finance-eyebrow">Collections</p><h2 id="collections-title">Cash to collect</h2><p>Confirmed QBO receivables due in the next 14 days. This is potential income, not cash on hand. Showing {min(len(targets), total_count)} of {total_count}.</p></div>
+          <div><p class="finance-eyebrow">Collections</p><h2 id="collections-title">Overdue invoices and incoming cash</h2><p>Confirmed QBO receivables that are overdue or due in the next 14 days. This is potential income, not cash on hand. Showing {min(len(targets), total_count)} of {total_count}.</p></div>
           <button type="button" class="btn btn-secondary btn-sm" data-open-collections>View collections queue</button>
         </div>
         <div class="finance-collections__metrics">
           <div><span>Overdue open</span><strong class="{'amount-out' if overdue_open else ''}">{_money(overdue_open)}</strong><small>{overdue_count} overdue invoice{'s' if overdue_count != 1 else ''}</small></div>
+          <div><span>Due in 14 days</span><strong class="amount-in">{_money(due_soon_open)}</strong><small>{due_soon_count} dated invoice{'s' if due_soon_count != 1 else ''}</small></div>
           <div><span>Collectible in 14 days</span><strong class="amount-in">{_money(collectible)}</strong><small>QBO balance and settlement evidence agree</small></div>
           <div><span>Collection impact</span><strong>{_money(gap_cover)}</strong><small>{html.escape(coverage_copy)}</small>{f'<em>{html.escape(remaining_copy)}</em>' if remaining_copy else ''}</div>
         </div>
+        {f'<p class="finance-collections__next">{html.escape(next_copy)}</p>' if next_copy else ''}
         {list_html}
         <p class="finance-collections__note">{html.escape(review_copy)}</p>
       </section>"""

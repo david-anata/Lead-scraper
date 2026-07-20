@@ -212,6 +212,8 @@ def test_collections_block_distinguishes_overdue_receivables_from_cash_on_hand()
     state["collections"] = {
         "overdue_count": 1,
         "overdue_open_cents": 250_000,
+        "due_soon_count": 1,
+        "due_soon_open_cents": 550_000,
         "collectible_14d_cents": 800_000,
         "gap_cover_cents": 601_608,
         "remaining_gap_after_collections_cents": 0,
@@ -220,21 +222,31 @@ def test_collections_block_distinguishes_overdue_receivables_from_cash_on_hand()
             "id": "qbo-inv-42",
             "party": "Acme",
             "invoice_reference": "Invoice #INV-42",
+            "evidence_label": "QuickBooks Online balance",
             "timing": "4d overdue",
             "open_amount_cents": 250_000,
             "action_label": "Review collection",
         }],
+        "next_collection": {
+            "party": "Acme",
+            "invoice_reference": "Invoice #INV-42",
+            "timing": "4d overdue · Due 2026-07-10",
+            "open_amount_cents": 250_000,
+        },
     }
 
     page = _render([], state)
     collections = page[page.index('aria-labelledby="collections-title"'):page.index('aria-labelledby="smart-brief-title"')]
 
-    assert "Cash to collect" in collections
+    assert "Overdue invoices and incoming cash" in collections
     assert "This is potential income, not cash on hand." in collections
     assert "Overdue open" in collections
     assert "$2,500" in collections
     assert "Collectible in 14 days" in collections
+    assert "Due in 14 days" in collections
+    assert "Work first: Acme" in collections
     assert "Invoice #INV-42" in collections
+    assert "QuickBooks Online balance" in collections
     assert "Review collection" in collections
     assert "of the funding gap could be covered" in collections
     assert 'data-open-collections' in collections

@@ -256,11 +256,14 @@ def test_collections_summary_surfaces_only_evidence_safe_qbo_receivables():
     ]
     assert collections["targets"][0]["invoice_reference"] == "Invoice #INV-42"
     assert collections["overdue_open_cents"] == 40_000
+    assert collections["due_soon_open_cents"] == 75_000
+    assert collections["due_soon_count"] == 1
     assert collections["collectible_14d_cents"] == 115_000
     assert collections["gap_cover_cents"] == 80_000
     assert collections["remaining_gap_after_collections_cents"] == 0
     assert collections["review_count"] == 1
     assert collections["review_cents"] == 50_000
+    assert collections["next_collection"]["id"] == "qbo-inv-overdue"
 
 
 def test_metrics_reserve_every_bill_due_in_window_and_separate_later_exposure():

@@ -1235,6 +1235,11 @@ def build_collections_summary(
             "timing": timing,
             "open_amount_cents": open_amount,
             "source": "QBO",
+            "evidence_label": (
+                "QuickBooks Online balance"
+                if str(row.get("source") or "").lower() in {"qbo", "quickbooks"}
+                else "QBO Open Invoices CSV balance"
+            ),
             "collection_state": "overdue" if days_overdue else "due_soon",
             "action_label": "Review collection" if days_overdue else "Track receipt",
         })
@@ -1247,19 +1252,25 @@ def build_collections_summary(
         item["id"],
     ))
     overdue = [item for item in targets if item["days_overdue"]]
+    due_soon = [item for item in targets if not item["days_overdue"]]
     overdue_open = sum(item["open_amount_cents"] for item in overdue)
+    due_soon_open = sum(item["open_amount_cents"] for item in due_soon)
     collectible = sum(item["open_amount_cents"] for item in targets)
     gap_cover = min(max(0, funding_gap_cents), collectible)
     return {
         "targets": targets[:5],
+        "overdue_targets": overdue[:5],
         "total_count": len(targets),
         "overdue_count": len(overdue),
         "overdue_open_cents": overdue_open,
+        "due_soon_count": len(due_soon),
+        "due_soon_open_cents": due_soon_open,
         "collectible_14d_cents": collectible,
         "gap_cover_cents": gap_cover,
         "remaining_gap_after_collections_cents": max(0, funding_gap_cents - collectible),
         "review_count": review_count,
         "review_cents": review_cents,
+        "next_collection": overdue[0] if overdue else (due_soon[0] if due_soon else None),
     }
 
 

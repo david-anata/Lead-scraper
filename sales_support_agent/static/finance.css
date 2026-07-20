@@ -789,7 +789,7 @@ input:focus, select:focus, textarea:focus {
 
 .finance-collections__metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border: 1px solid var(--line);
   border-radius: 16px;
   overflow: hidden;
@@ -840,6 +840,7 @@ input:focus, select:focus, textarea:focus {
 .finance-collections__empty strong { color: var(--anata-ink); font-family: "Montserrat", sans-serif; }
 .finance-collections__empty p { font-size: 11px; }
 .finance-collections__note { margin: 0; }
+.finance-collections__next { margin: 0; padding: 10px 12px; color: var(--anata-ink); background: rgba(133, 187, 218, .12); border: 1px solid rgba(79, 132, 196, .2); border-radius: 12px; font-size: 11px; line-height: 1.45; }
 
 .finance-cash-metric {
   position: relative;
