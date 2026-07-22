@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -66,6 +67,16 @@ def _finance_settings(request: Request) -> Any:
     standalone sales-support app and focused route tests.
     """
     return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+
+
+def _plaid_client_user_id(user: Any) -> str:
+    """Return a stable opaque Plaid user ID without transmitting PII."""
+    if isinstance(user, dict):
+        identity = str(user.get("id") or user.get("email") or "finance-operator")
+    else:
+        identity = str(getattr(user, "id", "") or getattr(user, "email", "") or "finance-operator")
+    digest = hashlib.sha256(identity.strip().lower().encode("utf-8")).hexdigest()
+    return f"finance-{digest[:32]}"
 
 
 router = APIRouter(
@@ -332,7 +343,7 @@ async def plaid_link_token(request: Request):
     from sales_support_agent.services.cashflow.plaid import PlaidClient, PlaidError
 
     user = get_current_user(request) or {}
-    client_user_id = str(user.get("email") or user.get("id") or "finance-operator")
+    client_user_id = _plaid_client_user_id(user)
     try:
         token = await asyncio.to_thread(
             PlaidClient(_finance_settings(request)).create_link_token,

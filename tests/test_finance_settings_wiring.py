@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from sales_support_agent.api import cashflow_router
-from sales_support_agent.api.cashflow_router import _finance_settings
+from sales_support_agent.api.cashflow_router import _finance_settings, _plaid_client_user_id
 
 
 def test_finance_prefers_full_agent_settings_over_root_app_settings():
@@ -28,6 +28,16 @@ def test_finance_settings_falls_back_for_standalone_app():
     )
 
     assert _finance_settings(request) is standalone_settings
+
+
+def test_plaid_user_id_is_stable_and_contains_no_email_address():
+    first = _plaid_client_user_id({"email": "David@AnataInc.com"})
+    second = _plaid_client_user_id({"email": "david@anatainc.com"})
+
+    assert first == second
+    assert first.startswith("finance-")
+    assert "@" not in first
+    assert "david" not in first
 
 
 def test_plaid_link_loader_is_served_as_first_party_javascript(monkeypatch):
