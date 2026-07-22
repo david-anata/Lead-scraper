@@ -143,6 +143,11 @@ from sales_support_agent.api.fulfillment_deck_router import (  # noqa: E402
 app.include_router(_fulfillment_deck_admin_router)
 app.include_router(_fulfillment_deck_public_router)
 
+# Fulfillment public self-serve funnel — /api/public/fulfillment/* (taste +
+# unlock), shared-secret gated like the marketing intake routes.
+from sales_support_agent.api.fulfillment_public_router import router as _fulfillment_public_router  # noqa: E402
+app.include_router(_fulfillment_public_router)
+
 # Access admin UI — /admin/access (users list, role CRUD, guards all behind access.manage).
 from sales_support_agent.api.access_router import router as _access_router, _settings_router as _settings_router_  # noqa: E402
 app.include_router(_access_router)

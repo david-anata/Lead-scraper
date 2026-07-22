@@ -27,6 +27,7 @@ from sales_support_agent.api.fulfillment_deck_router import (
     admin_router as fulfillment_deck_admin_router,
     public_router as fulfillment_deck_public_router,
 )
+from sales_support_agent.api.fulfillment_public_router import router as fulfillment_public_router
 from sales_support_agent.api.router import router
 from sales_support_agent.config import load_settings
 from sales_support_agent.models.database import create_session_factory, init_cashflow_db, init_database
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(brand_analysis_public_router)
     app.include_router(fulfillment_deck_admin_router)
     app.include_router(fulfillment_deck_public_router)
+    app.include_router(fulfillment_public_router)
     app.include_router(access_router)
     app.include_router(_settings_router)
     app.include_router(hr_router)
