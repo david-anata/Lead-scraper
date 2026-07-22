@@ -6,6 +6,8 @@ by `hr.payroll`. Server-rendered HTML (no JSON API). POSTs redirect (303).
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -16,7 +18,10 @@ from sales_support_agent.services.hr.pages import (
     render_hr_dashboard,
     render_hr_employee_form,
     render_hr_employees,
+    render_hr_payroll_control,
+    render_hr_settings,
     render_hr_teams,
+    render_hr_time,
 )
 
 router = APIRouter(prefix="/admin/hr")
@@ -68,7 +73,7 @@ async def employee_create(
     new_id = store.create_employee(
         email=email, full_name=full_name, hr_role=hr_role, employee_type=employee_type,
         team_id=team_id or None, hourly_rate=hourly_rate, annual_salary=annual_salary,
-        phone=phone, status=status)
+        phone=phone, status=status, actor=user.get("email", "system"))
     if new_id is None:
         return HTMLResponse(render_hr_employee_form(
             {"email": email.strip().lower(), "full_name": full_name, "hr_role": hr_role,
@@ -104,7 +109,7 @@ async def employee_update(
     store.update_employee(emp_id, full_name=full_name, hr_role=hr_role,
                           employee_type=employee_type, team_id=team_id or None,
                           hourly_rate=hourly_rate, annual_salary=annual_salary,
-                          phone=phone, status=status)
+                          phone=phone, status=status, actor=user.get("email", "system"))
     return RedirectResponse("/admin/hr/employees?ok=updated", status_code=303)
 
 
@@ -127,13 +132,45 @@ async def team_create(
     return RedirectResponse("/admin/hr/teams?ok=team_created", status_code=303)
 
 
-# --- placeholders for later phases ----------------------------------------
+# --- time and PTO ----------------------------------------------------------
 
 @router.get("/time", response_class=HTMLResponse)
 async def hr_time(request: Request, user: dict = Depends(_guard)):
-    return HTMLResponse(render_hr_coming_soon(
-        "time", "Time & Timesheets",
-        "Clock in/out, manual time entry, and manager timesheet approval.", user=user))
+    email = (user.get("email") or "").strip().lower()
+    can_review = bool(user.get("is_superadmin") or "hr.payroll" in (user.get("permissions") or set()))
+    return HTMLResponse(render_hr_time(
+        store.list_time_entries(email), store.pto_summary(email),
+        store.list_pto_requests(None if can_review else email), store.current_clock(email),
+        user=user, flash=_flash(request)))
+
+
+@router.post("/time/clock")
+async def hr_time_clock(action: str = Form(""), user: dict = Depends(_guard)):
+    email = (user.get("email") or "").strip().lower()
+    ok, message = (store.clock_out(email, actor=email) if action == "out"
+                   else store.clock_in(email, actor=email))
+    key = "ok" if ok else "err"
+    return RedirectResponse(f"/admin/hr/time?{key}={message}", status_code=303)
+
+
+@router.post("/time/pto/{request_id}/decision")
+async def hr_pto_decision(request_id: int, decision: str = Form(""),
+                          user: dict = Depends(_pay_guard)):
+    actor = (user.get("email") or "").strip().lower()
+    ok = store.decide_pto(request_id, decision=decision, actor=actor)
+    return RedirectResponse(f"/admin/hr/time?{'ok=updated' if ok else 'err=invalid_request'}",
+                            status_code=303)
+
+
+@router.post("/time/pto")
+async def hr_pto_request(start_date: date = Form(...), end_date: date = Form(...),
+                         hours: float = Form(...), reason: str = Form(""),
+                         user: dict = Depends(_guard)):
+    email = (user.get("email") or "").strip().lower()
+    ok, message = store.create_pto_request(email, start_date=start_date, end_date=end_date,
+                                           hours=hours, reason=reason, actor=email)
+    key = "ok" if ok else "err"
+    return RedirectResponse(f"/admin/hr/time?{key}={message}", status_code=303)
 
 
 @router.get("/reports", response_class=HTMLResponse)
@@ -144,11 +181,9 @@ async def hr_reports(request: Request, user: dict = Depends(_guard)):
 
 @router.get("/payroll", response_class=HTMLResponse)
 async def hr_payroll(request: Request, user: dict = Depends(_pay_guard)):
-    return HTMLResponse(render_hr_coming_soon(
-        "payroll", "Payroll", "Run payroll: compute gross/taxes/net and pay employees.", user=user))
+    return HTMLResponse(render_hr_payroll_control(user=user))
 
 
 @router.get("/settings", response_class=HTMLResponse)
 async def hr_settings(request: Request, user: dict = Depends(_pay_guard)):
-    return HTMLResponse(render_hr_coming_soon(
-        "settings", "Payroll Settings", "Pay schedules, tax rates, and payroll configuration.", user=user))
+    return HTMLResponse(render_hr_settings(user=user))

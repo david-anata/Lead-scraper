@@ -93,6 +93,32 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(self._get("/admin/hr/employees", ck).status_code, 200)   # allowed
         self.assertEqual(self._get("/admin/hr/payroll", ck).status_code, 403)     # blocked
 
+    def test_time_clock_and_pto_pages_are_live(self):
+        page = self._get("/admin/hr/time", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Time &amp; PTO", page.text)
+        self.assertIn("Clock in", page.text)
+
+        punch = self._post("/admin/hr/time/clock", {"action": "in"}, self.sa)
+        self.assertEqual(punch.status_code, 303)
+        running = self._get("/admin/hr/time", self.sa)
+        self.assertIn("Clock out", running.text)
+        self._post("/admin/hr/time/clock", {"action": "out"}, self.sa)
+
+        request = self._post("/admin/hr/time/pto", {
+            "start_date": "2026-08-10", "end_date": "2026-08-10",
+            "hours": "4", "reason": "Appointment",
+        }, self.sa)
+        self.assertEqual(request.status_code, 303)
+        self.assertIn("Appointment", self._get("/admin/hr/time", self.sa).text)
+
+    def test_payroll_page_is_a_control_room_not_payment_claim(self):
+        page = self._get("/admin/hr/payroll", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Payroll control room", page.text)
+        self.assertIn("Not ready for final approval", page.text)
+        self.assertNotIn("compute gross/taxes/net and pay employees", page.text)
+
 
 if __name__ == "__main__":
     unittest.main()
