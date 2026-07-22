@@ -60,6 +60,7 @@ def serialize_public_matrix(summary: dict[str, Any], *, preview: bool) -> dict[s
                     "id": destination_id,
                     "label": zone_rates.dest_label or f"Zone {zone}",
                     "zone": zone,
+                    "zip": str(zone_rates.dest_zip or "")[:5],
                 }
                 coordinate = _coordinate(zone_rates.dest_zip)
                 if coordinate:
