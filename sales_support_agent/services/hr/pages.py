@@ -65,6 +65,26 @@ _HR_STYLES = """
   .hr-flash { background: #e6f4ec; color: #2e7d5b; border: 1px solid #2e7d5b33; border-radius: 10px; padding: 10px 14px; margin-bottom: 18px; font-size: 14px; }
   .hr-empty { padding: 40px; text-align: center; color: rgba(43,54,68,0.5); }
   .hr-soon { background: #fff; border: 1px dashed rgba(43,54,68,0.25); border-radius: 14px; padding: 48px; text-align: center; color: rgba(43,54,68,0.6); }
+  .hr-callout { background:#f3f8fb; border:1px solid #b8dce8; border-radius:14px; padding:18px 20px; margin-bottom:20px; }
+  .hr-callout.warn { background:#fff8e8; border-color:#e6bd62; }
+  .hr-kicker { font:700 11px Montserrat,Inter,sans-serif; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }
+  .hr-stack { display:grid; gap:14px; }
+  .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .hr-btn-danger { background:#8b3a32; }
+  @media (max-width: 768px) {
+    .hr-wrap { display:block; }
+    .hr-side { width:auto; padding:10px 14px; border-right:0; border-bottom:1px solid rgba(43,54,68,.1); overflow-x:auto; display:flex; gap:4px; }
+    .hr-side-title { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+    .hr-side a { white-space:nowrap; margin:0; }
+    .hr-main { padding:22px 16px 36px; }
+    .hr-grid2 { grid-template-columns:1fr; }
+    .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
+    .hr-actions { flex-direction:column; }
+    .hr-tbl, .hr-tbl tbody, .hr-tbl tr, .hr-tbl td { display:block; width:100%; box-sizing:border-box; }
+    .hr-tbl thead { display:none; }
+    .hr-tbl tr { padding:10px 0; border-bottom:1px solid rgba(43,54,68,.1); }
+    .hr-tbl td { border:0; padding:5px 14px; }
+  }
 """
 
 
@@ -110,6 +130,12 @@ def _flash(flash: Optional[str]) -> str:
         "updated": "✓ Employee saved.",
         "team_created": "✓ Team created.",
         "exists": "That email already has an employee record.",
+        "clocked_in": "Clocked in. Your paid time is running.",
+        "clocked_out": "Clocked out. Your time entry was saved.",
+        "already_clocked_in": "You are already clocked in.",
+        "not_clocked_in": "No open time entry was found.",
+        "pto_requested": "PTO request sent for approval.",
+        "invalid_request": "Check the PTO dates and requested hours.",
     }
     if not flash:
         return ""
@@ -257,3 +283,74 @@ def render_hr_coming_soon(active: str, title: str, blurb: str, *, user) -> str:
     </div>
     """
     return hr_shell(title, active, body, user=user)
+
+
+def render_hr_time(entries: list, pto: dict, pto_requests: list, current: Optional[dict], *, user, flash=None) -> str:
+    punch_action = "out" if current else "in"
+    punch_label = "Clock out" if current else "Clock in"
+    can_review = bool((user or {}).get("is_superadmin") or "hr.payroll" in ((user or {}).get("permissions") or set()))
+    rows = "".join(f"""<tr><td>{_esc(r['date'])}</td><td>{_esc(r['start_time'] or '—')}</td>
+      <td>{_esc(r['stop_time'] or 'Open')}</td><td>{r['hours']:.2f}</td><td>{_esc(r['employee_email'])}</td></tr>""" for r in entries)
+    if not rows:
+        rows = '<tr><td colspan="5" class="hr-empty">No time recorded yet.</td></tr>'
+    requests = "".join(f"""<tr><td>{_esc(r['employee_email'])}</td><td>{_esc(r['start_date'])}–{_esc(r['end_date'])}</td>
+      <td>{r['hours']:.2f}</td><td>{_esc(r['status'])}</td><td>{_esc(r['reason'] or '—')}</td><td>
+      {f'<form class="hr-inline" method="post" action="/admin/hr/time/pto/{r["id"]}/decision"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="denied">Deny</button></form>' if can_review and r['status'] == 'pending' else '—'}</td></tr>""" for r in pto_requests)
+    if not requests:
+        requests = '<tr><td colspan="6" class="hr-empty">No PTO requests yet.</td></tr>'
+    body = f"""
+    {_flash(flash)}
+    <h1 class="hr-h1">Time & PTO</h1>
+    <p class="hr-sub">Simple daily punches. Paid breaks stay inside the workday; no location is collected.</p>
+    <div class="hr-callout"><div class="hr-kicker">Your time clock</div>
+      <p>{'Clocked in. Your time is running.' if current else 'You are currently clocked out.'}</p>
+      <form method="post" action="/admin/hr/time/clock"><input type="hidden" name="action" value="{punch_action}">
+        <button class="hr-btn" type="submit">{punch_label}</button></form></div>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">{pto.get('available',0):.2f}</div><div class="l">PTO hours available</div></div>
+      <div class="hr-card"><div class="n">{pto.get('accrued',0):.2f}</div><div class="l">PTO hours accrued</div></div>
+      <div class="hr-card"><div class="n">{pto.get('used',0):.2f}</div><div class="l">PTO hours used</div></div>
+    </div>
+    <h2>Recent punches</h2><table class="hr-tbl"><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Employee</th></tr></thead><tbody>{rows}</tbody></table>
+    <h2 style="margin-top:28px">Request PTO</h2>
+    <form class="hr-form" method="post" action="/admin/hr/time/pto">
+      <div class="hr-grid2"><div><label for="pto-start">Start date</label><input id="pto-start" type="date" name="start_date" required></div>
+      <div><label for="pto-end">End date</label><input id="pto-end" type="date" name="end_date" required></div></div>
+      <label for="pto-hours">Hours requested</label><input id="pto-hours" type="number" min="0.25" max="40" step="0.25" name="hours" required>
+      <label for="pto-reason">Note (optional)</label><input id="pto-reason" name="reason" maxlength="500">
+      <div class="hr-actions"><button class="hr-btn" type="submit">Send request</button></div></form>
+    <h2 style="margin-top:28px">PTO requests</h2><table class="hr-tbl"><thead><tr><th>Employee</th><th>Dates</th><th>Hours</th><th>Status</th><th>Note</th><th>Decision</th></tr></thead><tbody>{requests}</tbody></table>
+    """
+    return hr_shell("Time & PTO", "time", body, user=user)
+
+
+def render_hr_payroll_control(*, user) -> str:
+    body = """
+    <h1 class="hr-h1">Payroll control room</h1>
+    <p class="hr-sub">Prepare the August 1–15 payroll for payment on August 20.</p>
+    <div class="hr-callout warn"><div class="hr-kicker">Not ready for final approval</div>
+      <h2 style="margin:6px 0">Opening payroll balances are required</h2>
+      <p style="margin-bottom:0">Import 2026 year-to-date wages and taxes, confirm the Utah unemployment rate, and establish a federal electronic payment route. Agent will not guess or mark taxes paid without a confirmation.</p></div>
+    <div class="hr-cards">
+      <div class="hr-card"><div class="n">Aug 20</div><div class="l">Next live payday</div></div>
+      <div class="hr-card"><div class="n">1–15</div><div class="l">Pay-period dates</div></div>
+      <div class="hr-card"><div class="n">Blocked</div><div class="l">Approval readiness</div></div>
+    </div>
+    <div class="hr-callout"><div class="hr-kicker">Approved operating rules</div>
+      <ul><li>Semimonthly: 1st–15th paid the 20th; 16th–month end paid the following 5th.</li>
+      <li>Saturday paydays move to Friday; Sunday paydays move to Monday.</li>
+      <li>Sunday–Saturday overtime week; overtime requires advance approval but worked overtime remains payable.</li>
+      <li>Printed/manual checks at launch. Each check number, void, and reissue is recorded.</li></ul></div>
+    """
+    return hr_shell("Payroll", "payroll", body, user=user)
+
+
+def render_hr_settings(*, user) -> str:
+    body = """
+    <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
+    <div class="hr-stack">
+      <div class="hr-callout"><div class="hr-kicker">PTO</div><h2>40-hour combined PTO bank</h2><p>Accrues 1 hour per 52 paid hours, usable after 90 days, capped at 40 hours. No negative balance. Unused PTO is not paid at separation unless a written agreement requires it.</p></div>
+      <div class="hr-callout"><div class="hr-kicker">Paid holidays</div><p>New Year's Day, Memorial Day, Independence Day, Labor Day, Thanksgiving, and Christmas. W-2 employees become eligible after 90 days.</p></div>
+      <div class="hr-callout"><div class="hr-kicker">Tax operations</div><p>Utah TAP access confirmed. Federal deposit schedule: semiweekly. EFTPS and Utah unemployment portal access remain setup checks.</p></div>
+    </div>"""
+    return hr_shell("Settings", "settings", body, user=user)

@@ -265,4 +265,33 @@ class HRHandbookAcknowledgement(Base):
     acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class HRPTORequest(Base):
+    """Employee PTO request; the event trail records every decision."""
+
+    __tablename__ = "hr_pto_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_email: Mapped[str] = mapped_column(String(255), index=True)
+    start_date: Mapped[date] = mapped_column(Date, index=True)
+    end_date: Mapped[date] = mapped_column(Date)
+    hours: Mapped[float] = mapped_column(Numeric(10, 2), default=0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    decided_by: Mapped[str] = mapped_column(String(255), default="")
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class HRAuditEvent(Base):
+    """Append-only evidence for HR writes, approvals, and payroll controls."""
+
+    __tablename__ = "hr_audit_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_email: Mapped[str] = mapped_column(String(255), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    entity_type: Mapped[str] = mapped_column(String(64), index=True)
+    entity_id: Mapped[str] = mapped_column(String(64), default="")
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
 Index("ix_hr_line_items_run_email", HRPayrollLineItem.payroll_run_id, HRPayrollLineItem.employee_email)

@@ -8,14 +8,16 @@ the form boundary so the rest of the app deals in dollars.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import get_engine
-from sales_support_agent.models.hr import HREmployee, HRTeam
+from sales_support_agent.models.hr import HRAuditEvent, HREmployee, HRPTORequest, HRTeam, HRTimeEntry
 
 
 @contextmanager
@@ -46,6 +48,13 @@ def cents_to_dollars(cents: Optional[int]) -> str:
 
 HR_ROLES = ("employee", "manager", "owner", "admin")
 EMPLOYEE_TYPES = ("hourly", "salaried", "contractor")
+
+
+def _audit(session: Session, actor: str, action: str, entity_type: str,
+           entity_id: object = "", details: Optional[dict] = None) -> None:
+    session.add(HRAuditEvent(actor_email=(actor or "system").strip().lower(), action=action,
+                             entity_type=entity_type, entity_id=str(entity_id or ""),
+                             details=details or {}))
 
 
 # --- employees -------------------------------------------------------------
@@ -93,7 +102,7 @@ def get_employee_by_email(email: str) -> Optional[dict]:
 def create_employee(*, email: str, full_name: str = "", hr_role: str = "employee",
                     employee_type: str = "hourly", team_id: Optional[str] = None,
                     hourly_rate: str = "0", annual_salary: str = "0",
-                    phone: str = "", status: str = "active") -> Optional[int]:
+                    phone: str = "", status: str = "active", actor: str = "system") -> Optional[int]:
     email = (email or "").strip().lower()
     if not email:
         return None
@@ -113,10 +122,11 @@ def create_employee(*, email: str, full_name: str = "", hr_role: str = "employee
         )
         s.add(e)
         s.flush()
+        _audit(s, actor, "employee.created", "employee", e.id, {"email": email})
         return e.id
 
 
-def update_employee(emp_id: int, **fields) -> bool:
+def update_employee(emp_id: int, *, actor: str = "system", **fields) -> bool:
     with _session() as s:
         e = s.get(HREmployee, emp_id)
         if not e:
@@ -138,6 +148,8 @@ def update_employee(emp_id: int, **fields) -> bool:
         if "status" in fields:
             e.status = "inactive" if fields["status"] == "inactive" else "active"
         e.updated_at = datetime.utcnow()
+        _audit(s, actor, "employee.updated", "employee", emp_id,
+               {"fields": sorted(k for k in fields if k not in {"ssn", "bank_account"})})
         return True
 
 
@@ -178,3 +190,123 @@ def dashboard_stats() -> dict:
                       .scalar() or 0)
         return {"total_employees": total, "active_employees": active,
                 "teams": teams, "onboarding_incomplete": onboarding}
+
+
+# --- daily time clock ------------------------------------------------------
+
+def list_time_entries(employee_email: Optional[str] = None, *, limit: int = 60) -> list:
+    with _session() as s:
+        q = s.query(HRTimeEntry)
+        if employee_email:
+            q = q.filter(HRTimeEntry.employee_email == employee_email.strip().lower())
+        rows = q.order_by(HRTimeEntry.date.desc(), HRTimeEntry.id.desc()).limit(limit).all()
+        return [{"id": r.id, "employee_email": r.employee_email, "date": r.date,
+                 "start_time": r.start_time, "stop_time": r.stop_time,
+                 "hours": float(r.hours or 0), "notes": r.notes,
+                 "is_open": bool(r.clocked_in_at and not r.stop_time)} for r in rows]
+
+
+def current_clock(employee_email: str) -> Optional[dict]:
+    email = (employee_email or "").strip().lower()
+    with _session() as s:
+        row = (s.query(HRTimeEntry).filter(HRTimeEntry.employee_email == email,
+                                           HRTimeEntry.clocked_in_at.is_not(None),
+                                           HRTimeEntry.stop_time == "")
+               .order_by(HRTimeEntry.id.desc()).first())
+        return ({"id": row.id, "clocked_in_at": row.clocked_in_at} if row else None)
+
+
+def clock_in(employee_email: str, *, actor: str) -> tuple[bool, str]:
+    email = (employee_email or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    local_now = now.astimezone(ANATA_TIMEZONE)
+    with _session() as s:
+        open_row = s.query(HRTimeEntry).filter(HRTimeEntry.employee_email == email,
+                                               HRTimeEntry.clocked_in_at.is_not(None),
+                                               HRTimeEntry.stop_time == "").first()
+        if open_row:
+            return False, "already_clocked_in"
+        row = HRTimeEntry(employee_email=email, date=local_now.date(),
+                          start_time=local_now.strftime("%H:%M"), clocked_in_at=now, hours=0)
+        s.add(row)
+        s.flush()
+        _audit(s, actor, "time.clock_in", "time_entry", row.id)
+        return True, "clocked_in"
+
+
+def clock_out(employee_email: str, *, actor: str) -> tuple[bool, str]:
+    email = (employee_email or "").strip().lower()
+    now = datetime.now(timezone.utc)
+    with _session() as s:
+        row = (s.query(HRTimeEntry).filter(HRTimeEntry.employee_email == email,
+                                           HRTimeEntry.clocked_in_at.is_not(None),
+                                           HRTimeEntry.stop_time == "")
+               .order_by(HRTimeEntry.id.desc()).first())
+        if not row:
+            return False, "not_clocked_in"
+        started = row.clocked_in_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        seconds = max(0, (now - started).total_seconds())
+        row.stop_time = now.astimezone(ANATA_TIMEZONE).strftime("%H:%M")
+        row.hours = Decimal(str(round(seconds / 3600, 4)))
+        _audit(s, actor, "time.clock_out", "time_entry", row.id,
+               {"hours": float(row.hours)})
+        return True, "clocked_out"
+
+
+# --- simple PTO policy -----------------------------------------------------
+
+PTO_ANNUAL_HOURS = 40.0
+PTO_ACCRUAL_DIVISOR = 52.0
+ANATA_TIMEZONE = ZoneInfo("America/Denver")
+
+
+def pto_summary(employee_email: str) -> dict:
+    email = (employee_email or "").strip().lower()
+    with _session() as s:
+        worked = s.query(func.coalesce(func.sum(HRTimeEntry.hours), 0)).filter(
+            HRTimeEntry.employee_email == email).scalar() or 0
+        used = s.query(func.coalesce(func.sum(HRPTORequest.hours), 0)).filter(
+            HRPTORequest.employee_email == email, HRPTORequest.status == "approved").scalar() or 0
+        accrued = min(PTO_ANNUAL_HOURS, float(worked) / PTO_ACCRUAL_DIVISOR)
+        return {"accrued": round(accrued, 2), "used": round(float(used), 2),
+                "available": round(max(0.0, accrued - float(used)), 2)}
+
+
+def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
+                       hours: float, reason: str, actor: str) -> tuple[bool, str]:
+    if end_date < start_date or hours <= 0:
+        return False, "invalid_request"
+    email = (employee_email or "").strip().lower()
+    with _session() as s:
+        row = HRPTORequest(employee_email=email, start_date=start_date, end_date=end_date,
+                           hours=Decimal(str(round(hours, 2))), reason=(reason or "").strip())
+        s.add(row)
+        s.flush()
+        _audit(s, actor, "pto.requested", "pto_request", row.id, {"hours": hours})
+        return True, "pto_requested"
+
+
+def list_pto_requests(employee_email: Optional[str] = None) -> list:
+    with _session() as s:
+        q = s.query(HRPTORequest)
+        if employee_email:
+            q = q.filter(HRPTORequest.employee_email == employee_email.strip().lower())
+        rows = q.order_by(HRPTORequest.created_at.desc()).limit(100).all()
+        return [{"id": r.id, "employee_email": r.employee_email,
+                 "start_date": r.start_date, "end_date": r.end_date,
+                 "hours": float(r.hours), "reason": r.reason, "status": r.status}
+                for r in rows]
+
+
+def decide_pto(request_id: int, *, decision: str, actor: str) -> bool:
+    if decision not in {"approved", "denied"}:
+        return False
+    with _session() as s:
+        row = s.get(HRPTORequest, request_id)
+        if not row or row.status != "pending":
+            return False
+        row.status, row.decided_by, row.decided_at = decision, actor, datetime.now(timezone.utc)
+        _audit(s, actor, f"pto.{decision}", "pto_request", row.id)
+        return True

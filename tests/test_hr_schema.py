@@ -25,6 +25,7 @@ _EXPECTED_TABLES = {
     "hr_pay_periods", "hr_time_entries", "hr_payroll_runs", "hr_payroll_line_items",
     "hr_paychecks", "hr_printed_checks", "hr_employee_handbooks",
     "hr_handbook_acknowledgements",
+    "hr_pto_requests", "hr_audit_events",
 }
 
 
