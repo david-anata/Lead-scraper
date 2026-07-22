@@ -795,6 +795,37 @@ class DeckGenerationService:
                 _est_rev = int(round(_est_units * _price_value))
                 target_revenue_label = f"~${_est_rev:,}"  # `~` flags it as derived
         target_dimensions = (hero_product.dimensions or (target_row.dimensions if target_row else "")).strip()
+        # PR-C2.3: replace the deterministic fixed-string SEO/CRO/creative recs
+        # with per-listing recommendations reasoned from the real product +
+        # keyword + competitor data when an Anthropic key is available. Any
+        # failure (no key, network, bad JSON) silently keeps the recs above.
+        try:
+            from sales_support_agent.services.deck.dataset import reason_listing_recommendations
+
+            _kw_phrases: list[str] = []
+            if keyword_report and keyword_report.keywords:
+                _kw_phrases.extend(k.phrase for k in keyword_report.keywords[:12])
+            if cerebro_report and cerebro_report.keywords:
+                _kw_phrases.extend(k.phrase for k in cerebro_report.keywords[:12])
+            _reasoned = reason_listing_recommendations(
+                brand_name=target_brand,
+                target_title=display_title,
+                category_label=resolved_category_label,
+                keyword_phrases=_kw_phrases,
+                competitor_titles=[p.title for p in primary_competitors[:6]],
+                price_label=target_price_label,
+                review_count=target_review_count,
+            )
+            if _reasoned:
+                if _reasoned.get("seo"):
+                    seo_recommendations = _reasoned["seo"]
+                if _reasoned.get("cro"):
+                    cro_recommendations = _reasoned["cro"]
+                if _reasoned.get("creative"):
+                    creative_recommendations = _reasoned["creative"]
+        except Exception:  # noqa: BLE001 - never break deck generation
+            pass
+
         target_state = _resolve_target_state(parsed_target["source_type"], target_row=target_row, hero_product=hero_product)
         target_strengths, target_gaps = _build_target_opportunities(
             comparison_mode=target_state,
@@ -1077,6 +1108,32 @@ class DeckGenerationService:
                 growth_plan_html = ""
         else:
             growth_plan_html = ""
+        # PR-C2.2: honest margin snapshot for the target listing section.
+        # Renders nothing when no price is available; every derived figure is
+        # labeled "estimated" (CLAUDE.md: no invented facts).
+        from sales_support_agent.services.deck.dataset import _build_margin_snapshot_html
+        margin_snapshot_html = _build_margin_snapshot_html(str(target.get("price", "") or ""))
+
+        # PR-C2.5: terminal advisement CTA. Present on the result page whenever
+        # MARKETING_BOOKING_URL is configured. Calm copy, no em-dashes.
+        _booking_url = str(getattr(self.settings, "marketing_booking_url", "") or "").strip()
+        advisement_cta_html = (
+            (
+                '<section class="advisement-cta" data-screen-label="Advisement call" '
+                'style="margin-top:32px;padding:28px;border-radius:16px;background:#0f2a1e;color:#f4f7f5">'
+                '<h2 style="margin:0 0 8px;font-size:20px;letter-spacing:-0.01em">Want a human to walk it with you?</h2>'
+                '<p style="margin:0 0 16px;font-size:14px;color:#c7d6cd;max-width:56ch">'
+                'Book a free advisement call and we will talk through these findings together, '
+                'no pressure and no obligation.</p>'
+                f'<a class="advisement-btn" href="{html.escape(_booking_url, quote=True)}" '
+                'target="_blank" rel="noreferrer" '
+                'style="display:inline-block;padding:12px 22px;border-radius:10px;background:#f4f7f5;'
+                'color:#0f2a1e;font-weight:700;text-decoration:none">Schedule a free advisement call →</a>'
+                '</section>'
+            )
+            if _booking_url
+            else ""
+        )
         monogram = self._load_brand_asset("assets/monogram.png")
         no_product_image = self._load_brand_asset("assets/no-product-image-available.png")
         stylesheet = self._load_brand_stylesheet()
@@ -1709,6 +1766,8 @@ class DeckGenerationService:
           <ul class="cklist bad">{target_gap_html}</ul>
         </div>
       </div>
+
+      {margin_snapshot_html}
     </section>
 
     <!-- ===== 03 COMPETITORS ===== -->
@@ -1814,6 +1873,8 @@ class DeckGenerationService:
     <!-- ===== 08 PROPOSED OFFERS (optional) ===== -->
     {_div_offers}
     {recommended_plan_html}
+
+    {advisement_cta_html}
 
   </main>
 </div>

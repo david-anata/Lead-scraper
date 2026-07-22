@@ -35,6 +35,7 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     ProspectProfile,
     RateMatrix,
     RATE_SOURCE_MOCK,
+    clean_segment,
     clean_zip,
 )
 from sales_support_agent.services.fulfillment_deck.sections import decide_sections
@@ -319,11 +320,14 @@ def _assemble(
     quote_margin_override: Optional[float] = None,
     rate_overrides: Optional[dict] = None,
     rate_card_note: str = "",
+    segment: str = "dfy",
+    suppress_fulfillment_pricing: bool = False,
 ) -> dict:
     """Shared back half: rates -> savings -> quote -> narrative -> HTML.
 
     Returns the summary fields that change whenever the profile changes.
     """
+    segment = clean_segment(segment)
     matrix, rate_warnings = build_rate_matrix(list(profile.products), origin, get_wms_client())
     warnings.extend(rate_warnings)
     if matrix.source == RATE_SOURCE_MOCK:
@@ -363,9 +367,13 @@ def _assemble(
         quote=fulfillment_quote,
         rate_overrides=rate_overrides or {},
         rate_card_note=rate_card_note or "",
+        segment=segment,
+        suppress_fulfillment_pricing=suppress_fulfillment_pricing,
     )
     return {
         "design_title": f"{profile.display_name} × Anata Rate Sheet",
+        "segment": segment,
+        "suppress_fulfillment_pricing": suppress_fulfillment_pricing,
         "prospect": profile.display_name,
         "deck_html": deck_html,
         "prospect_profile": profile.to_dict(),
@@ -377,6 +385,7 @@ def _assemble(
         "savings": savings,
         "fulfillment_quote": fulfillment_quote,
         "blend_method": blend_method,
+        "blended_rate": round(blended_rate, 2) if blended_rate else None,
         "avg_transit_days": round(avg_transit, 2) if avg_transit else None,
         "warnings": warnings,
     }
@@ -391,9 +400,19 @@ def generate_rate_sheet(
     origin_zip: str = "",
     brand_override: str = "",
     trigger: str = "admin_dashboard",
+    segment: str = "dfy",
+    max_products: int = 0,
+    suppress_fulfillment_pricing: bool = False,
 ) -> dict:
     """Run the full pipeline; persists a DRAFT and returns the summary
-    (incl. run_id + review_path)."""
+    (incl. run_id + review_path).
+
+    ``segment`` ("dfy"|"diy") drives the closer + invoice visibility and is
+    stored on the run's summary_json. ``max_products`` > 0 caps how many
+    products are rate-quoted for THIS render (a speed lever for the public
+    self-serve teaser); the FULL extracted product list is still persisted so a
+    later rerender/publish produces the complete sheet."""
+    segment = clean_segment(segment)
     run_id = storage.create_run(
         trigger=trigger,
         metadata={
@@ -450,10 +469,23 @@ def generate_rate_sheet(
         token = secrets.token_hex(16)
         view_path = f"/rate-sheets/{slug}/{run_id}/{token}"
 
+        # Speed lever for the public teaser: quote only the first N products for
+        # this render, but persist the full extracted catalog so a later
+        # rerender/publish yields the complete sheet.
+        assemble_profile = profile
+        if max_products and max_products > 0 and len(profile.products) > max_products:
+            assemble_profile = ProspectProfile.from_dict({
+                **profile.to_dict(),
+                "products": [p.to_dict() for p in profile.products[:max_products]],
+            })
+
         assembled = _assemble(
-            settings=settings, profile=profile, origin=origin,
-            warnings=warnings, view_path=view_path,
+            settings=settings, profile=assemble_profile, origin=origin,
+            warnings=warnings, view_path=view_path, segment=segment,
+            suppress_fulfillment_pricing=suppress_fulfillment_pricing,
         )
+        # Persist the FULL profile even when the teaser render was truncated.
+        assembled["prospect_profile"] = profile.to_dict()
 
         summary = {
             **assembled,
@@ -490,6 +522,8 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
         quote_margin_override=_opt_margin(summary.get("quote_margin_override")),
         rate_overrides=dict(summary.get("rate_overrides") or {}),
         rate_card_note=str(summary.get("rate_card_note") or ""),
+        segment=clean_segment(summary.get("segment")),
+        suppress_fulfillment_pricing=bool(summary.get("suppress_fulfillment_pricing")),
     )
     storage.update_summary(run_id, patch)
     summary.update(patch)
@@ -583,6 +617,8 @@ def apply_viewer_requote(
         quote=fulfillment_quote,
         rate_overrides=dict(summary.get("rate_overrides") or {}),
         rate_card_note=str(summary.get("rate_card_note") or ""),
+        segment=clean_segment(summary.get("segment")),
+        suppress_fulfillment_pricing=bool(summary.get("suppress_fulfillment_pricing")),
     )
     patch = {
         "prospect_profile": profile.to_dict(),

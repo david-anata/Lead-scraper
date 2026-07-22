@@ -426,6 +426,12 @@ def sync_new_prospect(run_id: int, summary: dict, prospect_profile: dict) -> Non
         "monthly_order_volume": prospect_profile.get("monthly_order_volume"),
         "prospect_profile": prospect_profile,
     })
+    # Funnel segment (dfy|diy) drives rep routing + the sheet closer. Surface it
+    # at the top of the deal brief so the rep sees it without opening the sheet.
+    segment = str(summary.get("segment") or "").strip().lower()
+    if segment in ("dfy", "diy"):
+        seg_label = "Done-for-you (full 3PL)" if segment == "dfy" else "Do-it-yourself (Shipping OS, own dock)"
+        brief = f"Segment: {segment.upper()} — {seg_label}\n{brief}"
     _bg(_do_sync_new, run_id, prospect, website, stage, round(pitched, 2), brief)
 
 

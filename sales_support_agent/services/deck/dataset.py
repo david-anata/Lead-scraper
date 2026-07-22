@@ -7,7 +7,9 @@ import csv
 import html
 import io
 import json
+import logging
 import mimetypes
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -440,6 +442,179 @@ def _build_creative_recommendations(target_row: XrayProduct | None, competitors:
     if target_row and not target_row.image_url:
         recommendations.append("Capture a clean primary listing image before the creative refresh so the deck has a stable hero asset.")
     return recommendations[:4]
+
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Margin snapshot (PR-C2.2)
+# ---------------------------------------------------------------------------
+# Amazon's published referral rate is 15% for most categories. FBA fulfillment
+# fees depend on the unit's size tier and weight, which the deck pipeline does
+# not reliably have, so we never fabricate an FBA dollar figure. We render the
+# referral estimate and margin-before-fulfillment when a price is present, and
+# clearly label every derived number as an estimate. When price is missing the
+# whole block renders nothing (CLAUDE.md: missing inputs render nothing).
+
+_AMAZON_REFERRAL_RATE = 0.15  # Amazon's published standard referral rate, most categories
+
+
+def _parse_price_value(price_label: str) -> float:
+    cleaned = str(price_label or "").strip()
+    if not cleaned:
+        return 0.0
+    # Grab the first monetary figure (handles "$29.99", "29.99", "~$1,234").
+    match = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", cleaned.replace(",", ""))
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return 0.0
+
+
+def _build_margin_snapshot_html(price_label: str) -> str:
+    """Render an honest margin snapshot from the target's list price.
+
+    Every derived figure is labeled 'estimated'. Amazon's 15% referral rate is
+    a published standard, not an invented number. FBA fulfillment is NOT
+    estimated (size/weight dependent and not available), so we surface it as a
+    call-time item rather than a fabricated figure. Returns '' when no price.
+    """
+    price = _parse_price_value(price_label)
+    if price <= 0:
+        return ""
+    referral_fee = price * _AMAZON_REFERRAL_RATE
+    margin_before_fulfillment = price - referral_fee
+
+    def _tile(lab: str, val: str, sub: str) -> str:
+        return (
+            f'<div class="margin-tile">'
+            f'<p class="lab">{html.escape(lab)}</p>'
+            f'<p class="val">${val}</p>'
+            f'<p class="sub">{html.escape(sub)}</p>'
+            f'</div>'
+        )
+
+    tiles = (
+        _tile("List price", f"{price:,.2f}", "from the live listing")
+        + _tile(
+            "Amazon referral fee",
+            f"{referral_fee:,.2f}",
+            "estimated at 15%, Amazon's published rate",
+        )
+        + _tile(
+            "Margin before fulfillment",
+            f"{margin_before_fulfillment:,.2f}",
+            "estimated, before FBA and COGS",
+        )
+    )
+    return (
+        '<div class="margin-snapshot" style="margin-top:24px">'
+        '<div class="card-h"><h3>Margin snapshot</h3>'
+        '<span class="meta">Estimated. Sharpened with your real COGS on a call.</span></div>'
+        f'<div class="margin-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">{tiles}</div>'
+        '<p class="margin-note" style="margin-top:10px;font-size:12px;color:#6b7280">'
+        'FBA fulfillment fees vary by size tier and weight, so we estimate those with your real '
+        'dimensions rather than guess here. COGS and shipping come from you.'
+        '</p>'
+        '</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# LLM-reasoned, per-listing recommendations (PR-C2.3)
+# ---------------------------------------------------------------------------
+# Reuses the same lazy-anthropic pattern as services/advertising/llm.py: read
+# the key from the environment, lazily import, and fall back silently to the
+# deterministic fixed-string recommendations on any error or when no key is
+# set. No new dependency, no new infra.
+
+_RECS_SYSTEM = (
+    "You are a senior Amazon listing strategist writing the recommendations section of a "
+    "strategy deck for a specific product. You are given the real product, its category, the "
+    "keyword set buyers use, and competitor titles. Write concrete, specific recommendations "
+    "that reason from THIS listing's data, not generic advice. Rules: second person (you, your). "
+    "Calm operator voice, no hype. Never use an em dash; use commas or periods. Do not invent "
+    "numbers, prices, review counts, or claims beyond the facts given. Return ONLY compact JSON "
+    'with exactly these keys: {"seo": [..], "cro": [..], "creative": [..]}. Each list holds 3 to '
+    "4 short strings. No markdown, no prose outside the JSON."
+)
+
+
+def reason_listing_recommendations(
+    *,
+    brand_name: str,
+    target_title: str,
+    category_label: str,
+    keyword_phrases: list[str],
+    competitor_titles: list[str],
+    price_label: str,
+    review_count: int | None,
+    api_key: str | None = None,
+    model: str = "claude-haiku-4-5-20251001",
+) -> dict[str, list[str]] | None:
+    """Return {'seo':[...], 'cro':[...], 'creative':[...]} reasoned from the
+    real listing data, or None to signal the caller to keep the deterministic
+    fixed-string recommendations. Never raises."""
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return None
+    if not (target_title or brand_name):
+        return None
+    facts = {
+        "brand": brand_name,
+        "product_title": target_title,
+        "category": category_label,
+        "top_keywords": [p for p in keyword_phrases[:12] if p],
+        "competitor_titles": [t for t in competitor_titles[:6] if t],
+        "price": price_label,
+        "review_count": review_count if review_count is not None else "",
+    }
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=key)
+        message = client.messages.create(
+            model=model,
+            max_tokens=900,
+            system=_RECS_SYSTEM,
+            messages=[{"role": "user", "content": f"FACTS: {json.dumps(facts)}"}],
+        )
+        raw = (message.content[0].text if message.content else "").strip()
+        if not raw:
+            return None
+        # Tolerate stray prose or code fences around the JSON.
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        parsed = json.loads(raw[start : end + 1])
+    except Exception:  # noqa: BLE001 - never break deck generation on the LLM
+        logger.debug("[deck] listing recommendation reasoning failed", exc_info=True)
+        return None
+
+    def _clean(items: Any) -> list[str]:
+        out: list[str] = []
+        if isinstance(items, list):
+            for item in items:
+                text = str(item).strip().replace("—", ",").replace("–", ",")
+                if text:
+                    out.append(text)
+        return out[:4]
+
+    result = {
+        "seo": _clean(parsed.get("seo")),
+        "cro": _clean(parsed.get("cro")),
+        "creative": _clean(parsed.get("creative")),
+    }
+    # Require at least one populated bucket, else keep the deterministic recs.
+    if not any(result.values()):
+        return None
+    return result
+
+
 def _build_channel_sections(channels: list[str]) -> list[dict[str, Any]]:
     rail = [
         {"label": "Amazon", "key": "amazon"},

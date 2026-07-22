@@ -51,6 +51,16 @@ _SERVICES_NEEDS = {"advertising", "strategy", "catalog", "creative", "fulfillmen
 # Hard ceiling on the cheap identity lookups so the intake endpoint stays fast.
 _IDENTITY_TIMEOUT_SECONDS = 25
 
+# PR-C2.1: prospect decks now always ship the 4-phase Growth Plan section.
+# Passing an empty dict (rather than None) makes parse_growth_plan_inputs fill
+# every field from its defaults, and the deck pipeline derives the product-
+# specific inputs it already has: average order value falls back to the target
+# listing price, and current sessions are reverse-engineered from the listing's
+# BSR-based unit estimate. No dollar targets are fabricated: where a real figure
+# is not derivable the phase model still renders (phases + what each does) using
+# published industry benchmarks that the section labels as directional.
+_PROSPECT_GROWTH_PLAN_INPUTS: dict[str, Any] = {}
+
 
 def _enforce_marketing_intake_key(request: Request, provided: Optional[str]) -> Optional[JSONResponse]:
     """Shared-secret gate (same header convention as the internal API key
@@ -201,7 +211,7 @@ def _run_analysis_and_deliver(
                 channels=list(DEFAULT_SERVICE_TABS),
                 offers=_normalize_offers([]),
                 include_recommended_plan=True,
-                growth_plan_inputs=None,
+                growth_plan_inputs=dict(_PROSPECT_GROWTH_PLAN_INPUTS),
                 trigger=trigger,
             )
             view_url = result.view_url
@@ -521,13 +531,74 @@ def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list
         logger.warning("[marketing_intake] HubSpot note failed for contact %s: %s", contact_id, exc)
 
 
+def _send_store_deck_email(settings, *, email: str, brand_name: str, domain: str, view_url: str) -> None:
+    """Store deck ready: email the tokenized deck URL plus the booking line."""
+    client = ResendClient(settings)
+    if not client.is_configured():
+        logger.warning("[marketing_intake] Resend not configured; skipping store deck email to %s", email)
+        return
+    booking_url = str(getattr(settings, "marketing_booking_url", "") or "").strip()
+    display = brand_name or domain
+    lines = [
+        "Hi,",
+        "",
+        f"Your Strategy Audit for {display} is ready. You can view it here:",
+        view_url,
+        "",
+    ]
+    if booking_url:
+        lines += [
+            "If you would like to walk through it with us on a free advisement call, you can book a time here:",
+            booking_url,
+            "",
+        ]
+    lines += ["Anata"]
+    client.send_message(
+        to=email,
+        subject="Your Anata Strategy Audit is ready",
+        text="\n".join(lines),
+    )
+
+
 def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, brand_name: str, needs: list[str], source: str) -> None:
-    """Background task for kind=store unlock: no deck, just ack email + HubSpot."""
+    """Background task for kind=store unlock (Phase 3D).
+
+    Builds a real store / DTC strategy deck from the store URL, reusing the
+    existing deck pipeline in its website (DTC) mode. That mode populates the
+    sections store data can honestly fill (identity, market read,
+    recommendations, growth plan) and omits the Amazon-only competitor pulls,
+    since no ASIN/Xray exists for a store URL. On any failure it falls back to
+    the original acknowledgement email so the lead is never dropped.
+    """
     settings = app.state.settings
+    view_url = ""
+    store_url = f"https://{domain}" if domain and not domain.startswith("http") else (domain or "")
+    if store_url:
+        try:
+            from sales_support_agent.services.deck.formatting import DEFAULT_SERVICE_TABS, _normalize_offers
+
+            with session_scope(app.state.session_factory) as session:
+                result = DeckGenerationService(settings, session).generate_deck(
+                    target_product_input=store_url,
+                    competitor_xray_csv_payloads=[],
+                    keyword_xray_csv_payloads=[],
+                    channels=list(DEFAULT_SERVICE_TABS),
+                    offers=_normalize_offers([]),
+                    include_recommended_plan=True,
+                    growth_plan_inputs=dict(_PROSPECT_GROWTH_PLAN_INPUTS),
+                    trigger="marketing_site_store",
+                )
+                view_url = result.view_url
+        except Exception as exc:  # noqa: BLE001 - fall back to the ack email
+            logger.error("[marketing_intake] store deck generation failed for %s: %s", domain, exc, exc_info=True)
+
     try:
-        _send_store_ack_email(settings, email=email, brand_name=brand_name, domain=domain)
+        if view_url:
+            _send_store_deck_email(settings, email=email, brand_name=brand_name, domain=domain, view_url=view_url)
+        else:
+            _send_store_ack_email(settings, email=email, brand_name=brand_name, domain=domain)
     except Exception:  # noqa: BLE001
-        logger.exception("[marketing_intake] store ack email failed for %s", email)
+        logger.exception("[marketing_intake] store email failed for %s", email)
     try:
         _record_store_hubspot_lead(settings, email=email, domain=domain, needs=needs, source=source)
     except Exception:  # noqa: BLE001
@@ -539,7 +610,11 @@ def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, b
                 AuditService(session).finish_run(
                     run,
                     status="success",
-                    summary={**(run.summary_json or {}), "delivered": "store_ack"},
+                    summary={
+                        **(run.summary_json or {}),
+                        "delivered": "store_deck" if view_url else "store_ack",
+                        "view_url": view_url,
+                    },
                 )
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] failed to update intake run %s", intake_run_id)
@@ -760,7 +835,12 @@ async def marketing_site_intake_unlock(
         needs = [str(n) for n in (summary.get("needs") or [])]
         source = str((run.metadata_json or {}).get("source", "") or "")
         # Record the email on the run so the shared daily gate sees it.
-        run.metadata_json = {**(run.metadata_json or {}), "email": email.lower()}
+        consent_version = str(body.get("consent_version", "") or "").strip()[:64]
+        run.metadata_json = {
+            **(run.metadata_json or {}),
+            "email": email.lower(),
+            **({"consent_version": consent_version} if consent_version else {}),
+        }
         session.add(run)
         run_id = run.id
 

@@ -853,28 +853,25 @@ def _render_fee_schedule_section(
 
 
 def _render_partner_section(
-    shipping_os_icon: str = "", fulfillment_icon: str = "", sec: str = "05"
+    shipping_os_icon: str = "", fulfillment_icon: str = "", sec: str = "05",
+    segment: str = "dfy",
 ) -> str:
     """Two ways to ship on these rates: full 3PL or Anata Shipping OS.
 
     v5 balance pass: both cards get a 64px icon and their own CTA pill, equal
     heights via flex stretch, and matched bullet counts so neither card has
-    trailing dead space."""
+    trailing dead space.
+
+    Segment "diy" leads with the Anata Shipping OS (try-free) card, since a DIY
+    prospect keeps fulfillment in-house on their own dock and just wants these
+    negotiated carrier rates. "dfy" keeps the full-3PL card first."""
     icon_html = (
         f'<div class="offer-icon">{shipping_os_icon}</div>' if shipping_os_icon else ""
     )
     fulfillment_icon_html = (
         f'<div class="offer-icon">{fulfillment_icon}</div>' if fulfillment_icon else ""
     )
-    return f"""
-    <section class="slide" id="sec-{sec}" data-key="partner" data-screen-label="{sec} Partner with Anata">
-      <header class="slide-head">
-        <div class="heading-stack">
-          <p class="eyebrow">Partner with Anata</p>
-          <h2 class="slide-title">Two ways to ship on these rates</h2>
-        </div>
-      </header>
-      <div class="offer-cards">
+    fulfillment_card = f"""
         <div class="offer-card">
           {fulfillment_icon_html}
           <h4>Anata Fulfillment</h4>
@@ -886,7 +883,8 @@ def _render_partner_section(
             <li>Lot control &amp; expiry tracking built in</li>
           </ul>
           <a class="os-cta" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Book a scoping call →</a>
-        </div>
+        </div>"""
+    shipping_os_card = f"""
         <div class="offer-card">
           {icon_html}
           <h4>Anata Shipping OS</h4>
@@ -897,16 +895,39 @@ def _render_partner_section(
             <li>Multi-channel order sync</li>
           </ul>
           <a class="os-cta" href="https://app.anatainc.com/register" target="_blank" rel="noreferrer">Try for free →</a>
-        </div>
-      </div>
-      <p class="coming-banner">Coming soon: additional Anata fulfillment locations — multi-node placement compresses your zones and lowers these rates further.</p>
-      <div class="next-steps" style="margin-top:18px;grid-template-columns:1fr">
+        </div>"""
+
+    if segment == "diy":
+        cards = shipping_os_card + fulfillment_card
+        next_step = """
+        <div class="next-step cta">
+          <span class="num">Next step</span>
+          <h4>Ship on these rates today</h4>
+          <p>Start free on Anata Shipping OS and print your first labels from your own dock at the rates above. No contract to get going.</p>
+          <a class="link" href="https://app.anatainc.com/register" target="_blank" rel="noreferrer">Start free →</a>
+        </div>"""
+    else:
+        cards = fulfillment_card + shipping_os_card
+        next_step = """
         <div class="next-step cta">
           <span class="num">Next step</span>
           <h4>Lock these rates in</h4>
           <p>Reply to the email this sheet came with, or grab time with the team — onboarding takes under two weeks.</p>
           <a class="link" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Talk to Anata →</a>
+        </div>"""
+
+    return f"""
+    <section class="slide" id="sec-{sec}" data-key="partner" data-screen-label="{sec} Partner with Anata">
+      <header class="slide-head">
+        <div class="heading-stack">
+          <p class="eyebrow">Partner with Anata</p>
+          <h2 class="slide-title">Two ways to ship on these rates</h2>
         </div>
+      </header>
+      <div class="offer-cards">{cards}
+      </div>
+      <p class="coming-banner">Coming soon: additional Anata fulfillment locations — multi-node placement compresses your zones and lowers these rates further.</p>
+      <div class="next-steps" style="margin-top:18px;grid-template-columns:1fr">{next_step}
       </div>
     </section>"""
 
@@ -1251,7 +1272,10 @@ def render_rate_sheet_html(
     quote: Optional[dict] = None,
     rate_overrides: Optional[dict] = None,
     rate_card_note: str = "",
+    segment: str = "dfy",
+    suppress_fulfillment_pricing: bool = False,
 ) -> str:
+    segment = "diy" if str(segment or "").strip().lower() == "diy" else "dfy"
     monogram = load_brand_asset(settings, "assets/monogram.png")
     # Anata Shipping OS brand mark (the arrow logo David supplied).
     shipping_os_icon = load_brand_asset(settings, "assets/shipping-os-icon.png")
@@ -1259,8 +1283,12 @@ def render_rate_sheet_html(
     favicon_link = load_brand_favicon_link(settings)
     title = f"{profile.display_name} × Anata — Fulfillment Rate Sheet"
     og_description = (
-        f"Live carrier rates, transit times, and a line-item fulfillment "
-        f"estimate prepared for {profile.display_name} by Anata."
+        f"Live carrier rates and transit times prepared for {profile.display_name} by Anata."
+        if suppress_fulfillment_pricing
+        else (
+            f"Live carrier rates, transit times, and a line-item fulfillment "
+            f"estimate prepared for {profile.display_name} by Anata."
+        )
     )
     narrative = narrative or NarrativeBlock()
 
@@ -1284,13 +1312,17 @@ def render_rate_sheet_html(
         _add("The monthly math", lambda sec: _render_monthly_math_section(
             profile, matrix, narrative, savings, blended_rate, blend_method, sec))
     # Full rate card: every fee answered deterministically before the estimate.
-    _add("Full rate card", lambda sec: _render_fee_schedule_section(
-        sec, rate_overrides or {}, rate_card_note or ""))
-    # The estimated invoice sits immediately AFTER the rate card and BEFORE the partner closer.
-    _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
+    if not suppress_fulfillment_pricing:
+        _add("Full rate card", lambda sec: _render_fee_schedule_section(
+            sec, rate_overrides or {}, rate_card_note or ""))
+    # The estimated invoice sits immediately AFTER the rate card and BEFORE the
+    # partner closer. DIY prospects ship from their own dock, so the line-item
+    # 3PL invoice is hidden for that segment.
+    if segment != "diy" and not suppress_fulfillment_pricing:
+        _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
     if flags.about_anata:
         _add("Partner with Anata", lambda sec: _render_partner_section(
-            shipping_os_icon, monogram, sec))
+            shipping_os_icon, monogram, sec, segment))
 
     last_sec_id = sections[-1][0] if sections else "sec-01"
     rail_items = "".join(

@@ -32,6 +32,20 @@ PRODUCT_CATEGORIES = (
     "beauty", "supplements", "apparel", "food", "electronics", "home", "other",
 )
 
+# Prospect funnel segment. "dfy" (done-for-you) = full Anata 3PL: we ship from
+# our dock, the sheet shows the line-item fulfillment invoice. "diy"
+# (do-it-yourself) = same negotiated carrier rates, the prospect ships from
+# their OWN origin ZIP on Anata Shipping OS; the invoice section is hidden and
+# the closer leads with the try-free Shipping OS offer.
+SEGMENTS = ("dfy", "diy")
+DEFAULT_SEGMENT = "dfy"
+
+
+def clean_segment(value: object) -> str:
+    """Normalize a funnel segment to one of SEGMENTS; unknown -> DEFAULT_SEGMENT."""
+    v = str(value or "").strip().lower()
+    return v if v in SEGMENTS else DEFAULT_SEGMENT
+
 
 def clean_zip(value: object) -> Optional[str]:
     """Normalize a US ZIP to 5 digits, or None."""
