@@ -1273,6 +1273,7 @@ def render_rate_sheet_html(
     rate_overrides: Optional[dict] = None,
     rate_card_note: str = "",
     segment: str = "dfy",
+    suppress_fulfillment_pricing: bool = False,
 ) -> str:
     segment = "diy" if str(segment or "").strip().lower() == "diy" else "dfy"
     monogram = load_brand_asset(settings, "assets/monogram.png")
@@ -1282,8 +1283,12 @@ def render_rate_sheet_html(
     favicon_link = load_brand_favicon_link(settings)
     title = f"{profile.display_name} × Anata — Fulfillment Rate Sheet"
     og_description = (
-        f"Live carrier rates, transit times, and a line-item fulfillment "
-        f"estimate prepared for {profile.display_name} by Anata."
+        f"Live carrier rates and transit times prepared for {profile.display_name} by Anata."
+        if suppress_fulfillment_pricing
+        else (
+            f"Live carrier rates, transit times, and a line-item fulfillment "
+            f"estimate prepared for {profile.display_name} by Anata."
+        )
     )
     narrative = narrative or NarrativeBlock()
 
@@ -1307,12 +1312,13 @@ def render_rate_sheet_html(
         _add("The monthly math", lambda sec: _render_monthly_math_section(
             profile, matrix, narrative, savings, blended_rate, blend_method, sec))
     # Full rate card: every fee answered deterministically before the estimate.
-    _add("Full rate card", lambda sec: _render_fee_schedule_section(
-        sec, rate_overrides or {}, rate_card_note or ""))
+    if not suppress_fulfillment_pricing:
+        _add("Full rate card", lambda sec: _render_fee_schedule_section(
+            sec, rate_overrides or {}, rate_card_note or ""))
     # The estimated invoice sits immediately AFTER the rate card and BEFORE the
     # partner closer. DIY prospects ship from their own dock, so the line-item
     # 3PL invoice is hidden for that segment.
-    if segment != "diy":
+    if segment != "diy" and not suppress_fulfillment_pricing:
         _add("Estimated invoice", lambda sec: _render_quote_section(profile, quote, sec))
     if flags.about_anata:
         _add("Partner with Anata", lambda sec: _render_partner_section(

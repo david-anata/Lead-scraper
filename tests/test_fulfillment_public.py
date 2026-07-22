@@ -119,17 +119,23 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
 
     def test_taste_returns_teaser_fields_without_email_or_sheet(self) -> None:
         data = self._taste("dfy")
-        # Teaser shape: exactly these keys, nothing more.
+        # Teaser shape: exactly these safe public keys, nothing more.
         self.assertEqual(
             set(data),
-            {"run_id", "token", "blended_rate", "avg_transit_days", "product_count", "brand_name"},
+            {
+                "run_id", "token", "carrier_rate", "avg_transit_days", "rates_source",
+                "excludes_3pl_fees", "product_count", "brand_name",
+            },
         )
         self.assertTrue(data["token"])
         self.assertEqual(data["brand_name"], "TabCo")
         # Full catalog (4) persisted even though only 3 were rate-quoted.
         self.assertEqual(data["product_count"], 4)
         self.assertNotIn("deck_html", data)
-        self.assertGreater(float(data["blended_rate"]), 0)
+        self.assertIsNone(data["carrier_rate"])
+        self.assertIsNone(data["avg_transit_days"])
+        self.assertEqual(data["rates_source"], "unavailable")
+        self.assertTrue(data["excludes_3pl_fees"])
 
         # The draft run exists, is not public yet, and stored the full profile.
         run = storage.get_run(data["run_id"])
@@ -137,6 +143,7 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
         self.assertEqual(run.status, "draft")
         summary = dict(run.summary_json or {})
         self.assertEqual(summary["segment"], "dfy")
+        self.assertTrue(summary["suppress_fulfillment_pricing"])
         self.assertEqual(len(summary["prospect_profile"]["products"]), 4)
         self.assertEqual(summary.get("public_source"), "hero")
 
@@ -147,6 +154,15 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
             headers=_HEADERS,
         )
         self.assertEqual(resp.status_code, 400)
+
+    def test_diy_taste_requires_valid_origin_zip(self) -> None:
+        resp = self.client.post(
+            "/api/public/fulfillment/rate-sheet/taste",
+            json={"url": "https://tabco.example", "segment": "diy"},
+            headers=_HEADERS,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("ship-from ZIP", resp.json()["detail"])
 
     def test_taste_honeypot_returns_building_without_work(self) -> None:
         before = len(storage.list_runs())
@@ -163,40 +179,22 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
     # Unlock -> publish + deliver + segment
     # ------------------------------------------------------------------
 
-    def test_unlock_publishes_would_email_and_tags_segment(self) -> None:
+    def test_unlock_rejects_sample_rates(self) -> None:
         taste = self._taste("dfy")
-        run_id, token = taste["run_id"], taste["token"]
-
-        with mock.patch.object(P, "_send_unlock_email") as email_mock:
-            resp = self.client.post(
-                "/api/public/fulfillment/rate-sheet/unlock",
-                json={
-                    "run_id": run_id,
-                    "token": token,
-                    "email": "buyer@tabco.com",
-                    "monthly_orders": 1200,
-                },
-                headers=_HEADERS,
-            )
-        self.assertEqual(resp.status_code, 202, resp.text)
-        self.assertEqual(resp.json(), {"status": "building"})
-
-        # BackgroundTasks run synchronously under TestClient: sheet is published.
-        run = storage.get_run(run_id)
-        self.assertEqual(run.status, "completed")
-        summary = dict(run.summary_json or {})
-        # Segment tagged on the published run.
-        self.assertEqual(summary["segment"], "dfy")
-        # Refinement applied.
-        self.assertEqual(summary["prospect_profile"]["monthly_order_volume"], 1200)
-        self.assertEqual(summary.get("public_unlock_email"), "buyer@tabco.com")
-
-        # Would-email the tokenized absolute view URL.
-        email_mock.assert_called_once()
-        kwargs = email_mock.call_args.kwargs
-        self.assertEqual(kwargs["email"], "buyer@tabco.com")
-        self.assertIn(token, kwargs["view_url"])
-        self.assertTrue(kwargs["view_url"].startswith("https://agent.anatainc.com/rate-sheets/"))
+        resp = self.client.post(
+            "/api/public/fulfillment/rate-sheet/unlock",
+            json={
+                "run_id": taste["run_id"],
+                "token": taste["token"],
+                "email": "buyer@tabco.com",
+                "monthly_orders": 1200,
+            },
+            headers=_HEADERS,
+        )
+        self.assertEqual(resp.status_code, 503, resp.text)
+        self.assertIn("Live carrier rates", resp.json()["detail"])
+        run = storage.get_run(taste["run_id"])
+        self.assertEqual(run.status, "draft")
 
     def test_unlock_rejects_bad_token(self) -> None:
         taste = self._taste("dfy")
@@ -220,13 +218,26 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
     # DIY variant
     # ------------------------------------------------------------------
 
-    def test_diy_hides_invoice_and_leads_with_shipping_os(self) -> None:
-        taste = self._taste("diy")
+    def test_diy_hides_all_3pl_pricing_and_leads_with_shipping_os(self) -> None:
+        resp = self.client.post(
+            "/api/public/fulfillment/rate-sheet/taste",
+            json={
+                "url": "https://tabco.example",
+                "segment": "diy",
+                "origin_zip": "10001",
+                "source": "hero",
+            },
+            headers=_HEADERS,
+        )
+        self.assertEqual(resp.status_code, 202, resp.text)
+        taste = resp.json()
         run = storage.get_run(taste["run_id"])
         summary = dict(run.summary_json or {})
         self.assertEqual(summary["segment"], "diy")
+        self.assertEqual(summary["origin_zip"], "10001")
         html = summary["deck_html"]
-        # The line-item 3PL invoice section is hidden for DIY.
+        # No public funnel sheet may expose unapproved 3PL fees.
+        self.assertNotIn('data-key="fee-schedule"', html)
         self.assertNotIn('data-key="quote"', html)
         self.assertNotIn("Your estimated monthly invoice", html)
         # Closer leads with the try-free Shipping OS offer.
@@ -236,12 +247,13 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
         pos_ff = html.find("Anata Fulfillment")
         self.assertLess(pos_os, pos_ff)  # Shipping OS card comes first
 
-    def test_dfy_keeps_invoice_section(self) -> None:
+    def test_public_dfy_hides_all_3pl_pricing(self) -> None:
         taste = self._taste("dfy")
         run = storage.get_run(taste["run_id"])
         html = dict(run.summary_json or {})["deck_html"]
-        self.assertIn('data-key="quote"', html)
-        self.assertIn("Your estimated monthly invoice", html)
+        self.assertNotIn('data-key="fee-schedule"', html)
+        self.assertNotIn('data-key="quote"', html)
+        self.assertNotIn("Your estimated monthly invoice", html)
         # DFY leads with the full-3PL card.
         pos_ff = html.find("Anata Fulfillment")
         pos_os = html.find("Anata Shipping OS")

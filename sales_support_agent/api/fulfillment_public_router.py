@@ -9,7 +9,7 @@ Two steps, wrapped around the SAME rate-sheet engine the rep-driven admin
 generator uses (``services.fulfillment_deck.service``):
 
   POST /api/public/fulfillment/rate-sheet/taste
-      {url, segment:"dfy"|"diy", source?} -> extraction + a TRIMMED rate pass
+      {url, segment:"dfy"|"diy", origin_zip?, source?} -> extraction + a TRIMMED rate pass
       (a few products, for speed), saves a DRAFT run, and returns TEASER fields
       only (blended rate, transit, product/brand). No full sheet, no email.
 
@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from sales_support_agent.config import load_settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.fulfillment_deck import storage
-from sales_support_agent.services.fulfillment_deck.schema import clean_segment, clean_zip
+from sales_support_agent.services.fulfillment_deck.schema import RATE_SOURCE_WMS, clean_segment, clean_zip
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
     generate_rate_sheet,
@@ -107,6 +107,12 @@ async def rate_sheet_taste(
     if not url or len(url) > 2048:
         return JSONResponse(status_code=400, content={"detail": "url is required (your store or product page)."})
     segment = clean_segment(body.get("segment"))
+    origin_zip = str(body.get("origin_zip", "") or "").strip()
+    if segment == "diy" and clean_zip(origin_zip) is None:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "A valid ship-from ZIP is required when you ship from your own dock."},
+        )
     source = str(body.get("source", "") or "").strip()[:120]
 
     try:
@@ -115,9 +121,11 @@ async def rate_sheet_taste(
             notes="",
             files=[],
             website_url=url,
+            origin_zip=origin_zip if segment == "diy" else "",
             segment=segment,
             max_products=TASTE_MAX_PRODUCTS,
             trigger="public_funnel",
+            suppress_fulfillment_pricing=True,
         )
     except Exception as exc:  # noqa: BLE001 — never leak internals to the public
         logger.exception("[fulfillment_public] taste generation failed for %s", url[:120])
@@ -134,14 +142,21 @@ async def rate_sheet_taste(
     product_count = len(profile.get("products") or [])
     brand_name = str(result.get("prospect") or "").strip()
 
-    # TEASER FIELDS ONLY — no deck_html, no full profile, no email.
+    rates_source = str(result.get("rates_source") or "")
+    live_rates = rates_source == "wms"
+
+    # TEASER FIELDS ONLY — no deck_html, no full profile, no email. Mock/sample
+    # rates are useful for internal rendering tests but must never be presented
+    # to a public visitor as a real quote.
     return JSONResponse(
         status_code=202,
         content={
             "run_id": result["run_id"],
             "token": str(result.get("export_token") or ""),
-            "blended_rate": result.get("blended_rate"),
-            "avg_transit_days": result.get("avg_transit_days"),
+            "carrier_rate": result.get("blended_rate") if live_rates else None,
+            "avg_transit_days": result.get("avg_transit_days") if live_rates else None,
+            "rates_source": "live" if live_rates else "unavailable",
+            "excludes_3pl_fees": True,
             "product_count": product_count,
             "brand_name": brand_name,
         },
@@ -219,6 +234,15 @@ def _finish_unlock(
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] refinement/rerender failed for run %d", run_id)
 
+    refreshed = storage.get_run(run_id)
+    refreshed_summary = dict(refreshed.summary_json or {}) if refreshed is not None else {}
+    if str(refreshed_summary.get("rates_source") or "") != RATE_SOURCE_WMS:
+        logger.warning(
+            "[fulfillment_public] live rates unavailable after rerender for run %d; skipping publish and delivery",
+            run_id,
+        )
+        return
+
     published = False
     try:
         published = storage.publish_run(run_id)
@@ -287,6 +311,17 @@ async def rate_sheet_unlock(
     summary = dict(run.summary_json or {})
     if token != str(summary.get("export_token") or ""):
         return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
+    if str(summary.get("rates_source") or "") != RATE_SOURCE_WMS:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Live carrier rates are temporarily unavailable. Please build a new preview and try again."},
+        )
+    consent_version = str(body.get("consent_version", "") or "").strip()[:64]
+    if consent_version:
+        try:
+            storage.update_summary(run_id, {"consent_version": consent_version})
+        except Exception:  # noqa: BLE001
+            logger.debug("[fulfillment_public] consent persist failed", exc_info=True)
 
     monthly_orders: Optional[int] = None
     raw_orders = body.get("monthly_orders")

@@ -321,6 +321,7 @@ def _assemble(
     rate_overrides: Optional[dict] = None,
     rate_card_note: str = "",
     segment: str = "dfy",
+    suppress_fulfillment_pricing: bool = False,
 ) -> dict:
     """Shared back half: rates -> savings -> quote -> narrative -> HTML.
 
@@ -367,10 +368,12 @@ def _assemble(
         rate_overrides=rate_overrides or {},
         rate_card_note=rate_card_note or "",
         segment=segment,
+        suppress_fulfillment_pricing=suppress_fulfillment_pricing,
     )
     return {
         "design_title": f"{profile.display_name} × Anata Rate Sheet",
         "segment": segment,
+        "suppress_fulfillment_pricing": suppress_fulfillment_pricing,
         "prospect": profile.display_name,
         "deck_html": deck_html,
         "prospect_profile": profile.to_dict(),
@@ -399,6 +402,7 @@ def generate_rate_sheet(
     trigger: str = "admin_dashboard",
     segment: str = "dfy",
     max_products: int = 0,
+    suppress_fulfillment_pricing: bool = False,
 ) -> dict:
     """Run the full pipeline; persists a DRAFT and returns the summary
     (incl. run_id + review_path).
@@ -478,6 +482,7 @@ def generate_rate_sheet(
         assembled = _assemble(
             settings=settings, profile=assemble_profile, origin=origin,
             warnings=warnings, view_path=view_path, segment=segment,
+            suppress_fulfillment_pricing=suppress_fulfillment_pricing,
         )
         # Persist the FULL profile even when the teaser render was truncated.
         assembled["prospect_profile"] = profile.to_dict()
@@ -518,6 +523,7 @@ def rerender_rate_sheet(run_id: int, *, settings: Settings) -> dict:
         rate_overrides=dict(summary.get("rate_overrides") or {}),
         rate_card_note=str(summary.get("rate_card_note") or ""),
         segment=clean_segment(summary.get("segment")),
+        suppress_fulfillment_pricing=bool(summary.get("suppress_fulfillment_pricing")),
     )
     storage.update_summary(run_id, patch)
     summary.update(patch)
@@ -612,6 +618,7 @@ def apply_viewer_requote(
         rate_overrides=dict(summary.get("rate_overrides") or {}),
         rate_card_note=str(summary.get("rate_card_note") or ""),
         segment=clean_segment(summary.get("segment")),
+        suppress_fulfillment_pricing=bool(summary.get("suppress_fulfillment_pricing")),
     )
     patch = {
         "prospect_profile": profile.to_dict(),

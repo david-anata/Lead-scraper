@@ -835,7 +835,12 @@ async def marketing_site_intake_unlock(
         needs = [str(n) for n in (summary.get("needs") or [])]
         source = str((run.metadata_json or {}).get("source", "") or "")
         # Record the email on the run so the shared daily gate sees it.
-        run.metadata_json = {**(run.metadata_json or {}), "email": email.lower()}
+        consent_version = str(body.get("consent_version", "") or "").strip()[:64]
+        run.metadata_json = {
+            **(run.metadata_json or {}),
+            "email": email.lower(),
+            **({"consent_version": consent_version} if consent_version else {}),
+        }
         session.add(run)
         run_id = run.id
 
