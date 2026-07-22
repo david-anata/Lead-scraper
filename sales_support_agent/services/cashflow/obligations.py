@@ -132,6 +132,11 @@ def create_obligation(
     notes: str = "",
     recurring_template_id: Optional[str] = None,
     clickup_task_id: Optional[str] = None,
+    commitment_type: str = "general",
+    workflow_status: str = "draft",
+    owner: str = "",
+    approval_status: str = "not_required",
+    created_by: str = "system",
     db=None,  # legacy/unused — kept for backwards compatibility
 ) -> dict[str, Any]:
     """Insert a new manual CashEvent and return it as a dict."""
@@ -150,7 +155,8 @@ def create_obligation(
                     amount_cents, due_date, status, confidence, notes,
                     recurring_template_id, clickup_task_id,
                     bank_transaction_type, bank_reference,
-                    recurring_rule,
+                    recurring_rule, commitment_type, workflow_status, owner,
+                    approval_status, created_by,
                     created_at, updated_at
                 ) VALUES (
                     :id, 'manual', :id, :event_type, :category,
@@ -158,7 +164,8 @@ def create_obligation(
                     :amount_cents, :due_date, :status, :confidence, :notes,
                     :recurring_template_id, :clickup_task_id,
                     '', '',
-                    '',
+                    '', :commitment_type, :workflow_status, :owner,
+                    :approval_status, :created_by,
                     :now, :now
                 )
             """),
@@ -175,6 +182,11 @@ def create_obligation(
                 "notes": notes,
                 "recurring_template_id": recurring_template_id,
                 "clickup_task_id": clickup_task_id or "",
+                "commitment_type": commitment_type,
+                "workflow_status": workflow_status,
+                "owner": owner,
+                "approval_status": approval_status,
+                "created_by": created_by,
                 "now": now.isoformat(),
             },
         )
@@ -206,7 +218,8 @@ def update_obligation(event_id: str, **fields: Any) -> Optional[dict[str, Any]]:
     allowed = {
         "name", "event_type", "category", "vendor_or_customer",
         "amount_cents", "due_date", "status", "confidence",
-        "notes", "matched_to_id",
+        "notes", "matched_to_id", "commitment_type", "workflow_status",
+        "owner", "approval_status", "archived_at", "pay_priority",
     }
     safe = {k: v for k, v in fields.items() if k in allowed}
     if not safe:

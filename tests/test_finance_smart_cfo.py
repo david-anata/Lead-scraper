@@ -223,7 +223,7 @@ def test_qbo_actuals_refresh_is_visible_without_replacing_csv_cash_truth(monkeyp
     assert "QuickBooks%20actuals%20refreshed%3A%2012%20imported" in response.headers["location"]
 
 
-def test_connected_sources_refreshes_clickup_and_both_qbo_paths_without_csv(monkeypatch):
+def test_connected_sources_refreshes_qbo_without_clickup_or_bank_data(monkeypatch):
     app = FastAPI()
     app.state.settings = type("Settings", (), {"admin_session_secret": "test", "admin_cookie_name": "admin", "admin_session_ttl_hours": 1})()
     app.include_router(cashflow_router)
@@ -247,6 +247,6 @@ def test_connected_sources_refreshes_clickup_and_both_qbo_paths_without_csv(monk
     response = TestClient(app, follow_redirects=False).post("/admin/finances/sync-connected-sources")
 
     assert response.status_code == 303
-    assert called == ["clickup", "receivables", ("actuals", 365)]
-    assert "Connected%20sources%20refreshed" in response.headers["location"]
-    assert "Bank%20CSV%20was%20not%20changed" in response.headers["location"]
+    assert called == ["receivables", ("actuals", 365)]
+    assert "Accounting%20sources%20refreshed" in response.headers["location"]
+    assert "Connected%20bank%20data%20was%20not%20changed" in response.headers["location"]

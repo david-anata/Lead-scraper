@@ -100,7 +100,9 @@ class TestQBOAuthRoutes(unittest.TestCase):
         """The Render entrypoint must expose the same paths used by Finance UI."""
         from sales_support_agent.main import app
 
-        paths = {route.path for route in app.routes}
+        # FastAPI 0.120+ defers included routers behind private wrapper objects;
+        # the generated schema is the stable, flattened route contract.
+        paths = set(app.openapi()["paths"])
         self.assertIn("/admin/finances/qbo/connect", paths)
         self.assertIn("/admin/finances/qbo/callback", paths)
         self.assertIn("/admin/finances/qbo/disconnect", paths)

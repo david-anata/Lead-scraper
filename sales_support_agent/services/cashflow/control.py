@@ -122,6 +122,38 @@ def _is_transaction(row: Mapping[str, Any]) -> bool:
     return str(row.get("source") or "").lower() == "csv" or str(row.get("status") or "").lower() in TRANSACTION_STATUSES
 
 
+def _canonical_bank_history(
+    rows: Sequence[Mapping[str, Any]], *, as_of: date
+) -> list[tuple[Mapping[str, Any], date]]:
+    """Use Plaid from its first posted day and retain older CSV history only.
+
+    This lets a newly connected bank take over without double-counting an
+    overlapping CSV import, while preserving useful history from before Link.
+    Pending Plaid rows are visible in the ledger but never treated as evidence.
+    """
+    candidates: list[tuple[Mapping[str, Any], date]] = []
+    for row in rows:
+        source = str(row.get("source") or "").lower()
+        row_date = _actual_date(row)
+        status = str(row.get("status") or "posted").lower()
+        if source not in {"csv", "plaid"} or row_date is None or row_date > as_of:
+            continue
+        if status not in TRANSACTION_STATUSES:
+            continue
+        candidates.append((row, row_date))
+    plaid_start = min(
+        (row_date for row, row_date in candidates if str(row.get("source") or "").lower() == "plaid"),
+        default=None,
+    )
+    if plaid_start is None:
+        return candidates
+    return [
+        (row, row_date)
+        for row, row_date in candidates
+        if str(row.get("source") or "").lower() == "plaid" or row_date < plaid_start
+    ]
+
+
 def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     if _is_transaction(row):
         return False
@@ -257,10 +289,10 @@ def resolve_cash_snapshot(
     as_of: date,
     stale_after_days: int = 3,
 ) -> dict[str, Any]:
-    """Resolve the latest CSV balance; the first same-day row is closing cash."""
+    """Resolve the latest connected-bank or CSV closing balance."""
     candidates: list[tuple[int, Mapping[str, Any], date]] = []
     for index, row in enumerate(rows):
-        if str(row.get("source") or "").lower() != "csv" or row.get("account_balance_cents") is None:
+        if str(row.get("source") or "").lower() not in {"csv", "plaid"} or row.get("account_balance_cents") is None:
             continue
         row_date = _actual_date(row)
         if row_date is not None and row_date <= as_of:
@@ -439,10 +471,7 @@ def calculate_csv_trends(
     """Calculate bank-history trends after transfer and duplicate exclusion."""
     actuals: list[tuple[Mapping[str, Any], date]] = []
     excluded = 0
-    for row in rows:
-        row_date = _actual_date(row)
-        if not _is_transaction(row) or str(row.get("source") or "").lower() != "csv" or row_date is None or row_date > as_of:
-            continue
+    for row, row_date in _canonical_bank_history(rows, as_of=as_of):
         if str(row.get("category") or "").lower() == "transfer" or row.get("is_transfer") or _is_duplicate(row):
             excluded += 1
             continue
@@ -687,7 +716,7 @@ def _build_source_status(
     source_connections: Mapping[str, Any] | None,
 ) -> list[dict[str, Any]]:
     definitions = (
-        ("bank_csv", "Bank CSV", ("csv", "bank_csv", "bank csv"), {"csv"}),
+        ("bank_csv", "Bank CSV", ("plaid", "bank", "csv", "bank_csv", "bank csv"), {"csv", "plaid"}),
         ("clickup", "ClickUp", ("clickup",), {"clickup"}),
         ("qbo_receivables", "QBO receivables", ("quickbooks", "qbo", "qbo_receivables"), {"quickbooks", "qbo", "qbo-csv"}),
         ("qbo_actuals", "QBO payment evidence", ("quickbooks", "qbo", "qbo_actuals"), {"qbo_bank"}),
@@ -851,11 +880,8 @@ def derive_csv_income_projections(
     horizon_end = as_of + timedelta(days=max(1, horizon_days) - 1)
     historical = [
         (row, row_date)
-        for row in rows
-        if (row_date := _actual_date(row)) is not None
-        and row_date <= as_of
-        and _is_transaction(row)
-        and str(row.get("source") or "").lower() == "csv"
+        for row, row_date in _canonical_bank_history(rows, as_of=as_of)
+        if _is_transaction(row)
         and str(row.get("event_type") or "").lower() == "inflow"
         and str(row.get("status") or "posted").lower() in TRANSACTION_STATUSES
         and _amount(row.get("amount_cents"))
@@ -1823,6 +1849,7 @@ def build_finance_control(
     settlement_annotations: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     income_decisions: Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     source_connections: Mapping[str, Any] | None = None,
+    balance_source: str = "csv",
     as_of: date | None = None,
     floor_cents: int | None = None,
 ) -> dict[str, Any]:
@@ -1852,7 +1879,7 @@ def build_finance_control(
             {
                 "id": "finance-control-balance-override",
                 "record_kind": "transaction",
-                "source": "csv",
+                "source": "plaid" if str(balance_source).lower() == "plaid" else "csv",
                 "source_id": "finance-control-balance-override",
                 "event_type": "inflow",
                 "category": "transfer",

@@ -446,6 +446,22 @@ class CashEvent(Base):
     status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
     confidence: Mapped[str] = mapped_column(String(16), default="estimated")  # "confirmed" | "estimated"
 
+    # Native Anata commitment workflow.  These fields deliberately live on the
+    # canonical obligation instead of in a second task system so Finance has one
+    # operational source of truth.  Transaction rows retain inert defaults.
+    commitment_type: Mapped[str] = mapped_column(
+        String(32), default="general", server_default="general", index=True
+    )
+    workflow_status: Mapped[str] = mapped_column(
+        String(32), default="draft", server_default="draft", index=True
+    )
+    owner: Mapped[str] = mapped_column(String(255), default="", server_default="", index=True)
+    approval_status: Mapped[str] = mapped_column(
+        String(32), default="not_required", server_default="not_required", index=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="system", server_default="system")
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
     # Provider-reported lifecycle is evidence, not canonical settlement truth.
     # ``status`` remains derived from allocations / explicit local decisions.
     source_status: Mapped[str] = mapped_column(
@@ -495,6 +511,7 @@ class CashEvent(Base):
     __table_args__ = (
         Index("ix_cash_events_due_date_status", "due_date", "status"),
         Index("ix_cash_events_source_source_id", "source", "source_id"),
+        Index("ix_cash_events_native_queue", "workflow_status", "archived_at", "due_date"),
     )
 
 
@@ -608,6 +625,51 @@ class FinanceSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class PlaidItem(Base):
+    """One consented Plaid institution connection; access tokens are sealed."""
+
+    __tablename__ = "plaid_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(255), default="default", index=True)
+    external_item_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    institution_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    display_name: Mapped[str] = mapped_column(String(255), default="")
+    sealed_access_token: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="connected", index=True)
+    consent_expiration: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_webhook_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str] = mapped_column(String(128), default="")
+    transactions_cursor: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="system")
+    disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class PlaidAccount(Base):
+    """A masked bank account belonging to a Plaid Item."""
+
+    __tablename__ = "plaid_accounts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    plaid_item_id: Mapped[str] = mapped_column(ForeignKey("plaid_items.id"), index=True)
+    external_account_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    official_name: Mapped[str] = mapped_column(String(255), default="")
+    mask: Mapped[str] = mapped_column(String(8), default="")
+    account_type: Mapped[str] = mapped_column(String(32), default="")
+    subtype: Mapped[str] = mapped_column(String(64), default="")
+    currency: Mapped[str] = mapped_column(String(16), default="USD")
+    current_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    available_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    balance_as_of: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class FinanceActionAudit(Base):
     """Append-only evidence for trust-sensitive Finance mutations."""
 
@@ -619,6 +681,7 @@ class FinanceActionAudit(Base):
     entity_type: Mapped[str] = mapped_column(String(64), default="")
     entity_id: Mapped[str] = mapped_column(String(255), default="", index=True)
     actor: Mapped[str] = mapped_column(String(255), default="system")
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, unique=True, index=True)
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

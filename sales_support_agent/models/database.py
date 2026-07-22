@@ -129,6 +129,8 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_reconciliation_reports",
         "finance_savings_reviews",
         "finance_savings_review_events",
+        "plaid_items",
+        "plaid_accounts",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
@@ -407,6 +409,15 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
             "pay_priority":          "ALTER TABLE cash_events ADD COLUMN pay_priority VARCHAR(16) NOT NULL DEFAULT 'review'",
             "minimum_payment_cents": "ALTER TABLE cash_events ADD COLUMN minimum_payment_cents INTEGER",
             "flexibility":           "ALTER TABLE cash_events ADD COLUMN flexibility VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+            "commitment_type":       "ALTER TABLE cash_events ADD COLUMN commitment_type VARCHAR(32) NOT NULL DEFAULT 'general'",
+            "workflow_status":       "ALTER TABLE cash_events ADD COLUMN workflow_status VARCHAR(32) NOT NULL DEFAULT 'draft'",
+            "owner":                 "ALTER TABLE cash_events ADD COLUMN owner VARCHAR(255) NOT NULL DEFAULT ''",
+            "approval_status":       "ALTER TABLE cash_events ADD COLUMN approval_status VARCHAR(32) NOT NULL DEFAULT 'not_required'",
+            "created_by":            "ALTER TABLE cash_events ADD COLUMN created_by VARCHAR(255) NOT NULL DEFAULT 'system'",
+            "archived_at":           "ALTER TABLE cash_events ADD COLUMN archived_at DATETIME",
+        },
+        "finance_action_audit": {
+            "idempotency_key": "ALTER TABLE finance_action_audit ADD COLUMN idempotency_key VARCHAR(128)",
         },
     }
 
@@ -448,6 +459,11 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
                     UPDATE cash_events SET record_kind = 'transaction' WHERE id = NEW.id;
                 END
             """))
+        if "finance_action_audit" in existing_tables:
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_finance_action_audit_idempotency_key "
+                "ON finance_action_audit(idempotency_key) WHERE idempotency_key IS NOT NULL"
+            ))
 
         # QuickBooks OAuth tables for SQLite deployments
         connection.execute(text("""
@@ -528,6 +544,11 @@ def _apply_sqlite_compat_migrations(engine: Any) -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_record_kind ON cash_events(record_kind)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_pay_priority ON cash_events(pay_priority)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_flexibility ON cash_events(flexibility)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_commitment_type ON cash_events(commitment_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_workflow_status ON cash_events(workflow_status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_owner ON cash_events(owner)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_approval_status ON cash_events(approval_status)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_archived_at ON cash_events(archived_at)"))
 
 
 def _apply_postgres_compat_migrations(engine: Any) -> None:
@@ -805,10 +826,24 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
                     ADD COLUMN IF NOT EXISTS matched_to_id         TEXT         NULL,
                     ADD COLUMN IF NOT EXISTS pay_priority          VARCHAR(16)  NOT NULL DEFAULT 'review',
                     ADD COLUMN IF NOT EXISTS minimum_payment_cents INTEGER      NULL,
-                    ADD COLUMN IF NOT EXISTS flexibility           VARCHAR(16)  NOT NULL DEFAULT 'unknown'
+                    ADD COLUMN IF NOT EXISTS flexibility           VARCHAR(16)  NOT NULL DEFAULT 'unknown',
+                    ADD COLUMN IF NOT EXISTS commitment_type       VARCHAR(32)  NOT NULL DEFAULT 'general',
+                    ADD COLUMN IF NOT EXISTS workflow_status       VARCHAR(32)  NOT NULL DEFAULT 'draft',
+                    ADD COLUMN IF NOT EXISTS owner                 VARCHAR(255) NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS approval_status       VARCHAR(32)  NOT NULL DEFAULT 'not_required',
+                    ADD COLUMN IF NOT EXISTS created_by            VARCHAR(255) NOT NULL DEFAULT 'system',
+                    ADD COLUMN IF NOT EXISTS archived_at           TIMESTAMPTZ  NULL
                 """
             )
         )
+        connection.execute(text(
+            "ALTER TABLE finance_action_audit "
+            "ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128) NULL"
+        ))
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_finance_action_audit_idempotency_key "
+            "ON finance_action_audit(idempotency_key) WHERE idempotency_key IS NOT NULL"
+        ))
         connection.execute(text("""
             UPDATE cash_events
             SET record_kind = 'transaction'
@@ -850,6 +885,11 @@ def _apply_postgres_compat_migrations(engine: Any) -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_record_kind ON cash_events (record_kind)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_pay_priority ON cash_events (pay_priority)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_flexibility ON cash_events (flexibility)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_commitment_type ON cash_events (commitment_type)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_workflow_status ON cash_events (workflow_status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_owner ON cash_events (owner)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_approval_status ON cash_events (approval_status)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_cash_events_archived_at ON cash_events (archived_at)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_is_active ON recurring_templates (is_active)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_recurring_templates_next_due_date ON recurring_templates (next_due_date)"))
         # friendly_name column — additive migration for existing Postgres deployments

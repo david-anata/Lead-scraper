@@ -203,7 +203,7 @@ def test_income_card_and_trajectory_keep_income_sources_distinct() -> None:
     assert "Expected: $4,500" in incoming
     assert "$3,000 CSV trend" in incoming
     assert "$1,500 dated receivables" in incoming
-    assert "Use this to validate the decision above. Expected includes probability-weighted CSV recurring-deposit trends and dated receivables" in page
+    assert "Use this to validate the decision above. Expected includes probability-weighted bank-history trends and dated receivables" in page
     assert "it is not committed cash." in page
 
 
@@ -256,7 +256,7 @@ def test_collections_empty_state_does_not_invent_receivables() -> None:
     page = _render([], _control_state(queue=[]))
 
     assert "No evidence-safe QBO receivables need collection in the next 14 days." in page
-    assert "Expected CSV trends remain separate from receivables." in page
+    assert "Bank-history trends remain separate from receivables." in page
 
 
 def test_source_readiness_and_failed_trust_gate_precede_cash_decisions() -> None:
@@ -338,7 +338,7 @@ def test_renderer_fallback_fails_closed_and_source_statuses_are_not_ready() -> N
     assert 'data-trust-ready="false"' in page
     assert "CFO decision support unavailable" in page
     assert "CFO payment advice is unavailable until the trust gate passes." in page
-    assert "Bank CSV</strong><small>Status not reported.</small></div>\n            <span>Not reported</span>" in page
+    assert "Connected bank / CSV</strong><small>Status not reported.</small></div>\n            <span>Not reported</span>" in page
     assert "ClickUp</strong><small>Status not reported.</small></div>\n            <span>Ready</span>" not in page
 
 
@@ -528,16 +528,18 @@ def test_empty_queue_copy_keeps_exception_actions_available() -> None:
     assert "Update money" in page
 
 
-def test_update_money_offers_one_connected_refresh_without_changing_csv_cash_truth() -> None:
+def test_source_center_offers_bank_connection_and_accounting_refresh() -> None:
     page = _render([], _control_state(queue=[]))
 
+    assert 'id="finance-plaid-connect"' in page
+    assert "Bank accounts" in page
     assert 'action="/admin/finances/sync-connected-sources"' in page
-    assert "Refresh connected sources" in page
-    assert "Bank CSV is not changed." in page
+    assert "Refresh accounting sources" in page
+    assert "Connected bank data remains cash-on-hand truth." in page
     assert '<details class="finance-source-advanced">' in page
     assert 'action="/admin/finances/sync-qbo-invoices"' in page
     assert "Refresh receivables only" in page
-    assert "Bank CSV remains cash-on-hand truth." in page
+    assert "Connected bank data remains cash-on-hand truth." in page
     assert 'action="/admin/finances/sync-qbo-actuals"' in page
     assert "Refresh actuals only" in page
 
@@ -566,14 +568,14 @@ def test_bottom_review_guide_explains_cadence_reading_and_trust_rules() -> None:
     assert "Run the money review in five minutes." in guide
     assert "Scan each workday" in guide
     assert "Mon + Fri" in guide
-    assert "latest bank CSV for current cash and actual history" in guide
+    assert "Connect or refresh Plaid for current cash and actual history" in guide
     assert "Eligible recurring deposits can appear only as Expected" in guide
-    assert "CSV does not create confirmed income" in guide
+    assert "never become confirmed income automatically" in guide
     assert "QBO open invoices for dated receivable balances" in guide
-    assert "use manual entries only for exceptions" in guide
+    assert "Add planned commitments in Anata" in guide
     assert "Cash on hand" in guide
     assert "Confirmed means a dated receivable" in guide
-    assert "weighted CSV trends and unconfirmed dated receivables" in guide
+    assert "weighted bank-history trends and unconfirmed dated receivables" in guide
     assert "Overdue plus bills due in 14 days" in guide
     assert "configured cash floor" in guide
     assert "Clear Broken and Needs action first" in guide
@@ -611,7 +613,7 @@ def test_renderer_falls_back_when_control_builder_fails() -> None:
 
     assert "Needs update" in page
     assert "Low confidence" in page
-    assert "Upload the latest bank CSV" in page
+    assert "Connect or refresh a bank account" in page
     assert "Money queue" in page
 
 

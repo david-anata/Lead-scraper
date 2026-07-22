@@ -191,6 +191,12 @@ class Settings:
     qbo_refresh_token: str = ""
     qbo_realm_id: str = ""           # Company ID shown in QBO URL
     qbo_sandbox: bool = False        # True = use sandbox API endpoint
+    # Plaid — read-only bank truth for Finance. Payments remain out of scope.
+    plaid_client_id: str = ""
+    plaid_secret: str = ""
+    plaid_environment: str = "sandbox"
+    plaid_token_secret: str = ""
+    plaid_webhook_url: str = ""
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_allowed_domain: str = "anatainc.com"
@@ -621,6 +627,16 @@ def load_settings() -> Settings:
         qbo_refresh_token=os.getenv("QBO_REFRESH_TOKEN", "").strip(),
         qbo_realm_id=os.getenv("QBO_REALM_ID", "").strip(),
         qbo_sandbox=_parse_bool(os.getenv("QBO_SANDBOX", "false"), default=False),
+        plaid_client_id=os.getenv("PLAID_CLIENT_ID", "").strip(),
+        plaid_secret=os.getenv("PLAID_SECRET", "").strip(),
+        plaid_environment=(os.getenv("PLAID_ENV", "sandbox").strip().lower() or "sandbox"),
+        # Deliberately separate from session/API secrets so rotating one key
+        # cannot make stored bank tokens unreadable or widen its blast radius.
+        plaid_token_secret=os.getenv("PLAID_TOKEN_SECRET", "").strip(),
+        plaid_webhook_url=(
+            os.getenv("PLAID_WEBHOOK_URL", "https://agent.anatainc.com/api/integrations/plaid/webhook").strip()
+            or "https://agent.anatainc.com/api/integrations/plaid/webhook"
+        ),
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
         google_oauth_allowed_domain=(os.getenv("GOOGLE_OAUTH_ALLOWED_DOMAIN", "anatainc.com").strip() or "anatainc.com"),

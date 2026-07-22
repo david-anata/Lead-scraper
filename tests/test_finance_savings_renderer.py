@@ -257,7 +257,7 @@ def test_smart_off_placeholder_and_read_only_drawer_accessibility_are_wired() ->
     assert "drawerFacts.replaceChildren()" in page
     assert 'id="finance-drawer-source"' in page
     assert "Potential only. Finance records review decisions but never cancels a service or changes the forecast." in page
-    assert "Create ClickUp review task" in page
+    assert "Add to Anata review" in page
     assert 'id="finance-live-region"' in page
 
 

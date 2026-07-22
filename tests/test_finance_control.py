@@ -1052,3 +1052,35 @@ def test_completed_clickup_task_releases_after_settlement_allocation():
     assert state["metrics"]["required_outgoing_cents"] == 0
     assert item["group"] == "completed"
     assert item["completion_requires_bank_evidence"] is False
+
+
+def test_plaid_history_replaces_overlapping_csv_without_losing_older_history():
+    older_csv = _row(
+        "older-csv", record_kind="transaction", source="csv", status="posted",
+        event_type="inflow", amount_cents=100_000, due_date=AS_OF - timedelta(days=10),
+    )
+    overlapping_csv = _row(
+        "overlap-csv", record_kind="transaction", source="csv", status="posted",
+        event_type="inflow", amount_cents=200_000, due_date=AS_OF - timedelta(days=2),
+    )
+    plaid = _row(
+        "plaid-posted", record_kind="transaction", source="plaid", status="posted",
+        event_type="inflow", amount_cents=200_000, due_date=AS_OF - timedelta(days=2),
+    )
+
+    trends = calculate_csv_trends([older_csv, overlapping_csv, plaid], as_of=AS_OF)
+
+    assert trends["transaction_count"] == 2
+    assert trends["net_28_cents"] == 300_000
+
+
+def test_pending_plaid_transaction_is_not_bank_history_evidence():
+    pending = _row(
+        "plaid-pending", record_kind="transaction", source="plaid", status="pending",
+        event_type="outflow", amount_cents=999_999, due_date=AS_OF,
+    )
+
+    trends = calculate_csv_trends([pending], as_of=AS_OF)
+
+    assert trends["transaction_count"] == 0
+    assert trends["net_28_cents"] == 0

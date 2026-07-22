@@ -311,7 +311,23 @@ def load_finance_source_connections(settings: Any = None) -> dict[str, dict[str,
     qbo_env_connected = all(qbo_values)
     qbo_connected = qbo_database_connected or qbo_env_connected
 
+    plaid_summary: dict[str, Any] = {}
+    if settings is not None:
+        try:
+            from sales_support_agent.services.cashflow.plaid import connection_summary
+
+            plaid_summary = connection_summary(settings=settings)
+        except Exception:
+            plaid_summary = {}
+    plaid_connected = int(plaid_summary.get("connected_count") or 0) > 0
+
     return {
+        "plaid": {
+            "connected": plaid_connected,
+            "status": "connected" if plaid_connected else "not_connected",
+            "configured": bool(plaid_summary.get("configured")),
+            "account_count": int(plaid_summary.get("account_count") or 0),
+        },
         "clickup": {
             "configured": clickup_configured,
             "status": "configured" if clickup_configured else "not_configured",

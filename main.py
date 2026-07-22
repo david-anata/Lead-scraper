@@ -116,8 +116,9 @@ _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sales_su
 os.makedirs(_static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
-from sales_support_agent.api.cashflow_router import router as _cashflow_router  # noqa: E402
+from sales_support_agent.api.cashflow_router import plaid_webhook_router as _plaid_webhook_router, router as _cashflow_router  # noqa: E402
 app.include_router(_cashflow_router)
+app.include_router(_plaid_webhook_router)
 
 # Advertising > Audit — self-contained router serving /admin/advertising/* in
 # process (same pattern as the cashflow router above).

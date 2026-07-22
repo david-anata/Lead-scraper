@@ -72,6 +72,16 @@ services:
         sync: false
       - key: CANVA_TOKEN_SECRET
         sync: false
+      - key: PLAID_CLIENT_ID
+        sync: false
+      - key: PLAID_SECRET
+        sync: false
+      - key: PLAID_ENV
+        value: sandbox
+      - key: PLAID_TOKEN_SECRET
+        sync: false
+      - key: PLAID_WEBHOOK_URL
+        value: https://agent.anatainc.com/api/integrations/plaid/webhook
 
   - type: cron
     name: sales-support-stale-scan

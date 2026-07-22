@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from sales_support_agent.services.cashflow.ap import (
@@ -58,6 +58,47 @@ router = APIRouter(
     tags=["finance"],
     dependencies=[Depends(require_tool("finance")), Depends(_set_finance_nav_user)],
 )
+
+plaid_webhook_router = APIRouter(tags=["plaid"])
+
+
+@plaid_webhook_router.post("/api/integrations/plaid/webhook")
+async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Authenticate a Plaid webhook, record it, and queue an idempotent sync."""
+    from sales_support_agent.services.cashflow.plaid import (
+        PlaidClient,
+        PlaidError,
+        record_webhook,
+        sync_item,
+        verify_webhook,
+    )
+
+    settings = request.app.state.settings
+    raw_body = await request.body()
+    signed_jwt = request.headers.get("Plaid-Verification", "")
+    client = PlaidClient(settings)
+    try:
+        verify_webhook(raw_body, signed_jwt, client=client)
+        payload = json.loads(raw_body)
+    except (PlaidError, json.JSONDecodeError) as exc:
+        code = exc.code if isinstance(exc, PlaidError) else "invalid_json"
+        raise HTTPException(status_code=401, detail={"code": code, "message": "Webhook verification failed"}) from exc
+    payload_environment = str(payload.get("environment") or "").lower()
+    expected_environment = str(settings.plaid_environment or "sandbox").lower()
+    if payload_environment and payload_environment != expected_environment:
+        raise HTTPException(status_code=401, detail={"code": "environment_mismatch", "message": "Webhook verification failed"})
+    external_item_id = str(payload.get("item_id") or "")
+    error = payload.get("error") or {}
+    error_code = str(error.get("error_code") or "") if isinstance(error, dict) else ""
+    local_item_id = record_webhook(external_item_id, error_code=error_code) if external_item_id else None
+    webhook_type = str(payload.get("webhook_type") or "").upper()
+    webhook_code = str(payload.get("webhook_code") or "").upper()
+    should_sync = webhook_type == "TRANSACTIONS" or (
+        webhook_type == "ITEM" and webhook_code in {"LOGIN_REPAIRED", "NEW_ACCOUNTS_AVAILABLE"}
+    )
+    if local_item_id and should_sync:
+        background_tasks.add_task(sync_item, local_item_id, settings=settings)
+    return JSONResponse({"status": "accepted"})
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +149,15 @@ async def cashflow_health(request: Request):
 
     # -- Live DB check -------------------------------------------------------
     try:
-        from sales_support_agent.models.database import ensure_finance_trust_schema, get_engine
+        from sales_support_agent.models.database import (
+            _ensure_finance_settlement_tables,
+            ensure_finance_trust_schema,
+            get_engine,
+        )
         from sqlalchemy import inspect as _sainsp
 
         db_engine = get_engine()
+        _ensure_finance_settlement_tables(db_engine)
         ensure_finance_trust_schema(db_engine)
         insp = _sainsp(db_engine)
         tables = set(insp.get_table_names())
@@ -122,7 +168,11 @@ async def cashflow_health(request: Request):
             missing_columns = sorted(REQUIRED_COLUMNS - set(db_columns))
             checks["all_required_columns_present"] = len(missing_columns) == 0
             missing_v2_columns = sorted(
-                {"record_kind", "pay_priority", "minimum_payment_cents", "flexibility"}
+                {
+                    "record_kind", "pay_priority", "minimum_payment_cents", "flexibility",
+                    "commitment_type", "workflow_status", "owner", "approval_status",
+                    "created_by", "archived_at",
+                }
                 - set(db_columns)
             )
             checks["finance_v2_columns_present"] = not missing_v2_columns
@@ -142,12 +192,21 @@ async def cashflow_health(request: Request):
         checks["finance_v2_tables_present"] = finance_v2_tables.issubset(tables)
         savings_review_tables = {"finance_savings_reviews", "finance_savings_review_events"}
         checks["savings_review_tables_present"] = savings_review_tables.issubset(tables)
+        checks["native_commitment_columns_present"] = not any(
+            column in missing_v2_columns for column in {
+                "commitment_type", "workflow_status", "owner", "approval_status",
+                "created_by", "archived_at",
+            }
+        )
+        checks["plaid_tables_present"] = {"plaid_items", "plaid_accounts"}.issubset(tables)
 
         if (
             missing_columns
             or missing_v2_columns
             or not checks["finance_v2_tables_present"]
             or not checks["savings_review_tables_present"]
+            or not checks["native_commitment_columns_present"]
+            or not checks["plaid_tables_present"]
         ):
             overall = "degraded"
 
@@ -217,14 +276,150 @@ async def finance_overview(request: Request, flash: str = ""):
     async def _expand():
         try:
             created = await asyncio.to_thread(
-                generate_upcoming_from_templates, horizon_days=400, advance_template=True
+                generate_upcoming_from_templates, horizon_days=45, advance_template=True
             )
             if created:
                 _forecast_logger.debug("[overview] template expansion: %d events created", len(created))
         except Exception as exc:
             _forecast_logger.error("[overview] template expansion failed: %s", exc, exc_info=True)
     asyncio.create_task(_expand())
-    return await render_cashflow_overview_page(flash=flash)
+    return await render_cashflow_overview_page(flash=flash, settings=request.app.state.settings)
+
+
+@router.post("/plaid/link-token")
+async def plaid_link_token(request: Request):
+    """Create a short-lived, Transactions-only Plaid Link token."""
+    from sales_support_agent.services.cashflow.plaid import PlaidClient, PlaidError
+
+    user = get_current_user(request) or {}
+    client_user_id = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        token = await asyncio.to_thread(
+            PlaidClient(request.app.state.settings).create_link_token,
+            client_user_id=client_user_id,
+        )
+    except PlaidError as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    return JSONResponse({"link_token": token})
+
+
+@router.post("/plaid/exchange")
+async def plaid_exchange(request: Request):
+    """Exchange Link's public token, seal it, and perform the first sync."""
+    from sales_support_agent.services.cashflow.plaid import (
+        PlaidClient, PlaidError, store_item, sync_item,
+    )
+
+    body = await request.json()
+    public_token = str(body.get("public_token") or "").strip()
+    if not public_token:
+        raise HTTPException(status_code=400, detail="public_token is required")
+    settings = request.app.state.settings
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    client = PlaidClient(settings)
+    try:
+        exchanged = await asyncio.to_thread(client.exchange_public_token, public_token)
+        local_item_id = await asyncio.to_thread(
+            store_item,
+            item_id=exchanged["item_id"], access_token=exchanged["access_token"],
+            token_secret=settings.plaid_token_secret, actor=actor,
+            institution_id=str(body.get("institution_id") or ""),
+            display_name=str(body.get("institution_name") or ""),
+        )
+        result = await asyncio.to_thread(sync_item, local_item_id, settings=settings, client=client)
+    except PlaidError as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    return JSONResponse({"status": "ok", "item_id": local_item_id, "sync": result})
+
+
+@router.post("/plaid/items/{item_id}/refresh")
+async def plaid_refresh_item(request: Request, item_id: str):
+    from sales_support_agent.services.cashflow.plaid import PlaidError, sync_item
+
+    try:
+        result = await asyncio.to_thread(sync_item, item_id, settings=request.app.state.settings)
+    except PlaidError as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    return JSONResponse({"status": "ok", "sync": result})
+
+
+@router.post("/assistant/preview")
+async def finance_assistant_preview(request: Request):
+    """Turn plain English into a server-side draft; this never writes money."""
+    from sales_support_agent.services.cashflow.assistant import (
+        FinanceAssistantError,
+        create_preview,
+    )
+
+    body = await request.json()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        preview = await asyncio.to_thread(
+            create_preview,
+            str(body.get("prompt") or ""), actor=actor, settings=request.app.state.settings,
+        )
+    except (ValueError, FinanceAssistantError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(preview)
+
+
+@router.post("/assistant/confirm")
+async def finance_assistant_confirm(request: Request):
+    """Confirm one unexpired assistant draft after explicit user review."""
+    from sales_support_agent.services.cashflow.assistant import confirm_preview
+
+    body = await request.json()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        commitment = await asyncio.to_thread(
+            confirm_preview, str(body.get("preview_id") or ""), actor=actor,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"status": "ok", "commitment": commitment})
+
+
+@router.post("/commitments/{commitment_id}/transition-preview")
+async def commitment_transition_preview(request: Request, commitment_id: str):
+    """Preview a native workflow change without changing the commitment."""
+    from sales_support_agent.services.cashflow.commitments import preview_transition
+    from sales_support_agent.services.cashflow.obligations import get_obligation
+
+    body = await request.json()
+    commitment = await asyncio.to_thread(get_obligation, commitment_id)
+    if not commitment:
+        raise HTTPException(status_code=404, detail="Commitment not found")
+    try:
+        preview = preview_transition(commitment, str(body.get("target_status") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(preview)
+
+
+@router.post("/commitments/{commitment_id}/transition-confirm")
+async def commitment_transition_confirm(request: Request, commitment_id: str):
+    """Confirm an explicitly reviewed native workflow change."""
+    from sales_support_agent.services.cashflow.commitments import confirm_transition
+
+    body = await request.json()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        commitment = await asyncio.to_thread(
+            confirm_transition,
+            commitment_id,
+            str(body.get("target_status") or ""),
+            actor=actor,
+            idempotency_key=str(body.get("idempotency_key") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"status": "ok", "commitment": commitment})
 
 
 @router.get("/chart-data")
@@ -390,10 +585,7 @@ async def record_savings_review_action(
 ):
     """Store a confirmed savings disposition without mutating cash facts."""
     import json
-    from sales_support_agent.services.cashflow.savings_reviews import (
-        create_clickup_savings_review_task,
-        record_savings_review,
-    )
+    from sales_support_agent.services.cashflow.savings_reviews import record_savings_review
 
     current_user = get_current_user(request)
     actor = "finance-operator"
@@ -405,9 +597,6 @@ async def record_savings_review_action(
             raise ValueError("Savings evidence is invalid; refresh Finance and try again")
         if opportunity.get("opportunity_key") != opportunity_key or opportunity.get("evidence_hash") != evidence_hash:
             raise ValueError("Savings evidence is stale; refresh Finance and try again")
-        task = None
-        if action == "follow_up":
-            task = await asyncio.to_thread(create_clickup_savings_review_task, opportunity)
         result = await asyncio.to_thread(
             record_savings_review,
             opportunity,
@@ -415,7 +604,7 @@ async def record_savings_review_action(
             actor,
             reason=reason,
             request_id=request.headers.get("Idempotency-Key") or uuid4().hex,
-            clickup_task=task,
+            clickup_task=None,
         )
     except ValueError as exc:
         return _redirect_finance_error(str(exc))
@@ -424,7 +613,7 @@ async def record_savings_review_action(
     messages = {
         "keep": "Savings opportunity kept for 90 days.",
         "dismiss": "Savings opportunity dismissed for 90 days.",
-        "follow_up": "Savings review task created; Finance will wait for bank evidence before counting a saving.",
+        "follow_up": "Savings review added to Anata; Finance will wait for bank evidence before counting a saving.",
         "confirm_realized": "Bank-verified savings recorded.",
     }
     return _redirect_finance_home(messages.get(action, "Savings review recorded."))
@@ -721,14 +910,9 @@ async def _refresh_connected_finance_sources(request: Request) -> RedirectRespon
     parts: list[str] = []
     errors: list[str] = []
 
-    try:
-        result = await asyncio.to_thread(sync_clickup_finance, settings)
-        parts.append(
-            f"ClickUp {result.rows_inserted} new, {result.rows_skipped_duplicate} unchanged"
-        )
-        errors.extend(f"ClickUp: {error}" for error in result.errors[:1])
-    except Exception as exc:
-        errors.append(f"ClickUp: {exc}")
+    # ClickUp is a migration archive now. It is refreshed only through the
+    # explicit legacy control so native Anata work cannot be repopulated from
+    # an old task list during a normal source refresh.
 
     try:
         result = await asyncio.to_thread(sync_qbo_invoices, settings)
@@ -756,13 +940,13 @@ async def _refresh_connected_finance_sources(request: Request) -> RedirectRespon
             f"Connected refresh completed with issues: {summary}. {'; '.join(errors[:2])}"
         )
     return _redirect_finance_home(
-        f"Connected sources refreshed: {summary}. Bank CSV was not changed."
+        f"Accounting sources refreshed: {summary}. Connected bank data was not changed."
     )
 
 
 @router.post("/sync-connected-sources", response_class=HTMLResponse)
 async def sync_connected_sources(request: Request):
-    """One-click refresh for ClickUp plus both QuickBooks data paths."""
+    """One-click refresh for current accounting data; ClickUp stays archival."""
     return await _refresh_connected_finance_sources(request)
 
 @router.post("/sync-qbo", response_class=HTMLResponse)
@@ -817,7 +1001,7 @@ async def sync_qbo_actuals(request: Request):
 
 @router.post("/recurring/generate", response_class=HTMLResponse)
 async def recurring_generate(request: Request):
-    created = generate_upcoming_from_templates(horizon_days=90)
+    created = generate_upcoming_from_templates(horizon_days=45)
     return RedirectResponse(
         f"/admin/finances?flash=ok:{len(created)}+obligations+generated",
         status_code=303,

@@ -52,6 +52,36 @@ def _resolve_current_balance(rows: list[dict[str, Any]]) -> tuple[int, str, str]
     except Exception:
         pass
 
+    # Connected Plaid accounts replace routine CSV uploads when their balance
+    # evidence is newer.  Available balance is deliberately preferred for cash
+    # decisions; current balance is the fallback when an institution omits it.
+    try:
+        from sqlalchemy import text
+        from sales_support_agent.models.database import get_engine
+
+        with get_engine().connect() as connection:
+            plaid_row = connection.execute(text("""
+                SELECT
+                    SUM(COALESCE(available_balance_cents, current_balance_cents, 0)) AS balance_cents,
+                    MAX(balance_as_of) AS balance_as_of,
+                    COUNT(*) AS account_count
+                FROM plaid_accounts
+                WHERE active=TRUE
+            """)).fetchone()
+        if plaid_row and int(plaid_row._mapping.get("account_count") or 0) > 0:
+            plaid_as_of = str(plaid_row._mapping.get("balance_as_of") or "")[:10]
+            try:
+                plaid_date = date.fromisoformat(plaid_as_of)
+            except ValueError:
+                plaid_date = None
+            if plaid_date is not None and (snapshot_date is None or plaid_date >= snapshot_date):
+                balance_cents = int(plaid_row._mapping.get("balance_cents") or 0)
+                balance_as_of = plaid_as_of
+                snapshot_date = plaid_date
+                balance_source = "plaid"
+    except Exception:
+        pass
+
     csv_rows = [
         row
         for row in rows
@@ -791,7 +821,7 @@ def _fallback_finance_control(
         broken_parts.append(f"{len(overdue)} items are overdue.")
     broken = " ".join(broken_parts) or "No material blockers are detected in the selected window."
     if not balance_available:
-        next_action = "Upload the latest bank CSV before making a payment decision."
+        next_action = "Connect or refresh a bank account before making a payment decision."
     elif overdue:
         next_action = f"Review {_display_name(overdue[0])} before scheduling the next cash action."
     elif missing_dates:
@@ -836,8 +866,8 @@ def _trust_action_copy(value: Any) -> str:
     raw = str(value or "").strip()
     key = _status_key(raw)
     known = {
-        "upload_latest_balance": "Upload the latest bank CSV before making a cash decision.",
-        "refresh_cash_balance": "Refresh the bank CSV before making a cash decision.",
+        "upload_latest_balance": "Connect or refresh a bank account before making a cash decision.",
+        "refresh_cash_balance": "Refresh the connected bank before making a cash decision.",
         "resolve_finance_data": "Resolve missing or conflicting finance evidence first.",
         "review_income_patterns": "Review inferred income patterns before making a cash decision.",
         "configure_income_forecast": "Configure forecast income before making a cash decision.",
@@ -868,7 +898,7 @@ def _normalise_source_statuses(control: Any) -> list[dict[str, str]]:
         "qbo_actuals": "qbo_actuals", "qbo_payment_evidence": "qbo_actuals",
     }
     labels = {
-        "bank_csv": "Bank CSV",
+        "bank_csv": "Connected bank / CSV",
         "clickup": "ClickUp",
         "qbo_receivables": "QBO receivables",
         "qbo_actuals": "QBO payment evidence",
@@ -986,6 +1016,7 @@ def _build_renderer_state(
     settlement_annotations: list[dict[str, Any]] | None = None,
     income_decisions: Any = None,
     source_connections: Any = None,
+    balance_source: str = "csv",
 ) -> tuple[Any, dict[str, Any], bool]:
     """Load the canonical control builder, retaining a safe local read fallback."""
     fallback = _fallback_finance_control(rows, balance_cents, balance_as_of, today)
@@ -1464,7 +1495,7 @@ def _collections_html(collections: Mapping[str, Any], *, funding_gap_cents: int)
         list_html = """
           <div class="finance-collections__empty">
             <strong>No evidence-safe QBO receivables need collection in the next 14 days.</strong>
-            <p>Refresh QuickBooks if an expected invoice is missing. Expected CSV trends remain separate from receivables.</p>
+            <p>Refresh QuickBooks if an expected invoice is missing. Bank-history trends remain separate from receivables.</p>
           </div>"""
 
     coverage_copy = (
@@ -2223,6 +2254,9 @@ def _load_finance_control_inputs(settings: Any = None) -> tuple[Any, Any]:
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
+    if settings is None:
+        from sales_support_agent.config import load_settings
+        settings = load_settings()
     # Finance Control and Smart CFO must evaluate the identical canonical
     # ledger. A smaller UI-only limit can hide a trust blocker from the page.
     rows = list_obligations(limit=10_000)
@@ -2265,7 +2299,7 @@ async def render_cashflow_overview_page(
     elif csv_trend_expected_cents:
         incoming_expected_note = (
             f"Expected: {_money(cash['incoming_expected_cents'])} &middot; "
-            "eligible CSV recurring deposits"
+            "eligible bank-history recurring deposits"
         )
     elif cash["incoming_expected_cents"]:
         incoming_expected_note = (
@@ -2324,13 +2358,38 @@ async def render_cashflow_overview_page(
         smart_broken_html = f"<p>{html.escape(state['brief']['broken'])}</p>"
         smart_next_html = f"<p>{html.escape(state['brief']['next'])}</p>"
 
-    source_label = "Bank CSV" if balance_source == "csv" else "QBO bank" if balance_source else "Bank source"
+    source_label = (
+        "Connected bank" if balance_source == "plaid"
+        else "Bank CSV" if balance_source == "csv"
+        else "QBO bank" if balance_source else "Bank source"
+    )
     if cash["balance_available"]:
         balance_display = _money(cash["cash_on_hand_cents"], exact=True)
         balance_note = f"{source_label} &middot; {html.escape(balance_as_of or 'date unavailable')}"
     else:
         balance_display = "Needs update"
-        balance_note = "Upload the latest bank CSV"
+        balance_note = "Connect or refresh a bank account"
+
+    try:
+        from sales_support_agent.services.cashflow.plaid import connection_summary
+        plaid_summary = connection_summary(settings=settings)
+    except Exception:
+        plaid_summary = {"configured": False, "connected_count": 0, "account_count": 0, "environment": "sandbox"}
+    if plaid_summary["connected_count"]:
+        plaid_status_text = (
+            f"{plaid_summary['account_count']} bank account(s) connected &middot; "
+            f"{html.escape(str(plaid_summary['environment']).title())}"
+        )
+        plaid_action_text = "Connect another bank"
+        plaid_button_disabled = ""
+    elif plaid_summary["configured"]:
+        plaid_status_text = "Ready to connect in " + html.escape(str(plaid_summary["environment"]).title())
+        plaid_action_text = "Connect bank"
+        plaid_button_disabled = ""
+    else:
+        plaid_status_text = "Plaid credentials must be added to the production service"
+        plaid_action_text = "Plaid setup required"
+        plaid_button_disabled = " disabled"
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -2513,6 +2572,7 @@ async def render_cashflow_overview_page(
             <input id="finance-smart-mode" type="checkbox" checked>
             <span class="finance-smart-toggle__track" aria-hidden="true"></span>
           </label>
+          <button class="btn btn-secondary" type="button" data-open-modal="finance-assistant-modal">Ask Finance</button>
           <button class="btn btn-primary" type="button" data-open-modal="finance-update-modal">Update money</button>
         </div>
       </header>
@@ -2597,7 +2657,7 @@ async def render_cashflow_overview_page(
             <span class="is-expected">Expected</span><span class="is-stress">Stress</span>
           </div>
         </div>
-        <p class="finance-trajectory__helper">Use this to validate the decision above. Expected includes probability-weighted CSV recurring-deposit trends and dated receivables; it is not committed cash.</p>
+        <p class="finance-trajectory__helper">Use this to validate the decision above. Expected includes probability-weighted bank-history trends and dated receivables; it is not committed cash.</p>
         <div class="finance-chart-wrap"><canvas id="finance-control-chart" aria-label="Current cash, committed, expected, and stress cash paths"></canvas><p id="finance-chart-status">Calculating forecast</p></div>
       </section>
 
@@ -2614,7 +2674,7 @@ async def render_cashflow_overview_page(
           <div class="finance-review-guide__cadence" aria-label="Recommended finance review cadence">
             <span><strong>Daily</strong> Scan Broken and Next</span>
             <span><strong>Mon + Fri</strong> Refresh every source</span>
-            <span><strong>Money moved</strong> Update the bank CSV</span>
+            <span><strong>Money moved</strong> Refresh the connected bank</span>
           </div>
         </div>
 
@@ -2622,14 +2682,14 @@ async def render_cashflow_overview_page(
           <article>
             <span>01</span>
             <h3>Update reality</h3>
-            <p>Upload the latest bank CSV for current cash and actual history. Eligible recurring deposits can appear only as Expected; the CSV does not create confirmed income. Refresh ClickUp for planned AP/AR dates, priority, and notes; use QBO open invoices for dated receivable balances; and use manual entries only for exceptions.</p>
+            <p>Connect or refresh Plaid for current cash and actual history; a bank CSV remains available as a fallback. Eligible recurring deposits can appear only as Expected and never become confirmed income automatically. Add planned commitments in Anata, and use QBO open invoices for dated receivable balances.</p>
           </article>
           <article>
             <span>02</span>
             <h3>Read left to right</h3>
             <dl>
               <div><dt>Cash on hand</dt><dd>What the bank says is available now.</dd></div>
-              <div><dt>Incoming</dt><dd>Confirmed means a dated receivable. Expected separately shows weighted CSV trends and unconfirmed dated receivables.</dd></div>
+              <div><dt>Incoming</dt><dd>Confirmed means a dated receivable. Expected separately shows weighted bank-history trends and unconfirmed dated receivables.</dd></div>
               <div><dt>Required out</dt><dd>Overdue plus bills due in 14 days.</dd></div>
               <div><dt>Safe to commit / Funding gap</dt><dd>What remains after required out and the configured cash floor.</dd></div>
             </dl>
@@ -2671,16 +2731,34 @@ async def render_cashflow_overview_page(
 
       {income_review_drawer}
 
+      <dialog id="finance-assistant-modal" class="finance-modal finance-assistant-modal">
+        <div class="finance-modal__head"><div><p class="finance-eyebrow">Anata commitments</p><h2>Ask Finance</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close Ask Finance">&times;</button></div>
+        <p class="finance-assistant-intro">Describe one bill, expected payment, payroll item, or recurring commitment. Finance prepares a draft for you to review; it never moves bank money.</p>
+        <form id="finance-assistant-form" class="finance-assistant-form">
+          <label for="finance-assistant-prompt">What should Finance prepare?</label>
+          <textarea id="finance-assistant-prompt" rows="4" maxlength="4000" required placeholder="Add $10,000 payroll for August 5 and mark it critical."></textarea>
+          <div class="finance-assistant-actions"><button class="btn btn-secondary" type="button" data-close-modal>Cancel</button><button id="finance-assistant-preview-button" class="btn btn-primary" type="submit">Prepare draft</button></div>
+        </form>
+        <section id="finance-assistant-preview" class="finance-assistant-preview" hidden aria-live="polite">
+          <p class="finance-eyebrow">Review before saving</p><h3 id="finance-assistant-preview-title"></h3>
+          <dl id="finance-assistant-preview-facts" class="finance-recommendation-facts"></dl>
+          <p id="finance-assistant-preview-warning" class="finance-preview-note"></p>
+          <p id="finance-assistant-preview-missing" class="finance-assistant-error" hidden></p>
+          <div class="finance-assistant-actions"><button id="finance-assistant-edit" class="btn btn-secondary" type="button">Edit request</button><button id="finance-assistant-save" class="btn btn-primary" type="button">Save commitment</button></div>
+        </section>
+      </dialog>
+
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
+        <div class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span></div><button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div>
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
-          <strong>Upload bank CSV or QBO Open Invoices CSV</strong><span>Bank CSV creates actual cash history, not confirmed income. Eligible recurring deposits appear only as Expected. QBO Open Invoices supplies dated receivables.</span>
+          <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
           <input type="hidden" name="merge_mode" value="append"><button class="btn btn-primary btn-sm" type="submit">Upload and reconcile</button>
         </form>
-        <div class="finance-source-row finance-source-row--primary"><div><strong>Connected sources</strong><span>Refresh ClickUp plans, QBO receivables, and QBO payment evidence. Bank CSV is not changed.</span></div><form method="post" action="/admin/finances/sync-connected-sources"><button class="btn btn-primary btn-sm" type="submit">Refresh connected sources</button></form></div>
+        <div class="finance-source-row"><div><strong>Accounting sources</strong><span>Refresh QBO receivables and payment evidence. ClickUp stays unchanged unless you explicitly refresh the migration archive below.</span></div><form method="post" action="/admin/finances/sync-connected-sources"><button class="btn btn-secondary btn-sm" type="submit">Refresh accounting sources</button></form></div>
         {reconciliation_shadow_html}
-        <details class="finance-source-advanced"><summary>Refresh one source or manage connections</summary><div class="finance-source-row"><div><strong>ClickUp</strong><span>Connected source for planned AP/AR</span></div><form method="post" action="/admin/finances/sync-clickup"><button class="btn btn-secondary btn-sm" type="submit">Refresh ClickUp only</button></form></div><div class="finance-source-row"><div><strong>QuickBooks</strong><span>Refresh invoices for collections or actuals for payment matching. Bank CSV remains cash-on-hand truth.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/qbo/connect">Connect</a><form method="post" action="/admin/finances/sync-qbo-invoices" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh receivables only</button></form><form method="post" action="/admin/finances/sync-qbo-actuals" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh actuals only</button></form><form method="post" action="/admin/finances/qbo/disconnect" style="display:inline" onsubmit="return confirm('Disconnect QuickBooks? Synced records remain, but no new QBO data will be pulled.');"><button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form></div></div></details>
+        <details class="finance-source-advanced"><summary>Refresh one source or manage connections</summary><div class="finance-source-row"><div><strong>ClickUp migration archive</strong><span>Temporary read-only source while active Finance work moves into Anata.</span></div><form method="post" action="/admin/finances/sync-clickup"><button class="btn btn-secondary btn-sm" type="submit">Refresh legacy records</button></form></div><div class="finance-source-row"><div><strong>QuickBooks</strong><span>Invoices for collections and accounting payment evidence. Connected bank data remains cash-on-hand truth.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/qbo/connect">Connect</a><form method="post" action="/admin/finances/sync-qbo-invoices" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh receivables only</button></form><form method="post" action="/admin/finances/sync-qbo-actuals" style="display:inline"><button class="btn btn-secondary btn-sm" type="submit">Refresh actuals only</button></form><form method="post" action="/admin/finances/qbo/disconnect" style="display:inline" onsubmit="return confirm('Disconnect QuickBooks? Synced records remain, but no new QBO data will be pulled.');"><button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form></div></div></details>
         <div class="finance-source-row"><div><strong>Cash floor</strong><span>Reserve kept after required bills. Current: {cash_floor_display}</span></div><form class="finance-floor-form" method="post" action="/admin/finances/settings/cash-floor"><label class="sr-only" for="finance-cash-floor">Cash floor in dollars</label><input id="finance-cash-floor" name="cash_floor" inputmode="decimal" value="{cash_floor_input}" placeholder="Enter cash floor" required><button class="btn btn-secondary btn-sm" type="submit">Save floor</button></form></div>
         <div class="finance-source-row"><div><strong>Manual exception</strong><span>Add an obligation without changing source records.</span></div><div><a class="btn btn-secondary btn-sm" href="/admin/finances/ap/new">Add payable</a><a class="btn btn-secondary btn-sm" href="/admin/finances/ar/new">Add incoming</a></div></div>
         {inline_result}
@@ -2693,9 +2771,78 @@ async def render_cashflow_overview_page(
       <script id="finance-drawer-payloads" type="application/json">{drawer_json}</script>
     </main>
 
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script>
-    (() => {{
+      (() => {{
+      const assistantForm = document.getElementById('finance-assistant-form');
+      const assistantPreview = document.getElementById('finance-assistant-preview');
+      const assistantSave = document.getElementById('finance-assistant-save');
+      const assistantEdit = document.getElementById('finance-assistant-edit');
+      let assistantPreviewId = '';
+      if (assistantForm) assistantForm.addEventListener('submit', async event => {{
+        event.preventDefault();
+        const button = document.getElementById('finance-assistant-preview-button');
+        button.disabled = true; button.textContent = 'Preparing draft...';
+        try {{
+          const response = await fetch('/admin/finances/assistant/preview', {{
+            method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json'}},
+            body:JSON.stringify({{prompt:document.getElementById('finance-assistant-prompt').value}})
+          }});
+          if (!response.ok) throw new Error('Finance could not prepare that draft.');
+          const preview = await response.json(); const fields = preview.fields;
+          assistantPreviewId = preview.preview_id;
+          document.getElementById('finance-assistant-preview-title').textContent = fields.name;
+          const facts = document.getElementById('finance-assistant-preview-facts'); facts.replaceChildren();
+          [['Type',fields.commitment_type],['Direction',fields.event_type],['Amount',fields.amount_cents ? '$'+(fields.amount_cents/100).toLocaleString(undefined,{{minimumFractionDigits:2}}) : 'Missing'],['Date',fields.due_date || 'Missing'],['Owner',fields.owner || 'Unassigned'],['Approval',fields.approval_status.replaceAll('_',' ')]].forEach(([label,value]) => {{ const dt=document.createElement('dt');dt.textContent=label;const dd=document.createElement('dd');dd.textContent=value;facts.append(dt,dd); }});
+          document.getElementById('finance-assistant-preview-warning').textContent = preview.warning;
+          const missing = document.getElementById('finance-assistant-preview-missing');
+          missing.hidden = !preview.missing_fields.length; missing.textContent = preview.missing_fields.length ? 'Missing: '+preview.missing_fields.join(', ')+'. Edit the request before saving.' : '';
+          assistantSave.disabled = Boolean(preview.missing_fields.length);
+          assistantForm.hidden = true; assistantPreview.hidden = false;
+        }} catch (error) {{ button.textContent='Try again'; button.title=error.message; }} finally {{ button.disabled=false; }}
+      }});
+      if (assistantEdit) assistantEdit.addEventListener('click', () => {{ assistantPreview.hidden=true; assistantForm.hidden=false; document.getElementById('finance-assistant-prompt').focus(); }});
+      if (assistantSave) assistantSave.addEventListener('click', async () => {{
+        assistantSave.disabled=true; assistantSave.textContent='Saving...';
+        const response = await fetch('/admin/finances/assistant/confirm', {{method:'POST',headers:{{'Content-Type':'application/json','Accept':'application/json'}},body:JSON.stringify({{preview_id:assistantPreviewId}})}});
+        if (response.ok) window.location.assign('/admin/finances?flash='+encodeURIComponent('ok:Anata commitment saved.'));
+        else {{ assistantSave.disabled=false; assistantSave.textContent='Save commitment'; }}
+      }});
+      const plaidConnect = document.getElementById('finance-plaid-connect');
+      if (plaidConnect && !plaidConnect.disabled) plaidConnect.addEventListener('click', async () => {{
+        const original = plaidConnect.textContent;
+        plaidConnect.disabled = true;
+        plaidConnect.textContent = 'Preparing secure connection...';
+        try {{
+          const tokenResponse = await fetch('/admin/finances/plaid/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
+          if (!tokenResponse.ok) throw new Error('Bank connection is not ready. Check Plaid setup.');
+          const tokenData = await tokenResponse.json();
+          if (!window.Plaid) throw new Error('Secure bank connection could not load.');
+          const handler = window.Plaid.create({{
+            token: tokenData.link_token,
+            onSuccess: async (publicToken, metadata) => {{
+              plaidConnect.textContent = 'Connecting accounts...';
+              const exchange = await fetch('/admin/finances/plaid/exchange', {{
+                method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json'}},
+                body:JSON.stringify({{
+                  public_token:publicToken,
+                  institution_id:metadata.institution?.institution_id || '',
+                  institution_name:metadata.institution?.name || ''
+                }})
+              }});
+              if (!exchange.ok) {{ plaidConnect.disabled=false; plaidConnect.textContent='Connection needs attention'; return; }}
+              window.location.assign('/admin/finances?flash=' + encodeURIComponent('ok:Bank accounts connected and refreshed.'));
+            }},
+            onExit: () => {{ plaidConnect.disabled=false; plaidConnect.textContent=original; }}
+          }});
+          handler.open();
+        }} catch (error) {{
+          plaidConnect.disabled = false;
+          plaidConnect.textContent = 'Try bank connection again';
+          plaidConnect.title = error.message || 'Bank connection unavailable';
+        }}
+      }});
       const root = document.querySelector('.finance-control');
       const chartData = {chart_json};
       const queueEmpty = document.getElementById('finance-queue-empty');
@@ -2864,7 +3011,7 @@ async def render_cashflow_overview_page(
         }};
         create('Keep for 90 days', 'keep', 'This hides this unchanged evidence for 90 days. It does not change cash or the forecast.');
         create('Dismiss for 90 days', 'dismiss', 'This hides this unchanged evidence for 90 days. It does not cancel or change the source charge.');
-        create('Create ClickUp review task', 'follow_up', 'This creates one review task in the dedicated Finance review list. It does not create an AP/AR payable or change cash.');
+        create('Add to Anata review', 'follow_up', 'This adds the opportunity to the native Finance review list. It does not create an AP/AR payable or change cash.');
         if (payload.savings.realization_ready) create('Confirm bank-verified saving', 'confirm_realized', 'A later posted bank charge is materially lower than the baseline. Confirm only after verifying this is a durable saving.');
       }}
 
