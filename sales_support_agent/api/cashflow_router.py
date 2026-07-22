@@ -7,12 +7,14 @@ import json
 import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from functools import lru_cache
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+import requests
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from sales_support_agent.services.cashflow.ap import (
     parse_obligation_form,
@@ -73,6 +75,31 @@ router = APIRouter(
 )
 
 plaid_webhook_router = APIRouter(tags=["plaid"])
+
+_PLAID_LINK_SDK_URL = "https://cdn.plaid.com/link/v2/stable/link-initialize.js"
+
+
+@lru_cache(maxsize=1)
+def _load_plaid_link_sdk() -> bytes:
+    """Fetch and cache Plaid's official Link loader for first-party delivery."""
+    response = requests.get(_PLAID_LINK_SDK_URL, timeout=20)
+    response.raise_for_status()
+    return response.content
+
+
+@plaid_webhook_router.get("/api/integrations/plaid/link-initialize.js")
+async def plaid_link_sdk() -> Response:
+    """Serve Plaid Link through Agent when privacy tools block the CDN URL."""
+    try:
+        content = await asyncio.to_thread(_load_plaid_link_sdk)
+    except requests.RequestException as exc:
+        logger.warning("Plaid Link loader could not be fetched: %s", exc)
+        raise HTTPException(status_code=503, detail="Secure bank connection loader is unavailable") from exc
+    return Response(
+        content=content,
+        media_type="text/javascript",
+        headers={"Cache-Control": "public, max-age=3600, stale-if-error=86400"},
+    )
 
 
 @plaid_webhook_router.post("/api/integrations/plaid/webhook")

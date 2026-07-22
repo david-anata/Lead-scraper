@@ -2750,7 +2750,7 @@ async def render_cashflow_overview_page(
 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
-        <div class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span></div><button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div>
+        <div class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div>
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
@@ -2771,7 +2771,7 @@ async def render_cashflow_overview_page(
       <script id="finance-drawer-payloads" type="application/json">{drawer_json}</script>
     </main>
 
-    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+    <script src="/api/integrations/plaid/link-initialize.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script>
       (() => {{
@@ -2810,10 +2810,12 @@ async def render_cashflow_overview_page(
         else {{ assistantSave.disabled=false; assistantSave.textContent='Save commitment'; }}
       }});
       const plaidConnect = document.getElementById('finance-plaid-connect');
+      const plaidError = document.getElementById('finance-plaid-error');
       if (plaidConnect && !plaidConnect.disabled) plaidConnect.addEventListener('click', async () => {{
         const original = plaidConnect.textContent;
         plaidConnect.disabled = true;
         plaidConnect.textContent = 'Preparing secure connection...';
+        if (plaidError) {{ plaidError.hidden = true; plaidError.textContent = ''; }}
         try {{
           const tokenResponse = await fetch('/admin/finances/plaid/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
           if (!tokenResponse.ok) throw new Error('Bank connection is not ready. Check Plaid setup.');
@@ -2841,6 +2843,10 @@ async def render_cashflow_overview_page(
           plaidConnect.disabled = false;
           plaidConnect.textContent = 'Try bank connection again';
           plaidConnect.title = error.message || 'Bank connection unavailable';
+          if (plaidError) {{
+            plaidError.hidden = false;
+            plaidError.textContent = error.message || 'The secure bank window could not open. Please reload and try again.';
+          }}
         }}
       }});
       const root = document.querySelector('.finance-control');
