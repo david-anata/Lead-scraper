@@ -254,6 +254,11 @@ class FulfillmentPublicFunnelTests(unittest.TestCase):
         self.assertNotIn('data-key="fee-schedule"', html)
         self.assertNotIn('data-key="quote"', html)
         self.assertNotIn("Your estimated monthly invoice", html)
+        self.assertNotIn("all 50 U.S. zones", html)
+        self.assertNotIn("entire West", html)
+        self.assertNotIn("avg per parcel, your mix", html)
+        self.assertIn("representative shipping zones", html)
+        self.assertEqual(dict(run.summary_json or {})["narrative"]["model"], "public-deterministic")
         # DFY leads with the full-3PL card.
         pos_ff = html.find("Anata Fulfillment")
         pos_os = html.find("Anata Shipping OS")

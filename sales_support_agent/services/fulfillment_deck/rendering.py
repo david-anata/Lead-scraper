@@ -1302,7 +1302,14 @@ def render_rate_sheet_html(
             sections.append((f"sec-{sec}", label, block))
 
     _add("Overview", lambda sec: _render_hero(
-        profile, matrix, narrative, generated_on, sec, blended_rate, avg_transit_days))
+        profile,
+        matrix,
+        narrative,
+        generated_on,
+        sec,
+        None if suppress_fulfillment_pricing else blended_rate,
+        None if suppress_fulfillment_pricing else avg_transit_days,
+    ))
     # v6: the map + carrier-rate tables are ONE "Explore your rates" section
     # driven by a single control bar — the rail collapses to one entry.
     if flags.zone_map or flags.rate_matrix:

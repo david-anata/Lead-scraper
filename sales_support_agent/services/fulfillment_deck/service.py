@@ -144,6 +144,30 @@ def _build_narrative(
     return _fallback_narrative(profile, matrix, savings)
 
 
+def _public_narrative(profile: ProspectProfile, matrix: RateMatrix) -> NarrativeBlock:
+    """Deterministic public-funnel copy derived only from the returned matrix."""
+    zones = {zone.zone for product in matrix.products for zone in product.zones if zone.quotes}
+    products = [product for product in matrix.products if product.zones]
+    product_label = "package configuration" if len(products) == 1 else "package configurations"
+    zone_label = "representative shipping zone" if len(zones) == 1 else "representative shipping zones"
+    bullets = [
+        "Every displayed price is carrier postage returned by the live rate engine.",
+        "The table shows the carrier service and returned transit time for each representative zone.",
+        "Fulfillment service fees are not included in this public Rate Sheet.",
+    ]
+    if any(product.product.dims_estimated for product in products):
+        bullets.append("Package assumptions marked estimated should be confirmed before shipping.")
+    return NarrativeBlock(
+        executive_summary=(
+            f"Live carrier postage was prepared for {profile.display_name} using "
+            f"{len(products)} recognized {product_label} across {len(zones)} {zone_label}. "
+            "Review the returned service, transit time, and postage by zone below."
+        ),
+        bullets=tuple(bullets[:4]),
+        model="public-deterministic",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Savings math
 # ---------------------------------------------------------------------------
@@ -346,7 +370,7 @@ def _assemble(
         margin_override=quote_margin_override,
         rate_overrides=rate_overrides or {},
     )
-    narrative = _build_narrative(profile, matrix, savings)
+    narrative = _public_narrative(profile, matrix) if suppress_fulfillment_pricing else _build_narrative(profile, matrix, savings)
     flags = decide_sections(profile, matrix)
 
     now = datetime.now(timezone.utc)
@@ -595,8 +619,12 @@ def apply_viewer_requote(
         rate_overrides=dict(summary.get("rate_overrides") or {}),
     )
     # Deterministic narrative only — viewer edits must never trigger an LLM call.
-    narrative_fn = getattr(llm_module, "_fallback_narrative", None) or _fallback_narrative
-    narrative = narrative_fn(profile, matrix, savings)
+    suppress_fulfillment_pricing = bool(summary.get("suppress_fulfillment_pricing"))
+    if suppress_fulfillment_pricing:
+        narrative = _public_narrative(profile, matrix)
+    else:
+        narrative_fn = getattr(llm_module, "_fallback_narrative", None) or _fallback_narrative
+        narrative = narrative_fn(profile, matrix, savings)
     flags = decide_sections(profile, matrix)
 
     view_path = str(summary.get("view_path") or "")
@@ -618,7 +646,7 @@ def apply_viewer_requote(
         rate_overrides=dict(summary.get("rate_overrides") or {}),
         rate_card_note=str(summary.get("rate_card_note") or ""),
         segment=clean_segment(summary.get("segment")),
-        suppress_fulfillment_pricing=bool(summary.get("suppress_fulfillment_pricing")),
+        suppress_fulfillment_pricing=suppress_fulfillment_pricing,
     )
     patch = {
         "prospect_profile": profile.to_dict(),
