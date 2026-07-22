@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -53,6 +54,18 @@ from sales_support_agent.services.cashflow.qbo_sync import sync_qbo_invoices
 logger = logging.getLogger(__name__)
 
 
+def _finance_settings(request: Request) -> Any:
+    """Return the full agent settings used by Finance integrations.
+
+    The root application keeps its legacy lead-scraper settings in
+    ``app.state.settings`` and the modular agent settings in
+    ``app.state.agent_settings``. Finance integrations (including Plaid) are
+    configured on the latter. The fallback preserves compatibility with the
+    standalone sales-support app and focused route tests.
+    """
+    return getattr(request.app.state, "agent_settings", None) or request.app.state.settings
+
+
 router = APIRouter(
     prefix="/admin/finances",
     tags=["finance"],
@@ -73,7 +86,7 @@ async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
         verify_webhook,
     )
 
-    settings = request.app.state.settings
+    settings = _finance_settings(request)
     raw_body = await request.body()
     signed_jwt = request.headers.get("Plaid-Verification", "")
     client = PlaidClient(settings)
@@ -283,7 +296,7 @@ async def finance_overview(request: Request, flash: str = ""):
         except Exception as exc:
             _forecast_logger.error("[overview] template expansion failed: %s", exc, exc_info=True)
     asyncio.create_task(_expand())
-    return await render_cashflow_overview_page(flash=flash, settings=request.app.state.settings)
+    return await render_cashflow_overview_page(flash=flash, settings=_finance_settings(request))
 
 
 @router.post("/plaid/link-token")
@@ -295,7 +308,7 @@ async def plaid_link_token(request: Request):
     client_user_id = str(user.get("email") or user.get("id") or "finance-operator")
     try:
         token = await asyncio.to_thread(
-            PlaidClient(request.app.state.settings).create_link_token,
+            PlaidClient(_finance_settings(request)).create_link_token,
             client_user_id=client_user_id,
         )
     except PlaidError as exc:
@@ -314,7 +327,7 @@ async def plaid_exchange(request: Request):
     public_token = str(body.get("public_token") or "").strip()
     if not public_token:
         raise HTTPException(status_code=400, detail="public_token is required")
-    settings = request.app.state.settings
+    settings = _finance_settings(request)
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
     client = PlaidClient(settings)
@@ -338,7 +351,7 @@ async def plaid_refresh_item(request: Request, item_id: str):
     from sales_support_agent.services.cashflow.plaid import PlaidError, sync_item
 
     try:
-        result = await asyncio.to_thread(sync_item, item_id, settings=request.app.state.settings)
+        result = await asyncio.to_thread(sync_item, item_id, settings=_finance_settings(request))
     except PlaidError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
     return JSONResponse({"status": "ok", "sync": result})
@@ -358,7 +371,7 @@ async def finance_assistant_preview(request: Request):
     try:
         preview = await asyncio.to_thread(
             create_preview,
-            str(body.get("prompt") or ""), actor=actor, settings=request.app.state.settings,
+            str(body.get("prompt") or ""), actor=actor, settings=_finance_settings(request),
         )
     except (ValueError, FinanceAssistantError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -558,7 +571,7 @@ async def run_smart_cfo_review(request: Request):
     from sales_support_agent.services.cashflow.smart_cfo import SmartCfoProviderError, run_smart_cfo
 
     try:
-        result = await asyncio.to_thread(run_smart_cfo, request.app.state.settings)
+        result = await asyncio.to_thread(run_smart_cfo, _finance_settings(request))
     except (TypeError, ValueError, json.JSONDecodeError):
         logger.exception("Smart CFO returned invalid advice")
         return _redirect_finance_error("Smart review returned invalid advice; no finance data changed")
