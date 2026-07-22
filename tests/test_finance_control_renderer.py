@@ -535,6 +535,8 @@ def test_source_center_offers_bank_connection_and_accounting_refresh() -> None:
     assert 'id="finance-plaid-error"' in page
     assert 'src="/api/integrations/plaid/link-initialize.js"' in page
     assert 'src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"' not in page
+    assert "if (updateModal?.open) updateModal.close();" in page
+    assert "reopenUpdateModal();" in page
     assert "Bank accounts" in page
     assert 'action="/admin/finances/sync-connected-sources"' in page
     assert "Refresh accounting sources" in page

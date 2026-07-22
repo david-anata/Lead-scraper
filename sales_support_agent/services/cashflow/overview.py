@@ -2813,6 +2813,11 @@ async def render_cashflow_overview_page(
       const plaidError = document.getElementById('finance-plaid-error');
       if (plaidConnect && !plaidConnect.disabled) plaidConnect.addEventListener('click', async () => {{
         const original = plaidConnect.textContent;
+        const updateModal = plaidConnect.closest('dialog');
+        const reopenUpdateModal = () => {{
+          if (!updateModal || updateModal.open) return;
+          if (updateModal.showModal) updateModal.showModal(); else updateModal.setAttribute('open', '');
+        }};
         plaidConnect.disabled = true;
         plaidConnect.textContent = 'Preparing secure connection...';
         if (plaidError) {{ plaidError.hidden = true; plaidError.textContent = ''; }}
@@ -2836,10 +2841,16 @@ async def render_cashflow_overview_page(
               if (!exchange.ok) {{ plaidConnect.disabled=false; plaidConnect.textContent='Connection needs attention'; return; }}
               window.location.assign('/admin/finances?flash=' + encodeURIComponent('ok:Bank accounts connected and refreshed.'));
             }},
-            onExit: () => {{ plaidConnect.disabled=false; plaidConnect.textContent=original; }}
+            onExit: () => {{
+              plaidConnect.disabled=false;
+              plaidConnect.textContent=original;
+              reopenUpdateModal();
+            }}
           }});
+          if (updateModal?.open) updateModal.close();
           handler.open();
         }} catch (error) {{
+          reopenUpdateModal();
           plaidConnect.disabled = false;
           plaidConnect.textContent = 'Try bank connection again';
           plaidConnect.title = error.message || 'Bank connection unavailable';
