@@ -202,6 +202,44 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertFalse(body["closers"]["services"])
         deliver.assert_called_once()
 
+    def test_unlock_stores_sanitized_diagnostic_qualification(self) -> None:
+        from sales_support_agent.models.entities import AutomationRun
+
+        data = self._create()
+        with mock.patch.object(M, "_run_analysis_and_deliver"):
+            resp = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={
+                    "token": data["token"],
+                    "email": "qualified@example.com",
+                    "qualification": {
+                        "name": "  David  ",
+                        "company": "Anata",
+                        "storefront": "https://www.amazon.com/dp/B0TESTASIN",
+                        "revenue_range": "$100k-$500k",
+                        "challenge": "Unclear advertising efficiency",
+                        "next_step": "Book an audit review",
+                        "completed_engines": ["advertising", "market_shelf", "ignored"],
+                        "untrusted": "must not persist",
+                    },
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(resp.status_code, 202, resp.text)
+
+        session = app.state.session_factory()
+        try:
+            run = session.get(AutomationRun, data["intake_id"])
+            qualification = run.metadata_json["diagnostic_qualification"]
+            self.assertEqual(qualification["name"], "David")
+            self.assertEqual(qualification["company"], "Anata")
+            self.assertEqual(
+                qualification["completed_engines"], ["advertising", "market_shelf"]
+            )
+            self.assertNotIn("untrusted", qualification)
+        finally:
+            session.close()
+
 
 if __name__ == "__main__":
     unittest.main()
