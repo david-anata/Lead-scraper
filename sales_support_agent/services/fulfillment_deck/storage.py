@@ -138,6 +138,27 @@ def get_run(run_id: int) -> Optional[AutomationRun]:
         return run
 
 
+def get_run_by_public_correlation(correlation_id: str) -> Optional[AutomationRun]:
+    """Find a public-funnel run by its high-entropy, non-PII correlation ID."""
+    needle = str(correlation_id or "").strip()
+    if not needle:
+        return None
+    with _session() as s:
+        runs = (
+            s.execute(
+                select(AutomationRun)
+                .where(AutomationRun.run_type == RUN_TYPE)
+                .order_by(AutomationRun.started_at.desc())
+            )
+            .scalars()
+            .all()
+        )
+        for run in runs:
+            if str((run.summary_json or {}).get("public_correlation_id") or "") == needle:
+                return run
+    return None
+
+
 def list_runs(limit: int = 100) -> list[dict]:
     """Slim rows for the pipeline table, newest first."""
     with _session() as s:

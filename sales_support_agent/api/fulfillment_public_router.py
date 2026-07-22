@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, Request
@@ -35,6 +36,7 @@ from fastapi.responses import JSONResponse
 from sales_support_agent.config import load_settings
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.services.fulfillment_deck import storage
+from sales_support_agent.services.fulfillment_deck.public_payload import serialize_public_matrix
 from sales_support_agent.services.fulfillment_deck.schema import RATE_SOURCE_WMS, clean_segment, clean_zip
 from sales_support_agent.services.fulfillment_deck.service import (
     apply_profile_edits,
@@ -144,13 +146,12 @@ async def rate_sheet_taste(
 
     rates_source = str(result.get("rates_source") or "")
     live_rates = rates_source == "wms"
+    public_preview = serialize_public_matrix(result, preview=True) if live_rates else None
 
     # TEASER FIELDS ONLY — no deck_html, no full profile, no email. Mock/sample
     # rates are useful for internal rendering tests but must never be presented
     # to a public visitor as a real quote.
-    return JSONResponse(
-        status_code=202,
-        content={
+    response: dict[str, Any] = {
             "run_id": result["run_id"],
             "token": str(result.get("export_token") or ""),
             "carrier_rate": result.get("blended_rate") if live_rates else None,
@@ -159,8 +160,10 @@ async def rate_sheet_taste(
             "excludes_3pl_fees": True,
             "product_count": product_count,
             "brand_name": brand_name,
-        },
-    )
+        }
+    if public_preview is not None:
+        response["preview"] = public_preview
+    return JSONResponse(status_code=202, content=response)
 
 
 # ---------------------------------------------------------------------------
@@ -180,11 +183,11 @@ def _absolute_view_url(settings, view_path: str) -> str:
     return f"{base}{path}" if base else path
 
 
-def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> None:
+def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> bool:
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[fulfillment_public] Resend not configured; skipping email to %s", email)
-        return
+        return False
     label = brand or "your brand"
     booking_url = str(getattr(settings, "marketing_booking_url", "") or "").strip()
     lines = [
@@ -206,6 +209,7 @@ def _send_unlock_email(settings, *, email: str, brand: str, view_url: str) -> No
         subject="Your Anata rate sheet is ready",
         text="\n".join(lines),
     )
+    return True
 
 
 def _finish_unlock(
@@ -219,6 +223,14 @@ def _finish_unlock(
     """Background task: apply refinements, complete + publish, email the
     tokenized view URL, and fire the HubSpot company+deal sync."""
     settings = getattr(app.state, "settings", None) or load_settings()
+    storage.update_summary(
+        run_id,
+        {
+            "public_rate_sheet_status": "building",
+            "public_email_status": "pending",
+            "public_sales_handoff_status": "pending",
+        },
+    )
     try:
         edits: dict = {}
         if monthly_orders is not None:
@@ -233,6 +245,8 @@ def _finish_unlock(
             rerender_rate_sheet(run_id, settings=settings)
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] refinement/rerender failed for run %d", run_id)
+        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
+        return
 
     refreshed = storage.get_run(run_id)
     refreshed_summary = dict(refreshed.summary_json or {}) if refreshed is not None else {}
@@ -241,6 +255,7 @@ def _finish_unlock(
             "[fulfillment_public] live rates unavailable after rerender for run %d; skipping publish and delivery",
             run_id,
         )
+        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
         return
 
     published = False
@@ -250,6 +265,7 @@ def _finish_unlock(
         logger.exception("[fulfillment_public] publish failed for run %d", run_id)
     if not published:
         logger.warning("[fulfillment_public] run %d not published; skipping delivery", run_id)
+        storage.update_summary(run_id, {"public_rate_sheet_status": "failed"})
         return
 
     run = storage.get_run(run_id)
@@ -257,6 +273,13 @@ def _finish_unlock(
     profile = dict(summary.get("prospect_profile") or {})
     brand = str(summary.get("prospect") or "")
     view_url = _absolute_view_url(settings, str(summary.get("view_path") or ""))
+    storage.update_summary(
+        run_id,
+        {
+            "public_rate_sheet_status": "ready",
+            "public_shared_url": view_url,
+        },
+    )
 
     # Store the requester email for first-view notifications / audit.
     try:
@@ -266,16 +289,27 @@ def _finish_unlock(
 
     if view_url:
         try:
-            _send_unlock_email(settings, email=email, brand=brand, view_url=view_url)
+            sent = _send_unlock_email(settings, email=email, brand=brand, view_url=view_url)
+            storage.update_summary(run_id, {"public_email_status": "sent" if sent else "failed"})
         except Exception:  # noqa: BLE001
             logger.exception("[fulfillment_public] unlock email failed for %s", email)
+            storage.update_summary(run_id, {"public_email_status": "failed"})
+    else:
+        storage.update_summary(run_id, {"public_email_status": "failed"})
 
     # HubSpot company+deal sync (segment rides in summary -> deal brief).
     try:
         from sales_support_agent.services.fulfillment_deck.hubspot_sync import sync_new_prospect
         sync_new_prospect(run_id, summary, profile)
+        synced = storage.get_run(run_id)
+        synced_summary = dict(synced.summary_json or {}) if synced is not None else {}
+        storage.update_summary(
+            run_id,
+            {"public_sales_handoff_status": "complete" if synced_summary.get("hubspot_deal_id") else "failed"},
+        )
     except Exception:  # noqa: BLE001
         logger.exception("[fulfillment_public] hubspot sync_new_prospect failed for run %d", run_id)
+        storage.update_summary(run_id, {"public_sales_handoff_status": "failed"})
 
 
 @router.post("/rate-sheet/unlock")
@@ -334,6 +368,29 @@ async def rate_sheet_unlock(
             monthly_orders = None
     origin_zip = str(body.get("origin_zip", "") or "").strip()
 
+    correlation_id = str(summary.get("public_correlation_id") or "").strip()
+    existing_status = str(summary.get("public_rate_sheet_status") or "").strip()
+    if correlation_id and existing_status in {"building", "ready"}:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "correlation_id": correlation_id,
+                "status": existing_status,
+                "status_path": f"/api/public/fulfillment/rate-sheet/status/{correlation_id}",
+            },
+        )
+    if not correlation_id:
+        correlation_id = secrets.token_urlsafe(24)
+    storage.update_summary(
+        run_id,
+        {
+            "public_correlation_id": correlation_id,
+            "public_rate_sheet_status": "building",
+            "public_email_status": "pending",
+            "public_sales_handoff_status": "pending",
+        },
+    )
+
     background_tasks.add_task(
         _finish_unlock,
         request.app,
@@ -342,4 +399,59 @@ async def rate_sheet_unlock(
         monthly_orders=monthly_orders,
         origin_zip=origin_zip,
     )
-    return JSONResponse(status_code=202, content={"status": "building"})
+    return JSONResponse(
+        status_code=202,
+        content={
+            "correlation_id": correlation_id,
+            "status": "building",
+            "status_path": f"/api/public/fulfillment/rate-sheet/status/{correlation_id}",
+        },
+    )
+
+
+@router.get("/rate-sheet/status/{correlation_id}")
+async def rate_sheet_status(
+    correlation_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    denied = _enforce_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    run = storage.get_run_by_public_correlation(correlation_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
+    summary = dict(run.summary_json or {})
+    rate_status = str(summary.get("public_rate_sheet_status") or "building")
+    response: dict[str, Any] = {
+        "rate_sheet": {"status": rate_status if rate_status in {"building", "ready", "failed"} else "building"},
+        "email": {"status": str(summary.get("public_email_status") or "pending")},
+        "sales_handoff": {"status": str(summary.get("public_sales_handoff_status") or "pending")},
+    }
+    if rate_status == "ready":
+        response["result_path"] = f"/api/public/fulfillment/rate-sheet/result/{correlation_id}"
+        shared_url = str(summary.get("public_shared_url") or "").strip()
+        if shared_url:
+            response["shared_url"] = shared_url
+    return JSONResponse(content=response)
+
+
+@router.get("/rate-sheet/result/{correlation_id}")
+async def rate_sheet_result(
+    correlation_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    denied = _enforce_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    run = storage.get_run_by_public_correlation(correlation_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"detail": "Rate sheet not found."})
+    summary = dict(run.summary_json or {})
+    if str(summary.get("public_rate_sheet_status") or "") != "ready":
+        return JSONResponse(status_code=409, content={"detail": "Rate sheet is not ready."})
+    payload = serialize_public_matrix(summary, preview=False)
+    if payload is None:
+        return JSONResponse(status_code=503, content={"detail": "Live carrier rates are unavailable."})
+    return JSONResponse(content=payload)
