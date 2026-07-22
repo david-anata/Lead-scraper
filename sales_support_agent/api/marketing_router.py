@@ -853,7 +853,7 @@ async def marketing_site_intake_unlock(
             engines = qualification.get("completed_engines")
             if isinstance(engines, list):
                 safe_qualification["completed_engines"] = [
-                    str(engine)[:64] for engine in engines[:2] if str(engine).strip()
+                    str(engine)[:64] for engine in engines[:4] if str(engine).strip()
                 ]
         run.metadata_json = {
             **(run.metadata_json or {}),

@@ -219,7 +219,13 @@ class MarketingIntakeTests(unittest.TestCase):
                         "revenue_range": "$100k-$500k",
                         "challenge": "Unclear advertising efficiency",
                         "next_step": "Book an audit review",
-                        "completed_engines": ["advertising", "market_shelf", "ignored"],
+                        "completed_engines": [
+                            "advertising",
+                            "market_shelf",
+                            "content_alignment",
+                            "profit",
+                            "ignored",
+                        ],
                         "untrusted": "must not persist",
                     },
                 },
@@ -234,7 +240,8 @@ class MarketingIntakeTests(unittest.TestCase):
             self.assertEqual(qualification["name"], "David")
             self.assertEqual(qualification["company"], "Anata")
             self.assertEqual(
-                qualification["completed_engines"], ["advertising", "market_shelf"]
+                qualification["completed_engines"],
+                ["advertising", "market_shelf", "content_alignment", "profit"],
             )
             self.assertNotIn("untrusted", qualification)
         finally:
