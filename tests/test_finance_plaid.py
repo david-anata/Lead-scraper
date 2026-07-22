@@ -6,9 +6,12 @@ import json
 import pytest
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
+from sqlalchemy import text
 
+from sales_support_agent.models.database import create_session_factory, init_database
 from sales_support_agent.services.cashflow.plaid import (
-    PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, verify_webhook,
+    PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, store_item,
+    verify_webhook,
 )
 
 
@@ -63,6 +66,30 @@ def test_update_link_token_repairs_existing_item_without_reinitializing_products
     assert captured["payload"]["access_token"] == "access-sandbox"
     assert "products" not in captured["payload"]
     assert "transactions" not in captured["payload"]
+
+
+def test_store_item_supplies_required_status_fields():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    local_id = store_item(
+        item_id="sandbox-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        institution_id="ins_test",
+        display_name="First Platypus Bank",
+    )
+
+    with finance_engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT status, last_error_code, transactions_cursor "
+                "FROM plaid_items WHERE id=:id"
+            ),
+            {"id": local_id},
+        ).one()
+    assert tuple(row) == ("connected", "", "")
 
 
 def _signed_webhook(raw_body: bytes, *, issued_at: int | None = None):

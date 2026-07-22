@@ -187,10 +187,11 @@ def store_item(
         connection.execute(text("""
             INSERT INTO plaid_items (
                 id, scope_key, external_item_id, institution_id, display_name,
-                sealed_access_token, status, created_by, created_at, updated_at
+                sealed_access_token, status, last_error_code, transactions_cursor,
+                created_by, created_at, updated_at
             ) VALUES (
                 :id, 'default', :external_id, :institution_id, :display_name,
-                :token, 'connected', :actor, :now, :now
+                :token, 'connected', '', '', :actor, :now, :now
             )
             ON CONFLICT(external_item_id) DO UPDATE SET
                 institution_id=:institution_id, display_name=:display_name,
