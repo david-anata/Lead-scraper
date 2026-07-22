@@ -83,6 +83,7 @@ class PublicPayloadTests(unittest.TestCase):
         self.assertTrue(quotes[0]["is_lowest_cost"])
         self.assertTrue(quotes[1]["is_fastest"])
         self.assertEqual((payload or {})["destinations"][0]["label"], "Dallas, TX")
+        self.assertEqual((payload or {})["destinations"][0]["zip"], "75201")
 
     def test_serializer_rejects_mock_or_mixed_matrix(self) -> None:
         summary = live_summary()
