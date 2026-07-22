@@ -533,6 +533,9 @@ def test_source_center_offers_bank_connection_and_accounting_refresh() -> None:
 
     assert 'id="finance-plaid-connect"' in page
     assert 'id="finance-plaid-error"' in page
+    assert "/admin/finances/plaid/refresh" in page
+    assert "data-plaid-reconnect" in page
+    assert "/link-token" in page
     assert 'src="/api/integrations/plaid/link-initialize.js"' in page
     assert 'src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"' not in page
     assert "if (updateModal?.open) updateModal.close();" in page
@@ -547,6 +550,55 @@ def test_source_center_offers_bank_connection_and_accounting_refresh() -> None:
     assert "Connected bank data remains cash-on-hand truth." in page
     assert 'action="/admin/finances/sync-qbo-actuals"' in page
     assert "Refresh actuals only" in page
+
+
+def test_connected_plaid_source_shows_refresh_proof_and_action() -> None:
+    with patch(
+        "sales_support_agent.services.cashflow.plaid.connection_summary",
+        return_value={
+            "configured": True,
+            "environment": "sandbox",
+            "connected_count": 1,
+            "account_count": 2,
+            "last_success_at": "2026-07-22T16:30:00+00:00",
+            "needs_reconnect_count": 0,
+            "items": [{
+                "id": "item-1", "display_name": "First Platypus Bank",
+                "status": "connected", "account_count": 2,
+                "last_error_code": "", "needs_reconnect": False,
+            }],
+        },
+    ):
+        page = _render([], _control_state(queue=[]), balance_source="plaid")
+
+    assert 'id="finance-plaid-refresh"' in page
+    assert "Refresh bank now" in page
+    assert "First Platypus Bank" in page
+    assert "Last refreshed 2026-07-22 16:30:00" in page
+
+
+def test_plaid_login_problem_shows_reconnect_action() -> None:
+    with patch(
+        "sales_support_agent.services.cashflow.plaid.connection_summary",
+        return_value={
+            "configured": True,
+            "environment": "sandbox",
+            "connected_count": 0,
+            "account_count": 1,
+            "last_success_at": None,
+            "needs_reconnect_count": 1,
+            "items": [{
+                "id": "item-needs-login", "display_name": "First Platypus Bank",
+                "status": "error", "account_count": 1,
+                "last_error_code": "ITEM_LOGIN_REQUIRED", "needs_reconnect": True,
+            }],
+        },
+    ):
+        page = _render([], _control_state(queue=[]), balance_source="plaid")
+
+    assert "1 bank connection(s) need attention" in page
+    assert 'data-plaid-reconnect="item-needs-login"' in page
+    assert ">Reconnect</button>" in page
 
 
 def test_finance_control_prioritizes_one_decision_then_current_work() -> None:

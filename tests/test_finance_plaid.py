@@ -51,6 +51,20 @@ def test_link_token_is_transactions_only():
     assert "transfer" not in captured["payload"]["products"]
 
 
+def test_update_link_token_repairs_existing_item_without_reinitializing_products():
+    client = PlaidClient(_settings())
+    captured = {}
+    client.post = lambda path, payload: captured.update(path=path, payload=payload) or {"link_token": "update-sandbox"}
+
+    assert client.create_link_token(
+        client_user_id="finance-user", access_token="access-sandbox",
+    ) == "update-sandbox"
+    assert captured["path"] == "/link/token/create"
+    assert captured["payload"]["access_token"] == "access-sandbox"
+    assert "products" not in captured["payload"]
+    assert "transactions" not in captured["payload"]
+
+
 def _signed_webhook(raw_body: bytes, *, issued_at: int | None = None):
     private_key = ec.generate_private_key(ec.SECP256R1())
     key_data = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key()))

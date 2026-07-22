@@ -2375,9 +2375,45 @@ async def render_cashflow_overview_page(
         plaid_summary = connection_summary(settings=settings)
     except Exception:
         plaid_summary = {"configured": False, "connected_count": 0, "account_count": 0, "environment": "sandbox"}
+    plaid_items_html = ""
+    plaid_last_success = plaid_summary.get("last_success_at")
+    if plaid_last_success:
+        try:
+            plaid_last_refresh_text = plaid_last_success.astimezone().strftime("%b %d, %Y at %I:%M %p")
+        except (AttributeError, ValueError):
+            plaid_last_refresh_text = str(plaid_last_success)[:19].replace("T", " ")
+    else:
+        plaid_last_refresh_text = "Not refreshed yet"
+    if plaid_summary.get("items"):
+        item_rows = []
+        for item in plaid_summary["items"]:
+            name = html.escape(str(item.get("display_name") or "Connected bank"))
+            account_count = int(item.get("account_count") or 0)
+            item_id = html.escape(str(item.get("id") or ""), quote=True)
+            needs_reconnect = bool(item.get("needs_reconnect"))
+            state_text = "Reconnect required" if needs_reconnect else "Connected"
+            state_class = " is-attention" if needs_reconnect else ""
+            action = (
+                f'<button class="btn btn-secondary btn-sm" type="button" '
+                f'data-plaid-reconnect="{item_id}">Reconnect</button>'
+                if needs_reconnect else ""
+            )
+            item_rows.append(
+                f'<li class="finance-plaid-item{state_class}"><div><strong>{name}</strong>'
+                f'<span>{account_count} account(s) &middot; {state_text}</span></div>{action}</li>'
+            )
+        plaid_items_html = '<ul class="finance-plaid-items">' + "".join(item_rows) + "</ul>"
     if plaid_summary["connected_count"]:
         plaid_status_text = (
             f"{plaid_summary['account_count']} bank account(s) connected &middot; "
+            f"Last refreshed {html.escape(plaid_last_refresh_text)} &middot; "
+            f"{html.escape(str(plaid_summary['environment']).title())}"
+        )
+        plaid_action_text = "Connect another bank"
+        plaid_button_disabled = ""
+    elif plaid_summary.get("needs_reconnect_count"):
+        plaid_status_text = (
+            f"{plaid_summary['needs_reconnect_count']} bank connection(s) need attention &middot; "
             f"{html.escape(str(plaid_summary['environment']).title())}"
         )
         plaid_action_text = "Connect another bank"
@@ -2750,7 +2786,7 @@ async def render_cashflow_overview_page(
 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
-        <div class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div>
+        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span>{plaid_items_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
@@ -2810,7 +2846,56 @@ async def render_cashflow_overview_page(
         else {{ assistantSave.disabled=false; assistantSave.textContent='Save commitment'; }}
       }});
       const plaidConnect = document.getElementById('finance-plaid-connect');
+      const plaidRefresh = document.getElementById('finance-plaid-refresh');
       const plaidError = document.getElementById('finance-plaid-error');
+      if (plaidRefresh) plaidRefresh.addEventListener('click', async () => {{
+        const original = plaidRefresh.textContent;
+        plaidRefresh.disabled = true;
+        plaidRefresh.textContent = 'Refreshing bank...';
+        if (plaidError) {{ plaidError.hidden = true; plaidError.textContent = ''; }}
+        try {{
+          const response = await fetch('/admin/finances/plaid/refresh', {{method:'POST', headers:{{'Accept':'application/json'}}}});
+          const payload = await response.json();
+          if (!response.ok || payload.failed) throw new Error('One or more bank connections need attention.');
+          window.location.assign('/admin/finances?flash=' + encodeURIComponent('ok:Bank balances and transactions refreshed.'));
+        }} catch (error) {{
+          plaidRefresh.disabled = false;
+          plaidRefresh.textContent = original;
+          if (plaidError) {{ plaidError.hidden = false; plaidError.textContent = error.message || 'Bank refresh failed. Please try again.'; }}
+        }}
+      }});
+      document.querySelectorAll('[data-plaid-reconnect]').forEach(button => button.addEventListener('click', async () => {{
+        const itemId = button.dataset.plaidReconnect;
+        const updateModal = button.closest('dialog');
+        const original = button.textContent;
+        const reopenUpdateModal = () => {{
+          if (!updateModal || updateModal.open) return;
+          if (updateModal.showModal) updateModal.showModal(); else updateModal.setAttribute('open', '');
+        }};
+        button.disabled = true;
+        button.textContent = 'Preparing...';
+        try {{
+          const response = await fetch('/admin/finances/plaid/items/' + encodeURIComponent(itemId) + '/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
+          if (!response.ok) throw new Error('Bank reconnect is not ready.');
+          const payload = await response.json();
+          if (!window.Plaid) throw new Error('Secure bank connection could not load.');
+          const handler = window.Plaid.create({{
+            token: payload.link_token,
+            onSuccess: async () => {{
+              await fetch('/admin/finances/plaid/items/' + encodeURIComponent(itemId) + '/refresh', {{method:'POST', headers:{{'Accept':'application/json'}}}});
+              window.location.assign('/admin/finances?flash=' + encodeURIComponent('ok:Bank login repaired and refreshed.'));
+            }},
+            onExit: () => {{ button.disabled=false; button.textContent=original; reopenUpdateModal(); }}
+          }});
+          if (updateModal?.open) updateModal.close();
+          handler.open();
+        }} catch (error) {{
+          reopenUpdateModal();
+          button.disabled = false;
+          button.textContent = original;
+          if (plaidError) {{ plaidError.hidden = false; plaidError.textContent = error.message || 'Bank reconnect could not open.'; }}
+        }}
+      }}));
       if (plaidConnect && !plaidConnect.disabled) plaidConnect.addEventListener('click', async () => {{
         const original = plaidConnect.textContent;
         const updateModal = plaidConnect.closest('dialog');

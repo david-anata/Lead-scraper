@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Mapping
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -60,16 +60,22 @@ class PlaidClient:
             raise PlaidError(message, code=code)
         return data
 
-    def create_link_token(self, *, client_user_id: str) -> str:
-        data = self.post("/link/token/create", {
+    def create_link_token(self, *, client_user_id: str, access_token: str = "") -> str:
+        payload: dict[str, Any] = {
             "user": {"client_user_id": client_user_id},
             "client_name": "Anata Finance",
-            "products": ["transactions"],
             "country_codes": ["US"],
             "language": "en",
             "webhook": self.webhook_url,
-            "transactions": {"days_requested": 365},
-        })
+        }
+        if access_token:
+            # Plaid update mode repairs credentials/consent. Products must be
+            # omitted so the existing Item is updated rather than recreated.
+            payload["access_token"] = access_token
+        else:
+            payload["products"] = ["transactions"]
+            payload["transactions"] = {"days_requested": 365}
+        data = self.post("/link/token/create", payload)
         return str(data["link_token"])
 
     def exchange_public_token(self, public_token: str) -> dict[str, str]:
@@ -221,27 +227,91 @@ def connection_summary(*, settings: Any) -> dict[str, Any]:
         with get_engine().connect() as connection:
             rows = connection.execute(text("""
                 SELECT item.id, item.display_name, item.status, item.last_success_at,
-                       item.last_error_code, COUNT(account.id) AS account_count
+                       item.last_webhook_at, item.last_error_code,
+                       COUNT(account.id) AS account_count,
+                       MAX(account.balance_as_of) AS balance_as_of
                 FROM plaid_items AS item
                 LEFT JOIN plaid_accounts AS account
                   ON account.plaid_item_id=item.id AND account.active=TRUE
                 WHERE item.disconnected_at IS NULL
                 GROUP BY item.id, item.display_name, item.status,
-                         item.last_success_at, item.last_error_code
+                         item.last_success_at, item.last_webhook_at, item.last_error_code
                 ORDER BY item.created_at
             """)).fetchall()
         items = [dict(row._mapping) for row in rows]
     except Exception:
         # A pre-migration boot should render setup, not crash Finance.
         items = []
+    reconnect_codes = {
+        "ITEM_LOGIN_REQUIRED", "PENDING_DISCONNECT", "PENDING_EXPIRATION",
+        "ACCESS_NOT_GRANTED", "USER_PERMISSION_REVOKED",
+    }
+    for item in items:
+        code = str(item.get("last_error_code") or "").upper()
+        item["needs_reconnect"] = code in reconnect_codes
     connected = sum(1 for item in items if item.get("status") == "connected")
+    last_successes = [item.get("last_success_at") for item in items if item.get("last_success_at")]
     return {
         "configured": configured,
         "environment": str(settings.plaid_environment or "sandbox"),
         "items": items,
         "connected_count": connected,
         "account_count": sum(int(item.get("account_count") or 0) for item in items),
+        "last_success_at": max(last_successes) if last_successes else None,
+        "needs_reconnect_count": sum(1 for item in items if item.get("needs_reconnect")),
     }
+
+
+def create_update_link_token(
+    local_item_id: str, *, client_user_id: str, settings: Any,
+    client: PlaidClient | None = None,
+) -> str:
+    """Create a short-lived Link token that repairs one existing Item."""
+    item = _item_row(local_item_id)
+    access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
+    return (client or PlaidClient(settings)).create_link_token(
+        client_user_id=client_user_id, access_token=access_token,
+    )
+
+
+def stale_connected_item_ids(*, max_age_hours: int = 6) -> list[str]:
+    """Return connected Items whose last successful refresh is old or missing."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("""
+            SELECT id FROM plaid_items
+            WHERE disconnected_at IS NULL AND status='connected'
+              AND (last_success_at IS NULL OR last_success_at < :cutoff)
+            ORDER BY created_at
+        """), {"cutoff": cutoff}).fetchall()
+    return [str(row._mapping["id"]) for row in rows]
+
+
+def sync_connected_items(*, settings: Any, item_ids: list[str] | None = None) -> dict[str, Any]:
+    """Refresh connected Items independently so one bank cannot block another."""
+    if item_ids is None:
+        with get_engine().connect() as connection:
+            rows = connection.execute(text("""
+                SELECT id FROM plaid_items
+                WHERE disconnected_at IS NULL AND status='connected'
+                ORDER BY created_at
+            """)).fetchall()
+        item_ids = [str(row._mapping["id"]) for row in rows]
+    result: dict[str, Any] = {"refreshed": 0, "failed": 0, "items": []}
+    client = PlaidClient(settings)
+    for item_id in item_ids:
+        try:
+            counts = sync_item(item_id, settings=settings, client=client)
+            result["refreshed"] += 1
+            result["items"].append({"item_id": item_id, "status": "ok", "sync": counts})
+        except Exception as exc:
+            result["failed"] += 1
+            result["items"].append({
+                "item_id": item_id,
+                "status": "error",
+                "code": exc.code if isinstance(exc, PlaidError) else "sync_error",
+            })
+    return result
 
 
 def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None = None) -> dict[str, int]:

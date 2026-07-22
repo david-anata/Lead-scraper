@@ -138,12 +138,14 @@ async def plaid_webhook(request: Request, background_tasks: BackgroundTasks):
     expected_environment = str(settings.plaid_environment or "sandbox").lower()
     if payload_environment and payload_environment != expected_environment:
         raise HTTPException(status_code=401, detail={"code": "environment_mismatch", "message": "Webhook verification failed"})
+    webhook_type = str(payload.get("webhook_type") or "").upper()
+    webhook_code = str(payload.get("webhook_code") or "").upper()
     external_item_id = str(payload.get("item_id") or "")
     error = payload.get("error") or {}
     error_code = str(error.get("error_code") or "") if isinstance(error, dict) else ""
+    if webhook_type == "ITEM" and webhook_code in {"PENDING_DISCONNECT", "PENDING_EXPIRATION"}:
+        error_code = webhook_code
     local_item_id = record_webhook(external_item_id, error_code=error_code) if external_item_id else None
-    webhook_type = str(payload.get("webhook_type") or "").upper()
-    webhook_code = str(payload.get("webhook_code") or "").upper()
     should_sync = webhook_type == "TRANSACTIONS" or (
         webhook_type == "ITEM" and webhook_code in {"LOGIN_REPAIRED", "NEW_ACCOUNTS_AVAILABLE"}
     )
@@ -334,6 +336,21 @@ async def finance_overview(request: Request, flash: str = ""):
         except Exception as exc:
             _forecast_logger.error("[overview] template expansion failed: %s", exc, exc_info=True)
     asyncio.create_task(_expand())
+    async def _refresh_stale_plaid():
+        try:
+            from sales_support_agent.services.cashflow.plaid import (
+                stale_connected_item_ids,
+                sync_connected_items,
+            )
+            item_ids = await asyncio.to_thread(stale_connected_item_ids, max_age_hours=6)
+            if item_ids:
+                await asyncio.to_thread(
+                    sync_connected_items,
+                    settings=_finance_settings(request), item_ids=item_ids,
+                )
+        except Exception as exc:
+            _forecast_logger.warning("[overview] background Plaid refresh failed: %s", exc)
+    asyncio.create_task(_refresh_stale_plaid())
     return await render_cashflow_overview_page(flash=flash, settings=_finance_settings(request))
 
 
@@ -393,6 +410,39 @@ async def plaid_refresh_item(request: Request, item_id: str):
     except PlaidError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
     return JSONResponse({"status": "ok", "sync": result})
+
+
+@router.post("/plaid/refresh")
+async def plaid_refresh_all(request: Request):
+    """Refresh every healthy bank connection without letting one block another."""
+    from sales_support_agent.services.cashflow.plaid import sync_connected_items
+
+    result = await asyncio.to_thread(
+        sync_connected_items, settings=_finance_settings(request),
+    )
+    status = "ok" if not result["failed"] else "attention"
+    return JSONResponse({"status": status, **result})
+
+
+@router.post("/plaid/items/{item_id}/link-token")
+async def plaid_update_link_token(request: Request, item_id: str):
+    """Create a Plaid update-mode session for an expired bank login."""
+    from sales_support_agent.services.cashflow.plaid import (
+        PlaidError,
+        create_update_link_token,
+    )
+
+    user = get_current_user(request) or {}
+    try:
+        token = await asyncio.to_thread(
+            create_update_link_token,
+            item_id,
+            client_user_id=_plaid_client_user_id(user),
+            settings=_finance_settings(request),
+        )
+    except PlaidError as exc:
+        raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    return JSONResponse({"link_token": token, "mode": "update", "item_id": item_id})
 
 
 @router.post("/assistant/preview")
