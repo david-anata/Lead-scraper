@@ -661,7 +661,7 @@ _STYLES = """
     --white:#FFF; --border:rgba(43,54,68,0.12); --shadow:rgba(43,54,68,0.10); }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--light-brown); color:var(--dark-blue);
-    font-family:"Inter","Segoe UI",sans-serif; }
+    font-family:"Roboto","Segoe UI",sans-serif; }
   a { color:var(--dark-blue); }
   __NAV__
   .shell { max-width:1180px; margin:0 auto; padding:24px 18px 64px; }
@@ -880,7 +880,7 @@ def render_deal_detail_page(d: DealDetail, *, user: dict | None = None, flash: s
     <title>agent | {_esc(d.name or 'Deal')}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>{styles}</style>
   </head>
   <body>

@@ -21,6 +21,24 @@ rewrite the information architecture without an approved product decision.
 
 ## Brand And Tokens
 
+### Agent product source of truth
+
+- Website brand values originate in the website repository's
+  `design-system/tokens.data.mjs`. Agent mirrors the approved values in
+  `sales_support_agent/services/product_ui.py` for authenticated pages and in
+  `shared/anata_brand/` for portable public and exported artifacts.
+- `render_agent_nav_styles()` injects the shared product layer into every
+  authenticated server-rendered page that uses the global Agent shell. Page
+  modules may add layout-specific rules, but must use the `--agent-*` roles for
+  color, typography, radii, focus, shadows, and motion rather than defining a
+  competing theme.
+- Canonical product typography is Montserrat for concise headings and controls,
+  and Roboto for body copy, forms, tables, and dense operational content.
+- Primary commit actions use the blue accent. Ink-filled controls identify a
+  selected navigation or toggle state. Destructive actions use the danger role.
+- Public reports, calculators, and decks share the same tokens and typography
+  but do not inherit authenticated navigation or marketing CTA treatments.
+
 - Reuse the shared Anata brand primitives and `sales_support_agent/static/finance.css`
   tokens. Do not introduce raw colors, font families, shadow values, or radii
   when an existing token or component rule already fits.
@@ -28,7 +46,7 @@ rewrite the information architecture without an approved product decision.
   It is not a generic "AI cream" default and may not be replaced merely to
   satisfy an external anti-pattern rule.
 - `Montserrat` is reserved for concise headings, labels, and controls;
-  `Inter`/`Segoe UI` is for operational reading. Maintain high contrast for
+  `Roboto`/`Segoe UI` is for operational reading. Maintain high contrast for
   body copy and metadata.
 - Status color carries meaning only: teal for verified/positive, amber for
   caution, red for blocked/required attention, and sky for neutral context.

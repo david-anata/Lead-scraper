@@ -340,7 +340,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/admin.css">
     <style>
       :root {{
@@ -357,7 +357,7 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
         margin: 0;
         background: var(--light-brown);
         color: var(--dark-blue);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
       }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}

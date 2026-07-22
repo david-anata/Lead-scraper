@@ -32,14 +32,14 @@ _APP_STYLES = """
     --abu-light: #85bbda;
     --abu-bg: #f9f7f3;
     --abu-card: #ffffff;
-    --abu-result: #e7eef5;
+    --abu-result: rgba(133, 187, 218, 0.18);
     --abu-border: rgba(43, 54, 68, 0.12);
     --abu-shadow: rgba(43, 54, 68, 0.1);
     --abu-danger: #9a5a4e;
-    --abu-success: #5c8a6e;
+    --abu-success: #6ea480;
     background: linear-gradient(180deg, rgba(133, 187, 218, 0.12), rgba(249, 247, 243, 0.9)), var(--abu-bg);
     border: 1px solid var(--abu-border);
-    border-radius: 30px;
+    border-radius: 22px;
     box-shadow: 0 18px 40px var(--abu-shadow);
     color: var(--abu-dark);
     font-family: "Roboto", sans-serif;

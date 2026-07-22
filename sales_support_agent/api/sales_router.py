@@ -98,10 +98,10 @@ def _deal_not_found_page(request: Request) -> str:
     <title>agent | Deal Not Found</title>
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{--dark-blue:#2B3644;--light-brown:#F9F7F3;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);--white:#FFF;}}
-      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
+      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Roboto","Segoe UI",sans-serif;}}
       a{{color:var(--dark-blue);}}
       {nav_styles}
       .shell{{max-width:1180px;margin:0 auto;padding:48px 18px;}}
@@ -140,10 +140,10 @@ def _render_sales_operator_unavailable(request: Request, message: str) -> str:
     <title>agent | Sales Control Room Unavailable</title>
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{--dark-blue:#2B3644;--light-brown:#F9F7F3;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);--white:#FFF;}}
-      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
+      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Roboto","Segoe UI",sans-serif;}}
       a{{color:var(--dark-blue);}}
       {nav_styles}
       .shell{{max-width:1180px;margin:0 auto;padding:48px 18px;}}
@@ -436,10 +436,10 @@ def _render_create_deal_page(
     <title>agent | Create HubSpot Deal</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root{{--dark-blue:#2B3644;--light-blue:#85BBDA;--light-brown:#F9F7F3;--white:#FFF;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);}}
-      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}} a{{color:var(--dark-blue);}}
+      *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Roboto","Segoe UI",sans-serif;}} a{{color:var(--dark-blue);}}
       {nav_styles}
       .shell{{max-width:900px;margin:0 auto;padding:28px 18px 64px;}} .workspace{{background:var(--white);border:1px solid var(--border);border-radius:20px;box-shadow:0 18px 40px var(--shadow);padding:26px 28px 30px;}}
       h1{{font-family:"Montserrat",sans-serif;font-size:26px;margin:0 0 6px;}} .intro{{font-size:14px;color:rgba(43,54,68,.72);margin:0 0 18px;}}

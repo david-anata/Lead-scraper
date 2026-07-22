@@ -32,45 +32,48 @@ _HR_NAV = [
 
 _HR_STYLES = """
   .hr-wrap { display: flex; gap: 0; align-items: stretch; max-width: 1320px; margin: 0 auto; }
-  .hr-side { width: 232px; flex: 0 0 232px; padding: 26px 14px; border-right: 1px solid rgba(43,54,68,0.1); }
+  .hr-side { width: 232px; flex: 0 0 232px; padding: 26px 14px; border-right: 1px solid var(--agent-border); background:rgba(255,255,255,.42); }
   .hr-side-title { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
                    color: rgba(43,54,68,0.45); padding: 0 12px 12px; }
-  .hr-side a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px;
-               color: #2b3644; text-decoration: none; font-weight: 500; font-size: 14.5px; margin-bottom: 2px; }
+  .hr-side a { display: flex; align-items: center; gap: 10px; min-height:42px; padding: 10px 12px; border-radius: var(--agent-radius-md);
+               color: var(--agent-ink); text-decoration: none; font-weight: 500; font-size: 14px; margin-bottom: 2px; }
   .hr-side a:hover { background: rgba(43,54,68,0.05); }
-  .hr-side a.active { background: #2b3644; color: #fff; }
+  .hr-side a.active { background: var(--agent-ink); color: #fff; }
   .hr-side a .muted-tag { margin-left: auto; font-size: 10px; font-weight: 600; color: rgba(43,54,68,0.4);
                           border: 1px solid rgba(43,54,68,0.18); border-radius: 6px; padding: 1px 6px; }
   .hr-side a.active .muted-tag { color: rgba(255,255,255,0.6); border-color: rgba(255,255,255,0.3); }
   .hr-main { flex: 1; min-width: 0; padding: 28px 30px; }
-  .hr-h1 { font-family: Montserrat, Inter, sans-serif; font-weight: 800; font-size: 26px; margin: 0 0 4px; color: #1c2430; }
-  .hr-sub { color: rgba(43,54,68,0.6); font-size: 14px; margin: 0 0 24px; }
+  .hr-h1 { font-family: var(--agent-font-heading); font-weight: 800; font-size: clamp(26px,3vw,32px); line-height:1.1; letter-spacing:-.025em; margin: 0 0 6px; color: var(--agent-ink); }
+  .hr-sub { color: var(--agent-ink-muted); font-size: 14px; line-height:1.55; margin: 0 0 24px; }
   .hr-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 16px; margin-bottom: 28px; }
-  .hr-card { background: #fff; border: 1px solid rgba(43,54,68,0.1); border-radius: 14px; padding: 18px 20px; }
-  .hr-card .n { font-size: 30px; font-weight: 800; color: #1c2430; font-family: Montserrat, Inter, sans-serif; }
+  .hr-card { background: var(--agent-surface); border: 1px solid var(--agent-border); border-radius: var(--agent-radius-lg); padding: 18px 20px; box-shadow:var(--agent-shadow-resting); }
+  .hr-card .n { font-size: 30px; font-weight: 800; color: var(--agent-ink); font-family: var(--agent-font-heading); }
   .hr-card .l { font-size: 13px; color: rgba(43,54,68,0.6); margin-top: 2px; }
-  .hr-tbl { width: 100%; background: #fff; border: 1px solid rgba(43,54,68,0.1); border-radius: 14px; border-collapse: separate; border-spacing: 0; overflow: hidden; }
+  .hr-tbl { width: 100%; background: var(--agent-surface); border: 1px solid var(--agent-border); border-radius: var(--agent-radius-lg); border-collapse: separate; border-spacing: 0; overflow: hidden; box-shadow:var(--agent-shadow-resting); }
   .hr-tbl th { text-align: left; font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: rgba(43,54,68,0.5); padding: 12px 16px; border-bottom: 1px solid rgba(43,54,68,0.08); }
   .hr-tbl td { padding: 13px 16px; border-bottom: 1px solid rgba(43,54,68,0.06); font-size: 14px; }
   .hr-tbl tr:last-child td { border-bottom: none; }
   .hr-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid; }
   .hr-row-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-  .hr-btn { display: inline-block; background: #2b3644; color: #fff; text-decoration: none; font-weight: 600; font-size: 14px; padding: 9px 16px; border-radius: 10px; border: none; cursor: pointer; }
-  .hr-btn-light { background: #fff; color: #2b3644; border: 1px solid rgba(43,54,68,0.2); }
-  .hr-form { background: #fff; border: 1px solid rgba(43,54,68,0.1); border-radius: 14px; padding: 24px; max-width: 640px; }
+  .hr-btn { display: inline-flex; align-items:center; justify-content:center; min-height:42px; background: var(--agent-accent); color: var(--agent-ink); text-decoration: none; font-family:var(--agent-font-heading); font-weight: 700; font-size: 13px; padding: 9px 16px; border-radius: var(--agent-radius-md); border: 1px solid transparent; cursor: pointer; transition:background var(--agent-duration-fast) ease,box-shadow var(--agent-duration-fast) ease; }
+  .hr-btn:hover { background:var(--agent-accent-strong); }
+  .hr-btn-light { background: var(--agent-surface); color: var(--agent-ink); border-color: var(--agent-border); }
+  .hr-btn-light:hover { background:var(--agent-surface-soft); }
+  .hr-form { background: var(--agent-surface); border: 1px solid var(--agent-border); border-radius: var(--agent-radius-lg); padding: 24px; max-width: 640px; box-shadow:var(--agent-shadow-resting); }
   .hr-form label { display: block; font-size: 13px; font-weight: 600; color: rgba(43,54,68,0.7); margin: 14px 0 6px; }
   .hr-form input, .hr-form select { width: 100%; padding: 10px 12px; border: 1px solid rgba(43,54,68,0.2); border-radius: 10px; font-size: 14px; font-family: inherit; box-sizing: border-box; }
   .hr-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .hr-actions { margin-top: 22px; display: flex; gap: 10px; }
-  .hr-flash { background: #e6f4ec; color: #2e7d5b; border: 1px solid #2e7d5b33; border-radius: 10px; padding: 10px 14px; margin-bottom: 18px; font-size: 14px; }
+  .hr-flash { background: var(--agent-success-soft); color: #386a49; border: 1px solid rgba(110,164,128,.35); border-radius: var(--agent-radius-md); padding: 10px 14px; margin-bottom: 18px; font-size: 14px; }
   .hr-empty { padding: 40px; text-align: center; color: rgba(43,54,68,0.5); }
   .hr-soon { background: #fff; border: 1px dashed rgba(43,54,68,0.25); border-radius: 14px; padding: 48px; text-align: center; color: rgba(43,54,68,0.6); }
-  .hr-callout { background:#f3f8fb; border:1px solid #b8dce8; border-radius:14px; padding:18px 20px; margin-bottom:20px; }
-  .hr-callout.warn { background:#fff8e8; border-color:#e6bd62; }
-  .hr-kicker { font:700 11px Montserrat,Inter,sans-serif; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }
+  .hr-callout { background:var(--agent-accent-soft); border:1px solid rgba(133,187,218,.4); border-radius:var(--agent-radius-lg); padding:18px 20px; margin-bottom:20px; }
+  .hr-callout.warn { background:rgba(194,139,44,.10); border-color:rgba(194,139,44,.45); }
+  .hr-kicker { font:700 11px var(--agent-font-heading); letter-spacing:.06em; text-transform:uppercase; color:var(--agent-ink-muted); }
   .hr-stack { display:grid; gap:14px; }
   .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-  .hr-btn-danger { background:#8b3a32; }
+  .hr-btn-danger { background:var(--agent-danger); color:#fff; }
+  .hr-btn-danger:hover { background:#82483f; }
   @media (max-width: 768px) {
     .hr-wrap { display:block; }
     .hr-side { width:auto; padding:10px 14px; border-right:0; border-bottom:1px solid rgba(43,54,68,.1); overflow-x:auto; display:flex; gap:4px; }
@@ -80,10 +83,8 @@ _HR_STYLES = """
     .hr-grid2 { grid-template-columns:1fr; }
     .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
     .hr-actions { flex-direction:column; }
-    .hr-tbl, .hr-tbl tbody, .hr-tbl tr, .hr-tbl td { display:block; width:100%; box-sizing:border-box; }
-    .hr-tbl thead { display:none; }
-    .hr-tbl tr { padding:10px 0; border-bottom:1px solid rgba(43,54,68,.1); }
-    .hr-tbl td { border:0; padding:5px 14px; }
+    .hr-main { overflow-x:auto; }
+    .hr-tbl { min-width:680px; }
   }
 """
 
@@ -113,7 +114,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   <title>agent | HR — {_esc(title)}</title>
   {render_agent_favicon_links()}
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>{styles}{_HR_STYLES}</style>
 </head><body>
   {nav}

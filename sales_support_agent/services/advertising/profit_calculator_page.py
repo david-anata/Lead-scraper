@@ -64,7 +64,7 @@ _APP_STYLES = """
   body {
     margin: 0;
     background: transparent;
-    color: #222222;
+    color: #2b3644;
     font-family: "Roboto", sans-serif;
   }
 
@@ -75,12 +75,13 @@ _APP_STYLES = """
   .apc-calculator {
     --apc-bg: #85bbda;
     --apc-card: #ffffff;
-    --apc-border: #d9d2c3;
-    --apc-text: #222222;
-    --apc-muted: #6b6b6b;
-    --apc-accent: #111111;
-    --apc-button-text: #ffffff;
-    --apc-radius: 18px;
+    --apc-border: rgba(43, 54, 68, 0.12);
+    --apc-text: #2b3644;
+    --apc-muted: #5d6977;
+    --apc-accent: #85bbda;
+    --apc-accent-strong: #5e9fc4;
+    --apc-button-text: #2b3644;
+    --apc-radius: 14px;
     --apc-gap: 24px;
     color: var(--apc-text);
     background: transparent;

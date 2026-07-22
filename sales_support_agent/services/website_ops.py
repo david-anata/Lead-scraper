@@ -1277,13 +1277,13 @@ def _page_shell(title: str, body: str) -> str:
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{
         --anata-ink: #2b3644;
         --anata-ink-soft: #4b5668;
         --anata-sky: #85bbda;
-        --anata-sky-deep: #4f84c4;
+        --anata-sky-deep: #5e9fc4;
         --anata-sand: #bfa889;
         --anata-sand-soft: #f9f7f3;
         --anata-paper: #ffffff;
@@ -1301,7 +1301,7 @@ def _page_shell(title: str, body: str) -> str:
         --bad: #b91c1c;
       }}
       * {{ box-sizing: border-box; }}
-      body {{ margin: 0; background: var(--anata-sand-soft); color: var(--ink); font-family: "Inter", "Segoe UI", sans-serif; }}
+      body {{ margin: 0; background: var(--anata-sand-soft); color: var(--ink); font-family: "Roboto", "Segoe UI", sans-serif; }}
       a {{ color: var(--anata-ink); }}
       {render_agent_nav_styles()}
       .shell {{ max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; display: grid; gap: 20px; }}
@@ -1409,7 +1409,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
     font_links = """
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     """
     nav_style_block = f"<style>{nav_styles}</style>"
     shell_styles = """
@@ -1417,7 +1417,7 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
       body {
         background: #f9f7f3;
         color: #2b3644;
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
       }
       h1, h2, h3, h4, h5, h6 {
         font-family: "Montserrat", sans-serif;

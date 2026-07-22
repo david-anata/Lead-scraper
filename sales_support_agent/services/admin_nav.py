@@ -6,6 +6,7 @@ import base64
 import html
 from functools import lru_cache
 from pathlib import Path
+from sales_support_agent.services.product_ui import render_product_ui_styles
 from typing import Optional
 
 
@@ -108,7 +109,7 @@ def render_agent_favicon_links() -> str:
 
 
 def render_agent_nav_styles() -> str:
-    return """
+    return render_product_ui_styles() + """
       .topbar {
         padding: 16px 24px;
         border-bottom: 1px solid rgba(43, 54, 68, 0.10);
@@ -357,7 +358,7 @@ def render_agent_nav_styles() -> str:
         max-width: 190px;
       }
       .user-dropdown-profile-email {
-        font-family: "Inter", sans-serif;
+        font-family: "Roboto", sans-serif;
         font-size: 12px;
         font-weight: 500;
         color: rgba(43,54,68,0.6);
@@ -559,19 +560,20 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
             continue
 
         # >=2 reachable pages — non-navigating trigger + caret + dropdown of pills.
-        # The trigger is a <span> (not <a>) so clicking the header label only
+        # The trigger is a button so keyboard and assistive-technology users can
         # opens/closes the dropdown; navigation happens via the pills inside.
         active_class = " active" if is_primary_active else ""
         primary_trigger = (
-            f'<span class="top-link{active_class}" style="cursor:default;user-select:none">'
-            f'{section.label}<span class="nav-caret">&#9660;</span></span>'
+            f'<button type="button" class="top-link{active_class}" aria-haspopup="true" '
+            f'onclick="this.parentElement.toggleAttribute(\'data-open\');this.setAttribute(\'aria-expanded\',this.parentElement.hasAttribute(\'data-open\'));event.stopPropagation()">'
+            f'{section.label}<span class="nav-caret" aria-hidden="true">&#9660;</span></button>'
         )
         pills = "".join(
             _nav_item(sp.label, sp.href, active=(current == sp.active_key), extra_class="top-link--secondary")
             for sp in accessible
         )
         nav_items.append(
-            f"""<div class="nav-item" tabindex="0" onclick="this.toggleAttribute('data-open')">
+            f"""<div class="nav-item">
               {primary_trigger}
               <div class="nav-dropdown">{pills}</div>
             </div>"""

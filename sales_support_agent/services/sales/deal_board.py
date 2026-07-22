@@ -196,7 +196,7 @@ def _fmt_money(cents: int) -> str:
 def _fmt_date(dt: Optional[datetime]) -> str:
     if dt is None:
         return '<span class="muted">no close date</span>'
-    return _esc(dt.strftime("%b %-d, %Y"))
+    return _esc(f"{dt.strftime('%b')} {dt.day}, {dt.year}")
 
 
 def _row_html(r: DealRow, *, as_of: datetime, portal_id: str = "") -> str:
@@ -241,7 +241,7 @@ _STYLES = """
     --white:#FFF; --border:rgba(43,54,68,0.12); --shadow:rgba(43,54,68,0.10); }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--light-brown); color:var(--dark-blue);
-    font-family:"Inter","Segoe UI",sans-serif; }
+    font-family:"Roboto","Segoe UI",sans-serif; }
   a { color:var(--dark-blue); }
   __NAV__
   .shell { max-width:1180px; margin:0 auto; padding:28px 18px 64px; }
@@ -370,7 +370,9 @@ def render_deal_board_page(
     if completed_at:
         try:
             dt = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
-            last_synced_html = f'<span class="muted">Last synced {_esc(dt.strftime("%b %-d, %-I:%M %p"))}</span>'
+            hour = dt.strftime("%I").lstrip("0") or "12"
+            synced = f"{dt.strftime('%b')} {dt.day}, {hour}:{dt.strftime('%M %p')}"
+            last_synced_html = f'<span class="muted">Last synced {_esc(synced)}</span>'
         except ValueError:
             pass
 
@@ -388,7 +390,7 @@ def render_deal_board_page(
     <title>agent | Sales Deal Board</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>{styles}</style>
   </head>
   <body>

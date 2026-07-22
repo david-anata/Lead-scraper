@@ -1,14 +1,21 @@
 :root {
-  --anata-ink: #1d2d44;
-  --anata-ink-soft: #314664;
+  --anata-background: #f9f7f3;
+  --anata-surface: #ffffff;
+  --anata-surface-soft: #f2ece3;
+  --anata-ink: #2b3644;
+  --anata-ink-soft: #5d6977;
+  --anata-navy: #34445c;
   --anata-sky: #85bbda;
-  --anata-sky-deep: #4f84c4;
+  --anata-sky-deep: #5e9fc4;
   --anata-sand: #bfa889;
-  --anata-sand-soft: #f7f3ec;
-  --anata-paper: #fffdf9;
-  --anata-line: rgba(29, 45, 68, 0.12);
-  --anata-shadow: rgba(29, 45, 68, 0.10);
-  --anata-muted: #6b7688;
+  --anata-sand-soft: rgba(191, 168, 137, 0.18);
+  --anata-paper: #ffffff;
+  --anata-line: rgba(43, 54, 68, 0.12);
+  --anata-shadow: rgba(43, 54, 68, 0.10);
+  --anata-muted: #5d6977;
+  --anata-success: #6ea480;
+  --anata-warning: #c28b2c;
+  --anata-danger: #9a5a4e;
 }
 
 * {
@@ -19,7 +26,7 @@ body {
   margin: 0;
   background: linear-gradient(180deg, #eef5fb 0%, #f7f3ec 100%);
   color: var(--anata-ink);
-  font-family: "Inter", "Segoe UI", sans-serif;
+  font-family: "Roboto", "Segoe UI", sans-serif;
 }
 
 .deck {
@@ -1477,7 +1484,7 @@ mark {
   font-size: 28px;
   font-weight: 700;
   color: var(--anata-ink);
-  font-family: "Montserrat", "Inter", sans-serif;
+  font-family: "Montserrat", "Roboto", sans-serif;
 }
 
 .growth-plan-slide .growth-kpi small {
@@ -1745,7 +1752,7 @@ mark {
   font-size: 22px;
   font-weight: 700;
   color: var(--anata-ink);
-  font-family: "Montserrat", "Inter", sans-serif;
+  font-family: "Montserrat", "Roboto", sans-serif;
 }
 
 .growth-plan-slide .channel-card .card-cost {

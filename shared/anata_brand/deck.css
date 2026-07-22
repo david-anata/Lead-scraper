@@ -1,13 +1,13 @@
 /* Anata Strategy Deck — hi-fi styles */
 
 :root {
-  --anata-ink: #1d2d44;
-  --anata-ink-soft: #314664;
+  --anata-ink: #2b3644;
+  --anata-ink-soft: #5d6977;
   --anata-sky: #85bbda;
-  --anata-sky-deep: #4f84c4;
+  --anata-sky-deep: #5e9fc4;
   --anata-sand: #bfa889;
   --anata-sand-soft: #f7f3ec;
-  --anata-paper: #fffdf9;
+  --anata-paper: #ffffff;
   --anata-line: rgba(29, 45, 68, 0.12);
   --anata-line-strong: rgba(29, 45, 68, 0.22);
   --anata-shadow: rgba(29, 45, 68, 0.10);
@@ -25,7 +25,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
-  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Roboto', 'Segoe UI', system-ui, sans-serif;
   color: var(--anata-ink);
   background:
     linear-gradient(180deg, #eef5fb 0%, #f7f3ec 100%);
@@ -85,7 +85,7 @@ a { color: inherit; }
   color: var(--anata-ink, #1f3253);
   font-weight: 800;
   font-size: 18px;
-  font-family: 'Inter', sans-serif;
+  font-family: 'Roboto', sans-serif;
   letter-spacing: -0.02em;
 }
 /* PR36/PR52: when the monogram PNG is available, brand_assets.py emits

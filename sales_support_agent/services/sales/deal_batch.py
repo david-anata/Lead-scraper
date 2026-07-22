@@ -462,7 +462,7 @@ def render_batch_cleanup_page(
     <title>agent | HubSpot Fix Queue</title>
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       {nav_styles}
       :root {{
@@ -473,7 +473,7 @@ def render_batch_cleanup_page(
         --red:#c0392b; --amber:#b45309; --blue:#1d4ed8;
       }}
       *{{box-sizing:border-box;}}
-      body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
+      body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Roboto","Segoe UI",sans-serif;}}
       a{{color:var(--accent);text-decoration:none;}}
       a:hover{{text-decoration:underline;}}
       .shell{{max-width:1120px;margin:0 auto;padding:36px 18px;}}

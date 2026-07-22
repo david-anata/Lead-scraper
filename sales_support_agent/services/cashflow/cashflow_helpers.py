@@ -238,7 +238,7 @@ function editName(wrapId, currentVal, fieldName) {
     <title>agent | {_html.escape(title)}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       {render_agent_nav_styles()}
     </style>

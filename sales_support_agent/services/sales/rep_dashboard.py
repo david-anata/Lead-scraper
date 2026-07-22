@@ -206,10 +206,10 @@ def render_rep_dashboard_page(
 <title>Rep Accountability — Sales</title>
 {render_agent_favicon_links()}
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 {render_agent_nav_styles()}
-body {{ margin:0; font-family:"Inter",sans-serif; background:#f9f7f3; color:#2B3644; }}
+body {{ margin:0; font-family:"Roboto",sans-serif; background:#f9f7f3; color:#2B3644; }}
 .page {{ max-width:1180px; margin:0 auto; padding:32px 24px; }}
 h1 {{ font-family:"Montserrat",sans-serif; font-size:24px; font-weight:900; margin:0 0 4px; }}
 .subtitle {{ font-size:13px; color:#888; margin:0 0 24px; }}

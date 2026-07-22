@@ -1,5 +1,14 @@
 Anata brand assets for shared deck/UI use.
 
+This package mirrors the canonical website vocabulary for portable Agent
+artifacts. Authenticated pages consume the corresponding roles from
+`sales_support_agent/services/product_ui.py`; decks and public reports use this
+package because they render independently of the application shell.
+
+Typography is Montserrat for headings and controls and Roboto for body content.
+The primary ink is `#2b3644`, the action accent is `#85bbda`, and the base page
+background is `#f9f7f3`.
+
 Source of truth for deployed deck assets:
 - `/Users/davidnarayan/Documents/Playground/Lead-scraper/shared/anata_brand/assets`
 

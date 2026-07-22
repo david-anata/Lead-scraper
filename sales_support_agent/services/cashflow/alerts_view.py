@@ -135,7 +135,7 @@ def render_alerts_view_page(*, flash: str = "", severity_filter: str = "all") ->
         content = (
             _render_group(critical_alerts, "Critical", "#b91c1c", "rgba(185,28,28,.10)") +
             _render_group(warning_alerts, "Warnings", "#a16207", "rgba(161,98,7,.12)") +
-            _render_group(info_alerts, "Info", "#4f84c4", "rgba(133,187,218,.18)")
+            _render_group(info_alerts, "Info", "#5e9fc4", "rgba(133,187,218,.18)")
         )
 
     body = f"""

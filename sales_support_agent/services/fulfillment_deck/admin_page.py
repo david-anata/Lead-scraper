@@ -45,7 +45,7 @@ _STYLES = """
       }
       * { box-sizing: border-box; }
       body { margin: 0; background: var(--light-brown); color: var(--dark-blue);
-        font-family: "Inter", "Segoe UI", sans-serif; }
+        font-family: "Roboto", "Segoe UI", sans-serif; }
       a { color: var(--dark-blue); }
       __NAV__
       .shell { max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; }
@@ -138,7 +138,7 @@ _STYLES = """
       .review-section > summary::-webkit-details-marker { display:none; }
       .review-section > summary::after { content:"▾"; color:rgba(43,54,68,0.45); font-size:12px; }
       .review-section:not([open]) > summary::after { transform: rotate(-90deg); }
-      .review-section__sub { display:block; margin-top:3px; font-family:"Inter", sans-serif; font-weight:500; font-size:12px; color:rgba(43,54,68,0.55); }
+      .review-section__sub { display:block; margin-top:3px; font-family:"Roboto", sans-serif; font-weight:500; font-size:12px; color:rgba(43,54,68,0.55); }
       .review-section__body { padding: 0 16px 16px; }
       .form-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 4px 22px; }
       .form-grid--wide { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
@@ -634,11 +634,11 @@ def render_fulfillment_cost_form_page(
     <title>Fulfillment cost form | {_esc(prospect)}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{ --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --border:rgba(43,54,68,.12); --shadow:rgba(43,54,68,.10); }}
       * {{ box-sizing:border-box; }}
-      body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Inter","Segoe UI",sans-serif; }}
+      body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Roboto","Segoe UI",sans-serif; }}
       .shell {{ max-width:1120px; margin:0 auto; padding:28px 18px 64px; }}
       .workspace {{ background:white; border:1px solid var(--border); border-radius:18px; box-shadow:0 18px 40px var(--shadow); padding:26px 28px 30px; }}
       h1 {{ font-family:"Montserrat",sans-serif; font-size:26px; margin:0 0 4px; }}
@@ -1311,7 +1311,7 @@ def render_fulfillment_sales_page(
     <title>agent | Fulfillment Pipeline</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/admin.css">
     <style>{styles}</style>
   </head>
@@ -2570,7 +2570,7 @@ def render_rate_sheet_review_page(
     <title>agent | Review Rate Sheet — {_esc(summary.get('prospect') or f'Run {run_id}')}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/admin.css">
     <style>{styles}
       .preview-frame {{ width: 100%; height: 70vh; border: 1px solid var(--border);

@@ -11,8 +11,8 @@ import base64
 import os
 
 _FONTS = (
-    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&"
-    "family=Montserrat:wght@700;800;900&display=swap"
+    "https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&"
+    "family=Roboto:wght@400;500;600;700&display=swap"
 )
 
 
@@ -33,7 +33,7 @@ _CSS = """
 :root {
   --navy:   #2B3644;
   --blue:   #85BBDA;
-  --blue-d: #4f84c4;
+  --blue-d: #5e9fc4;
   --brown:  #BFA889;
   --cream:  #F9F7F3;
   --white:  #fff;
@@ -45,7 +45,7 @@ _CSS = """
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: Roboto, "Segoe UI", sans-serif;
   background: var(--cream);
   color: var(--navy);
   -webkit-font-smoothing: antialiased;

@@ -1683,7 +1683,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -1702,7 +1702,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         min-height: 100vh;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         display: flex;
         flex-direction: column;
       }}
@@ -1758,7 +1758,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         color: var(--light-blue);
       }}
       .copy {{
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 18px;
         line-height: 1.5;
@@ -1782,7 +1782,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
       }}
       .login-card p {{
         margin: 0 0 26px;
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 18px;
         line-height: 1.5;
@@ -1808,7 +1808,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         border-radius: 10px;
         border: 2px solid rgba(43, 54, 68, 0.16);
         background: var(--white);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 18px;
         margin-bottom: 22px;
@@ -1831,7 +1831,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         border-radius: 10px;
         padding: 16px 18px;
         margin-bottom: 20px;
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 16px;
       }}
@@ -2201,7 +2201,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -2218,7 +2218,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         margin: 0;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
       }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
@@ -2586,7 +2586,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       .snapshot-row strong {{
         font-size: 15px;
         color: var(--dark-blue);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 400;
       }}
       .notice {{
@@ -2636,7 +2636,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         border-radius: 10px;
         border: 2px solid rgba(43, 54, 68, 0.16);
         background: var(--white);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 15px;
         color: var(--dark-blue);
@@ -2763,7 +2763,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         display: inline-flex;
         align-items: center;
         gap: 10px;
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 15px;
         text-transform: none;
@@ -2814,7 +2814,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       }}
       .draft-help {{
         color: var(--alt-dark-blue);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 14px;
         line-height: 1.45;
@@ -3190,7 +3190,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
         border: 2px solid rgba(43, 54, 68, 0.14);
         border-radius: 999px;
         padding: 12px 16px;
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-size: 15px;
         background: var(--white);
         color: var(--dark-blue);
@@ -3361,7 +3361,7 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       }}
       .date {{
         color: var(--dark-blue);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 13px;
       }}
@@ -4696,7 +4696,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -4713,7 +4713,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         margin: 0;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
       }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
@@ -4944,7 +4944,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         display: grid;
         gap: 6px;
         margin: 0;
-        font-family: "Inter", "Segoe UI", sans-serif !important;
+        font-family: "Roboto", "Segoe UI", sans-serif !important;
         font-weight: 600 !important;
         font-size: 13px !important;
         text-transform: none !important;
@@ -5042,7 +5042,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         border-radius: 10px;
         border: 2px solid rgba(43, 54, 68, 0.16);
         background: var(--white);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 15px;
         color: var(--dark-blue);
@@ -5200,7 +5200,7 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
         display: inline-flex;
         align-items: center;
         gap: 10px;
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-weight: 300;
         font-size: 15px;
         text-transform: none;
@@ -7089,7 +7089,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644;
@@ -7107,7 +7107,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         margin: 0;
         background: var(--light-brown);
         color: var(--text);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
       }}
       a {{ color: var(--dark-blue); text-decoration: none; }}
       {render_agent_nav_styles()}
@@ -7262,7 +7262,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         border-radius: 12px;
         background: var(--alt-dark-blue);
         color: var(--white);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-size: 13px;
         line-height: 1.45;
         box-shadow: 0 10px 24px rgba(43, 54, 68, 0.18);
@@ -7314,7 +7314,7 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
         padding: 12px 14px;
         border-radius: 12px;
         border: 2px solid rgba(43, 54, 68, 0.14);
-        font-family: "Inter", "Segoe UI", sans-serif;
+        font-family: "Roboto", "Segoe UI", sans-serif;
         font-size: 15px;
         color: var(--dark-blue);
         background: var(--white);

@@ -29,7 +29,7 @@ def _esc(value: object) -> str:
 def _week_label() -> str:
     today = date.today()
     monday = today - timedelta(days=today.weekday())
-    return f"Week of {monday.strftime('%b %-d')}"
+    return f"Week of {monday.strftime('%b')} {monday.day}"
 
 
 def _page(
@@ -47,7 +47,7 @@ def _page(
     <title>{_esc(title)}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
       :root {{
         --dark-blue: #2B3644; --light-blue: #85BBDA; --light-brown: #F9F7F3;
@@ -55,7 +55,7 @@ def _page(
         --line: rgba(43, 54, 68, 0.12);
       }}
       * {{ box-sizing: border-box; }}
-      body {{ margin: 0; background: var(--light-brown); color: var(--dark-blue); font-family: "Inter","Segoe UI",sans-serif; }}
+      body {{ margin: 0; background: var(--light-brown); color: var(--dark-blue); font-family: "Roboto","Segoe UI",sans-serif; }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{ max-width: 1280px; margin: 0 auto; padding: 28px 18px 64px; }}
@@ -95,7 +95,7 @@ def _page(
       @keyframes adv-spin {{ to {{ transform: rotate(360deg); }} }}
       .card {{ border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 22px; background: var(--white); }}
       .card h2 {{ font-family: "Montserrat",sans-serif; font-size: 18px; margin: 0 0 14px; }}
-      .card h2 small {{ font-family: "Inter",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
+      .card h2 small {{ font-family: "Roboto",sans-serif; font-weight: 500; font-size: 13px; color: rgba(43,54,68,0.6); }}
       .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }}
       .metric {{ border: 2px solid var(--line); border-radius: 16px; padding: 16px; display: grid; gap: 6px; }}
       .metric span {{ font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: rgba(43,54,68,0.6); font-family: "Montserrat",sans-serif; font-weight: 700; }}

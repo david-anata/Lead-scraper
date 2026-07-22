@@ -3,11 +3,12 @@
   --agent-blue: #85bbda;
   --agent-surface: #ffffff;
   --agent-page: #f9f7f3;
+  --agent-muted: #5d6977;
   --agent-border: rgba(43, 54, 68, 0.12);
   --agent-shadow: rgba(43, 54, 68, 0.10);
-  --agent-good: #15803d;
-  --agent-warn: #b45309;
-  --agent-danger: #b91c1c;
+  --agent-good: #6ea480;
+  --agent-warn: #c28b2c;
+  --agent-danger: #9a5a4e;
 }
 
 .admin-shell {
@@ -49,16 +50,20 @@
   gap: 8px;
   min-height: 42px;
   padding: 0 18px;
-  border-radius: 999px;
+  border-radius: 12px;
   border: 1px solid transparent;
-  background: var(--agent-ink);
-  color: #fff;
+  background: var(--agent-blue);
+  color: var(--agent-ink);
   font-family: "Montserrat", sans-serif;
   font-weight: 800;
   font-size: 13px;
   text-decoration: none;
   cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
+
+.admin-btn:hover { background: #5e9fc4; }
+.admin-btn:focus-visible { outline: 2px solid var(--agent-ink); outline-offset: 2px; box-shadow: 0 0 0 3px rgba(133,187,218,.48); }
 
 .admin-btn--ghost {
   background: #fff;

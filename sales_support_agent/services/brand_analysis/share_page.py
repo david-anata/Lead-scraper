@@ -25,9 +25,9 @@ from sales_support_agent.services.brand_analysis.valuation import ValuationRange
 
 _CHART_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
 
-_GRADE_FILL = {"A": "#2E7D5B", "B": "#3F8F6E", "C": "#B8860B", "D": "#C2663B", "F": "#8B4C42"}
-_TONE_COLOR = {"good": "#2E7D5B", "warn": "#B8860B", "bad": "#8B4C42", "neutral": "#2B3644"}
-_SEV_COLOR = {"Critical": "#8B4C42", "High": "#C2663B", "Medium": "#B8860B"}
+_GRADE_FILL = {"A": "#6EA480", "B": "#6EA480", "C": "#C28B2C", "D": "#9A5A4E", "F": "#9A5A4E"}
+_TONE_COLOR = {"good": "#6EA480", "warn": "#C28B2C", "bad": "#9A5A4E", "neutral": "#2B3644"}
+_SEV_COLOR = {"Critical": "#9A5A4E", "High": "#9A5A4E", "Medium": "#C28B2C"}
 
 
 def _e(v: object) -> str:
@@ -922,7 +922,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
 <meta name="robots" content="noindex, nofollow">
 <title>{_e(report.brand)} — Acquisition Brief</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>{_STYLES}</style>
 </head>
 <body>
@@ -954,10 +954,10 @@ _PRINT_JS = """
 
 
 _STYLES = """
-:root{--navy:#2B3644;--blue:#85BBDA;--brown:#BFA889;--cream:#F9F7F3;--white:#fff;
- --line:rgba(43,54,68,.10);--shadow:rgba(43,54,68,.10);--good:#2E7D5B;--bad:#8B4C42;}
+:root{--navy:#2B3644;--blue:#85BBDA;--blue-strong:#5E9FC4;--brown:#BFA889;--cream:#F9F7F3;--white:#fff;
+ --line:rgba(43,54,68,.12);--shadow:rgba(43,54,68,.10);--good:#6EA480;--warn:#C28B2C;--bad:#9A5A4E;}
 *{box-sizing:border-box}
-body{margin:0;background:var(--cream);color:var(--navy);font-family:"Inter","Segoe UI",sans-serif;line-height:1.5}
+body{margin:0;background:var(--cream);color:var(--navy);font-family:"Roboto","Segoe UI",sans-serif;line-height:1.5}
 .page{max-width:1000px;margin:0 auto;padding:28px 20px 64px}
 .cover{display:flex;justify-content:space-between;gap:28px;background:var(--white);border:1px solid var(--line);
  border-radius:24px;padding:40px;box-shadow:0 18px 40px var(--shadow);border-top:6px solid var(--grade);margin-bottom:20px}
@@ -1029,7 +1029,7 @@ _CHART_JS = """
   if(!window.Chart||!window.__BA)return;
   var D=window.__BA, navy="#2B3644", blue="#85BBDA", brown="#BFA889";
   var money=function(v){return "$"+Number(v).toLocaleString();};
-  Chart.defaults.font.family='Inter, sans-serif';
+  Chart.defaults.font.family='Roboto, sans-serif';
   Chart.defaults.color='rgba(43,54,68,.7)';
   function el(id){return document.getElementById(id);}
   // YoY grouped bar

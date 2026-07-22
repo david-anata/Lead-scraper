@@ -53,7 +53,7 @@ _STYLES = """
     --text:#2B3644; --border:rgba(43,54,68,0.10); --shadow:rgba(43,54,68,0.10); }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--light-brown); color:var(--text);
-    font-family:"Inter","Segoe UI",sans-serif; }
+    font-family:"Roboto","Segoe UI",sans-serif; }
   __NAV__
   .settings-shell { max-width:1040px; margin:0 auto; padding:40px 20px 80px; }
   .settings-title { font-family:"Montserrat",sans-serif; font-size:22px; font-weight:800;
@@ -460,7 +460,7 @@ def render_settings_page(
   <title>agent | Settings</title>
   {favicon}
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>{styles}</style>
 </head>
 <body>

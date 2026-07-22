@@ -292,7 +292,7 @@ def render_draft_followup_page(
     --white:#FFF;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);}}
   *{{box-sizing:border-box;}}
   body{{margin:0;background:var(--light-brown);color:var(--dark-blue);
-    font-family:"Inter","Segoe UI",sans-serif;}}
+    font-family:"Roboto","Segoe UI",sans-serif;}}
   a{{color:var(--dark-blue);}}
   {nav_styles}
   .shell{{max-width:820px;margin:0 auto;padding:24px 18px 64px;}}
@@ -336,7 +336,7 @@ def render_draft_followup_page(
     <title>agent | Draft Follow-Up — {subject_escaped}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>{styles}</style>
   </head>
   <body>
@@ -462,13 +462,13 @@ def render_send_preview_page(
     <title>agent | Confirm Send — {subject_escaped}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       :root {{--dark-blue:#2B3644;--light-blue:#85BBDA;--light-brown:#F9F7F3;
         --white:#FFF;--border:rgba(43,54,68,0.12);--shadow:rgba(43,54,68,0.10);}}
       *{{box-sizing:border-box;}}
       body{{margin:0;background:var(--light-brown);color:var(--dark-blue);
-        font-family:"Inter","Segoe UI",sans-serif;}}
+        font-family:"Roboto","Segoe UI",sans-serif;}}
       a{{color:var(--dark-blue);}}
       {nav_styles}
       .shell{{max-width:820px;margin:0 auto;padding:24px 18px 64px;}}

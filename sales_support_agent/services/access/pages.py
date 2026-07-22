@@ -30,7 +30,7 @@ _BASE_STYLES = """
   :root { --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --white:#fff;
     --text:#2B3644; --border:rgba(43,54,68,0.10); --shadow:rgba(43,54,68,0.10); }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--light-brown); color:var(--text); font-family:"Inter","Segoe UI",sans-serif; }
+  body { margin:0; background:var(--light-brown); color:var(--text); font-family:"Roboto","Segoe UI",sans-serif; }
   a { color:var(--dark-blue); }
   __NAV__
   .shell { max-width:760px; margin:0 auto; padding:48px 20px 72px; }
@@ -84,7 +84,7 @@ _ADMIN_STYLES = """
   .acts { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
   .role-form { display:flex; align-items:center; gap:6px; }
   select.role-sel { padding:5px 10px; border:1px solid rgba(43,54,68,0.18);
-    border-radius:8px; font-size:13px; font-family:"Inter",sans-serif;
+    border-radius:8px; font-size:13px; font-family:"Roboto",sans-serif;
     background:#fff; color:#2B3644; min-width:140px; cursor:pointer; }
   .btn-xs { display:inline-flex; align-items:center; min-height:30px; padding:0 12px;
     border-radius:999px; font-family:"Montserrat",sans-serif; font-weight:700;
@@ -117,7 +117,7 @@ _ADMIN_STYLES = """
     font-size:11px; text-transform:uppercase; letter-spacing:0.07em;
     color:rgba(43,54,68,0.65); margin-bottom:7px; }
   .form-input { width:100%; padding:10px 14px; border:1px solid rgba(43,54,68,0.18);
-    border-radius:10px; font-size:14px; font-family:"Inter",sans-serif;
+    border-radius:10px; font-size:14px; font-family:"Roboto",sans-serif;
     color:#2B3644; background:#fff; box-sizing:border-box;
     transition:border-color 120ms; }
   .form-input:focus { outline:none; border-color:#85BBDA;
@@ -158,7 +158,7 @@ def _shell(title: str, body: str, *, user: Optional[dict], active: str = "",
   <title>agent | {_esc(title)}</title>
   {render_agent_favicon_links()}
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>{all_styles}</style>
 </head><body>
   {nav}
@@ -498,7 +498,7 @@ def _standalone_page(title: str, icon: str, heading: str, body_html: str) -> str
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>agent | {_esc(title)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>{styles}</style>
 </head><body>
   <div class="shell">

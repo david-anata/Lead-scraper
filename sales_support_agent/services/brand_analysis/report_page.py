@@ -83,7 +83,7 @@ def _styles() -> str:
         --border: rgba(43, 54, 68, 0.10); --shadow: rgba(43, 54, 68, 0.10);
       }
       * { box-sizing: border-box; }
-      body { margin: 0; background: var(--light-brown); color: var(--text); font-family: "Inter","Segoe UI",sans-serif; }
+      body { margin: 0; background: var(--light-brown); color: var(--text); font-family: "Roboto","Segoe UI",sans-serif; }
       a { color: var(--dark-blue); text-decoration: none; }
       __NAV__
       .shell { max-width: 1080px; margin: 0 auto; padding: 32px 20px 72px; }
@@ -168,7 +168,7 @@ def _doc(title: str, body: str, *, user: Optional[dict], section: str = "brand_a
     <title>agent | {_esc(title)}</title>
     {render_agent_favicon_links()}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>{_styles()}</style>
   </head>
   <body>

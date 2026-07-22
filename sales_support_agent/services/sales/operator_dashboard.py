@@ -1868,12 +1868,12 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
     <title>agent | Sales Control Room</title>
     {favicons}
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/admin.css">
     <style>
       :root {{ --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --white:#FFF; --border:rgba(43,54,68,0.12); --shadow:rgba(43,54,68,0.10); }}
       * {{ box-sizing:border-box; }}
-      body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Inter","Segoe UI",sans-serif; }}
+      body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Roboto","Segoe UI",sans-serif; }}
       a {{ color:var(--dark-blue); }}
       {nav_styles}
       .shell {{ max-width:1260px; margin:0 auto; padding:28px 18px 64px; }}
