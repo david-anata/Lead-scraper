@@ -267,6 +267,95 @@ class MarketingIntakeTests(unittest.TestCase):
             "website": "https://example.com",
         })
 
+    def test_advertising_audit_rejects_store_url(self) -> None:
+        response = self.client.post(
+            "/api/public/marketing/advertising-audit",
+            json={
+                "product": "https://oceanrx.us",
+                "email": "ads@example.com",
+                "company": "Ocean Rx",
+            },
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["reason"], "invalid_product")
+
+    def test_advertising_audit_accepts_amazon_url_and_returns_status_handle(self) -> None:
+        with mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
+            response = self.client.post(
+                "/api/public/marketing/advertising-audit",
+                json={
+                    "product": "https://www.amazon.com/example/dp/B09239YTZQ",
+                    "email": "ads-accepted@example.com",
+                    "company": "Ocean Rx",
+                    "source": "anatainc.com/tools/advertising-audit",
+                },
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 202, response.text)
+        body = response.json()
+        self.assertEqual(body["asin"], "B09239YTZQ")
+        self.assertEqual(body["status"], "accepted")
+        self.assertTrue(body["token"])
+        deliver.assert_called_once()
+        forwarded = deliver.call_args.kwargs
+        self.assertEqual(forwarded["needs"], ["advertising"])
+        self.assertEqual(forwarded["qualification"]["company"], "Ocean Rx")
+
+        status = self.client.get(
+            f"/api/public/marketing/advertising-audit/{body['run_id']}",
+            params={"token": body["token"]},
+            headers=HEADERS,
+        )
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertEqual(status.json(), {
+            "status": "building",
+            "strategy_audit": "building",
+            "advertising_audit": "reports_required",
+            "email_delivery": "pending",
+        })
+
+    def test_advertising_audit_status_requires_run_token(self) -> None:
+        with mock.patch.object(M, "_run_analysis_and_deliver"):
+            body = self.client.post(
+                "/api/public/marketing/advertising-audit",
+                json={
+                    "product": "B09239YTZQ",
+                    "email": "ads-token@example.com",
+                    "company": "Ocean Rx",
+                },
+                headers=HEADERS,
+            ).json()
+        response = self.client.get(
+            f"/api/public/marketing/advertising-audit/{body['run_id']}",
+            params={"token": "wrong"},
+            headers=HEADERS,
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_advertising_hubspot_note_names_tool_and_next_step(self) -> None:
+        client = mock.Mock()
+        client.is_configured = True
+        client.create_contact.return_value = {"id": "321"}
+        with mock.patch.object(M, "HubSpotClient", return_value=client):
+            recorded = M._record_hubspot_lead(
+                app.state.settings,
+                email="ads-note@example.com",
+                asin="B09239YTZQ",
+                view_url="https://agent.example/deck",
+                source="anatainc.com/tools/advertising-audit",
+                needs=["advertising"],
+                qualification={
+                    "company": "Ocean Rx",
+                    "next_step": "Call prospect and confirm the four-report handoff.",
+                },
+            )
+        self.assertTrue(recorded)
+        note = client.create_contact_note.call_args.kwargs["body"]
+        self.assertIn("Advertising Audit requested", note)
+        self.assertIn("Ocean Rx", note)
+        self.assertIn("Call prospect and confirm the four-report handoff.", note)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,6 +44,12 @@ INTAKE_RUN_TYPE = "marketing_analysis_intake"
 SITE_INTAKE_RUN_TYPE = "marketing_intake"
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_ASIN_RE = re.compile(r"^B0[A-Z0-9]{8}$", re.IGNORECASE)
+_AMAZON_ASIN_RE = re.compile(
+    r"amazon\.[a-z.]+/(?:[^?#]*/)?(?:dp|gp/product|product)/(B0[A-Z0-9]{8})",
+    re.IGNORECASE,
+)
+_BARE_AMAZON_ASIN_RE = re.compile(r"\b(B0[A-Z0-9]{8})\b", re.IGNORECASE)
 
 # Needs chips the site can send; anything else is dropped silently.
 _KNOWN_NEEDS = {"analytics", "advertising", "strategy", "catalog", "creative", "fulfillment"}
@@ -56,6 +62,7 @@ _QUALIFICATION_FIELDS = {
     "revenue_range": 80,
     "challenge": 1000,
     "next_step": 120,
+    "audit_run_id": 40,
 }
 
 
@@ -137,11 +144,26 @@ def _latest_intake(session, *, email: str, asin: str) -> Optional[AutomationRun]
     return None
 
 
-def _send_result_email(settings, *, email: str, asin: str, view_url: str) -> None:
+def _normalize_amazon_asin(raw: Any) -> str:
+    value = str(raw or "").strip()
+    upper = value.upper()
+    if _ASIN_RE.fullmatch(upper):
+        return upper
+    match = _AMAZON_ASIN_RE.search(value)
+    if match:
+        return match.group(1).upper()
+    if "amazon." in value.lower():
+        match = _BARE_AMAZON_ASIN_RE.search(value)
+        if match:
+            return match.group(1).upper()
+    return ""
+
+
+def _send_result_email(settings, *, email: str, asin: str, view_url: str) -> bool:
     client = ResendClient(settings)
     if not client.is_configured():
         logger.warning("[marketing_intake] Resend not configured; skipping result email to %s", email)
-        return
+        return False
     booking_url = str(getattr(settings, "marketing_booking_url", "") or "").strip()
     lines = [
         "Hi,",
@@ -162,19 +184,20 @@ def _send_result_email(settings, *, email: str, asin: str, view_url: str) -> Non
         subject="Your Anata product analysis is ready",
         text="\n".join(lines),
     )
+    return True
 
 
 def _record_hubspot_lead(
     settings, *, email: str, asin: str, view_url: str, source: str, needs: Optional[list[str]] = None,
     qualification: Optional[dict[str, str]] = None,
-) -> None:
+) -> bool:
     """Create the contact (standard email property only; custom properties are
     not confirmed to exist in the portal) and attach the run details as a note.
     On a duplicate-email 409, reuse the existing contact id HubSpot reports."""
     client = HubSpotClient(settings)
     if not client.is_configured:  # property, not a method (hubspot.py:98)
         logger.warning("[marketing_intake] HubSpot not configured; skipping contact for %s", email)
-        return
+        return False
     contact_id = ""
     try:
         qualification = qualification or {}
@@ -192,30 +215,36 @@ def _record_hubspot_lead(
             contact_id = match.group(1)
         else:
             logger.warning("[marketing_intake] HubSpot create_contact failed for %s: %s", email, exc)
-            return
+            return False
     if not contact_id:
-        return
+        return False
     contact_updates = {key: value for key, value in properties.items() if key != "email"}
     if contact_updates:
         try:
             client.update_contact(contact_id, contact_updates)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[marketing_intake] HubSpot contact update failed for %s: %s", contact_id, exc)
-    note_body = (
-        "Free analysis requested from the marketing site."
+    request_label = (
+        "Advertising Audit requested from the marketing site."
+        if needs and "advertising" in needs
+        else "Strategy Audit requested from the marketing site."
+    )
+    note_body = request_label + (
         f"<br>ASIN: {asin}"
         f"<br>Deck: {view_url}"
         f"<br>Source: {source or 'anatainc.com'}"
     )
     if needs:
         note_body += f"<br>Needs: {', '.join(needs)}"
-    for key in ("company", "phone", "storefront", "revenue_range", "challenge", "next_step"):
+    for key in ("company", "phone", "storefront", "revenue_range", "challenge", "next_step", "audit_run_id"):
         if qualification and qualification.get(key):
             note_body += f"<br>{key.replace('_', ' ').title()}: {escape(qualification[key])}"
     try:
         client.create_contact_note(contact_id=contact_id, body=note_body)
     except Exception as exc:  # noqa: BLE001 — the contact itself is the critical write
         logger.warning("[marketing_intake] HubSpot note failed for contact %s: %s", contact_id, exc)
+        return False
+    return True
 
 
 def _run_analysis_and_deliver(
@@ -294,14 +323,36 @@ def _run_analysis_and_deliver(
     if not view_url:
         return
 
+    email_delivered = False
     try:
-        _send_result_email(settings, email=email, asin=asin, view_url=view_url)
+        email_delivered = _send_result_email(settings, email=email, asin=asin, view_url=view_url)
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] result email failed for %s", email)
+    hubspot_recorded = False
     try:
-        _record_hubspot_lead(settings, email=email, asin=asin, view_url=view_url, source=source, needs=needs, qualification=qualification)
+        hubspot_recorded = _record_hubspot_lead(
+            settings,
+            email=email,
+            asin=asin,
+            view_url=view_url,
+            source=source,
+            needs=needs,
+            qualification=qualification,
+        )
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] HubSpot lead recording failed for %s", email)
+    try:
+        with session_scope(app.state.session_factory) as session:
+            run = session.get(AutomationRun, intake_run_id)
+            if run is not None:
+                run.summary_json = {
+                    **(run.summary_json or {}),
+                    "email_delivery": "delivered" if email_delivered else "failed",
+                    "hubspot_handoff": "recorded" if hubspot_recorded else "failed",
+                }
+                session.add(run)
+    except Exception:  # noqa: BLE001
+        logger.exception("[marketing_intake] failed to record delivery state for %s", intake_run_id)
 
 
 @router.post("/analysis")
@@ -348,6 +399,138 @@ async def marketing_analysis_intake(
         source=source,
     )
     return JSONResponse(status_code=202, content={"status": "building"})
+
+
+@router.post("/advertising-audit")
+async def advertising_audit_intake(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    """Start the Strategy Audit that opens the sales-assisted Advertising Audit.
+
+    The deeper advertising audit remains report-assisted. This endpoint creates
+    the secure run/correlation record, starts the Strategy Audit, and gives the
+    website a token-protected status handle without exposing PII in the URL.
+    """
+    denied = _enforce_marketing_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    try:
+        body: dict[str, Any] = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"detail": "Request body must be valid JSON."})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"detail": "Request body must be a JSON object."})
+
+    asin = _normalize_amazon_asin(body.get("product"))
+    email = str(body.get("email", "") or "").strip().lower()
+    company = str(body.get("company", "") or "").strip()[:160]
+    source = str(body.get("source", "") or "").strip()[:120]
+    if not asin:
+        return JSONResponse(
+            status_code=400,
+            content={"reason": "invalid_product", "detail": "Enter an Amazon ASIN or Amazon product URL."},
+        )
+    if not email or not _EMAIL_RE.match(email):
+        return JSONResponse(status_code=400, content={"reason": "invalid_email", "detail": "A valid work email is required."})
+    if not company:
+        return JSONResponse(status_code=400, content={"reason": "company_required", "detail": "Company name is required."})
+
+    with session_scope(request.app.state.session_factory) as session:
+        if _daily_gate_enabled() and _today_intakes_for_email(session, email):
+            return JSONResponse(status_code=429, content={"reason": "daily_limit"})
+        status_token = secrets.token_urlsafe(24)
+        intake_run = AuditService(session).start_run(
+            INTAKE_RUN_TYPE,
+            trigger="marketing_site_advertising_audit",
+            metadata={
+                "email": email,
+                "asin": asin,
+                "company": company,
+                "source": source,
+                "tool": "advertising_audit",
+                "status_token": status_token,
+            },
+        )
+        intake_run.summary_json = {
+            "strategy_audit": "building",
+            "advertising_audit": "reports_required",
+            "email_delivery": "pending",
+            "hubspot_handoff": "pending",
+        }
+        session.add(intake_run)
+        intake_run_id = intake_run.id
+
+    background_tasks.add_task(
+        _run_analysis_and_deliver,
+        request.app,
+        intake_run_id=intake_run_id,
+        asin=asin,
+        email=email,
+        source=source or "anatainc.com/tools/advertising-audit",
+        trigger="marketing_site_advertising_audit",
+        needs=["advertising"],
+        qualification={
+            "company": company,
+            "storefront": f"https://www.amazon.com/dp/{asin}",
+            "challenge": "Advertising Audit requested from anatainc.com.",
+            "next_step": "Call prospect and confirm the four-report handoff.",
+            "audit_run_id": str(intake_run_id),
+        },
+    )
+    return JSONResponse(
+        status_code=202,
+        content={
+            "run_id": str(intake_run_id),
+            "token": status_token,
+            "asin": asin,
+            "status": "accepted",
+        },
+    )
+
+
+@router.get("/advertising-audit/{run_id}")
+def advertising_audit_status(
+    request: Request,
+    run_id: int,
+    token: str = "",
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> JSONResponse:
+    denied = _enforce_marketing_intake_key(request, x_internal_api_key)
+    if denied is not None:
+        return denied
+    with session_scope(request.app.state.session_factory) as session:
+        run = session.get(AutomationRun, run_id)
+        if run is None or run.run_type != INTAKE_RUN_TYPE:
+            return JSONResponse(status_code=404, content={"status": "not_found"})
+        metadata = run.metadata_json or {}
+        if metadata.get("tool") != "advertising_audit":
+            return JSONResponse(status_code=404, content={"status": "not_found"})
+        expected = str(metadata.get("status_token", "") or "")
+        if not expected or not secrets.compare_digest(str(token or ""), expected):
+            return JSONResponse(status_code=403, content={"detail": "Invalid status token."})
+        summary = run.summary_json or {}
+        if run.status == "failed":
+            public_status = "failed"
+            strategy_status = "failed"
+        elif run.status == "success":
+            delivery = str(summary.get("email_delivery", "pending") or "pending")
+            public_status = "delivered" if delivery == "delivered" else (
+                "delivery_failed" if delivery == "failed" else "ready"
+            )
+            strategy_status = "ready"
+        else:
+            public_status = "building"
+            strategy_status = "building"
+        return JSONResponse(
+            content={
+                "status": public_status,
+                "strategy_audit": strategy_status,
+                "advertising_audit": "reports_required",
+                "email_delivery": str(summary.get("email_delivery", "pending") or "pending"),
+            }
+        )
 
 
 @router.get("/analysis/status")
