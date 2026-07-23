@@ -175,6 +175,8 @@ class Settings:
     clickup_ap_list_id: str = "901104880724"
     clickup_ar_list_id: str = "901113065688"
     building_site_intake_key: str = ""
+    building_public_base_url: str = "https://anata-building.vercel.app"
+    building_campaign_token_secret: str = ""
     # HubSpot — the sales system source of truth (replacing ClickUp for sales).
     # Private-app token; same env var the legacy fulfillment hubspot_sync used.
     hubspot_api_token: str = ""
@@ -511,6 +513,14 @@ def load_settings() -> Settings:
         building_site_intake_key=(
             os.getenv("BUILDING_SITE_INTAKE_KEY", "").strip()
             or os.getenv("MARKETING_SITE_INTAKE_KEY", "").strip()
+        ),
+        building_public_base_url=(
+            os.getenv("BUILDING_PUBLIC_BASE_URL", "https://anata-building.vercel.app").strip().rstrip("/")
+            or "https://anata-building.vercel.app"
+        ),
+        building_campaign_token_secret=(
+            os.getenv("BUILDING_CAMPAIGN_TOKEN_SECRET", "").strip()
+            or os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "").strip()
         ),
         marketing_booking_url=os.getenv("MARKETING_BOOKING_URL", "").strip(),
         discovery_snapshot_path=Path(

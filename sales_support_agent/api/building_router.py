@@ -9,15 +9,19 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
     BuildingAvailabilityBlock,
+    BuildingCommunicationPreference,
+    BuildingContact,
     BuildingInquiry,
     BuildingOffering,
+    BuildingRelationship,
+    BuildingSuppression,
     BuildingSpace,
 )
 
@@ -262,6 +266,49 @@ def create_inquiry(
         )
         session.add(inquiry)
         session.flush()
+        contact = session.execute(
+            select(BuildingContact).where(BuildingContact.email == inquiry.email)
+        ).scalar_one_or_none()
+        if contact is None:
+            contact = BuildingContact(
+                id=str(uuid4()),
+                email=inquiry.email,
+                full_name=inquiry.name,
+                phone=inquiry.phone,
+                source=inquiry.source,
+            )
+        else:
+            contact.full_name = contact.full_name or inquiry.name
+            contact.phone = contact.phone or inquiry.phone
+            contact.updated_at = _now()
+        session.add(contact)
+        session.flush()
+        relationship_type = "event_host" if inquiry.kind == "event" else "prospect"
+        relationship_reference = f"inquiry:{inquiry.id}"
+        session.add(BuildingRelationship(
+            id=str(uuid4()),
+            contact_id=contact.id,
+            relationship_type=relationship_type,
+            status="active",
+            source_reference=relationship_reference,
+            metadata_json={"inquiry_kind": inquiry.kind, "offering_id": inquiry.offering_id},
+        ))
+        preference = session.get(BuildingCommunicationPreference, contact.id)
+        if preference is None:
+            preference = BuildingCommunicationPreference(contact_id=contact.id)
+        if payload.consent_to_marketing:
+            preference.marketing_status = "subscribed"
+            preference.marketing_source = "building_inquiry"
+            preference.marketing_changed_at = _now()
+            session.execute(
+                delete(BuildingSuppression).where(
+                    BuildingSuppression.email == contact.email,
+                    BuildingSuppression.scope == "marketing",
+                    BuildingSuppression.reason == "unsubscribe",
+                )
+            )
+        preference.updated_at = _now()
+        session.add(preference)
         session.add(BuildingAuditEvent(
             entity_type="inquiry",
             entity_id=inquiry.id,
@@ -279,6 +326,7 @@ def create_inquiry(
                     **({"phone": inquiry.phone} if inquiry.phone else {}),
                 })
                 inquiry.hubspot_contact_id = str((created or {}).get("id", "") or "")
+                contact.hubspot_contact_id = inquiry.hubspot_contact_id
                 if inquiry.hubspot_contact_id:
                     client.create_contact_note(
                         contact_id=inquiry.hubspot_contact_id,

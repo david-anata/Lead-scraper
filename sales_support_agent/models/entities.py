@@ -1383,3 +1383,122 @@ class BuildingAuditEvent(Base):
     before_json: Mapped[dict] = mapped_column(JSON, default=dict)
     after_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+
+
+class BuildingContact(Base):
+    __tablename__ = "building_contacts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(128), default="")
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    hubspot_contact_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="manual", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingRelationship(Base):
+    __tablename__ = "building_relationships"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("building_contacts.id"), index=True)
+    relationship_type: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    organization: Mapped[str] = mapped_column(String(255), default="")
+    starts_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    ends_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    source_reference: Mapped[str] = mapped_column(String(255), default="")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "ix_building_relationship_unique",
+            "contact_id",
+            "relationship_type",
+            "source_reference",
+            unique=True,
+        ),
+    )
+
+
+class BuildingCommunicationPreference(Base):
+    __tablename__ = "building_communication_preferences"
+
+    contact_id: Mapped[str] = mapped_column(ForeignKey("building_contacts.id"), primary_key=True)
+    marketing_status: Mapped[str] = mapped_column(String(32), default="unknown", index=True)
+    marketing_source: Mapped[str] = mapped_column(String(64), default="")
+    marketing_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    transactional_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingSuppression(Base):
+    __tablename__ = "building_suppressions"
+
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(32), default="marketing", index=True)
+    reason: Mapped[str] = mapped_column(String(64), default="unsubscribe", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="agent")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingSegment(Base):
+    __tablename__ = "building_segments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    rules_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingCampaign(Base):
+    __tablename__ = "building_campaigns"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    segment_id: Mapped[str] = mapped_column(ForeignKey("building_segments.id"), index=True)
+    communication_class: Mapped[str] = mapped_column(String(32), default="marketing", index=True)
+    subject: Mapped[str] = mapped_column(String(255))
+    body_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    preview_hash: Mapped[str] = mapped_column(String(128), default="")
+    previewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    test_sent_by: Mapped[str] = mapped_column(String(255), default="")
+    test_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingCampaignRecipient(Base):
+    __tablename__ = "building_campaign_recipients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("building_campaigns.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("building_contacts.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    full_name: Mapped[str] = mapped_column(String(255), default="")
+    inclusion_reason: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(32), default="approved", index=True)
+    exclusion_reason: Mapped[str] = mapped_column(String(255), default="")
+    provider_message_id: Mapped[str] = mapped_column(String(255), default="")
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_building_campaign_recipient_unique", "campaign_id", "contact_id", unique=True),
+    )

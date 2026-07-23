@@ -32,6 +32,7 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("website_ops.queue", "Queue", "Website Ops", ("/admin/website-ops/queue", "/admin/website-ops/feedback", "/admin/api/website-ops/feedback")),
     Tool("website_ops.reports", "Reports", "Website Ops", ("/admin/website-ops/reports",)),
     Tool("finance", "Finance", "Finance", ("/admin/finances",)),
+    Tool("building.manage", "Building operations", "Building", ("/admin/building",)),
     Tool("advertising.audit", "Advertising Audit", "Advertising", ("/admin/advertising",)),
     Tool("executive.summary", "Executive Summary", "Executive", ("/admin/executive",), exact=True),
     Tool("executive.brand_analysis", "Brand Analysis", "Executive", ("/admin/executive/brand-analysis",)),

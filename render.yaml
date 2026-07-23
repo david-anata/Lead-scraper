@@ -60,6 +60,10 @@ services:
         value: agent
       - key: BUILDING_SITE_INTAKE_KEY
         sync: false
+      - key: BUILDING_PUBLIC_BASE_URL
+        value: https://anata-building.vercel.app
+      - key: BUILDING_CAMPAIGN_TOKEN_SECRET
+        sync: false
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
         sync: false
       - key: GOOGLE_SHEETS_SALES_RANGE

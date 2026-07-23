@@ -60,6 +60,9 @@ _NAV_SECTIONS = [
     _NavSection("finance", "Finance", "finance", [
         _NavSubpage("finance", "Finance", "/admin/finances", "finance"),
     ]),
+    _NavSection("building", "Building", "building", [
+        _NavSubpage("building.manage", "Control Room", "/admin/building", "building"),
+    ]),
     _NavSection("advertising", "Advertising", "advertising", [
         _NavSubpage("advertising.audit", "Audit", "/admin/advertising/audit", "advertising_audit"),
         _NavSubpage("advertising.audit", "Clients", "/admin/advertising/clients", "advertising_clients"),
@@ -522,6 +525,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "sales"
     if active in {"finance", "finances"}:
         primary_active = "finance"
+    if active == "building":
+        primary_active = "building"
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
     if active in {"executive", "brand_analysis"}:
@@ -542,6 +547,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         "advertising": advertising_section or ("advertising_audit" if active == "advertising" else active),
         "executive": executive_section or ("executive" if active == "executive" else active),
         "finance": active,
+        "building": active,
         "fulfillment": fulfillment_section or (website_ops_section if website_ops_section.startswith("fulfillment_") else "") or ("fulfillment_sales" if active == "fulfillment" else active),
         "hr": hr_section or ("dashboard" if active == "hr" else active.removeprefix("hr_")),
     }
