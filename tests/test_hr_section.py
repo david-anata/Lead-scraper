@@ -482,6 +482,8 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("/admin/hr/reports/quarterly-register.csv", page.text)
         self.assertIn("/admin/hr/reports/year-to-date-register.csv", page.text)
+        self.assertIn("preserve ordinary payroll and employment history for seven years", page.text)
+        self.assertIn("No record is automatically deleted", page.text)
 
         quarterly = self._get(
             "/admin/hr/reports/quarterly-register.csv?year=2026&quarter=3", self.sa

@@ -1001,7 +1001,8 @@ def render_hr_reports(*, user) -> str:
     body = f"""<h1 class="hr-h1">HR reports & exports</h1>
     <p class="hr-sub">Portable records for review, backup, accountant handoff, or a future payroll-provider migration.</p>
     <div class="hr-callout warn"><div class="hr-kicker">Sensitive records</div>
-    <p>Exports intentionally exclude full Social Security numbers and sealed tax-election data. Store downloaded files securely.</p></div>
+    <p>Exports intentionally exclude full Social Security numbers and sealed tax-election data. Store downloaded files securely.</p>
+    <p><strong>Retention:</strong> preserve ordinary payroll and employment history for seven years under Anata's operating policy. Offboarding deactivates access; it does not delete history. Form I-9 uses its separate legal deadline. No record is automatically deleted.</p></div>
     <form method="get" action="/admin/hr/reports/backup.zip" class="hr-card">
       <div class="hr-kicker">Operational recovery</div><h2>Download verified HR backup</h2>
       <p class="hr-sub">A ZIP of operational CSV records plus a checksum manifest. Sealed tax forms and full SSNs are excluded.</p>
