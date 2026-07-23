@@ -201,6 +201,10 @@ class BuildingChecklistTests(unittest.TestCase):
         self.assertEqual(confirmed.status_code, 200, confirmed.text)
         occupied = self._transition("checklist-workspace", "occupied")
         self.assertEqual(occupied.status_code, 200, occupied.text)
+        renewal = self._transition("checklist-workspace", "renewal")
+        self.assertEqual(renewal.status_code, 200, renewal.text)
+        renewed = self._transition("checklist-workspace", "occupied")
+        self.assertEqual(renewed.status_code, 200, renewed.text)
         move_out = self._transition("checklist-workspace", "move_out")
         self.assertEqual(move_out.status_code, 200, move_out.text)
 
@@ -213,7 +217,7 @@ class BuildingChecklistTests(unittest.TestCase):
         types = {
             row["checklist_type"] for row in listing.json()["checklists"]
         }
-        self.assertEqual(types, {"move_in", "move_out"})
+        self.assertEqual(types, {"move_in", "renewal", "move_out"})
         with self.factory() as session:
             self.assertGreater(
                 session.query(BuildingOperationalChecklistItem).count(),

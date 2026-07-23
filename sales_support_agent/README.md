@@ -248,9 +248,10 @@ retries idempotent; provider failures stay visible and retryable in the queue.
 
 Confirming an event creates an event-readiness and closeout checklist.
 Confirming a workspace creates a move-in checklist, and moving an occupied
-workspace to move-out creates a separate move-out checklist. Defaults cover the
-common handoffs without claiming that insurance, access, refund, or safety
-requirements have been satisfied. Operators can add booking-specific items.
+workspace to renewal or move-out creates a separate renewal or move-out
+checklist. Defaults cover the common handoffs without claiming that insurance,
+access, refund, or safety requirements have been satisfied. Operators can add
+booking-specific items.
 Checklist completion is derived from its required items; waiving a required
 item requires a reason and records the signed-in operator in the audit trail.
 

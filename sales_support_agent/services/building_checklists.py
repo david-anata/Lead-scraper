@@ -38,6 +38,13 @@ DEFAULT_ITEMS = {
         "Update occupancy and reviewed public availability",
         "Close, renew, or update the tenant relationship",
     ],
+    "renewal": [
+        "Confirm the tenant's renewal, expansion, transfer, or move-out decision",
+        "Review term, pricing, space, and approved exceptions",
+        "Prepare and complete the correct agreement or amendment",
+        "Review deposit, billing schedule, and accounting handoff",
+        "Update occupancy dates, relationships, and future availability",
+    ],
 }
 
 
@@ -52,10 +59,11 @@ def _target_type(reservation: BuildingReservation) -> str:
         "completed",
     }:
         return "event_readiness"
+    if reservation.kind == "workspace" and reservation.status == "renewal":
+        return "renewal"
     if reservation.kind == "workspace" and reservation.status in {
         "confirmed",
         "occupied",
-        "renewal",
     }:
         return "move_in"
     if reservation.kind == "workspace" and reservation.status in {
@@ -90,6 +98,7 @@ def ensure_operational_checklist(
         "event_readiness": "Event readiness and closeout",
         "move_in": "Workspace move-in",
         "move_out": "Workspace move-out",
+        "renewal": "Workspace renewal",
     }
     row = BuildingOperationalChecklist(
         id=str(uuid4()),
