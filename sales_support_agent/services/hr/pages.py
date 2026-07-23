@@ -109,8 +109,7 @@ def render_hr_dashboard(stats: dict, *, user, flash=None) -> str:
       <div class="hr-card"><div class="n">{stats.get('total_employees',0)}</div><div class="l">Total records</div></div>
     </div>
     <div class="hr-row-head"><div></div><a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a></div>
-    <p class="hr-sub" style="margin-top:0">Time tracking, payroll runs, and reports arrive in the next phases — the
-    menu on the left shows what's coming.</p>
+    <p class="hr-sub" style="margin-top:0">Use the HR navigation above to manage people, time, payroll readiness, and reporting.</p>
     """
     return hr_shell("Dashboard", "dashboard", body, user=user)
 
