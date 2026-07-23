@@ -21,6 +21,7 @@ from sales_support_agent.models.entities import (
     BuildingOffering,
     BuildingProposal,
     BuildingRatePlan,
+    BuildingRelationship,
     BuildingReservation,
     BuildingSpace,
     BuildingTour,
@@ -190,6 +191,150 @@ def _reservation_payload(row: BuildingReservation) -> dict[str, Any]:
         "calendar_event_id": row.calendar_event_id,
         "updated_at": (row.updated_at or _now()).isoformat(),
     }
+
+
+def _activate_tenant_relationship(
+    session,
+    reservation: BuildingReservation,
+    *,
+    actor: str,
+    renewed: bool,
+) -> BuildingRelationship:
+    if not reservation.contact_id:
+        raise HTTPException(
+            status_code=409,
+            detail="A linked contact is required before workspace occupancy.",
+        )
+    contact = session.get(BuildingContact, reservation.contact_id)
+    if contact is None:
+        raise HTTPException(status_code=409, detail="Linked workspace contact is missing.")
+    if contact.status != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Linked workspace contact must be active before occupancy.",
+        )
+    source_reference = f"reservation:{reservation.id}"
+    relationship = session.execute(
+        select(BuildingRelationship).where(
+            BuildingRelationship.contact_id == contact.id,
+            BuildingRelationship.relationship_type == "tenant",
+            BuildingRelationship.source_reference == source_reference,
+        )
+    ).scalar_one_or_none()
+    before = (
+        {
+            "status": relationship.status,
+            "starts_on": (
+                relationship.starts_on.isoformat() if relationship.starts_on else None
+            ),
+            "ends_on": (
+                relationship.ends_on.isoformat() if relationship.ends_on else None
+            ),
+        }
+        if relationship
+        else {}
+    )
+    if relationship is None:
+        relationship = BuildingRelationship(
+            id=str(uuid4()),
+            contact_id=contact.id,
+            relationship_type="tenant",
+            source_reference=source_reference,
+        )
+    metadata = dict(relationship.metadata_json or {})
+    metadata.update({
+        "reservation_id": reservation.id,
+        "space_id": reservation.space_id,
+        "offering_id": reservation.offering_id or "",
+        "activated_at": metadata.get("activated_at") or _now().isoformat(),
+        "last_renewed_at": _now().isoformat() if renewed else metadata.get("last_renewed_at"),
+        "activated_by": actor,
+    })
+    relationship.status = "active"
+    relationship.organization = relationship.organization or contact.company_name
+    relationship.starts_on = reservation.starts_at.date()
+    relationship.ends_on = reservation.ends_at.date()
+    relationship.metadata_json = metadata
+    relationship.updated_at = _now()
+    session.add(relationship)
+    session.add(BuildingAuditEvent(
+        entity_type="relationship",
+        entity_id=relationship.id,
+        action="tenant_renewed" if renewed else "tenant_activated",
+        actor=actor,
+        before_json=before,
+        after_json={
+            "contact_id": contact.id,
+            "reservation_id": reservation.id,
+            "space_id": reservation.space_id,
+            "status": relationship.status,
+            "starts_on": relationship.starts_on.isoformat(),
+            "ends_on": relationship.ends_on.isoformat(),
+        },
+    ))
+    return relationship
+
+
+def _complete_tenant_relationship(
+    session,
+    reservation: BuildingReservation,
+    *,
+    actor: str,
+) -> None:
+    if not reservation.contact_id:
+        return
+    source_reference = f"reservation:{reservation.id}"
+    tenant = session.execute(
+        select(BuildingRelationship).where(
+            BuildingRelationship.contact_id == reservation.contact_id,
+            BuildingRelationship.relationship_type == "tenant",
+            BuildingRelationship.source_reference == source_reference,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        return
+    tenant.status = "inactive"
+    tenant.ends_on = _now().date()
+    tenant.updated_at = _now()
+    former_reference = f"former:{source_reference}"
+    former = session.execute(
+        select(BuildingRelationship).where(
+            BuildingRelationship.contact_id == reservation.contact_id,
+            BuildingRelationship.relationship_type == "former_tenant",
+            BuildingRelationship.source_reference == former_reference,
+        )
+    ).scalar_one_or_none()
+    if former is None:
+        former = BuildingRelationship(
+            id=str(uuid4()),
+            contact_id=reservation.contact_id,
+            relationship_type="former_tenant",
+            status="active",
+            organization=tenant.organization,
+            starts_on=tenant.starts_on,
+            ends_on=tenant.ends_on,
+            source_reference=former_reference,
+            metadata_json={
+                "reservation_id": reservation.id,
+                "space_id": reservation.space_id,
+                "offering_id": reservation.offering_id or "",
+                "completed_at": _now().isoformat(),
+            },
+        )
+        session.add(former)
+    session.add(BuildingAuditEvent(
+        entity_type="relationship",
+        entity_id=tenant.id,
+        action="tenant_moved_out",
+        actor=actor,
+        before_json={"status": "active"},
+        after_json={
+            "status": "inactive",
+            "former_tenant_relationship_id": former.id,
+            "reservation_id": reservation.id,
+            "ends_on": tenant.ends_on.isoformat(),
+        },
+    ))
 
 
 def _active_conflicts(
@@ -444,6 +589,13 @@ def transition_reservation(
             if block:
                 block.state = "occupied"
                 block.updated_at = _now()
+            if row.kind == "workspace":
+                _activate_tenant_relationship(
+                    session,
+                    row,
+                    actor=payload.actor,
+                    renewed=row.status == "renewal",
+                )
         if payload.target_status in {"cancelled", "expired", "completed"}:
             session.execute(
                 delete(BuildingAvailabilityBlock).where(
@@ -452,6 +604,12 @@ def transition_reservation(
             )
             row.hold_expires_at = None
         before = row.status
+        if (
+            row.kind == "workspace"
+            and payload.target_status == "completed"
+            and row.status == "move_out"
+        ):
+            _complete_tenant_relationship(session, row, actor=payload.actor)
         row.status = payload.target_status
         row.updated_at = _now()
         queue_calendar_projection(session, row)

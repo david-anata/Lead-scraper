@@ -19,6 +19,8 @@ try:
     from sales_support_agent.models.entities import (
         BuildingOperationalChecklist,
         BuildingOperationalChecklistItem,
+        BuildingRelationship,
+        BuildingReservation,
     )
 
     DEPS = True
@@ -65,6 +67,18 @@ class BuildingChecklistTests(unittest.TestCase):
             )
             if response.status_code != 200:
                 raise AssertionError(response.text)
+        contact = cls.client.put(
+            "/api/internal/building/crm/contacts/checklist-tenant",
+            headers=cls.headers,
+            json={
+                "email": "checklist-tenant@example.com",
+                "full_name": "Checklist Tenant",
+                "source": "test",
+                "actor": "operations@example.com",
+            },
+        )
+        if contact.status_code != 200:
+            raise AssertionError(contact.text)
 
     def _create(self, reservation_id: str, kind: str, space_id: str):
         return self.client.post(
@@ -74,6 +88,7 @@ class BuildingChecklistTests(unittest.TestCase):
                 "id": reservation_id,
                 "kind": kind,
                 "space_id": space_id,
+                "contact_id": "checklist-tenant" if kind == "workspace" else None,
                 "starts_at": self.start.isoformat(),
                 "ends_at": (self.start + timedelta(hours=4)).isoformat(),
                 "attendance": 4,
@@ -273,6 +288,8 @@ class BuildingChecklistTests(unittest.TestCase):
         self.assertEqual(renewed.status_code, 200, renewed.text)
         move_out = self._transition("checklist-workspace", "move_out")
         self.assertEqual(move_out.status_code, 200, move_out.text)
+        completed = self._transition("checklist-workspace", "completed")
+        self.assertEqual(completed.status_code, 200, completed.text)
 
         listing = self.client.get(
             "/api/internal/building/checklists",
@@ -289,6 +306,41 @@ class BuildingChecklistTests(unittest.TestCase):
                 session.query(BuildingOperationalChecklistItem).count(),
                 5,
             )
+            relationships = session.query(BuildingRelationship).filter(
+                BuildingRelationship.contact_id == "checklist-tenant"
+            ).all()
+            tenant = next(
+                row for row in relationships if row.relationship_type == "tenant"
+            )
+            former = next(
+                row
+                for row in relationships
+                if row.relationship_type == "former_tenant"
+            )
+            self.assertEqual(tenant.status, "inactive")
+            self.assertEqual(former.status, "active")
+            self.assertEqual(
+                tenant.source_reference,
+                "reservation:checklist-workspace",
+            )
+
+    def test_03_workspace_cannot_become_occupied_without_a_contact(self) -> None:
+        with self.factory() as session:
+            session.add(BuildingReservation(
+                id="workspace-without-contact",
+                kind="workspace",
+                status="confirmed",
+                space_id="checklist-office",
+                starts_at=self.start + timedelta(days=2),
+                ends_at=self.start + timedelta(days=32),
+                deposit_required=False,
+                agreement_status="signed",
+                created_by="test",
+            ))
+            session.commit()
+        response = self._transition("workspace-without-contact", "occupied")
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("linked contact", response.text)
 
 
 if __name__ == "__main__":

@@ -157,11 +157,22 @@ def render_building_page(
             for rel in governed
         )
 
+    def relationship_labels(item: dict[str, Any]) -> str:
+        labels = {
+            (
+                str(rel.get("type") or "").replace("_", " ")
+                + f" ({str(rel.get('status') or 'active')})"
+            )
+            for rel in item.get("relationships", [])
+            if rel.get("type")
+        }
+        return ", ".join(sorted(labels)) or "No relationship"
+
     contact_rows = "".join(
         f"""
         <tr>
           <td><strong>{_esc(item.get("full_name") or item.get("email"))}</strong><span class="sub">{_esc(item.get("email"))} · {_esc(item.get("status") or "active")}</span></td>
-          <td>{_esc(", ".join(sorted({rel.get("type", "") for rel in item.get("relationships", []) if rel.get("type")})) or "No relationship")}{relationship_review_controls(item)}</td>
+          <td>{_esc(relationship_labels(item))}{relationship_review_controls(item)}</td>
           <td>{_badge(str(item.get("marketing_status") or "unknown"))}</td>
           <td>{_badge("suppressed") if item.get("suppressed") else "Allowed"}<span class="sub">{_esc(item.get("suppression_reason"))}</span></td>
           <td><a class="secondary secondary--small" href="/admin/building/privacy/contacts/{_esc(item.get("id"))}/export">Export</a>

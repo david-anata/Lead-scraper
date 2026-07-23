@@ -2705,6 +2705,13 @@ def building_control_room(
                         "id": rel.id,
                         "type": rel.relationship_type,
                         "status": rel.status,
+                        "source_reference": rel.source_reference,
+                        "starts_on": (
+                            rel.starts_on.isoformat() if rel.starts_on else ""
+                        ),
+                        "ends_on": (
+                            rel.ends_on.isoformat() if rel.ends_on else ""
+                        ),
                         "list_owner": str(
                             (rel.metadata_json or {}).get("list_owner") or ""
                         ),

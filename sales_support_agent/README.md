@@ -294,6 +294,13 @@ typed confirmation, the invoice must still have an outstanding balance and a
 secure Stripe link, and an all-email suppression blocks delivery. Stripe paid,
 void, and uncollectible events close matching cases with provider evidence.
 
+Workspace occupancy is also connected to CRM identity. A workspace cannot move
+to occupied without an active linked contact. Occupancy creates an audited
+tenant relationship scoped to that reservation and space; renewal refreshes the
+same relationship instead of duplicating it. Completing move-out closes only
+that tenancy and adds a former-tenant relationship, preserving any other active
+tenant or event-host relationships the person may have.
+
 Website and assisted-source inquiries remain durable even when HubSpot is
 unavailable. A partial contact or note failure changes the inquiry to
 `crm_sync_needed`, stores the latest error and attempt count, and exposes a
