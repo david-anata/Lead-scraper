@@ -96,43 +96,47 @@ REPRESENTATIVE_METROS: tuple = (
     ("85701", "Tucson, AZ"),
     ("89501", "Reno, NV"),
     ("59101", "Billings, MT"),
-    # Zone 5 — Pacific NW coast, southern plains, upper midwest.
+    # Zone 5 — Pacific NW coast + southern plains. Keep the first sampling
+    # pair geographically separated so the public map does not double-count
+    # the West Coast while omitting the central US.
     ("98101", "Seattle, WA"),
+    ("75201", "Dallas, TX"),
     ("92101", "San Diego, CA"),
     ("97201", "Portland, OR"),
-    ("75201", "Dallas, TX"),
     ("73102", "Oklahoma City, OK"),
     ("64106", "Kansas City, MO"),
     ("55401", "Minneapolis, MN"),
     ("99201", "Spokane, WA"),
     ("79901", "El Paso, TX"),
-    # Zone 6 — Texas triangle, midwest, mid-south.
+    # Zone 6 — Midwest + Texas.
+    ("60601", "Chicago, IL"),
     ("77002", "Houston, TX"),
     ("78701", "Austin, TX"),
-    ("60601", "Chicago, IL"),
     ("63101", "St. Louis, MO"),
     ("38103", "Memphis, TN"),
     ("37203", "Nashville, TN"),
     ("46204", "Indianapolis, IN"),
     ("53202", "Milwaukee, WI"),
     ("78205", "San Antonio, TX"),
-    # Zone 7 — southeast + great lakes.
+    # Zone 7 — Appalachia/Great Lakes + Southeast.
+    ("15222", "Pittsburgh, PA"),
     ("30303", "Atlanta, GA"),
     ("28202", "Charlotte, NC"),
-    ("15222", "Pittsburgh, PA"),
     ("44114", "Cleveland, OH"),
     ("43215", "Columbus, OH"),
     ("48226", "Detroit, MI"),
     ("70112", "New Orleans, LA"),
-    # Zone 8 — Florida + eastern seaboard.
-    ("33101", "Miami, FL"),
+    # Zone 8 — Northeast. Southeast coverage is already represented in zone 7;
+    # prioritizing two Northeast metros prevents the public map from ending at
+    # Florida when the cheapest far-zone quote happens to be southern.
     ("10001", "New York, NY"),
+    ("02108", "Boston, MA"),
+    ("33101", "Miami, FL"),
     ("32801", "Orlando, FL"),
     ("33602", "Tampa, FL"),
     ("27601", "Raleigh, NC"),
     ("20001", "Washington, DC"),
     ("19102", "Philadelphia, PA"),
-    ("02108", "Boston, MA"),
 )
 
 

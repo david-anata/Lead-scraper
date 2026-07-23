@@ -592,8 +592,11 @@ class MultiSampleCollapseTests(unittest.TestCase):
 
         sampled = representative_destinations_multi("84043", per_zone=2, cap=18)
         self.assertEqual(sampled[4][1][0], "90012")  # Los Angeles
-        self.assertEqual(sampled[5][1][0], "92101")  # San Diego
-        self.assertEqual(sampled[8][1][0], "10001")  # New York
+        self.assertEqual(sampled[5][1][0], "75201")  # Dallas
+        self.assertEqual(sampled[6][0][0], "60601")  # Chicago
+        self.assertEqual(sampled[7][0][0], "15222")  # Pittsburgh
+        self.assertEqual(sampled[8][0][0], "10001")  # New York
+        self.assertEqual(sampled[8][1][0], "02108")  # Boston
 
     def test_regional_carrier_surfaces_when_serving_one_sampled_city(self):
         from sales_support_agent.services.fulfillment_deck.zones import (
