@@ -255,9 +255,12 @@ class BuildingCrmCampaignTests(unittest.TestCase):
             billing_schedules=[],
             calendar_projections=[],
             checklists=[],
+            service_requests=[],
             can_finance=True,
         )
         self.assertIn("Building Control", body)
+        self.assertIn("Operator queue", body)
+        self.assertIn("No service requests.", body)
         self.assertIn("No spaces entered yet.", body)
         self.assertIn("No building contacts yet.", body)
         self.assertIn("No campaigns yet.", body)

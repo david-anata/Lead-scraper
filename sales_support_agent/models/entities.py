@@ -1621,6 +1621,43 @@ class BuildingOperationalChecklistItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingServiceRequest(Base):
+    """Audited maintenance or tenant-service work owned by building operations."""
+
+    __tablename__ = "building_service_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    priority: Mapped[str] = mapped_column(String(16), default="normal", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="new", index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    space_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_spaces.id"), nullable=True, index=True
+    )
+    contact_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_contacts.id"), nullable=True, index=True
+    )
+    reservation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_reservations.id"), nullable=True, index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), default="operator", index=True)
+    source_reference: Mapped[str] = mapped_column(String(255), default="")
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="", index=True)
+    due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    resolution: Mapped[str] = mapped_column(Text, default="")
+    attachments_json: Mapped[list] = mapped_column(JSON, default=list)
+    reported_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class BuildingAgreement(Base):
     __tablename__ = "building_agreements"
 

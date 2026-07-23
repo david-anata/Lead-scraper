@@ -188,6 +188,9 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/internal/building/checklists`
 - `POST /api/internal/building/checklists/{checklist_id}/items`
 - `POST /api/internal/building/checklists/items/{item_id}/status`
+- `GET /api/internal/building/service-requests`
+- `POST /api/internal/building/service-requests`
+- `POST /api/internal/building/service-requests/{request_id}/transition`
 - `PUT /api/internal/building/billing/accounts/{account_id}`
 - `PUT /api/internal/building/billing/schedules/{schedule_id}`
 - `POST /api/internal/building/billing/schedules/{schedule_id}/approve`
@@ -250,6 +253,15 @@ common handoffs without claiming that insurance, access, refund, or safety
 requirements have been satisfied. Operators can add booking-specific items.
 Checklist completion is derived from its required items; waiving a required
 item requires a reason and records the signed-in operator in the audit trail.
+
+Maintenance and tenant-service work uses its own deterministic queue rather
+than being hidden in booking notes. Requests may link to a space, contact, or
+reservation and carry category, priority, owner, response due time, source, and
+resolution evidence. High and urgent work requires an owner; urgent work also
+requires a due time. Active work cannot be completed without a resolution, and
+reopening completed work retains the original audit trail. Building Control's
+operator queue ranks urgent or overdue service work alongside new leads,
+calendar failures, and incomplete booking-readiness tasks.
 
 The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires

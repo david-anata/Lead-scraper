@@ -43,6 +43,7 @@ def render_building_page(
     billing_schedules: list[dict[str, Any]],
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
+    service_requests: list[dict[str, Any]],
     can_finance: bool = False,
     csrf_token: str = "",
     notice: str = "",
@@ -315,6 +316,11 @@ def render_building_page(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("description"))} · {_esc(str(item.get("currency") or "usd").upper())} {int(item.get("amount_due_cents") or 0) / 100:,.2f}</option>'
         for item in invoices
     )
+    open_service_requests = sum(
+        1
+        for item in service_requests
+        if item.get("status") not in {"completed", "cancelled"}
+    )
     adjustment_rows = "".join(
         f"""
         <tr>
@@ -335,6 +341,88 @@ def render_building_page(
         """
         for item in adjustments
     ) or '<tr><td colspan="5"><div class="empty"><strong>No financial adjustments.</strong><br>Refunds, credits, and write-offs begin as reviewed requests and never imply provider or accounting confirmation.</div></td></tr>'
+    service_request_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("title"))}</strong><span class="sub">{_esc(str(item.get("category") or "").replace("_", " ").title())} · {_esc(item.get("space_name") or "Building-wide")}</span></td>
+          <td>{_badge(str(item.get("priority") or "normal"))}{'<span class="sub">Overdue</span>' if item.get("overdue") else ''}</td>
+          <td>{_badge(str(item.get("status") or "new"))}</td>
+          <td>{_esc(item.get("assigned_owner") or "Unassigned")}<span class="sub">{_esc(item.get("due_at") or "No due time")}</span></td>
+          <td><details class="row-actions"><summary>Update work</summary>
+            <form method="post" action="/admin/building/service-requests/{_esc(item.get("id"))}/transition">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <label>Next state<select name="target_status" required>{''.join(f'<option value="{_esc(state)}">{_esc(state.replace("_", " ").title())}</option>' for state in item.get("allowed_next", []))}</select></label>
+              <label>Assigned owner<input name="assigned_owner" value="{_esc(item.get("assigned_owner"))}"></label>
+              <label>Response due (Mountain time)<input name="due_at" type="datetime-local"></label>
+              <label>Resolution<input name="resolution" placeholder="Required when completing"></label>
+              <label>Reason<input name="reason" required placeholder="Why is the state changing?"></label>
+              <button class="secondary secondary--small" type="submit" {'disabled' if not item.get("allowed_next") else ''}>Save update</button>
+            </form>
+          </details></td>
+        </tr>
+        """
+        for item in service_requests
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No service requests.</strong><br>Add maintenance, cleaning, access, internet, or tenant-service work when it is reported.</div></td></tr>'
+    priority_items: list[dict[str, Any]] = []
+    for item in service_requests:
+        if item.get("status") in {"completed", "cancelled"}:
+            continue
+        priority = str(item.get("priority") or "normal")
+        score = {"urgent": 100, "high": 80, "normal": 50, "low": 30}.get(priority, 40)
+        if item.get("overdue"):
+            score += 30
+        priority_items.append({
+            "score": score,
+            "type": "Service request",
+            "title": item.get("title"),
+            "detail": (
+                f"{priority.title()} · {item.get('status', 'new').replace('_', ' ')}"
+                f" · {item.get('assigned_owner') or 'assign an owner'}"
+            ),
+            "next": "Triage or update the service request",
+        })
+    for item in inquiries:
+        if item.get("status") not in {"new", "crm_sync_needed"}:
+            continue
+        crm_failed = item.get("status") == "crm_sync_needed"
+        priority_items.append({
+            "score": 75 if crm_failed else 65,
+            "type": "Inquiry",
+            "title": item.get("name") or item.get("email"),
+            "detail": f"{item.get('kind', 'lead')} · {item.get('source', 'unknown source')}",
+            "next": "Retry HubSpot" if crm_failed else "Respond and qualify",
+        })
+    for item in calendar_projections:
+        if item.get("status") != "error":
+            continue
+        priority_items.append({
+            "score": 85,
+            "type": "Calendar",
+            "title": item.get("space_name") or item.get("reservation_id"),
+            "detail": item.get("last_error") or "Calendar synchronization failed",
+            "next": "Review and retry calendar sync",
+        })
+    for item in checklists:
+        if item.get("status") != "open":
+            continue
+        remaining = sum(
+            1
+            for checklist_item in item.get("items", [])
+            if checklist_item.get("is_required")
+            and checklist_item.get("status") == "pending"
+        )
+        priority_items.append({
+            "score": 55,
+            "type": "Readiness",
+            "title": item.get("title"),
+            "detail": f"{item.get('space_name') or item.get('reservation_id')} · {remaining} required remaining",
+            "next": "Complete or explicitly waive required items",
+        })
+    priority_items.sort(key=lambda item: (-int(item["score"]), str(item["title"])))
+    priority_rows = "".join(
+        f"<tr><td>{_badge(str(item.get('type')))}</td><td><strong>{_esc(item.get('title'))}</strong><span class=\"sub\">{_esc(item.get('detail'))}</span></td><td>{_esc(item.get('next'))}</td></tr>"
+        for item in priority_items[:12]
+    ) or '<tr><td colspan="3"><div class="empty"><strong>No urgent operating actions.</strong><br>New leads, failed integrations, readiness work, and service requests will appear here.</div></td></tr>'
     segment_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} ({_esc(item.get("included_count", 0))} eligible)</option>'
         for item in segments
@@ -418,6 +506,7 @@ def render_building_page(
     </section>
     <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
     <div class="grid">
+      <section class="panel panel--wide" id="operator-queue"><div class="panel-head"><div><h2>Operator queue</h2><p>The highest-risk customer, revenue, readiness, and building-service actions in one place.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
       <section class="panel">
         <div class="panel-head"><div><h2>Add or update a space</h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
         <form class="form-grid" method="post" action="/admin/building/spaces">
@@ -528,6 +617,25 @@ def render_building_page(
           <div class="field field--wide"><label for="reservation-requirements">Requirements and operator notes</label><textarea id="reservation-requirements" name="requirements"></textarea></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="deposit_required" value="true" checked> Deposit required before confirmation</label><button class="primary" type="submit">Create booking inquiry</button></div>
         </form>
+      </section>
+      <section class="panel panel--wide" id="service-requests">
+        <div class="panel-head"><div><h2>Building service</h2><p>Maintenance and tenant requests stay owned, due, auditable, and separate from commercial booking state.</p></div><span class="count">{open_service_requests} open</span></div>
+        <form class="form-grid" method="post" action="/admin/building/service-requests">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="service-category">Category</label><select id="service-category" name="category"><option value="maintenance">Maintenance</option><option value="cleaning">Cleaning</option><option value="access">Access</option><option value="internet">Internet</option><option value="furniture">Furniture</option><option value="safety">Safety</option><option value="billing_question">Billing question</option><option value="event_support">Event support</option><option value="other">Other</option></select></div>
+          <div class="field"><label for="service-priority">Priority</label><select id="service-priority" name="priority"><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+          <div class="field field--wide"><label for="service-title">Request</label><input id="service-title" name="title" required placeholder="What needs attention?"></div>
+          <div class="field field--wide"><label for="service-description">Details</label><textarea id="service-description" name="description" placeholder="What happened, what is affected, and what has already been tried?"></textarea></div>
+          <div class="field"><label for="service-space">Space</label><select id="service-space" name="space_id"><option value="">Building-wide</option>{linked_space_options}</select></div>
+          <div class="field"><label for="service-contact">Related contact</label><select id="service-contact" name="contact_id"><option value="">No linked contact</option>{contact_options}</select></div>
+          <div class="field"><label for="service-reservation">Related booking</label><select id="service-reservation" name="reservation_id"><option value="">No linked booking</option>{reservation_options}</select></div>
+          <div class="field"><label for="service-source">Reported through</label><select id="service-source" name="source"><option value="operator">Operator</option><option value="tenant">Tenant</option><option value="event_host">Event host</option><option value="inspection">Inspection</option><option value="checklist">Checklist</option></select></div>
+          <div class="field"><label for="service-reference">Source reference</label><input id="service-reference" name="source_reference" placeholder="Email, ticket, or inspection reference"></div>
+          <div class="field"><label for="service-owner">Assigned owner</label><input id="service-owner" name="assigned_owner" value="{_esc(user.get("email"))}"></div>
+          <div class="field"><label for="service-due">Response due (Mountain time)</label><input id="service-due" name="due_at" type="datetime-local"></div>
+          <div class="form-actions"><span class="form-note">Urgent requests require an owner and response due time. This queue is not an emergency-response service.</span><button class="primary" type="submit">Add service request</button></div>
+        </form>
+        <div class="table-wrap"><table><thead><tr><th>Request</th><th>Priority</th><th>Status</th><th>Owner and due</th><th>Action</th></tr></thead><tbody>{service_request_rows}</tbody></table></div>
       </section>
       <section class="panel">
         <div class="panel-head"><div><h2>Billing account</h2><p>Connect a person or company to Stripe and the current QBO record.</p></div></div>

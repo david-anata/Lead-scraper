@@ -29,6 +29,7 @@ try:
         BuildingInquiry,
         BuildingInvoice,
         BuildingReservation,
+        BuildingServiceRequest,
     )
     from sales_support_agent.services.admin_auth import create_user_session_token
 
@@ -155,6 +156,61 @@ class BuildingAdminOperationsTests(unittest.TestCase):
                 BuildingAuditEvent.action == "created",
             ).one()
             self.assertEqual(audit.actor, "david@anatainc.com")
+
+    def test_00b_operator_owns_and_resolves_urgent_service_work(self) -> None:
+        missing_owner = self._post(
+            "/admin/building/service-requests",
+            {
+                "category": "maintenance",
+                "priority": "high",
+                "title": "Water observed near utility room",
+                "space_id": "arena-admin",
+            },
+        )
+        self.assertIn("error=", missing_owner.headers["location"])
+        due = datetime.now() + timedelta(hours=1)
+        created = self._post(
+            "/admin/building/service-requests",
+            {
+                "category": "maintenance",
+                "priority": "urgent",
+                "title": "Water observed near utility room",
+                "description": "Inspect the source and protect the affected area.",
+                "space_id": "arena-admin",
+                "source": "inspection",
+                "assigned_owner": "facilities@example.com",
+                "due_at": due.strftime("%Y-%m-%dT%H:%M"),
+            },
+        )
+        self._assert_notice(created)
+        with self.factory() as session:
+            row = session.query(BuildingServiceRequest).one()
+            request_id = row.id
+            self.assertEqual(row.priority, "urgent")
+        for target_status in ("triaged", "in_progress"):
+            changed = self._post(
+                f"/admin/building/service-requests/{request_id}/transition",
+                {
+                    "target_status": target_status,
+                    "assigned_owner": "facilities@example.com",
+                    "reason": "Reviewed onsite by facilities",
+                },
+            )
+            self._assert_notice(changed)
+        completed = self._post(
+            f"/admin/building/service-requests/{request_id}/transition",
+            {
+                "target_status": "completed",
+                "assigned_owner": "facilities@example.com",
+                "resolution": "Area inspected, source corrected, and floor dried.",
+                "reason": "Facilities verified the correction",
+            },
+        )
+        self._assert_notice(completed)
+        with self.factory() as session:
+            row = session.get(BuildingServiceRequest, request_id)
+            self.assertEqual(row.status, "completed")
+            self.assertTrue(row.resolution)
 
     def test_01_operator_completes_guarded_event_booking_evidence(self) -> None:
         starts = datetime.now() + timedelta(days=14)

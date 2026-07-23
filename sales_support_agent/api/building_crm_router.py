@@ -21,6 +21,9 @@ from sales_support_agent.api.building_booking_router import (
     EVENT_TRANSITIONS,
     WORKSPACE_TRANSITIONS,
 )
+from sales_support_agent.api.building_service_request_router import (
+    TRANSITIONS as SERVICE_REQUEST_TRANSITIONS,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -34,6 +37,7 @@ from sales_support_agent.models.entities import (
     BuildingContact,
     BuildingRelationship,
     BuildingSegment,
+    BuildingServiceRequest,
     BuildingSuppression,
     BuildingInquiry,
     BuildingInvoice,
@@ -1631,6 +1635,15 @@ def building_control_room(
                 BuildingOperationalChecklistItem.sort_order,
             )
         ).scalars().all() if checklist_rows else []
+        service_request_rows = session.execute(
+            select(BuildingServiceRequest)
+            .order_by(
+                BuildingServiceRequest.status,
+                BuildingServiceRequest.due_at,
+                BuildingServiceRequest.created_at,
+            )
+            .limit(200)
+        ).scalars().all()
         space_names = {item.id: item.name for item in space_rows}
         reservations_by_id = {item.id: item for item in reservation_rows}
 
@@ -1679,6 +1692,37 @@ def building_control_room(
             }
             for item in campaign_rows
         ]
+        service_requests = []
+        for item in service_request_rows:
+            due_at = item.due_at
+            comparable_due = due_at
+            if comparable_due is not None and comparable_due.tzinfo is None:
+                comparable_due = comparable_due.replace(tzinfo=timezone.utc)
+            service_requests.append({
+                "id": item.id,
+                "category": item.category,
+                "priority": item.priority,
+                "status": item.status,
+                "title": item.title,
+                "description": item.description,
+                "space_id": item.space_id,
+                "space_name": space_names.get(item.space_id or "", ""),
+                "contact_id": item.contact_id,
+                "reservation_id": item.reservation_id,
+                "source": item.source,
+                "source_reference": item.source_reference,
+                "assigned_owner": item.assigned_owner,
+                "due_at": due_at.strftime("%b %d, %Y · %I:%M %p") if due_at else "",
+                "overdue": bool(
+                    comparable_due
+                    and comparable_due < _now()
+                    and item.status not in {"completed", "cancelled"}
+                ),
+                "resolution": item.resolution,
+                "allowed_next": sorted(
+                    SERVICE_REQUEST_TRANSITIONS.get(item.status, set())
+                ),
+            })
         html_body = render_building_page(
             user=user,
             spaces=[
@@ -1862,6 +1906,7 @@ def building_control_room(
                 }
                 for item in checklist_rows
             ],
+            service_requests=service_requests,
             csrf_token=building_csrf_token(user),
             notice=notice[:300],
             error=error[:300],

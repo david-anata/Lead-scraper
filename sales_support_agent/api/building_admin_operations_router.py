@@ -58,6 +58,12 @@ from sales_support_agent.api.building_adjustment_router import (
     record_adjustment_evidence,
     request_adjustment,
 )
+from sales_support_agent.api.building_service_request_router import (
+    ServiceRequestInput,
+    ServiceRequestTransitionInput,
+    create_service_request,
+    transition_service_request,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import BuildingBillingSchedule
 from sales_support_agent.services.auth_deps import (
@@ -637,3 +643,78 @@ def retry_inquiry_hubspot_from_control_room(
             )
         )
     return _redirect(notice="Inquiry synchronized to HubSpot.")
+
+
+@router.post("/service-requests", dependencies=FORM_DEPS)
+def create_service_request_from_control_room(
+    request: Request,
+    category: str = Form(...),
+    priority: str = Form("normal"),
+    title: str = Form(...),
+    description: str = Form(""),
+    space_id: str = Form(""),
+    contact_id: str = Form(""),
+    reservation_id: str = Form(""),
+    source: str = Form("operator"),
+    source_reference: str = Form(""),
+    assigned_owner: str = Form(""),
+    due_at: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        create_service_request(
+            ServiceRequestInput(
+                id=str(uuid4()),
+                category=category,
+                priority=priority,
+                title=title.strip(),
+                description=description.strip(),
+                space_id=space_id.strip() or None,
+                contact_id=contact_id.strip() or None,
+                reservation_id=reservation_id.strip() or None,
+                source=source.strip() or "operator",
+                source_reference=source_reference.strip(),
+                assigned_owner=assigned_owner.strip(),
+                due_at=_local_datetime(due_at) if due_at.strip() else None,
+                reported_by=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(action, "Service request added to the operator queue.")
+
+
+@router.post(
+    "/service-requests/{service_request_id}/transition",
+    dependencies=FORM_DEPS,
+)
+def transition_service_request_from_control_room(
+    service_request_id: str,
+    request: Request,
+    target_status: str = Form(...),
+    assigned_owner: str = Form(""),
+    due_at: str = Form(""),
+    resolution: str = Form(""),
+    reason: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        transition_service_request(
+            service_request_id,
+            ServiceRequestTransitionInput(
+                target_status=target_status,
+                assigned_owner=assigned_owner.strip(),
+                due_at=_local_datetime(due_at) if due_at.strip() else None,
+                resolution=resolution.strip(),
+                reason=reason.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        f"Service request moved to {target_status.replace('_', ' ')}.",
+    )
