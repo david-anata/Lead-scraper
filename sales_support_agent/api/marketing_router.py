@@ -17,7 +17,8 @@ import os
 import re
 import secrets
 from html import escape
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timezone
+from statistics import median
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, Request
@@ -931,7 +932,7 @@ async def marketing_site_intake_create(
 # slow Rainforest day cannot pin a worker (the shelf simply stays "pending"
 # until the next status poll after completion, or lands "empty" on failure).
 _SHELF_COMPETITOR_LIMIT = 8
-_SHELF_MAX_ITEMS = 6
+_SHELF_MAX_ITEMS = 5
 _SHELF_TIMEOUT_SECONDS = 90
 
 
@@ -943,6 +944,83 @@ def _write_shelf(app, intake_run_id: int, shelf: dict[str, Any]) -> None:
             return
         run.summary_json = {**(run.summary_json or {}), "shelf": shelf}
         session.add(run)
+
+
+def _shelf_product_payload(product: Any) -> dict[str, Any]:
+    """Return a public, calculation-ready product record for the website.
+
+    ``units_label`` carries a trailing ``+`` only when Amazon exposed its
+    "bought in past month" floor. All other unit values are BSR estimates.
+    """
+    units_label = str(product.units_label or "")
+    units_source = (
+        "recent_sales"
+        if units_label.endswith("+") and product.units_sold is not None
+        else "bsr"
+        if product.units_sold is not None
+        else "unavailable"
+    )
+    revenue_source = units_source if product.revenue is not None else "unavailable"
+    return {
+        "asin": str(product.asin or ""),
+        "title": str(product.title or ""),
+        "brand": str(product.brand or ""),
+        "image": str(product.image_url or ""),
+        # Preserve the original formatted value while adding a numeric field
+        # for calculations in the report.
+        "price": str(product.price_label or ""),
+        "price_value": float(product.price) if product.price is not None else None,
+        "rating": float(product.rating) if product.rating is not None else None,
+        "ratings_total": int(product.review_count) if product.review_count is not None else None,
+        "category": str(product.category or ""),
+        "bsr": int(product.bsr) if product.bsr is not None else None,
+        "recent_sales": (
+            int(product.units_sold)
+            if units_source == "recent_sales" and product.units_sold is not None
+            else None
+        ),
+        "estimated_units": int(product.units_sold) if product.units_sold is not None else None,
+        "units_source": units_source,
+        "estimated_revenue": float(product.revenue) if product.revenue is not None else None,
+        "revenue_source": revenue_source,
+        "fulfillment": str(product.fulfillment or ""),
+        "dimensions": str(product.dimensions or ""),
+        "weight": str(product.weight or ""),
+    }
+
+
+def _assemble_shelf_payload(
+    target_product: Any | None,
+    products: list[Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Build the bounded public comparison payload used by the website."""
+    visible_products = products[:_SHELF_MAX_ITEMS]
+    competitors = [_shelf_product_payload(product) for product in visible_products]
+    revenues = [
+        float(product.revenue)
+        for product in visible_products
+        if product.revenue is not None
+    ]
+    prices = [float(product.price) for product in visible_products if product.price is not None]
+    ratings = [float(product.rating) for product in visible_products if product.rating is not None]
+
+    return {
+        "status": "ready" if competitors else "empty",
+        "target": _shelf_product_payload(target_product) if target_product is not None else None,
+        "competitors": competitors,
+        # Existing fields remain for backwards compatibility.
+        "count": len(visible_products),
+        "avg_price": f"${sum(prices) / len(prices):.2f}" if prices else "",
+        "avg_rating": f"{sum(ratings) / len(ratings):.1f}" if ratings else "",
+        # New evidence contract.
+        "comparison_count": len(competitors),
+        "revenue_product_count": len(revenues),
+        "visible_revenue": round(sum(revenues), 2) if revenues else None,
+        "median_revenue": round(float(median(revenues)), 2) if revenues else None,
+        "revenue_warning": str(warnings[0]) if warnings else "",
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _build_shelf(app, intake_run_id: int, asin: str) -> None:
@@ -957,38 +1035,19 @@ def _build_shelf(app, intake_run_id: int, asin: str) -> None:
 
     try:
         _write_shelf(app, intake_run_id, {"status": "pending"})
+        client = RainforestClient()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
-                RainforestClient().build_xray_report,
+                client.build_xray_report,
                 asin,
                 competitor_limit=_SHELF_COMPETITOR_LIMIT,
             )
-            xray_report, _target_raw = future.result(timeout=_SHELF_TIMEOUT_SECONDS)
+            xray_report, target_raw = future.result(timeout=_SHELF_TIMEOUT_SECONDS)
 
         target = str(asin).strip().upper()
         products = [p for p in xray_report.products if (p.asin or "").upper() != target]
-        competitors = [
-            {
-                "asin": str(p.asin or ""),
-                "title": str(p.title or ""),
-                "brand": str(p.brand or ""),
-                "price": str(p.price_label or ""),
-                "rating": p.rating_label if p.rating is not None else "",
-                "ratings_total": str(p.review_count) if p.review_count is not None else "",
-                "image": str(p.image_url or ""),
-            }
-            for p in products[:_SHELF_MAX_ITEMS]
-        ]
-
-        prices = [p.price for p in products if p.price]
-        ratings = [p.rating for p in products if p.rating]
-        shelf: dict[str, Any] = {
-            "status": "ready" if competitors else "empty",
-            "competitors": competitors,
-            "count": len(products),
-            "avg_price": f"${sum(prices) / len(prices):.2f}" if prices else "",
-            "avg_rating": f"{sum(ratings) / len(ratings):.1f}" if ratings else "",
-        }
+        target_product = client._product_to_xray(target_raw, display_order=0)
+        shelf = _assemble_shelf_payload(target_product, products, list(xray_report.warnings or []))
         _write_shelf(app, intake_run_id, shelf)
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] shelf build failed for run %s", intake_run_id)

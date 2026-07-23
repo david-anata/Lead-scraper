@@ -30,6 +30,78 @@ HEADERS = {"X-Internal-Api-Key": "test-intake-key"}
 
 
 @unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
+class MarketingShelfPayloadTests(unittest.TestCase):
+    @staticmethod
+    def _product(
+        asin: str,
+        *,
+        revenue: float | None,
+        units: float | None,
+        floor: bool = False,
+        price: float = 20.0,
+    ):
+        from sales_support_agent.services.helium10 import XrayProduct
+
+        suffix = "+" if floor else ""
+        return XrayProduct(
+            display_order=1,
+            title=f"Product {asin}",
+            asin=asin,
+            url=f"https://www.amazon.com/dp/{asin}",
+            image_url=f"https://images.example/{asin}.jpg",
+            brand="TestBrand",
+            price=price,
+            price_label=f"${price:.2f}",
+            revenue=revenue,
+            revenue_label=f"${revenue:,.0f}{suffix}" if revenue is not None else "N/A",
+            units_sold=units,
+            units_label=f"{int(units):,}{suffix}" if units is not None else "N/A",
+            bsr=5000.0,
+            bsr_label="5,000",
+            rating=4.5,
+            rating_label="4.5",
+            review_count=120,
+            category="Health",
+            seller_country="",
+            size_tier="",
+            fulfillment="FBA",
+            dimensions="10 x 6 x 3 in",
+            weight="1.2 lb",
+        )
+
+    def test_product_payload_distinguishes_recent_sales_floor(self) -> None:
+        payload = M._shelf_product_payload(
+            self._product("B09ABCDEF1", revenue=10_000, units=500, floor=True)
+        )
+        self.assertEqual(payload["units_source"], "recent_sales")
+        self.assertEqual(payload["revenue_source"], "recent_sales")
+        self.assertEqual(payload["recent_sales"], 500)
+        self.assertEqual(payload["estimated_revenue"], 10_000.0)
+
+    def test_assembled_payload_uses_visible_five_product_set(self) -> None:
+        products = [
+            self._product(
+                f"B09ABCDEF{i}",
+                revenue=float(value),
+                units=float(value / 20),
+            )
+            for i, value in enumerate((1000, 2000, 3000, 4000, 5000, 9000))
+        ]
+        payload = M._assemble_shelf_payload(
+            self._product("B09TARGET01", revenue=2500, units=125, floor=True),
+            products,
+            ["Mixed evidence."],
+        )
+        self.assertEqual(payload["comparison_count"], 5)
+        self.assertEqual(payload["revenue_product_count"], 5)
+        self.assertEqual(payload["visible_revenue"], 15_000.0)
+        self.assertEqual(payload["median_revenue"], 3_000.0)
+        self.assertEqual(payload["target"]["units_source"], "recent_sales")
+        self.assertEqual(payload["revenue_warning"], "Mixed evidence.")
+        self.assertTrue(payload["captured_at"])
+
+
+@unittest.skipUnless(DEPS, "fastapi + sqlalchemy required")
 class MarketingIntakeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
