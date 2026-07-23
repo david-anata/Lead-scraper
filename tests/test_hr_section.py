@@ -606,6 +606,61 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(history[0]["prior"]["hourly_rate_cents"], 2000)
         self.assertEqual(history[0]["new"]["hourly_rate_cents"], 2200)
 
+    def test_time_approver_is_limited_to_assigned_employees(self):
+        import uuid
+        from sqlalchemy.orm import Session
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.models.hr import HRTimesheetApproval
+
+        suffix = uuid.uuid4().hex[:8]
+        manager = f"manager-{suffix}@anatainc.com"
+        assigned = f"assigned-{suffix}@anatainc.com"
+        outside = f"outside-{suffix}@anatainc.com"
+        for email in (assigned, outside):
+            hr_store.create_employee(email=email, full_name=email.split("@")[0])
+        hr_store.upsert_employment_profile(
+            assigned, hire_date=date(2026, 1, 1), manager_email=manager,
+            actor="test",
+        )
+        hr_store.upsert_employment_profile(
+            outside, hire_date=date(2026, 1, 1),
+            manager_email="someone-else@anatainc.com", actor="test",
+        )
+        uid = access_store.upsert_user(manager, "Manager")
+        access_store.set_user_permissions(
+            uid, ["hr.access", "hr.time.approve_team"]
+        )
+        with Session(get_engine()) as session:
+            assigned_row = HRTimesheetApproval(
+                employee_email=assigned, period_start=date(2026, 8, 1),
+                period_end=date(2026, 8, 15), status="submitted",
+                source_hash="assigned", submitted_by=assigned,
+            )
+            outside_row = HRTimesheetApproval(
+                employee_email=outside, period_start=date(2026, 8, 1),
+                period_end=date(2026, 8, 15), status="submitted",
+                source_hash="outside", submitted_by=outside,
+            )
+            session.add_all([assigned_row, outside_row])
+            session.commit()
+            outside_id = outside_row.id
+
+        page = self._get(
+            "/admin/hr/time?period_date=2026-08-01", _cookie(manager)
+        )
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(assigned, page.text)
+        self.assertNotIn(outside, page.text)
+        blocked = self._post(
+            f"/admin/hr/time/timesheets/{outside_id}/decision",
+            {
+                "period_start": "2026-08-01", "decision": "approved",
+                "review_note": "Should not be allowed",
+            },
+            _cookie(manager),
+        )
+        self.assertEqual(blocked.status_code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

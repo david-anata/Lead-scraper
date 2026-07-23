@@ -134,6 +134,39 @@ def _hide_compensation(employee: dict) -> dict:
     return safe
 
 
+def _has_full_hr_admin(user: dict) -> bool:
+    return bool(
+        user.get("is_superadmin")
+        or "hr.payroll" in (user.get("permissions") or set())
+    )
+
+
+def _managed_employee_emails(user: dict) -> set[str]:
+    if _has_full_hr_admin(user):
+        return {item["email"] for item in store.list_employees()}
+    manager = (user.get("email") or "").strip().lower()
+    return {
+        item["email"] for item in store.list_employees()
+        if ((item.get("employment") or {}).get("manager_email") or "")
+        .strip().lower() == manager
+    }
+
+
+def _require_team_record(user: dict, records: list[dict], record_id: int) -> None:
+    if _has_full_hr_admin(user):
+        return
+    selected = next(
+        (item for item in records if int(item.get("id") or 0) == record_id), None
+    )
+    if (
+        not selected
+        or selected.get("employee_email") not in _managed_employee_emails(user)
+    ):
+        raise HTTPException(
+            status_code=403, detail="That employee is not assigned to you."
+        )
+
+
 # --- dashboard -------------------------------------------------------------
 
 @router.get("", response_class=HTMLResponse)
@@ -447,14 +480,22 @@ async def hr_time(
         )
     )
     period = payroll_store.semimonthly_period(period_date or date.today())
+    managed = _managed_employee_emails(user) if can_review else {email}
+
+    def scoped(items: list[dict]) -> list[dict]:
+        return [
+            item for item in items
+            if item.get("employee_email") in managed
+        ]
+
     return HTMLResponse(render_hr_time(
-        store.list_time_entries(None if can_review else email), store.pto_summary(email),
-        store.list_pto_requests(None if can_review else email), store.current_clock(email),
-        store.list_time_corrections(None if can_review else email),
-        store.time_review_flags(None if can_review else email),
-        store.list_timesheet_approvals(
-            period.start_date, period.end_date, None if can_review else email
-        ),
+        scoped(store.list_time_entries(None)), store.pto_summary(email),
+        scoped(store.list_pto_requests(None)), store.current_clock(email),
+        scoped(store.list_time_corrections(None)),
+        scoped(store.time_review_flags(None)),
+        scoped(store.list_timesheet_approvals(
+            period.start_date, period.end_date, None
+        )),
         period,
         user=user, flash=_flash(request)))
 
@@ -488,6 +529,9 @@ async def hr_time_correction_decision(
     reviewer_reason: str = Form(""), user: dict = Depends(_time_review_guard),
 ):
     actor = (user.get("email") or "").strip().lower()
+    _require_team_record(
+        user, store.list_time_corrections(None), correction_id
+    )
     ok, message = store.decide_time_correction(
         correction_id, decision=decision, reviewer_reason=reviewer_reason, actor=actor,
     )
@@ -518,6 +562,12 @@ async def hr_timesheet_decision(
     decision: str = Form(""), review_note: str = Form(""),
     user: dict = Depends(_time_review_guard),
 ):
+    period = payroll_store.semimonthly_period(period_start)
+    _require_team_record(
+        user,
+        store.list_timesheet_approvals(period.start_date, period.end_date, None),
+        approval_id,
+    )
     ok, message = store.decide_timesheet(
         approval_id, decision=decision, review_note=review_note,
         actor=user.get("email", ""),
@@ -532,6 +582,7 @@ async def hr_timesheet_decision(
 async def hr_pto_decision(request_id: int, decision: str = Form(""),
                           user: dict = Depends(_time_review_guard)):
     actor = (user.get("email") or "").strip().lower()
+    _require_team_record(user, store.list_pto_requests(None), request_id)
     ok = store.decide_pto(request_id, decision=decision, actor=actor)
     return RedirectResponse(f"/admin/hr/time?{'ok=updated' if ok else 'err=invalid_request'}",
                             status_code=303)
