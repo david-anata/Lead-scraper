@@ -220,6 +220,51 @@ class HRSectionTests(unittest.TestCase):
         self.assertTrue(state["profile_complete"])
         self.assertTrue(state["w4_complete"])
 
+    def test_new_w4_requires_employee_to_choose_filing_status(self):
+        import uuid
+        email = f"new-w4-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="New Employee")
+        hr_store.save_employee_profile(
+            email, phone="", address_line1="20 State St", address_line2="",
+            city="Salt Lake City", state="UT", zip_code="84111",
+            emergency_name="David", emergency_relationship="Employer",
+            emergency_phone="8015550100", emergency_email="",
+            actor=email,
+        )
+        uid = access_store.upsert_user(email, "New Employee")
+        access_store.set_user_permissions(uid, ["hr.access"])
+
+        page = self._get("/admin/hr/onboarding", _cookie(email))
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("New Employee", page.text)
+        self.assertIn("20 State St", page.text)
+        self.assertIn('<option value="">Choose your filing status</option>', page.text)
+        self.assertNotIn('value="single" selected', page.text)
+        self.assertNotIn('value="married_joint" selected', page.text)
+        self.assertNotIn('value="head_household" selected', page.text)
+
+    def test_w4_correction_prefills_safe_fields_but_never_full_ssn(self):
+        saved = self._post("/admin/hr/onboarding/w4", {
+            "ssn": "123-45-6789", "filing_status": "married_joint",
+            "two_jobs": "true", "dependents_credit": "500",
+            "other_income": "25", "deductions": "100",
+            "extra_withholding": "15", "exempt": "false", "attested": "true",
+        }, self.sa)
+        self.assertIn("ok=w4_saved", saved.headers["location"])
+
+        election = hr_store.get_current_tax_election("david@anatainc.com")
+        self.assertEqual(election["ssn_last4"], "6789")
+        self.assertNotIn("sealed_ssn", election)
+        page = self._get("/admin/hr/onboarding", self.sa)
+
+        self.assertIn('value="married_joint" selected', page.text)
+        self.assertIn('name="two_jobs" value="true" style="width:auto" checked', page.text)
+        self.assertIn('name="dependents_credit" inputmode="decimal" value="500.00"', page.text)
+        self.assertIn("ending in <strong>6789</strong>", page.text)
+        self.assertNotIn("123-45-6789", page.text)
+        self.assertNotIn("123456789", page.text)
+
     def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
         self._post("/admin/hr/onboarding/profile", {
             "address_line1": "1 Main", "city": "Salt Lake City", "state": "UT",

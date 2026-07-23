@@ -203,7 +203,9 @@ async def employee_onboarding(request: Request, user: dict = Depends(_guard)):
     if not employee:
         return HTMLResponse("Employee record not found.", status_code=404)
     return HTMLResponse(render_hr_onboarding(
-        employee, store.get_onboarding(email), user=user, flash=_flash(request)
+        employee, store.get_onboarding(email),
+        tax_election=store.get_current_tax_election(email),
+        user=user, flash=_flash(request)
     ))
 
 

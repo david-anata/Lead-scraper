@@ -404,6 +404,33 @@ def get_onboarding(employee_email: str) -> dict:
         }
 
 
+def get_current_tax_election(employee_email: str) -> Optional[dict]:
+    """Return only the safe-to-display fields from the employee's current W-4."""
+    email = (employee_email or "").strip().lower()
+    with _session() as s:
+        row = (
+            s.query(HRTaxElection)
+            .filter_by(employee_email=email, superseded_at=None)
+            .order_by(HRTaxElection.effective_date.desc(), HRTaxElection.id.desc())
+            .first()
+        )
+        if not row:
+            return None
+        return {
+            "effective_date": row.effective_date.isoformat(),
+            "filing_status": row.filing_status,
+            "two_jobs": bool(row.two_jobs),
+            "exempt_from_federal_withholding": bool(
+                row.exempt_from_federal_withholding
+            ),
+            "dependents_credit": cents_to_dollars(row.dependents_credit_cents),
+            "other_income": cents_to_dollars(row.other_income_cents),
+            "deductions": cents_to_dollars(row.deductions_cents),
+            "extra_withholding": cents_to_dollars(row.extra_withholding_cents),
+            "ssn_last4": row.ssn_last4,
+        }
+
+
 def request_onboarding_correction(employee_email: str, *, reason: str,
                                   actor: str) -> tuple[bool, str]:
     """Return onboarding to the employee without erasing their signed history."""

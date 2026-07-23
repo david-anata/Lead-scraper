@@ -444,7 +444,28 @@ def render_hr_invitation(invite_link: str, employee: dict, *, user, email_sent: 
     return hr_shell("Invitation", "employees", body, user=user)
 
 
-def render_hr_onboarding(employee: dict, onboarding: dict, *, user, flash=None) -> str:
+def render_hr_onboarding(
+    employee: dict, onboarding: dict, *, tax_election: Optional[dict] = None,
+    user, flash=None
+) -> str:
+    tax_election = tax_election or {}
+    filing_status = tax_election.get("filing_status", "")
+    selected = lambda value: " selected" if filing_status == value else ""
+    checked = lambda value: " checked" if value else ""
+    ssn_note = (
+        f'Your current signed W-4 uses an SSN ending in '
+        f'<strong>{_esc(tax_election.get("ssn_last4"))}</strong>. '
+        "For security, the full number is never shown or prefilled. "
+        "Re-enter it to sign a replacement."
+        if tax_election.get("ssn_last4")
+        else "Enter your Social Security number. It will be encrypted and will not "
+             "be shown again."
+    )
+    address = ", ".join(filter(None, [
+        employee.get("address_line1"), employee.get("address_line2"),
+        employee.get("city"),
+        " ".join(filter(None, [employee.get("state"), employee.get("zip_code")])),
+    ]))
     correction = (
         f'''<div class="hr-callout warn"><div class="hr-kicker">Correction requested</div>
         <p>{_esc(onboarding.get("correction_reason"))}</p>
@@ -477,13 +498,24 @@ def render_hr_onboarding(employee: dict, onboarding: dict, *, user, flash=None) 
     </form>
     <form class="hr-form" method="post" action="/admin/hr/onboarding/w4" style="margin-top:18px">
       <div class="hr-kicker">Federal W-4</div>
-      <p>Agent can guide and validate this form, but it cannot choose your tax elections.</p>
-      <label>Social Security number</label><input type="password" inputmode="numeric" autocomplete="off" name="ssn" minlength="9" maxlength="11" required>
-      <label>Filing status</label><select name="filing_status"><option value="single">Single or married filing separately</option><option value="married_joint">Married filing jointly</option><option value="head_household">Head of household</option></select>
-      <label><input type="checkbox" name="two_jobs" value="true" style="width:auto"> Multiple jobs or spouse works</label>
-      <div class="hr-grid2"><div><label>Dependent credit ($)</label><input name="dependents_credit" value="0"></div><div><label>Other income ($)</label><input name="other_income" value="0"></div></div>
-      <div class="hr-grid2"><div><label>Deductions ($)</label><input name="deductions" value="0"></div><div><label>Extra withholding per check ($)</label><input name="extra_withholding" value="0"></div></div>
-      <label><input type="checkbox" name="exempt" value="true" style="width:auto"> Exempt from federal withholding (choose only if you meet both IRS conditions shown on the official 2026 Form W-4)</label>
+      <p>We prefill facts already in your profile and, for a correction, your current elections. Agent never chooses a tax election for you.</p>
+      <div class="hr-callout"><div class="hr-kicker">Prefilled employee information</div>
+        <p><strong>{_esc(employee.get("full_name"))}</strong><br>{_esc(address)}</p>
+        <p class="hr-sub">Update your personal profile above if this is not correct.</p>
+      </div>
+      <label>Social Security number</label>
+      <p class="hr-sub" id="w4-ssn-help">{ssn_note}</p>
+      <input type="password" inputmode="numeric" autocomplete="new-password" name="ssn" minlength="9" maxlength="11" required aria-describedby="w4-ssn-help">
+      <label>Filing status</label><select name="filing_status" required>
+        <option value="">Choose your filing status</option>
+        <option value="single"{selected("single")}>Single or married filing separately</option>
+        <option value="married_joint"{selected("married_joint")}>Married filing jointly</option>
+        <option value="head_household"{selected("head_household")}>Head of household</option>
+      </select>
+      <label><input type="checkbox" name="two_jobs" value="true" style="width:auto"{checked(tax_election.get("two_jobs"))}> Multiple jobs or spouse works</label>
+      <div class="hr-grid2"><div><label>Dependent credit ($)</label><input name="dependents_credit" inputmode="decimal" value="{_esc(tax_election.get('dependents_credit', '0.00'))}"></div><div><label>Other income ($)</label><input name="other_income" inputmode="decimal" value="{_esc(tax_election.get('other_income', '0.00'))}"></div></div>
+      <div class="hr-grid2"><div><label>Deductions ($)</label><input name="deductions" inputmode="decimal" value="{_esc(tax_election.get('deductions', '0.00'))}"></div><div><label>Extra withholding per check ($)</label><input name="extra_withholding" inputmode="decimal" value="{_esc(tax_election.get('extra_withholding', '0.00'))}"></div></div>
+      <label><input type="checkbox" name="exempt" value="true" style="width:auto"{checked(tax_election.get("exempt_from_federal_withholding"))}> Exempt from federal withholding (choose only if you meet both IRS conditions shown on the official 2026 Form W-4)</label>
       <p><a href="https://www.irs.gov/pub/irs-pdf/fw4.pdf" target="_blank" rel="noopener">Review the official Form W-4 instructions and worksheets</a>. Agent does not choose an election for you.</p>
       <label><input type="checkbox" name="attested" value="true" required style="width:auto"> Under penalties of perjury, I declare that this certificate, to the best of my knowledge and belief, is true, correct, and complete.</label>
       <div class="hr-actions"><button class="hr-btn" type="submit">Sign and save W-4</button></div>
