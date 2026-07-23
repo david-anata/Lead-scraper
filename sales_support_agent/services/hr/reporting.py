@@ -12,6 +12,7 @@ from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.hr import (
     HRAuditEvent,
     HRContractorPayment,
+    HRContractorProfile,
     HREmployee,
     HREmploymentProfile,
     HRPayrollCalculation,
@@ -104,14 +105,26 @@ def export_csv(kind: str) -> str | None:
             rows = session.query(HRContractorPayment).order_by(
                 HRContractorPayment.due_date
             ).all()
+            profiles = {
+                row.contractor_email: row
+                for row in session.query(HRContractorProfile).all()
+            }
             return _csv(
                 ["contractor_email", "service_start", "service_end", "due_date",
                  "amount", "currency", "status", "invoice_reference",
-                 "wise_transfer_reference", "approved_by"],
+                 "wise_transfer_reference", "approved_by", "tax_form_type",
+                 "tax_form_status", "tax_form_expiration"],
                 [[row.contractor_email, row.service_start, row.service_end,
                   row.due_date, row.amount_minor / 100, row.currency, row.status,
                   row.invoice_reference, row.wise_transfer_reference,
-                  row.approved_by] for row in rows],
+                  row.approved_by,
+                  profiles.get(row.contractor_email).tax_form_type
+                  if profiles.get(row.contractor_email) else "",
+                  profiles.get(row.contractor_email).tax_form_status
+                  if profiles.get(row.contractor_email) else "",
+                  profiles.get(row.contractor_email).expiration_date
+                  if profiles.get(row.contractor_email) else "",
+                  ] for row in rows],
             )
         if kind == "audit":
             rows = session.query(HRAuditEvent).order_by(HRAuditEvent.created_at).all()

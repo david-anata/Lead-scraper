@@ -512,6 +512,24 @@ class HROpeningPayrollBalance(Base):
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class HRContractorProfile(Base):
+    """Employer-tracked contractor compliance status; no tax form image."""
+
+    __tablename__ = "hr_contractor_profiles"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contractor_email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    tax_form_type: Mapped[str] = mapped_column(String(32), default="undetermined")
+    tax_form_status: Mapped[str] = mapped_column(String(24), default="missing", index=True)
+    received_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expiration_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    wise_recipient_reference: Mapped[str] = mapped_column(String(128), default="")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class HRContractorPayment(Base):
     """Approved contractor obligation later matched to Wise payment evidence."""
 

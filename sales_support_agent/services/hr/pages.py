@@ -158,6 +158,8 @@ def _flash(flash: Optional[str]) -> str:
         "contractor_payment_approved": "Contractor payment approved; complete it in Wise and record the reference.",
         "contractor_payment_paid": "Wise payment evidence recorded.",
         "contractor_payment_reconciled": "Contractor payment reconciled.",
+        "contractor_profile_saved": "Contractor tax-form and Wise readiness saved.",
+        "contractor_profile_invalid": "Review the contractor status, dates, and note.",
         "wise_evidence_required": "Enter the Wise reference and evidence note.",
         "offboarding_started": "Offboarding checklist started.",
         "offboarding_saved": "Offboarding progress saved.",
@@ -488,7 +490,8 @@ def render_hr_onboarding(employee: dict, onboarding: dict, *, user, flash=None) 
     </form>
     <form class="hr-form" method="post" action="/admin/hr/onboarding/attestations" style="margin-top:18px">
       <div class="hr-kicker">Employee attestations</div>
-      <label><input type="checkbox" name="i9_attested" value="true" required style="width:auto"> I completed my employee I-9 information and will present acceptable documents directly to David or Val; I will not email identity documents.</label>
+      <p><a href="https://www.uscis.gov/i-9" target="_blank" rel="noopener">Use the official USCIS Form I-9 and instructions</a>. Complete Section 1 no later than your first day of work. Agent does not choose your citizenship/immigration status or retain identity-document images.</p>
+      <label><input type="checkbox" name="i9_attested" value="true" required style="width:auto"> I completed Section 1 of the official Form I-9 and will present acceptable documents directly to David or Val; I will not email identity documents.</label>
       <label><input type="checkbox" name="policies_attested" value="true" required style="width:auto"> I received and acknowledge the timekeeping, overtime, PTO, holiday, payroll, and privacy policies.</label>
       <div class="hr-actions"><button class="hr-btn" type="submit">Save attestations</button></div>
     </form>
@@ -652,7 +655,8 @@ def render_hr_pay_statements(runs: list, *, user) -> str:
     return hr_shell("Pay statements", "pay_statements", body, user=user)
 
 
-def render_hr_contractors(contractors: list, payments: list, *, user, flash=None) -> str:
+def render_hr_contractors(contractors: list, profiles: list, payments: list,
+                          *, user, flash=None) -> str:
     options = "".join(
         f'<option value="{_esc(row["email"])}">{_esc(row["full_name"])} — {_esc(row["email"])}</option>'
         for row in contractors
@@ -675,8 +679,31 @@ def render_hr_contractors(contractors: list, payments: list, *, user, flash=None
         <td>{_esc(item['currency'])} {_esc(item['amount'])}</td><td>{_esc(item['due_date'])}</td>
         <td>{_esc(item['status'])}</td><td>{_esc(item['wise_transfer_reference'] or '—')}</td><td>{action}</td></tr>"""
     rows = rows or '<tr><td colspan="7" class="hr-empty">No contractor payment obligations yet.</td></tr>'
+    profile_by_email = {row["contractor_email"]: row for row in profiles}
+    profile_rows = "".join(
+        f"""<tr><td>{_esc(contractor['full_name'])}<br><span class="hr-sub">{_esc(contractor['email'])}</span></td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('tax_form_type', 'undetermined'))}</td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('tax_form_status', 'missing'))}</td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('expiration_date') or '—')}</td>
+        <td>{_esc(profile_by_email.get(contractor['email'], {}).get('wise_recipient_reference') or '—')}</td></tr>"""
+        for contractor in contractors
+    ) or '<tr><td colspan="5" class="hr-empty">Add a contractor employee record first.</td></tr>'
     body = f"""{_flash(flash)}<h1 class="hr-h1">Contractors & Wise</h1>
     <p class="hr-sub">Contractor obligations stay separate from W-2 payroll. Agent records approvals and Wise evidence; it does not initiate a transfer.</p>
+    <h2>Contractor readiness</h2>
+    <p class="hr-sub">Choose the tax-form type only after a qualified review. Agent tracks status but does not select or prepare a country-specific tax form.</p>
+    <table class="hr-tbl"><thead><tr><th>Contractor</th><th>Tax form</th><th>Status</th><th>Expiry</th><th>Wise recipient</th></tr></thead><tbody>{profile_rows}</tbody></table>
+    <form class="hr-form" method="post" action="/admin/hr/contractors/profile">
+      <div class="hr-kicker">Review contractor profile</div>
+      <label>Contractor</label><select name="contractor_email" required>{options}</select>
+      <label>Tax form type (human selected)</label><select name="tax_form_type"><option value="undetermined">Not determined</option><option value="w9">W-9</option><option value="w8ben">W-8BEN</option><option value="w8bene">W-8BEN-E</option><option value="other">Other</option></select>
+      <label>Tax form status</label><select name="tax_form_status"><option value="missing">Missing</option><option value="requested">Requested</option><option value="received">Received</option><option value="reviewed">Reviewed</option><option value="expired">Expired</option></select>
+      <div class="hr-grid2"><div><label>Received date</label><input type="date" name="received_date"></div><div><label>Expiration date, if applicable</label><input type="date" name="expiration_date"></div></div>
+      <label>Wise recipient reference</label><input name="wise_recipient_reference">
+      <label>Review note</label><textarea name="review_note" required></textarea>
+      <button class="hr-btn" type="submit">Save contractor readiness</button>
+    </form>
+    <h2>Payment obligations</h2>
     <table class="hr-tbl"><thead><tr><th>Contractor</th><th>Service period</th><th>Amount</th><th>Due</th><th>Status</th><th>Wise reference</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table>
     <form class="hr-form" method="post" action="/admin/hr/contractors/payments">
       <div class="hr-kicker">Prepare contractor payment</div>

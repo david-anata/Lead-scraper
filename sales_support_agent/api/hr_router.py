@@ -436,9 +436,30 @@ async def hr_contractors(request: Request, user: dict = Depends(_pay_guard)):
         if row.get("employee_type") == "contractor"
     ]
     return HTMLResponse(render_hr_contractors(
-        contractors, workforce.list_contractor_payments(),
+        contractors, workforce.list_contractor_profiles(),
+        workforce.list_contractor_payments(),
         user=user, flash=_flash(request),
     ))
+
+
+@router.post("/contractors/profile")
+async def hr_contractor_profile_save(
+    contractor_email: str = Form(""), tax_form_type: str = Form("undetermined"),
+    tax_form_status: str = Form("missing"), received_date: date | None = Form(None),
+    expiration_date: date | None = Form(None),
+    wise_recipient_reference: str = Form(""), review_note: str = Form(""),
+    user: dict = Depends(_pay_guard),
+):
+    ok, message = workforce.save_contractor_profile(
+        contractor_email=contractor_email, tax_form_type=tax_form_type,
+        tax_form_status=tax_form_status, received_date=received_date,
+        expiration_date=expiration_date,
+        wise_recipient_reference=wise_recipient_reference,
+        review_note=review_note, actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/contractors?{'ok' if ok else 'err'}={message}", status_code=303
+    )
 
 
 @router.post("/contractors/payments")

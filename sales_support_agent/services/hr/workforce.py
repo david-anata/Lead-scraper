@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.hr import (
     HRAuditEvent,
+    HRContractorProfile,
     HRContractorPayment,
     HREmployee,
     HREmploymentProfile,
@@ -67,6 +68,64 @@ def create_contractor_payment(
         session.flush()
         _audit(session, actor, "contractor.payment_prepared", "contractor_payment", row.id)
         return True, "contractor_payment_prepared"
+
+
+def save_contractor_profile(
+    *, contractor_email: str, tax_form_type: str, tax_form_status: str,
+    received_date: date | None, expiration_date: date | None,
+    wise_recipient_reference: str, review_note: str, actor: str,
+) -> tuple[bool, str]:
+    """Track the human-selected tax-document status without storing the form."""
+    email = (contractor_email or "").strip().lower()
+    allowed_forms = {"undetermined", "w9", "w8ben", "w8bene", "other"}
+    allowed_statuses = {"missing", "requested", "received", "reviewed", "expired"}
+    if (
+        tax_form_type not in allowed_forms or tax_form_status not in allowed_statuses
+        or not (review_note or "").strip()
+        or expiration_date and received_date and expiration_date < received_date
+    ):
+        return False, "contractor_profile_invalid"
+    with _session() as session:
+        contractor = session.query(HREmployee).filter_by(
+            email=email, employee_type="contractor"
+        ).first()
+        if not contractor:
+            return False, "contractor_not_found"
+        row = session.query(HRContractorProfile).filter_by(
+            contractor_email=email
+        ).first()
+        if not row:
+            row = HRContractorProfile(contractor_email=email)
+            session.add(row)
+        row.tax_form_type = tax_form_type
+        row.tax_form_status = tax_form_status
+        row.received_date = received_date
+        row.expiration_date = expiration_date
+        row.wise_recipient_reference = (wise_recipient_reference or "").strip()
+        row.review_note = review_note.strip()
+        row.reviewed_by = actor
+        row.updated_at = datetime.now(timezone.utc)
+        session.flush()
+        _audit(session, actor, "contractor.profile_reviewed", "contractor_profile", row.id, {
+            "tax_form_type": tax_form_type, "tax_form_status": tax_form_status,
+        })
+        return True, "contractor_profile_saved"
+
+
+def list_contractor_profiles() -> list[dict]:
+    with _session() as session:
+        rows = session.query(HRContractorProfile).order_by(
+            HRContractorProfile.contractor_email
+        ).all()
+        return [{
+            "contractor_email": row.contractor_email,
+            "tax_form_type": row.tax_form_type,
+            "tax_form_status": row.tax_form_status,
+            "received_date": row.received_date,
+            "expiration_date": row.expiration_date,
+            "wise_recipient_reference": row.wise_recipient_reference,
+            "review_note": row.review_note,
+        } for row in rows]
 
 
 def contractor_payment_action(payment_id: int, *, action: str,
