@@ -269,6 +269,13 @@ def render_building_page(
                 f'<input aria-label="Send confirmation" name="confirmation" required placeholder="SEND {campaign_id}">'
                 '<button class="primary secondary--small" type="submit">Send campaign</button></form>'
             )
+        if status == "sent_with_errors":
+            return (
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/retry">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                f'<input aria-label="Retry confirmation" name="confirmation" required placeholder="RETRY {campaign_id}">'
+                '<button class="primary secondary--small" type="submit">Retry failed only</button></form>'
+            )
         return '<span class="sub">No action required</span>'
 
     campaign_rows = "".join(
@@ -276,7 +283,7 @@ def render_building_page(
         <tr>
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("subject"))}</span><span class="sub">{_esc(str(item.get("communication_class") or "marketing").replace("_", " ").title())} · from {_esc(item.get("sender_identity") or "configured sender")}</span></td>
           <td>{_esc(item.get("segment_name") or "—")}</td>
-          <td>{_esc(item.get("recipient_count", 0))}</td>
+          <td>{_esc(item.get("recipient_count", 0))}{f'<span class="sub">{_esc(item.get("failed_recipient_count", 0))} failed</span>' if item.get("failed_recipient_count") else ''}</td>
           <td>{_badge(str(item.get("status") or "draft"))}</td>
           <td>{campaign_actions(item)}</td>
         </tr>

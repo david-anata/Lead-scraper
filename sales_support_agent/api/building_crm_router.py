@@ -921,6 +921,53 @@ def _campaign_delivery_text(
     )
 
 
+def _deliver_campaign_recipients(
+    session,
+    request: Request,
+    campaign: BuildingCampaign,
+    client: ResendClient,
+    *,
+    eligible_statuses: set[str],
+) -> dict[str, int]:
+    recipients = session.execute(
+        select(BuildingCampaignRecipient)
+        .where(BuildingCampaignRecipient.campaign_id == campaign.id)
+        .order_by(BuildingCampaignRecipient.id)
+    ).scalars().all()
+    current_eligibility = _current_campaign_eligibility(session, campaign)
+    counts = {"sent": 0, "suppressed": 0, "failed": 0}
+    for recipient in recipients:
+        if recipient.status not in eligible_statuses:
+            continue
+        if current_eligibility.get(recipient.contact_id) is None:
+            recipient.status = "suppressed"
+            recipient.exclusion_reason = (
+                "Contact no longer meets the current audience and permission rules."
+            )
+            counts["suppressed"] += 1
+            continue
+        try:
+            provider_message_id = client.send_message(
+                to=recipient.email,
+                subject=campaign.subject,
+                text=_campaign_delivery_text(request, campaign, recipient),
+            )
+            recipient.status = "sent"
+            recipient.provider_message_id = (
+                provider_message_id
+                if isinstance(provider_message_id, str) and provider_message_id
+                else "resend"
+            )
+            recipient.sent_at = _now()
+            recipient.exclusion_reason = ""
+            counts["sent"] += 1
+        except Exception as exc:  # noqa: BLE001 - preserve retry evidence
+            recipient.status = "failed"
+            recipient.exclusion_reason = str(exc)[:500]
+            counts["failed"] += 1
+    return counts
+
+
 @internal_router.put("/contacts/{contact_id}")
 def upsert_contact(
     contact_id: str,
@@ -1429,45 +1476,17 @@ def send_campaign(
         client = ResendClient(request.app.state.settings)
         if not client.is_configured():
             raise HTTPException(status_code=503, detail="Email delivery is not configured.")
-        recipients = session.execute(
-            select(BuildingCampaignRecipient)
-            .where(BuildingCampaignRecipient.campaign_id == campaign.id)
-            .order_by(BuildingCampaignRecipient.id)
-        ).scalars().all()
-        current_eligibility = _current_campaign_eligibility(session, campaign)
-        sent = 0
-        suppressed = 0
-        failed = 0
         campaign.status = "sending"
-        for recipient in recipients:
-            if recipient.status != "approved":
-                continue
-            eligibility = current_eligibility.get(recipient.contact_id)
-            if eligibility is None:
-                recipient.status = "suppressed"
-                recipient.exclusion_reason = (
-                    "Contact no longer meets the current audience and permission rules."
-                )
-                suppressed += 1
-                continue
-            try:
-                provider_message_id = client.send_message(
-                    to=recipient.email,
-                    subject=campaign.subject,
-                    text=_campaign_delivery_text(request, campaign, recipient),
-                )
-                recipient.status = "sent"
-                recipient.provider_message_id = (
-                    provider_message_id
-                    if isinstance(provider_message_id, str) and provider_message_id
-                    else "resend"
-                )
-                recipient.sent_at = _now()
-                sent += 1
-            except Exception as exc:  # noqa: BLE001 - record and preserve retry evidence
-                recipient.status = "failed"
-                recipient.exclusion_reason = str(exc)[:500]
-                failed += 1
+        counts = _deliver_campaign_recipients(
+            session,
+            request,
+            campaign,
+            client,
+            eligible_statuses={"approved"},
+        )
+        sent = counts["sent"]
+        suppressed = counts["suppressed"]
+        failed = counts["failed"]
         campaign.status = "sent_with_errors" if failed else "sent"
         campaign.sent_at = _now()
         campaign.updated_at = _now()
@@ -1484,6 +1503,52 @@ def send_campaign(
             "sent": sent,
             "suppressed": suppressed,
             "failed": failed,
+        }
+
+
+@internal_router.post("/campaigns/{campaign_id}/retry")
+def retry_campaign_failures(
+    campaign_id: str,
+    payload: SendInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found.")
+        if campaign.status != "sent_with_errors":
+            raise HTTPException(
+                status_code=409,
+                detail="Only a campaign with failed recipients can be retried.",
+            )
+        if campaign.communication_class == "marketing":
+            _campaign_secret(request)
+        client = ResendClient(request.app.state.settings)
+        if not client.is_configured():
+            raise HTTPException(status_code=503, detail="Email delivery is not configured.")
+        campaign.status = "sending"
+        counts = _deliver_campaign_recipients(
+            session,
+            request,
+            campaign,
+            client,
+            eligible_statuses={"failed"},
+        )
+        campaign.status = "sent_with_errors" if counts["failed"] else "sent"
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="failed_recipients_retried",
+            actor=payload.actor,
+            after_json=counts,
+        ))
+        return {
+            "ok": counts["failed"] == 0,
+            "status": campaign.status,
+            **counts,
         }
 
 
@@ -2454,45 +2519,17 @@ def send_campaign_from_control_room(
         client = ResendClient(request.app.state.settings)
         if not client.is_configured():
             return _building_redirect(error="Email delivery is not configured.")
-        recipients = session.execute(
-            select(BuildingCampaignRecipient)
-            .where(BuildingCampaignRecipient.campaign_id == campaign.id)
-            .order_by(BuildingCampaignRecipient.id)
-        ).scalars().all()
-        current_eligibility = _current_campaign_eligibility(session, campaign)
-        sent = 0
-        suppressed = 0
-        failed = 0
         campaign.status = "sending"
-        for recipient in recipients:
-            if recipient.status != "approved":
-                continue
-            eligibility = current_eligibility.get(recipient.contact_id)
-            if eligibility is None:
-                recipient.status = "suppressed"
-                recipient.exclusion_reason = (
-                    "Contact no longer meets the current audience and permission rules."
-                )
-                suppressed += 1
-                continue
-            try:
-                provider_message_id = client.send_message(
-                    to=recipient.email,
-                    subject=campaign.subject,
-                    text=_campaign_delivery_text(request, campaign, recipient),
-                )
-                recipient.status = "sent"
-                recipient.provider_message_id = (
-                    provider_message_id
-                    if isinstance(provider_message_id, str) and provider_message_id
-                    else "resend"
-                )
-                recipient.sent_at = _now()
-                sent += 1
-            except Exception as exc:  # noqa: BLE001 - record retry evidence
-                recipient.status = "failed"
-                recipient.exclusion_reason = str(exc)[:500]
-                failed += 1
+        counts = _deliver_campaign_recipients(
+            session,
+            request,
+            campaign,
+            client,
+            eligible_statuses={"approved"},
+        )
+        sent = counts["sent"]
+        suppressed = counts["suppressed"]
+        failed = counts["failed"]
         campaign.status = "sent_with_errors" if failed else "sent"
         campaign.sent_at = _now()
         campaign.updated_at = _now()
@@ -2506,6 +2543,63 @@ def send_campaign_from_control_room(
     return _building_redirect(
         notice=(
             f"{campaign.name}: {sent} sent, {suppressed} suppressed, {failed} failed."
+        )
+    )
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/retry",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def retry_campaign_failures_from_control_room(
+    campaign_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status != "sent_with_errors":
+            return _building_redirect(error="This campaign has no retryable failures.")
+        expected_confirmation = f"RETRY {campaign.id}"
+        if confirmation.strip() != expected_confirmation:
+            return _building_redirect(error=f"Type {expected_confirmation} to retry delivery.")
+        if (
+            campaign.communication_class == "marketing"
+            and not str(
+                getattr(request.app.state.settings, "building_campaign_token_secret", "")
+                or ""
+            ).strip()
+        ):
+            return _building_redirect(error="Campaign unsubscribe signing is not configured.")
+        client = ResendClient(request.app.state.settings)
+        if not client.is_configured():
+            return _building_redirect(error="Email delivery is not configured.")
+        campaign.status = "sending"
+        counts = _deliver_campaign_recipients(
+            session,
+            request,
+            campaign,
+            client,
+            eligible_statuses={"failed"},
+        )
+        campaign.status = "sent_with_errors" if counts["failed"] else "sent"
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="failed_recipients_retried_from_control_room",
+            actor=actor,
+            after_json=counts,
+        ))
+    return _building_redirect(
+        notice=(
+            f"{campaign.name} retry: {counts['sent']} sent, "
+            f"{counts['suppressed']} suppressed, {counts['failed']} still failed."
         )
     )
 
@@ -2568,6 +2662,7 @@ def building_control_room(
         ).scalars().all()
         segment_names = {item.id: item.name for item in segment_rows}
         recipient_counts: dict[str, int] = {}
+        failed_recipient_counts: dict[str, int] = {}
         if campaign_rows:
             for recipient in session.execute(
                 select(BuildingCampaignRecipient).where(
@@ -2579,6 +2674,10 @@ def building_control_room(
                 recipient_counts[recipient.campaign_id] = (
                     recipient_counts.get(recipient.campaign_id, 0) + 1
                 )
+                if recipient.status == "failed":
+                    failed_recipient_counts[recipient.campaign_id] = (
+                        failed_recipient_counts.get(recipient.campaign_id, 0) + 1
+                    )
         inquiry_rows = session.execute(
             select(BuildingInquiry)
             .order_by(BuildingInquiry.created_at.desc())
@@ -2754,6 +2853,7 @@ def building_control_room(
                 "sender_identity": request.app.state.settings.resend_from,
                 "segment_name": segment_names.get(item.segment_id, ""),
                 "recipient_count": recipient_counts.get(item.id, 0),
+                "failed_recipient_count": failed_recipient_counts.get(item.id, 0),
                 "status": item.status,
             }
             for item in campaign_rows

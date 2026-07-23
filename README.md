@@ -180,6 +180,8 @@ Confirmed bookings also maintain CRM relationships automatically:
 - confirming the event creates a reservation-scoped `event_host` relationship
 - completing or cancelling the event closes that relationship while preserving
   its history for future event-host audiences
+- failed campaign deliveries can be retried without resending successful
+  recipients; eligibility and suppression are rechecked at retry time
 
 ## Daily Automation
 

@@ -18,6 +18,7 @@ try:
     from sales_support_agent.models.entities import (
         BuildingCampaignRecipient,
         BuildingCampaign,
+        BuildingAuditEvent,
         BuildingCommunicationPreference,
         BuildingContact,
         BuildingOffering,
@@ -409,6 +410,90 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422, response.text)
         self.assertIn("active audience", response.text)
+
+    def test_05c_failed_campaign_retries_only_failed_recipients(self) -> None:
+        self._preference("contact-tenant", "subscribed")
+        draft = self.client.put(
+            "/api/internal/building/crm/campaigns/retry-campaign",
+            headers=self.headers,
+            json={
+                "id": "retry-campaign",
+                "name": "Retry campaign",
+                "segment_id": "current-tenants",
+                "subject": "Community update",
+                "body_text": "A useful update for the building.",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(draft.status_code, 200, draft.text)
+        preview = self.client.post(
+            "/api/internal/building/crm/campaigns/retry-campaign/preview",
+            headers=self.headers,
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        with mock.patch(
+            "sales_support_agent.api.building_crm_router.ResendClient"
+        ) as client:
+            client.return_value.is_configured.return_value = True
+            test_send = self.client.post(
+                "/api/internal/building/crm/campaigns/retry-campaign/test-send",
+                headers=self.headers,
+                json={"email": "operator@example.com", "actor": "operator@example.com"},
+            )
+            self.assertEqual(test_send.status_code, 200, test_send.text)
+            approved = self.client.post(
+                "/api/internal/building/crm/campaigns/retry-campaign/approve",
+                headers=self.headers,
+                json={
+                    "preview_hash": preview.json()["preview_hash"],
+                    "actor": "approver@example.com",
+                },
+            )
+            self.assertEqual(approved.status_code, 200, approved.text)
+            client.return_value.send_message.reset_mock()
+            client.return_value.send_message.side_effect = RuntimeError("temporary outage")
+            first = self.client.post(
+                "/api/internal/building/crm/campaigns/retry-campaign/send",
+                headers=self.headers,
+                json={"actor": "operator@example.com"},
+            )
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertEqual(first.json()["status"], "sent_with_errors")
+            self.assertEqual(first.json()["failed"], 1)
+            client.return_value.send_message.side_effect = None
+            client.return_value.send_message.return_value = "resend-retry-1"
+            retried = self.client.post(
+                "/api/internal/building/crm/campaigns/retry-campaign/retry",
+                headers=self.headers,
+                json={"actor": "operator@example.com"},
+            )
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retried.json()["status"], "sent")
+        self.assertEqual(retried.json()["sent"], 1)
+        self.assertEqual(client.return_value.send_message.call_count, 2)
+        second_retry = self.client.post(
+            "/api/internal/building/crm/campaigns/retry-campaign/retry",
+            headers=self.headers,
+            json={"actor": "operator@example.com"},
+        )
+        self.assertEqual(second_retry.status_code, 409)
+        with self.factory() as session:
+            recipient = session.execute(
+                select(BuildingCampaignRecipient).where(
+                    BuildingCampaignRecipient.campaign_id == "retry-campaign"
+                )
+            ).scalar_one()
+            self.assertEqual(recipient.status, "sent")
+            self.assertEqual(recipient.provider_message_id, "resend-retry-1")
+            retry_audit = session.execute(
+                select(BuildingAuditEvent).where(
+                    BuildingAuditEvent.entity_type == "campaign",
+                    BuildingAuditEvent.entity_id == "retry-campaign",
+                    BuildingAuditEvent.action == "failed_recipients_retried",
+                )
+            ).scalar_one()
+            self.assertEqual(retry_audit.after_json["sent"], 1)
+        self._preference("contact-tenant", "unsubscribed")
 
     def test_06_building_admin_requires_auth_and_is_in_tool_catalog(self) -> None:
         from sales_support_agent.services.access.catalog import ALL_TOOL_KEYS
