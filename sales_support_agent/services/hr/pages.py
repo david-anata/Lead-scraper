@@ -65,8 +65,14 @@ _HR_STYLES = """
     .hr-dashboard-action { align-items:stretch; flex-direction:column; }
     .hr-dashboard-action .hr-btn { min-height:44px; text-align:center; }
     .hr-btn { min-height:44px; }
-    .hr-tbl { display:block; width:100%; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
-    .hr-tbl th, .hr-tbl td { white-space:nowrap; }
+    .hr-js .hr-tbl { display:block; width:100%; max-width:100%; overflow:visible; border:0; background:transparent; }
+    .hr-js .hr-tbl thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    .hr-js .hr-tbl tbody, .hr-js .hr-tbl tr, .hr-js .hr-tbl td { display:block; width:100%; box-sizing:border-box; }
+    .hr-js .hr-tbl tr { margin-bottom:12px; overflow:hidden; background:#fff; border:1px solid rgba(43,54,68,.12); border-radius:12px; }
+    .hr-js .hr-tbl td { display:grid; grid-template-columns:minmax(104px,36%) minmax(0,1fr); gap:12px; align-items:start; padding:11px 14px; white-space:normal; overflow-wrap:anywhere; }
+    .hr-js .hr-tbl td::before { content:attr(data-label); color:#52606d; font:700 10px Montserrat,Inter,sans-serif; letter-spacing:.04em; text-transform:uppercase; }
+    .hr-js .hr-tbl td[colspan] { display:block; }
+    .hr-js .hr-tbl td[colspan]::before { content:none; }
     .hr-form { padding:18px 16px; }
     .hr-form input, .hr-form select, .hr-form textarea { min-height:46px; }
     .hr-cards { grid-template-columns:1fr 1fr; gap:10px; }
@@ -102,6 +108,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
     return f"""<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>document.documentElement.classList.add('hr-js');</script>
   <title>agent | HR — {_esc(title)}</title>
   {render_agent_favicon_links()}
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -111,6 +118,20 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   {nav}
   <main class="hr-main">{body}</main>
   <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
+  <script>
+    document.querySelectorAll('.hr-tbl').forEach(function(table) {{
+      var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) {{
+        return th.textContent.trim();
+      }});
+      table.querySelectorAll('tbody tr').forEach(function(row) {{
+        Array.from(row.children).forEach(function(cell, index) {{
+          if (!cell.hasAttribute('data-label')) {{
+            cell.setAttribute('data-label', headers[index] || 'Record');
+          }}
+        }});
+      }});
+    }});
+  </script>
 </body></html>"""
 
 

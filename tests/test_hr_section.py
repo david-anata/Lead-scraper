@@ -524,6 +524,8 @@ class HRSectionTests(unittest.TestCase):
             '<a href="/admin/hr/time" aria-current="page">Time</a>', page.text
         )
         self.assertIn('href="/admin/hr/pay-statements"', page.text)
+        self.assertIn("cell.setAttribute('data-label'", page.text)
+        self.assertIn(".hr-js .hr-tbl td::before", page.text)
 
     def test_granular_people_permission_does_not_imply_compensation_access(self):
         import uuid
