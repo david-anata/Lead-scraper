@@ -39,6 +39,10 @@ from sales_support_agent.services.fulfillment_deck.us_map import (
     carrier_chip,
     render_interactive_rate_map,
 )
+from sales_support_agent.services.public_report_ui import (
+    PUBLIC_REPORT_DESIGN_VERSION,
+    public_report_foundation_css,
+)
 
 _SAMPLE_BADGE = (
     '<span style="display:inline-block;background:#fff4d9;border:1px solid #d2a94b;'
@@ -1340,7 +1344,7 @@ def render_rate_sheet_html(
     body_sections = "".join(section_html for _, _, section_html in sections)
 
     return f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-design-system="{PUBLIC_REPORT_DESIGN_VERSION}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1353,6 +1357,7 @@ def render_rate_sheet_html(
   <meta name="twitter:title" content="{html.escape(title, quote=True)}">
   <meta name="twitter:description" content="{html.escape(og_description, quote=True)}">
   {favicon_link}
+  <style>{public_report_foundation_css()}</style>
   <style>{stylesheet}</style>
   <style>
     /* Density pass: tighter slides, left-aligned body copy everywhere. */
@@ -1837,6 +1842,7 @@ def render_rate_sheet_html(
   </style>
 </head>
 <body>
+<a class="public-report-skip" href="#rate-sheet-content">Skip to rate sheet</a>
 
 <div class="app">
 
@@ -1851,14 +1857,15 @@ def render_rate_sheet_html(
     <div class="rail-eye">Contents</div>
     <ul class="rail-list">{rail_items}</ul>
     <div class="rail-foot">
-      <a class="rail-util" id="rail-print" href="#" onclick="event.preventDefault();window.print();return false;">Print PDF <span class="arrow">↗</span></a>
-      <a class="rail-util" id="rail-copy" href="#" onclick="event.preventDefault();var self=this;try{{navigator.clipboard.writeText(window.location.origin+window.location.pathname).then(function(){{self.innerHTML='Copied ✓';}});}}catch(_e){{}}return false;">Copy link <span class="arrow">⧉</span></a>
-      <a class="rail-util" id="rail-call" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Book a call <span class="arrow">→</span></a>
       <a class="rail-util primary" href="#{last_sec_id}">Get started <span class="arrow">→</span></a>
+      <a class="rail-util" id="rail-print" href="#" onclick="event.preventDefault();window.print();return false;">Print PDF <span class="arrow">↗</span></a>
+      <a class="rail-util" id="rail-copy" href="#" aria-describedby="rail-copy-status">Copy link <span class="arrow">⧉</span></a>
+      <a class="rail-util" id="rail-call" href="https://anatainc.com/contact" target="_blank" rel="noreferrer">Book a call <span class="arrow">→</span></a>
+      <span id="rail-copy-status" class="public-report-live" aria-live="polite"></span>
     </div>
   </aside>
 
-  <main class="content">
+  <main id="rate-sheet-content" class="content">
     {body_sections}
   </main>
 
@@ -1867,5 +1874,20 @@ def render_rate_sheet_html(
 {_TABS_JS}
 {_POLISH_JS}
 {_ENGAGEMENT_JS}
+<script>
+(function(){{
+  var button=document.getElementById('rail-copy');
+  var status=document.getElementById('rail-copy-status');
+  if(!button||!status)return;
+  button.addEventListener('click',function(event){{
+    event.preventDefault();
+    var url=window.location.origin+window.location.pathname;
+    if(navigator.clipboard&&navigator.clipboard.writeText){{
+      navigator.clipboard.writeText(url).then(function(){{status.textContent='Copied ✓';}})
+        .catch(function(){{status.textContent='Copy failed. Select the address from your browser.';}});
+    }}else{{status.textContent='Select the address from your browser to copy this link.';}}
+  }});
+}})();
+</script>
 </body>
 </html>"""

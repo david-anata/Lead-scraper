@@ -1,17 +1,17 @@
 /* Anata Strategy Deck — hi-fi styles */
 
 :root {
-  --anata-ink: #1d2d44;
-  --anata-ink-soft: #314664;
+  --anata-ink: #2b3644;
+  --anata-ink-soft: #5d6977;
   --anata-sky: #85bbda;
-  --anata-sky-deep: #4f84c4;
+  --anata-sky-deep: #5e9fc4;
   --anata-sand: #bfa889;
-  --anata-sand-soft: #f7f3ec;
-  --anata-paper: #fffdf9;
-  --anata-line: rgba(29, 45, 68, 0.12);
-  --anata-line-strong: rgba(29, 45, 68, 0.22);
-  --anata-shadow: rgba(29, 45, 68, 0.10);
-  --anata-muted: #6b7688;
+  --anata-sand-soft: #f9f7f3;
+  --anata-paper: #ffffff;
+  --anata-line: rgba(43, 54, 68, 0.12);
+  --anata-line-strong: rgba(43, 54, 68, 0.22);
+  --anata-shadow: rgba(43, 54, 68, 0.10);
+  --anata-muted: #5d6977;
   --anata-rose: #d28b8b;
   --anata-sage: #8bb59a;
 
@@ -20,6 +20,31 @@
   --radius-slide: 24px;
   --radius-card: 18px;
   --radius-pill: 999px;
+}
+
+.public-report-skip {
+  position: fixed;
+  z-index: 9999;
+  top: 12px;
+  left: 12px;
+  transform: translateY(-160%);
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--anata-ink);
+  color: #fff;
+  font-weight: 800;
+}
+
+.public-report-skip:focus {
+  transform: translateY(0);
+  outline: 3px solid var(--anata-sky);
+  outline-offset: 3px;
+}
+
+.rail-copy-status {
+  min-height: 1.25em;
+  color: var(--anata-muted);
+  font-size: 11px;
 }
 
 * { box-sizing: border-box; }

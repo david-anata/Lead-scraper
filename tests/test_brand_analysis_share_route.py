@@ -59,7 +59,11 @@ class ShareRouteTests(unittest.TestCase):
         rid = storage.save_report(_report("Acme"), report_html="<h1>Acme</h1>")
         row = storage.get_report_row(rid)
         bad = f"/brand/{row['slug']}/{rid}/not-the-real-token"
-        self.assertEqual(self.client.get(bad).status_code, 404)
+        response = self.client.get(bad)
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("This report is unavailable", response.text)
+        self.assertIn("anata-public-report-v1", response.text)
+        self.assertNotIn("not-the-real-token", response.text)
 
     def test_admin_view_requires_auth(self) -> None:
         rid = storage.save_report(_report("Gated"), report_html="<h1>Gated</h1>")

@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 from urllib.parse import parse_qs
 import traceback
+from html import escape
 
 import requests
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
@@ -75,6 +76,11 @@ from sales_support_agent.services.admin_dashboard import (
 from sales_support_agent.services.discovery import ClickUpDiscoveryService
 from sales_support_agent.services.deck_generator import DeckGenerationService
 from sales_support_agent.services.deck.preview_image import render_sales_deck_preview_png
+from sales_support_agent.services.public_report_ui import (
+    PUBLIC_REPORT_DESIGN_VERSION,
+    public_report_foundation_css,
+    render_public_recovery_page,
+)
 from sales_support_agent.services.fulfillment_dashboard import (
     fulfillment_report_entries,
     latest_fulfillment_report_entry,
@@ -959,7 +965,13 @@ def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Re
     report = load_fulfillment_report_by_slug(request.app.state.settings.fulfillment_cs_reports_dir, report_slug)
     if report is None:
         return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found.", user=_get_request_user(request)), status_code=404)
-    return HTMLResponse(render_fulfillment_report_detail_page(report, user=_get_request_user(request)))
+    return HTMLResponse(
+        render_fulfillment_report_detail_page(
+            report,
+            report_slug=report_slug,
+            user=_get_request_user(request),
+        )
+    )
 
 
 @router.get("/admin/website-ops", response_class=HTMLResponse)
@@ -1555,13 +1567,22 @@ def _render_deck_export(request: Request, run_id: int, token: str) -> Response:
             )
         ).scalar_one_or_none()
         if run is None:
-            return HTMLResponse("Deck export not found.", status_code=404)
+            return HTMLResponse(
+                render_public_recovery_page(report_kind="sales deck"),
+                status_code=404,
+            )
         summary = dict(run.summary_json or {})
         if summary.get("export_token") != token:
-            return HTMLResponse("Deck export not found.", status_code=404)
+            return HTMLResponse(
+                render_public_recovery_page(report_kind="sales deck"),
+                status_code=404,
+            )
         deck_html = str(summary.get("deck_html") or "")
         if not deck_html:
-            return HTMLResponse("Deck export not found.", status_code=404)
+            return HTMLResponse(
+                render_public_recovery_page(report_kind="sales deck"),
+                status_code=404,
+            )
         now_iso = datetime.now(timezone.utc).isoformat()
         viewer_type = "internal" if str(request.query_params.get("viewer") or "").strip().lower() == "internal" else "external"
         view_events = list(summary.get("view_events", []) or [])
@@ -1783,9 +1804,8 @@ def _load_story_markdown(
         if markdown_text:
             return markdown_text, deck_title, False
 
-        # Fallback for decks generated BEFORE the Story feature shipped:
-        # craft a minimal markdown with the data we still have on the run row,
-        # plus a clear instruction to re-generate the deck for the full Story.
+        # Fallback for decks generated before Story shipped. Keep this
+        # recipient-safe: do not expose operator-only regeneration guidance.
         view_url = str(summary.get("view_url") or "").strip()
         target_id = str(summary.get("target_product_identifier") or "").strip()
         channels = list(summary.get("channels") or [])
@@ -1800,13 +1820,10 @@ def _load_story_markdown(
 
         fallback_md = (
             f"# {deck_title}\n\n"
-            "## Story not yet generated for this deck\n\n"
-            "This deck was created before the Story markdown companion was added. "
-            "Re-generate the deck from the admin dashboard with the same inputs "
-            "and the new Story will be saved automatically — including the full "
-            "executive summary, market & competitive landscape, search behavior, "
-            "conversion recommendations, growth-plan synopsis, 4-phase implementation "
-            "roadmap with cited sources, and proposed offers.\n\n"
+            "## Summary unavailable for this deck\n\n"
+            "This shared deck does not include the one-page Story companion. "
+            "You can still review the complete deck using the link below. If you "
+            "need a written summary, ask the person who shared this report.\n\n"
             f"{bullets_block}\n"
         )
         return fallback_md, deck_title, True
@@ -1816,7 +1833,10 @@ def _load_story_markdown(
 def deck_story_view(request: Request, deck_slug: str, run_id: int, token: str) -> Response:
     loaded = _load_story_markdown(request, run_id, token)
     if loaded is None:
-        return HTMLResponse("Story not found.", status_code=404)
+        return HTMLResponse(
+            render_public_recovery_page(report_kind="sales story"),
+            status_code=404,
+        )
     markdown_text, deck_title, _is_fallback = loaded
     try:
         import markdown as _markdown  # type: ignore
@@ -1832,87 +1852,77 @@ def deck_story_view(request: Request, deck_slug: str, run_id: int, token: str) -
         body_html = f"<pre>{_escape(markdown_text)}</pre>"
 
     download_url = f"/decks/{deck_slug}/{run_id}/{token}/story.md"
+    deck_url = f"/decks/{deck_slug}/{run_id}/{token}"
+    safe_title = escape(deck_title)
     page = f"""<!doctype html>
-<html lang=\"en\">
+<html lang=\"en\" data-design-system=\"{PUBLIC_REPORT_DESIGN_VERSION}\">
 <head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>{deck_title} — Story</title>
+  <meta name=\"robots\" content=\"noindex, nofollow\" />
+  <title>{safe_title} | Story | Anata</title>
   <style>
-    :root {{
-      --ink: #0d1f24;
-      --muted: #5f6f73;
-      --accent: #1a4f4a;
-      --bg: #f6f3ec;
-      --card: #ffffff;
-      --rule: #e3decf;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      background: var(--bg);
-      color: var(--ink);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      line-height: 1.6;
-    }}
+    {public_report_foundation_css()}
     .story-shell {{
       max-width: 820px;
       margin: 0 auto;
       padding: 56px 32px 96px;
     }}
-    .story-toolbar {{
-      display: flex;
-      justify-content: flex-end;
-      gap: 12px;
-      margin-bottom: 24px;
-    }}
-    .story-toolbar a {{
-      font-size: 13px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--accent);
-      border: 1px solid var(--accent);
-      padding: 8px 14px;
-      border-radius: 999px;
-      text-decoration: none;
-    }}
-    .story-toolbar a:hover {{ background: var(--accent); color: #fff; }}
+    .story-head {{ display: grid; gap: 18px; margin-bottom: 24px; }}
+    .story-head__row {{ display: flex; justify-content: space-between; align-items: end; gap: 20px; }}
+    .story-head h1 {{ margin: 4px 0 0; font-family: "Montserrat","Inter",sans-serif; font-size: clamp(24px,4vw,34px); line-height: 1.1; }}
     .story-body {{
-      background: var(--card);
+      background: var(--anata-surface);
       padding: 48px 56px;
       border-radius: 14px;
-      box-shadow: 0 18px 40px -28px rgba(13,31,36,0.35);
-      border: 1px solid var(--rule);
+      box-shadow: var(--anata-shadow);
+      border: 1px solid var(--anata-border);
     }}
     .story-body h1 {{ font-size: 30px; margin-top: 0; }}
-    .story-body h2 {{ font-size: 22px; margin-top: 36px; border-top: 1px solid var(--rule); padding-top: 28px; }}
+    .story-body h1, .story-body h2, .story-body h3, .story-body h4 {{ font-family: "Montserrat","Inter",sans-serif; }}
+    .story-body h2 {{ font-size: 22px; margin-top: 36px; border-top: 1px solid var(--anata-border); padding-top: 28px; }}
     .story-body h3 {{ font-size: 17px; margin-top: 24px; }}
-    .story-body h4 {{ font-size: 15px; margin-top: 18px; color: var(--accent); }}
-    .story-body code {{ background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
+    .story-body h4 {{ font-size: 15px; margin-top: 18px; color: var(--anata-accent-strong); }}
+    .story-body code {{ background: var(--anata-surface-soft); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
     .story-body blockquote {{
-      border-left: 3px solid var(--accent);
+      border-left: 3px solid var(--anata-accent-strong);
       margin: 16px 0;
       padding: 4px 16px;
-      color: var(--muted);
-      background: rgba(26,79,74,0.04);
+      color: var(--anata-ink-muted);
+      background: var(--anata-accent-soft);
     }}
     .story-body ul, .story-body ol {{ padding-left: 22px; }}
     .story-body li {{ margin: 6px 0; }}
-    .story-body a {{ color: var(--accent); }}
+    .story-body a {{ color: var(--anata-accent-strong); }}
     @media (max-width: 640px) {{
       .story-shell {{ padding: 24px 16px 64px; }}
       .story-body {{ padding: 28px 22px; }}
+      .story-head__row {{ align-items: stretch; flex-direction: column; }}
     }}
   </style>
 </head>
 <body>
+  <a class=\"public-report-skip\" href=\"#story-content\">Skip to story</a>
   <div class=\"story-shell\">
-    <div class=\"story-toolbar\">
-      <a href=\"{download_url}\" download>Download .md</a>
-    </div>
-    <article class=\"story-body\">
+    <header class=\"story-head\">
+      <div class=\"story-head__row\">
+        <div>
+          <p class=\"public-report-wordmark\" aria-label=\"Anata\">anata<span>.</span></p>
+          <p class=\"public-report-eyebrow\">Sales story</p>
+          <h1>{safe_title}</h1>
+        </div>
+        <nav class=\"public-report-toolbar\" aria-label=\"Report actions\">
+          <a class=\"public-report-action public-report-action--primary\" href=\"{deck_url}\">Open full deck</a>
+          <a class=\"public-report-action\" href=\"{download_url}\" download>Download Markdown</a>
+          <button class=\"public-report-action\" type=\"button\" onclick=\"window.print()\">Print or save PDF</button>
+        </nav>
+      </div>
+      <p class=\"public-report-live\" aria-live=\"polite\">Shared securely through Anata Agent.</p>
+    </header>
+    <main id=\"story-content\" class=\"story-body\">
       {body_html}
-    </article>
+    </main>
+    <footer class=\"public-report-footer\">Generated by Anata. Figures and recommendations should be read with the source and limitation notes in the full deck.</footer>
   </div>
 </body>
 </html>

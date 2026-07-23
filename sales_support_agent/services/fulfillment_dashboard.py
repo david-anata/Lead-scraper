@@ -615,6 +615,14 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
         flex-wrap: wrap;
         gap: 8px;
       }}
+      .report-actions {{ display:flex; flex-wrap:wrap; gap:10px; margin:0 0 18px; }}
+      .report-action {{
+        display:inline-flex; align-items:center; min-height:42px; padding:0 14px;
+        border:1px solid rgba(43,54,68,.12); border-radius:999px; background:var(--white);
+        color:var(--dark-blue); font-family:"Montserrat",sans-serif; font-size:12px;
+        font-weight:800; text-decoration:none;
+      }}
+      .report-action:focus-visible {{ outline:3px solid var(--light-blue); outline-offset:3px; }}
       .format-badge {{
         display: inline-flex;
         align-items: center;
@@ -754,14 +762,30 @@ def render_fulfillment_reports_page(entries: list[FulfillmentReportEntry], *, us
     )
 
 
-def render_fulfillment_report_detail_page(report: dict[str, Any], *, user: dict | None = None) -> str:
+def render_fulfillment_report_detail_page(
+    report: dict[str, Any],
+    *,
+    report_slug: str = "",
+    user: dict | None = None,
+) -> str:
     summary = _summary(report)
     action_counts = _normalized_counts(summary.get("action_counts", report.get("action_counts", {})), ACTION_STATE_ORDER)
     lifecycle_counts = _normalized_counts(summary.get("lifecycle_counts", report.get("lifecycle_counts", {})), LIFECYCLE_STATE_ORDER)
     warnings = report.get("warnings", []) if isinstance(report.get("warnings", []), list) else []
     escalations = report.get("escalations", []) if isinstance(report.get("escalations", []), list) else []
+    safe_slug = html.escape(str(report_slug or ""), quote=True)
+    artifact_actions = ""
+    if safe_slug:
+        artifact_actions = (
+            '<nav class="report-actions" aria-label="Report downloads">'
+            f'<a class="report-action" href="/admin/fulfillment/cs/reports/{safe_slug}.html">Open HTML artifact</a>'
+            f'<a class="report-action" href="/admin/fulfillment/cs/reports/{safe_slug}.md">Download Markdown</a>'
+            f'<a class="report-action" href="/admin/fulfillment/cs/reports/{safe_slug}.json">Download JSON</a>'
+            '</nav>'
+        )
     body = (
-        _warning_block(warnings)
+        artifact_actions
+        + _warning_block(warnings)
         + '<section class="metrics">'
         + _metric("Support threads", str(_int(summary.get("candidate_count", report.get("candidate_count", 0)), 0)), "Threads included in this report.")
         + _metric("Unresolved", str(_int(summary.get("unresolved_count", 0), 0)), "Cases still open after this review pass.")

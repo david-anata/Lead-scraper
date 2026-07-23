@@ -4082,7 +4082,13 @@ def admin_fulfillment_cs_report_detail(request: Request, report_slug: str) -> Re
         from sales_support_agent.services.auth_deps import get_current_user
         return HTMLResponse(render_fulfillment_not_found_page("The requested fulfillment report was not found.", user=get_current_user(request)), status_code=404)
     from sales_support_agent.services.auth_deps import get_current_user
-    return HTMLResponse(render_fulfillment_report_detail_page(report, user=get_current_user(request)))
+    return HTMLResponse(
+        render_fulfillment_report_detail_page(
+            report,
+            report_slug=report_slug,
+            user=get_current_user(request),
+        )
+    )
 
 
 def _website_ops_run_status(request: Request, *, mode: str = "daily") -> dict[str, Any]:

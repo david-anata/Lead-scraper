@@ -7,6 +7,11 @@ Styled to match the Anata brand guide (share_page.py palette + typography).
 
 from __future__ import annotations
 
+from sales_support_agent.services.public_report_ui import (
+    PUBLIC_REPORT_DESIGN_VERSION,
+    public_report_foundation_css,
+)
+
 import base64
 import os
 
@@ -520,23 +525,25 @@ def render_intake_guide(print_mode: bool = False) -> str:
 </div>"""
 
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-design-system="{PUBLIC_REPORT_DESIGN_VERSION}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Brand Intake Checklist — Anata</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="{_FONTS}">
+<style>{public_report_foundation_css()}</style>
 <style>{_CSS}</style>
 </head>
 <body>
+<a class="public-report-skip" href="#brand-intake">Skip to intake checklist</a>
 
 <header class="site-header">
   {logo_html}
   {pdf_btn}
 </header>
 
-<main class="page">
+<main id="brand-intake" class="page">
   <div class="eyebrow">Brand Acquisition</div>
   <h1 class="hero-title">Brand Intake Checklist</h1>
   <p class="hero-sub">

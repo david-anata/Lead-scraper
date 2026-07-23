@@ -514,6 +514,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
 
         bad = public.get(f"/fulfillment-costs/{run['id']}/{'0' * 32}")
         self.assertEqual(bad.status_code, 404)
+        self.assertIn("This report is unavailable", bad.text)
+        self.assertNotIn("0" * 32, bad.text)
 
         unsigned = public.post(
             path,
@@ -525,6 +527,8 @@ class FulfillmentDeckRouteTests(unittest.TestCase):
         )
         self.assertEqual(unsigned.status_code, 400)
         self.assertIn("Name and a valid email are required", unsigned.text)
+        self.assertIn('value="0.91"', unsigned.text)
+        self.assertIn('value="0.16"', unsigned.text)
 
         posted = public.post(
             path,

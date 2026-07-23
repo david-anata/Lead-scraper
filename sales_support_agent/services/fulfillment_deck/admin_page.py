@@ -28,6 +28,10 @@ from sales_support_agent.services.fulfillment_deck.schema import (
     ProspectProfile,
     RATE_SOURCE_WMS,
 )
+from sales_support_agent.services.public_report_ui import (
+    PUBLIC_REPORT_DESIGN_VERSION,
+    public_report_foundation_css,
+)
 
 
 def _esc(value: object) -> str:
@@ -537,6 +541,7 @@ def render_fulfillment_cost_form_page(
     *,
     saved: bool = False,
     error: str = "",
+    form_values: dict[str, str] | None = None,
 ) -> str:
     profile = dict(summary.get("prospect_profile") or {})
     costs = dict(summary.get("fulfillment_actual_costs") or {})
@@ -544,8 +549,11 @@ def render_fulfillment_cost_form_page(
     products = [p for p in (profile.get("products") or []) if isinstance(p, dict)]
     token = str(summary.get("export_token") or "")
     form_path = _cost_form_path(run_id, summary)
+    submitted = dict(form_values or {})
 
-    def _value(key: str, suggested: float) -> str:
+    def _value(form_name: str, key: str, suggested: float) -> str:
+        if form_name in submitted:
+            return str(submitted.get(form_name) or "")
         value = costs.get(key)
         if value in (None, ""):
             value = suggested
@@ -626,7 +634,7 @@ def render_fulfillment_cost_form_page(
             inputs.append(
                 '<div class="field">'
                 f'<label for="{form_name}">{_esc(label)}</label>'
-                f'<input type="number" id="{form_name}" name="{form_name}" step="{step}" min="0" value="{_value(key, suggested)}">'
+                f'<input type="number" id="{form_name}" name="{form_name}" step="{step}" min="0" value="{_esc(_value(form_name, key, suggested))}">'
                 f'<span class="hint">Suggested: {_fmt_rate(suggested)} · {_esc(unit)}</span>'
                 '</div>'
             )
@@ -646,7 +654,7 @@ def render_fulfillment_cost_form_page(
         if error else ""
     )
     return f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-design-system="{PUBLIC_REPORT_DESIGN_VERSION}">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -655,6 +663,7 @@ def render_fulfillment_cost_form_page(
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800&display=swap" rel="stylesheet">
     <style>
+      {public_report_foundation_css()}
       :root {{ --dark-blue:#2B3644; --light-blue:#85BBDA; --light-brown:#F9F7F3; --border:rgba(43,54,68,.12); --shadow:rgba(43,54,68,.10); }}
       * {{ box-sizing:border-box; }}
       body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Inter","Segoe UI",sans-serif; }}
@@ -679,6 +688,7 @@ def render_fulfillment_cost_form_page(
       .field input:focus {{ outline:2px solid rgba(133,187,218,.38); border-color:rgba(133,187,218,.9); }}
       .hint,.muted {{ font-size:12px; color:rgba(43,54,68,.55); }}
       table {{ width:100%; border-collapse:collapse; margin:10px 0 18px; font-size:13px; }}
+      .table-wrap,.cost-group {{ max-width:100%; overflow-x:auto; }}
       th,td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }}
       th {{ background:rgba(133,187,218,.18); font-family:"Montserrat",sans-serif; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }}
       .btn {{ display:inline-flex; align-items:center; min-height:46px; padding:0 22px; border-radius:999px; border:0; background:var(--dark-blue); color:white; font-family:"Montserrat",sans-serif; font-weight:800; cursor:pointer; }}
@@ -687,13 +697,15 @@ def render_fulfillment_cost_form_page(
     </style>
   </head>
   <body>
-    <main class="shell">
+    <a class="public-report-skip" href="#cost-form">Skip to fulfillment cost form</a>
+    <main id="cost-form" class="shell">
       <div class="workspace">
+        <p class="public-report-wordmark" aria-label="Anata">anata<span>.</span></p>
         <p class="eyebrow">Anata fulfillment cost input</p>
         <h1>{_esc(prospect)}</h1>
         <p class="intro">This page is for fulfillment cost input only. It does not show sales pricing, customer pitch, margin, or quote details. Suggested values are based on current baseline operating costs; overwrite anything that needs warehouse-specific pricing.</p>
-        {saved_html}
-        {error_html}
+        <div aria-live="polite">{saved_html}</div>
+        <div role="alert">{error_html}</div>
         <div class="facts">
           <div class="fact"><span>Monthly orders</span><strong>{_esc(profile.get('monthly_order_volume') or '—')}</strong></div>
           <div class="fact"><span>Products</span><strong>{len(products)}</strong></div>
@@ -701,10 +713,10 @@ def render_fulfillment_cost_form_page(
           <div class="fact"><span>Est. cu ft/mo</span><strong>{_esc(cuft_est or '—')}</strong></div>
         </div>
         <h2>Latest product inputs</h2>
-        <table>
+        <div class="table-wrap"><table>
           <thead><tr><th>Product</th><th>Dims</th><th>Weight lb</th><th>Units/mo</th><th>Fragile</th></tr></thead>
           <tbody>{_product_rows()}</tbody>
-        </table>
+        </table></div>
         {_submission_history()}
         <form method="post" action="{_esc(form_path)}">
           <section class="cost-group">
@@ -713,11 +725,11 @@ def render_fulfillment_cost_form_page(
             <div class="cost-grid-wide">
               <div class="field">
                 <label for="submitter_name">Your name</label>
-                <input type="text" id="submitter_name" name="submitter_name" autocomplete="name" required>
+                <input type="text" id="submitter_name" name="submitter_name" autocomplete="name" value="{_esc(submitted.get('submitter_name') or '')}" required>
               </div>
               <div class="field">
                 <label for="submitter_email">Your email</label>
-                <input type="email" id="submitter_email" name="submitter_email" autocomplete="email" required>
+                <input type="email" id="submitter_email" name="submitter_email" autocomplete="email" value="{_esc(submitted.get('submitter_email') or '')}" required>
               </div>
             </div>
           </section>

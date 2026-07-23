@@ -995,7 +995,7 @@ def render_hr_reports(*, user) -> str:
     )
     rows = "".join(
         f"""<tr><td><strong>{_esc(label)}</strong><br><span class="hr-sub">{_esc(description)}</span></td>
-        <td><a class="hr-btn hr-btn-light" href="/admin/hr/reports/{kind}.csv">Download CSV</a></td></tr>"""
+        <td><a class="hr-btn hr-btn-light" href="/admin/hr/reports/{kind}.csv" aria-label="Download {_esc(label)} as CSV">Download CSV</a></td></tr>"""
         for kind, label, description in exports
     )
     quarter_options = "".join(
@@ -1004,6 +1004,7 @@ def render_hr_reports(*, user) -> str:
     )
     body = f"""<h1 class="hr-h1">HR reports & exports</h1>
     <p class="hr-sub">Portable records for review, backup, accountant handoff, or migration to the internal authoritative payroll service.</p>
+    <p class="hr-sub"><strong>Available now:</strong> {len(exports)} CSV exports. Files reflect approved records available when you download them on {today.isoformat()}.</p>
     <div class="hr-callout warn"><div class="hr-kicker">Sensitive records</div>
     <p>Exports intentionally exclude full Social Security numbers and sealed tax-election data. Store downloaded files securely.</p>
     <p><strong>Retention:</strong> preserve ordinary payroll and employment history for seven years under Anata's operating policy. Offboarding deactivates access; it does not delete history. Form I-9 uses its separate legal deadline. No record is automatically deleted.</p></div>

@@ -44,6 +44,7 @@ from sales_support_agent.services.fulfillment_deck.us_map import (
     state_zone_map,
 )
 from sales_support_agent.services.fulfillment_deck.wms_client import get_wms_client
+from sales_support_agent.services.public_report_ui import PUBLIC_REPORT_DESIGN_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -400,6 +401,7 @@ def _assemble(
         "suppress_fulfillment_pricing": suppress_fulfillment_pricing,
         "prospect": profile.display_name,
         "deck_html": deck_html,
+        "renderer_version": PUBLIC_REPORT_DESIGN_VERSION,
         "prospect_profile": profile.to_dict(),
         "rate_matrix": matrix.to_dict(),
         "sections_included": [key for key, on in flags.to_dict().items() if on],
@@ -658,6 +660,7 @@ def apply_viewer_requote(
         "avg_transit_days": round(avg_transit, 2) if avg_transit else None,
         "narrative": narrative.to_dict(),
         "deck_html": deck_html,
+        "renderer_version": PUBLIC_REPORT_DESIGN_VERSION,
         "rates_source": matrix.source,
         "sections_included": [key for key, on in flags.to_dict().items() if on],
     }

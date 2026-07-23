@@ -1799,13 +1799,15 @@ class DeckRoutingTests(unittest.TestCase):
         # HTML viewer returns a 200 with the fallback messaging.
         story_resp = client.get(f"/decks/{slug}/{run_id}/{token}/story")
         self.assertEqual(story_resp.status_code, 200)
-        self.assertIn("Story not yet generated", story_resp.text)
-        self.assertIn("Re-generate", story_resp.text)
+        self.assertIn("Summary unavailable", story_resp.text)
+        self.assertNotIn("Re-generate", story_resp.text)
+        self.assertIn("ask the person who shared", story_resp.text)
 
         # The .md route also serves the fallback markdown (200, not 404).
         md_resp = client.get(f"/decks/{slug}/{run_id}/{token}/story.md")
         self.assertEqual(md_resp.status_code, 200)
-        self.assertIn("Story not yet generated", md_resp.text)
+        self.assertIn("Summary unavailable", md_resp.text)
+        self.assertNotIn("Re-generate", md_resp.text)
 
 
 if __name__ == "__main__":

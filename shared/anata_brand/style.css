@@ -1,14 +1,14 @@
 :root {
-  --anata-ink: #1d2d44;
-  --anata-ink-soft: #314664;
+  --anata-ink: #2b3644;
+  --anata-ink-soft: #5d6977;
   --anata-sky: #85bbda;
-  --anata-sky-deep: #4f84c4;
+  --anata-sky-deep: #5e9fc4;
   --anata-sand: #bfa889;
-  --anata-sand-soft: #f7f3ec;
-  --anata-paper: #fffdf9;
-  --anata-line: rgba(29, 45, 68, 0.12);
-  --anata-shadow: rgba(29, 45, 68, 0.10);
-  --anata-muted: #6b7688;
+  --anata-sand-soft: #f9f7f3;
+  --anata-paper: #ffffff;
+  --anata-line: rgba(43, 54, 68, 0.12);
+  --anata-shadow: rgba(43, 54, 68, 0.10);
+  --anata-muted: #5d6977;
 }
 
 * {

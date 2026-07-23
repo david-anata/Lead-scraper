@@ -55,6 +55,7 @@ from sales_support_agent.services.visitor_meta import (
     extract_visitor_geo,
     parse_user_agent,
 )
+from sales_support_agent.services.public_report_ui import render_public_recovery_page
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +261,10 @@ def preview_run(run_id: int) -> HTMLResponse:
     review page's iframe so drafts never need a live public link."""
     run, summary = _load_reviewable_run(run_id)
     if run is None:
-        return HTMLResponse("Rate sheet not found.", status_code=404)
+        return HTMLResponse(
+            render_public_recovery_page(report_kind="rate sheet preview"),
+            status_code=404,
+        )
     return HTMLResponse(str(summary.get("deck_html") or ""))
 
 
@@ -950,7 +954,7 @@ def _load_token_run(run_id: int, token: str):
 def fulfillment_cost_form(run_id: int, token: str, saved: str = "") -> HTMLResponse:
     run = _load_token_run(run_id, token)
     if run is None:
-        return HTMLResponse("Cost form not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="fulfillment cost form"), status_code=404)
     return HTMLResponse(
         render_fulfillment_cost_form_page(
             run_id,
@@ -988,16 +992,40 @@ def save_fulfillment_cost_form(
 ):
     run = _load_token_run(run_id, token)
     if run is None:
-        return HTMLResponse("Cost form not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="fulfillment cost form"), status_code=404)
     submitter_name = str(submitter_name or "").strip()
     submitter_email = str(submitter_email or "").strip().lower()
     email_domain = submitter_email.rsplit("@", 1)[-1] if "@" in submitter_email else ""
     if not submitter_name or not email_domain or "." not in email_domain:
+        submitted_values = {
+            "submitter_name": submitter_name,
+            "submitter_email": submitter_email,
+            "actual_pick_pack_per_order": actual_pick_pack_per_order,
+            "actual_pick_pack_additional_item": actual_pick_pack_additional_item,
+            "actual_storage_per_pallet_mo": actual_storage_per_pallet_mo,
+            "actual_storage_cubic_foot_mo": actual_storage_cubic_foot_mo,
+            "actual_receiving_precounted_box": actual_receiving_precounted_box,
+            "actual_receiving_count_per_item": actual_receiving_count_per_item,
+            "actual_receiving_per_pallet": actual_receiving_per_pallet,
+            "actual_monthly_tech_fee": actual_monthly_tech_fee,
+            "actual_customer_service_monthly": actual_customer_service_monthly,
+            "actual_pallet_order_per_pallet": actual_pallet_order_per_pallet,
+            "actual_kitting_per_item": actual_kitting_per_item,
+            "actual_labeling_per_item": actual_labeling_per_item,
+            "actual_bagging_labeling_per_item": actual_bagging_labeling_per_item,
+            "actual_returns_units_mo": actual_returns_units_mo,
+            "actual_returns_receive_per_unit": actual_returns_receive_per_unit,
+            "actual_returns_examination_per_unit": actual_returns_examination_per_unit,
+            "actual_returns_custom_steps_per_unit": actual_returns_custom_steps_per_unit,
+            "actual_special_project_hours_mo": actual_special_project_hours_mo,
+            "actual_special_projects_per_hour": actual_special_projects_per_hour,
+        }
         return HTMLResponse(
             render_fulfillment_cost_form_page(
                 run_id,
                 dict(run.summary_json or {}),
                 error="Name and a valid email are required before saving fulfillment costs.",
+                form_values=submitted_values,
             ),
             status_code=400,
         )
@@ -1079,10 +1107,10 @@ def save_fulfillment_cost_form(
 def rate_sheet_view(slug: str, run_id: int, token: str) -> HTMLResponse:
     run = _load_valid_run(run_id, token)
     if run is None:
-        return HTMLResponse("Rate sheet not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
     deck_html = str((run.summary_json or {}).get("deck_html") or "")
     if not deck_html:
-        return HTMLResponse("Rate sheet not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="rate sheet"), status_code=404)
     return HTMLResponse(deck_html)
 
 

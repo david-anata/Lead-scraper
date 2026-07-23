@@ -22,6 +22,10 @@ from sales_support_agent.services.brand_analysis.schema import (
     fmt_pct,
 )
 from sales_support_agent.services.brand_analysis.valuation import ValuationRange
+from sales_support_agent.services.public_report_ui import (
+    PUBLIC_REPORT_DESIGN_VERSION,
+    public_report_foundation_css,
+)
 
 _CHART_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
 
@@ -915,7 +919,7 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
         'Indicative analysis, not a formal valuation or investment advice.</div>'
     )
     return f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-design-system="{PUBLIC_REPORT_DESIGN_VERSION}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -923,10 +927,23 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
 <title>{_e(report.brand)} — Acquisition Brief</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@700;800;900&display=swap" rel="stylesheet">
+<style>{public_report_foundation_css()}</style>
 <style>{_STYLES}</style>
 </head>
 <body>
-<main class="page">
+<a class="public-report-skip" href="#brand-report">Skip to acquisition brief</a>
+<main id="brand-report" class="page">
+  <header class="public-report-head">
+    <div>
+      <p class="public-report-wordmark" aria-label="Anata">anata<span>.</span></p>
+      <p class="public-report-eyebrow">Acquisition brief · Prepared {_e(report.prepared_date)}</p>
+    </div>
+    <nav class="public-report-toolbar" aria-label="Report actions">
+      <button class="public-report-action public-report-action--primary" type="button" onclick="window.print()">Print or save PDF</button>
+      <button class="public-report-action" type="button" id="copy-report-link">Copy link</button>
+    </nav>
+    <p id="copy-report-status" class="public-report-live" aria-live="polite"></p>
+  </header>
   {_cover(report)}
   {_hard_disqualifier_banner(report)}
   {sections}
@@ -937,6 +954,20 @@ def render_share_page(report: BrandReport, *, public: bool = True) -> str:
 <script>window.__BA = {json.dumps(data)};</script>
 <script>{_CHART_JS}</script>
 <script>{_PRINT_JS}</script>
+<script>
+(function(){{
+  var button=document.getElementById('copy-report-link');
+  var status=document.getElementById('copy-report-status');
+  if(!button||!status)return;
+  button.addEventListener('click',function(){{
+    var url=window.location.href.split('#')[0];
+    if(navigator.clipboard&&navigator.clipboard.writeText){{
+      navigator.clipboard.writeText(url).then(function(){{status.textContent='Link copied.';}})
+        .catch(function(){{status.textContent='Copy failed. Select the address from your browser.';}});
+    }}else{{status.textContent='Select the address from your browser to copy this link.';}}
+  }});
+}})();
+</script>
 </body>
 </html>"""
 
@@ -957,8 +988,10 @@ _STYLES = """
 :root{--navy:#2B3644;--blue:#85BBDA;--brown:#BFA889;--cream:#F9F7F3;--white:#fff;
  --line:rgba(43,54,68,.10);--shadow:rgba(43,54,68,.10);--good:#2E7D5B;--bad:#8B4C42;}
 *{box-sizing:border-box}
-body{margin:0;background:var(--cream);color:var(--navy);font-family:"Inter","Segoe UI",sans-serif;line-height:1.5}
+body{margin:0;overflow-x:hidden;background:var(--cream);color:var(--navy);font-family:"Inter","Segoe UI",sans-serif;line-height:1.5}
 .page{max-width:1000px;margin:0 auto;padding:28px 20px 64px}
+.public-report-head{display:grid;grid-template-columns:1fr auto;gap:10px 20px;align-items:end;margin:0 0 20px}
+.public-report-head .public-report-live{grid-column:1/-1;margin:0}
 .cover{display:flex;justify-content:space-between;gap:28px;background:var(--white);border:1px solid var(--line);
  border-radius:24px;padding:40px;box-shadow:0 18px 40px var(--shadow);border-top:6px solid var(--grade);margin-bottom:20px}
 .cover-logo{max-height:54px;max-width:200px;margin-bottom:18px;display:block;object-fit:contain}
@@ -1021,7 +1054,15 @@ body{margin:0;background:var(--cream);color:var(--navy);font-family:"Inter","Seg
   @page{margin:14mm}
 }
 .foot{text-align:center;font-size:12px;color:rgba(43,54,68,.35);margin-top:10px}
-@media(max-width:760px){.cover{flex-direction:column}.chart-grid,.two-col{grid-template-columns:1fr}.cover-brand{font-size:34px}}
+@media(max-width:760px){
+  .public-report-head{grid-template-columns:1fr}
+  .cover{flex-direction:column}
+  .chart-grid,.two-col{grid-template-columns:1fr}
+  .cover-brand{font-size:34px}
+  #playbook [style*="grid-template-columns"]{grid-template-columns:1fr!important}
+  .data-table{display:block;max-width:100%;overflow-x:auto}
+  .page>nav{margin-left:0!important;margin-right:0!important;padding-left:0!important;padding-right:0!important}
+}
 """
 
 _CHART_JS = """

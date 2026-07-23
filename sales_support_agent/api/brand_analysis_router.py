@@ -40,6 +40,7 @@ from sales_support_agent.services.brand_analysis.report_page import (
 from sales_support_agent.services.brand_analysis.share_page import render_share_page
 from sales_support_agent.services.brand_analysis.intake_guide_page import render_intake_guide
 from sales_support_agent.services.brand_analysis.schema import CATEGORY_DTC
+from sales_support_agent.services.public_report_ui import render_public_recovery_page
 
 logger = logging.getLogger(__name__)
 
@@ -632,15 +633,20 @@ def download(report_id: str) -> Response:
 
 @public_router.get("/brand/{slug}/{report_id}/{token}", response_class=HTMLResponse)
 def public_brand_page(slug: str, report_id: str, token: str) -> HTMLResponse:
-    # Always render fresh so share_page.py changes take effect without DB cache flush.
+    # Preserve the exact stored customer deliverable when one exists. Historic
+    # reports may have been generated under an older renderer contract and must
+    # not be silently rewritten by a later visual deployment.
     row = storage.get_report_row(report_id)
     if not row or not row.get("share_token") or token != row["share_token"]:
-        return HTMLResponse("Brief not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="brand brief"), status_code=404)
     if row.get("status") != "complete":
-        return HTMLResponse("Brief not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="brand brief"), status_code=404)
+    stored_html = str(row.get("report_html") or "").strip()
+    if stored_html:
+        return HTMLResponse(stored_html)
     report = storage.get_report(report_id)
     if report is None:
-        return HTMLResponse("Brief not found.", status_code=404)
+        return HTMLResponse(render_public_recovery_page(report_kind="brand brief"), status_code=404)
     html = render_share_page(report)
     return HTMLResponse(html)
 

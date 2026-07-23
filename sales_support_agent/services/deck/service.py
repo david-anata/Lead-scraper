@@ -41,6 +41,7 @@ from sales_support_agent.services.helium10 import (
     parse_xray_csvs,
 )
 from sales_support_agent.services.product_research import EnrichedHeroProduct, ProductResearchService
+from sales_support_agent.services.public_report_ui import PUBLIC_REPORT_DESIGN_VERSION
 
 from sales_support_agent.services.deck.brand_assets import (
     load_brand_asset,
@@ -497,6 +498,7 @@ class DeckGenerationService:
             "last_viewed_at": prior_last_viewed_at,
             "story_markdown": story_markdown,
             "share_preview": share_preview,
+            "renderer_version": PUBLIC_REPORT_DESIGN_VERSION,
         }
         self.session.add(run)
         self.session.flush()
@@ -1629,7 +1631,7 @@ class DeckGenerationService:
 """
 
         return f"""<!doctype html>
-<html lang="en">
+<html lang="en" data-design-system="anata-public-report-v1">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1639,6 +1641,7 @@ class DeckGenerationService:
   <style>{stylesheet}</style>
 </head>
 <body>
+<a class="public-report-skip" href="#summary">Skip to strategy summary</a>
 
 <div class="app">
 
@@ -1661,12 +1664,14 @@ class DeckGenerationService:
     <div class="rail-foot">
       <a class="rail-util" id="rail-open-story" href="#" onclick="event.preventDefault();window.open(location.pathname.replace(/\\/$/, '') + '/story', '_blank');return false;">Open one-pager <span class="arrow">↗</span></a>
       <a class="rail-util" id="rail-print" href="#" onclick="event.preventDefault();window.print();return false;">Print PDF <span class="arrow">↗</span></a>
+      <a class="rail-util" id="rail-copy" href="#" aria-describedby="rail-copy-status">Copy link <span class="arrow">⧉</span></a>
       <a class="rail-util primary" href="#sec-08">Get started <span class="arrow">→</span></a>
+      <span id="rail-copy-status" class="rail-copy-status" aria-live="polite"></span>
     </div>
   </aside>
 
   <!-- ============= CONTENT ============= -->
-  <main class="content">
+  <main class="content" id="deck-content">
 
     <!-- ===== EXECUTIVE SUMMARY ===== -->
     <!-- PR34: target product card moved to the header row (top-right)
@@ -2216,6 +2221,26 @@ class DeckGenerationService:
       }}
       window.addEventListener('pagehide', flush);
       window.addEventListener('beforeunload', flush);
+    }})();
+  </script>
+  <script>
+    (function() {{
+      var button = document.getElementById('rail-copy');
+      var status = document.getElementById('rail-copy-status');
+      if (!button || !status) return;
+      button.addEventListener('click', function(event) {{
+        event.preventDefault();
+        var url = window.location.origin + window.location.pathname;
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+          navigator.clipboard.writeText(url).then(function() {{
+            status.textContent = 'Copied ✓';
+          }}).catch(function() {{
+            status.textContent = 'Copy failed. Select the address from your browser.';
+          }});
+        }} else {{
+          status.textContent = 'Select the address from your browser to copy this link.';
+        }}
+      }});
     }})();
   </script>
 </body>
