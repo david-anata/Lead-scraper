@@ -1401,6 +1401,29 @@ class BuildingContact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingContactMerge(Base):
+    """Immutable evidence that one duplicate contact was merged into another."""
+
+    __tablename__ = "building_contact_merges"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    survivor_contact_id: Mapped[str] = mapped_column(
+        ForeignKey("building_contacts.id"), index=True
+    )
+    merged_contact_id: Mapped[str] = mapped_column(
+        ForeignKey("building_contacts.id"), unique=True, index=True
+    )
+    preview_hash: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(Text)
+    moved_counts_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    preserved_history_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    consent_result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(255))
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+
+
 class BuildingRelationship(Base):
     __tablename__ = "building_relationships"
 

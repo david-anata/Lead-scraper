@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
@@ -36,6 +37,7 @@ from sales_support_agent.models.entities import (
     BuildingCalendarProjection,
     BuildingCommunicationPreference,
     BuildingContact,
+    BuildingContactMerge,
     BuildingRelationship,
     BuildingSegment,
     BuildingServiceRequest,
@@ -237,6 +239,15 @@ class TestSendInput(BaseModel):
         return _normalize_email(value)
 
 
+class ContactMergeInput(BaseModel):
+    survivor_contact_id: str = Field(min_length=1, max_length=64)
+    merged_contact_id: str = Field(min_length=1, max_length=64)
+    preview_hash: str = Field(min_length=64, max_length=64)
+    confirmation: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=10, max_length=2000)
+    actor: str = Field(min_length=1, max_length=255)
+
+
 def _contact_payload(
     contact: BuildingContact,
     relationships: list[BuildingRelationship],
@@ -341,6 +352,380 @@ def _resolve_segment(session, segment: BuildingSegment) -> list[dict[str, Any]]:
             }
         )
     return resolved
+
+
+def _merge_preview(session, survivor_id: str, merged_id: str) -> dict[str, Any]:
+    if survivor_id == merged_id:
+        raise HTTPException(status_code=422, detail="Choose two different contacts.")
+    survivor = session.get(BuildingContact, survivor_id)
+    merged = session.get(BuildingContact, merged_id)
+    if survivor is None or merged is None:
+        raise HTTPException(status_code=404, detail="Contact not found.")
+    if survivor.status == "merged" or merged.status == "merged":
+        raise HTTPException(status_code=409, detail="Merged contacts cannot be merged again.")
+    relationship_rows = session.execute(
+        select(BuildingRelationship).where(BuildingRelationship.contact_id == merged.id)
+    ).scalars().all()
+    survivor_relationship_keys = {
+        (row.relationship_type, row.source_reference)
+        for row in session.execute(
+            select(BuildingRelationship).where(
+                BuildingRelationship.contact_id == survivor.id
+            )
+        ).scalars().all()
+    }
+    reservations = session.execute(
+        select(BuildingReservation).where(BuildingReservation.contact_id == merged.id)
+    ).scalars().all()
+    billing_accounts = session.execute(
+        select(BuildingBillingAccount).where(BuildingBillingAccount.contact_id == merged.id)
+    ).scalars().all()
+    service_requests = session.execute(
+        select(BuildingServiceRequest).where(BuildingServiceRequest.contact_id == merged.id)
+    ).scalars().all()
+    privacy_requests = session.execute(
+        select(BuildingPrivacyRequest).where(BuildingPrivacyRequest.contact_id == merged.id)
+    ).scalars().all()
+    campaign_snapshots = session.execute(
+        select(BuildingCampaignRecipient).where(
+            BuildingCampaignRecipient.contact_id == merged.id
+        )
+    ).scalars().all()
+    inquiries = session.execute(
+        select(BuildingInquiry).where(BuildingInquiry.email == merged.email)
+    ).scalars().all()
+    counts = {
+        "relationships_to_move": sum(
+            1 for row in relationship_rows
+            if (row.relationship_type, row.source_reference) not in survivor_relationship_keys
+        ),
+        "duplicate_relationships_preserved": sum(
+            1 for row in relationship_rows
+            if (row.relationship_type, row.source_reference) in survivor_relationship_keys
+        ),
+        "reservations_to_move": len(reservations),
+        "billing_accounts_to_move": len(billing_accounts),
+        "service_requests_to_move": len(service_requests),
+        "privacy_requests_to_move": len(privacy_requests),
+        "campaign_snapshots_preserved": len(campaign_snapshots),
+        "inquiries_preserved_by_original_email": len(inquiries),
+    }
+    conflicts = []
+    if survivor.hubspot_contact_id and merged.hubspot_contact_id and (
+        survivor.hubspot_contact_id != merged.hubspot_contact_id
+    ):
+        conflicts.append("Both contacts have different HubSpot contact IDs; the survivor ID wins and the other is preserved in merge evidence.")
+    survivor_pref = session.get(BuildingCommunicationPreference, survivor.id)
+    merged_pref = session.get(BuildingCommunicationPreference, merged.id)
+    statuses = {
+        pref.marketing_status
+        for pref in (survivor_pref, merged_pref)
+        if pref is not None
+    }
+    marketing_status = (
+        "unsubscribed" if "unsubscribed" in statuses
+        else "subscribed" if statuses == {"subscribed"}
+        else "unknown"
+    )
+    transactional_allowed = all(
+        pref.transactional_allowed
+        for pref in (survivor_pref, merged_pref)
+        if pref is not None
+    )
+    seed = {
+        "survivor_id": survivor.id,
+        "survivor_updated_at": str(survivor.updated_at),
+        "merged_id": merged.id,
+        "merged_updated_at": str(merged.updated_at),
+        "counts": counts,
+        "reference_ids": {
+            "relationships": sorted(row.id for row in relationship_rows),
+            "reservations": sorted(row.id for row in reservations),
+            "billing_accounts": sorted(row.id for row in billing_accounts),
+            "service_requests": sorted(row.id for row in service_requests),
+            "privacy_requests": sorted(row.id for row in privacy_requests),
+            "campaign_snapshots": sorted(row.id for row in campaign_snapshots),
+            "inquiries": sorted(row.id for row in inquiries),
+        },
+        "marketing_status": marketing_status,
+        "transactional_allowed": transactional_allowed,
+    }
+    preview_hash = hashlib.sha256(
+        json.dumps(seed, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return {
+        "preview_hash": preview_hash,
+        "survivor": {
+            "id": survivor.id, "email": survivor.email,
+            "full_name": survivor.full_name, "hubspot_contact_id": survivor.hubspot_contact_id,
+        },
+        "merged": {
+            "id": merged.id, "email": merged.email,
+            "full_name": merged.full_name, "hubspot_contact_id": merged.hubspot_contact_id,
+        },
+        "counts": counts,
+        "conflicts": conflicts,
+        "consent_result": {
+            "marketing_status": marketing_status,
+            "transactional_allowed": transactional_allowed,
+            "rule": "most restrictive permission wins",
+        },
+        "_rows": {
+            "relationships": relationship_rows,
+            "survivor_relationship_keys": survivor_relationship_keys,
+        },
+    }
+
+
+def _execute_merge(session, payload: ContactMergeInput) -> dict[str, Any]:
+    preview = _merge_preview(
+        session, payload.survivor_contact_id, payload.merged_contact_id
+    )
+    if not hmac.compare_digest(preview["preview_hash"], payload.preview_hash):
+        raise HTTPException(
+            status_code=409,
+            detail="Contact data changed after preview. Review the merge again.",
+        )
+    expected = f"MERGE {payload.merged_contact_id} INTO {payload.survivor_contact_id}"
+    if payload.confirmation.strip() != expected:
+        raise HTTPException(status_code=422, detail=f"Type {expected} to confirm.")
+    survivor = session.get(BuildingContact, payload.survivor_contact_id)
+    merged = session.get(BuildingContact, payload.merged_contact_id)
+    moved_counts = dict(preview["counts"])
+    relationship_keys = preview["_rows"]["survivor_relationship_keys"]
+    for row in preview["_rows"]["relationships"]:
+        if (row.relationship_type, row.source_reference) not in relationship_keys:
+            row.contact_id = survivor.id
+            session.add(row)
+    for model in (
+        BuildingReservation,
+        BuildingBillingAccount,
+        BuildingServiceRequest,
+        BuildingPrivacyRequest,
+    ):
+        for row in session.execute(
+            select(model).where(model.contact_id == merged.id)
+        ).scalars().all():
+            row.contact_id = survivor.id
+            session.add(row)
+    survivor_pref = session.get(BuildingCommunicationPreference, survivor.id)
+    merged_pref = session.get(BuildingCommunicationPreference, merged.id)
+    if survivor_pref is None:
+        survivor_pref = BuildingCommunicationPreference(contact_id=survivor.id)
+    survivor_pref.marketing_status = preview["consent_result"]["marketing_status"]
+    survivor_pref.marketing_source = "contact_merge"
+    survivor_pref.marketing_changed_at = _now()
+    survivor_pref.transactional_allowed = preview["consent_result"]["transactional_allowed"]
+    survivor_pref.updated_by = payload.actor
+    survivor_pref.updated_at = _now()
+    session.add(survivor_pref)
+    source_suppression = session.get(BuildingSuppression, merged.email)
+    survivor_suppression = session.get(BuildingSuppression, survivor.email)
+    if source_suppression:
+        if survivor_suppression is None:
+            survivor_suppression = BuildingSuppression(email=survivor.email)
+        survivor_suppression.scope = (
+            "all"
+            if "all" in {source_suppression.scope, survivor_suppression.scope}
+            else "marketing"
+        )
+        survivor_suppression.reason = "merged_contact_suppression"
+        survivor_suppression.source = "contact_merge"
+        session.add(survivor_suppression)
+    before_survivor = {
+        "full_name": survivor.full_name,
+        "phone": survivor.phone,
+        "company_name": survivor.company_name,
+        "hubspot_contact_id": survivor.hubspot_contact_id,
+    }
+    survivor.full_name = survivor.full_name or merged.full_name
+    survivor.phone = survivor.phone or merged.phone
+    survivor.company_name = survivor.company_name or merged.company_name
+    survivor.hubspot_contact_id = survivor.hubspot_contact_id or merged.hubspot_contact_id
+    survivor_metadata = dict(survivor.metadata_json or {})
+    survivor_metadata.setdefault("_merged_contact_ids", []).append(merged.id)
+    if merged.hubspot_contact_id and merged.hubspot_contact_id != survivor.hubspot_contact_id:
+        survivor_metadata.setdefault("_merged_hubspot_contact_ids", []).append(
+            merged.hubspot_contact_id
+        )
+    survivor.metadata_json = survivor_metadata
+    survivor.updated_at = _now()
+    merged_metadata = dict(merged.metadata_json or {})
+    merged_metadata["_merged_into_contact_id"] = survivor.id
+    merged.metadata_json = merged_metadata
+    merged.status = "merged"
+    merged.updated_at = _now()
+    session.add(survivor)
+    session.add(merged)
+    merge = BuildingContactMerge(
+        id=f"merge-{uuid4().hex}",
+        survivor_contact_id=survivor.id,
+        merged_contact_id=merged.id,
+        preview_hash=payload.preview_hash,
+        reason=payload.reason.strip(),
+        moved_counts_json=moved_counts,
+        preserved_history_json={
+            "campaign_snapshots": moved_counts["campaign_snapshots_preserved"],
+            "inquiries_by_original_email": moved_counts["inquiries_preserved_by_original_email"],
+            "source_contact_retained_as": "merged",
+        },
+        consent_result_json=preview["consent_result"],
+        actor=payload.actor,
+    )
+    session.add(merge)
+    session.add(BuildingAuditEvent(
+        entity_type="contact_merge",
+        entity_id=merge.id,
+        action="contacts_merged",
+        actor=payload.actor,
+        before_json={
+            "survivor": before_survivor,
+            "merged_contact_id": merged.id,
+            "merged_email": merged.email,
+        },
+        after_json={
+            "survivor_contact_id": survivor.id,
+            "moved_counts": moved_counts,
+            "consent_result": preview["consent_result"],
+            "reason": payload.reason.strip(),
+        },
+    ))
+    return {
+        "merge_id": merge.id,
+        "survivor_contact_id": survivor.id,
+        "merged_contact_id": merged.id,
+        "moved_counts": moved_counts,
+        "consent_result": preview["consent_result"],
+    }
+
+
+@internal_router.post("/contacts/merge/preview")
+def preview_contact_merge(
+    survivor_contact_id: str,
+    merged_contact_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        preview = _merge_preview(session, survivor_contact_id, merged_contact_id)
+        preview.pop("_rows", None)
+        return preview
+
+
+@internal_router.post("/contacts/merge")
+def merge_contacts(
+    payload: ContactMergeInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        return {"ok": True, **_execute_merge(session, payload)}
+
+
+@admin_router.post(
+    "/contacts/merge/preview",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=HTMLResponse,
+)
+def preview_contact_merge_from_control_room(
+    request: Request,
+    survivor_contact_id: str = Form(...),
+    merged_contact_id: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+):
+    try:
+        with session_scope(request.app.state.session_factory) as session:
+            preview = _merge_preview(
+                session, survivor_contact_id.strip(), merged_contact_id.strip()
+            )
+    except HTTPException as exc:
+        return _building_redirect(error=str(exc.detail))
+    survivor = preview["survivor"]
+    merged = preview["merged"]
+    counts = preview["counts"]
+    conflicts = preview["conflicts"]
+    expected = f"MERGE {merged['id']} INTO {survivor['id']}"
+    conflict_html = "".join(
+        f"<li>{html.escape(str(item))}</li>" for item in conflicts
+    ) or "<li>No provider-ID conflicts detected.</li>"
+    count_html = "".join(
+        f"<li>{html.escape(key.replace('_', ' ').title())}: <strong>{int(value)}</strong></li>"
+        for key, value in counts.items()
+    )
+    body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Review contact merge · Anata Agent</title>
+<style>
+body{{font-family:Inter,Arial,sans-serif;background:#f5f7f8;color:#17222b;margin:0;padding:32px}}
+main{{max-width:820px;margin:auto;background:white;border:1px solid #d9e0e4;border-radius:18px;padding:28px}}
+h1,h2{{font-family:Montserrat,Arial,sans-serif}} .pair{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+.card{{border:1px solid #d9e0e4;border-radius:12px;padding:16px}} label{{display:block;font-weight:700;margin:16px 0 6px}}
+input,textarea{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #87949d;border-radius:8px}}
+button,a{{display:inline-block;margin-top:18px;padding:12px 16px;border-radius:8px}}button{{background:#17222b;color:white;border:0;font-weight:700}}
+.warning{{background:#fff5d9;border:1px solid #e0bd5b;border-radius:10px;padding:14px}}:focus-visible{{outline:3px solid #168dcc;outline-offset:2px}}
+</style></head><body><main>
+<a href="/admin/building">← Back to Building Control</a>
+<h1>Review contact merge</h1>
+<p class="warning"><strong>This changes operational references.</strong> Historical campaign recipients and inquiries keep their original contact/email evidence. The duplicate contact remains as a merged record.</p>
+<div class="pair"><section class="card"><h2>Survivor</h2><p><strong>{html.escape(survivor['full_name'] or survivor['email'])}</strong><br>{html.escape(survivor['email'])}<br>ID: {html.escape(survivor['id'])}</p></section>
+<section class="card"><h2>Duplicate</h2><p><strong>{html.escape(merged['full_name'] or merged['email'])}</strong><br>{html.escape(merged['email'])}<br>ID: {html.escape(merged['id'])}</p></section></div>
+<h2>What will happen</h2><ul>{count_html}</ul>
+<h2>Conflicts and permission result</h2><ul>{conflict_html}</ul>
+<p>Marketing: <strong>{html.escape(preview['consent_result']['marketing_status'])}</strong><br>
+Transactional allowed: <strong>{'yes' if preview['consent_result']['transactional_allowed'] else 'no'}</strong><br>
+Rule: most restrictive permission wins.</p>
+<form method="post" action="/admin/building/contacts/merge">
+<input type="hidden" name="_csrf_token" value="{html.escape(building_csrf_token(user))}">
+<input type="hidden" name="survivor_contact_id" value="{html.escape(survivor['id'])}">
+<input type="hidden" name="merged_contact_id" value="{html.escape(merged['id'])}">
+<input type="hidden" name="preview_hash" value="{html.escape(preview['preview_hash'])}">
+<label for="merge-reason">Why are these the same person?</label><textarea id="merge-reason" name="reason" minlength="10" required></textarea>
+<label for="merge-confirmation">Type <code>{html.escape(expected)}</code></label><input id="merge-confirmation" name="confirmation" required autocomplete="off">
+<button type="submit">Merge duplicate into survivor</button>
+</form></main></body></html>"""
+    return HTMLResponse(body)
+
+
+@admin_router.post(
+    "/contacts/merge",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def merge_contacts_from_control_room(
+    request: Request,
+    survivor_contact_id: str = Form(...),
+    merged_contact_id: str = Form(...),
+    preview_hash: str = Form(...),
+    confirmation: str = Form(...),
+    reason: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        payload = ContactMergeInput(
+            survivor_contact_id=survivor_contact_id,
+            merged_contact_id=merged_contact_id,
+            preview_hash=preview_hash,
+            confirmation=confirmation,
+            reason=reason,
+            actor=str(user.get("email") or "building-operator"),
+        )
+        with session_scope(request.app.state.session_factory) as session:
+            result = _execute_merge(session, payload)
+        return _building_redirect(
+            notice=(
+                f"Duplicate contact merged into {result['survivor_contact_id']}. "
+                "Historical campaign and inquiry evidence was preserved."
+            )
+        )
+    except (ValidationError, HTTPException) as exc:
+        detail = (
+            exc.errors()[0].get("msg", "Invalid merge.")
+            if isinstance(exc, ValidationError)
+            else exc.detail
+        )
+        return _building_redirect(error=str(detail))
 
 
 def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
@@ -1651,6 +2036,11 @@ def building_control_room(
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
+        contact_merge_rows = session.execute(
+            select(BuildingContactMerge)
+            .order_by(BuildingContactMerge.completed_at.desc())
+            .limit(50)
+        ).scalars().all()
         contact_ids = [item.id for item in contact_rows]
         relationships: dict[str, list[BuildingRelationship]] = {}
         preferences: dict[str, BuildingCommunicationPreference] = {}
@@ -1799,6 +2189,7 @@ def building_control_room(
                 "full_name": item.full_name,
                 "phone": item.phone,
                 "company_name": item.company_name,
+                "status": item.status,
                 "relationships": [
                     {
                         "type": rel.relationship_type,
@@ -2106,6 +2497,20 @@ def building_control_room(
                     "next_step": item.next_step,
                 }
                 for item in tour_rows
+            ],
+            contact_merges=[
+                {
+                    "id": item.id,
+                    "survivor_contact_id": item.survivor_contact_id,
+                    "merged_contact_id": item.merged_contact_id,
+                    "reason": item.reason,
+                    "actor": item.actor,
+                    "completed_at": _mountain(item.completed_at).strftime(
+                        "%b %d, %Y · %I:%M %p MT"
+                    ),
+                    "consent_result": dict(item.consent_result_json or {}),
+                }
+                for item in contact_merge_rows
             ],
             privacy_requests=[
                 {

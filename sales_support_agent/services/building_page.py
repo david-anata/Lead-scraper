@@ -45,6 +45,7 @@ def render_building_page(
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
     tours: list[dict[str, Any]] | None = None,
+    contact_merges: list[dict[str, Any]] | None = None,
     privacy_requests: list[dict[str, Any]] | None = None,
     analytics: dict[str, Any] | None = None,
     can_finance: bool = False,
@@ -55,6 +56,7 @@ def render_building_page(
     analytics = dict(analytics or {})
     privacy_requests = list(privacy_requests or [])
     tours = list(tours or [])
+    contact_merges = list(contact_merges or [])
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
@@ -133,7 +135,7 @@ def render_building_page(
     contact_rows = "".join(
         f"""
         <tr>
-          <td><strong>{_esc(item.get("full_name") or item.get("email"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
+          <td><strong>{_esc(item.get("full_name") or item.get("email"))}</strong><span class="sub">{_esc(item.get("email"))} · {_esc(item.get("status") or "active")}</span></td>
           <td>{_esc(", ".join(sorted({rel.get("type", "") for rel in item.get("relationships", []) if rel.get("type")})) or "No relationship")}</td>
           <td>{_badge(str(item.get("marketing_status") or "unknown"))}</td>
           <td>{_badge("suppressed") if item.get("suppressed") else "Allowed"}<span class="sub">{_esc(item.get("suppression_reason"))}</span></td>
@@ -179,6 +181,16 @@ def render_building_page(
         """
         for item in privacy_requests
     ) or '<tr><td colspan="4"><div class="empty"><strong>No privacy requests.</strong><br>Export, correction, suppression, deletion review, and retention review requests will appear here.</div></td></tr>'
+
+    merge_rows = "".join(
+        f"""<tr>
+          <td><strong>{_esc(item.get("merged_contact_id"))}</strong><span class="sub">into {_esc(item.get("survivor_contact_id"))}</span></td>
+          <td>{_esc(item.get("reason"))}</td>
+          <td>{_esc((item.get("consent_result") or {}).get("marketing_status") or "unknown")}<span class="sub">Transactional: {'allowed' if (item.get("consent_result") or {}).get("transactional_allowed") else 'suppressed'}</span></td>
+          <td>{_esc(item.get("actor"))}<span class="sub">{_esc(item.get("completed_at"))}</span></td>
+        </tr>"""
+        for item in contact_merges
+    ) or '<tr><td colspan="4"><div class="empty"><strong>No contact merges.</strong><br>Merge history will remain here as permanent evidence.</div></td></tr>'
 
     segment_rows = "".join(
         f"""
@@ -447,7 +459,7 @@ def render_building_page(
     )
     contact_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("full_name") or item.get("email"))}</option>'
-        for item in contacts
+        for item in contacts if item.get("status") != "merged"
     )
     billing_account_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("account_name"))}</option>'
@@ -926,6 +938,16 @@ def render_building_page(
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Media assignments</h2><p>Attach images and videos to the exact physical space. Draft assets never reach the public site; approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>
+        <form class="form-grid" method="post" action="/admin/building/contacts/merge/preview">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="merge-survivor">Surviving contact</label><select id="merge-survivor" name="survivor_contact_id" required><option value="">Choose survivor</option>{contact_options}</select></div>
+          <div class="field"><label for="merge-duplicate">Duplicate contact</label><select id="merge-duplicate" name="merged_contact_id" required><option value="">Choose duplicate</option>{contact_options}</select></div>
+          <div class="form-actions"><span class="form-note">Nothing changes until you review counts, conflicts, consent, and type the exact confirmation.</span><button class="secondary" type="submit">Preview merge</button></div>
+        </form>
+        <div class="table-wrap"><table><thead><tr><th>Merge</th><th>Reason</th><th>Permission result</th><th>Evidence</th></tr></thead><tbody>{merge_rows}</tbody></table></div>
+      </section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Data governance</h2><p>Track access, correction, suppression, deletion review, and retention review with a 30-day deadline. Deletion is never automatic.</p></div><span class="count">{len(privacy_requests)} requests</span></div>
         <form class="form-grid" method="post" action="/admin/building/privacy/requests">

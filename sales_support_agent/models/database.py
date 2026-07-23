@@ -115,6 +115,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_inquiries",
         "building_audit_events",
         "building_contacts",
+        "building_contact_merges",
         "building_relationships",
         "building_communication_preferences",
         "building_suppressions",
