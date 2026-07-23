@@ -42,6 +42,8 @@ services:
         sync: false
       - key: HR_PII_SECRET
         sync: false
+      - key: HR_PAYROLL_ADMIN_EMAILS
+        value: david@anatainc.com,val@anatainc.com
       - key: FULFILLMENT_CS_REPORTS_DIR
         sync: false
       - key: HUBSPOT_API_TOKEN
@@ -129,6 +131,8 @@ services:
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
         -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/hr-reminders/run" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY"
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false

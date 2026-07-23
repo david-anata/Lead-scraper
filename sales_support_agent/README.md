@@ -343,6 +343,13 @@ Set `HR_PII_SECRET` to a long, production-only secret before collecting W-4
 information. Without it, W-4 storage fails closed. Existing databases receive
 additive HR tables and columns at startup.
 
+`HR_PAYROLL_ADMIN_EMAILS` controls the recipients of the privacy-safe HR action
+digest (David and Val by default). The existing operator cron invokes
+`POST /api/jobs/hr-reminders/run`; one digest per recipient per day is sent only
+when onboarding, time, contractor-document, I-9-expiration, or payroll-liability
+items need review. The email contains no compensation, SSN, tax-election, or
+pay-statement details.
+
 Before the first live payroll, complete `/admin/hr/settings`:
 
 1. enter reviewed 2026 opening balances for every W-2 employee;
