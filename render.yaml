@@ -82,6 +82,8 @@ services:
         sync: false
       - key: PLAID_WEBHOOK_URL
         value: https://agent.anatainc.com/api/integrations/plaid/webhook
+      - key: PLAID_REDIRECT_URI
+        value: https://agent.anatainc.com/admin/finances/plaid/oauth-return
 
   - type: cron
     name: sales-support-stale-scan

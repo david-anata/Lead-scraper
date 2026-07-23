@@ -1344,6 +1344,10 @@ input:focus, select:focus, textarea:focus {
 .finance-plaid-item strong { font-size: 10px; }
 .finance-plaid-item span { font-size: 10px; }
 .finance-plaid-item.is-attention { border-color: rgba(185, 28, 28, .22); background: rgba(185, 28, 28, .05); }
+.finance-plaid-item-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.finance-plaid-item-actions form { margin: 0; }
+.finance-source-consent { margin: 6px 0 0; max-width: 70ch; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.finance-source-consent a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 .finance-source-advanced { margin-top: 2px; border-bottom: 1px solid var(--line); }
 .finance-source-advanced summary { padding: 15px 0; color: var(--muted); cursor: pointer; font: 700 11px/1.3 "Montserrat", sans-serif; }
 .finance-source-advanced[open] summary { color: var(--ink); }

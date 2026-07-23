@@ -354,6 +354,12 @@ async def finance_overview(request: Request, flash: str = ""):
     return await render_cashflow_overview_page(flash=flash, settings=_finance_settings(request))
 
 
+@router.get("/plaid/oauth-return", response_class=HTMLResponse)
+async def plaid_oauth_return(request: Request):
+    """Render Finance at Plaid's exact OAuth return URL so Link can resume."""
+    return await render_cashflow_overview_page(settings=_finance_settings(request))
+
+
 @router.post("/plaid/link-token")
 async def plaid_link_token(request: Request):
     """Create a short-lived, Transactions-only Plaid Link token."""
@@ -368,6 +374,7 @@ async def plaid_link_token(request: Request):
         )
     except PlaidError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    logger.info("Plaid Link token created mode=create actor=%s", _plaid_client_user_id(user))
     return JSONResponse({"link_token": token})
 
 
@@ -385,6 +392,7 @@ async def plaid_exchange(request: Request):
     settings = _finance_settings(request)
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
+    link_session_id = str(body.get("link_session_id") or "")
     client = PlaidClient(settings)
     try:
         exchanged = await asyncio.to_thread(client.exchange_public_token, public_token)
@@ -398,6 +406,10 @@ async def plaid_exchange(request: Request):
         result = await asyncio.to_thread(sync_item, local_item_id, settings=settings, client=client)
     except PlaidError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    logger.info(
+        "Plaid Link exchange complete item_id=%s link_session_id=%s actor=%s",
+        local_item_id, link_session_id, actor,
+    )
     return JSONResponse({"status": "ok", "item_id": local_item_id, "sync": result})
 
 
@@ -443,6 +455,26 @@ async def plaid_update_link_token(request: Request, item_id: str):
     except PlaidError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
     return JSONResponse({"link_token": token, "mode": "update", "item_id": item_id})
+
+
+@router.post("/plaid/items/{item_id}/disconnect")
+async def plaid_disconnect_item(request: Request, item_id: str):
+    """Revoke a bank connection and destroy its reusable Plaid credential."""
+    from sales_support_agent.services.cashflow.plaid import PlaidError, disconnect_item
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        await asyncio.to_thread(
+            disconnect_item, item_id, settings=_finance_settings(request), actor=actor,
+        )
+    except PlaidError as exc:
+        return _redirect_finance_error(
+            "The bank is still connected because Plaid could not confirm removal. Please try again."
+        )
+    return _redirect_finance_home(
+        "Bank disconnected. Its Plaid credential was removed and it will no longer refresh."
+    )
 
 
 @router.post("/assistant/preview")

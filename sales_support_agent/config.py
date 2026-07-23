@@ -197,6 +197,7 @@ class Settings:
     plaid_environment: str = "sandbox"
     plaid_token_secret: str = ""
     plaid_webhook_url: str = ""
+    plaid_redirect_uri: str = ""
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
     google_oauth_allowed_domain: str = "anatainc.com"
@@ -636,6 +637,10 @@ def load_settings() -> Settings:
         plaid_webhook_url=(
             os.getenv("PLAID_WEBHOOK_URL", "https://agent.anatainc.com/api/integrations/plaid/webhook").strip()
             or "https://agent.anatainc.com/api/integrations/plaid/webhook"
+        ),
+        plaid_redirect_uri=(
+            os.getenv("PLAID_REDIRECT_URI", "https://agent.anatainc.com/admin/finances/plaid/oauth-return").strip()
+            or "https://agent.anatainc.com/admin/finances/plaid/oauth-return"
         ),
         google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
         google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),

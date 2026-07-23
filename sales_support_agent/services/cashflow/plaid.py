@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Mapping
@@ -27,11 +28,14 @@ PLAID_BASE_URLS = {
     "production": "https://production.plaid.com",
 }
 
+logger = logging.getLogger(__name__)
+
 
 class PlaidError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "plaid_error") -> None:
+    def __init__(self, message: str, *, code: str = "plaid_error", request_id: str = "") -> None:
         super().__init__(message)
         self.code = code
+        self.request_id = request_id
 
 
 class PlaidClient:
@@ -43,6 +47,7 @@ class PlaidClient:
         self.client_id = str(settings.plaid_client_id or "")
         self.secret = str(settings.plaid_secret or "")
         self.webhook_url = str(settings.plaid_webhook_url or "")
+        self.redirect_uri = str(getattr(settings, "plaid_redirect_uri", "") or "")
         self.session = session or requests.Session()
         if not self.client_id or not self.secret:
             raise PlaidError("Plaid is not configured", code="not_configured")
@@ -53,11 +58,18 @@ class PlaidClient:
             response = self.session.post(f"{self.base_url}{path}", json=body, timeout=30)
             data = response.json()
         except (requests.RequestException, ValueError) as exc:
+            logger.warning("Plaid request failed operation=%s code=network_error", path)
             raise PlaidError("Plaid could not be reached", code="network_error") from exc
+        request_id = str(data.get("request_id") or "")
         if response.status_code >= 400 or data.get("error_code"):
             code = str(data.get("error_code") or f"http_{response.status_code}")
             message = str(data.get("display_message") or data.get("error_message") or "Plaid request failed")
-            raise PlaidError(message, code=code)
+            logger.warning(
+                "Plaid request rejected operation=%s code=%s request_id=%s",
+                path, code, request_id,
+            )
+            raise PlaidError(message, code=code, request_id=request_id)
+        logger.info("Plaid request complete operation=%s request_id=%s", path, request_id)
         return data
 
     def create_link_token(self, *, client_user_id: str, access_token: str = "") -> str:
@@ -68,6 +80,8 @@ class PlaidClient:
             "language": "en",
             "webhook": self.webhook_url,
         }
+        if self.redirect_uri:
+            payload["redirect_uri"] = self.redirect_uri
         if access_token:
             # Plaid update mode repairs credentials/consent. Products must be
             # omitted so the existing Item is updated rather than recreated.
@@ -90,6 +104,10 @@ class PlaidClient:
         if cursor:
             payload["cursor"] = cursor
         return self.post("/transactions/sync", payload)
+
+    def remove_item(self, access_token: str) -> dict[str, Any]:
+        """Revoke one Item so Plaid stops access and recurring billing."""
+        return self.post("/item/remove", {"access_token": access_token})
 
     def webhook_verification_key(self, key_id: str) -> dict[str, Any]:
         data = self.post("/webhook_verification_key/get", {"key_id": key_id})
@@ -273,6 +291,46 @@ def create_update_link_token(
     return (client or PlaidClient(settings)).create_link_token(
         client_user_id=client_user_id, access_token=access_token,
     )
+
+
+def disconnect_item(
+    local_item_id: str, *, settings: Any, actor: str,
+    client: PlaidClient | None = None,
+) -> None:
+    """Revoke a Plaid Item, destroy its credential, and append an audit event."""
+    item = _item_row(local_item_id)
+    if item.get("disconnected_at") or not item.get("sealed_access_token"):
+        return
+    access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
+    api = client or PlaidClient(settings)
+    result = api.remove_item(access_token)
+    now = datetime.now(timezone.utc)
+    request_id = str(result.get("request_id") or "")
+    with get_engine().begin() as connection:
+        connection.execute(text("""
+            UPDATE plaid_items
+            SET sealed_access_token='', status='disconnected', disconnected_at=:now,
+                last_error_code='', updated_at=:now
+            WHERE id=:id
+        """), {"id": local_item_id, "now": now})
+        connection.execute(text("""
+            UPDATE plaid_accounts SET active=FALSE, updated_at=:now
+            WHERE plaid_item_id=:id
+        """), {"id": local_item_id, "now": now})
+        connection.execute(text("""
+            INSERT INTO finance_action_audit (
+                id, scope_key, action_type, entity_type, entity_id, actor,
+                evidence_json, created_at
+            ) VALUES (
+                :audit_id, 'default', 'plaid_disconnect', 'plaid_item', :item_id,
+                :actor, :evidence, :now
+            )
+        """), {
+            "audit_id": str(uuid4()), "item_id": local_item_id,
+            "actor": actor or "system", "evidence": json.dumps({"request_id": request_id}),
+            "now": now,
+        })
+    logger.info("Plaid item disconnected item_id=%s request_id=%s", local_item_id, request_id)
 
 
 def stale_connected_item_ids(*, max_age_hours: int = 6) -> list[str]:

@@ -541,6 +541,11 @@ def test_source_center_offers_bank_connection_and_accounting_refresh() -> None:
     assert "if (updateModal?.open) updateModal.close();" in page
     assert "reopenUpdateModal();" in page
     assert "Bank accounts" in page
+    assert "Anata privacy policy" in page
+    assert "https://anatainc.com/privacy-page/" in page
+    assert "/disconnect" in page
+    assert "receivedRedirectUri" in page
+    assert "link_session_id" in page
     assert 'action="/admin/finances/sync-connected-sources"' in page
     assert "Refresh accounting sources" in page
     assert "Connected bank data remains cash-on-hand truth." in page

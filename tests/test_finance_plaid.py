@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from sales_support_agent.models.database import create_session_factory, init_database
 from sales_support_agent.services.cashflow.plaid import (
-    PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, store_item,
+    PlaidClient, PlaidError, _WEBHOOK_KEY_CACHE, _cents, disconnect_item, store_item,
     verify_webhook,
 )
 
@@ -54,6 +54,16 @@ def test_link_token_is_transactions_only():
     assert "transfer" not in captured["payload"]["products"]
 
 
+def test_link_token_includes_configured_oauth_redirect():
+    client = PlaidClient(_settings(plaid_redirect_uri="https://agent.example/plaid/oauth-return"))
+    captured = {}
+    client.post = lambda path, payload: captured.update(path=path, payload=payload) or {"link_token": "link-sandbox"}
+
+    client.create_link_token(client_user_id="finance-user")
+
+    assert captured["payload"]["redirect_uri"] == "https://agent.example/plaid/oauth-return"
+
+
 def test_update_link_token_repairs_existing_item_without_reinitializing_products():
     client = PlaidClient(_settings())
     captured = {}
@@ -90,6 +100,69 @@ def test_store_item_supplies_required_status_fields():
             {"id": local_id},
         ).one()
     assert tuple(row) == ("connected", "", "")
+
+
+def test_disconnect_revokes_item_destroys_token_and_records_audit():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    local_id = store_item(
+        item_id="sandbox-disconnect-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+    )
+    client = SimpleNamespace(remove_item=lambda token: {"request_id": "request-safe"})
+
+    disconnect_item(
+        local_id,
+        settings=SimpleNamespace(plaid_token_secret="test-token-secret"),
+        actor="qa@example.com",
+        client=client,
+    )
+
+    with finance_engine.connect() as connection:
+        item = connection.execute(text(
+            "SELECT status, sealed_access_token, disconnected_at FROM plaid_items WHERE id=:id"
+        ), {"id": local_id}).one()
+        audit = connection.execute(text(
+            "SELECT action_type, actor FROM finance_action_audit WHERE entity_id=:id"
+        ), {"id": local_id}).one()
+    assert item.status == "disconnected"
+    assert item.sealed_access_token == ""
+    assert item.disconnected_at is not None
+    assert tuple(audit) == ("plaid_disconnect", "qa@example.com")
+
+
+def test_disconnect_failure_preserves_credential_and_connected_state():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    local_id = store_item(
+        item_id="sandbox-removal-failure",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+    )
+    client = SimpleNamespace(remove_item=lambda token: (_ for _ in ()).throw(
+        PlaidError("Removal failed", code="ITEM_ERROR")
+    ))
+
+    with pytest.raises(PlaidError):
+        disconnect_item(
+            local_id,
+            settings=SimpleNamespace(plaid_token_secret="test-token-secret"),
+            actor="qa@example.com",
+            client=client,
+        )
+
+    with finance_engine.connect() as connection:
+        item = connection.execute(text(
+            "SELECT status, sealed_access_token, disconnected_at FROM plaid_items WHERE id=:id"
+        ), {"id": local_id}).one()
+    assert item.status == "connected"
+    assert item.sealed_access_token
+    assert item.disconnected_at is None
 
 
 def _signed_webhook(raw_body: bytes, *, issued_at: int | None = None):

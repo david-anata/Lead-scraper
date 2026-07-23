@@ -2393,11 +2393,17 @@ async def render_cashflow_overview_page(
             needs_reconnect = bool(item.get("needs_reconnect"))
             state_text = "Reconnect required" if needs_reconnect else "Connected"
             state_class = " is-attention" if needs_reconnect else ""
-            action = (
+            reconnect_action = (
                 f'<button class="btn btn-secondary btn-sm" type="button" '
                 f'data-plaid-reconnect="{item_id}">Reconnect</button>'
                 if needs_reconnect else ""
             )
+            disconnect_action = (
+                f'<form method="post" action="/admin/finances/plaid/items/{item_id}/disconnect" '
+                f'onsubmit="return confirm(\'Disconnect this bank? Plaid access will be revoked, the stored credential will be removed, and the bank will stop refreshing.\');">'
+                f'<button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form>'
+            )
+            action = f'<div class="finance-plaid-item-actions">{reconnect_action}{disconnect_action}</div>'
             item_rows.append(
                 f'<li class="finance-plaid-item{state_class}"><div><strong>{name}</strong>'
                 f'<span>{account_count} account(s) &middot; {state_text}</span></div>{action}</li>'
@@ -2786,7 +2792,7 @@ async def render_cashflow_overview_page(
 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
-        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span>{plaid_items_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
@@ -2848,6 +2854,22 @@ async def render_cashflow_overview_page(
       const plaidConnect = document.getElementById('finance-plaid-connect');
       const plaidRefresh = document.getElementById('finance-plaid-refresh');
       const plaidError = document.getElementById('finance-plaid-error');
+      const plaidOAuthTokenKey = 'anata_plaid_oauth_link_token';
+      const exchangePlaidConnection = async (publicToken, metadata) => {{
+        if (plaidConnect) plaidConnect.textContent = 'Connecting accounts...';
+        const exchange = await fetch('/admin/finances/plaid/exchange', {{
+          method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json'}},
+          body:JSON.stringify({{
+            public_token:publicToken,
+            institution_id:metadata.institution?.institution_id || '',
+            institution_name:metadata.institution?.name || '',
+            link_session_id:metadata.link_session_id || ''
+          }})
+        }});
+        if (!exchange.ok) throw new Error('The bank connected, but the first secure refresh needs attention.');
+        sessionStorage.removeItem(plaidOAuthTokenKey);
+        window.location.assign('/admin/finances?flash=' + encodeURIComponent('ok:Bank accounts connected and refreshed.'));
+      }};
       if (plaidRefresh) plaidRefresh.addEventListener('click', async () => {{
         const original = plaidRefresh.textContent;
         plaidRefresh.disabled = true;
@@ -2911,21 +2933,10 @@ async def render_cashflow_overview_page(
           if (!tokenResponse.ok) throw new Error('Bank connection is not ready. Check Plaid setup.');
           const tokenData = await tokenResponse.json();
           if (!window.Plaid) throw new Error('Secure bank connection could not load.');
+          sessionStorage.setItem(plaidOAuthTokenKey, tokenData.link_token);
           const handler = window.Plaid.create({{
             token: tokenData.link_token,
-            onSuccess: async (publicToken, metadata) => {{
-              plaidConnect.textContent = 'Connecting accounts...';
-              const exchange = await fetch('/admin/finances/plaid/exchange', {{
-                method:'POST', headers:{{'Content-Type':'application/json','Accept':'application/json'}},
-                body:JSON.stringify({{
-                  public_token:publicToken,
-                  institution_id:metadata.institution?.institution_id || '',
-                  institution_name:metadata.institution?.name || ''
-                }})
-              }});
-              if (!exchange.ok) {{ plaidConnect.disabled=false; plaidConnect.textContent='Connection needs attention'; return; }}
-              window.location.assign('/admin/finances?flash=' + encodeURIComponent('ok:Bank accounts connected and refreshed.'));
-            }},
+            onSuccess: exchangePlaidConnection,
             onExit: () => {{
               plaidConnect.disabled=false;
               plaidConnect.textContent=original;
@@ -2945,6 +2956,25 @@ async def render_cashflow_overview_page(
           }}
         }}
       }});
+      const plaidOAuthState = new URLSearchParams(window.location.search).get('oauth_state_id');
+      const plaidOAuthToken = sessionStorage.getItem(plaidOAuthTokenKey);
+      if (plaidOAuthState && plaidOAuthToken && window.Plaid) {{
+        const oauthHandler = window.Plaid.create({{
+          token: plaidOAuthToken,
+          receivedRedirectUri: window.location.href,
+          onSuccess: exchangePlaidConnection,
+          onExit: (error) => {{
+            if (error && plaidError) {{
+              plaidError.hidden = false;
+              plaidError.textContent = 'The bank authorization could not be completed. Please try the connection again.';
+            }}
+          }}
+        }});
+        oauthHandler.open();
+      }} else if (plaidOAuthState && !plaidOAuthToken && plaidError) {{
+        plaidError.hidden = false;
+        plaidError.textContent = 'The secure bank session expired. Please start the bank connection again.';
+      }}
       const root = document.querySelector('.finance-control');
       const chartData = {chart_json};
       const queueEmpty = document.getElementById('finance-queue-empty');
