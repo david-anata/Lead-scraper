@@ -195,6 +195,9 @@ Confirmed bookings also maintain CRM relationships automatically:
 - approved campaign snapshots can be sent immediately or scheduled in Mountain
   Time; the hourly operator job delivers due campaigns and rechecks permission
   and suppression at delivery time
+- tenant and community rosters can be staged from a reviewed CSV, compared
+  against existing contacts, and applied only after typed confirmation;
+  existing profile data and marketing opt-outs are preserved
 - failed campaign deliveries can be retried without resending successful
   recipients; Resend idempotency keys reduce duplicate sends during retries
 

@@ -231,6 +231,12 @@ editing code. Scheduled times are entered in `America/Denver`; delivery runs on
 the next hourly operator cycle. Permission and suppression are rechecked at
 delivery time, and stable Resend idempotency keys protect recipient retries from
 duplicate sends within the provider's idempotency window.
+Reviewed tenant, employee, event-host, and community rosters can also be pasted
+as CSV. The preview normalizes and deduplicates up to 500 rows, reports new
+versus matched contacts, and changes nothing until an operator types the exact
+`IMPORT {id}` confirmation. A subscribed row requires a documented
+`marketing_source`; existing unsubscribe state and populated profile fields are
+never overwritten by the bulk import.
 They can also create reservations, move them through the permitted booking
 states, attach agreement and deposit evidence, create billing accounts and
 draft schedules, approve schedules, and intentionally create a Stripe invoice

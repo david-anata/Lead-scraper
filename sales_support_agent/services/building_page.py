@@ -49,6 +49,7 @@ def render_building_page(
     tours: list[dict[str, Any]] | None = None,
     contact_merges: list[dict[str, Any]] | None = None,
     privacy_requests: list[dict[str, Any]] | None = None,
+    roster_imports: list[dict[str, Any]] | None = None,
     analytics: dict[str, Any] | None = None,
     can_finance: bool = False,
     csrf_token: str = "",
@@ -57,6 +58,7 @@ def render_building_page(
 ) -> str:
     analytics = dict(analytics or {})
     privacy_requests = list(privacy_requests or [])
+    roster_imports = list(roster_imports or [])
     tours = list(tours or [])
     contact_merges = list(contact_merges or [])
     rate_plans = list(rate_plans or [])
@@ -309,6 +311,48 @@ def render_building_page(
         """
         for item in campaigns
     ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a segment preview, test send, and approval before delivery.</div></td></tr>'
+
+    def roster_contact_preview(item: dict[str, Any]) -> str:
+        rows = list(item.get("rows") or [])
+        if not rows:
+            return ""
+        contacts = "".join(
+            f"<li><strong>{_esc(row.get('full_name') or row.get('email'))}</strong> "
+            f"· {_esc(row.get('email'))} · "
+            f"{_esc(str(row.get('marketing_status') or 'unknown').replace('_', ' '))}"
+            f"{f' ({_esc(row.get('marketing_source'))})' if row.get('marketing_source') else ''}</li>"
+            for row in rows
+        )
+        return (
+            '<details class="row-actions"><summary>Review exact contacts</summary>'
+            f'<ul class="roster-preview">{contacts}</ul></details>'
+        )
+
+    roster_import_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("filename"))}</strong><span class="sub">{_esc(item.get("relationship_type", "").replace("_", " ").title())}{f' · {_esc(item.get("organization"))}' if item.get("organization") else ''}</span>{roster_contact_preview(item)}</td>
+          <td>{_esc(item.get("row_count", 0))}<span class="sub">{_esc(item.get("new_contact_count", 0))} new · {_esc(item.get("existing_contact_count", 0))} matched</span></td>
+          <td>{_badge(str(item.get("status") or "previewed"))}<span class="sub">{_esc(item.get("created_by"))} · {_esc(item.get("created_at"))}</span></td>
+          <td>{
+            (
+              '<div class="action-stack">'
+              f'<form class="inline-send" method="post" action="/admin/building/roster-imports/{_esc(item.get("id"))}/apply">'
+              f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+              f'<input aria-label="Import confirmation" name="confirmation" required placeholder="IMPORT {_esc(item.get("id"))}">'
+              '<button class="primary secondary--small" type="submit">Apply roster</button></form>'
+              f'<form method="post" action="/admin/building/roster-imports/{_esc(item.get("id"))}/cancel">'
+              f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+              '<button class="secondary secondary--small" type="submit">Cancel preview</button></form>'
+              '</div>'
+            )
+            if item.get("status") == "previewed"
+            else f'<span class="sub">{_esc(item.get("applied_by") or "No action required")}</span>'
+          }</td>
+        </tr>
+        """
+        for item in roster_imports
+    ) or '<tr><td colspan="4"><div class="empty"><strong>No roster previews yet.</strong><br>Paste a reviewed CSV above to stage tenant or community contacts without changing CRM data.</div></td></tr>'
 
     inquiry_stage_transitions = {
         "new": ("responded", "qualified", "closed_lost"),
@@ -832,6 +876,7 @@ def render_building_page(
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .roster-preview{{max-height:260px;overflow:auto;margin:10px 0 0;padding:10px 10px 10px 28px;border:1px solid var(--border);border-radius:8px;background:#f8f8f6;font-size:12px;line-height:1.6;min-width:320px;}}
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
@@ -949,6 +994,19 @@ def render_building_page(
           <div class="field"><label for="contact-review-due">Review through</label><input id="contact-review-due" name="review_due_on" type="date"><span class="form-note">Required for tenant employees and community members.</span></div>
           <div class="field"><label for="contact-marketing">Marketing permission</label><select id="contact-marketing" name="marketing_status"><option value="unknown">Unknown / no promotional email</option><option value="subscribed">Subscribed</option><option value="unsubscribed">Unsubscribed</option></select></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="consent_confirmed" value="true"> I have documented consent for “Subscribed”</label><button class="primary" type="submit">Save contact</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>Preview a roster import</h2><p>Stage up to 500 tenant or community contacts before anything changes.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/roster-imports/preview">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="roster-filename">List name</label><input id="roster-filename" name="filename" value="tenant-roster.csv" required></div>
+          <div class="field"><label for="roster-relationship">Relationship</label><select id="roster-relationship" name="relationship_type"><option value="tenant">Tenant</option><option value="tenant_employee">Tenant employee</option><option value="event_host">Event host</option><option value="former_tenant">Former tenant</option><option value="community_member">Community member</option><option value="vendor">Vendor</option><option value="partner">Partner</option></select></div>
+          <div class="field"><label for="roster-organization">Organization</label><input id="roster-organization" name="organization" placeholder="Required for tenant employees"></div>
+          <div class="field"><label for="roster-owner">List owner</label><input id="roster-owner" name="list_owner" placeholder="Required for employee/community lists"></div>
+          <div class="field"><label for="roster-review">Review through</label><input id="roster-review" name="review_due_on" type="date"><span class="form-note">Required for employee/community lists.</span></div>
+          <div class="field field--wide"><label for="roster-csv">CSV data</label><textarea id="roster-csv" name="csv_text" required spellcheck="false" placeholder="email,full_name,phone,company_name,marketing_status,marketing_source,source_reference&#10;taylor@example.com,Taylor Morgan,,Acme,unknown,,tenant roster"></textarea><span class="form-note">Email is required. Optional columns: full_name, phone, company_name, marketing_status, marketing_source, source_reference. “Subscribed” requires a documented marketing_source. Existing unsubscribes are never overwritten.</span></div>
+          <div class="form-actions"><span class="form-note">Previewing creates a reviewable snapshot only. Applying it requires a separate typed confirmation.</span><button class="primary" type="submit">Preview roster</button></div>
         </form>
       </section>
       <section class="panel">
@@ -1106,6 +1164,7 @@ def render_building_page(
       )}
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Media assignments</h2><p>Attach images and videos to the exact physical space. Draft assets never reach the public site; approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Roster import reviews</h2><p>Previewed lists remain inert until an operator confirms the exact snapshot.</p></div><span class="count">{len(roster_imports)} imports</span></div><div class="table-wrap"><table><thead><tr><th>Roster</th><th>Contacts</th><th>Status</th><th>Action</th></tr></thead><tbody>{roster_import_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Duplicate contact review</h2><p>Preview every move before merging. The survivor keeps the most restrictive communication permission; campaign and inquiry history remains unchanged.</p></div><span class="count">{len(contact_merges)} completed</span></div>

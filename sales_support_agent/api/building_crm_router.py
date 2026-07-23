@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
 import html
+import io
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
@@ -44,6 +46,7 @@ from sales_support_agent.models.entities import (
     BuildingCommunicationPreference,
     BuildingContact,
     BuildingContactMerge,
+    BuildingRosterImport,
     BuildingRelationship,
     BuildingSegment,
     BuildingServiceRequest,
@@ -151,6 +154,103 @@ def _normalize_email(value: str) -> str:
     if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
         raise ValueError("Enter a valid email address.")
     return email
+
+
+ROSTER_RELATIONSHIP_TYPES = {
+    "tenant",
+    "tenant_employee",
+    "event_host",
+    "former_tenant",
+    "community_member",
+    "vendor",
+    "partner",
+}
+ROSTER_COLUMNS = {
+    "email",
+    "full_name",
+    "phone",
+    "company_name",
+    "marketing_status",
+    "marketing_source",
+    "source_reference",
+}
+
+
+def _parse_roster_csv(csv_text: str) -> list[dict[str, str]]:
+    """Normalize a small roster CSV and fail closed on ambiguous consent data."""
+
+    if len(csv_text.encode("utf-8")) > 200_000:
+        raise ValueError("Roster CSV is larger than 200 KB.")
+    reader = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")))
+    if not reader.fieldnames:
+        raise ValueError("Roster CSV needs a header row.")
+    normalized_headers = [str(item or "").strip().lower() for item in reader.fieldnames]
+    if "email" not in normalized_headers:
+        raise ValueError("Roster CSV must include an email column.")
+    unknown = set(normalized_headers) - ROSTER_COLUMNS
+    if unknown:
+        raise ValueError(
+            "Unsupported roster columns: " + ", ".join(sorted(unknown)) + "."
+        )
+    reader.fieldnames = normalized_headers
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line_number, raw in enumerate(reader, start=2):
+        if not any(str(value or "").strip() for value in raw.values()):
+            continue
+        try:
+            email = _normalize_email(str(raw.get("email") or ""))
+        except ValueError as exc:
+            raise ValueError(f"Row {line_number}: {exc}") from exc
+        if email in seen:
+            raise ValueError(f"Row {line_number}: duplicate email {email}.")
+        seen.add(email)
+        marketing_status = str(raw.get("marketing_status") or "unknown").strip().lower()
+        if marketing_status not in MARKETING_STATUSES:
+            raise ValueError(
+                f"Row {line_number}: marketing_status must be unknown, subscribed, "
+                "or unsubscribed."
+            )
+        marketing_source = str(raw.get("marketing_source") or "").strip()[:64]
+        if marketing_status == "subscribed" and not marketing_source:
+            raise ValueError(
+                f"Row {line_number}: subscribed requires a documented marketing_source."
+            )
+        row = {
+            "email": email,
+            "full_name": str(raw.get("full_name") or "").strip()[:255],
+            "phone": str(raw.get("phone") or "").strip()[:128],
+            "company_name": str(raw.get("company_name") or "").strip()[:255],
+            "marketing_status": marketing_status,
+            "marketing_source": marketing_source,
+            "source_reference": str(raw.get("source_reference") or "").strip()[:255],
+        }
+        rows.append(row)
+        if len(rows) > 500:
+            raise ValueError("Roster CSV may contain at most 500 contacts.")
+    if not rows:
+        raise ValueError("Roster CSV has no contact rows.")
+    return rows
+
+
+def _roster_preview_hash(
+    *,
+    rows: list[dict[str, str]],
+    relationship_type: str,
+    organization: str,
+    list_owner: str,
+    review_due_on: date | None,
+) -> str:
+    payload = {
+        "rows": rows,
+        "relationship_type": relationship_type,
+        "organization": organization,
+        "list_owner": list_owner,
+        "review_due_on": review_due_on.isoformat() if review_due_on else None,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class ContactInput(BaseModel):
@@ -2192,6 +2292,318 @@ def save_rate_plan_from_control_room(
 
 
 @admin_router.post(
+    "/roster-imports/preview",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def preview_roster_import_from_control_room(
+    request: Request,
+    csv_text: str = Form(...),
+    relationship_type: str = Form(...),
+    organization: str = Form(""),
+    list_owner: str = Form(""),
+    review_due_on: str = Form(""),
+    filename: str = Form("pasted-roster.csv"),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Stage a normalized roster snapshot without changing CRM records."""
+
+    actor = user.get("email") or "building-operator"
+    relationship_type = relationship_type.strip()
+    organization = organization.strip()[:255]
+    list_owner = list_owner.strip()[:255]
+    if relationship_type not in ROSTER_RELATIONSHIP_TYPES:
+        return _building_redirect(error="Choose a supported roster relationship.")
+    try:
+        review_date = date.fromisoformat(review_due_on) if review_due_on else None
+    except ValueError:
+        return _building_redirect(error="Choose a valid review-through date.")
+    if relationship_type in REVIEWED_RELATIONSHIP_TYPES:
+        if not list_owner or review_date is None:
+            return _building_redirect(
+                error="Tenant employee and community lists need an owner and review date."
+            )
+        if review_date < date.today():
+            return _building_redirect(error="Review-through date cannot be in the past.")
+    if relationship_type == "tenant_employee" and not organization:
+        return _building_redirect(
+            error="Tenant employee rosters need the tenant organization."
+        )
+    try:
+        rows = _parse_roster_csv(csv_text)
+    except ValueError as exc:
+        return _building_redirect(error=str(exc))
+
+    emails = [row["email"] for row in rows]
+    with session_scope(request.app.state.session_factory) as session:
+        existing_emails = set(
+            session.execute(
+                select(BuildingContact.email).where(BuildingContact.email.in_(emails))
+            ).scalars().all()
+        )
+        import_id = str(uuid4())
+        preview_hash = _roster_preview_hash(
+            rows=rows,
+            relationship_type=relationship_type,
+            organization=organization,
+            list_owner=list_owner,
+            review_due_on=review_date,
+        )
+        session.add(
+            BuildingRosterImport(
+                id=import_id,
+                filename=(filename.strip() or "pasted-roster.csv")[:255],
+                relationship_type=relationship_type,
+                organization=organization,
+                list_owner=list_owner,
+                review_due_on=review_date,
+                rows_json=rows,
+                preview_hash=preview_hash,
+                status="previewed",
+                row_count=len(rows),
+                new_contact_count=len(rows) - len(existing_emails),
+                existing_contact_count=len(existing_emails),
+                created_by=actor,
+            )
+        )
+        session.add(
+            BuildingAuditEvent(
+                entity_type="roster_import",
+                entity_id=import_id,
+                action="previewed_from_control_room",
+                actor=actor,
+                after_json={
+                    "relationship_type": relationship_type,
+                    "organization": organization,
+                    "row_count": len(rows),
+                    "new_contact_count": len(rows) - len(existing_emails),
+                    "existing_contact_count": len(existing_emails),
+                    "preview_hash": preview_hash,
+                },
+            )
+        )
+    return _building_redirect(
+        notice=(
+            f"Roster preview ready: {len(rows)} rows, "
+            f"{len(rows) - len(existing_emails)} new contacts, "
+            f"{len(existing_emails)} existing contacts. Review and confirm below."
+        )
+    )
+
+
+@admin_router.post(
+    "/roster-imports/{import_id}/apply",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def apply_roster_import_from_control_room(
+    import_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    """Apply a staged roster while preserving opt-outs and existing profile data."""
+
+    actor = user.get("email") or "building-operator"
+    expected_confirmation = f"IMPORT {import_id}"
+    if confirmation.strip() != expected_confirmation:
+        return _building_redirect(error=f"Type {expected_confirmation} to confirm.")
+    with session_scope(request.app.state.session_factory) as session:
+        roster = session.execute(
+            select(BuildingRosterImport)
+            .where(BuildingRosterImport.id == import_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if roster is None:
+            return _building_redirect(error="Roster preview not found.")
+        if roster.status != "previewed":
+            return _building_redirect(error="This roster preview is no longer pending.")
+        rows = list(roster.rows_json or [])
+        current_hash = _roster_preview_hash(
+            rows=rows,
+            relationship_type=roster.relationship_type,
+            organization=roster.organization,
+            list_owner=roster.list_owner,
+            review_due_on=roster.review_due_on,
+        )
+        if not hmac.compare_digest(current_hash, roster.preview_hash):
+            return _building_redirect(
+                error="Roster preview integrity check failed; create a new preview."
+            )
+
+        counts = {
+            "created": 0,
+            "updated": 0,
+            "relationships_created": 0,
+            "opt_outs_preserved": 0,
+        }
+        for row in rows:
+            contact = session.execute(
+                select(BuildingContact).where(BuildingContact.email == row["email"])
+            ).scalar_one_or_none()
+            before: dict[str, Any] = {}
+            if contact is None:
+                contact = BuildingContact(
+                    id=str(uuid4()),
+                    email=row["email"],
+                    full_name=row["full_name"],
+                    phone=row["phone"],
+                    company_name=row["company_name"],
+                    source="roster_import",
+                    metadata_json={"roster_import_id": roster.id},
+                )
+                session.add(contact)
+                session.flush()
+                counts["created"] += 1
+            else:
+                before = {
+                    "full_name": contact.full_name,
+                    "phone": contact.phone,
+                    "company_name": contact.company_name,
+                }
+                for field in ("full_name", "phone", "company_name"):
+                    if not str(getattr(contact, field) or "").strip() and row[field]:
+                        setattr(contact, field, row[field])
+                contact.updated_at = _now()
+                counts["updated"] += 1
+
+            relationship = session.execute(
+                select(BuildingRelationship).where(
+                    BuildingRelationship.contact_id == contact.id,
+                    BuildingRelationship.relationship_type
+                    == roster.relationship_type,
+                    BuildingRelationship.organization == roster.organization,
+                )
+            ).scalars().first()
+            governance = {}
+            if roster.relationship_type in REVIEWED_RELATIONSHIP_TYPES:
+                governance = {
+                    "list_owner": roster.list_owner,
+                    "review_due_on": roster.review_due_on.isoformat(),
+                    "reviewed_at": _now().isoformat(),
+                    "reviewed_by": actor,
+                    "roster_import_id": roster.id,
+                }
+            if relationship is None:
+                relationship = BuildingRelationship(
+                    id=str(uuid4()),
+                    contact_id=contact.id,
+                    relationship_type=roster.relationship_type,
+                    status="active",
+                    organization=roster.organization,
+                    source_reference=(
+                        row["source_reference"] or f"roster-import:{roster.id}"
+                    ),
+                    metadata_json=governance,
+                )
+                session.add(relationship)
+                counts["relationships_created"] += 1
+            else:
+                relationship.status = "active"
+                if governance:
+                    metadata = dict(relationship.metadata_json or {})
+                    metadata.update(governance)
+                    relationship.metadata_json = metadata
+                relationship.updated_at = _now()
+
+            preference = session.get(BuildingCommunicationPreference, contact.id)
+            if preference is None:
+                preference = BuildingCommunicationPreference(
+                    contact_id=contact.id,
+                    marketing_status="unknown",
+                    marketing_source="roster_import",
+                    updated_by=actor,
+                )
+                session.add(preference)
+            requested_status = row["marketing_status"]
+            if preference.marketing_status == "unsubscribed":
+                if requested_status != "unsubscribed":
+                    counts["opt_outs_preserved"] += 1
+            elif requested_status in {"subscribed", "unsubscribed"}:
+                preference.marketing_status = requested_status
+                preference.marketing_source = (
+                    row["marketing_source"] or "roster_import"
+                )
+                preference.marketing_changed_at = _now()
+                preference.updated_by = actor
+                preference.updated_at = _now()
+
+            session.add(
+                BuildingAuditEvent(
+                    entity_type="contact",
+                    entity_id=contact.id,
+                    action="roster_import_applied",
+                    actor=actor,
+                    before_json=before,
+                    after_json={
+                        "roster_import_id": roster.id,
+                        "relationship_type": roster.relationship_type,
+                        "organization": roster.organization,
+                        "requested_marketing_status": requested_status,
+                        "effective_marketing_status": preference.marketing_status,
+                    },
+                )
+            )
+
+        roster.status = "applied"
+        roster.applied_by = actor
+        roster.applied_at = _now()
+        session.add(
+            BuildingAuditEvent(
+                entity_type="roster_import",
+                entity_id=roster.id,
+                action="applied_from_control_room",
+                actor=actor,
+                before_json={"status": "previewed"},
+                after_json={"status": roster.status, **counts},
+            )
+        )
+        roster_filename = roster.filename
+    return _building_redirect(
+        notice=(
+            f"{roster_filename} imported: {counts['created']} created, "
+            f"{counts['updated']} matched, "
+            f"{counts['opt_outs_preserved']} opt-outs preserved."
+        )
+    )
+
+
+@admin_router.post(
+    "/roster-imports/{import_id}/cancel",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def cancel_roster_import_from_control_room(
+    import_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    with session_scope(request.app.state.session_factory) as session:
+        roster = session.execute(
+            select(BuildingRosterImport)
+            .where(BuildingRosterImport.id == import_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if roster is None:
+            return _building_redirect(error="Roster preview not found.")
+        if roster.status != "previewed":
+            return _building_redirect(error="This roster preview is no longer pending.")
+        roster.status = "cancelled"
+        session.add(
+            BuildingAuditEvent(
+                entity_type="roster_import",
+                entity_id=roster.id,
+                action="cancelled_from_control_room",
+                actor=actor,
+                before_json={"status": "previewed"},
+                after_json={"status": roster.status},
+            )
+        )
+    return _building_redirect(notice="Roster preview cancelled; no contacts changed.")
+
+
+@admin_router.post(
     "/contacts",
     dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
@@ -2923,6 +3335,11 @@ def building_control_room(
             .order_by(BuildingContactMerge.completed_at.desc())
             .limit(50)
         ).scalars().all()
+        roster_import_rows = session.execute(
+            select(BuildingRosterImport)
+            .order_by(BuildingRosterImport.created_at.desc())
+            .limit(25)
+        ).scalars().all()
         contact_ids = [item.id for item in contact_rows]
         relationships: dict[str, list[BuildingRelationship]] = {}
         preferences: dict[str, BuildingCommunicationPreference] = {}
@@ -3242,6 +3659,35 @@ def building_control_room(
             contacts=contacts,
             segments=segments,
             campaigns=campaigns,
+            roster_imports=[
+                {
+                    "id": item.id,
+                    "filename": item.filename,
+                    "relationship_type": item.relationship_type,
+                    "organization": item.organization,
+                    "list_owner": item.list_owner,
+                    "review_due_on": (
+                        item.review_due_on.isoformat()
+                        if item.review_due_on
+                        else ""
+                    ),
+                    "status": item.status,
+                    "row_count": item.row_count,
+                    "new_contact_count": item.new_contact_count,
+                    "existing_contact_count": item.existing_contact_count,
+                    "created_by": item.created_by,
+                    "created_at": _mountain(item.created_at).strftime(
+                        "%b %d, %Y · %I:%M %p MT"
+                    ),
+                    "applied_by": item.applied_by,
+                    "rows": (
+                        list(item.rows_json or [])
+                        if item.status == "previewed"
+                        else []
+                    ),
+                }
+                for item in roster_import_rows
+            ],
             inquiries=[
                 {
                     "name": item.name,

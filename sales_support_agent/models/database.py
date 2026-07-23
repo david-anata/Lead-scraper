@@ -251,6 +251,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_audit_events",
         "building_contacts",
         "building_contact_merges",
+        "building_roster_imports",
         "building_relationships",
         "building_communication_preferences",
         "building_suppressions",

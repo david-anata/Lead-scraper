@@ -1474,6 +1474,33 @@ class BuildingContactMerge(Base):
     )
 
 
+class BuildingRosterImport(Base):
+    """A reviewed, immutable roster snapshot awaiting explicit application."""
+
+    __tablename__ = "building_roster_imports"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    relationship_type: Mapped[str] = mapped_column(String(64), index=True)
+    organization: Mapped[str] = mapped_column(String(255), default="")
+    list_owner: Mapped[str] = mapped_column(String(255), default="")
+    review_due_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    rows_json: Mapped[list] = mapped_column(JSON, default=list)
+    preview_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="previewed", index=True)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    new_contact_count: Mapped[int] = mapped_column(Integer, default=0)
+    existing_contact_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[str] = mapped_column(String(255))
+    applied_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    applied_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class BuildingRelationship(Base):
     __tablename__ = "building_relationships"
 

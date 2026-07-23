@@ -408,6 +408,9 @@ Rules:
   campaigns by default.
 - Tenant employee lists must have an owner and periodic review so former
   employees do not remain active indefinitely.
+- Bulk roster onboarding is preview-first, reports new and matched contacts,
+  requires typed confirmation, and never overwrites an existing unsubscribe or
+  infers consent from possession of an email address.
 
 ### Billing and collection
 
@@ -765,6 +768,8 @@ an integration shutdown.
 
 - A contact may be a tenant, prospect, and event host without duplication.
 - Operators can preview why each contact is included or excluded from a segment.
+- Operators can preview and confirm a reviewed roster import without creating
+  duplicate contacts or reviving an existing marketing opt-out.
 - Marketing-unsubscribed contacts are excluded immediately from promotional
   sends.
 - Required transactional messages remain independently deliverable when
