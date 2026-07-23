@@ -5,7 +5,11 @@ from __future__ import annotations
 from contextlib import contextmanager
 import csv
 from datetime import date, timedelta
+import hashlib
 from io import StringIO
+from io import BytesIO
+import json
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from sqlalchemy.orm import Session
 
@@ -35,10 +39,16 @@ def _session():
 
 
 def _csv(headers: list[str], rows: list[list]) -> str:
+    def safe_cell(value):
+        """Keep user-controlled text from becoming a spreadsheet formula."""
+        if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+            return "'" + value
+        return value
+
     output = StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(headers)
-    writer.writerows(rows)
+    writer.writerows([[safe_cell(value) for value in row] for row in rows])
     return output.getvalue()
 
 
@@ -212,4 +222,39 @@ def export_csv(
                   row.confirmation_reference, row.evidence_note,
                   row.completed_by, row.completed_at] for row in rows],
             )
-    return None
+        return None
+
+
+def export_backup_zip(*, year: int | None = None) -> bytes:
+    """Build a checksum-verifiable HR operations backup without sealed PII."""
+    report_year = year or date.today().year
+    kinds = (
+        "employees", "time", "payroll", "liabilities", "compliance",
+        "contractors", "audit", "year-to-date-register",
+    )
+    files: dict[str, bytes] = {}
+    for kind in kinds:
+        content = export_csv(kind, year=report_year)
+        if content is not None:
+            files[f"{kind}.csv"] = content.encode("utf-8-sig")
+    manifest = {
+        "format": "anata-hr-operational-backup-v1",
+        "tax_year": report_year,
+        "contains_sealed_tax_forms": False,
+        "contains_full_ssns": False,
+        "files": {
+            name: {
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for name, payload in sorted(files.items())
+        },
+    }
+    files["manifest.json"] = json.dumps(
+        manifest, indent=2, sort_keys=True
+    ).encode("utf-8")
+    output = BytesIO()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+        for name, payload in sorted(files.items()):
+            archive.writestr(name, payload)
+    return output.getvalue()

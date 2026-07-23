@@ -493,6 +493,29 @@ class HRSectionTests(unittest.TestCase):
             quarterly.headers["content-disposition"],
         )
 
+    def test_hr_backup_is_private_and_checksum_verifiable(self):
+        import hashlib
+        import io
+        import json
+        import zipfile
+
+        response = self._get("/admin/hr/reports/backup.zip?year=2026", self.sa)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            names = set(archive.namelist())
+            self.assertIn("manifest.json", names)
+            self.assertIn("year-to-date-register.csv", names)
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertFalse(manifest["contains_full_ssns"])
+            self.assertFalse(manifest["contains_sealed_tax_forms"])
+            for name, details in manifest["files"].items():
+                self.assertEqual(
+                    hashlib.sha256(archive.read(name)).hexdigest(),
+                    details["sha256"],
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,7 @@ from datetime import date
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from sales_support_agent.services.auth_deps import require_tool
 from sales_support_agent.services.access.notify import send_invite_email
@@ -454,6 +454,24 @@ async def hr_report_csv(
         content, media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="anata-hr-{kind}{suffix}.csv"',
                  "Cache-Control": "no-store"},
+    )
+
+
+@router.get("/reports/backup.zip")
+async def hr_backup_zip(
+    year: int | None = None, user: dict = Depends(_pay_guard)
+):
+    report_year = year or date.today().year
+    content = reporting.export_backup_zip(year=report_year)
+    return Response(
+        content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="anata-hr-backup-{report_year}.zip"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

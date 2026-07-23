@@ -880,6 +880,12 @@ def render_hr_reports(*, user) -> str:
     <p class="hr-sub">Portable records for review, backup, accountant handoff, or a future payroll-provider migration.</p>
     <div class="hr-callout warn"><div class="hr-kicker">Sensitive records</div>
     <p>Exports intentionally exclude full Social Security numbers and sealed tax-election data. Store downloaded files securely.</p></div>
+    <form method="get" action="/admin/hr/reports/backup.zip" class="hr-card">
+      <div class="hr-kicker">Operational recovery</div><h2>Download verified HR backup</h2>
+      <p class="hr-sub">A ZIP of operational CSV records plus a checksum manifest. Sealed tax forms and full SSNs are excluded.</p>
+      <label>Tax year</label><input type="number" name="year" min="2026" value="{today.year}" required>
+      <button class="hr-btn" type="submit">Download HR backup</button>
+    </form>
     <div class="hr-grid2">
       <form method="get" action="/admin/hr/reports/quarterly-register.csv" class="hr-card">
         <div class="hr-kicker">Accountant handoff</div><h2>Quarterly payroll register</h2>
