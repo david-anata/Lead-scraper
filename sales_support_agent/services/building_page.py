@@ -316,13 +316,16 @@ def render_building_page(
         rows = list(item.get("rows") or [])
         if not rows:
             return ""
-        contacts = "".join(
-            f"<li><strong>{_esc(row.get('full_name') or row.get('email'))}</strong> "
-            f"· {_esc(row.get('email'))} · "
-            f"{_esc(str(row.get('marketing_status') or 'unknown').replace('_', ' '))}"
-            f"{f' ({_esc(row.get('marketing_source'))})' if row.get('marketing_source') else ''}</li>"
-            for row in rows
-        )
+        contacts = ""
+        for row in rows:
+            source = row.get("marketing_source")
+            source_suffix = f" ({_esc(source)})" if source else ""
+            contacts += (
+                f"<li><strong>{_esc(row.get('full_name') or row.get('email'))}</strong> "
+                f"· {_esc(row.get('email'))} · "
+                f"{_esc(str(row.get('marketing_status') or 'unknown').replace('_', ' '))}"
+                f"{source_suffix}</li>"
+            )
         return (
             '<details class="row-actions"><summary>Review exact contacts</summary>'
             f'<ul class="roster-preview">{contacts}</ul></details>'

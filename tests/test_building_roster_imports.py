@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ast
 import dataclasses
 import os
 import re
 import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault(
     "SALES_AGENT_DB_URL",
@@ -231,3 +233,12 @@ class BuildingRosterImportTests(unittest.TestCase):
         self.assertIn("error=", response.headers["location"])
         with self.factory() as session:
             self.assertEqual(session.query(BuildingRosterImport).count(), 0)
+
+    def test_building_roster_code_uses_production_python_grammar(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        for relative_path in (
+            "sales_support_agent/api/building_crm_router.py",
+            "sales_support_agent/services/building_page.py",
+        ):
+            source = (repo_root / relative_path).read_text(encoding="utf-8")
+            ast.parse(source, filename=relative_path, feature_version=(3, 11))
