@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable
@@ -34,7 +35,9 @@ from sales_support_agent.api.building_booking_router import (
     transition_reservation,
 )
 from sales_support_agent.api.building_router import (
+    InquiryInput,
     InquiryRetryInput,
+    create_inquiry,
     retry_inquiry_hubspot,
 )
 from sales_support_agent.api.building_calendar_router import (
@@ -84,6 +87,18 @@ def _internal_key(request: Request) -> str:
     return key
 
 
+def _building_site_key(request: Request) -> str:
+    key = str(
+        getattr(request.app.state.settings, "building_site_intake_key", "") or ""
+    ).strip()
+    if not key:
+        raise HTTPException(
+            status_code=503,
+            detail="Building inquiry intake is not configured.",
+        )
+    return key
+
+
 def _actor(user: dict) -> str:
     return str(user.get("email") or "building-operator")
 
@@ -117,6 +132,68 @@ def _run_form_action(action: Callable[[], object], success: str) -> RedirectResp
     except HTTPException as exc:
         return _redirect(error=str(exc.detail))
     return _redirect(notice=success)
+
+
+@router.post("/inquiries", dependencies=FORM_DEPS)
+def create_assisted_inquiry_from_control_room(
+    request: Request,
+    kind: str = Form(...),
+    name: str = Form(...),
+    email: str = Form(...),
+    phone: str = Form(""),
+    preferred_date: str = Form(""),
+    offering_id: str = Form(""),
+    source: str = Form(...),
+    source_reference: str = Form(""),
+    details: str = Form(""),
+    consent_to_contact: bool = Form(False),
+    consent_to_marketing: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    external_sources = {"facebook_marketplace", "eventective"}
+    normalized_source = source.strip()
+    normalized_reference = source_reference.strip()
+    if normalized_source in external_sources and not normalized_reference:
+        return _redirect(
+            error="Marketplace and Eventective leads require the original message or listing reference."
+        )
+    identity = (
+        f"{normalized_source}:{normalized_reference or uuid4()}:{email.strip().lower()}"
+    )
+    idempotency_key = "assisted:" + hashlib.sha256(identity.encode()).hexdigest()
+
+    def action() -> None:
+        request.state.building_inquiry_actor = _actor(user)
+        create_inquiry(
+            InquiryInput(
+                kind=kind,
+                name=name.strip(),
+                email=email,
+                phone=phone.strip(),
+                preferred_date=(
+                    date.fromisoformat(preferred_date)
+                    if preferred_date.strip()
+                    else None
+                ),
+                offering_id=offering_id.strip() or None,
+                source=normalized_source,
+                source_reference=normalized_reference,
+                consent_to_contact=consent_to_contact,
+                consent_to_marketing=consent_to_marketing,
+                details={
+                    "assisted_intake": True,
+                    "operator_notes": details.strip(),
+                },
+            ),
+            request,
+            _building_site_key(request),
+            idempotency_key,
+        )
+
+    return _run_form_action(
+        action,
+        "Lead added to the inquiry and CRM response queue.",
+    )
 
 
 @router.post("/reservations", dependencies=FORM_DEPS)

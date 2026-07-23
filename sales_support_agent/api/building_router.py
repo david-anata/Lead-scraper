@@ -247,6 +247,10 @@ def create_inquiry(
         raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required.")
 
     with session_scope(request.app.state.session_factory) as session:
+        actor = str(
+            getattr(request.state, "building_inquiry_actor", "building-site")
+            or "building-site"
+        )
         existing = session.execute(
             select(BuildingInquiry).where(BuildingInquiry.idempotency_key == dedupe_key)
         ).scalar_one_or_none()
@@ -320,7 +324,7 @@ def create_inquiry(
             entity_type="inquiry",
             entity_id=inquiry.id,
             action="created",
-            actor="building-site",
+            actor=actor,
             after_json={"kind": inquiry.kind, "source": inquiry.source, "offering_id": inquiry.offering_id},
         ))
 
@@ -331,7 +335,7 @@ def create_inquiry(
                 inquiry=inquiry,
                 contact=contact,
                 client=client,
-                actor="building-site",
+                actor=actor,
             )
         return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
 

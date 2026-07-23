@@ -266,6 +266,14 @@ email before creating one and reuses any stored HubSpot contact ID, preventing
 an ordinary retry from creating an uncontrolled duplicate. Success returns the
 inquiry to the new-lead queue and preserves the sync audit history.
 
+Building Control also provides assisted intake for Facebook Marketplace,
+Eventective, referrals, phone calls, walk-ins, and direct inquiries. External
+platform leads require the original listing or message reference and follow the
+same contact deduplication, attribution, consent, HubSpot sync, and retry path
+as website leads. Re-entering the same source reference and email is
+idempotent. Promotional consent remains a separate explicit checkbox and is
+never inferred from permission to answer the inquiry.
+
 An inquiry is not a booking. Event and workspace reservations begin in
 `inquiry` and can move only through their approved state transitions. A
 confirmed reservation requires signed-agreement evidence and, when configured,

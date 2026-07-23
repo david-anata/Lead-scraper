@@ -493,6 +493,25 @@ def render_building_page(
         </form>
       </section>
       <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Add an assisted lead</h2><p>Normalize Facebook Marketplace, Eventective, referral, phone, and walk-in leads into the same inquiry and CRM recovery queue.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/inquiries">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="lead-kind">Journey</label><select id="lead-kind" name="kind"><option value="workspace">Workspace</option><option value="tour">Tour</option><option value="event">Event</option></select></div>
+          <div class="field"><label for="lead-source">Lead source</label><select id="lead-source" name="source"><option value="facebook_marketplace">Facebook Marketplace</option><option value="eventective">Eventective</option><option value="referral">Referral</option><option value="phone">Phone</option><option value="walk_in">Walk-in</option><option value="direct">Direct</option></select></div>
+          <div class="field"><label for="lead-name">Name</label><input id="lead-name" name="name" required></div>
+          <div class="field"><label for="lead-email">Email</label><input id="lead-email" name="email" type="email" required></div>
+          <div class="field"><label for="lead-phone">Phone</label><input id="lead-phone" name="phone" type="tel"></div>
+          <div class="field"><label for="lead-date">Preferred date</label><input id="lead-date" name="preferred_date" type="date"></div>
+          <div class="field"><label for="lead-offering">Offering</label><select id="lead-offering" name="offering_id"><option value="">Not decided</option>{offering_options}</select></div>
+          <div class="field"><label for="lead-reference">Original source reference</label><input id="lead-reference" name="source_reference" placeholder="Required for Marketplace or Eventective"></div>
+          <div class="field field--wide"><label for="lead-details">Original request and operator notes</label><textarea id="lead-details" name="details" placeholder="Preserve the requested dates, capacity, budget, and original message."></textarea></div>
+          <div class="form-actions">
+            <div><label class="check"><input type="checkbox" name="consent_to_contact" value="true" required> The person asked to be contacted about this request</label><label class="check"><input type="checkbox" name="consent_to_marketing" value="true"> Separate promotional-email consent is documented</label></div>
+            <button class="primary" type="submit">Add lead to response queue</button>
+          </div>
+        </form>
+      </section>
+      <section class="panel panel--wide">
         <div class="panel-head"><div><h2>Start a booking workflow</h2><p>Create an event or workspace inquiry. This does not hold or confirm inventory.</p></div></div>
         <form class="form-grid" method="post" action="/admin/building/reservations">
           <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">

@@ -25,6 +25,8 @@ try:
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
         BuildingBillingSchedule,
+        BuildingAuditEvent,
+        BuildingInquiry,
         BuildingInvoice,
         BuildingReservation,
     )
@@ -52,6 +54,7 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         app.state.settings = dataclasses.replace(
             app.state.settings,
             internal_api_key="internal-test-key",
+            building_site_intake_key="building-assisted-test-key",
             building_campaign_token_secret="building-admin-operations-test-secret",
             stripe_secret_key="sk_test_building",
         )
@@ -103,6 +106,55 @@ class BuildingAdminOperationsTests(unittest.TestCase):
 
     def _assert_notice(self, response) -> None:
         self.assertIn("notice=", response.headers["location"])
+
+    def test_00_assisted_lead_preserves_source_consent_and_deduplication(self) -> None:
+        missing_reference = self._post(
+            "/admin/building/inquiries",
+            {
+                "kind": "event",
+                "source": "eventective",
+                "name": "Assisted Event Lead",
+                "email": "assisted-event@example.com",
+                "consent_to_contact": "true",
+            },
+        )
+        self.assertIn("error=", missing_reference.headers["location"])
+        payload = {
+            "kind": "event",
+            "source": "eventective",
+            "source_reference": "eventective-lead-123",
+            "name": "Assisted Event Lead",
+            "email": "assisted-event@example.com",
+            "phone": "801-555-0199",
+            "preferred_date": (date.today() + timedelta(days=45)).isoformat(),
+            "details": "Company gathering for 40 people.",
+            "consent_to_contact": "true",
+        }
+        with patch(
+            "sales_support_agent.api.building_router.HubSpotClient"
+        ) as hubspot:
+            hubspot.return_value.is_configured = False
+            first = self._post("/admin/building/inquiries", payload)
+            second = self._post("/admin/building/inquiries", payload)
+        self._assert_notice(first)
+        self._assert_notice(second)
+        with self.factory() as session:
+            inquiries = session.query(BuildingInquiry).filter(
+                BuildingInquiry.email == "assisted-event@example.com"
+            ).all()
+            self.assertEqual(len(inquiries), 1)
+            self.assertEqual(inquiries[0].source, "eventective")
+            self.assertEqual(
+                inquiries[0].source_reference,
+                "eventective-lead-123",
+            )
+            self.assertFalse(inquiries[0].consent_to_marketing)
+            audit = session.query(BuildingAuditEvent).filter(
+                BuildingAuditEvent.entity_type == "inquiry",
+                BuildingAuditEvent.entity_id == inquiries[0].id,
+                BuildingAuditEvent.action == "created",
+            ).one()
+            self.assertEqual(audit.actor, "david@anatainc.com")
 
     def test_01_operator_completes_guarded_event_booking_evidence(self) -> None:
         starts = datetime.now() + timedelta(days=14)
