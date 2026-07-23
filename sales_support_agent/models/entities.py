@@ -1737,6 +1737,50 @@ class BuildingAgreement(Base):
     )
 
 
+class BuildingProposal(Base):
+    """Versioned commercial proposal or event quote tied to a reservation."""
+
+    __tablename__ = "building_proposals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    proposal_type: Mapped[str] = mapped_column(String(32), default="proposal")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    line_items_json: Mapped[list] = mapped_column(JSON, default=list)
+    terms_summary: Mapped[str] = mapped_column(Text, default="")
+    valid_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    document_url: Mapped[str] = mapped_column(String(1024), default="")
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    voided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index("ix_building_proposal_version", "reservation_id", "version", unique=True),
+    )
+
+
 class BuildingDepositEvidence(Base):
     __tablename__ = "building_deposit_evidence"
 

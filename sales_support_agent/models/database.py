@@ -125,6 +125,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_email_events",
         "building_reservations",
         "building_agreements",
+        "building_proposals",
         "building_deposit_evidence",
         "building_billing_accounts",
         "building_billing_schedules",

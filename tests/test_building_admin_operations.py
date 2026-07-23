@@ -278,11 +278,32 @@ class BuildingAdminOperationsTests(unittest.TestCase):
                 "reason": "Client requested a short hold.",
             },
         ))
-        for state in ("quote_sent", "contract_pending"):
+        proposal_payload = {
+            "proposal_type": "quote",
+            "version": "1",
+            "amount": "2500.00",
+            "line_item": "Event package",
+            "terms_summary": "Four-hour event package.",
+            "valid_until": (starts.date() + timedelta(days=7)).isoformat(),
+            "document_url": "https://example.com/event-quote.pdf",
+        }
+        for proposal_status in ("draft", "approved", "sent"):
             self._assert_notice(self._post(
-                f"/admin/building/reservations/{reservation_id}/transition",
-                {"target_status": state, "reason": "Workflow progression."},
+                f"/admin/building/reservations/{reservation_id}/proposals",
+                {**proposal_payload, "status": proposal_status},
             ))
+        self._assert_notice(self._post(
+            f"/admin/building/reservations/{reservation_id}/transition",
+            {"target_status": "quote_sent", "reason": "Workflow progression."},
+        ))
+        self._assert_notice(self._post(
+            f"/admin/building/reservations/{reservation_id}/proposals",
+            {**proposal_payload, "status": "accepted"},
+        ))
+        self._assert_notice(self._post(
+            f"/admin/building/reservations/{reservation_id}/transition",
+            {"target_status": "contract_pending", "reason": "Workflow progression."},
+        ))
         agreement = self._post(
             f"/admin/building/reservations/{reservation_id}/agreements",
             {

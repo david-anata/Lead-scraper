@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from sales_support_agent.models.entities import (
     BuildingDepositEvidence,
     BuildingInquiry,
     BuildingOffering,
+    BuildingProposal,
     BuildingReservation,
     BuildingSpace,
 )
@@ -60,6 +61,14 @@ WORKSPACE_TRANSITIONS = {
 }
 AGREEMENT_STATUSES = {"draft", "sent", "signed", "voided"}
 DEPOSIT_STATUSES = {"not_started", "due", "pending", "paid", "refunded", "waived"}
+PROPOSAL_TRANSITIONS = {
+    "draft": {"approved", "voided"},
+    "approved": {"sent", "voided"},
+    "sent": {"accepted", "declined", "voided"},
+    "accepted": set(),
+    "declined": set(),
+    "voided": set(),
+}
 
 
 def _now() -> datetime:
@@ -114,6 +123,21 @@ class AgreementInput(BaseModel):
     template_name: str = Field(default="", max_length=255)
     document_url: str = Field(default="", max_length=1024)
     evidence: dict[str, Any] = Field(default_factory=dict)
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class ProposalInput(BaseModel):
+    id: str | None = Field(default=None, max_length=64)
+    version: int = Field(default=1, ge=1)
+    status: Literal["draft", "approved", "sent", "accepted", "declined", "voided"]
+    proposal_type: Literal["proposal", "quote"] = "proposal"
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    amount_cents: int = Field(default=0, ge=0)
+    line_items: list[dict[str, Any]] = Field(default_factory=list)
+    terms_summary: str = Field(default="", max_length=4000)
+    valid_until: date | None = None
+    document_url: str = Field(default="", max_length=1024)
+    approved_by: str = Field(default="", max_length=255)
     actor: str = Field(min_length=1, max_length=255)
 
 
@@ -317,6 +341,31 @@ def transition_reservation(
                 block.updated_at = _now()
             session.add(block)
             row.hold_expires_at = payload.hold_expires_at
+        if payload.target_status in {"proposal_sent", "quote_sent"}:
+            latest_proposal = session.execute(
+                select(BuildingProposal)
+                .where(BuildingProposal.reservation_id == row.id)
+                .order_by(BuildingProposal.version.desc())
+            ).scalars().first()
+            if latest_proposal is None or latest_proposal.status not in {
+                "sent", "accepted"
+            }:
+                noun = "quote" if row.kind == "event" else "proposal"
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A versioned, approved, sent {noun} is required.",
+                )
+        if payload.target_status == "contract_pending":
+            latest_proposal = session.execute(
+                select(BuildingProposal)
+                .where(BuildingProposal.reservation_id == row.id)
+                .order_by(BuildingProposal.version.desc())
+            ).scalars().first()
+            if latest_proposal is None or latest_proposal.status != "accepted":
+                raise HTTPException(
+                    status_code=409,
+                    detail="An accepted proposal or quote is required before contract preparation.",
+                )
         if payload.target_status == "confirmed":
             if row.agreement_status != "signed":
                 raise HTTPException(status_code=409, detail="A signed agreement is required.")
@@ -375,6 +424,166 @@ def transition_reservation(
             after_json={"status": row.status, "reason": payload.reason},
         ))
         return {"ok": True, "reservation": _reservation_payload(row)}
+
+
+@router.get("/{reservation_id}/proposals")
+def list_proposals(
+    reservation_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        if session.get(BuildingReservation, reservation_id) is None:
+            raise HTTPException(status_code=404, detail="Reservation not found.")
+        rows = session.execute(
+            select(BuildingProposal)
+            .where(BuildingProposal.reservation_id == reservation_id)
+            .order_by(BuildingProposal.version.desc())
+        ).scalars().all()
+        return {"proposals": [
+            {
+                "id": row.id,
+                "version": row.version,
+                "proposal_type": row.proposal_type,
+                "status": row.status,
+                "currency": row.currency,
+                "amount_cents": row.amount_cents,
+                "line_items": list(row.line_items_json or []),
+                "terms_summary": row.terms_summary,
+                "valid_until": row.valid_until.isoformat() if row.valid_until else None,
+                "document_url": row.document_url,
+                "approved_by": row.approved_by,
+                "approved_at": row.approved_at.isoformat() if row.approved_at else None,
+                "sent_at": row.sent_at.isoformat() if row.sent_at else None,
+                "accepted_at": row.accepted_at.isoformat() if row.accepted_at else None,
+            }
+            for row in rows
+        ]}
+
+
+@router.post("/{reservation_id}/proposals", status_code=201)
+def record_proposal(
+    reservation_id: str,
+    payload: ProposalInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    if payload.status in {"approved", "sent", "accepted"} and payload.amount_cents <= 0:
+        raise HTTPException(status_code=422, detail="Approved proposals require an amount.")
+    if payload.status in {"sent", "accepted"} and not payload.document_url.strip():
+        raise HTTPException(status_code=422, detail="Sent proposals require a document link.")
+    if (
+        payload.status in {"approved", "sent", "accepted"}
+        and payload.valid_until is not None
+        and payload.valid_until < _now().date()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This proposal or quote has expired; create a new version.",
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, reservation_id)
+        if reservation is None:
+            raise HTTPException(status_code=404, detail="Reservation not found.")
+        expected_type = "quote" if reservation.kind == "event" else "proposal"
+        if payload.proposal_type != expected_type:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{reservation.kind.title()} reservations use {expected_type} records.",
+            )
+        row = session.execute(
+            select(BuildingProposal).where(
+                BuildingProposal.reservation_id == reservation_id,
+                BuildingProposal.version == payload.version,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            if payload.status != "draft":
+                raise HTTPException(
+                    status_code=409, detail="Create a draft before approving or sending it."
+                )
+            row = BuildingProposal(
+                id=payload.id or str(uuid4()),
+                reservation_id=reservation_id,
+                version=payload.version,
+                proposal_type=payload.proposal_type,
+                created_by=payload.actor,
+            )
+            before: dict[str, Any] = {}
+        else:
+            before = {
+                "status": row.status,
+                "amount_cents": row.amount_cents,
+                "document_url": row.document_url,
+            }
+            if payload.status != row.status and payload.status not in PROPOSAL_TRANSITIONS[row.status]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot move proposal from {row.status} to {payload.status}.",
+                )
+            if row.status in {"sent", "accepted", "declined", "voided"}:
+                content_changed = any((
+                    payload.amount_cents != row.amount_cents,
+                    payload.currency.upper() != row.currency,
+                    payload.line_items != list(row.line_items_json or []),
+                    payload.terms_summary.strip() != row.terms_summary,
+                    payload.valid_until != row.valid_until,
+                    payload.document_url.strip() != row.document_url,
+                ))
+                if content_changed:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Sent proposal content is immutable; create a new version.",
+                    )
+        if row.status not in {"sent", "accepted", "declined", "voided"}:
+            row.currency = payload.currency.upper()
+            row.amount_cents = payload.amount_cents
+            row.line_items_json = payload.line_items
+            row.terms_summary = payload.terms_summary.strip()
+            row.valid_until = payload.valid_until
+            row.document_url = payload.document_url.strip()
+        row.status = payload.status
+        row.updated_at = _now()
+        if payload.status == "approved":
+            approver = payload.approved_by.strip()
+            if not approver:
+                raise HTTPException(status_code=422, detail="Proposal approval requires an approver.")
+            row.approved_by = approver
+            row.approved_at = row.approved_at or _now()
+        if payload.status == "sent":
+            if not row.approved_by:
+                raise HTTPException(status_code=409, detail="Approve the proposal before sending.")
+            row.sent_at = row.sent_at or _now()
+        if payload.status == "accepted":
+            row.accepted_at = row.accepted_at or _now()
+        if payload.status == "voided":
+            row.voided_at = row.voided_at or _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="proposal",
+            entity_id=row.id,
+            action=f"proposal_{payload.status}",
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                "reservation_id": reservation_id,
+                "version": row.version,
+                "type": row.proposal_type,
+                "status": row.status,
+                "amount_cents": row.amount_cents,
+                "currency": row.currency,
+                "document_url": row.document_url,
+                "approved_by": row.approved_by,
+            },
+        ))
+        return {
+            "ok": True,
+            "proposal_id": row.id,
+            "version": row.version,
+            "status": row.status,
+        }
 
 
 @router.post("/{reservation_id}/agreements", status_code=201)

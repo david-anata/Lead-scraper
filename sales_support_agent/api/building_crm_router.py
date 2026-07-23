@@ -45,6 +45,7 @@ from sales_support_agent.models.entities import (
     BuildingOperationalChecklist,
     BuildingOperationalChecklistItem,
     BuildingPrivacyRequest,
+    BuildingProposal,
     BuildingReservation,
     BuildingSpace,
 )
@@ -1693,6 +1694,13 @@ def building_control_room(
             .order_by(BuildingReservation.starts_at)
             .limit(100)
         ).scalars().all()
+        proposal_rows = session.execute(
+            select(BuildingProposal)
+            .order_by(BuildingProposal.reservation_id, BuildingProposal.version.desc())
+        ).scalars().all()
+        latest_proposals: dict[str, BuildingProposal] = {}
+        for proposal in proposal_rows:
+            latest_proposals.setdefault(proposal.reservation_id, proposal)
         invoice_rows = session.execute(
             select(BuildingInvoice)
             .order_by(BuildingInvoice.created_at.desc())
@@ -1919,6 +1927,31 @@ def building_control_room(
                     "status": item.status,
                     "agreement_status": item.agreement_status,
                     "deposit_status": item.deposit_status,
+                    "proposal": (
+                        {
+                            "version": latest_proposals[item.id].version,
+                            "proposal_type": latest_proposals[item.id].proposal_type,
+                            "status": latest_proposals[item.id].status,
+                            "currency": latest_proposals[item.id].currency,
+                            "amount_cents": latest_proposals[item.id].amount_cents,
+                            "line_item": str(
+                                (
+                                    list(latest_proposals[item.id].line_items_json or [{}])[0]
+                                    or {}
+                                ).get("description")
+                                or ""
+                            ),
+                            "terms_summary": latest_proposals[item.id].terms_summary,
+                            "valid_until": (
+                                latest_proposals[item.id].valid_until.isoformat()
+                                if latest_proposals[item.id].valid_until
+                                else ""
+                            ),
+                            "document_url": latest_proposals[item.id].document_url,
+                        }
+                        if item.id in latest_proposals
+                        else {}
+                    ),
                     "allowed_next": sorted(
                         (
                             EVENT_TRANSITIONS

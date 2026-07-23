@@ -16,6 +16,7 @@ try:
         BuildingAgreement,
         BuildingAvailabilityBlock,
         BuildingDepositEvidence,
+        BuildingProposal,
         BuildingReservation,
     )
     DEPS = True
@@ -86,6 +87,24 @@ class BuildingBookingTests(unittest.TestCase):
             },
         )
 
+    def _proposal(self, reservation_id: str, status: str, *, version: int = 1, amount_cents: int = 250000, document_url: str = "https://example.com/quote-v1.pdf"):
+        return self.client.post(
+            f"/api/internal/building/bookings/{reservation_id}/proposals",
+            headers=self.headers,
+            json={
+                "version": version,
+                "status": status,
+                "proposal_type": "quote",
+                "amount_cents": amount_cents,
+                "line_items": [{"description": "Event package", "amount_cents": amount_cents}],
+                "terms_summary": "Four-hour event package.",
+                "valid_until": (self.start.date() - timedelta(days=1)).isoformat(),
+                "document_url": document_url,
+                "approved_by": "approver@example.com" if status == "approved" else "",
+                "actor": "operator@example.com",
+            },
+        )
+
     def test_00_capacity_and_time_window_are_enforced(self) -> None:
         too_large = self._create("event-too-large", attendance=121)
         self.assertEqual(too_large.status_code, 422)
@@ -130,7 +149,15 @@ class BuildingBookingTests(unittest.TestCase):
             self.assertEqual(block.state, "soft_hold")
 
     def test_02_confirmation_requires_agreement_and_deposit_evidence(self) -> None:
+        blocked_quote = self._transition("event-one", "quote_sent")
+        self.assertEqual(blocked_quote.status_code, 409)
+        self.assertEqual(self._proposal("event-one", "draft").status_code, 201)
+        self.assertEqual(self._proposal("event-one", "approved").status_code, 201)
+        self.assertEqual(self._proposal("event-one", "sent").status_code, 201)
         self.assertEqual(self._transition("event-one", "quote_sent").status_code, 200)
+        blocked_contract = self._transition("event-one", "contract_pending")
+        self.assertEqual(blocked_contract.status_code, 409)
+        self.assertEqual(self._proposal("event-one", "accepted").status_code, 201)
         self.assertEqual(self._transition("event-one", "contract_pending").status_code, 200)
         blocked = self._transition("event-one", "confirmed")
         self.assertEqual(blocked.status_code, 409)
@@ -179,6 +206,7 @@ class BuildingBookingTests(unittest.TestCase):
             self.assertEqual(reservation.agreement_status, "signed")
             self.assertEqual(reservation.deposit_status, "paid")
             self.assertEqual(session.query(BuildingAgreement).count(), 1)
+            self.assertEqual(session.query(BuildingProposal).count(), 1)
             self.assertEqual(session.query(BuildingDepositEvidence).count(), 1)
             self.assertEqual(session.query(BuildingAvailabilityBlock).one().state, "booked")
 
@@ -213,3 +241,23 @@ class BuildingBookingTests(unittest.TestCase):
         self.assertEqual(analytics["event_funnel"]["deposits"], 1)
         self.assertEqual(analytics["event_funnel"]["confirmed"], 1)
         self.assertEqual(analytics["operations"]["holds_started"], 2)
+
+    def test_06_sent_proposal_content_is_immutable_and_revisions_use_new_version(self) -> None:
+        changed = self._proposal(
+            "event-one", "accepted", amount_cents=300000
+        )
+        self.assertEqual(changed.status_code, 409)
+        new_draft = self._proposal(
+            "event-one",
+            "draft",
+            version=2,
+            amount_cents=300000,
+            document_url="https://example.com/quote-v2.pdf",
+        )
+        self.assertEqual(new_draft.status_code, 201, new_draft.text)
+        response = self.client.get(
+            "/api/internal/building/bookings/event-one/proposals",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([item["version"] for item in response.json()["proposals"]], [2, 1])

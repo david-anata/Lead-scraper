@@ -27,11 +27,13 @@ from sales_support_agent.api.building_billing_router import (
 from sales_support_agent.api.building_booking_router import (
     AgreementInput,
     DepositInput,
+    ProposalInput,
     ReservationInput,
     TransitionInput,
     create_reservation,
     record_agreement,
     record_deposit,
+    record_proposal,
     transition_reservation,
 )
 from sales_support_agent.api.building_router import (
@@ -326,6 +328,45 @@ def record_agreement_from_control_room(
         record_agreement(reservation_id, payload, request, _internal_key(request))
 
     return _run_form_action(action, f"Agreement evidence recorded as {status}.")
+
+
+@router.post("/reservations/{reservation_id}/proposals", dependencies=FORM_DEPS)
+def record_proposal_from_control_room(
+    reservation_id: str,
+    request: Request,
+    version: int = Form(1),
+    status: str = Form(...),
+    proposal_type: str = Form(...),
+    amount: str = Form("0"),
+    line_item: str = Form(""),
+    terms_summary: str = Form(""),
+    valid_until: str = Form(""),
+    document_url: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        payload = ProposalInput(
+            version=version,
+            status=status,
+            proposal_type=proposal_type,
+            amount_cents=_dollars_to_cents(amount),
+            line_items=(
+                [{"description": line_item.strip(), "amount_cents": _dollars_to_cents(amount)}]
+                if line_item.strip()
+                else []
+            ),
+            terms_summary=terms_summary.strip(),
+            valid_until=date.fromisoformat(valid_until) if valid_until.strip() else None,
+            document_url=document_url.strip(),
+            approved_by=_actor(user) if status == "approved" else "",
+            actor=_actor(user),
+        )
+        record_proposal(reservation_id, payload, request, _internal_key(request))
+
+    return _run_form_action(
+        action,
+        f"{proposal_type.title()} version {version} recorded as {status}.",
+    )
 
 
 @router.post("/reservations/{reservation_id}/deposits", dependencies=FORM_DEPS)

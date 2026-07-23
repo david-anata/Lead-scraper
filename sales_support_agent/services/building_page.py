@@ -326,6 +326,10 @@ def render_building_page(
           <td><strong>{_esc(item.get("space_name"))}</strong><span class="sub">{_esc(item.get("kind"))}</span></td>
           <td>{_esc(item.get("starts_at"))}</td>
           <td>{_badge(str(item.get("status") or "inquiry"))}</td>
+          <td>{_badge(str((item.get("proposal") or {}).get("status") or "not started"))}<span class="sub">{(
+            f'v{_esc((item.get("proposal") or {}).get("version"))} · {str((item.get("proposal") or {}).get("currency") or "USD")} {int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:,.2f}'
+            if item.get("proposal") else "Create a versioned quote or proposal"
+          )}</span></td>
           <td>{_badge(str(item.get("agreement_status") or "not started"))}</td>
           <td>{_badge(str(item.get("deposit_status") or "not started"))}</td>
           <td>
@@ -336,6 +340,19 @@ def render_building_page(
                 <label>Hold expires<input type="datetime-local" name="hold_expires_at"></label>
                 <label>Reason<input name="reason" placeholder="Required context"></label>
                 <button class="secondary secondary--small" type="submit">Move workflow</button>
+              </form>
+              <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/proposals">
+                <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+                <label>{'Quote' if item.get("kind") == "event" else 'Proposal'} status<select name="status">{''.join(f'<option value="{state}"{" selected" if state == str((item.get("proposal") or {}).get("status") or "draft") else ""}>{state.title()}</option>' for state in ("draft", "approved", "sent", "accepted", "declined", "voided"))}</select></label>
+                <input type="hidden" name="proposal_type" value="{'quote' if item.get("kind") == "event" else 'proposal'}">
+                <label>Version<input type="number" name="version" min="1" value="{_esc((item.get("proposal") or {}).get("version") or 1)}"></label>
+                <label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>
+                <label>Line item<input name="line_item" value="{_esc((item.get("proposal") or {}).get("line_item"))}" placeholder="Office rent or event package"></label>
+                <label>Valid until<input type="date" name="valid_until" value="{_esc((item.get("proposal") or {}).get("valid_until"))}"></label>
+                <label>Document URL<input type="url" name="document_url" value="{_esc((item.get("proposal") or {}).get("document_url"))}" placeholder="Required before sent"></label>
+                <label>Terms summary<textarea name="terms_summary">{_esc((item.get("proposal") or {}).get("terms_summary"))}</textarea></label>
+                <button class="secondary secondary--small" type="submit">Record version</button>
+                <span class="sub">Approve before sending. Sent content is locked; use a new version for revisions.</span>
               </form>
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/agreements">
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
@@ -359,7 +376,7 @@ def render_building_page(
         </tr>
         """
         for item in reservations
-    ) or '<tr><td colspan="6"><div class="empty"><strong>No bookings or holds yet.</strong><br>An inquiry remains a lead until an operator starts the appropriate booking workflow.</div></td></tr>'
+    ) or '<tr><td colspan="7"><div class="empty"><strong>No bookings or holds yet.</strong><br>An inquiry remains a lead until an operator starts the appropriate booking workflow.</div></td></tr>'
 
     invoice_rows = "".join(
         f"""
@@ -826,7 +843,7 @@ def render_building_page(
         </form>
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">
           <div><h2>Calendar projection</h2><p>Agent remains authoritative. Approved holds and bookings are queued for Google Calendar; calendar edits never change a booking.</p></div>

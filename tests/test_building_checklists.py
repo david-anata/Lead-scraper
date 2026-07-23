@@ -106,6 +106,32 @@ class BuildingChecklistTests(unittest.TestCase):
             },
         )
 
+    def _commercial_version(self, reservation_id: str, kind: str) -> None:
+        proposal_type = "quote" if kind == "event" else "proposal"
+        payload = {
+            "version": 1,
+            "proposal_type": proposal_type,
+            "amount_cents": 250000,
+            "line_items": [
+                {"description": f"{proposal_type.title()} package", "amount_cents": 250000}
+            ],
+            "terms_summary": "Reviewed commercial terms.",
+            "valid_until": (self.start.date() + timedelta(days=7)).isoformat(),
+            "document_url": f"https://example.com/{reservation_id}.pdf",
+            "actor": "operations@example.com",
+        }
+        for status in ("draft", "approved", "sent"):
+            response = self.client.post(
+                f"/api/internal/building/bookings/{reservation_id}/proposals",
+                headers=self.headers,
+                json={
+                    **payload,
+                    "status": status,
+                    "approved_by": "approver@example.com" if status == "approved" else "",
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+
     def test_00_event_confirmation_creates_one_readiness_checklist(self) -> None:
         created = self._create(
             "checklist-event",
@@ -113,9 +139,29 @@ class BuildingChecklistTests(unittest.TestCase):
             "checklist-event-space",
         )
         self.assertEqual(created.status_code, 201, created.text)
-        for status in ("requirements_review", "quote_sent", "contract_pending"):
-            response = self._transition("checklist-event", status)
-            self.assertEqual(response.status_code, 200, response.text)
+        response = self._transition("checklist-event", "requirements_review")
+        self.assertEqual(response.status_code, 200, response.text)
+        self._commercial_version("checklist-event", "event")
+        response = self._transition("checklist-event", "quote_sent")
+        self.assertEqual(response.status_code, 200, response.text)
+        accepted = self.client.post(
+            "/api/internal/building/bookings/checklist-event/proposals",
+            headers=self.headers,
+            json={
+                "version": 1,
+                "status": "accepted",
+                "proposal_type": "quote",
+                "amount_cents": 250000,
+                "line_items": [{"description": "Quote package", "amount_cents": 250000}],
+                "terms_summary": "Reviewed commercial terms.",
+                "valid_until": (self.start.date() + timedelta(days=7)).isoformat(),
+                "document_url": "https://example.com/checklist-event.pdf",
+                "actor": "operations@example.com",
+            },
+        )
+        self.assertEqual(accepted.status_code, 201, accepted.text)
+        response = self._transition("checklist-event", "contract_pending")
+        self.assertEqual(response.status_code, 200, response.text)
         signed = self._sign("checklist-event")
         self.assertEqual(signed.status_code, 201, signed.text)
         confirmed = self._transition("checklist-event", "confirmed")
@@ -192,9 +238,29 @@ class BuildingChecklistTests(unittest.TestCase):
             "checklist-office",
         )
         self.assertEqual(created.status_code, 201, created.text)
-        for status in ("qualified", "proposal_sent", "contract_pending"):
-            response = self._transition("checklist-workspace", status)
-            self.assertEqual(response.status_code, 200, response.text)
+        response = self._transition("checklist-workspace", "qualified")
+        self.assertEqual(response.status_code, 200, response.text)
+        self._commercial_version("checklist-workspace", "workspace")
+        response = self._transition("checklist-workspace", "proposal_sent")
+        self.assertEqual(response.status_code, 200, response.text)
+        accepted = self.client.post(
+            "/api/internal/building/bookings/checklist-workspace/proposals",
+            headers=self.headers,
+            json={
+                "version": 1,
+                "status": "accepted",
+                "proposal_type": "proposal",
+                "amount_cents": 250000,
+                "line_items": [{"description": "Proposal package", "amount_cents": 250000}],
+                "terms_summary": "Reviewed commercial terms.",
+                "valid_until": (self.start.date() + timedelta(days=7)).isoformat(),
+                "document_url": "https://example.com/checklist-workspace.pdf",
+                "actor": "operations@example.com",
+            },
+        )
+        self.assertEqual(accepted.status_code, 201, accepted.text)
+        response = self._transition("checklist-workspace", "contract_pending")
+        self.assertEqual(response.status_code, 200, response.text)
         signed = self._sign("checklist-workspace")
         self.assertEqual(signed.status_code, 201, signed.text)
         confirmed = self._transition("checklist-workspace", "confirmed")
