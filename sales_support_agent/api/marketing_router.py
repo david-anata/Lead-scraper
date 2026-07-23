@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+from html import escape
 from datetime import datetime, time as dt_time
 from typing import Any, Optional
 
@@ -47,6 +48,25 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Needs chips the site can send; anything else is dropped silently.
 _KNOWN_NEEDS = {"analytics", "advertising", "strategy", "catalog", "creative", "fulfillment"}
 _SERVICES_NEEDS = {"advertising", "strategy", "catalog", "creative", "fulfillment"}
+_QUALIFICATION_FIELDS = {
+    "name": 160,
+    "company": 160,
+    "phone": 64,
+    "storefront": 500,
+    "revenue_range": 80,
+    "challenge": 1000,
+    "next_step": 120,
+}
+
+
+def _sanitize_qualification(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: str(raw.get(key, "") or "").strip()[:limit]
+        for key, limit in _QUALIFICATION_FIELDS.items()
+        if str(raw.get(key, "") or "").strip()
+    }
 
 # Hard ceiling on the cheap identity lookups so the intake endpoint stays fast.
 _IDENTITY_TIMEOUT_SECONDS = 25
@@ -145,7 +165,8 @@ def _send_result_email(settings, *, email: str, asin: str, view_url: str) -> Non
 
 
 def _record_hubspot_lead(
-    settings, *, email: str, asin: str, view_url: str, source: str, needs: Optional[list[str]] = None
+    settings, *, email: str, asin: str, view_url: str, source: str, needs: Optional[list[str]] = None,
+    qualification: Optional[dict[str, str]] = None,
 ) -> None:
     """Create the contact (standard email property only; custom properties are
     not confirmed to exist in the portal) and attach the run details as a note.
@@ -156,7 +177,14 @@ def _record_hubspot_lead(
         return
     contact_id = ""
     try:
-        created = client.create_contact({"email": email})
+        qualification = qualification or {}
+        properties = {"email": email}
+        if qualification.get("name"):
+            properties["firstname"] = qualification["name"]
+        for source_key, hubspot_key in (("company", "company"), ("phone", "phone"), ("storefront", "website")):
+            if qualification.get(source_key):
+                properties[hubspot_key] = qualification[source_key]
+        created = client.create_contact(properties)
         contact_id = str((created or {}).get("id", "") or "")
     except Exception as exc:  # noqa: BLE001 — duplicate email is expected for repeat visitors
         match = re.search(r"Existing ID:\s*(\d+)", str(exc))
@@ -167,6 +195,12 @@ def _record_hubspot_lead(
             return
     if not contact_id:
         return
+    contact_updates = {key: value for key, value in properties.items() if key != "email"}
+    if contact_updates:
+        try:
+            client.update_contact(contact_id, contact_updates)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[marketing_intake] HubSpot contact update failed for %s: %s", contact_id, exc)
     note_body = (
         "Free analysis requested from the marketing site."
         f"<br>ASIN: {asin}"
@@ -175,6 +209,9 @@ def _record_hubspot_lead(
     )
     if needs:
         note_body += f"<br>Needs: {', '.join(needs)}"
+    for key in ("company", "phone", "storefront", "revenue_range", "challenge", "next_step"):
+        if qualification and qualification.get(key):
+            note_body += f"<br>{key.replace('_', ' ').title()}: {escape(qualification[key])}"
     try:
         client.create_contact_note(contact_id=contact_id, body=note_body)
     except Exception as exc:  # noqa: BLE001 — the contact itself is the critical write
@@ -190,6 +227,7 @@ def _run_analysis_and_deliver(
     source: str,
     trigger: str = "marketing_site",
     needs: Optional[list[str]] = None,
+    qualification: Optional[dict[str, str]] = None,
 ) -> None:
     """Background task: run the existing Digital Shelf deck generation, then
     email the tokenized deck URL and record the HubSpot lead. Mirrors the
@@ -261,7 +299,7 @@ def _run_analysis_and_deliver(
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] result email failed for %s", email)
     try:
-        _record_hubspot_lead(settings, email=email, asin=asin, view_url=view_url, source=source, needs=needs)
+        _record_hubspot_lead(settings, email=email, asin=asin, view_url=view_url, source=source, needs=needs, qualification=qualification)
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] HubSpot lead recording failed for %s", email)
 
@@ -500,14 +538,21 @@ def _send_store_ack_email(settings, *, email: str, brand_name: str, domain: str)
     )
 
 
-def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list[str], source: str) -> None:
+def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list[str], source: str, qualification: Optional[dict[str, str]] = None) -> None:
     client = HubSpotClient(settings)
     if not client.is_configured:
         logger.warning("[marketing_intake] HubSpot not configured; skipping contact for %s", email)
         return
     contact_id = ""
     try:
-        created = client.create_contact({"email": email})
+        qualification = qualification or {}
+        properties = {"email": email}
+        if qualification.get("name"):
+            properties["firstname"] = qualification["name"]
+        for source_key, hubspot_key in (("company", "company"), ("phone", "phone"), ("storefront", "website")):
+            if qualification.get(source_key):
+                properties[hubspot_key] = qualification[source_key]
+        created = client.create_contact(properties)
         contact_id = str((created or {}).get("id", "") or "")
     except Exception as exc:  # noqa: BLE001 — duplicate email is expected for repeat visitors
         match = re.search(r"Existing ID:\s*(\d+)", str(exc))
@@ -518,6 +563,12 @@ def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list
             return
     if not contact_id:
         return
+    contact_updates = {key: value for key, value in properties.items() if key != "email"}
+    if contact_updates:
+        try:
+            client.update_contact(contact_id, contact_updates)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[marketing_intake] HubSpot contact update failed for %s: %s", contact_id, exc)
     note_body = (
         "Site intake from the marketing site (store, no ASIN)."
         f"<br>Store: {domain}"
@@ -525,6 +576,9 @@ def _record_store_hubspot_lead(settings, *, email: str, domain: str, needs: list
     )
     if needs:
         note_body += f"<br>Needs: {', '.join(needs)}"
+    for key in ("company", "phone", "storefront", "revenue_range", "challenge", "next_step"):
+        if qualification and qualification.get(key):
+            note_body += f"<br>{key.replace('_', ' ').title()}: {escape(qualification[key])}"
     try:
         client.create_contact_note(contact_id=contact_id, body=note_body)
     except Exception as exc:  # noqa: BLE001 — the contact itself is the critical write
@@ -560,7 +614,7 @@ def _send_store_deck_email(settings, *, email: str, brand_name: str, domain: str
     )
 
 
-def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, brand_name: str, needs: list[str], source: str) -> None:
+def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, brand_name: str, needs: list[str], source: str, qualification: Optional[dict[str, str]] = None) -> None:
     """Background task for kind=store unlock (Phase 3D).
 
     Builds a real store / DTC strategy deck from the store URL, reusing the
@@ -600,7 +654,7 @@ def _deliver_store_unlock(app, *, intake_run_id: int, email: str, domain: str, b
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] store email failed for %s", email)
     try:
-        _record_store_hubspot_lead(settings, email=email, domain=domain, needs=needs, source=source)
+        _record_store_hubspot_lead(settings, email=email, domain=domain, needs=needs, source=source, qualification=qualification)
     except Exception:  # noqa: BLE001
         logger.exception("[marketing_intake] store HubSpot lead recording failed for %s", email)
     try:
@@ -821,6 +875,8 @@ async def marketing_site_intake_unlock(
     if not email or not _EMAIL_RE.match(email):
         return JSONResponse(status_code=400, content={"detail": "A valid email is required."})
 
+    qualification = _sanitize_qualification(body.get("qualification"))
+
     with session_scope(request.app.state.session_factory) as session:
         run, error = _load_site_intake(session, intake_id, str(body.get("token", "") or ""))
         if error is not None:
@@ -840,6 +896,7 @@ async def marketing_site_intake_unlock(
             **(run.metadata_json or {}),
             "email": email.lower(),
             **({"consent_version": consent_version} if consent_version else {}),
+            **({"qualification": qualification} if qualification else {}),
         }
         session.add(run)
         run_id = run.id
@@ -854,6 +911,7 @@ async def marketing_site_intake_unlock(
             source=source,
             trigger="marketing_site_intake",
             needs=needs,
+            qualification=qualification,
         )
     else:
         background_tasks.add_task(
@@ -865,6 +923,7 @@ async def marketing_site_intake_unlock(
             brand_name=brand_name,
             needs=needs,
             source=source,
+            qualification=qualification,
         )
 
     return JSONResponse(

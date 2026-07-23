@@ -202,6 +202,71 @@ class MarketingIntakeTests(unittest.TestCase):
         self.assertFalse(body["closers"]["services"])
         deliver.assert_called_once()
 
+    def test_unlock_sanitizes_and_forwards_qualification(self) -> None:
+        data = self._create()
+        self.client.post(
+            f"/api/public/marketing/intake/{data['intake_id']}/needs",
+            json={"token": data["token"], "needs": ["advertising"]},
+            headers=HEADERS,
+        )
+        qualification = {
+            "name": "  David Narayan  ",
+            "company": " Anata ",
+            "phone": " 385-204-4649 ",
+            "storefront": " https://example.com ",
+            "revenue_range": "$250K–$1M",
+            "challenge": " Improve advertising efficiency ",
+            "next_step": "Book my review",
+            "ignored": "must not persist",
+        }
+        with mock.patch.object(M, "_run_analysis_and_deliver") as deliver:
+            response = self.client.post(
+                f"/api/public/marketing/intake/{data['intake_id']}/unlock",
+                json={"token": data["token"], "email": "qualified@example.com", "qualification": qualification},
+                headers=HEADERS,
+            )
+        self.assertEqual(response.status_code, 202, response.text)
+        forwarded = deliver.call_args.kwargs["qualification"]
+        self.assertEqual(forwarded["name"], "David Narayan")
+        self.assertEqual(forwarded["phone"], "385-204-4649")
+        self.assertNotIn("ignored", forwarded)
+        with app.state.session_factory() as session:
+            run = session.get(M.AutomationRun, int(data["intake_id"]))
+            self.assertEqual(run.metadata_json["qualification"]["company"], "Anata")
+
+    def test_qualified_contact_fields_sync_to_hubspot(self) -> None:
+        client = mock.Mock()
+        client.is_configured = True
+        client.create_contact.return_value = {"id": "123"}
+        with mock.patch.object(M, "HubSpotClient", return_value=client):
+            M._record_hubspot_lead(
+                app.state.settings,
+                email="qualified@example.com",
+                asin="B0TESTASIN",
+                view_url="https://agent.example/deck",
+                source="strategy-audit",
+                needs=["advertising"],
+                qualification={
+                    "name": "David Narayan",
+                    "company": "Anata",
+                    "phone": "385-204-4649",
+                    "storefront": "https://example.com",
+                },
+            )
+        client.create_contact.assert_called_once_with({
+            "email": "qualified@example.com",
+            "firstname": "David Narayan",
+            "company": "Anata",
+            "phone": "385-204-4649",
+            "website": "https://example.com",
+        })
+        client.update_contact.assert_called_once_with("123", {
+            "firstname": "David Narayan",
+            "company": "Anata",
+            "phone": "385-204-4649",
+            "website": "https://example.com",
+        })
+
 
 if __name__ == "__main__":
     unittest.main()
