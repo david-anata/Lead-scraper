@@ -1284,3 +1284,102 @@ class SalesDealAsset(Base):
     __table_args__ = (
         Index("ix_sales_deal_asset_unique", "hubspot_deal_id", "asset_type", "run_id", unique=True),
     )
+
+
+# ---------------------------------------------------------------------------
+# Anata Building operations. Agent owns inventory and commercial availability;
+# the public website receives only the explicitly published projection.
+# ---------------------------------------------------------------------------
+class BuildingSpace(Base):
+    __tablename__ = "building_spaces"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    space_type: Mapped[str] = mapped_column(String(64), index=True)
+    floor: Mapped[str] = mapped_column(String(64), default="")
+    capacity: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="unavailable", index=True)
+    public_description: Mapped[str] = mapped_column(Text, default="")
+    internal_notes: Mapped[str] = mapped_column(Text, default="")
+    features_json: Mapped[list] = mapped_column(JSON, default=list)
+    media_json: Mapped[list] = mapped_column(JSON, default=list)
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingOffering(Base):
+    __tablename__ = "building_offerings"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    offering_type: Mapped[str] = mapped_column(String(64), index=True)
+    space_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_spaces.id"), nullable=True, index=True
+    )
+    public_description: Mapped[str] = mapped_column(Text, default="")
+    price_display: Mapped[str] = mapped_column(String(128), default="")
+    booking_unit: Mapped[str] = mapped_column(String(32), default="custom")
+    call_to_action: Mapped[str] = mapped_column(String(64), default="inquire")
+    features_json: Mapped[list] = mapped_column(JSON, default=list)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingAvailabilityBlock(Base):
+    __tablename__ = "building_availability_blocks"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    space_id: Mapped[str] = mapped_column(ForeignKey("building_spaces.id"), index=True)
+    state: Mapped[str] = mapped_column(String(32), index=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(64), default="agent")
+    source_reference: Mapped[str] = mapped_column(String(255), default="", index=True)
+    public_label: Mapped[str] = mapped_column(String(128), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingInquiry(Base):
+    __tablename__ = "building_inquiries"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    source: Mapped[str] = mapped_column(String(64), default="anata-building", index=True)
+    source_reference: Mapped[str] = mapped_column(String(255), default="")
+    offering_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_offerings.id"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    phone: Mapped[str] = mapped_column(String(128), default="")
+    preferred_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="new", index=True)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="")
+    consent_to_contact: Mapped[bool] = mapped_column(Boolean, default=False)
+    consent_to_marketing: Mapped[bool] = mapped_column(Boolean, default=False)
+    hubspot_contact_id: Mapped[str] = mapped_column(String(64), default="")
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingAuditEvent(Base):
+    __tablename__ = "building_audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entity_type: Mapped[str] = mapped_column(String(64), index=True)
+    entity_id: Mapped[str] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    before_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    after_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)

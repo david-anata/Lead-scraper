@@ -174,6 +174,7 @@ class Settings:
     amazon_sp_api_aws_session_token: str
     clickup_ap_list_id: str = "901104880724"
     clickup_ar_list_id: str = "901113065688"
+    building_site_intake_key: str = ""
     # HubSpot — the sales system source of truth (replacing ClickUp for sales).
     # Private-app token; same env var the legacy fulfillment hubspot_sync used.
     hubspot_api_token: str = ""
@@ -507,6 +508,10 @@ def load_settings() -> Settings:
         sales_agent_db_url=(os.getenv("SALES_AGENT_DB_URL", "").strip() or _default_db_url()),
         internal_api_key=os.getenv("SALES_AGENT_INTERNAL_API_KEY", "").strip(),
         marketing_site_intake_key=os.getenv("MARKETING_SITE_INTAKE_KEY", "").strip(),
+        building_site_intake_key=(
+            os.getenv("BUILDING_SITE_INTAKE_KEY", "").strip()
+            or os.getenv("MARKETING_SITE_INTAKE_KEY", "").strip()
+        ),
         marketing_booking_url=os.getenv("MARKETING_BOOKING_URL", "").strip(),
         discovery_snapshot_path=Path(
             os.getenv("CLICKUP_DISCOVERY_SNAPSHOT_PATH", "runtime/clickup_schema_snapshot.json").strip()

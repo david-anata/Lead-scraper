@@ -97,11 +97,27 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     if not inspector.get_table_names():
         Base.metadata.create_all(bind=engine)
     _apply_postgres_compat_migrations(engine)
+    _ensure_building_tables(engine)
     _ensure_finance_settlement_tables(engine)
     ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
     _ensure_hr_columns(engine)
+
+
+def _ensure_building_tables(engine: Any) -> None:
+    """Create additive Anata Building tables on persistent databases."""
+
+    table_names = {
+        "building_spaces",
+        "building_offerings",
+        "building_availability_blocks",
+        "building_inquiries",
+        "building_audit_events",
+    }
+    tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
+    if tables:
+        Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
 
 def _ensure_hr_tables(engine: Any) -> None:

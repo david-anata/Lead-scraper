@@ -58,6 +58,8 @@ services:
         value: fulfillment
       - key: HUBSPOT_DEFAULT_LEAD_SOURCE_DETAIL
         value: agent
+      - key: BUILDING_SITE_INTAKE_KEY
+        sync: false
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
         sync: false
       - key: GOOGLE_SHEETS_SALES_RANGE
