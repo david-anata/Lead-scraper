@@ -11,6 +11,7 @@ import sys
 import os
 from types import SimpleNamespace
 from typing import Optional
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request
 
@@ -119,6 +120,7 @@ def _superadmin_dict(email: str, name: str = "") -> dict:
         "status": "active",
         "is_superadmin": True,
         "permissions": set(ALL_TOOL_KEYS),
+        "session_issued_at": "",
     }
 
 
@@ -147,6 +149,7 @@ def get_current_user(request: Request) -> Optional[dict]:
     admin_username = (getattr(settings, "admin_username", "") or "").strip().lower()
     if email in superadmins or (admin_username and email == admin_username):
         out = _superadmin_dict(email, name)
+        out["session_issued_at"] = identity.get("session_issued_at", "")
         try:
             from sales_support_agent.services.access import store
             row = store.get_user_by_email(email)
@@ -166,13 +169,16 @@ def get_current_user(request: Request) -> Optional[dict]:
         if access.get("is_superadmin"):
             sa = _superadmin_dict(email, access.get("name") or name)
             sa["picture"] = access.get("picture") or ""  # keep the Google avatar
+            sa["session_issued_at"] = identity.get("session_issued_at", "")
             return sa
+        access["session_issued_at"] = identity.get("session_issued_at", "")
         return access
 
     # Authenticated, domain-allowed, but not provisioned -> default deny.
     return {
         "email": email, "name": name, "role_id": None, "role_name": "",
         "status": "unprovisioned", "is_superadmin": False, "permissions": set(),
+        "session_issued_at": identity.get("session_issued_at", ""),
     }
 
 
@@ -252,6 +258,35 @@ def require_all_tools(*keys: str, legacy_keys: tuple[str, ...] = ()):
         ):
             return user
         raise ToolForbidden(user, keys[0])
+
+    return _dep
+
+
+def require_recent_tool(
+    *keys: str, legacy_keys: tuple[str, ...] = (), max_age_minutes: int = 30
+):
+    """Require capability plus a session minted within the sensitive-action window."""
+    base = require_all_tools(*keys, legacy_keys=legacy_keys)
+
+    def _dep(request: Request) -> dict:
+        user = base(request)
+        try:
+            issued_at = datetime.fromtimestamp(
+                int(user.get("session_issued_at") or 0), tz=timezone.utc
+            )
+        except (TypeError, ValueError, OSError):
+            issued_at = datetime.fromtimestamp(0, tz=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - issued_at).total_seconds()
+        if age_seconds > max_age_minutes * 60:
+            next_path = request.url.path
+            raise HTTPException(
+                status_code=303,
+                headers={
+                    "Location":
+                        f"/admin/login?err=reauth_required&next={next_path}"
+                },
+            )
+        return user
 
     return _dep
 

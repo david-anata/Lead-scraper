@@ -99,7 +99,10 @@ def get_session_user(settings: Settings, token: str, *, now: Optional[datetime] 
         issued_at = datetime.fromtimestamp(issued_ts, tz=timezone.utc)
         if current_time > issued_at + timedelta(hours=settings.admin_session_ttl_hours):
             return None
-        return {"email": email, "name": name, "role": role}
+        return {
+            "email": email, "name": name, "role": role,
+            "session_issued_at": str(issued_ts),
+        }
 
     if len(parts) == 3:
         # Legacy password token: username|timestamp|signature
@@ -121,7 +124,10 @@ def get_session_user(settings: Settings, token: str, *, now: Optional[datetime] 
         issued_at = datetime.fromtimestamp(issued_ts, tz=timezone.utc)
         if current_time > issued_at + timedelta(hours=settings.admin_session_ttl_hours):
             return None
-        return {"email": username, "name": username, "role": "admin"}
+        return {
+            "email": username, "name": username, "role": "admin",
+            "session_issued_at": str(issued_ts),
+        }
 
     return None
 

@@ -7,6 +7,9 @@ by `hr.payroll`. Server-rendered HTML (no JSON API). POSTs redirect (303).
 from __future__ import annotations
 
 from datetime import date
+from collections import defaultdict, deque
+from threading import Lock
+from time import monotonic
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -15,6 +18,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from sales_support_agent.services.auth_deps import (
     require_all_tools,
     require_any_tool,
+    require_recent_tool,
     require_tool,
 )
 from sales_support_agent.services.access.notify import send_invite_email
@@ -69,9 +73,34 @@ _pay_view_guard = require_any_tool(
 )
 _pay_prepare_guard = require_any_tool("hr.payroll.prepare", "hr.payroll")
 _pay_approve_guard = require_any_tool("hr.payroll.approve", "hr.payroll")
+_recent_pay_approve_guard = require_recent_tool(
+    "hr.payroll.approve", legacy_keys=("hr.payroll",), max_age_minutes=30
+)
 _pay_submit_guard = require_any_tool("hr.payroll.submit", "hr.payroll")
 _settings_guard = require_any_tool("hr.settings.manage", "hr.payroll")
 _reports_guard = require_any_tool("hr.audit.view", "hr.payroll.view", "hr.payroll")
+
+_sensitive_attempts: dict[str, deque] = defaultdict(deque)
+_sensitive_attempts_lock = Lock()
+
+
+async def _sensitive_rate_limit(request: Request) -> None:
+    """Limit rapid repeat writes on payroll approval/submission endpoints."""
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    identity = request.cookies.get(next(iter(request.cookies), ""), "")
+    key = f"{request.client.host if request.client else 'unknown'}:{hash(identity)}"
+    now = monotonic()
+    with _sensitive_attempts_lock:
+        attempts = _sensitive_attempts[key]
+        while attempts and attempts[0] < now - 60:
+            attempts.popleft()
+        if len(attempts) >= 20:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many sensitive HR actions. Wait one minute and retry.",
+            )
+        attempts.append(now)
 
 
 def _flash(request: Request):
@@ -578,6 +607,7 @@ async def hr_compliance_update(
     task_id: int, action: str = Form(""),
     confirmation_reference: str = Form(""), evidence_note: str = Form(""),
     user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
 ):
     ok, message = store.record_compliance_task(
         task_id, action=action, confirmation_reference=confirmation_reference,
@@ -772,7 +802,8 @@ async def hr_payroll_prepare(period_date: date = Form(...),
 @router.post("/payroll/{run_id}/approve")
 async def hr_payroll_approve(
     run_id: str, period_date: date = Form(...), approval_text: str = Form(""),
-    user: dict = Depends(_pay_approve_guard),
+    user: dict = Depends(_recent_pay_approve_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
 ):
     ok, message = payroll_store.approve_payroll(
         run_id, actor=user.get("email", ""), approval_text=approval_text
@@ -790,6 +821,7 @@ async def hr_payroll_liability_action(
     filing_confirmation_number: str = Form(""),
     evidence_note: str = Form(""),
     user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
 ):
     ok, message = payroll_store.record_liability_action(
         liability_id, action=action, confirmation_number=confirmation_number,
@@ -838,6 +870,7 @@ async def hr_payroll_provider_action(
     net: str = Form(""), taxes: str = Form(""),
     employer_cost: str = Form(""), evidence_note: str = Form(""),
     user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
 ):
     ok, message = payroll_store.record_provider_handoff(
         run_id, action=action, provider_name=provider_name,
@@ -855,6 +888,7 @@ async def hr_payroll_provider_action(
 async def hr_payroll_issue_check(
     run_id: str, employee_email: str = Form(""), check_number: str = Form(""),
     user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
 ):
     ok, message = payroll_store.issue_printed_check(
         run_id, employee_email=employee_email, check_number=check_number,
@@ -870,6 +904,7 @@ async def hr_payroll_issue_check(
 async def hr_payroll_reissue_check(
     run_id: str, employee_email: str = Form(""), reason: str = Form(""),
     new_check_number: str = Form(""), user: dict = Depends(_pay_approve_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
 ):
     ok, message = payroll_store.void_and_reissue_check(
         run_id, employee_email=employee_email, reason=reason,
@@ -882,7 +917,10 @@ async def hr_payroll_reissue_check(
 
 
 @router.post("/payroll/runs/{run_id}/close")
-async def hr_payroll_close_run(run_id: str, user: dict = Depends(_pay_submit_guard)):
+async def hr_payroll_close_run(
+    run_id: str, user: dict = Depends(_pay_submit_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
     ok, message = payroll_store.close_payroll_run(
         run_id, actor=user.get("email", "")
     )
