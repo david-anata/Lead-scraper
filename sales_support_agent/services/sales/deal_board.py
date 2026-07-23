@@ -196,7 +196,7 @@ def _fmt_money(cents: int) -> str:
 def _fmt_date(dt: Optional[datetime]) -> str:
     if dt is None:
         return '<span class="muted">no close date</span>'
-    return _esc(dt.strftime("%b %-d, %Y"))
+    return _esc(f"{dt:%b} {dt.day}, {dt:%Y}")
 
 
 def _row_html(r: DealRow, *, as_of: datetime, portal_id: str = "") -> str:
@@ -224,8 +224,14 @@ def _row_html(r: DealRow, *, as_of: datetime, portal_id: str = "") -> str:
     name = _esc(r.name or "(untitled deal)")
     stale_badge = ' <span class="stale-badge" title="No inbound reply in 14+ days">⚠</span>' if r.is_stale else ""
     company = f'<div class="muted">{_esc(r.company_name)}</div>' if r.company_name else ""
+    search_text = html.escape(
+        " ".join((r.name, r.company_name, r.stage_label, r.owner_email)).lower(),
+        quote=True,
+    )
+    readiness = "ready" if r.is_complete else "incomplete"
     return (
-        "<tr>"
+        f'<tr class="deal-row" data-bucket="{_esc(r.bucket)}" data-readiness="{readiness}" '
+        f'data-overdue="{"true" if overdue else "false"}" data-search="{search_text}">'
         f'<td class="deal"><a href="/admin/sales/deals/{_esc(r.deal_id)}">{name}</a>{stale_badge}{company}</td>'
         f"<td>{_esc(r.stage_label or r.stage or '—')}</td>"
         f'<td class="num">{_fmt_money(r.amount_cents)}</td>'
@@ -244,7 +250,7 @@ _STYLES = """
     font-family:"Inter","Segoe UI",sans-serif; }
   a { color:var(--dark-blue); }
   __NAV__
-  .shell { max-width:1180px; margin:0 auto; padding:28px 18px 64px; }
+  .shell { max-width:1320px; margin:0 auto; padding:28px 24px 64px; }
   .workspace { background:var(--white); border:1px solid var(--border);
     border-radius:20px; box-shadow:0 18px 40px var(--shadow); padding:26px 28px 30px; }
   h1 { font-family:"Montserrat",sans-serif; font-weight:800; font-size:26px; margin:0 0 4px; }
@@ -258,8 +264,10 @@ _STYLES = """
   .stat .l { font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(43,54,68,0.55); }
   table { width:100%; border-collapse:collapse; font-size:13.5px; }
   th,td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:top; }
-  th { font-family:"Montserrat",sans-serif; font-weight:700; font-size:11px; text-transform:uppercase;
+  th { position:sticky; top:0; z-index:2; background:var(--white);
+    font-family:"Montserrat",sans-serif; font-weight:700; font-size:11px; text-transform:uppercase;
     letter-spacing:0.05em; color:rgba(43,54,68,0.55); }
+  .deal-row:hover td { background:rgba(133,187,218,0.07); }
   td.num { text-align:right; font-variant-numeric:tabular-nums; }
   td.deal a { font-weight:600; text-decoration:none; }
   .muted { color:rgba(43,54,68,0.5); font-size:12px; }
@@ -281,7 +289,21 @@ _STYLES = """
   .create-link:hover { border-color:rgba(43,54,68,0.3); }
   .stale-badge { font-size:13px; color:#b23b3b; margin-left:4px; cursor:default; }
   .stat--warn .n { color:#b23b3b; }
-  .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .table-wrap { max-height:min(64vh,720px); overflow:auto; border:1px solid var(--border);
+    border-radius:14px; -webkit-overflow-scrolling:touch; }
+  .table-wrap table { margin:0; }
+  .results-toolbar { display:grid; grid-template-columns:minmax(220px,1fr) minmax(170px,220px) auto;
+    align-items:end; gap:10px; margin:0 0 12px; }
+  .results-field { display:grid; gap:5px; }
+  .results-field label { font:700 10px/1.2 "Montserrat",sans-serif; letter-spacing:.06em;
+    text-transform:uppercase; color:rgba(43,54,68,.55); }
+  .results-field input,.results-field select { width:100%; min-height:40px; padding:0 12px;
+    border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--dark-blue);
+    font:500 13px/1.2 "Inter","Segoe UI",sans-serif; }
+  .results-count { align-self:center; justify-self:end; color:rgba(43,54,68,.62);
+    font-size:12px; white-space:nowrap; }
+  .results-empty { display:none; margin:12px 0 0; padding:16px; border:1px dashed var(--border);
+    border-radius:12px; color:rgba(43,54,68,.62); text-align:center; font-size:13px; }
   .filter-tabs { display:flex; gap:8px; margin:0 0 16px; }
   .tab { font-size:13px; font-weight:600; padding:7px 16px; border-radius:20px;
     border:1px solid var(--border); text-decoration:none; color:var(--dark-blue);
@@ -293,6 +315,11 @@ _STYLES = """
     background:var(--light-brown); padding:10px 12px 6px; border-bottom:none; border-top:1px solid var(--border); }
   tr.bucket-hdr--overdue td { color:#b23b3b; }
   tr.bucket-hdr--this_week td { color:#1a6e3a; }
+  @media (max-width:900px) {
+    .shell { padding-inline:16px; }
+    .results-toolbar { grid-template-columns:1fr 1fr; }
+    .results-count { grid-column:1 / -1; justify-self:start; }
+  }
 """
 
 _POLL_JS = """(function(){
@@ -309,6 +336,37 @@ _POLL_JS = """(function(){
       }).catch(function(){});
   }
   check();
+})();
+(function(){
+  var search=document.getElementById('deal-search');
+  var status=document.getElementById('deal-status');
+  var count=document.getElementById('deal-count');
+  var empty=document.getElementById('deal-empty');
+  var rows=[].slice.call(document.querySelectorAll('tr.deal-row'));
+  var buckets=[].slice.call(document.querySelectorAll('tr.bucket-hdr'));
+  function apply(){
+    var q=(search&&search.value||'').toLowerCase().trim();
+    var state=(status&&status.value||'');
+    var shown=0;
+    rows.forEach(function(row){
+      var matchesText=!q||(row.dataset.search||'').indexOf(q)!==-1;
+      var matchesState=!state||
+        (state==='overdue'&&row.dataset.overdue==='true')||
+        (state!=='overdue'&&row.dataset.readiness===state);
+      var visible=matchesText&&matchesState;
+      row.hidden=!visible;
+      if(visible)shown++;
+    });
+    buckets.forEach(function(bucket){
+      var key=bucket.dataset.bucket;
+      bucket.hidden=!rows.some(function(row){return !row.hidden&&row.dataset.bucket===key;});
+    });
+    if(count)count.textContent='Showing '+shown+' of '+rows.length+' open deals';
+    if(empty)empty.style.display=shown?'none':'block';
+  }
+  if(search)search.addEventListener('input',apply);
+  if(status)status.addEventListener('change',apply);
+  apply();
 })();"""
 
 
@@ -336,7 +394,7 @@ def render_deal_board_page(
             label = _BUCKET_LABELS[bkey]
             n = len(brows)
             all_rows_html += (
-                f'<tr class="bucket-hdr{warn_cls}">'
+                f'<tr class="bucket-hdr{warn_cls}" data-bucket="{_esc(bkey)}">'
                 f'<td colspan="6">{_esc(label)} — {n} deal{"s" if n != 1 else ""}</td></tr>'
             )
             all_rows_html += "".join(_row_html(r, as_of=as_of, portal_id=portal_id) for r in brows)
@@ -370,7 +428,8 @@ def render_deal_board_page(
     if completed_at:
         try:
             dt = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
-            last_synced_html = f'<span class="muted">Last synced {_esc(dt.strftime("%b %-d, %-I:%M %p"))}</span>'
+            synced_label = f"{dt:%b} {dt.day}, {dt.strftime('%I:%M %p').lstrip('0')}"
+            last_synced_html = f'<span class="muted">Last synced {_esc(synced_label)}</span>'
         except ValueError:
             pass
 
@@ -379,6 +438,26 @@ def render_deal_board_page(
 
     all_active = "" if show_my else " tab--active"
     my_active = " tab--active" if show_my else ""
+    results_controls_html = ""
+    if board.rows:
+        results_controls_html = f"""
+        <div class="results-toolbar" aria-label="Deal result controls">
+          <div class="results-field">
+            <label for="deal-search">Search deals</label>
+            <input id="deal-search" type="search" placeholder="Deal, company, stage, or owner">
+          </div>
+          <div class="results-field">
+            <label for="deal-status">Readiness</label>
+            <select id="deal-status">
+              <option value="">All readiness</option>
+              <option value="incomplete">Incomplete</option>
+              <option value="ready">Ready</option>
+              <option value="overdue">Past close date</option>
+            </select>
+          </div>
+          <span class="results-count" id="deal-count" aria-live="polite">Showing {board.total_open} of {board.total_open} open deals</span>
+        </div>
+        """
 
     return f"""<!doctype html>
 <html lang="en">
@@ -416,7 +495,9 @@ def render_deal_board_page(
           {last_synced_html}
           <span id="sync-note">{sync_note}</span>
         </div>
+        {results_controls_html}
         {table}
+        {'<p class="results-empty" id="deal-empty">No deals match the current search and readiness filters.</p>' if board.rows else ''}
       </div>
     </main>
     <script>{_POLL_JS}</script>

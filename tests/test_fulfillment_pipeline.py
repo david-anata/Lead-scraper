@@ -535,3 +535,19 @@ def test_pipeline_page_no_js_string_newlines(isolated_db):
         f"Offending snippets: {offenses[:3]}. "
         f"Fix: use '\\\\n' in Python f-string instead of '\\n'."
     )
+
+
+def test_pipeline_page_uses_shared_results_toolbar(isolated_db):
+    from sales_support_agent.services.fulfillment_deck.admin_page import (
+        render_fulfillment_sales_page,
+    )
+
+    _make_run({"prospect": "RenderCo", "fulfillment_quote": {"monthly_total": 5000.0}})
+    html = render_fulfillment_sales_page(fds.list_runs(), {})
+
+    assert 'class="pipeline-toolbar"' in html
+    assert 'id="pipe-search"' in html
+    assert 'id="pipe-stage"' in html
+    assert 'id="pipe-sort"' in html
+    assert 'id="pipe-count" class="pipeline-results-count" aria-live="polite"' in html
+    assert 'class="pipeline-table-wrap"' in html

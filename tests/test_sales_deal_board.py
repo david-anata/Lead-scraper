@@ -269,6 +269,14 @@ class TestDealBoardP1Routes(unittest.TestCase):
         body = self.client.get("/admin/sales/deals").text
         self.assertIn('<a class="flag"', body)
 
+    def test_results_toolbar_and_bounded_table_are_rendered(self) -> None:
+        body = self.client.get("/admin/sales/deals").text
+        self.assertIn('id="deal-search"', body)
+        self.assertIn('id="deal-status"', body)
+        self.assertIn('id="deal-count" aria-live="polite"', body)
+        self.assertIn('class="deal-row"', body)
+        self.assertIn("max-height:min(64vh,720px)", body)
+
     def test_my_deals_empty_state_render(self) -> None:
         # Unit-level: render_deal_board_page with empty board + show_my renders the right message.
         html = render_deal_board_page(DealBoard(), show_my=True)

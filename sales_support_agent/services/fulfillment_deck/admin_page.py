@@ -48,7 +48,7 @@ _STYLES = """
         font-family: "Inter", "Segoe UI", sans-serif; }
       a { color: var(--dark-blue); }
       __NAV__
-      .shell { max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; }
+      .shell { max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; }
       .workspace { background: var(--white); border: 1px solid var(--border); border-radius: 20px;
         box-shadow: 0 18px 40px var(--shadow); padding: 26px 28px 30px; }
       h1 { font-family: "Montserrat", sans-serif; font-weight: 800; font-size: 26px; margin: 0 0 4px; }
@@ -87,8 +87,24 @@ _STYLES = """
         font-weight: 700; font-size: 10.5px; white-space: nowrap; }
       table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 6px 0 8px; }
       th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-      thead th { background: rgba(133,187,218,0.20); font-family: "Montserrat", sans-serif; font-size: 11px;
+      thead th { background: #e8f2f7; font-family: "Montserrat", sans-serif; font-size: 11px;
         letter-spacing: 0.04em; text-transform: uppercase; }
+      .pipeline-table-wrap > table > thead th { position: sticky; top: 0; z-index: 3; }
+      .pipeline-toolbar { display:grid; grid-template-columns:minmax(220px,1fr) minmax(170px,220px)
+        minmax(170px,220px) auto auto; align-items:end; gap:10px; margin:0 0 12px; }
+      .pipeline-toolbar__field { display:grid; gap:5px; }
+      .pipeline-toolbar__field label { font:700 10px/1.2 "Montserrat",sans-serif; letter-spacing:.06em;
+        text-transform:uppercase; color:rgba(43,54,68,.55); }
+      .pipeline-toolbar input,.pipeline-toolbar select { width:100%; min-height:40px; padding:0 12px;
+        border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--dark-blue);
+        font:500 13px/1.2 "Inter","Segoe UI",sans-serif; }
+      .pipeline-toolbar .btn { align-self:end; justify-content:center; min-height:40px; border-radius:10px; }
+      .pipeline-results-count { align-self:center; color:rgba(43,54,68,.62); font-size:12px; white-space:nowrap; }
+      .pipeline-table-wrap { max-height:min(64vh,720px); overflow:auto; border:1px solid var(--border);
+        border-radius:14px; }
+      .pipeline-table-wrap table { margin:0; }
+      .pipeline-filter-empty { display:none; margin:12px 0 0; padding:16px; border:1px dashed var(--border);
+        border-radius:12px; color:rgba(43,54,68,.62); text-align:center; font-size:13px; }
       .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px;
         font-weight: 700; font-family: "Montserrat", sans-serif; letter-spacing: 0.03em; }
       .pill--live { background: rgba(46,125,91,0.16); color: #2e7d5b; }
@@ -283,6 +299,9 @@ _STYLES = """
         border-radius: 8px; border: 1px solid var(--border); font-size: 13px;
         font-family: inherit; resize: vertical; }
       @media (max-width: 900px) {
+        .shell { padding-inline:16px; }
+        .pipeline-toolbar { grid-template-columns:1fr 1fr; }
+        .pipeline-toolbar .btn,.pipeline-results-count { justify-self:stretch; }
         .expand-panel { grid-template-columns: 1fr; }
         .grid2 { grid-template-columns: 1fr; }
         .operator-callout { grid-template-columns: 1fr; }
@@ -1362,8 +1381,15 @@ def render_fulfillment_sales_page(
         <h2 id="pipeline">Pipeline</h2>
         <p class="muted" style="margin:-6px 0 12px">Click a row to expand — enter fulfillment costs, track margin, update stage. Click again to close. Changes save automatically.</p>
         {_pipeline_stats(runs) if runs else ""}
-        {'<div style="display:flex;gap:10px;margin:0 0 10px;flex-wrap:wrap;align-items:center"><input id="pipe-search" type="search" placeholder="Filter by prospect…" oninput="filterPipeline()" style="flex:1;min-width:160px;max-width:280px;padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px"><select id="pipe-stage" onchange="filterPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select><select id="pipe-sort" onchange="sortPipeline()" style="padding:7px 12px;border-radius:999px;border:1px solid var(--border);font-size:13px;background:#fff"><option value="">Sort: Newest</option><option value="volume">Sort: Volume ↓</option><option value="pitched">Sort: Pitched $ ↓</option><option value="margin">Sort: Margin ↓</option><option value="views">Sort: Views ↓</option></select><a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" style="white-space:nowrap;font-size:12px" title="Download pipeline as CSV">⬇ Export CSV</a><span id="pipe-count" class="muted" style="font-size:12px;white-space:nowrap;opacity:.5">' + str(len(runs)) + ' prospect' + ("s" if len(runs) != 1 else "") + '</span></div>' if runs else ""}
-        {table}
+        {f'''<div class="pipeline-toolbar" aria-label="Pipeline result controls">
+          <div class="pipeline-toolbar__field"><label for="pipe-search">Search prospects</label><input id="pipe-search" type="search" placeholder="Prospect name" oninput="filterPipeline()"></div>
+          <div class="pipeline-toolbar__field"><label for="pipe-stage">Stage</label><select id="pipe-stage" onchange="filterPipeline()"><option value="">All stages</option><option value="intake">Intake</option><option value="pending_fulfillment">Sent to Fulfillment</option><option value="costs_received">Costs Received</option><option value="published">Published</option><option value="won">Won</option><option value="lost">Lost</option></select></div>
+          <div class="pipeline-toolbar__field"><label for="pipe-sort">Sort results</label><select id="pipe-sort" onchange="sortPipeline()"><option value="">Newest</option><option value="volume">Volume ↓</option><option value="pitched">Pitched $ ↓</option><option value="margin">Margin ↓</option><option value="views">Views ↓</option></select></div>
+          <a href="/admin/fulfillment/sales/export.csv" class="btn btn--ghost" title="Download pipeline as CSV">Export CSV</a>
+          <span id="pipe-count" class="pipeline-results-count" aria-live="polite">Showing {len(runs)} of {len(runs)} prospects</span>
+        </div>''' if runs else ""}
+        {f'<div class="pipeline-table-wrap">{table}</div>' if runs else table}
+        {'<p class="pipeline-filter-empty" id="pipe-empty">No prospects match the current search and stage filters.</p>' if runs else ""}
       </div>
     </main>
     <script>
@@ -1641,9 +1667,10 @@ def render_fulfillment_sales_page(
       var countEl = document.getElementById('pipe-count');
       if (countEl) {{
         var total = rows.length;
-        countEl.textContent = (shown < total) ? shown + ' of ' + total : total + ' prospect' + (total !== 1 ? 's' : '');
-        countEl.style.opacity = shown < total ? '1' : '0.5';
+        countEl.textContent = 'Showing ' + shown + ' of ' + total + ' prospect' + (total !== 1 ? 's' : '');
       }}
+      var emptyEl = document.getElementById('pipe-empty');
+      if (emptyEl) emptyEl.style.display = shown ? 'none' : 'block';
     }}
     // Restore persisted stage filter on load
     (function() {{
