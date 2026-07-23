@@ -44,6 +44,7 @@ def render_building_page(
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
+    privacy_requests: list[dict[str, Any]] | None = None,
     analytics: dict[str, Any] | None = None,
     can_finance: bool = False,
     csrf_token: str = "",
@@ -51,6 +52,7 @@ def render_building_page(
     error: str = "",
 ) -> str:
     analytics = dict(analytics or {})
+    privacy_requests = list(privacy_requests or [])
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
@@ -133,10 +135,48 @@ def render_building_page(
           <td>{_esc(", ".join(sorted({rel.get("type", "") for rel in item.get("relationships", []) if rel.get("type")})) or "No relationship")}</td>
           <td>{_badge(str(item.get("marketing_status") or "unknown"))}</td>
           <td>{_badge("suppressed") if item.get("suppressed") else "Allowed"}<span class="sub">{_esc(item.get("suppression_reason"))}</span></td>
+          <td><a class="secondary secondary--small" href="/admin/building/privacy/contacts/{_esc(item.get("id"))}/export">Export</a>
+            <details><summary>Correct or suppress</summary>
+              <form class="inline-send" method="post" action="/admin/building/privacy/contacts/{_esc(item.get("id"))}/correct">
+                <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+                <input name="full_name" value="{_esc(item.get("full_name"))}" aria-label="Correct full name">
+                <input name="phone" value="{_esc(item.get("phone"))}" aria-label="Correct phone">
+                <input name="company_name" value="{_esc(item.get("company_name"))}" aria-label="Correct company">
+                <input name="reason" minlength="5" required placeholder="Reason for correction">
+                <button class="secondary secondary--small" type="submit">Save correction</button>
+              </form>
+              <form class="inline-send" method="post" action="/admin/building/privacy/contacts/{_esc(item.get("id"))}/suppress">
+                <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+                <select name="scope"><option value="marketing">Marketing only</option><option value="all">All email</option></select>
+                <input name="reason" minlength="5" required placeholder="Suppression reason">
+                <button class="secondary secondary--small" type="submit">Suppress</button>
+              </form>
+            </details>
+          </td>
         </tr>
         """
         for item in contacts
-    ) or '<tr><td colspan="4"><div class="empty"><strong>No building contacts yet.</strong><br>Connected website inquiries will create CRM contacts automatically.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No building contacts yet.</strong><br>Connected website inquiries will create CRM contacts automatically.</div></td></tr>'
+
+    privacy_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("request_type", "").replace("_", " "))}</strong><span class="sub">{_esc(item.get("requestor_email"))}</span></td>
+          <td>{_badge(str(item.get("status") or "new"))}<span class="sub">Due {_esc(item.get("due_at"))}</span></td>
+          <td>{_esc(item.get("assigned_owner") or "Unassigned")}</td>
+          <td>
+            <form class="inline-send" method="post" action="/admin/building/privacy/requests/{_esc(item.get("id"))}/transition">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <select name="status"><option value="in_review">In review</option><option value="completed">Completed</option><option value="denied">Denied</option></select>
+              <input name="resolution" placeholder="Resolution required to close">
+              <input name="evidence_note" placeholder="Evidence required to close">
+              <button class="secondary secondary--small" type="submit">Update</button>
+            </form>
+          </td>
+        </tr>
+        """
+        for item in privacy_requests
+    ) or '<tr><td colspan="4"><div class="empty"><strong>No privacy requests.</strong><br>Export, correction, suppression, deletion review, and retention review requests will appear here.</div></td></tr>'
 
     segment_rows = "".join(
         f"""
@@ -822,7 +862,20 @@ def render_building_page(
       )}
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Media assignments</h2><p>Attach images and videos to the exact physical space. Draft assets never reach the public site; approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
-      <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, suppression, and permissioned data controls. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th><th>Data controls</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Data governance</h2><p>Track access, correction, suppression, deletion review, and retention review with a 30-day deadline. Deletion is never automatic.</p></div><span class="count">{len(privacy_requests)} requests</span></div>
+        <form class="form-grid" method="post" action="/admin/building/privacy/requests">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label>Request type</label><select name="request_type"><option value="access_export">Access export</option><option value="correction">Correction</option><option value="suppression">Suppression</option><option value="deletion_review">Deletion review</option><option value="retention_review">Retention review</option></select></div>
+          <div class="field"><label>Requestor email</label><input name="requestor_email" type="email" required></div>
+          <div class="field"><label>CRM contact</label><select name="contact_id"><option value="">Not yet matched</option>{contact_options}</select></div>
+          <div class="field"><label>Owner</label><input name="assigned_owner"></div>
+          <div class="field field--wide"><label>Details</label><textarea name="details"></textarea></div>
+          <div class="form-actions"><span class="form-note">Closing requires a written resolution and evidence.</span><button class="primary" type="submit">Add request</button></div>
+        </form>
+        <div class="table-wrap"><table><thead><tr><th>Request</th><th>Status</th><th>Owner</th><th>Review action</th></tr></thead><tbody>{privacy_rows}</tbody></table></div>
+      </section>
       <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
     </div>

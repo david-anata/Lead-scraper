@@ -44,6 +44,7 @@ from sales_support_agent.models.entities import (
     BuildingOffering,
     BuildingOperationalChecklist,
     BuildingOperationalChecklistItem,
+    BuildingPrivacyRequest,
     BuildingReservation,
     BuildingSpace,
 )
@@ -1753,6 +1754,11 @@ def building_control_room(
             )
             .limit(200)
         ).scalars().all()
+        privacy_request_rows = session.execute(
+            select(BuildingPrivacyRequest)
+            .order_by(BuildingPrivacyRequest.status, BuildingPrivacyRequest.due_at)
+            .limit(100)
+        ).scalars().all()
         space_names = {item.id: item.name for item in space_rows}
         reservations_by_id = {item.id: item for item in reservation_rows}
         analytics = build_building_analytics(session)
@@ -1770,6 +1776,8 @@ def building_control_room(
                 "id": item.id,
                 "email": item.email,
                 "full_name": item.full_name,
+                "phone": item.phone,
+                "company_name": item.company_name,
                 "relationships": [
                     {
                         "type": rel.relationship_type,
@@ -2031,6 +2039,20 @@ def building_control_room(
                 for item in checklist_rows
             ],
             service_requests=service_requests,
+            privacy_requests=[
+                {
+                    "id": item.id,
+                    "contact_id": item.contact_id,
+                    "request_type": item.request_type,
+                    "status": item.status,
+                    "requestor_email": item.requestor_email,
+                    "details": item.details,
+                    "due_at": item.due_at.strftime("%b %d, %Y"),
+                    "assigned_owner": item.assigned_owner,
+                    "resolution": item.resolution,
+                }
+                for item in privacy_request_rows
+            ],
             analytics=analytics,
             csrf_token=building_csrf_token(user),
             notice=notice[:300],

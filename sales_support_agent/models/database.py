@@ -118,6 +118,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_relationships",
         "building_communication_preferences",
         "building_suppressions",
+        "building_privacy_requests",
         "building_segments",
         "building_campaigns",
         "building_campaign_recipients",

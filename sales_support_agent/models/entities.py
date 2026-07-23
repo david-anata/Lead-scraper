@@ -1449,6 +1449,36 @@ class BuildingSuppression(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingPrivacyRequest(Base):
+    """Audited contact-data request; deletion remains a manual review."""
+
+    __tablename__ = "building_privacy_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contact_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_contacts.id"), nullable=True, index=True
+    )
+    request_type: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="new", index=True)
+    requestor_email: Mapped[str] = mapped_column(String(255), index=True)
+    details: Mapped[str] = mapped_column(Text, default="")
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="")
+    resolution: Mapped[str] = mapped_column(Text, default="")
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class BuildingSegment(Base):
     __tablename__ = "building_segments"
 
