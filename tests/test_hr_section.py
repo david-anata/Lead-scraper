@@ -516,6 +516,15 @@ class HRSectionTests(unittest.TestCase):
                     details["sha256"],
                 )
 
+    def test_employee_mobile_shortcuts_are_present_and_mark_current_page(self):
+        page = self._get("/admin/hr/time", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('class="hr-mobile-nav"', page.text)
+        self.assertIn(
+            '<a href="/admin/hr/time" aria-current="page">Time</a>', page.text
+        )
+        self.assertIn('href="/admin/hr/pay-statements"', page.text)
+
 
 if __name__ == "__main__":
     unittest.main()

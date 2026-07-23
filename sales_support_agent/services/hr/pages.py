@@ -53,19 +53,29 @@ _HR_STYLES = """
   .hr-dashboard-action { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 20px; background:#fff; border:1px solid rgba(43,54,68,.1); border-radius:14px; }
   .hr-dashboard-action .hr-sub { margin:0; max-width:720px; }
   .hr-btn-danger { background:#8b3a32; }
+  .hr-mobile-nav { display:none; }
   @media (max-width: 768px) {
-    .hr-main { padding:22px 16px 36px; overflow-x:auto; }
+    body { padding-bottom:76px; }
+    .hr-main { padding:22px 16px 36px; overflow-x:hidden; }
+    .hr-h1 { font-size:23px; line-height:1.2; }
+    .hr-sub { line-height:1.5; }
     .hr-grid2 { grid-template-columns:1fr; }
     .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
     .hr-actions { flex-direction:column; }
     .hr-dashboard-action { align-items:stretch; flex-direction:column; }
     .hr-dashboard-action .hr-btn { min-height:44px; text-align:center; }
     .hr-btn { min-height:44px; }
-    .hr-tbl { min-width:640px; }
+    .hr-tbl { display:block; width:100%; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
+    .hr-tbl th, .hr-tbl td { white-space:nowrap; }
     .hr-form { padding:18px 16px; }
+    .hr-form input, .hr-form select, .hr-form textarea { min-height:46px; }
     .hr-cards { grid-template-columns:1fr 1fr; gap:10px; }
     .hr-card { padding:14px; }
     .hr-card .n { font-size:22px; overflow-wrap:anywhere; }
+    .hr-mobile-nav { position:fixed; z-index:100; left:10px; right:10px; bottom:max(8px, env(safe-area-inset-bottom)); display:grid; grid-template-columns:repeat(4,1fr); gap:4px; padding:6px; background:rgba(255,255,255,.97); border:1px solid rgba(43,54,68,.14); border-radius:14px; box-shadow:0 8px 28px rgba(28,36,48,.16); }
+    .hr-mobile-nav a { min-height:48px; display:flex; align-items:center; justify-content:center; padding:4px 6px; border-radius:9px; color:#52606d; text-decoration:none; font:700 11px Montserrat,Inter,sans-serif; text-align:center; }
+    .hr-mobile-nav a[aria-current="page"] { background:#e8f3f7; color:#1c2430; }
+    .hr-mobile-nav a:focus-visible { outline:3px solid #79b8d1; outline-offset:1px; }
   }
   @media (max-width: 420px) { .hr-cards { grid-template-columns:1fr; } }
 """
@@ -76,6 +86,19 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
     is_super = bool((user or {}).get("is_superadmin"))
     nav = render_agent_nav("hr", hr_section=active, permissions=perms, is_superadmin=is_super, user=user)
     styles = render_agent_nav_styles()
+    mobile_items = (
+        ("dashboard", "Home", "/admin/hr"),
+        ("time", "Time", "/admin/hr/time"),
+        ("pay_statements", "Pay", "/admin/hr/pay-statements"),
+        ("onboarding", "Profile", "/admin/hr/onboarding"),
+    )
+    mobile_nav = "".join(
+        (
+            f'<a href="{href}" aria-current="page">{label}</a>'
+            if active == key else f'<a href="{href}">{label}</a>'
+        )
+        for key, label, href in mobile_items
+    )
     return f"""<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -87,6 +110,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
 </head><body>
   {nav}
   <main class="hr-main">{body}</main>
+  <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
 </body></html>"""
 
 
