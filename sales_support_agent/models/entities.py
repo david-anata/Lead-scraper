@@ -1758,6 +1758,36 @@ class BuildingPayment(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingBillingAdjustment(Base):
+    """Permissioned refund, credit, or write-off workflow with external evidence."""
+
+    __tablename__ = "building_billing_adjustments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    invoice_id: Mapped[str] = mapped_column(
+        ForeignKey("building_invoices.id"), index=True
+    )
+    adjustment_type: Mapped[str] = mapped_column(String(32), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(8), default="usd")
+    status: Mapped[str] = mapped_column(String(32), default="requested", index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    provider_reference: Mapped[str] = mapped_column(String(255), default="")
+    qbo_reference: Mapped[str] = mapped_column(String(255), default="")
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(255))
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmed_by: Mapped[str] = mapped_column(String(255), default="")
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class BuildingStripeEvent(Base):
     __tablename__ = "building_stripe_events"
 

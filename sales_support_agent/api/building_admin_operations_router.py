@@ -43,9 +43,21 @@ from sales_support_agent.api.building_checklist_router import (
     add_checklist_item,
     update_checklist_item_status,
 )
+from sales_support_agent.api.building_adjustment_router import (
+    AdjustmentApprovalInput,
+    AdjustmentEvidenceInput,
+    AdjustmentRequestInput,
+    approve_adjustment,
+    record_adjustment_evidence,
+    request_adjustment,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import BuildingBillingSchedule
-from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.auth_deps import (
+    require_all_tools,
+    require_recent_tool,
+    require_tool,
+)
 from sales_support_agent.services.building_security import (
     require_building_form_security,
 )
@@ -420,4 +432,102 @@ def update_checklist_item_from_control_room(
     return _run_form_action(
         action,
         f"Operational item marked {status.replace('_', ' ')}.",
+    )
+
+
+@router.post("/billing/adjustments", dependencies=FORM_DEPS)
+def request_adjustment_from_control_room(
+    request: Request,
+    invoice_id: str = Form(...),
+    adjustment_type: str = Form(...),
+    amount: str = Form(...),
+    reason: str = Form(...),
+    user: dict = Depends(require_all_tools("building.manage", "finance")),
+) -> RedirectResponse:
+    def action() -> None:
+        request_adjustment(
+            AdjustmentRequestInput(
+                invoice_id=invoice_id.strip(),
+                adjustment_type=adjustment_type,
+                amount_cents=_dollars_to_cents(amount),
+                reason=reason.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        "Financial adjustment requested; a different finance operator must approve it.",
+    )
+
+
+@router.post(
+    "/billing/adjustments/{adjustment_id}/approve",
+    dependencies=FORM_DEPS,
+)
+def approve_adjustment_from_control_room(
+    adjustment_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(
+        require_recent_tool("building.manage", "finance", max_age_minutes=30)
+    ),
+) -> RedirectResponse:
+    expected = f"APPROVE {adjustment_id}"
+    if confirmation.strip() != expected:
+        return _redirect(error=f"Type {expected} to approve this adjustment.")
+
+    def action() -> None:
+        approve_adjustment(
+            adjustment_id,
+            AdjustmentApprovalInput(actor=_actor(user)),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        "Financial adjustment approved; no provider or accounting action was implied.",
+    )
+
+
+@router.post(
+    "/billing/adjustments/{adjustment_id}/evidence",
+    dependencies=FORM_DEPS,
+)
+def record_adjustment_evidence_from_control_room(
+    adjustment_id: str,
+    request: Request,
+    status: str = Form(...),
+    provider_reference: str = Form(""),
+    qbo_reference: str = Form(""),
+    note: str = Form(...),
+    confirmation: str = Form(...),
+    user: dict = Depends(
+        require_recent_tool("building.manage", "finance", max_age_minutes=30)
+    ),
+) -> RedirectResponse:
+    expected = f"CONFIRM {adjustment_id}"
+    if confirmation.strip() != expected:
+        return _redirect(error=f"Type {expected} to record final evidence.")
+
+    def action() -> None:
+        record_adjustment_evidence(
+            adjustment_id,
+            AdjustmentEvidenceInput(
+                status=status,
+                provider_reference=provider_reference.strip(),
+                qbo_reference=qbo_reference.strip(),
+                note=note.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        "Financial adjustment evidence recorded.",
     )

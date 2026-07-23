@@ -38,10 +38,12 @@ def render_building_page(
     inquiries: list[dict[str, Any]],
     reservations: list[dict[str, Any]],
     invoices: list[dict[str, Any]],
+    adjustments: list[dict[str, Any]],
     billing_accounts: list[dict[str, Any]],
     billing_schedules: list[dict[str, Any]],
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
+    can_finance: bool = False,
     csrf_token: str = "",
     notice: str = "",
     error: str = "",
@@ -300,6 +302,30 @@ def render_building_page(
         """
         for checklist in checklists
     ) or '<div class="empty"><strong>No operational checklists yet.</strong><br>Confirming an event or workspace automatically creates the appropriate readiness checklist.</div>'
+    invoice_options = "".join(
+        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("description"))} · {_esc(str(item.get("currency") or "usd").upper())} {int(item.get("amount_due_cents") or 0) / 100:,.2f}</option>'
+        for item in invoices
+    )
+    adjustment_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(str(item.get("adjustment_type") or "").replace("_", " ").title())}</strong><span class="sub">{_esc(item.get("invoice_id"))} · requested by {_esc(item.get("requested_by"))}</span></td>
+          <td>{_esc(str(item.get("currency") or "usd").upper())} {int(item.get("amount_cents") or 0) / 100:,.2f}</td>
+          <td><span class="sub">{_esc(item.get("reason"))}</span></td>
+          <td>{_badge(str(item.get("status") or "requested"))}</td>
+          <td>{(
+            f'<form class="inline-send" method="post" action="/admin/building/billing/adjustments/{_esc(item.get("id"))}/approve"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input aria-label="Adjustment approval confirmation" name="confirmation" required placeholder="APPROVE {_esc(item.get("id"))}"><button class="secondary secondary--small" type="submit">Approve</button></form>'
+            if item.get("status") == "requested"
+            else (
+              f'<form class="adjustment-evidence" method="post" action="/admin/building/billing/adjustments/{_esc(item.get("id"))}/evidence"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><select aria-label="Final evidence type" name="status"><option value="provider_confirmed">Provider-confirmed refund</option><option value="accounting_confirmed">Accounting-confirmed credit/write-off</option><option value="voided">Void approved request</option></select><input name="provider_reference" placeholder="Provider reference"><input name="qbo_reference" placeholder="QBO reference"><input name="note" required placeholder="Evidence note"><input aria-label="Evidence confirmation" name="confirmation" required placeholder="CONFIRM {_esc(item.get("id"))}"><button class="secondary secondary--small" type="submit">Record evidence</button></form>'
+              if item.get("status") == "approved"
+              else '<span class="sub">Evidence recorded</span>'
+            )
+          )}</td>
+        </tr>
+        """
+        for item in adjustments
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No financial adjustments.</strong><br>Refunds, credits, and write-offs begin as reviewed requests and never imply provider or accounting confirmation.</div></td></tr>'
     segment_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} ({_esc(item.get("included_count", 0))} eligible)</option>'
         for item in segments
@@ -358,6 +384,7 @@ def render_building_page(
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
+    .adjustment-evidence{{display:grid;grid-template-columns:repeat(2,minmax(130px,1fr));gap:6px;min-width:360px;}} .adjustment-evidence button{{justify-self:start;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
     @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}.form-grid{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
@@ -522,6 +549,22 @@ def render_building_page(
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
+      {(
+        f'''<section class="panel panel--wide">
+          <div class="panel-head"><div><h2>Refunds, credits, and write-offs</h2><p>Finance-only, two-person approval. Provider and accounting evidence remain distinct.</p></div><span class="count">{len(adjustments)} records</span></div>
+          <form class="form-grid" method="post" action="/admin/building/billing/adjustments">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <div class="field"><label for="adjustment-invoice">Invoice</label><select id="adjustment-invoice" name="invoice_id" required><option value="">Choose an invoice</option>{invoice_options}</select></div>
+            <div class="field"><label for="adjustment-type">Exception type</label><select id="adjustment-type" name="adjustment_type"><option value="refund">Refund</option><option value="credit">Credit</option><option value="write_off">Write-off</option></select></div>
+            <div class="field"><label for="adjustment-amount">Amount</label><input id="adjustment-amount" name="amount" inputmode="decimal" required placeholder="100.00"></div>
+            <div class="field"><label for="adjustment-reason">Reviewed reason</label><input id="adjustment-reason" name="reason" minlength="10" required></div>
+            <div class="form-actions"><span class="form-note">This creates a request only. A different finance operator must approve it.</span><button class="primary" type="submit">Request adjustment</button></div>
+          </form>
+          <div class="table-wrap"><table><thead><tr><th>Adjustment</th><th>Amount</th><th>Reason</th><th>Evidence state</th><th>Finance action</th></tr></thead><tbody>{adjustment_rows}</tbody></table></div>
+        </section>'''
+        if can_finance
+        else '<section class="panel panel--wide"><div class="panel-head"><div><h2>Financial adjustments</h2><p>Refunds, credits, and write-offs require both Building and Finance access.</p></div></div></section>'
+      )}
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>

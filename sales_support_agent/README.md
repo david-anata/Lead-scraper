@@ -191,6 +191,10 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `PUT /api/internal/building/billing/schedules/{schedule_id}`
 - `POST /api/internal/building/billing/schedules/{schedule_id}/approve`
 - `POST /api/internal/building/billing/invoices`
+- `GET /api/internal/building/billing/adjustments`
+- `POST /api/internal/building/billing/adjustments`
+- `POST /api/internal/building/billing/adjustments/{adjustment_id}/approve`
+- `POST /api/internal/building/billing/adjustments/{adjustment_id}/evidence`
 - `GET /api/internal/building/billing/qbo-export`
 - `PUT /api/internal/building/billing/invoices/{invoice_id}/accounting-link`
 - `POST /api/integrations/stripe/webhook`
@@ -269,6 +273,14 @@ described as bank-posted cash. Each invoice remains `pending_qbo` until the
 accounting bridge records the reviewed QBO result. The QBO export endpoint
 provides controlled invoice facts, and the accounting-link endpoint requires a
 QBO invoice reference before an item can be called synced or reconciled.
+
+Refunds, credits, and write-offs use a separate financial-exception workflow.
+The browser controls require both Building and Finance access. A request must
+include a reviewed reason and cannot exceed provider-confirmed paid value for a
+refund or the remaining invoice balance for a credit/write-off. The requester
+cannot approve their own adjustment. Final provider or QBO evidence is recorded
+as a separate step after approval; an approved request alone is never presented
+as completed money movement or formal accounting.
 
 ## Example Requests
 

@@ -26,6 +26,7 @@ from sales_support_agent.models.entities import (
     BuildingAuditEvent,
     BuildingBillingAccount,
     BuildingBillingSchedule,
+    BuildingBillingAdjustment,
     BuildingCampaign,
     BuildingCampaignRecipient,
     BuildingCalendarProjection,
@@ -1592,6 +1593,19 @@ def building_control_room(
             .order_by(BuildingBillingSchedule.created_at.desc())
             .limit(100)
         ).scalars().all()
+        can_finance = bool(
+            user.get("is_superadmin")
+            or "finance" in set(user.get("permissions") or ())
+        )
+        adjustment_rows = (
+            session.execute(
+                select(BuildingBillingAdjustment)
+                .order_by(BuildingBillingAdjustment.created_at.desc())
+                .limit(100)
+            ).scalars().all()
+            if can_finance
+            else []
+        )
         calendar_projection_rows = session.execute(
             select(BuildingCalendarProjection)
             .order_by(BuildingCalendarProjection.updated_at.desc())
@@ -1726,6 +1740,7 @@ def building_control_room(
             ],
             invoices=[
                 {
+                    "id": item.id,
                     "description": item.description,
                     "status": item.status,
                     "accounting_status": item.accounting_status,
@@ -1736,6 +1751,23 @@ def building_control_room(
                 }
                 for item in invoice_rows
             ],
+            adjustments=[
+                {
+                    "id": item.id,
+                    "invoice_id": item.invoice_id,
+                    "adjustment_type": item.adjustment_type,
+                    "amount_cents": item.amount_cents,
+                    "currency": item.currency,
+                    "status": item.status,
+                    "reason": item.reason,
+                    "provider_reference": item.provider_reference,
+                    "qbo_reference": item.qbo_reference,
+                    "requested_by": item.requested_by,
+                    "approved_by": item.approved_by,
+                }
+                for item in adjustment_rows
+            ],
+            can_finance=can_finance,
             billing_accounts=[
                 {
                     "id": item.id,
