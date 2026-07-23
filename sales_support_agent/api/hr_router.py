@@ -12,7 +12,11 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
-from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.auth_deps import (
+    require_all_tools,
+    require_any_tool,
+    require_tool,
+)
 from sales_support_agent.services.access.notify import send_invite_email
 from sales_support_agent.services.hr import store
 from sales_support_agent.services.hr import payroll_store
@@ -54,6 +58,20 @@ router = APIRouter(prefix="/admin/hr", dependencies=[Depends(_same_origin_write)
 
 _guard = require_tool("hr.access")
 _pay_guard = require_tool("hr.payroll")
+_people_guard = require_any_tool("hr.people.manage", "hr.payroll")
+_people_comp_guard = require_all_tools(
+    "hr.people.manage", "hr.compensation.manage", legacy_keys=("hr.payroll",)
+)
+_time_review_guard = require_any_tool("hr.time.approve_team", "hr.payroll")
+_pay_view_guard = require_any_tool(
+    "hr.payroll.view", "hr.payroll.prepare", "hr.payroll.approve",
+    "hr.payroll.submit", "hr.payroll",
+)
+_pay_prepare_guard = require_any_tool("hr.payroll.prepare", "hr.payroll")
+_pay_approve_guard = require_any_tool("hr.payroll.approve", "hr.payroll")
+_pay_submit_guard = require_any_tool("hr.payroll.submit", "hr.payroll")
+_settings_guard = require_any_tool("hr.settings.manage", "hr.payroll")
+_reports_guard = require_any_tool("hr.audit.view", "hr.payroll.view", "hr.payroll")
 
 
 def _flash(request: Request):
@@ -62,7 +80,29 @@ def _flash(request: Request):
 
 def _can_manage(user: dict) -> bool:
     permissions = user.get("permissions") or set()
-    return bool(user.get("is_superadmin") or "hr.payroll" in permissions)
+    return bool(user.get("is_superadmin") or {
+        "hr.people.view", "hr.people.manage", "hr.payroll",
+    }.intersection(permissions))
+
+
+def _can_view_compensation(user: dict) -> bool:
+    permissions = user.get("permissions") or set()
+    return bool(user.get("is_superadmin") or {
+        "hr.payroll", "hr.compensation.view", "hr.compensation.manage",
+    }.intersection(permissions))
+
+
+def _hide_compensation(employee: dict) -> dict:
+    safe = dict(employee)
+    safe.pop("hourly_rate", None)
+    safe.pop("hourly_rate_cents", None)
+    safe.pop("annual_salary", None)
+    safe.pop("annual_salary_cents", None)
+    if safe.get("employment"):
+        safe["employment"] = dict(safe["employment"])
+        safe["employment"].pop("fixed_pay_per_period", None)
+        safe["employment"].pop("fixed_pay_per_period_cents", None)
+    return safe
 
 
 # --- dashboard -------------------------------------------------------------
@@ -86,11 +126,13 @@ async def employees_list(request: Request, user: dict = Depends(_guard)):
         item for item in store.list_employees()
         if item["email"] == (user.get("email") or "").strip().lower()
     ]
+    if not _can_view_compensation(user):
+        employees = [_hide_compensation(item) for item in employees]
     return HTMLResponse(render_hr_employees(employees, user=user, flash=_flash(request)))
 
 
 @router.get("/employees/new", response_class=HTMLResponse)
-async def employee_new(request: Request, user: dict = Depends(_pay_guard)):
+async def employee_new(request: Request, user: dict = Depends(_people_comp_guard)):
     return HTMLResponse(render_hr_employee_form(None, store.list_teams(), user=user))
 
 
@@ -106,7 +148,7 @@ async def employee_create(
     annual_salary: str = Form("0"),
     phone: str = Form(""),
     status: str = Form("active"),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_people_comp_guard),
 ):
     if not email.strip():
         return HTMLResponse(render_hr_employee_form(None, store.list_teams(), user=user,
@@ -126,7 +168,7 @@ async def employee_create(
 
 
 @router.get("/employees/{emp_id}", response_class=HTMLResponse)
-async def employee_edit(emp_id: int, request: Request, user: dict = Depends(_pay_guard)):
+async def employee_edit(emp_id: int, request: Request, user: dict = Depends(_people_comp_guard)):
     emp = store.get_employee(emp_id)
     if not emp:
         return RedirectResponse("/admin/hr/employees", status_code=303)
@@ -152,7 +194,7 @@ async def employee_update(
     standard_weekly_hours: float = Form(40),
     phone: str = Form(""),
     status: str = Form("active"),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_people_comp_guard),
 ):
     employee = store.get_employee(emp_id)
     if not employee:
@@ -172,7 +214,7 @@ async def employee_update(
 
 
 @router.post("/employees/{emp_id}/invite", response_class=HTMLResponse)
-async def employee_invite(emp_id: int, request: Request, user: dict = Depends(_pay_guard)):
+async def employee_invite(emp_id: int, request: Request, user: dict = Depends(_people_guard)):
     employee = store.get_employee(emp_id)
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
@@ -271,7 +313,7 @@ async def onboarding_attestations(
 async def onboarding_employer_review(
     emp_id: int, i9_document_type: str = Form(""),
     i9_verified_date: date = Form(...), i9_expiration_date: date | None = Form(None),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_people_guard),
 ):
     employee = store.get_employee(emp_id)
     if not employee:
@@ -287,7 +329,7 @@ async def onboarding_employer_review(
 
 @router.post("/employees/{emp_id}/onboarding-correction")
 async def onboarding_correction_request(
-    emp_id: int, reason: str = Form(""), user: dict = Depends(_pay_guard),
+    emp_id: int, reason: str = Form(""), user: dict = Depends(_people_guard),
 ):
     employee = store.get_employee(emp_id)
     if not employee:
@@ -304,7 +346,7 @@ async def onboarding_correction_request(
 # --- teams -----------------------------------------------------------------
 
 @router.get("/teams", response_class=HTMLResponse)
-async def teams_list(request: Request, user: dict = Depends(_pay_guard)):
+async def teams_list(request: Request, user: dict = Depends(_people_guard)):
     return HTMLResponse(render_hr_teams(store.list_teams(), user=user, flash=_flash(request)))
 
 
@@ -314,7 +356,7 @@ async def team_create(
     name: str = Form(""),
     manager_email: str = Form(""),
     description: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_people_guard),
 ):
     store.create_team(name=name, manager_email=manager_email, description=description)
     return RedirectResponse("/admin/hr/teams?ok=team_created", status_code=303)
@@ -327,7 +369,12 @@ async def hr_time(
     request: Request, period_date: date | None = None, user: dict = Depends(_guard)
 ):
     email = (user.get("email") or "").strip().lower()
-    can_review = bool(user.get("is_superadmin") or "hr.payroll" in (user.get("permissions") or set()))
+    can_review = bool(
+        user.get("is_superadmin")
+        or {"hr.payroll", "hr.time.approve_team"}.intersection(
+            user.get("permissions") or set()
+        )
+    )
     period = payroll_store.semimonthly_period(period_date or date.today())
     return HTMLResponse(render_hr_time(
         store.list_time_entries(None if can_review else email), store.pto_summary(email),
@@ -367,7 +414,7 @@ async def hr_time_correction(
 @router.post("/time/corrections/{correction_id}/decision")
 async def hr_time_correction_decision(
     correction_id: int, decision: str = Form(""),
-    reviewer_reason: str = Form(""), user: dict = Depends(_pay_guard),
+    reviewer_reason: str = Form(""), user: dict = Depends(_time_review_guard),
 ):
     actor = (user.get("email") or "").strip().lower()
     ok, message = store.decide_time_correction(
@@ -398,7 +445,7 @@ async def hr_timesheet_submit(
 async def hr_timesheet_decision(
     approval_id: int, period_start: date = Form(...),
     decision: str = Form(""), review_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_time_review_guard),
 ):
     ok, message = store.decide_timesheet(
         approval_id, decision=decision, review_note=review_note,
@@ -412,7 +459,7 @@ async def hr_timesheet_decision(
 
 @router.post("/time/pto/{request_id}/decision")
 async def hr_pto_decision(request_id: int, decision: str = Form(""),
-                          user: dict = Depends(_pay_guard)):
+                          user: dict = Depends(_time_review_guard)):
     actor = (user.get("email") or "").strip().lower()
     ok = store.decide_pto(request_id, decision=decision, actor=actor)
     return RedirectResponse(f"/admin/hr/time?{'ok=updated' if ok else 'err=invalid_request'}",
@@ -431,7 +478,7 @@ async def hr_pto_request(start_date: date = Form(...), end_date: date = Form(...
 
 
 @router.get("/reports", response_class=HTMLResponse)
-async def hr_reports(request: Request, user: dict = Depends(_pay_guard)):
+async def hr_reports(request: Request, user: dict = Depends(_reports_guard)):
     return HTMLResponse(render_hr_reports(user=user))
 
 
@@ -440,7 +487,7 @@ async def hr_report_csv(
     kind: str,
     year: int | None = None,
     quarter: int | None = None,
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_reports_guard),
 ):
     content = reporting.export_csv(kind, year=year, quarter=quarter)
     if content is None:
@@ -459,7 +506,7 @@ async def hr_report_csv(
 
 @router.get("/reports/backup.zip")
 async def hr_backup_zip(
-    year: int | None = None, user: dict = Depends(_pay_guard)
+    year: int | None = None, user: dict = Depends(_reports_guard)
 ):
     report_year = year or date.today().year
     content = reporting.export_backup_zip(year=report_year)
@@ -478,7 +525,7 @@ async def hr_backup_zip(
 @router.get("/compliance", response_class=HTMLResponse)
 async def hr_compliance(
     request: Request, year: int = date.today().year,
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_view_guard),
 ):
     safe_year = min(max(year, 2026), date.today().year + 2)
     store.ensure_annual_compliance_tasks(safe_year)
@@ -493,7 +540,7 @@ async def hr_compliance(
 async def hr_compliance_update(
     task_id: int, action: str = Form(""),
     confirmation_reference: str = Form(""), evidence_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_submit_guard),
 ):
     ok, message = store.record_compliance_task(
         task_id, action=action, confirmation_reference=confirmation_reference,
@@ -528,7 +575,7 @@ async def hr_policy_acknowledge(
 
 @router.get("/payroll", response_class=HTMLResponse)
 async def hr_payroll(request: Request, period_date: date | None = None,
-                     user: dict = Depends(_pay_guard)):
+                     user: dict = Depends(_pay_view_guard)):
     return HTMLResponse(render_hr_payroll_control(
         payroll_store.control_room(period_date or date.today()),
         user=user, flash=_flash(request),
@@ -536,7 +583,7 @@ async def hr_payroll(request: Request, period_date: date | None = None,
 
 
 @router.get("/contractors", response_class=HTMLResponse)
-async def hr_contractors(request: Request, user: dict = Depends(_pay_guard)):
+async def hr_contractors(request: Request, user: dict = Depends(_pay_prepare_guard)):
     contractors = [
         row for row in store.list_employees()
         if row.get("employee_type") == "contractor"
@@ -554,7 +601,7 @@ async def hr_contractor_profile_save(
     tax_form_status: str = Form("missing"), received_date: date | None = Form(None),
     expiration_date: date | None = Form(None),
     wise_recipient_reference: str = Form(""), review_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_prepare_guard),
 ):
     ok, message = workforce.save_contractor_profile(
         contractor_email=contractor_email, tax_form_type=tax_form_type,
@@ -574,7 +621,7 @@ async def hr_contractor_payment_create(
     service_end: date = Form(...), due_date: date = Form(...),
     amount: str = Form(""), currency: str = Form("USD"),
     description: str = Form(""), invoice_reference: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_prepare_guard),
 ):
     ok, message = workforce.create_contractor_payment(
         contractor_email=contractor_email, service_start=service_start,
@@ -590,7 +637,7 @@ async def hr_contractor_payment_create(
 @router.post("/contractors/payments/{payment_id}")
 async def hr_contractor_payment_action(
     payment_id: int, action: str = Form(""), wise_reference: str = Form(""),
-    evidence_note: str = Form(""), user: dict = Depends(_pay_guard),
+    evidence_note: str = Form(""), user: dict = Depends(_pay_submit_guard),
 ):
     ok, message = workforce.contractor_payment_action(
         payment_id, action=action, wise_reference=wise_reference,
@@ -602,7 +649,7 @@ async def hr_contractor_payment_action(
 
 
 @router.get("/offboarding", response_class=HTMLResponse)
-async def hr_offboarding(request: Request, user: dict = Depends(_pay_guard)):
+async def hr_offboarding(request: Request, user: dict = Depends(_people_guard)):
     return HTMLResponse(render_hr_offboarding(
         store.list_employees(), workforce.list_offboarding(),
         user=user, flash=_flash(request),
@@ -613,7 +660,7 @@ async def hr_offboarding(request: Request, user: dict = Depends(_pay_guard)):
 async def hr_offboarding_create(
     employee_email: str = Form(""), separation_type: str = Form(""),
     last_working_day: date = Form(...), final_pay_date: date = Form(...),
-    reason: str = Form(""), user: dict = Depends(_pay_guard),
+    reason: str = Form(""), user: dict = Depends(_people_guard),
 ):
     ok, message = workforce.create_offboarding(
         employee_email=employee_email, separation_type=separation_type,
@@ -628,7 +675,7 @@ async def hr_offboarding_create(
 @router.post("/offboarding/{checklist_id}")
 async def hr_offboarding_update(
     checklist_id: int, completed_steps: list[str] = Form(default=[]),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_people_guard),
 ):
     ok, message = workforce.update_offboarding(
         checklist_id, completed_steps=completed_steps, actor=user.get("email", "")
@@ -644,7 +691,7 @@ async def hr_payroll_input(
     input_type: str = Form(""), amount: str = Form(""),
     taxable: bool = Form(False), description: str = Form(""),
     source_reference: str = Form(""), recurring: bool = Form(False),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_prepare_guard),
 ):
     period = payroll_store.semimonthly_period(period_date)
     ok, message = payroll_store.add_payroll_input(
@@ -662,7 +709,7 @@ async def hr_payroll_input(
 @router.post("/payroll/inputs/{input_id}/decision")
 async def hr_payroll_input_decision(
     input_id: int, period_date: date = Form(...), decision: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_prepare_guard),
 ):
     ok, message = payroll_store.decide_payroll_input(
         input_id, decision=decision, actor=user.get("email", "")
@@ -675,7 +722,7 @@ async def hr_payroll_input_decision(
 
 @router.post("/payroll/prepare")
 async def hr_payroll_prepare(period_date: date = Form(...),
-                             user: dict = Depends(_pay_guard)):
+                             user: dict = Depends(_pay_prepare_guard)):
     ok, message = payroll_store.prepare_payroll(
         period_date, actor=user.get("email", "")
     )
@@ -688,7 +735,7 @@ async def hr_payroll_prepare(period_date: date = Form(...),
 @router.post("/payroll/{run_id}/approve")
 async def hr_payroll_approve(
     run_id: str, period_date: date = Form(...), approval_text: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_approve_guard),
 ):
     ok, message = payroll_store.approve_payroll(
         run_id, actor=user.get("email", ""), approval_text=approval_text
@@ -705,7 +752,7 @@ async def hr_payroll_liability_action(
     confirmation_number: str = Form(""), confirmed_amount: str = Form(""),
     filing_confirmation_number: str = Form(""),
     evidence_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_submit_guard),
 ):
     ok, message = payroll_store.record_liability_action(
         liability_id, action=action, confirmation_number=confirmation_number,
@@ -721,7 +768,7 @@ async def hr_payroll_liability_action(
 
 @router.get("/payroll/runs/{run_id}", response_class=HTMLResponse)
 async def hr_payroll_run_review(
-    run_id: str, request: Request, user: dict = Depends(_pay_guard),
+    run_id: str, request: Request, user: dict = Depends(_pay_view_guard),
 ):
     run = payroll_store.payroll_run_detail(run_id)
     if not run:
@@ -731,7 +778,7 @@ async def hr_payroll_run_review(
 
 @router.get("/payroll/runs/{run_id}/provider.csv")
 async def hr_payroll_provider_export(
-    run_id: str, user: dict = Depends(_pay_guard)
+    run_id: str, user: dict = Depends(_pay_view_guard)
 ):
     content = reporting.payroll_provider_csv(run_id)
     if content is None:
@@ -753,7 +800,7 @@ async def hr_payroll_provider_action(
     provider_reference: str = Form(""), gross: str = Form(""),
     net: str = Form(""), taxes: str = Form(""),
     employer_cost: str = Form(""), evidence_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_submit_guard),
 ):
     ok, message = payroll_store.record_provider_handoff(
         run_id, action=action, provider_name=provider_name,
@@ -770,7 +817,7 @@ async def hr_payroll_provider_action(
 @router.post("/payroll/runs/{run_id}/checks")
 async def hr_payroll_issue_check(
     run_id: str, employee_email: str = Form(""), check_number: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_pay_submit_guard),
 ):
     ok, message = payroll_store.issue_printed_check(
         run_id, employee_email=employee_email, check_number=check_number,
@@ -785,7 +832,7 @@ async def hr_payroll_issue_check(
 @router.post("/payroll/runs/{run_id}/checks/reissue")
 async def hr_payroll_reissue_check(
     run_id: str, employee_email: str = Form(""), reason: str = Form(""),
-    new_check_number: str = Form(""), user: dict = Depends(_pay_guard),
+    new_check_number: str = Form(""), user: dict = Depends(_pay_approve_guard),
 ):
     ok, message = payroll_store.void_and_reissue_check(
         run_id, employee_email=employee_email, reason=reason,
@@ -798,7 +845,7 @@ async def hr_payroll_reissue_check(
 
 
 @router.post("/payroll/runs/{run_id}/close")
-async def hr_payroll_close_run(run_id: str, user: dict = Depends(_pay_guard)):
+async def hr_payroll_close_run(run_id: str, user: dict = Depends(_pay_submit_guard)):
     ok, message = payroll_store.close_payroll_run(
         run_id, actor=user.get("email", "")
     )
@@ -828,7 +875,7 @@ async def hr_pay_statement_detail(run_id: str, request: Request,
 
 
 @router.get("/settings", response_class=HTMLResponse)
-async def hr_settings(request: Request, user: dict = Depends(_pay_guard)):
+async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
         store.list_employees(),
@@ -843,7 +890,7 @@ async def hr_settings_save(
     eftps_ready: bool = Form(False), utah_tap_ready: bool = Form(False),
     utah_ui_ready: bool = Form(False),
     opening_balances_confirmed: bool = Form(False),
-    opening_balance_note: str = Form(""), user: dict = Depends(_pay_guard),
+    opening_balance_note: str = Form(""), user: dict = Depends(_settings_guard),
 ):
     try:
         payroll_store.save_payroll_settings(
@@ -871,7 +918,7 @@ async def hr_company_profile_save(
     federal_deposit_schedule: str = Form(""),
     utah_withholding_payment_frequency: str = Form(""),
     source_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_settings_guard),
 ):
     ok, message = payroll_store.save_company_profile(
         legal_name=legal_name, trade_name=trade_name, ein_last4=ein_last4,
@@ -897,7 +944,7 @@ async def hr_opening_balance_save(
     utah_ui_wages: str = Form("0"), federal_withheld: str = Form("0"),
     utah_withheld: str = Form("0"), employee_ss_withheld: str = Form("0"),
     employee_medicare_withheld: str = Form("0"), source_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_settings_guard),
 ):
     ok, message = payroll_store.save_opening_balance(
         employee_email=employee_email, tax_year=tax_year, gross_wages=gross_wages,
@@ -918,7 +965,7 @@ async def hr_qualified_review_save(
     tax_year: int = Form(2026), reviewer_name: str = Form(""),
     reviewer_email: str = Form(""), reviewed_on: date = Form(...),
     evidence_reference: str = Form(""), review_note: str = Form(""),
-    attested: bool = Form(False), user: dict = Depends(_pay_guard),
+    attested: bool = Form(False), user: dict = Depends(_settings_guard),
 ):
     ok, message = payroll_store.save_payroll_review(
         tax_year=tax_year, reviewer_name=reviewer_name,
@@ -935,7 +982,7 @@ async def hr_qualified_review_save(
 @router.post("/settings/opening-balance/{balance_id}/decision")
 async def hr_opening_balance_decision(
     balance_id: int, decision: str = Form(""), review_note: str = Form(""),
-    user: dict = Depends(_pay_guard),
+    user: dict = Depends(_settings_guard),
 ):
     ok, message = payroll_store.decide_opening_balance(
         balance_id, decision=decision, review_note=review_note,

@@ -76,16 +76,20 @@ class AccessControlMiddleware(BaseHTTPMiddleware):
             ToolForbidden,
             get_current_user,
             get_session_user_from_request,
-            has_tool,
             render_forbidden_response,
         )
+        from sales_support_agent.services.access.catalog import grants_tool
 
         try:
             if get_session_user_from_request(request) is None:
                 return RedirectResponse(url="/admin/login", status_code=302)
-            if has_tool(request, tool.key):
+            user = get_current_user(request)
+            if user and (
+                user.get("is_superadmin")
+                or grants_tool(set(user.get("permissions") or ()), tool.key)
+            ):
                 return await call_next(request)
-            return render_forbidden_response(request, ToolForbidden(get_current_user(request), tool.key))
+            return render_forbidden_response(request, ToolForbidden(user, tool.key))
         except Exception:  # noqa: BLE001 — a guard error must never 500 every page; fail closed to login
             logger.exception("[access] authorization middleware error on %s", path)
             return RedirectResponse(url="/admin/login", status_code=302)

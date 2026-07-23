@@ -216,6 +216,46 @@ def require_tool(key: str):
     return _dep
 
 
+def require_any_tool(*keys: str):
+    """Allow any named capability; useful while splitting legacy broad roles."""
+    if not keys:
+        raise ValueError("At least one tool key is required")
+
+    def _dep(request: Request) -> dict:
+        identity = get_session_user_from_request(request)
+        if not identity:
+            raise HTTPException(status_code=303, headers={"Location": "/admin/login"})
+        user = get_current_user(request)
+        permissions = set((user or {}).get("permissions") or ())
+        if user and (user.get("is_superadmin") or any(key in permissions for key in keys)):
+            return user
+        raise ToolForbidden(user, keys[0])
+
+    return _dep
+
+
+def require_all_tools(*keys: str, legacy_keys: tuple[str, ...] = ()):
+    """Require all narrow capabilities, or one explicitly named legacy grant."""
+    if not keys:
+        raise ValueError("At least one tool key is required")
+
+    def _dep(request: Request) -> dict:
+        identity = get_session_user_from_request(request)
+        if not identity:
+            raise HTTPException(status_code=303, headers={"Location": "/admin/login"})
+        user = get_current_user(request)
+        permissions = set((user or {}).get("permissions") or ())
+        if user and (
+            user.get("is_superadmin")
+            or all(key in permissions for key in keys)
+            or any(key in permissions for key in legacy_keys)
+        ):
+            return user
+        raise ToolForbidden(user, keys[0])
+
+    return _dep
+
+
 def require_tool_inline(request: Request, key: str):
     """Imperative variant for handlers that render their own pages. Returns
     (user, None) when allowed, or (None, Response) with the redirect/403 to

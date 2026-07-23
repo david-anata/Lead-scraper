@@ -296,17 +296,28 @@ def _role_badge(role: str) -> str:
 
 
 def render_hr_employees(employees: list, *, user, flash=None) -> str:
+    permissions = (user or {}).get("permissions") or set()
+    can_manage_people = bool(
+        (user or {}).get("is_superadmin")
+        or {"hr.people.manage", "hr.payroll"}.intersection(permissions)
+    )
     rows = ""
     for e in employees:
         status_dot = "🟢" if e["status"] == "active" else "⚪️"
         employment = e.get("employment") or {}
-        pay = (
+        pay = "Restricted"
+        if "hourly_rate" in e:
+            pay = (
             f"${employment.get('fixed_pay_per_period', '0.00')}/check"
             if employment.get("pay_basis") == "fixed_semimonthly"
-            else f"${e['hourly_rate']}/hr"
+            else f"${e.get('hourly_rate', '0.00')}/hr"
+            )
+        name = (
+            f'<a href="/admin/hr/employees/{e["id"]}" style="color:#2456b8;text-decoration:none;font-weight:600">{_esc(e["full_name"])}</a>'
+            if can_manage_people else f'<strong>{_esc(e["full_name"])}</strong>'
         )
         rows += f"""<tr>
-          <td><a href="/admin/hr/employees/{e['id']}" style="color:#2456b8;text-decoration:none;font-weight:600">{_esc(e['full_name'])}</a></td>
+          <td>{name}</td>
           <td class="hr-sub" style="margin:0">{_esc(e['email'])}</td>
           <td>{_role_badge(e['hr_role'])}</td>
           <td>{_esc(e['employee_type'])}</td>
@@ -457,7 +468,11 @@ def render_hr_time(
 ) -> str:
     punch_action = "out" if current else "in"
     punch_label = "Clock out" if current else "Clock in"
-    can_review = bool((user or {}).get("is_superadmin") or "hr.payroll" in ((user or {}).get("permissions") or set()))
+    review_permissions = (user or {}).get("permissions") or set()
+    can_review = bool(
+        (user or {}).get("is_superadmin")
+        or {"hr.payroll", "hr.time.approve_team"}.intersection(review_permissions)
+    )
     rows = "".join(f"""<tr><td>{_esc(r['date'])}</td><td>{_esc(r['start_time'] or '—')}</td>
       <td>{_esc(r['stop_time'] or 'Open')}</td><td>{r['hours']:.2f}</td><td>{_esc(r['employee_email'])}</td>
       <td>{f'<details><summary>Correct</summary><form method="post" action="/admin/hr/time/{r["id"]}/correction"><label>Correct start</label><input type="time" name="proposed_start" value="{_esc(r["start_time"])}" required><label>Correct end</label><input type="time" name="proposed_stop" value="{_esc(r["stop_time"])}" required><label>Reason</label><input name="reason" required maxlength="500"><button class="hr-btn" type="submit">Request correction</button></form></details>' if not r['is_open'] else 'Close the shift first'}</td></tr>""" for r in entries)

@@ -518,7 +518,12 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         _show_all = True  # legacy callers that didn't pass permissions
 
     def _can(key: str) -> bool:
-        return _show_all or (_granted is not None and key in _granted)
+        if _show_all:
+            return True
+        if _granted is None:
+            return False
+        from sales_support_agent.services.access.catalog import grants_tool
+        return grants_tool(_granted, key)
 
     primary_active = "website_ops" if active in {"website_ops", "seo_dashboard", "queue", "reports"} else active
     if active in {"sales", "sales_decks", "sales_reps"}:

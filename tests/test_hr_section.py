@@ -525,6 +525,48 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertIn('href="/admin/hr/pay-statements"', page.text)
 
+    def test_granular_people_permission_does_not_imply_compensation_access(self):
+        import uuid
+        email = f"people-view-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(
+            email=email, full_name="People Viewer", hourly_rate="42.50"
+        )
+        uid = access_store.upsert_user(email, "People Viewer")
+        access_store.set_user_permissions(uid, ["hr.access", "hr.people.view"])
+
+        listing = self._get("/admin/hr/employees", _cookie(email))
+        self.assertEqual(listing.status_code, 200)
+        self.assertIn("Restricted", listing.text)
+        self.assertNotIn("$42.50/hr", listing.text)
+
+    def test_granular_payroll_viewer_cannot_prepare_payroll(self):
+        import uuid
+        email = f"pay-view-{uuid.uuid4().hex[:8]}@anatainc.com"
+        uid = access_store.upsert_user(email, "Payroll Viewer")
+        access_store.set_user_permissions(
+            uid, ["hr.access", "hr.payroll.view"]
+        )
+        page = self._get("/admin/hr/payroll", _cookie(email))
+        self.assertEqual(page.status_code, 200)
+        blocked = self._post(
+            "/admin/hr/payroll/prepare",
+            {"period_date": "2026-08-01"},
+            _cookie(email),
+        )
+        self.assertEqual(blocked.status_code, 403)
+
+    def test_people_and_compensation_manager_can_open_employee_setup(self):
+        import uuid
+        email = f"people-manage-{uuid.uuid4().hex[:8]}@anatainc.com"
+        uid = access_store.upsert_user(email, "People Manager")
+        access_store.set_user_permissions(
+            uid,
+            ["hr.access", "hr.people.manage", "hr.compensation.manage"],
+        )
+        page = self._get("/admin/hr/employees/new", _cookie(email))
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Hourly rate", page.text)
+
 
 if __name__ == "__main__":
     unittest.main()
