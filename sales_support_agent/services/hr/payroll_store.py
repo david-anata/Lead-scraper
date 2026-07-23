@@ -749,7 +749,14 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
         return False, "approval_attestation_required"
     with _session() as session:
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
-        if not run or run.status != "prepared":
+        if not run:
+            return False, "run_not_prepared"
+        existing_approval = session.query(HRPayrollApproval).filter_by(
+            payroll_run_id=run_id
+        ).first()
+        if existing_approval and run.status in {"approved", "checks_issued", "closed"}:
+            return True, "payroll_already_approved"
+        if run.status != "prepared":
             return False, "run_not_prepared"
         if run.initiated_by.strip().lower() == actor.strip().lower():
             return False, "self_approval_blocked"
@@ -929,14 +936,17 @@ def issue_printed_check(run_id: str, *, employee_email: str, check_number: str,
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
         if not run or run.status not in {"approved", "checks_issued"}:
             return False, "payroll_not_approved"
-        if session.query(HRPrintedCheck).filter_by(check_number=check_number.strip()).first():
-            return False, "check_number_used"
-        if session.query(HRPrintedCheck).filter(
+        existing_employee_check = session.query(HRPrintedCheck).filter(
             HRPrintedCheck.payroll_run_id == run_id,
             HRPrintedCheck.employee_email == email,
             HRPrintedCheck.status != "voided",
-        ).first():
-            return False, "check_already_issued"
+        ).first()
+        if existing_employee_check:
+            if existing_employee_check.check_number == check_number.strip():
+                return True, "check_already_issued"
+            return False, "employee_check_already_issued"
+        if session.query(HRPrintedCheck).filter_by(check_number=check_number.strip()).first():
+            return False, "check_number_used"
         calculation = session.query(HRPayrollCalculation).filter_by(
             payroll_run_id=run_id, employee_email=email, version=1
         ).first()
@@ -1005,16 +1015,58 @@ def void_and_reissue_check(
         ).first()
         if not run or not old:
             return False, "check_not_found"
+        if old.check_number == new_check_number.strip():
+            return False, "new_check_number_required"
+        if session.query(HRPrintedCheck).filter_by(
+            check_number=new_check_number.strip()
+        ).first():
+            return False, "check_number_used"
         old.status = "voided"
         old.notes = f"{old.notes}\nVoided by {actor}: {reason.strip()}".strip()
+        replacement = HRPrintedCheck(
+            base44_id=f"check_{secrets.token_hex(10)}",
+            payroll_run_id=old.payroll_run_id,
+            payroll_line_item_id=old.payroll_line_item_id,
+            employee_email=old.employee_email,
+            employee_name=old.employee_name,
+            pay_period_start=old.pay_period_start,
+            pay_period_end=old.pay_period_end,
+            pay_date=old.pay_date,
+            check_number=new_check_number.strip(),
+            gross_pay_cents=old.gross_pay_cents,
+            federal_income_tax_cents=old.federal_income_tax_cents,
+            social_security_tax_cents=old.social_security_tax_cents,
+            medicare_tax_cents=old.medicare_tax_cents,
+            state_income_tax_cents=old.state_income_tax_cents,
+            extra_withholding_cents=old.extra_withholding_cents,
+            total_deductions_cents=old.total_deductions_cents,
+            net_pay_cents=old.net_pay_cents,
+            total_hours=old.total_hours,
+            hourly_rate_cents=old.hourly_rate_cents,
+            status="ready",
+            notes=(
+                f"Reissued from check {old.check_number} by {actor}. "
+                f"Reason: {reason.strip()}"
+            ),
+        )
+        session.add(replacement)
         run.status = "approved"
         _audit(session, actor, "payroll.check_voided", "printed_check", old.id, {
             "reason": reason.strip(), "original_check_number": old.check_number,
         })
-    ok, message = issue_printed_check(
-        run_id, employee_email=email, check_number=new_check_number, actor=actor
-    )
-    return (ok, "check_reissued" if ok else message)
+        session.flush()
+        active_checks = session.query(func.count(HRPrintedCheck.id)).filter(
+            HRPrintedCheck.payroll_run_id == run_id,
+            HRPrintedCheck.status == "ready",
+        ).scalar() or 0
+        if active_checks >= run.employee_count:
+            run.status = "checks_issued"
+        _audit(session, actor, "payroll.check_reissued", "printed_check", replacement.id, {
+            "run_id": run_id, "employee_email": email,
+            "original_check_number": old.check_number,
+            "new_check_number": replacement.check_number,
+        })
+        return True, "check_reissued"
 
 
 def close_payroll_run(run_id: str, *, actor: str) -> tuple[bool, str]:
