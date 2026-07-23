@@ -147,6 +147,10 @@ services:
         -d '{"dry_run":false,"limit":25,"run_hubspot_sync":true,"run_mailbox_sync":false,"trigger":"scheduled"}'
       curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/hr-reminders/run" \
         -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY"
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/jobs/building-holds/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+        -d '{"dry_run":false}'
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false

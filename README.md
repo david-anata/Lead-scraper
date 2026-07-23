@@ -185,6 +185,8 @@ Confirmed bookings also maintain CRM relationships automatically:
 - new inquiries receive an owner and response deadline immediately; configure
   `BUILDING_DEFAULT_LEAD_OWNER` and `BUILDING_RESPONSE_SLA_HOURS` (default `4`)
   to match the operating team
+- the hourly operator job expires due soft holds, releases their availability,
+  queues calendar cleanup, and preserves an audit record
 - failed campaign deliveries can be retried without resending successful
   recipients; eligibility and suppression are rechecked at retry time
 

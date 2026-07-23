@@ -6,6 +6,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
 from sales_support_agent.jobs.sales_operator_review import SalesOperatorReviewJob
+from sales_support_agent.services.building_holds import expire_building_holds
 
 
 router = APIRouter(prefix="/api/jobs", tags=["sales-jobs"])
@@ -16,6 +17,36 @@ def _enforce_internal_api_key(request: Request, internal_api_key: str | None) ->
     provided = str(internal_api_key or "").strip()
     if configured and provided != configured:
         raise PermissionError("Invalid internal API key.")
+
+
+@router.post("/building-holds/run")
+async def building_hold_expiration_job(
+    request: Request,
+    x_internal_api_key: str | None = Header(default=None),
+) -> JSONResponse:
+    try:
+        _enforce_internal_api_key(request, x_internal_api_key)
+    except PermissionError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=401)
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    result = expire_building_holds(
+        request.app.state.session_factory,
+        dry_run=bool(payload.get("dry_run", False)),
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "status": "ok",
+            "message": "Building hold expiration completed.",
+            "details": result,
+        }
+    )
 
 
 @router.post("/sales-operator/run")
