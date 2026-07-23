@@ -1104,6 +1104,7 @@ class NavAccessSafetyTests(unittest.TestCase):
         # pointing at an inaccessible sales page.
         self.assertNotIn("nav-dropdown", nav)
         self.assertIn("topbar-section-row", nav)
+        self.assertIn("topbar-section-band", nav)
         self.assertIn('href="/admin/fulfillment/cs/"', nav)
         self.assertIn('href="/admin/fulfillment/cs/reports/"', nav)
         self.assertNotIn('href="/admin/fulfillment/sales"', nav)
@@ -1134,6 +1135,7 @@ class NavAccessSafetyTests(unittest.TestCase):
         nav = render_agent_nav("website_ops", permissions={"website_ops.seo", "website_ops.queue"})
         self.assertNotIn("nav-dropdown", nav)
         self.assertIn("topbar-section-row", nav)
+        self.assertIn("topbar-section-band", nav)
         self.assertIn('href="/admin/website-ops"', nav)
         self.assertIn('href="/admin/website-ops/queue"', nav)
         # reports tool not held -> its pill must not appear.

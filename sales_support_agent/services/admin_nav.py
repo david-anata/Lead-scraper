@@ -243,6 +243,10 @@ def render_agent_nav_styles() -> str:
         height: 1px;
         background: rgba(43, 54, 68, 0.08);
       }
+      .topbar-section-band {
+        width: 100%;
+        background: #f9f7f3;
+      }
       .topbar-section-row {
         width: 100%;
         max-width: 1320px;
@@ -254,7 +258,6 @@ def render_agent_nav_styles() -> str:
         padding: 7px 24px;
         overflow-x: auto;
         scrollbar-width: none;
-        background: #f9f7f3;
       }
       .topbar-section-row::-webkit-scrollbar { display:none; }
       .topbar-section-label {
@@ -573,11 +576,13 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         )
         active_section_row = f"""
         <div class="topbar-divider"></div>
-        <div class="topbar-section-row" aria-label="{html.escape(active_section_label)} pages">
-          <span class="topbar-section-label">{html.escape(active_section_label)} pages</span>
-          <nav class="top-actions top-actions--secondary">
-            {secondary_pills}
-          </nav>
+        <div class="topbar-section-band">
+          <div class="topbar-section-row" aria-label="{html.escape(active_section_label)} pages">
+            <span class="topbar-section-label">{html.escape(active_section_label)} pages</span>
+            <nav class="top-actions top-actions--secondary">
+              {secondary_pills}
+            </nav>
+          </div>
         </div>
         """
 

@@ -334,6 +334,7 @@ class MainFulfillmentCSTests(unittest.TestCase):
         # Fulfillment pages are visible and directly reachable.
         self.assertNotIn("nav-dropdown", nav_html)
         self.assertIn("topbar-section-row", nav_html)
+        self.assertIn("topbar-section-band", nav_html)
         self.assertIn('href="/admin/fulfillment/sales"', nav_html)
         self.assertIn('href="/admin/fulfillment/cs/"', nav_html)
         self.assertIn(">Sales Pipeline</a>", nav_html)
