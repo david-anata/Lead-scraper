@@ -274,6 +274,11 @@ but still honor operational-email permission and an all-email suppression.
 Record-specific transactional tenant and booking messages remain separate from
 the bulk campaign workflow.
 
+Active tenant-employee and community-member relationships also require a named
+list owner and a review-through date. Missing or overdue roster reviews exclude
+the relationship from campaign audiences until an operator renews the review
+or marks the relationship inactive; every review is retained in the audit log.
+
 Website and assisted-source inquiries remain durable even when HubSpot is
 unavailable. A partial contact or note failure changes the inquiry to
 `crm_sync_needed`, stores the latest error and attempt count, and exposes a

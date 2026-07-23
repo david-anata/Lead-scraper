@@ -132,11 +132,32 @@ def render_building_page(
         for space in spaces
     ) or '<div class="empty"><strong>No spaces available for media assignment.</strong><br>Add reviewed inventory first.</div>'
 
+    def relationship_review_controls(item: dict[str, Any]) -> str:
+        governed = [
+            rel
+            for rel in item.get("relationships", [])
+            if rel.get("type") in {"tenant_employee", "community_member"}
+        ]
+        if not governed:
+            return ""
+        return "".join(
+            f'''<details class="row-actions"><summary>{_esc(str(rel.get("type") or "").replace("_", " ").title())} review · {"current" if rel.get("review_current") else "needs attention"}</summary>
+              <form method="post" action="/admin/building/contacts/{_esc(item.get("id"))}/relationships/{_esc(rel.get("id"))}/review">
+                <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+                <label>List owner<input name="list_owner" required value="{_esc(rel.get("list_owner"))}" placeholder="Accountable operator"></label>
+                <label>Review through<input name="review_due_on" type="date" required value="{_esc(rel.get("review_due_on"))}"></label>
+                <label>Relationship state<select name="status"><option value="active"{" selected" if rel.get("status") == "active" else ""}>Active</option><option value="inactive"{" selected" if rel.get("status") == "inactive" else ""}>Inactive / removed</option></select></label>
+                <button class="secondary secondary--small" type="submit">Record review</button>
+              </form>
+            </details>'''
+            for rel in governed
+        )
+
     contact_rows = "".join(
         f"""
         <tr>
           <td><strong>{_esc(item.get("full_name") or item.get("email"))}</strong><span class="sub">{_esc(item.get("email"))} · {_esc(item.get("status") or "active")}</span></td>
-          <td>{_esc(", ".join(sorted({rel.get("type", "") for rel in item.get("relationships", []) if rel.get("type")})) or "No relationship")}</td>
+          <td>{_esc(", ".join(sorted({rel.get("type", "") for rel in item.get("relationships", []) if rel.get("type")})) or "No relationship")}{relationship_review_controls(item)}</td>
           <td>{_badge(str(item.get("marketing_status") or "unknown"))}</td>
           <td>{_badge("suppressed") if item.get("suppressed") else "Allowed"}<span class="sub">{_esc(item.get("suppression_reason"))}</span></td>
           <td><a class="secondary secondary--small" href="/admin/building/privacy/contacts/{_esc(item.get("id"))}/export">Export</a>
@@ -785,6 +806,8 @@ def render_building_page(
           <div class="field"><label for="contact-relationship">Relationship</label><select id="contact-relationship" name="relationship_type"><option value="prospect">Prospect</option><option value="tenant">Tenant</option><option value="tenant_employee">Tenant employee</option><option value="event_host">Event host</option><option value="former_tenant">Former tenant</option><option value="waitlist">Waitlist</option><option value="vendor">Vendor</option><option value="partner">Partner</option><option value="community_member">Community member</option></select></div>
           <div class="field"><label for="contact-org">Relationship organization</label><input id="contact-org" name="organization" placeholder="Company or tenant account"></div>
           <div class="field"><label for="contact-reference">Source reference</label><input id="contact-reference" name="source_reference" placeholder="Lease, Eventective, Marketplace"></div>
+          <div class="field"><label for="contact-list-owner">Employee/community list owner</label><input id="contact-list-owner" name="list_owner" placeholder="Required for tenant employees and community members"></div>
+          <div class="field"><label for="contact-review-due">Review through</label><input id="contact-review-due" name="review_due_on" type="date"><span class="form-note">Required for tenant employees and community members.</span></div>
           <div class="field"><label for="contact-marketing">Marketing permission</label><select id="contact-marketing" name="marketing_status"><option value="unknown">Unknown / no promotional email</option><option value="subscribed">Subscribed</option><option value="unsubscribed">Unsubscribed</option></select></div>
           <div class="form-actions"><label class="check"><input type="checkbox" name="consent_confirmed" value="true"> I have documented consent for “Subscribed”</label><button class="primary" type="submit">Save contact</button></div>
         </form>

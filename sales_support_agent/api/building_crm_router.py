@@ -81,6 +81,7 @@ MARKETING_STATUSES = {"unknown", "subscribed", "unsubscribed"}
 CONTACT_STATUSES = {"active", "inactive", "merged"}
 CAMPAIGN_COMMUNICATION_CLASSES = {"marketing", "operational"}
 OPERATIONAL_RELATIONSHIP_TYPES = {"tenant", "tenant_employee", "event_host"}
+REVIEWED_RELATIONSHIP_TYPES = {"tenant_employee", "community_member"}
 MOUNTAIN = ZoneInfo("America/Denver")
 
 
@@ -162,6 +163,8 @@ class RelationshipInput(BaseModel):
     starts_on: date | None = None
     ends_on: date | None = None
     source_reference: str = Field(default="", max_length=255)
+    list_owner: str = Field(default="", max_length=255)
+    review_due_on: date | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     actor: str = Field(default="", max_length=255)
 
@@ -184,6 +187,13 @@ class PreferenceInput(BaseModel):
         if value not in MARKETING_STATUSES:
             raise ValueError("Unsupported marketing status.")
         return value
+
+
+class RelationshipReviewInput(BaseModel):
+    list_owner: str = Field(min_length=1, max_length=255)
+    review_due_on: date
+    status: Literal["active", "inactive"] = "active"
+    actor: str = Field(min_length=1, max_length=255)
 
 
 class SegmentInput(BaseModel):
@@ -275,6 +285,10 @@ def _contact_payload(
                 "starts_on": item.starts_on.isoformat() if item.starts_on else None,
                 "ends_on": item.ends_on.isoformat() if item.ends_on else None,
                 "source_reference": item.source_reference,
+                "list_owner": str((item.metadata_json or {}).get("list_owner") or ""),
+                "review_due_on": (item.metadata_json or {}).get("review_due_on"),
+                "reviewed_at": (item.metadata_json or {}).get("reviewed_at"),
+                "reviewed_by": (item.metadata_json or {}).get("reviewed_by"),
             }
             for item in relationships
         ],
@@ -307,6 +321,19 @@ def _validate_campaign_segment(
                 "tenant employees, or event hosts."
             ),
         )
+
+
+def _relationship_review_is_current(relationship: BuildingRelationship) -> bool:
+    if relationship.relationship_type not in REVIEWED_RELATIONSHIP_TYPES:
+        return True
+    metadata = relationship.metadata_json or {}
+    owner = str(metadata.get("list_owner") or "").strip()
+    due_value = str(metadata.get("review_due_on") or "").strip()
+    try:
+        due_on = date.fromisoformat(due_value)
+    except ValueError:
+        return False
+    return bool(owner) and due_on >= datetime.now(MOUNTAIN).date()
 
 
 def _resolve_segment(
@@ -350,7 +377,7 @@ def _resolve_segment(
     resolved: list[dict[str, Any]] = []
     for contact in contacts:
         contact_relationships = relationships.get(contact.id, [])
-        eligible_relationships = [
+        matching_relationships = [
             item
             for item in contact_relationships
             if (not wanted_types or item.relationship_type in wanted_types)
@@ -359,11 +386,18 @@ def _resolve_segment(
                 or item.status == wanted_relationship_status
             )
         ]
+        eligible_relationships = [
+            item
+            for item in matching_relationships
+            if _relationship_review_is_current(item)
+        ]
         preference = preferences.get(contact.id)
         marketing_status = preference.marketing_status if preference else "unknown"
         reasons: list[str] = []
         exclusions: list[str] = []
-        if wanted_types and not eligible_relationships:
+        if matching_relationships and not eligible_relationships:
+            exclusions.append("relationship review is overdue or missing an owner")
+        elif wanted_types and not eligible_relationships:
             exclusions.append("relationship does not match")
         elif eligible_relationships:
             reasons.append(
@@ -966,9 +1000,28 @@ def add_relationship(
     _require_internal_key(request, x_internal_api_key)
     if payload.ends_on and payload.starts_on and payload.ends_on < payload.starts_on:
         raise HTTPException(status_code=422, detail="Relationship end precedes start.")
+    if (
+        payload.status == "active"
+        and payload.relationship_type in REVIEWED_RELATIONSHIP_TYPES
+        and (not payload.list_owner.strip() or payload.review_due_on is None)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Active employee/community relationships require an owner and review date.",
+        )
     with session_scope(request.app.state.session_factory) as session:
         if session.get(BuildingContact, contact_id) is None:
             raise HTTPException(status_code=404, detail="Contact not found.")
+        metadata = dict(payload.metadata)
+        if payload.relationship_type in REVIEWED_RELATIONSHIP_TYPES:
+            metadata.update({
+                "list_owner": payload.list_owner.strip(),
+                "review_due_on": (
+                    payload.review_due_on.isoformat() if payload.review_due_on else ""
+                ),
+                "reviewed_at": _now().isoformat(),
+                "reviewed_by": payload.actor or "internal-api",
+            })
         row = BuildingRelationship(
             id=payload.id or str(uuid4()),
             contact_id=contact_id,
@@ -978,7 +1031,7 @@ def add_relationship(
             starts_on=payload.starts_on,
             ends_on=payload.ends_on,
             source_reference=payload.source_reference,
-            metadata_json=payload.metadata,
+            metadata_json=metadata,
         )
         session.add(row)
         session.add(BuildingAuditEvent(
@@ -986,9 +1039,63 @@ def add_relationship(
             entity_id=row.id,
             action="created",
             actor=payload.actor or "internal-api",
-            after_json={"contact_id": contact_id, "type": row.relationship_type, "status": row.status},
+            after_json={
+                "contact_id": contact_id,
+                "type": row.relationship_type,
+                "status": row.status,
+                "governance": metadata,
+            },
         ))
         return {"ok": True, "relationship_id": row.id}
+
+
+@internal_router.put("/contacts/{contact_id}/relationships/{relationship_id}/review")
+def review_relationship(
+    contact_id: str,
+    relationship_id: str,
+    payload: RelationshipReviewInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingRelationship, relationship_id)
+        if row is None or row.contact_id != contact_id:
+            raise HTTPException(status_code=404, detail="Relationship not found.")
+        if row.relationship_type not in REVIEWED_RELATIONSHIP_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail="This relationship type does not require periodic list review.",
+            )
+        before = {
+            "status": row.status,
+            "governance": dict(row.metadata_json or {}),
+        }
+        metadata = dict(row.metadata_json or {})
+        metadata.update({
+            "list_owner": payload.list_owner.strip(),
+            "review_due_on": payload.review_due_on.isoformat(),
+            "reviewed_at": _now().isoformat(),
+            "reviewed_by": payload.actor,
+        })
+        row.metadata_json = metadata
+        row.status = payload.status
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="relationship",
+            entity_id=row.id,
+            action="list_reviewed",
+            actor=payload.actor,
+            before_json=before,
+            after_json={"status": row.status, "governance": metadata},
+        ))
+        return {
+            "ok": True,
+            "relationship_id": row.id,
+            "status": row.status,
+            "list_owner": metadata["list_owner"],
+            "review_due_on": metadata["review_due_on"],
+        }
 
 
 @internal_router.put("/contacts/{contact_id}/preference")
@@ -1656,6 +1763,8 @@ def save_contact_from_control_room(
     relationship_type: str = Form(...),
     organization: str = Form(""),
     source_reference: str = Form(""),
+    list_owner: str = Form(""),
+    review_due_on: date | None = Form(None),
     marketing_status: str = Form("unknown"),
     consent_confirmed: bool = Form(False),
     user: dict = Depends(require_tool("building.manage")),
@@ -1674,6 +1783,8 @@ def save_contact_from_control_room(
             relationship_type=relationship_type,
             organization=organization.strip(),
             source_reference=source_reference.strip(),
+            list_owner=list_owner.strip(),
+            review_due_on=review_due_on,
             actor=actor,
         )
         PreferenceInput(
@@ -1686,6 +1797,16 @@ def save_contact_from_control_room(
     if marketing_status == "subscribed" and not consent_confirmed:
         return _building_redirect(
             error="Confirm documented marketing consent before subscribing a contact."
+        )
+    if (
+        relationship_payload.relationship_type in REVIEWED_RELATIONSHIP_TYPES
+        and (
+            not relationship_payload.list_owner.strip()
+            or relationship_payload.review_due_on is None
+        )
+    ):
+        return _building_redirect(
+            error="Tenant employee and community relationships need an owner and review date."
         )
     with session_scope(request.app.state.session_factory) as session:
         normalized_id = contact_id.strip()
@@ -1724,6 +1845,17 @@ def save_contact_from_control_room(
             )
         ).scalar_one_or_none()
         if duplicate_relationship is None:
+            relationship_metadata: dict[str, Any] = {}
+            if (
+                relationship_payload.relationship_type
+                in REVIEWED_RELATIONSHIP_TYPES
+            ):
+                relationship_metadata = {
+                    "list_owner": relationship_payload.list_owner.strip(),
+                    "review_due_on": relationship_payload.review_due_on.isoformat(),
+                    "reviewed_at": _now().isoformat(),
+                    "reviewed_by": actor,
+                }
             session.add(BuildingRelationship(
                 id=str(uuid4()),
                 contact_id=row.id,
@@ -1731,6 +1863,7 @@ def save_contact_from_control_room(
                 status="active",
                 organization=relationship_payload.organization,
                 source_reference=relationship_payload.source_reference,
+                metadata_json=relationship_metadata,
             ))
         preference = session.get(BuildingCommunicationPreference, row.id)
         if preference is None:
@@ -1757,6 +1890,64 @@ def save_contact_from_control_room(
             },
         ))
     return _building_redirect(notice=f"{contact_payload.full_name or contact_payload.email} saved.")
+
+
+@admin_router.post(
+    "/contacts/{contact_id}/relationships/{relationship_id}/review",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def review_relationship_from_control_room(
+    contact_id: str,
+    relationship_id: str,
+    request: Request,
+    list_owner: str = Form(...),
+    review_due_on: date = Form(...),
+    status: str = Form("active"),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    try:
+        payload = RelationshipReviewInput(
+            list_owner=list_owner.strip(),
+            review_due_on=review_due_on,
+            status=status,
+            actor=actor,
+        )
+    except ValidationError as exc:
+        return _building_redirect(
+            error=exc.errors()[0].get("msg", "Invalid relationship review.")
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingRelationship, relationship_id)
+        if row is None or row.contact_id != contact_id:
+            return _building_redirect(error="Relationship not found.")
+        if row.relationship_type not in REVIEWED_RELATIONSHIP_TYPES:
+            return _building_redirect(
+                error="This relationship does not require periodic review."
+            )
+        before = {"status": row.status, "governance": dict(row.metadata_json or {})}
+        metadata = dict(row.metadata_json or {})
+        metadata.update({
+            "list_owner": payload.list_owner,
+            "review_due_on": payload.review_due_on.isoformat(),
+            "reviewed_at": _now().isoformat(),
+            "reviewed_by": actor,
+        })
+        row.metadata_json = metadata
+        row.status = payload.status
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="relationship",
+            entity_id=row.id,
+            action="list_reviewed_from_control_room",
+            actor=actor,
+            before_json=before,
+            after_json={"status": row.status, "governance": metadata},
+        ))
+    return _building_redirect(
+        notice=f"Relationship reviewed through {payload.review_due_on.isoformat()}."
+    )
 
 
 @admin_router.post(
@@ -2322,8 +2513,16 @@ def building_control_room(
                 "status": item.status,
                 "relationships": [
                     {
+                        "id": rel.id,
                         "type": rel.relationship_type,
                         "status": rel.status,
+                        "list_owner": str(
+                            (rel.metadata_json or {}).get("list_owner") or ""
+                        ),
+                        "review_due_on": (
+                            rel.metadata_json or {}
+                        ).get("review_due_on"),
+                        "review_current": _relationship_review_is_current(rel),
                     }
                     for rel in relationships.get(item.id, [])
                 ],

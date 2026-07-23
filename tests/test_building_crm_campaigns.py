@@ -133,6 +133,91 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertFalse(rows["contact-prospect"]["included"])
         self.assertIn("relationship does not match", rows["contact-prospect"]["reason"])
 
+    def test_01a_employee_lists_require_owner_and_current_review(self) -> None:
+        self._contact("contact-employee", "employee@example.com", "Erin Employee")
+        missing_governance = self.client.post(
+            "/api/internal/building/crm/contacts/contact-employee/relationships",
+            headers=self.headers,
+            json={
+                "id": "relationship-employee",
+                "relationship_type": "tenant_employee",
+                "source_reference": "tenant-roster:1",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(missing_governance.status_code, 422, missing_governance.text)
+        relationship = self.client.post(
+            "/api/internal/building/crm/contacts/contact-employee/relationships",
+            headers=self.headers,
+            json={
+                "id": "relationship-employee",
+                "relationship_type": "tenant_employee",
+                "source_reference": "tenant-roster:1",
+                "list_owner": "community@example.com",
+                "review_due_on": "2099-12-31",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(relationship.status_code, 201, relationship.text)
+        self._preference("contact-employee", "subscribed")
+        segment = self.client.put(
+            "/api/internal/building/crm/segments/current-employees",
+            headers=self.headers,
+            json={
+                "id": "current-employees",
+                "name": "Current tenant employees",
+                "relationship_types": ["tenant_employee"],
+                "marketing_statuses": ["subscribed"],
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(segment.status_code, 200, segment.text)
+        preview = self.client.get(
+            "/api/internal/building/crm/segments/current-employees/preview",
+            headers=self.headers,
+        )
+        employee = next(
+            row
+            for row in preview.json()["contacts"]
+            if row["contact_id"] == "contact-employee"
+        )
+        self.assertTrue(employee["included"])
+        review = self.client.put(
+            "/api/internal/building/crm/contacts/contact-employee/"
+            "relationships/relationship-employee/review",
+            headers=self.headers,
+            json={
+                "list_owner": "new-owner@example.com",
+                "review_due_on": "2000-01-01",
+                "status": "active",
+                "actor": "reviewer@example.com",
+            },
+        )
+        self.assertEqual(review.status_code, 200, review.text)
+        expired_preview = self.client.get(
+            "/api/internal/building/crm/segments/current-employees/preview",
+            headers=self.headers,
+        )
+        employee = next(
+            row
+            for row in expired_preview.json()["contacts"]
+            if row["contact_id"] == "contact-employee"
+        )
+        self.assertFalse(employee["included"])
+        self.assertIn("review is overdue", employee["reason"])
+        renewed = self.client.put(
+            "/api/internal/building/crm/contacts/contact-employee/"
+            "relationships/relationship-employee/review",
+            headers=self.headers,
+            json={
+                "list_owner": "new-owner@example.com",
+                "review_due_on": "2099-12-31",
+                "status": "active",
+                "actor": "reviewer@example.com",
+            },
+        )
+        self.assertEqual(renewed.status_code, 200, renewed.text)
+
     def test_02_campaign_requires_matching_preview_before_approval(self) -> None:
         draft = self.client.put(
             "/api/internal/building/crm/campaigns/tenant-news-1",
