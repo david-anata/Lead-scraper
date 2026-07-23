@@ -12,6 +12,7 @@ from sales_support_agent.models.hr import (
     HRPayrollApproval,
     HRPayrollCalculation,
     HRPayrollInput,
+    HRPayrollProviderHandoff,
     HRPayrollRun,
     HRPrintedCheck,
 )
@@ -71,6 +72,42 @@ def test_repeated_approval_and_check_actions_are_idempotent():
     with Session(engine) as session:
         assert session.query(HRPayrollApproval).count() == 1
         assert session.query(HRPrintedCheck).count() == 1
+
+
+def test_provider_handoff_detects_exact_match_and_variance():
+    engine = _engine()
+    run = _run()
+    run.total_gross_cents = 100000
+    run.total_net_cents = 80000
+    run.total_taxes_cents = 25000
+    run.notes = '{"total_employer_cost_cents": 110000}'
+    with Session(engine) as session:
+        session.add(run)
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.record_provider_handoff(
+            "pay_test", action="submitted", provider_name="Outside Provider",
+            provider_reference="run-123", evidence_note="Entered from provider",
+            actor="val@anatainc.com",
+        ) == (True, "provider_submitted")
+        assert payroll_store.record_provider_handoff(
+            "pay_test", action="confirmed", provider_name="Outside Provider",
+            provider_reference="run-123", gross="1000", net="800",
+            taxes="250", employer_cost="1100", evidence_note="Final report",
+            actor="david@anatainc.com",
+        ) == (True, "provider_matched")
+        assert payroll_store.record_provider_handoff(
+            "pay_test", action="confirmed", provider_name="Outside Provider",
+            provider_reference="run-123", gross="1001", net="800",
+            taxes="250", employer_cost="1100", evidence_note="Revised report",
+            actor="david@anatainc.com",
+        ) == (True, "provider_variance")
+
+    with Session(engine) as session:
+        handoff = session.query(HRPayrollProviderHandoff).one()
+        assert handoff.status == "variance"
+        assert handoff.variance_json["gross_cents"] == 100
 
 
 def test_reissue_is_atomic_and_preserves_original_evidence():

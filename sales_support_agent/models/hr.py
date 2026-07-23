@@ -475,6 +475,29 @@ class HRPayrollApproval(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class HRPayrollProviderHandoff(Base):
+    """Outside-provider evidence and variance check for an approved payroll."""
+
+    __tablename__ = "hr_payroll_provider_handoffs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payroll_run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    provider_name: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(24), default="not_submitted", index=True)
+    provider_reference: Mapped[str] = mapped_column(String(128), default="")
+    confirmed_gross_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confirmed_net_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confirmed_taxes_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confirmed_employer_cost_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    variance_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence_note: Mapped[str] = mapped_column(Text, default="")
+    submitted_by: Mapped[str] = mapped_column(String(255), default="")
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_by: Mapped[str] = mapped_column(String(255), default="")
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class HRTaxLiability(Base):
     """A payroll-created liability reconciled to its payment and filing."""
 

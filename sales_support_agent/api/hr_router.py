@@ -729,6 +729,44 @@ async def hr_payroll_run_review(
     return HTMLResponse(render_hr_payroll_run(run, user=user, flash=_flash(request)))
 
 
+@router.get("/payroll/runs/{run_id}/provider.csv")
+async def hr_payroll_provider_export(
+    run_id: str, user: dict = Depends(_pay_guard)
+):
+    content = reporting.payroll_provider_csv(run_id)
+    if content is None:
+        return PlainTextResponse("Approved payroll not found.", status_code=404)
+    return PlainTextResponse(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="anata-payroll-provider-{run_id}.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/payroll/runs/{run_id}/provider")
+async def hr_payroll_provider_action(
+    run_id: str, action: str = Form(""), provider_name: str = Form(""),
+    provider_reference: str = Form(""), gross: str = Form(""),
+    net: str = Form(""), taxes: str = Form(""),
+    employer_cost: str = Form(""), evidence_note: str = Form(""),
+    user: dict = Depends(_pay_guard),
+):
+    ok, message = payroll_store.record_provider_handoff(
+        run_id, action=action, provider_name=provider_name,
+        provider_reference=provider_reference, gross=gross, net=net,
+        taxes=taxes, employer_cost=employer_cost,
+        evidence_note=evidence_note, actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
 @router.post("/payroll/runs/{run_id}/checks")
 async def hr_payroll_issue_check(
     run_id: str, employee_email: str = Form(""), check_number: str = Form(""),

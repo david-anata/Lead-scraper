@@ -25,6 +25,7 @@ from sales_support_agent.models.hr import (
     HRPayrollCalculation,
     HRPayrollInput,
     HRPayrollLineItem,
+    HRPayrollProviderHandoff,
     HRPayrollRun,
     HRPayrollReview,
     HRPayrollSettings,
@@ -1152,6 +1153,9 @@ def payroll_run_detail(run_id: str, *, employee_email: str | None = None) -> dic
             run_meta = json.loads(run.notes or "{}")
         except json.JSONDecodeError:
             run_meta = {}
+        handoff = session.query(HRPayrollProviderHandoff).filter_by(
+            payroll_run_id=run_id
+        ).first()
         display_gross = run.total_gross_cents
         display_net = run.total_net_cents
         display_taxes = run.total_taxes_cents
@@ -1181,6 +1185,13 @@ def payroll_run_detail(run_id: str, *, employee_email: str | None = None) -> dic
             "taxes": cents_to_dollars(display_taxes),
             "deductions": cents_to_dollars(display_deductions),
             "cash_impact": cents_to_dollars(display_cost),
+            "provider_handoff": {
+                "status": handoff.status if handoff else "not_submitted",
+                "provider_name": handoff.provider_name if handoff else "",
+                "provider_reference": handoff.provider_reference if handoff else "",
+                "evidence_note": handoff.evidence_note if handoff else "",
+                "variance": dict(handoff.variance_json or {}) if handoff else {},
+            },
             "calculations": [{
                 "employee_email": row.employee_email, "inputs": row.inputs_json or {},
                 "results": row.results_json or {}, "trace": row.trace_json or {},
@@ -1191,6 +1202,82 @@ def payroll_run_detail(run_id: str, *, employee_email: str | None = None) -> dic
                 if checks.get(row.employee_email) else "",
             } for row in calculations],
         }
+
+
+def record_provider_handoff(
+    run_id: str, *, action: str, provider_name: str = "",
+    provider_reference: str = "", gross: str = "", net: str = "",
+    taxes: str = "", employer_cost: str = "", evidence_note: str = "",
+    actor: str,
+) -> tuple[bool, str]:
+    """Record outside submission or compare its authoritative final totals."""
+    if action not in {"submitted", "confirmed"}:
+        return False, "provider_action_invalid"
+    if not provider_name.strip() or not provider_reference.strip():
+        return False, "provider_reference_required"
+    with _session() as session:
+        run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
+        if not run or run.status not in {"approved", "checks_issued", "closed"}:
+            return False, "payroll_not_approved"
+        row = session.query(HRPayrollProviderHandoff).filter_by(
+            payroll_run_id=run_id
+        ).first()
+        if not row:
+            row = HRPayrollProviderHandoff(payroll_run_id=run_id)
+            session.add(row)
+        row.provider_name = provider_name.strip()
+        row.provider_reference = provider_reference.strip()
+        row.evidence_note = evidence_note.strip()
+        now = datetime.now(timezone.utc)
+        if action == "submitted":
+            row.status = "submitted"
+            row.submitted_by = actor
+            row.submitted_at = now
+        else:
+            from sales_support_agent.services.hr.store import dollars_to_cents
+            supplied = (gross, net, taxes, employer_cost)
+            if any(not str(value).strip() for value in supplied):
+                return False, "provider_totals_required"
+            confirmed = {
+                "gross_cents": dollars_to_cents(gross),
+                "net_cents": dollars_to_cents(net),
+                "taxes_cents": dollars_to_cents(taxes),
+                "employer_cost_cents": dollars_to_cents(employer_cost),
+            }
+            if any(value < 0 for value in confirmed.values()):
+                return False, "provider_totals_required"
+            try:
+                metadata = json.loads(run.notes or "{}")
+            except json.JSONDecodeError:
+                metadata = {}
+            expected = {
+                "gross_cents": run.total_gross_cents,
+                "net_cents": run.total_net_cents,
+                "taxes_cents": run.total_taxes_cents,
+                "employer_cost_cents": int(metadata.get(
+                    "total_employer_cost_cents",
+                    run.total_net_cents + run.total_taxes_cents,
+                )),
+            }
+            variance = {
+                key: confirmed[key] - expected[key] for key in expected
+            }
+            row.confirmed_gross_cents = confirmed["gross_cents"]
+            row.confirmed_net_cents = confirmed["net_cents"]
+            row.confirmed_taxes_cents = confirmed["taxes_cents"]
+            row.confirmed_employer_cost_cents = confirmed["employer_cost_cents"]
+            row.variance_json = variance
+            row.status = "matched" if not any(variance.values()) else "variance"
+            row.confirmed_by = actor
+            row.confirmed_at = now
+        row.updated_at = now
+        _audit(session, actor, f"payroll.provider_{action}", "payroll_run", run_id, {
+            "provider_name": row.provider_name,
+            "provider_reference": row.provider_reference,
+            "status": row.status,
+            "variance": dict(row.variance_json or {}),
+        })
+        return True, f"provider_{row.status}"
 
 
 def employee_pay_statements(employee_email: str) -> list[dict]:

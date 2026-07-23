@@ -193,6 +193,11 @@ def _flash(flash: Optional[str]) -> str:
         "approval_attestation_required": "Type the approval statement exactly as shown.",
         "payroll_approved": "Payroll approved. No money or tax payment was sent.",
         "payroll_already_approved": "This exact payroll version was already approved.",
+        "provider_submitted": "Outside payroll submission recorded.",
+        "provider_matched": "Provider totals match Anata's approved estimate.",
+        "provider_variance": "Provider totals differ. Review the variance before payment.",
+        "provider_reference_required": "Enter the provider name and confirmation or run reference.",
+        "provider_totals_required": "Enter all four nonnegative provider totals.",
         "check_issued": "Manual check recorded and pay statement created.",
         "check_number_used": "That check number is already recorded.",
         "check_already_issued": "That check was already recorded; no duplicate was created.",
@@ -749,6 +754,35 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
         <td>${money(results.get('net_cents'))}</td>
         <td>${money(results.get('employer_taxes_cents'))}</td>
         <td>${money(results.get('total_employer_cost_cents'))}</td><td>{check_action}</td></tr>"""
+    handoff = run.get("provider_handoff") or {}
+    variance = handoff.get("variance") or {}
+    variance_rows = "".join(
+        f"<li>{_esc(key.replace('_cents', '').replace('_', ' ').title())}: "
+        f"${money(value)} difference</li>"
+        for key, value in variance.items() if int(value or 0)
+    ) or "<li>No differences recorded.</li>"
+    provider_panel = ""
+    if not employee_view and run["status"] in {"approved", "checks_issued", "closed"}:
+        provider_panel = f"""
+        <section class="hr-callout {'warn' if handoff.get('status') == 'variance' else ''}">
+          <div class="hr-kicker">Outside payroll authority</div>
+          <h2>Provider handoff · {_esc(handoff.get('status') or 'not submitted')}</h2>
+          <p>Anata's numbers are planning estimates. The payroll provider's final calculation, filing, and payment record is authoritative.</p>
+          <a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(run['id'])}/provider.csv">Download provider handoff</a>
+          <form class="hr-form" method="post" action="/admin/hr/payroll/runs/{_esc(run['id'])}/provider">
+            <div class="hr-grid2"><div><label>Provider</label><input name="provider_name" required value="{_esc(handoff.get('provider_name'))}" placeholder="Provider not selected"></div>
+            <div><label>Provider run/reference</label><input name="provider_reference" required value="{_esc(handoff.get('provider_reference'))}"></div></div>
+            <label>Evidence note</label><input name="evidence_note" value="{_esc(handoff.get('evidence_note'))}" required>
+            <button class="hr-btn hr-btn-light" name="action" value="submitted">Record submission</button>
+            <h3>Compare authoritative totals</h3>
+            <div class="hr-grid2"><div><label>Provider gross</label><input name="gross" inputmode="decimal"></div>
+            <div><label>Provider net</label><input name="net" inputmode="decimal"></div>
+            <div><label>Provider total taxes</label><input name="taxes" inputmode="decimal"></div>
+            <div><label>Provider employer cost</label><input name="employer_cost" inputmode="decimal"></div></div>
+            <button class="hr-btn" name="action" value="confirmed">Compare provider totals</button>
+          </form>
+          <ul>{variance_rows}</ul>
+        </section>"""
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">{'Pay statement' if employee_view else 'Payroll version review'}</h1>
@@ -758,6 +792,7 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
     <div class="hr-card"><div class="n">${_esc(run['deductions'])}</div><div class="l">Deduction liability</div></div>
     <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">Employee check cash</div></div>
     <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">Total employer cost</div></div></div>
+    {provider_panel}
     <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Employee</th><th>Regular</th><th>OT</th><th>Holiday</th><th>PTO</th><th>Gross</th><th>Federal</th><th>Utah</th><th>Social Security</th><th>Medicare</th><th>Other deductions</th><th>Reimbursements</th><th>Net</th><th>Employer taxes</th><th>Employer cost</th><th>Payment record</th></tr></thead><tbody>{rows}</tbody></table></div>
     <p class="hr-sub">Calculation version: immutable snapshot. A recorded check is not marked cleared until separate reconciliation evidence exists.</p>
     {f'<form method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/close"><button class="hr-btn" type="submit">Close fully reconciled payroll</button></form>' if not employee_view and run["status"] == "checks_issued" else ''}

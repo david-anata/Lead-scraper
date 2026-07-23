@@ -258,3 +258,38 @@ def export_backup_zip(*, year: int | None = None) -> bytes:
         for name, payload in sorted(files.items()):
             archive.writestr(name, payload)
     return output.getvalue()
+
+
+def payroll_provider_csv(run_id: str) -> str | None:
+    """Export approved inputs/results for entry into an outside payroll system."""
+    with _session() as session:
+        run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
+        if not run or run.status not in {"approved", "checks_issued", "closed"}:
+            return None
+        calculations = session.query(HRPayrollCalculation).filter_by(
+            payroll_run_id=run_id, version=1
+        ).order_by(HRPayrollCalculation.employee_email).all()
+        return _csv(
+            [
+                "employee_email", "period_start", "period_end", "pay_date",
+                "regular_hours", "overtime_hours", "holiday_hours", "pto_hours",
+                "estimated_gross", "estimated_net", "estimated_total_taxes",
+                "bonus_commission_reimbursement_deduction_notes",
+                "anata_snapshot_hash",
+            ],
+            [[
+                row.employee_email, run.pay_period_start, run.pay_period_end,
+                run.pay_date, (row.inputs_json or {}).get("regular_hours", "0"),
+                (row.inputs_json or {}).get("overtime_hours", "0"),
+                (row.inputs_json or {}).get("holiday_hours", "0"),
+                (row.inputs_json or {}).get("pto_hours", "0"),
+                (row.results_json or {}).get("taxable_gross_cents", 0) / 100,
+                (row.results_json or {}).get("net_cents", 0) / 100,
+                sum(int((row.results_json or {}).get(key, 0)) for key in (
+                    "federal_cents", "utah_cents", "social_security_cents",
+                    "medicare_cents", "employer_taxes_cents",
+                )) / 100,
+                json.dumps((row.inputs_json or {}).get("approved_inputs", [])),
+                row.snapshot_hash,
+            ] for row in calculations],
+        )
