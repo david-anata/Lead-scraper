@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.hr import (
     HRAuditEvent,
+    HRComplianceTask,
     HRContractorProfile,
     HREmployee,
     HREmployeeOnboarding,
@@ -71,6 +72,14 @@ def reminder_items(today: date | None = None) -> list[dict]:
                 ).scalar() or 0,
                 "PTO request(s) await review",
                 "/admin/hr/time",
+            ),
+            (
+                session.query(func.count(HRComplianceTask.id)).filter(
+                    HRComplianceTask.status != "confirmed",
+                    HRComplianceTask.due_date <= due_cutoff,
+                ).scalar() or 0,
+                "employer compliance task(s) are due within seven days or overdue",
+                "/admin/hr/compliance",
             ),
             (
                 session.query(func.count(HRTaxLiability.id)).filter(

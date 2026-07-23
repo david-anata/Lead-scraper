@@ -31,6 +31,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_pay_statements,
     render_hr_settings,
     render_hr_contractors,
+    render_hr_compliance,
     render_hr_offboarding,
     render_hr_reports,
     render_hr_policies,
@@ -322,14 +323,21 @@ async def team_create(
 # --- time and PTO ----------------------------------------------------------
 
 @router.get("/time", response_class=HTMLResponse)
-async def hr_time(request: Request, user: dict = Depends(_guard)):
+async def hr_time(
+    request: Request, period_date: date | None = None, user: dict = Depends(_guard)
+):
     email = (user.get("email") or "").strip().lower()
     can_review = bool(user.get("is_superadmin") or "hr.payroll" in (user.get("permissions") or set()))
+    period = payroll_store.semimonthly_period(period_date or date.today())
     return HTMLResponse(render_hr_time(
         store.list_time_entries(None if can_review else email), store.pto_summary(email),
         store.list_pto_requests(None if can_review else email), store.current_clock(email),
         store.list_time_corrections(None if can_review else email),
         store.time_review_flags(None if can_review else email),
+        store.list_timesheet_approvals(
+            period.start_date, period.end_date, None if can_review else email
+        ),
+        period,
         user=user, flash=_flash(request)))
 
 
@@ -368,6 +376,40 @@ async def hr_time_correction_decision(
     return RedirectResponse(f"/admin/hr/time?{'ok' if ok else 'err'}={message}", status_code=303)
 
 
+@router.post("/time/timesheets/submit")
+async def hr_timesheet_submit(
+    period_start: date = Form(...), period_end: date = Form(...),
+    attested: bool = Form(False), user: dict = Depends(_guard),
+):
+    email = (user.get("email") or "").strip().lower()
+    if not attested:
+        ok, message = False, "timesheet_attestation_required"
+    else:
+        ok, message = store.submit_timesheet(
+            email, period_start=period_start, period_end=period_end, actor=email
+        )
+    return RedirectResponse(
+        f"/admin/hr/time?period_date={period_start}&{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
+@router.post("/time/timesheets/{approval_id}/decision")
+async def hr_timesheet_decision(
+    approval_id: int, period_start: date = Form(...),
+    decision: str = Form(""), review_note: str = Form(""),
+    user: dict = Depends(_pay_guard),
+):
+    ok, message = store.decide_timesheet(
+        approval_id, decision=decision, review_note=review_note,
+        actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/time?period_date={period_start}&{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
+
+
 @router.post("/time/pto/{request_id}/decision")
 async def hr_pto_decision(request_id: int, decision: str = Form(""),
                           user: dict = Depends(_pay_guard)):
@@ -402,6 +444,35 @@ async def hr_report_csv(kind: str, user: dict = Depends(_pay_guard)):
         content, media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="anata-hr-{kind}.csv"',
                  "Cache-Control": "no-store"},
+    )
+
+
+@router.get("/compliance", response_class=HTMLResponse)
+async def hr_compliance(
+    request: Request, year: int = date.today().year,
+    user: dict = Depends(_pay_guard),
+):
+    safe_year = min(max(year, 2026), date.today().year + 2)
+    return HTMLResponse(render_hr_compliance(
+        store.list_compliance_tasks(),
+        payroll_store.annual_payroll_calendar(safe_year),
+        year=safe_year, user=user, flash=_flash(request),
+    ))
+
+
+@router.post("/compliance/{task_id}")
+async def hr_compliance_update(
+    task_id: int, action: str = Form(""),
+    confirmation_reference: str = Form(""), evidence_note: str = Form(""),
+    user: dict = Depends(_pay_guard),
+):
+    ok, message = store.record_compliance_task(
+        task_id, action=action, confirmation_reference=confirmation_reference,
+        evidence_note=evidence_note, actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/compliance?{'ok' if ok else 'err'}={message}",
+        status_code=303,
     )
 
 
@@ -772,4 +843,23 @@ async def hr_opening_balance_save(
     )
     return RedirectResponse(
         f"/admin/hr/settings?{'ok' if ok else 'err'}={message}", status_code=303
+    )
+
+
+@router.post("/settings/qualified-review")
+async def hr_qualified_review_save(
+    tax_year: int = Form(2026), reviewer_name: str = Form(""),
+    reviewer_email: str = Form(""), reviewed_on: date = Form(...),
+    evidence_reference: str = Form(""), review_note: str = Form(""),
+    attested: bool = Form(False), user: dict = Depends(_pay_guard),
+):
+    ok, message = payroll_store.save_payroll_review(
+        tax_year=tax_year, reviewer_name=reviewer_name,
+        reviewer_email=reviewer_email, reviewed_on=reviewed_on,
+        evidence_reference=evidence_reference, review_note=review_note,
+        attested=attested, actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/settings?{'ok' if ok else 'err'}={message}",
+        status_code=303,
     )

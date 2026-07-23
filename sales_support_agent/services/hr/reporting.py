@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.hr import (
     HRAuditEvent,
+    HRComplianceTask,
     HRContractorPayment,
     HRContractorProfile,
     HREmployee,
@@ -132,5 +133,17 @@ def export_csv(kind: str) -> str | None:
                 ["created_at", "actor_email", "action", "entity_type", "entity_id", "details"],
                 [[row.created_at, row.actor_email, row.action, row.entity_type,
                   row.entity_id, row.details] for row in rows],
+            )
+        if kind == "compliance":
+            rows = session.query(HRComplianceTask).order_by(
+                HRComplianceTask.due_date, HRComplianceTask.employee_email
+            ).all()
+            return _csv(
+                ["employee_email", "task_type", "due_date", "status",
+                 "confirmation_reference", "evidence_note", "completed_by",
+                 "completed_at"],
+                [[row.employee_email, row.task_type, row.due_date, row.status,
+                  row.confirmation_reference, row.evidence_note,
+                  row.completed_by, row.completed_at] for row in rows],
             )
     return None

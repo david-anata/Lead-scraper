@@ -32,6 +32,9 @@ _EXPECTED_TABLES = {
     "hr_payroll_approvals", "hr_tax_liabilities", "hr_payroll_calculations",
     "hr_opening_payroll_balances",
     "hr_contractor_profiles", "hr_contractor_payments", "hr_offboarding_checklists",
+    "hr_timesheet_approvals",
+    "hr_compliance_tasks",
+    "hr_payroll_reviews",
 }
 
 

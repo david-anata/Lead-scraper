@@ -25,6 +25,7 @@ from sales_support_agent.models.hr import (
     HRPayrollInput,
     HRPayrollLineItem,
     HRPayrollRun,
+    HRPayrollReview,
     HRPayrollSettings,
     HRPaycheck,
     HRPrintedCheck,
@@ -39,12 +40,14 @@ from sales_support_agent.services.hr.payroll import (
     hourly_gross,
     payroll_readiness,
     period_overtime,
+    periods_for_year,
     semimonthly_period,
 )
 from sales_support_agent.services.hr.store import (
     cents_to_dollars,
     holiday_pay_proposals,
     list_employees,
+    list_timesheet_approvals,
 )
 from sales_support_agent.services.hr.tax import (
     employer_unemployment_2026,
@@ -93,9 +96,64 @@ def _settings_dict(row: HRPayrollSettings | None) -> dict:
     }
 
 
-def get_payroll_settings() -> dict:
+def get_payroll_settings(tax_year: int | None = None) -> dict:
     with _session() as session:
-        return _settings_dict(session.query(HRPayrollSettings).first())
+        result = _settings_dict(session.query(HRPayrollSettings).first())
+        review = session.query(HRPayrollReview).filter_by(
+            tax_year=tax_year or date.today().year, status="approved"
+        ).first()
+        result["qualified_tax_review"] = bool(review)
+        result["qualified_review"] = ({
+            "tax_year": review.tax_year, "reviewer_name": review.reviewer_name,
+            "reviewer_email": review.reviewer_email,
+            "reviewed_on": review.reviewed_on,
+            "evidence_reference": review.evidence_reference,
+            "review_note": review.review_note,
+            "recorded_by": review.recorded_by,
+        } if review else None)
+        return result
+
+
+def annual_payroll_calendar(year: int) -> list[dict]:
+    """Return the authoritative 24-period Anata payroll calendar."""
+    return [{
+        "period_number": index,
+        "start_date": period.start_date,
+        "end_date": period.end_date,
+        "pay_date": period.pay_date,
+    } for index, period in enumerate(periods_for_year(year), start=1)]
+
+
+def save_payroll_review(
+    *, tax_year: int, reviewer_name: str, reviewer_email: str,
+    reviewed_on: date, evidence_reference: str, review_note: str,
+    attested: bool, actor: str,
+) -> tuple[bool, str]:
+    """Record, but never fabricate, an external qualified payroll review."""
+    if (
+        tax_year < 2026 or tax_year > date.today().year + 1
+        or not reviewer_name.strip() or "@" not in reviewer_email
+        or not evidence_reference.strip() or not review_note.strip() or not attested
+    ):
+        return False, "qualified_review_invalid"
+    with _session() as session:
+        row = session.query(HRPayrollReview).filter_by(tax_year=tax_year).first()
+        if not row:
+            row = HRPayrollReview(tax_year=tax_year, reviewed_on=reviewed_on)
+            session.add(row)
+        row.status = "approved"
+        row.reviewer_name = reviewer_name.strip()
+        row.reviewer_email = reviewer_email.strip().lower()
+        row.reviewed_on = reviewed_on
+        row.evidence_reference = evidence_reference.strip()
+        row.review_note = review_note.strip()
+        row.recorded_by = actor.strip().lower()
+        session.flush()
+        _audit(session, actor, "payroll.qualified_review_recorded",
+               "payroll_review", row.id, {
+                   "tax_year": tax_year, "reviewer_email": row.reviewer_email,
+               })
+        return True, "qualified_review_saved"
 
 
 def get_company_profile() -> dict:
@@ -413,7 +471,7 @@ def _period_context(containing: date) -> tuple:
     workweek_start = period.start_date - timedelta(
         days=(period.start_date.weekday() + 1) % 7
     )
-    settings = get_payroll_settings()
+    settings = get_payroll_settings(period.end_date.year)
     employees = [
         employee for employee in list_employees(include_inactive=False)
         if employee.get("employee_type") != "contractor"
@@ -455,6 +513,11 @@ def _period_context(containing: date) -> tuple:
         eftps_ready=settings["eftps_ready"],
         utah_tax_ready=settings["utah_tap_ready"] and settings["utah_ui_ready"],
     )
+    approved_time_emails = {
+        item["employee_email"]
+        for item in list_timesheet_approvals(period.start_date, period.end_date)
+        if item["status"] == "approved"
+    }
     if not settings["opening_balances_confirmed"]:
         readiness["blockers"].append({
             "kind": "opening_balances", "severity": "blocker",
@@ -495,6 +558,15 @@ def _period_context(containing: date) -> tuple:
                 "kind": "time_missing", "severity": "blocker",
                 "employee_email": employee["email"],
                 "message": "No closed time entries exist for this pay period",
+            })
+        if (
+            employment.get("pay_basis") == "hourly"
+            and employee["email"] not in approved_time_emails
+        ):
+            readiness["blockers"].append({
+                "kind": "timesheet_approval", "severity": "blocker",
+                "employee_email": employee["email"],
+                "message": "Timesheet is not independently approved for this pay period",
             })
     readiness["ready"] = not readiness["blockers"]
     return period, settings, employees, inputs, readiness

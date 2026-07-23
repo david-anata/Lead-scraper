@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.hr import (
     HRAuditEvent,
+    HRComplianceTask,
     HREmployee,
     HREmployeeHandbook,
     HRHandbookAcknowledgement,
@@ -35,6 +36,7 @@ from sales_support_agent.models.hr import (
     HRTeam,
     HRTimeCorrection,
     HRTimeEntry,
+    HRTimesheetApproval,
     HRTaxLiability,
     HRContractorPayment,
 )
@@ -328,6 +330,16 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
         row.holiday_eligible_date = row.pto_eligible_date
         row.updated_by = actor
         row.updated_at = datetime.now(timezone.utc)
+        if hire_date and employee.employee_type != "contractor":
+            compliance = s.query(HRComplianceTask).filter_by(
+                employee_email=email, task_type="utah_new_hire_report"
+            ).first()
+            if not compliance:
+                compliance = HRComplianceTask(
+                    employee_email=email, task_type="utah_new_hire_report",
+                    due_date=hire_date + timedelta(days=20),
+                )
+                s.add(compliance)
         _supersede_open_payrolls(
             s, actor=actor, effective_start=date.today(),
             reason="employment profile changed",
@@ -338,6 +350,74 @@ def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
             "classification": classification, "pay_basis": pay_basis,
         })
         return True
+
+
+def list_compliance_tasks() -> list[dict]:
+    """List filing tasks and safely backfill Utah new-hire tasks."""
+    with _session() as session:
+        existing = {
+            row[0] for row in session.query(HRComplianceTask.employee_email).filter_by(
+                task_type="utah_new_hire_report"
+            ).all()
+        }
+        profiles = session.query(HREmploymentProfile).all()
+        for profile in profiles:
+            employee = session.query(HREmployee).filter_by(
+                email=profile.employee_email
+            ).first()
+            if (
+                profile.hire_date and employee and employee.employee_type != "contractor"
+                and profile.employee_email not in existing
+            ):
+                session.add(HRComplianceTask(
+                    employee_email=profile.employee_email,
+                    task_type="utah_new_hire_report",
+                    due_date=profile.hire_date + timedelta(days=20),
+                ))
+        session.flush()
+        rows = session.query(HRComplianceTask).order_by(
+            HRComplianceTask.status, HRComplianceTask.due_date,
+            HRComplianceTask.employee_email,
+        ).all()
+        return [{
+            "id": row.id, "employee_email": row.employee_email,
+            "task_type": row.task_type, "due_date": row.due_date,
+            "status": row.status,
+            "confirmation_reference": row.confirmation_reference,
+            "evidence_note": row.evidence_note,
+            "completed_by": row.completed_by,
+            "completed_at": row.completed_at,
+            "overdue": row.status != "confirmed" and row.due_date < date.today(),
+        } for row in rows]
+
+
+def record_compliance_task(
+    task_id: int, *, action: str, confirmation_reference: str,
+    evidence_note: str, actor: str
+) -> tuple[bool, str]:
+    """Confirm or reopen a compliance task without deleting its history."""
+    if action not in {"confirmed", "reopened"} or not evidence_note.strip():
+        return False, "compliance_evidence_required"
+    if action == "confirmed" and not confirmation_reference.strip():
+        return False, "compliance_confirmation_required"
+    with _session() as session:
+        row = session.get(HRComplianceTask, task_id)
+        if not row:
+            return False, "compliance_task_not_found"
+        row.status = "confirmed" if action == "confirmed" else "open"
+        row.confirmation_reference = (
+            confirmation_reference.strip() if action == "confirmed" else ""
+        )
+        row.evidence_note = evidence_note.strip()
+        row.completed_by = actor.strip().lower() if action == "confirmed" else ""
+        row.completed_at = (
+            datetime.now(timezone.utc) if action == "confirmed" else None
+        )
+        _audit(session, actor, f"compliance.{action}", "compliance_task", row.id, {
+            "task_type": row.task_type, "employee_email": row.employee_email,
+            "due_date": str(row.due_date),
+        })
+        return True, f"compliance_{action}"
 
 
 def get_employment_profile(employee_email: str) -> dict:
@@ -840,6 +920,134 @@ def time_review_flags(employee_email: Optional[str] = None) -> list[dict]:
                 "message": f"Week of {sunday}: {hours:.2f} hours; approaching overtime.",
             })
     return flags
+
+
+def _timesheet_source_hash(
+    session: Session, employee_email: str, period_start: date, period_end: date
+) -> str:
+    rows = session.query(HRTimeEntry).filter(
+        HRTimeEntry.employee_email == employee_email,
+        HRTimeEntry.date >= period_start,
+        HRTimeEntry.date <= period_end,
+    ).order_by(HRTimeEntry.id).all()
+    payload = [[
+        row.id, str(row.date), row.start_time, row.stop_time,
+        int(row.elapsed_seconds or 0), str(row.hours or 0),
+    ] for row in rows]
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def submit_timesheet(
+    employee_email: str, *, period_start: date, period_end: date, actor: str
+) -> tuple[bool, str]:
+    """Attest that the employee's closed time is complete for a pay period."""
+    email = (employee_email or "").strip().lower()
+    if actor.strip().lower() != email or period_end < period_start:
+        return False, "timesheet_attestation_required"
+    with _session() as session:
+        employee = session.query(HREmployee).filter_by(email=email).first()
+        if not employee:
+            return False, "employee_not_found"
+        open_entry = session.query(HRTimeEntry).filter(
+            HRTimeEntry.employee_email == email,
+            HRTimeEntry.date >= period_start, HRTimeEntry.date <= period_end,
+            HRTimeEntry.stop_time == "",
+        ).first()
+        pending = session.query(HRTimeCorrection).filter(
+            HRTimeCorrection.employee_email == email,
+            HRTimeCorrection.status == "requested",
+        ).first()
+        closed_count = session.query(func.count(HRTimeEntry.id)).filter(
+            HRTimeEntry.employee_email == email,
+            HRTimeEntry.date >= period_start, HRTimeEntry.date <= period_end,
+            HRTimeEntry.stop_time != "",
+        ).scalar() or 0
+        if open_entry:
+            return False, "timesheet_open_punch"
+        if pending:
+            return False, "timesheet_correction_pending"
+        if not closed_count:
+            return False, "timesheet_empty"
+        source_hash = _timesheet_source_hash(session, email, period_start, period_end)
+        row = session.query(HRTimesheetApproval).filter_by(
+            employee_email=email, period_start=period_start, period_end=period_end
+        ).first()
+        if not row:
+            row = HRTimesheetApproval(
+                employee_email=email, period_start=period_start, period_end=period_end
+            )
+            session.add(row)
+        elif row.status == "approved" and row.source_hash == source_hash:
+            return True, "timesheet_already_approved"
+        row.source_hash = source_hash
+        row.status = "submitted"
+        row.submitted_by = email
+        row.submitted_at = datetime.now(timezone.utc)
+        row.reviewed_by = ""
+        row.review_note = ""
+        row.reviewed_at = None
+        session.flush()
+        _audit(session, actor, "timesheet.submitted", "timesheet_approval", row.id, {
+            "period_start": str(period_start), "period_end": str(period_end),
+        })
+        return True, "timesheet_submitted"
+
+
+def decide_timesheet(
+    approval_id: int, *, decision: str, review_note: str, actor: str
+) -> tuple[bool, str]:
+    if decision not in {"approved", "rejected"} or not review_note.strip():
+        return False, "timesheet_review_invalid"
+    actor_email = (actor or "").strip().lower()
+    with _session() as session:
+        row = session.get(HRTimesheetApproval, approval_id)
+        if not row or row.status != "submitted":
+            return False, "timesheet_review_not_found"
+        if row.submitted_by.strip().lower() == actor_email:
+            return False, "self_approval_blocked"
+        current_hash = _timesheet_source_hash(
+            session, row.employee_email, row.period_start, row.period_end
+        )
+        if current_hash != row.source_hash:
+            row.status = "stale"
+            return False, "timesheet_changed"
+        row.status = decision
+        row.reviewed_by = actor_email
+        row.review_note = review_note.strip()
+        row.reviewed_at = datetime.now(timezone.utc)
+        _audit(session, actor, f"timesheet.{decision}", "timesheet_approval", row.id, {
+            "period_start": str(row.period_start), "period_end": str(row.period_end),
+        })
+        return True, f"timesheet_{decision}"
+
+
+def list_timesheet_approvals(
+    period_start: date, period_end: date, employee_email: Optional[str] = None
+) -> list[dict]:
+    with _session() as session:
+        query = session.query(HRTimesheetApproval).filter_by(
+            period_start=period_start, period_end=period_end
+        )
+        if employee_email:
+            query = query.filter_by(employee_email=employee_email.strip().lower())
+        rows = query.order_by(HRTimesheetApproval.employee_email).all()
+        result = []
+        for row in rows:
+            current_hash = _timesheet_source_hash(
+                session, row.employee_email, row.period_start, row.period_end
+            )
+            status = row.status
+            if status in {"submitted", "approved"} and current_hash != row.source_hash:
+                status = "stale"
+            result.append({
+                "id": row.id, "employee_email": row.employee_email,
+                "period_start": row.period_start, "period_end": row.period_end,
+                "status": status, "submitted_by": row.submitted_by,
+                "reviewed_by": row.reviewed_by, "review_note": row.review_note,
+            })
+        return result
 
 
 def clock_in(employee_email: str, *, actor: str) -> tuple[bool, str]:

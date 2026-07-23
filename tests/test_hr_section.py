@@ -144,6 +144,115 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(request.status_code, 303)
         self.assertIn("Appointment", self._get("/admin/hr/time", self.sa).text)
 
+    def test_hourly_timesheet_requires_employee_attestation_and_independent_review(self):
+        import uuid
+        email = f"timesheet-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(
+            email=email, full_name="Timesheet Employee",
+            employee_type="hourly", hourly_rate="20",
+        )
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2026, 1, 1), classification="nonexempt",
+            pay_basis="hourly", actor="test",
+        )
+        uid = access_store.upsert_user(email, "Timesheet Employee")
+        access_store.set_user_permissions(uid, ["hr.access"])
+        employee_cookie = _cookie(email, "Timesheet Employee")
+        self._post("/admin/hr/time/clock", {"action": "in"}, employee_cookie)
+        self._post("/admin/hr/time/clock", {"action": "out"}, employee_cookie)
+
+        today = date.today()
+        if today.day <= 15:
+            start, end = today.replace(day=1), today.replace(day=15)
+        else:
+            import calendar
+            start = today.replace(day=16)
+            end = today.replace(day=calendar.monthrange(today.year, today.month)[1])
+        submitted = self._post("/admin/hr/time/timesheets/submit", {
+            "period_start": start.isoformat(), "period_end": end.isoformat(),
+            "attested": "true",
+        }, employee_cookie)
+        self.assertIn("ok=timesheet_submitted", submitted.headers["location"])
+        approval = hr_store.list_timesheet_approvals(start, end, email)[0]
+
+        self.assertEqual(
+            hr_store.decide_timesheet(
+                approval["id"], decision="approved", review_note="Own review",
+                actor=email,
+            ),
+            (False, "self_approval_blocked"),
+        )
+        val_id = access_store.upsert_user("val@anatainc.com", "Val")
+        access_store.set_user_permissions(val_id, ["hr.access", "hr.payroll"])
+        approved = self._post(
+            f"/admin/hr/time/timesheets/{approval['id']}/decision",
+            {
+                "period_start": start.isoformat(), "decision": "approved",
+                "review_note": "Compared against the submitted punches.",
+            },
+            _cookie("val@anatainc.com", "Val"),
+        )
+        self.assertIn("ok=timesheet_approved", approved.headers["location"])
+        self.assertEqual(
+            hr_store.list_timesheet_approvals(start, end, email)[0]["status"],
+            "approved",
+        )
+
+    def test_hire_date_creates_trackable_utah_new_hire_report(self):
+        import uuid
+        email = f"new-hire-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="New Hire")
+        hr_store.upsert_employment_profile(
+            email, hire_date=date(2026, 8, 10), classification="nonexempt",
+            pay_basis="hourly", actor="david@anatainc.com",
+        )
+        task = next(
+            item for item in hr_store.list_compliance_tasks()
+            if item["employee_email"] == email
+        )
+        self.assertEqual(task["due_date"], date(2026, 8, 30))
+        self.assertEqual(task["status"], "open")
+
+        saved = self._post(f"/admin/hr/compliance/{task['id']}", {
+            "action": "confirmed", "confirmation_reference": "UT-NH-123",
+            "evidence_note": "Submission accepted by Utah registry.",
+        }, self.sa)
+        self.assertIn("ok=compliance_confirmed", saved.headers["location"])
+        updated = next(
+            item for item in hr_store.list_compliance_tasks()
+            if item["employee_email"] == email
+        )
+        self.assertEqual(updated["status"], "confirmed")
+        self.assertEqual(updated["confirmation_reference"], "UT-NH-123")
+
+    def test_compliance_page_has_24_period_authoritative_calendar(self):
+        page = self._get("/admin/hr/compliance?year=2026", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("Authoritative semimonthly schedule: 24 periods", page.text)
+        self.assertIn("2026-08-20", page.text)
+        self.assertIn("2026-09-04", page.text)
+
+    def test_qualified_review_requires_named_external_evidence(self):
+        invalid = self._post("/admin/hr/settings/qualified-review", {
+            "tax_year": "2026", "reviewer_name": "Payroll Reviewer",
+            "reviewer_email": "reviewer@example.com", "reviewed_on": "2026-07-23",
+            "evidence_reference": "", "review_note": "Compared payroll.",
+            "attested": "true",
+        }, self.sa)
+        self.assertIn("err=qualified_review_invalid", invalid.headers["location"])
+
+        saved = self._post("/admin/hr/settings/qualified-review", {
+            "tax_year": "2026", "reviewer_name": "Payroll Reviewer",
+            "reviewer_email": "reviewer@example.com", "reviewed_on": "2026-07-23",
+            "evidence_reference": "Parallel payroll workpaper 2026-07",
+            "review_note": "Compared federal, Utah, FICA, FUTA, and Utah UI.",
+            "attested": "true",
+        }, self.sa)
+        self.assertIn("ok=qualified_review_saved", saved.headers["location"])
+        settings = self._get("/admin/hr/settings", self.sa)
+        self.assertIn("Payroll Reviewer", settings.text)
+        self.assertIn("Parallel payroll workpaper", settings.text)
+
     def test_payroll_page_is_a_control_room_not_payment_claim(self):
         page = self._get("/admin/hr/payroll", self.sa)
         self.assertEqual(page.status_code, 200)

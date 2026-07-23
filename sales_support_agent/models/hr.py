@@ -94,7 +94,7 @@ class HRPayrollSettings(Base):
     __tablename__ = "hr_payroll_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     base44_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, index=True, nullable=True)
-    pay_periods_per_year: Mapped[int] = mapped_column(Integer, default=26)
+    pay_periods_per_year: Mapped[int] = mapped_column(Integer, default=24)
     ss_rate: Mapped[float] = mapped_column(Numeric(8, 5), default=0.062)
     medicare_rate: Mapped[float] = mapped_column(Numeric(8, 5), default=0.0145)
     ss_wage_base_cents: Mapped[int] = mapped_column(Integer, default=0)
@@ -404,6 +404,27 @@ class HRTimeCorrection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class HRTimesheetApproval(Base):
+    """Employee attestation and independent review for one semimonthly period."""
+
+    __tablename__ = "hr_timesheet_approvals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_email: Mapped[str] = mapped_column(String(255), index=True)
+    period_start: Mapped[date] = mapped_column(Date, index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(24), default="submitted", index=True)
+    submitted_by: Mapped[str] = mapped_column(String(255), default="")
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class HRPTOLedger(Base):
     """Immutable earned, reserved, used, released, and adjusted PTO movements."""
 
@@ -512,6 +533,24 @@ class HROpeningPayrollBalance(Base):
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class HRPayrollReview(Base):
+    """Evidence that an external qualified reviewer validated one tax year."""
+
+    __tablename__ = "hr_payroll_reviews"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tax_year: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="approved", index=True)
+    reviewer_name: Mapped[str] = mapped_column(String(255), default="")
+    reviewer_email: Mapped[str] = mapped_column(String(255), default="")
+    reviewed_on: Mapped[date] = mapped_column(Date)
+    evidence_reference: Mapped[str] = mapped_column(String(255), default="")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    recorded_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class HRContractorProfile(Base):
     """Employer-tracked contractor compliance status; no tax form image."""
 
@@ -572,8 +611,32 @@ class HROffboardingChecklist(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class HRComplianceTask(Base):
+    """Evidence-backed employer filing or registration task."""
+
+    __tablename__ = "hr_compliance_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    task_type: Mapped[str] = mapped_column(String(64), index=True)
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="open", index=True)
+    confirmation_reference: Mapped[str] = mapped_column(String(128), default="")
+    evidence_note: Mapped[str] = mapped_column(Text, default="")
+    completed_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 Index("ix_hr_line_items_run_email", HRPayrollLineItem.payroll_run_id, HRPayrollLineItem.employee_email)
 Index("ix_hr_calculation_run_email_version", HRPayrollCalculation.payroll_run_id,
       HRPayrollCalculation.employee_email, HRPayrollCalculation.version, unique=True)
 Index("ix_hr_opening_balance_employee_year", HROpeningPayrollBalance.employee_email,
       HROpeningPayrollBalance.tax_year, unique=True)
+Index("ix_hr_timesheet_employee_period", HRTimesheetApproval.employee_email,
+      HRTimesheetApproval.period_start, HRTimesheetApproval.period_end, unique=True)
+Index("ix_hr_compliance_employee_type", HRComplianceTask.employee_email,
+      HRComplianceTask.task_type, unique=True)

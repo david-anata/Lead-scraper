@@ -84,6 +84,7 @@ _NAV_SECTIONS = [
         _NavSubpage("hr.access", "Time & PTO", "/admin/hr/time", "time"),
         _NavSubpage("hr.access", "Pay statements", "/admin/hr/pay-statements", "pay_statements"),
         _NavSubpage("hr.payroll", "Payroll", "/admin/hr/payroll", "payroll"),
+        _NavSubpage("hr.payroll", "Compliance", "/admin/hr/compliance", "compliance"),
         _NavSubpage("hr.payroll", "Contractors", "/admin/hr/contractors", "contractors"),
         _NavSubpage("hr.payroll", "Offboarding", "/admin/hr/offboarding", "offboarding"),
         _NavSubpage("hr.payroll", "Reports", "/admin/hr/reports", "reports"),
