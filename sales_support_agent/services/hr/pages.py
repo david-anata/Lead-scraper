@@ -227,7 +227,7 @@ def _flash(flash: Optional[str]) -> str:
         "approval_attestation_required": "Type the approval statement exactly as shown.",
         "payroll_approved": "Payroll approved. No money or tax payment was sent.",
         "payroll_already_approved": "This exact payroll version was already approved.",
-        "provider_submitted": "Outside payroll submission recorded.",
+        "provider_submitted": "Payroll-service handoff recorded.",
         "provider_matched": "Provider totals match Anata's approved estimate.",
         "provider_variance": "Provider totals differ. Review the variance before payment.",
         "provider_reference_required": "Enter the provider name and confirmation or run reference.",
@@ -749,7 +749,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
       <h2 style="margin:6px 0">{status_label}</h2><ul>{blockers}</ul>
       <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
-      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates until matched to an outside payroll provider's authoritative result.</p></div>
+      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates until matched to the authoritative payroll service's result.</p></div>
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(period.pay_date)}</div><div class="l">Payday</div></div>
       <div class="hr-card"><div class="n">{len(control['employees'])}</div><div class="l">W-2 employees</div></div>
@@ -775,7 +775,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     <h2>Prepared and approved versions</h2>
     <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Estimated gross</th><th>Estimated tax liability</th><th>Deduction liability</th><th>Estimated employee check cash</th><th>Estimated employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
     <h2>Tax payment and filing reconciliation</h2>
-    <p class="hr-sub">Anata creates planning liability estimates after approval. Replace or reconcile them against the payroll provider's authoritative totals before recording outside payments and filings. Paid and filed are separate facts.</p>
+    <p class="hr-sub">Anata creates planning liability estimates after approval. Replace or reconcile them against the authoritative payroll service's totals before recording payments and filings. Paid and filed are separate facts.</p>
     <table class="hr-tbl"><thead><tr><th>Agency</th><th>Type</th><th>Amount</th><th>Due</th><th>Status</th><th>Evidence action</th></tr></thead><tbody>{liability_rows}</tbody></table>
     <div class="hr-callout"><div class="hr-kicker">Approved operating rules</div>
       <ul><li>Semimonthly: 1st–15th paid the 20th; 16th–month end paid the following 5th.</li>
@@ -831,10 +831,10 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
     if not employee_view and run["status"] in {"approved", "checks_issued", "closed"}:
         provider_panel = f"""
         <section class="hr-callout {'warn' if handoff.get('status') == 'variance' else ''}">
-          <div class="hr-kicker">Outside payroll authority</div>
-          <h2>Provider handoff · {_esc(handoff.get('status') or 'not submitted')}</h2>
-          <p>Anata's numbers are planning estimates. The payroll provider's final calculation, filing, and payment record is authoritative.</p>
-          <a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(run['id'])}/provider.csv">Download provider handoff</a>
+          <div class="hr-kicker">Authoritative payroll service</div>
+          <h2>Service handoff · {_esc(handoff.get('status') or 'not submitted')}</h2>
+          <p>Anata's numbers are planning estimates. Only the connected service's confirmed calculation, filing, and payment records are authoritative for capabilities that service explicitly owns.</p>
+          <a class="hr-btn hr-btn-light" href="/admin/hr/payroll/runs/{_esc(run['id'])}/provider.csv">Download payroll-service handoff</a>
           <form class="hr-form" method="post" action="/admin/hr/payroll/runs/{_esc(run['id'])}/provider">
             <div class="hr-grid2"><div><label>Provider</label><input name="provider_name" required value="{_esc(handoff.get('provider_name'))}" placeholder="Provider not selected"></div>
             <div><label>Provider run/reference</label><input name="provider_reference" required value="{_esc(handoff.get('provider_reference'))}"></div></div>
@@ -858,7 +858,7 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
     <div class="hr-card"><div class="n">${_esc(run['deductions'])}</div><div class="l">Deduction liability</div></div>
     <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">{amount_label}employee check cash</div></div>
     <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">{amount_label}employer cost</div></div></div>
-    {'' if provider_matched else '<div class="hr-callout warn"><strong>Provider comparison pending.</strong> Anata still calculates every line so you can prepare and review payroll, but the outside payroll provider must be the authority for final withholding, filings, and distribution.</div>'}
+    {'' if provider_matched else '<div class="hr-callout warn"><strong>Authoritative comparison pending.</strong> Anata still calculates every line for preparation and review. Final withholding, filing, or distribution becomes authoritative only when the connected payroll service declares and proves that capability.</div>'}
     {provider_panel}
     <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Employee</th><th>Regular</th><th>OT</th><th>Holiday</th><th>PTO</th><th>Gross</th><th>Federal</th><th>Utah</th><th>Social Security</th><th>Medicare</th><th>Other deductions</th><th>Reimbursements</th><th>Net</th><th>Employer taxes</th><th>Employer cost</th><th>Payment record</th></tr></thead><tbody>{rows}</tbody></table></div>
     <p class="hr-sub">Calculation version: immutable snapshot. A recorded check is not marked cleared until separate reconciliation evidence exists.</p>
@@ -1003,7 +1003,7 @@ def render_hr_reports(*, user) -> str:
         for quarter in range(1, 5)
     )
     body = f"""<h1 class="hr-h1">HR reports & exports</h1>
-    <p class="hr-sub">Portable records for review, backup, accountant handoff, or a future payroll-provider migration.</p>
+    <p class="hr-sub">Portable records for review, backup, accountant handoff, or migration to the internal authoritative payroll service.</p>
     <div class="hr-callout warn"><div class="hr-kicker">Sensitive records</div>
     <p>Exports intentionally exclude full Social Security numbers and sealed tax-election data. Store downloaded files securely.</p>
     <p><strong>Retention:</strong> preserve ordinary payroll and employment history for seven years under Anata's operating policy. Offboarding deactivates access; it does not delete history. Form I-9 uses its separate legal deadline. No record is automatically deleted.</p></div>

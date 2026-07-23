@@ -15,10 +15,24 @@ def replace(document: Document, old: str, new: str) -> None:
         if paragraph.text == old:
             paragraph.text = new
             return
+    if any(paragraph.text == new for paragraph in document.paragraphs):
+        return
     raise ValueError(f"Paragraph not found: {old}")
 
 
 def insert_before(document: Document, anchor: str, items: list[tuple[str, str]]) -> None:
+    if items:
+        existing = {p.text for p in document.paragraphs}
+        legacy_section_aliases = {
+            "9. Authoritative payroll-service handoff": {
+                "9. Outside payroll-provider handoff",
+            },
+        }
+        if (
+            items[0][0] in existing
+            or bool(legacy_section_aliases.get(items[0][0], set()) & existing)
+        ):
+            return
     target = next(p for p in document.paragraphs if p.text == anchor)
     for text, style in items:
         paragraph = document.add_paragraph(text, style=style)
@@ -39,8 +53,8 @@ def update_operator() -> None:
     )
     replace(
         document,
-        "Until bank transfer is connected, fill and deliver paper checks using Anata’s calculated net amounts. Confirm check number and issuance in the run.",
         "Until a full-service payroll provider is selected, fill and deliver paper checks using the approved amounts. Confirm each check number and issuance in the run. Do not describe an Anata estimate as provider-authoritative payroll.",
+        "Until an authoritative payroll service is connected, fill and deliver paper checks using the approved amounts. Confirm each check number and issuance in the run. Do not describe an Anata estimate as authoritative payroll.",
     )
     replace(
         document,
@@ -51,17 +65,17 @@ def update_operator() -> None:
         document,
         "9. Contractor payments through Wise",
         [
-            ("9. Outside payroll-provider handoff", "Heading 1"),
+            ("9. Authoritative payroll-service handoff", "Heading 1"),
             ("1. Export the approved run", "Heading 2"),
             ("Open the approved payroll version and download the provider handoff CSV. It contains hours, approved variable inputs, Anata estimates, and snapshot hashes; it does not transmit money.", "Normal"),
-            ("2. Enter payroll in the outside provider", "Heading 2"),
-            ("The outside provider must perform the legally authoritative wage calculation, tax withholding/deposit/filing, and direct deposit when that service is connected.", "Normal"),
-            ("3. Record the provider run", "Heading 2"),
-            ("Enter the provider name, provider run/reference, and an evidence note. Recording submission does not mean payroll has been paid or taxes have been filed.", "Normal"),
+            ("2. Send payroll to the connected service", "Heading 2"),
+            ("The connected service is authoritative only for the capabilities it explicitly declares and proves, such as final wage calculation, tax withholding/deposit/filing, or distribution.", "Normal"),
+            ("3. Record the service run", "Heading 2"),
+            ("Enter the service name, run/reference, and an evidence note. Recording a handoff does not mean payroll has been paid or taxes have been filed.", "Normal"),
             ("4. Compare final totals", "Heading 2"),
-            ("Enter the provider’s final gross, net, total taxes, and employer cost. Anata marks an exact match or lists each variance. Investigate every variance before relying on the outside result.", "Normal"),
+            ("Enter the service’s confirmed gross, net, total taxes, and employer cost. Anata marks an exact match or lists each variance. Investigate every variance before relying on the result.", "Normal"),
             ("5. Preserve the evidence", "Heading 2"),
-            ("Keep the final provider report and confirmation under Anata’s secure records policy. Anata keeps the reference and comparison audit; the provider remains the authority for its filings and transfers.", "Normal"),
+            ("Keep the final service report and confirmation under Anata’s secure records policy. Anata keeps the reference and comparison audit; the connected service is authoritative only for the capabilities it owns.", "Normal"),
         ],
     )
     # Renumber the remaining top-level sections after inserting the provider chapter.
@@ -90,9 +104,39 @@ def update_operator() -> None:
             ("Employee timesheets submitted and independently approved.", "List Bullet"),
             ("Opening balances independently approved and unchanged.", "List Bullet"),
             ("Compliance deadlines reviewed for the pay date.", "List Bullet"),
-            ("Outside provider reference and final-total comparison recorded when a provider is used.", "List Bullet"),
+            ("Payroll-service reference and final-total comparison recorded when a service is used.", "List Bullet"),
         ],
     )
+    for old, new in (
+        (
+            "Until a full-service payroll provider is selected, fill and deliver paper checks using the approved amounts. Confirm each check number and issuance in the run. Do not describe an Anata estimate as provider-authoritative payroll.",
+            "Until an authoritative payroll service is connected, fill and deliver paper checks using the approved amounts. Confirm each check number and issuance in the run. Do not describe an Anata estimate as authoritative payroll.",
+        ),
+        ("9. Outside payroll-provider handoff", "9. Authoritative payroll-service handoff"),
+        ("2. Enter payroll in the outside provider", "2. Send payroll to the connected service"),
+        (
+            "The outside provider must perform the legally authoritative wage calculation, tax withholding/deposit/filing, and direct deposit when that service is connected.",
+            "The connected service is authoritative only for the capabilities it explicitly declares and proves, such as final wage calculation, tax withholding/deposit/filing, or distribution.",
+        ),
+        ("3. Record the provider run", "3. Record the service run"),
+        (
+            "Enter the provider name, provider run/reference, and an evidence note. Recording submission does not mean payroll has been paid or taxes have been filed.",
+            "Enter the service name, run/reference, and an evidence note. Recording a handoff does not mean payroll has been paid or taxes have been filed.",
+        ),
+        (
+            "Enter the provider’s final gross, net, total taxes, and employer cost. Anata marks an exact match or lists each variance. Investigate every variance before relying on the outside result.",
+            "Enter the service’s confirmed gross, net, total taxes, and employer cost. Anata marks an exact match or lists each variance. Investigate every variance before relying on the result.",
+        ),
+        (
+            "Keep the final provider report and confirmation under Anata’s secure records policy. Anata keeps the reference and comparison audit; the provider remains the authority for its filings and transfers.",
+            "Keep the final service report and confirmation under Anata’s secure records policy. Anata keeps the reference and comparison audit; the connected service is authoritative only for the capabilities it owns.",
+        ),
+        (
+            "Outside provider reference and final-total comparison recorded when a provider is used.",
+            "Payroll-service reference and final-total comparison recorded when a service is used.",
+        ),
+    ):
+        replace(document, old, new)
     document.save(OPERATOR)
 
 

@@ -261,7 +261,7 @@ def export_backup_zip(*, year: int | None = None) -> bytes:
 
 
 def payroll_provider_csv(run_id: str) -> str | None:
-    """Export approved inputs/results for entry into an outside payroll system."""
+    """Export approved inputs/results for an authoritative payroll service."""
     with _session() as session:
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
         if not run or run.status not in {"approved", "checks_issued", "closed"}:
