@@ -209,6 +209,10 @@ def _flash(flash: Optional[str]) -> str:
         "compliance_task_not_found": "That compliance task was not found.",
         "qualified_review_saved": "Qualified payroll review evidence recorded.",
         "qualified_review_invalid": "Complete the reviewer, date, evidence, note, and attestation.",
+        "opening_balance_approved": "Opening balance independently approved.",
+        "opening_balance_rejected": "Opening balance returned for correction.",
+        "opening_review_invalid": "Add a review note and choose approve or reject.",
+        "opening_balance_not_found": "That opening balance was not found.",
     }
     if not flash:
         return ""
@@ -944,6 +948,17 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
         if employee.get("employee_type") == "contractor":
             continue
         balance = balance_by_email.get(employee["email"], {})
+        approval_form = (
+            f"""<form class="hr-form" method="post" action="/admin/hr/settings/opening-balance/{balance.get('id')}/decision" style="margin-top:12px">
+              <div class="hr-kicker">Independent review · {_esc(balance.get('approval_status'))}</div>
+              <p>Entered by {_esc(balance.get('confirmed_by') or '—')}; reviewed by {_esc(balance.get('reviewed_by') or '—')}.</p>
+              <label>Review note</label><input name="review_note" required maxlength="500" value="{_esc(balance.get('review_note'))}">
+              <div class="hr-inline"><button class="hr-btn" name="decision" value="approved">Approve opening balance</button>
+              <button class="hr-btn hr-btn-light" name="decision" value="rejected">Return for correction</button></div>
+            </form>"""
+            if balance.get("id") else
+            '<p class="hr-sub">Save the opening balance before another person reviews it.</p>'
+        )
         balance_forms += f"""
         <details class="hr-callout"><summary>{_esc(employee['full_name'])} — {_esc(employee['email'])}</summary>
         <form class="hr-form" method="post" action="/admin/hr/settings/opening-balance">
@@ -960,7 +975,7 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
           <label>Employee Medicare withheld</label><input name="employee_medicare_withheld" value="{_esc(balance.get('employee_medicare_withheld','0.00'))}" required>
           <label>Source and verification note</label><textarea name="source_note" required>{_esc(balance.get('source_note',''))}</textarea>
           <button class="hr-btn" type="submit">Save reviewed opening balance</button>
-        </form></details>"""
+        </form>{approval_form}</details>"""
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>

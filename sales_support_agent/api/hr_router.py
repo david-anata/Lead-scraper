@@ -863,3 +863,18 @@ async def hr_qualified_review_save(
         f"/admin/hr/settings?{'ok' if ok else 'err'}={message}",
         status_code=303,
     )
+
+
+@router.post("/settings/opening-balance/{balance_id}/decision")
+async def hr_opening_balance_decision(
+    balance_id: int, decision: str = Form(""), review_note: str = Form(""),
+    user: dict = Depends(_pay_guard),
+):
+    ok, message = payroll_store.decide_opening_balance(
+        balance_id, decision=decision, review_note=review_note,
+        actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/settings?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )

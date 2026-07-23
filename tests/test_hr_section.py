@@ -17,6 +17,7 @@ try:
     from sales_support_agent.services.access import store as access_store
     from sales_support_agent.services.admin_auth import create_user_session_token
     from sales_support_agent.services.hr import store as hr_store
+    from sales_support_agent.services.hr import payroll_store
     DEPS = True
 except ModuleNotFoundError as exc:
     if exc.name not in {"sqlalchemy", "fastapi"}:
@@ -252,6 +253,44 @@ class HRSectionTests(unittest.TestCase):
         settings = self._get("/admin/hr/settings", self.sa)
         self.assertIn("Payroll Reviewer", settings.text)
         self.assertIn("Parallel payroll workpaper", settings.text)
+
+    def test_opening_balance_requires_a_different_reviewer(self):
+        import uuid
+        email = f"opening-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=email, full_name="Opening Balance")
+        saved = payroll_store.save_opening_balance(
+            employee_email=email, tax_year=2026, gross_wages="1000",
+            social_security_wages="1000", medicare_wages="1000",
+            futa_wages="1000", utah_ui_wages="1000",
+            federal_withheld="100", utah_withheld="40",
+            employee_ss_withheld="62", employee_medicare_withheld="14.50",
+            source_note="Prior payroll register", actor="david@anatainc.com",
+        )
+        self.assertEqual(saved, (True, "opening_balance_saved"))
+        balance = next(
+            item for item in payroll_store.list_opening_balances(2026)
+            if item["employee_email"] == email
+        )
+        self.assertEqual(balance["approval_status"], "unreviewed")
+        self.assertEqual(
+            payroll_store.decide_opening_balance(
+                balance["id"], decision="approved",
+                review_note="Compared to the source register.",
+                actor="david@anatainc.com",
+            ),
+            (False, "self_approval_blocked"),
+        )
+        approved = payroll_store.decide_opening_balance(
+            balance["id"], decision="approved",
+            review_note="Compared to the source register.",
+            actor="val@anatainc.com",
+        )
+        self.assertEqual(approved, (True, "opening_balance_approved"))
+        updated = next(
+            item for item in payroll_store.list_opening_balances(2026)
+            if item["employee_email"] == email
+        )
+        self.assertEqual(updated["approval_status"], "approved")
 
     def test_payroll_page_is_a_control_room_not_payment_claim(self):
         page = self._get("/admin/hr/payroll", self.sa)

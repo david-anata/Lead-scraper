@@ -20,6 +20,7 @@ from sales_support_agent.models.hr import (
     HREmployee,
     HREmploymentProfile,
     HROpeningPayrollBalance,
+    HROpeningBalanceApproval,
     HRPayrollApproval,
     HRPayrollCalculation,
     HRPayrollInput,
@@ -303,9 +304,60 @@ def save_opening_balance(
         row.confirmed_by = actor
         row.confirmed_at = datetime.now(timezone.utc)
         session.flush()
+        prior_approval = session.query(HROpeningBalanceApproval).filter_by(
+            opening_balance_id=row.id
+        ).first()
+        if prior_approval:
+            prior_approval.status = "stale"
         _audit(session, actor, "payroll.opening_balance_saved",
                "opening_payroll_balance", row.id, {"employee_email": email, "year": tax_year})
         return True, "opening_balance_saved"
+
+
+def _opening_balance_hash(row: HROpeningPayrollBalance) -> str:
+    values = [
+        row.employee_email, row.tax_year, row.gross_wages_cents,
+        row.social_security_wages_cents, row.medicare_wages_cents,
+        row.futa_wages_cents, row.utah_ui_wages_cents,
+        row.federal_withheld_cents, row.utah_withheld_cents,
+        row.employee_ss_withheld_cents, row.employee_medicare_withheld_cents,
+        row.source_note,
+    ]
+    return hashlib.sha256(
+        json.dumps(values, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def decide_opening_balance(
+    balance_id: int, *, decision: str, review_note: str, actor: str
+) -> tuple[bool, str]:
+    if decision not in {"approved", "rejected"} or not review_note.strip():
+        return False, "opening_review_invalid"
+    actor_email = (actor or "").strip().lower()
+    with _session() as session:
+        balance = session.get(HROpeningPayrollBalance, balance_id)
+        if not balance:
+            return False, "opening_balance_not_found"
+        if balance.confirmed_by.strip().lower() == actor_email:
+            return False, "self_approval_blocked"
+        row = session.query(HROpeningBalanceApproval).filter_by(
+            opening_balance_id=balance.id
+        ).first()
+        if not row:
+            row = HROpeningBalanceApproval(opening_balance_id=balance.id)
+            session.add(row)
+        row.source_hash = _opening_balance_hash(balance)
+        row.status = decision
+        row.reviewed_by = actor_email
+        row.review_note = review_note.strip()
+        row.reviewed_at = datetime.now(timezone.utc)
+        session.flush()
+        _audit(session, actor, f"payroll.opening_balance_{decision}",
+               "opening_payroll_balance", balance.id, {
+                   "employee_email": balance.employee_email,
+                   "tax_year": balance.tax_year,
+               })
+        return True, f"opening_balance_{decision}"
 
 
 def list_opening_balances(tax_year: int) -> list[dict]:
@@ -313,7 +365,19 @@ def list_opening_balances(tax_year: int) -> list[dict]:
         rows = session.query(HROpeningPayrollBalance).filter_by(
             tax_year=tax_year
         ).order_by(HROpeningPayrollBalance.employee_email).all()
-        return [{
+        result = []
+        for row in rows:
+            approval = session.query(HROpeningBalanceApproval).filter_by(
+                opening_balance_id=row.id
+            ).first()
+            approval_status = approval.status if approval else "unreviewed"
+            if (
+                approval and approval.status == "approved"
+                and approval.source_hash != _opening_balance_hash(row)
+            ):
+                approval_status = "stale"
+            result.append({
+            "id": row.id,
             "employee_email": row.employee_email, "tax_year": row.tax_year,
             "gross_wages": cents_to_dollars(row.gross_wages_cents),
             "social_security_wages": cents_to_dollars(row.social_security_wages_cents),
@@ -325,7 +389,11 @@ def list_opening_balances(tax_year: int) -> list[dict]:
             "employee_ss_withheld": cents_to_dollars(row.employee_ss_withheld_cents),
             "employee_medicare_withheld": cents_to_dollars(row.employee_medicare_withheld_cents),
             "source_note": row.source_note, "confirmed_by": row.confirmed_by,
-        } for row in rows]
+            "approval_status": approval_status,
+            "reviewed_by": approval.reviewed_by if approval else "",
+            "review_note": approval.review_note if approval else "",
+        })
+        return result
 
 
 def add_payroll_input(*, employee_email: str, period_start: date, period_end: date,
@@ -494,17 +562,17 @@ def _period_context(containing: date) -> tuple:
                 HRTaxElection.superseded_at.is_(None),
             ).all()
         }
-        balance_emails = {
-            row[0] for row in session.query(HROpeningPayrollBalance.employee_email).filter_by(
-                tax_year=period.end_date.year
-            ).all()
-        }
         closed_time_emails = {
             row[0] for row in session.query(HRTimeEntry.employee_email).filter(
                 HRTimeEntry.date >= period.start_date, HRTimeEntry.date <= period.end_date,
                 HRTimeEntry.stop_time != "",
             ).distinct().all()
         }
+    balance_emails = {
+        item["employee_email"]
+        for item in list_opening_balances(period.end_date.year)
+        if item["approval_status"] == "approved"
+    }
     readiness = payroll_readiness(
         employees=employees, open_time_entries=open_entries,
         pending_corrections=corrections,
@@ -550,7 +618,10 @@ def _period_context(containing: date) -> tuple:
             readiness["blockers"].append({
                 "kind": "opening_balance", "severity": "blocker",
                 "employee_email": employee["email"],
-                "message": f"{period.end_date.year} year-to-date opening balance is missing",
+                "message": (
+                    f"{period.end_date.year} year-to-date opening balance is "
+                    "missing or not independently approved"
+                ),
             })
         employment = employee.get("employment") or {}
         if employment.get("pay_basis") == "hourly" and employee["email"] not in closed_time_emails:

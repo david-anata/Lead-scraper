@@ -551,6 +551,21 @@ class HRPayrollReview(Base):
     )
 
 
+class HROpeningBalanceApproval(Base):
+    """Independent approval for imported year-to-date employee totals."""
+
+    __tablename__ = "hr_opening_balance_approvals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    opening_balance_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(24), default="approved", index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(255), default="")
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class HRContractorProfile(Base):
     """Employer-tracked contractor compliance status; no tax form image."""
 

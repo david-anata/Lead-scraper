@@ -35,6 +35,7 @@ _EXPECTED_TABLES = {
     "hr_timesheet_approvals",
     "hr_compliance_tasks",
     "hr_payroll_reviews",
+    "hr_opening_balance_approvals",
 }
 
 
