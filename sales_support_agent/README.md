@@ -210,6 +210,13 @@ Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API
   creation, provider-confirmed payment evidence, and an explicit QBO accounting
   handoff state.
 
+Authorized building operators can create or update reviewed spaces and
+offerings, add deduplicated CRM relationships, record explicit marketing
+permission, define explainable audiences, and move campaigns through draft,
+preview, test-send, approval, and confirmed delivery without editing code.
+Browser writes are same-origin and session-token protected; consequential
+changes retain the signed-in operator in the audit trail.
+
 The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires
 `BUILDING_CAMPAIGN_TOKEN_SECRET` so unsubscribe links can be signed and verified.

@@ -2,21 +2,30 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/building_crm_boot.db")
+os.environ.setdefault("ADMIN_DASHBOARD_SESSION_SECRET", "building-browser-test-secret")
 
 try:
     from fastapi.testclient import TestClient
+    from sqlalchemy import select
     from sales_support_agent.main import app
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
         BuildingCampaignRecipient,
+        BuildingCampaign,
         BuildingCommunicationPreference,
+        BuildingContact,
+        BuildingOffering,
+        BuildingSegment,
+        BuildingSpace,
         BuildingSuppression,
     )
+    from sales_support_agent.services.admin_auth import create_user_session_token
     DEPS = True
 except ModuleNotFoundError as exc:
     if exc.name not in {"sqlalchemy", "fastapi"}:
@@ -247,3 +256,211 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertIn("No building contacts yet.", body)
         self.assertIn("No campaigns yet.", body)
         self.assertIn("No native invoices yet.", body)
+
+    def test_08_operator_can_save_reviewed_space_and_offering_from_control_room(self) -> None:
+        settings = app.state.agent_settings
+        cookie = create_user_session_token(
+            settings,
+            email="david@anatainc.com",
+            name="David",
+            role="admin",
+        )
+        self.client.cookies.set(settings.admin_cookie_name, cookie)
+        try:
+            page = self.client.get("/admin/building")
+            self.assertEqual(page.status_code, 200, page.text)
+            match = re.search(r'name="_csrf_token" value="([^"]+)"', page.text)
+            self.assertIsNotNone(match)
+            token = match.group(1)
+            browser_headers = {
+                "Origin": "http://testserver",
+                "Sec-Fetch-Mode": "navigate",
+            }
+            space = self.client.post(
+                "/admin/building/spaces",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "space_id": "office-pilot",
+                    "slug": "office-pilot",
+                    "name": "Pilot Office",
+                    "space_type": "private_office",
+                    "floor": "Second floor",
+                    "capacity": "4",
+                    "status": "available",
+                    "features": "Natural light, Furnished",
+                    "public_description": "A reviewed pilot office.",
+                    "is_public": "true",
+                },
+            )
+            self.assertEqual(space.status_code, 303, space.text)
+            offering = self.client.post(
+                "/admin/building/offerings",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "offering_id": "office-pilot-membership",
+                    "slug": "office-pilot-membership",
+                    "name": "Pilot Office Membership",
+                    "offering_type": "private_office",
+                    "space_id": "office-pilot",
+                    "price_display": "From $1,250/month",
+                    "booking_unit": "month",
+                    "call_to_action": "tour",
+                    "features": "Conference access, Boom Standard",
+                    "public_description": "A reviewed pilot offering.",
+                    "is_published": "true",
+                },
+            )
+            self.assertEqual(offering.status_code, 303, offering.text)
+            contact = self.client.post(
+                "/admin/building/contacts",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "email": "pilot-tenant@example.com",
+                    "full_name": "Pilot Tenant",
+                    "company_name": "Pilot Company",
+                    "relationship_type": "tenant",
+                    "organization": "Pilot Company",
+                    "source_reference": "reviewed-pilot",
+                    "marketing_status": "subscribed",
+                    "consent_confirmed": "true",
+                },
+            )
+            self.assertEqual(contact.status_code, 303, contact.text)
+            segment = self.client.post(
+                "/admin/building/segments",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "segment_id": "pilot-tenants",
+                    "name": "Pilot tenants",
+                    "relationship_types": ["tenant"],
+                    "marketing_statuses": ["subscribed"],
+                    "relationship_status": "active",
+                    "is_active": "true",
+                },
+            )
+            self.assertEqual(segment.status_code, 303, segment.text)
+            campaign = self.client.post(
+                "/admin/building/campaigns",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "campaign_id": "pilot-welcome",
+                    "name": "Pilot welcome",
+                    "segment_id": "pilot-tenants",
+                    "subject": "Welcome to the building",
+                    "body_text": "A good building full of people doing good work.",
+                },
+            )
+            self.assertEqual(campaign.status_code, 303, campaign.text)
+            preview = self.client.post(
+                "/admin/building/campaigns/pilot-welcome/preview",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={"_csrf_token": token},
+            )
+            self.assertEqual(preview.status_code, 303, preview.text)
+            with (
+                mock.patch(
+                    "sales_support_agent.api.building_crm_router.ResendClient.is_configured",
+                    return_value=True,
+                ),
+                mock.patch(
+                    "sales_support_agent.api.building_crm_router.ResendClient.send_message"
+                ) as send_message,
+            ):
+                test_send = self.client.post(
+                    "/admin/building/campaigns/pilot-welcome/test-send",
+                    headers=browser_headers,
+                    follow_redirects=False,
+                    data={
+                        "_csrf_token": token,
+                        "test_email": "operator@example.com",
+                    },
+                )
+                self.assertEqual(test_send.status_code, 303, test_send.text)
+                approve = self.client.post(
+                    "/admin/building/campaigns/pilot-welcome/approve",
+                    headers=browser_headers,
+                    follow_redirects=False,
+                    data={"_csrf_token": token},
+                )
+                self.assertEqual(approve.status_code, 303, approve.text)
+                wrong_confirmation = self.client.post(
+                    "/admin/building/campaigns/pilot-welcome/send",
+                    headers=browser_headers,
+                    follow_redirects=False,
+                    data={
+                        "_csrf_token": token,
+                        "confirmation": "send it",
+                    },
+                )
+                self.assertIn("error=", wrong_confirmation.headers["location"])
+                sent = self.client.post(
+                    "/admin/building/campaigns/pilot-welcome/send",
+                    headers=browser_headers,
+                    follow_redirects=False,
+                    data={
+                        "_csrf_token": token,
+                        "confirmation": "SEND pilot-welcome",
+                    },
+                )
+                self.assertEqual(sent.status_code, 303, sent.text)
+                self.assertEqual(send_message.call_count, 2)
+            with self.factory() as session:
+                saved_space = session.get(BuildingSpace, "office-pilot")
+                saved_offering = session.get(
+                    BuildingOffering, "office-pilot-membership"
+                )
+                saved_contact = session.execute(
+                    select(BuildingContact).where(
+                        BuildingContact.email == "pilot-tenant@example.com"
+                    )
+                ).scalar_one()
+                saved_segment = session.get(BuildingSegment, "pilot-tenants")
+                saved_campaign = session.get(BuildingCampaign, "pilot-welcome")
+                self.assertEqual(saved_space.capacity, 4)
+                self.assertTrue(saved_space.is_public)
+                self.assertEqual(saved_offering.space_id, saved_space.id)
+                self.assertTrue(saved_offering.is_published)
+                self.assertEqual(saved_contact.full_name, "Pilot Tenant")
+                self.assertTrue(saved_segment.is_active)
+                self.assertEqual(saved_campaign.status, "sent")
+                self.assertTrue(saved_campaign.preview_hash)
+        finally:
+            self.client.cookies.clear()
+
+    def test_09_browser_write_rejects_missing_csrf_token(self) -> None:
+        settings = app.state.agent_settings
+        cookie = create_user_session_token(
+            settings,
+            email="david@anatainc.com",
+            name="David",
+            role="admin",
+        )
+        self.client.cookies.set(settings.admin_cookie_name, cookie)
+        try:
+            response = self.client.post(
+                "/admin/building/spaces",
+                headers={
+                    "Origin": "http://testserver",
+                    "Sec-Fetch-Mode": "navigate",
+                },
+                data={
+                    "space_id": "should-not-save",
+                    "slug": "should-not-save",
+                    "name": "Should Not Save",
+                    "space_type": "private_office",
+                },
+            )
+            self.assertEqual(response.status_code, 403)
+        finally:
+            self.client.cookies.clear()

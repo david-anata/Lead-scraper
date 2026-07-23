@@ -36,6 +36,9 @@ def render_building_page(
     inquiries: list[dict[str, Any]],
     reservations: list[dict[str, Any]],
     invoices: list[dict[str, Any]],
+    csrf_token: str = "",
+    notice: str = "",
+    error: str = "",
 ) -> str:
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
@@ -99,6 +102,37 @@ def render_building_page(
         for item in segments
     ) or '<tr><td colspan="4"><div class="empty"><strong>No audiences defined.</strong><br>Create reviewed segments before drafting a tenant campaign.</div></td></tr>'
 
+    def campaign_actions(item: dict[str, Any]) -> str:
+        campaign_id = _esc(item.get("id"))
+        status = str(item.get("status") or "draft")
+        if status in {"draft", "previewed"}:
+            approve = (
+                f'<form method="post" action="/admin/building/campaigns/{campaign_id}/approve">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="secondary secondary--small" type="submit">Approve snapshot</button></form>'
+                if status == "previewed"
+                else ""
+            )
+            return (
+                '<div class="action-stack">'
+                f'<form method="post" action="/admin/building/campaigns/{campaign_id}/preview">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="secondary secondary--small" type="submit">Refresh preview</button></form>'
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/test-send">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<input aria-label="Test recipient email" name="test_email" type="email" required placeholder="Test email">'
+                '<button class="secondary secondary--small" type="submit">Send test</button></form>'
+                f"{approve}</div>"
+            )
+        if status == "approved":
+            return (
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/send">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                f'<input aria-label="Send confirmation" name="confirmation" required placeholder="SEND {campaign_id}">'
+                '<button class="primary secondary--small" type="submit">Send campaign</button></form>'
+            )
+        return '<span class="sub">No action required</span>'
+
     campaign_rows = "".join(
         f"""
         <tr>
@@ -106,10 +140,11 @@ def render_building_page(
           <td>{_esc(item.get("segment_name") or "—")}</td>
           <td>{_esc(item.get("recipient_count", 0))}</td>
           <td>{_badge(str(item.get("status") or "draft"))}</td>
+          <td>{campaign_actions(item)}</td>
         </tr>
         """
         for item in campaigns
-    ) or '<tr><td colspan="4"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a segment preview, test send, and approval before delivery.</div></td></tr>'
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a segment preview, test send, and approval before delivery.</div></td></tr>'
 
     inquiry_rows = "".join(
         f"""
@@ -151,6 +186,25 @@ def render_building_page(
         for item in invoices
     ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved billing schedules can create Stripe invoices; QBO remains the accounting destination during transition.</div></td></tr>'
 
+    linked_space_options = "".join(
+        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))}</option>'
+        for item in spaces
+    )
+    segment_options = "".join(
+        f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} ({_esc(item.get("included_count", 0))} eligible)</option>'
+        for item in segments
+        if item.get("is_active")
+    )
+    flash = (
+        f'<div class="flash flash--ok" role="status">{_esc(notice)}</div>'
+        if notice
+        else (
+            f'<div class="flash flash--error" role="alert">{_esc(error)}</div>'
+            if error
+            else ""
+        )
+    )
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -176,6 +230,7 @@ def render_building_page(
     .metric span{{display:block;font-size:12px;color:rgba(43,54,68,.6);text-transform:uppercase;letter-spacing:.08em;}}
     .metric strong{{display:block;font-family:"Montserrat";font-size:30px;margin-top:8px;}}
     .notice{{margin-top:18px;padding:16px 18px;border:1px solid rgba(155,101,14,.28);border-radius:12px;background:#fff8e8;line-height:1.55;}}
+    .flash{{margin:0 0 18px;padding:14px 16px;border-radius:10px;font-weight:700;}} .flash--ok{{background:#e4f4f1;color:#11665f;border:1px solid #acd8d2;}} .flash--error{{background:#fff0ed;color:#8b2f23;border:1px solid #e4b3aa;}}
     .grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;}}
     .panel{{background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;}}
     .panel--wide{{grid-column:1/-1;}} .panel-head{{display:flex;align-items:center;justify-content:space-between;padding:20px 22px;border-bottom:1px solid var(--border);}}
@@ -188,13 +243,17 @@ def render_building_page(
     .badge{{display:inline-block;border-radius:99px;padding:5px 8px;font-size:11px;font-weight:700;text-transform:capitalize;background:#edf0f2;}}
     .badge--ok{{background:#e4f4f1;color:#11665f;}} .badge--warn{{background:#fff0d2;color:#845407;}} .badge--muted{{background:#edf0f2;color:#56616d;}}
     .empty{{padding:18px 0;color:rgba(43,54,68,.62);line-height:1.55;}}
+    .form-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:20px 22px;}} .field{{display:grid;gap:6px;}} .field--wide{{grid-column:1/-1;}}
+    label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
+    .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
-    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}}}
+    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}.form-grid{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}}}
   </style>
 </head>
 <body>
   {nav}
   <main class="shell">
+    {flash}
     <header class="page-head">
       <div>
         <div class="eyebrow">Building operations</div>
@@ -211,13 +270,87 @@ def render_building_page(
     </section>
     <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
     <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><div><h2>Add or update a space</h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/spaces">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="space-id">Stable ID</label><input id="space-id" name="space_id" required placeholder="office-201"></div>
+          <div class="field"><label for="space-slug">Public URL slug</label><input id="space-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201"></div>
+          <div class="field"><label for="space-name">Name</label><input id="space-name" name="name" required placeholder="Office 201"></div>
+          <div class="field"><label for="space-type">Type</label><select id="space-type" name="space_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="conference">Conference room</option><option value="event">Event space</option><option value="warehouse">Warehouse</option><option value="amenity">Amenity</option></select></div>
+          <div class="field"><label for="space-floor">Floor or area</label><input id="space-floor" name="floor" placeholder="Second floor"></div>
+          <div class="field"><label for="space-capacity">Capacity</label><input id="space-capacity" name="capacity" type="number" min="0" value="0"></div>
+          <div class="field"><label for="space-status">Availability state</label><select id="space-status" name="status"><option value="unavailable">Unavailable</option><option value="available">Available</option><option value="soft_hold">Soft hold</option><option value="occupied">Occupied</option><option value="maintenance">Maintenance</option></select></div>
+          <div class="field"><label for="space-features">Features</label><input id="space-features" name="features" placeholder="Natural light, furnished, whiteboard"></div>
+          <div class="field field--wide"><label for="space-description">Public description</label><textarea id="space-description" name="public_description" placeholder="What a prospective tenant may safely see."></textarea></div>
+          <div class="field field--wide"><label for="space-notes">Internal notes</label><textarea id="space-notes" name="internal_notes" placeholder="Occupancy, repairs, or operator context. Never shown publicly."></textarea></div>
+          <div class="form-actions"><label class="check"><input type="checkbox" name="is_public" value="true"> Allow this space to appear publicly</label><button class="primary" type="submit">Save space</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>Add or update an offering</h2><p>Define what customers can inquire about and how pricing is described.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/offerings">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="offering-id">Stable ID</label><input id="offering-id" name="offering_id" required placeholder="private-office-201"></div>
+          <div class="field"><label for="offering-slug">Public URL slug</label><input id="offering-slug" name="slug" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="private-office-201"></div>
+          <div class="field"><label for="offering-name">Name</label><input id="offering-name" name="name" required placeholder="Private Office 201"></div>
+          <div class="field"><label for="offering-type">Offering type</label><select id="offering-type" name="offering_type"><option value="private_office">Private office</option><option value="coworking">Coworking</option><option value="meeting_room">Meeting room</option><option value="event">Event</option><option value="warehouse">Warehouse</option><option value="membership">Membership</option></select></div>
+          <div class="field"><label for="offering-space">Linked space</label><select id="offering-space" name="space_id"><option value="">No specific space</option>{linked_space_options}</select></div>
+          <div class="field"><label for="offering-price">Public price wording</label><input id="offering-price" name="price_display" placeholder="From $1,250/month"></div>
+          <div class="field"><label for="offering-unit">Booking unit</label><select id="offering-unit" name="booking_unit"><option value="custom">Custom</option><option value="month">Monthly</option><option value="day">Daily</option><option value="hour">Hourly</option><option value="event">Per event</option></select></div>
+          <div class="field"><label for="offering-cta">Call to action</label><select id="offering-cta" name="call_to_action"><option value="inquire">Inquire</option><option value="tour">Schedule a tour</option><option value="request_date">Request a date</option><option value="join_waitlist">Join waitlist</option></select></div>
+          <div class="field field--wide"><label for="offering-features">Included features</label><input id="offering-features" name="features" placeholder="Conference access, mail service, Boom Standard"></div>
+          <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
+          <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>Add a CRM relationship</h2><p>One person can be a tenant, prospect, event host, or community member without duplication.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/contacts">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="contact-name">Full name</label><input id="contact-name" name="full_name" placeholder="Taylor Morgan"></div>
+          <div class="field"><label for="contact-email">Email</label><input id="contact-email" name="email" type="email" required placeholder="taylor@example.com"></div>
+          <div class="field"><label for="contact-phone">Phone</label><input id="contact-phone" name="phone" type="tel"></div>
+          <div class="field"><label for="contact-company">Company</label><input id="contact-company" name="company_name"></div>
+          <div class="field"><label for="contact-relationship">Relationship</label><select id="contact-relationship" name="relationship_type"><option value="prospect">Prospect</option><option value="tenant">Tenant</option><option value="tenant_employee">Tenant employee</option><option value="event_host">Event host</option><option value="former_tenant">Former tenant</option><option value="waitlist">Waitlist</option><option value="vendor">Vendor</option><option value="partner">Partner</option><option value="community_member">Community member</option></select></div>
+          <div class="field"><label for="contact-org">Relationship organization</label><input id="contact-org" name="organization" placeholder="Company or tenant account"></div>
+          <div class="field"><label for="contact-reference">Source reference</label><input id="contact-reference" name="source_reference" placeholder="Lease, Eventective, Marketplace"></div>
+          <div class="field"><label for="contact-marketing">Marketing permission</label><select id="contact-marketing" name="marketing_status"><option value="unknown">Unknown / no promotional email</option><option value="subscribed">Subscribed</option><option value="unsubscribed">Unsubscribed</option></select></div>
+          <div class="form-actions"><label class="check"><input type="checkbox" name="consent_confirmed" value="true"> I have documented consent for “Subscribed”</label><button class="primary" type="submit">Save contact</button></div>
+        </form>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><h2>Build an audience</h2><p>Audience rules remain explainable and respect permission and suppression.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/segments">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="segment-id">Stable ID</label><input id="segment-id" name="segment_id" required placeholder="active-tenants"></div>
+          <div class="field"><label for="segment-name">Audience name</label><input id="segment-name" name="name" required placeholder="Active tenants"></div>
+          <div class="field field--wide"><label for="segment-description">Description</label><input id="segment-description" name="description" placeholder="People currently working from the building."></div>
+          <div class="field field--wide"><label>Relationships</label><div class="check-stack"><label class="check"><input type="checkbox" name="relationship_types" value="tenant"> Tenant</label><label class="check"><input type="checkbox" name="relationship_types" value="tenant_employee"> Tenant employee</label><label class="check"><input type="checkbox" name="relationship_types" value="event_host"> Event host</label><label class="check"><input type="checkbox" name="relationship_types" value="prospect"> Prospect</label><label class="check"><input type="checkbox" name="relationship_types" value="community_member"> Community member</label><label class="check"><input type="checkbox" name="relationship_types" value="former_tenant"> Former tenant</label></div></div>
+          <div class="field"><label for="segment-relationship-status">Relationship state</label><select id="segment-relationship-status" name="relationship_status"><option value="active">Active only</option><option value="any">Any</option><option value="inactive">Inactive only</option></select></div>
+          <div class="field"><label>Marketing status</label><div class="check-stack"><label class="check"><input type="checkbox" name="marketing_statuses" value="subscribed" checked> Subscribed</label><label class="check"><input type="checkbox" name="marketing_statuses" value="unknown"> Unknown</label><label class="check"><input type="checkbox" name="marketing_statuses" value="unsubscribed"> Unsubscribed</label></div></div>
+          <div class="form-actions"><label class="check"><input type="checkbox" name="is_active" value="true" checked> Audience active</label><button class="primary" type="submit">Save and preview audience</button></div>
+        </form>
+      </section>
+      <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Draft a campaign</h2><p>Saving creates a draft only. Preview, test send, approval, and final send remain separate gates.</p></div></div>
+        <form class="form-grid" method="post" action="/admin/building/campaigns">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="campaign-id">Stable ID</label><input id="campaign-id" name="campaign_id" required placeholder="tenant-august-update"></div>
+          <div class="field"><label for="campaign-name">Internal campaign name</label><input id="campaign-name" name="name" required placeholder="August tenant update"></div>
+          <div class="field"><label for="campaign-segment">Audience</label><select id="campaign-segment" name="segment_id" required><option value="">Choose a reviewed audience</option>{segment_options}</select></div>
+          <div class="field"><label for="campaign-subject">Email subject</label><input id="campaign-subject" name="subject" required></div>
+          <div class="field field--wide"><label for="campaign-body">Plain-text message</label><textarea id="campaign-body" name="body_text" required placeholder="Warm, useful, and specific."></textarea></div>
+          <div class="form-actions"><span class="form-note">This button never sends email.</span><button class="primary" type="submit">Save campaign draft</button></div>
+        </form>
+      </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Agreement</th><th>Deposit</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
     </div>
   </main>
 </body>

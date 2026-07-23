@@ -7,15 +7,16 @@ import hmac
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.resend import ResendClient
+from sales_support_agent.api.building_router import OfferingInput, SpaceInput
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -33,6 +34,11 @@ from sales_support_agent.models.entities import (
     BuildingSpace,
 )
 from sales_support_agent.services.auth_deps import require_tool
+from sales_support_agent.services.auth_deps import get_current_user
+from sales_support_agent.services.building_security import (
+    csrf_token as building_csrf_token,
+    valid_csrf_token as valid_building_csrf_token,
+)
 from sales_support_agent.services.building_page import render_building_page
 
 
@@ -53,6 +59,25 @@ RELATIONSHIP_TYPES = {
 }
 MARKETING_STATUSES = {"unknown", "subscribed", "unsubscribed"}
 CONTACT_STATUSES = {"active", "inactive", "merged"}
+
+
+async def _require_building_form_security(request: Request) -> None:
+    if (request.headers.get("sec-fetch-site") or "").lower() == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site building write rejected.")
+    origin = request.headers.get("origin")
+    if origin and urlparse(origin).netloc.lower() != request.url.netloc.lower():
+        raise HTTPException(status_code=403, detail="Building form origin does not match.")
+    if origin or request.headers.get("sec-fetch-mode"):
+        form = await request.form()
+        if not valid_building_csrf_token(
+            get_current_user(request), str(form.get("_csrf_token") or "")
+        ):
+            raise HTTPException(status_code=403, detail="Building form security token is invalid.")
+
+
+def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
+    query = urlencode({"notice": notice} if notice else {"error": error})
+    return RedirectResponse(f"/admin/building?{query}", status_code=303)
 
 
 def _now() -> datetime:
@@ -834,9 +859,668 @@ def send_campaign(
         }
 
 
+@admin_router.post(
+    "/spaces",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_space_from_control_room(
+    request: Request,
+    space_id: str = Form(...),
+    slug: str = Form(...),
+    name: str = Form(...),
+    space_type: str = Form(...),
+    floor: str = Form(""),
+    capacity: int = Form(0),
+    status: str = Form("unavailable"),
+    public_description: str = Form(""),
+    internal_notes: str = Form(""),
+    features: str = Form(""),
+    is_public: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        payload = SpaceInput(
+            id=space_id.strip(),
+            slug=slug.strip().lower(),
+            name=name.strip(),
+            space_type=space_type.strip().lower(),
+            floor=floor.strip(),
+            capacity=capacity,
+            status=status,
+            public_description=public_description.strip(),
+            internal_notes=internal_notes.strip(),
+            features=[item.strip() for item in features.split(",") if item.strip()],
+            is_public=is_public,
+        )
+    except ValidationError as exc:
+        return _building_redirect(error=exc.errors()[0].get("msg", "Invalid space."))
+    with session_scope(request.app.state.session_factory) as session:
+        slug_owner = session.execute(
+            select(BuildingSpace).where(BuildingSpace.slug == payload.slug)
+        ).scalar_one_or_none()
+        if slug_owner is not None and slug_owner.id != payload.id:
+            return _building_redirect(error="That public space URL is already in use.")
+        row = session.get(BuildingSpace, payload.id)
+        before = (
+            {"name": row.name, "status": row.status, "is_public": row.is_public}
+            if row
+            else {}
+        )
+        if row is None:
+            row = BuildingSpace(
+                id=payload.id,
+                slug=payload.slug,
+                name=payload.name,
+                space_type=payload.space_type,
+            )
+        row.slug = payload.slug
+        row.name = payload.name
+        row.space_type = payload.space_type
+        row.floor = payload.floor
+        row.capacity = payload.capacity
+        row.status = payload.status
+        row.public_description = payload.public_description
+        row.internal_notes = payload.internal_notes
+        row.features_json = payload.features
+        row.is_public = payload.is_public
+        row.updated_at = _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="space",
+            entity_id=row.id,
+            action="upserted_from_control_room",
+            actor=user.get("email") or "building-operator",
+            before_json=before,
+            after_json={
+                "name": row.name,
+                "status": row.status,
+                "is_public": row.is_public,
+                "capacity": row.capacity,
+            },
+        ))
+    return _building_redirect(notice=f"{payload.name} saved.")
+
+
+@admin_router.post(
+    "/offerings",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_offering_from_control_room(
+    request: Request,
+    offering_id: str = Form(...),
+    slug: str = Form(...),
+    name: str = Form(...),
+    offering_type: str = Form(...),
+    space_id: str = Form(""),
+    public_description: str = Form(""),
+    price_display: str = Form(""),
+    booking_unit: str = Form("custom"),
+    call_to_action: str = Form("inquire"),
+    features: str = Form(""),
+    is_published: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        payload = OfferingInput(
+            id=offering_id.strip(),
+            slug=slug.strip().lower(),
+            name=name.strip(),
+            offering_type=offering_type.strip().lower(),
+            space_id=space_id.strip() or None,
+            public_description=public_description.strip(),
+            price_display=price_display.strip(),
+            booking_unit=booking_unit.strip().lower(),
+            call_to_action=call_to_action.strip().lower(),
+            features=[item.strip() for item in features.split(",") if item.strip()],
+            is_published=is_published,
+        )
+    except ValidationError as exc:
+        return _building_redirect(error=exc.errors()[0].get("msg", "Invalid offering."))
+    with session_scope(request.app.state.session_factory) as session:
+        if payload.space_id and session.get(BuildingSpace, payload.space_id) is None:
+            return _building_redirect(error="Choose a saved space before linking an offering.")
+        slug_owner = session.execute(
+            select(BuildingOffering).where(BuildingOffering.slug == payload.slug)
+        ).scalar_one_or_none()
+        if slug_owner is not None and slug_owner.id != payload.id:
+            return _building_redirect(error="That public offering URL is already in use.")
+        row = session.get(BuildingOffering, payload.id)
+        before = (
+            {"name": row.name, "is_published": row.is_published}
+            if row
+            else {}
+        )
+        if row is None:
+            row = BuildingOffering(
+                id=payload.id,
+                slug=payload.slug,
+                name=payload.name,
+                offering_type=payload.offering_type,
+            )
+        row.slug = payload.slug
+        row.name = payload.name
+        row.offering_type = payload.offering_type
+        row.space_id = payload.space_id
+        row.public_description = payload.public_description
+        row.price_display = payload.price_display
+        row.booking_unit = payload.booking_unit
+        row.call_to_action = payload.call_to_action
+        row.features_json = payload.features
+        row.is_published = payload.is_published
+        row.updated_at = _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="offering",
+            entity_id=row.id,
+            action="upserted_from_control_room",
+            actor=user.get("email") or "building-operator",
+            before_json=before,
+            after_json={
+                "name": row.name,
+                "is_published": row.is_published,
+                "space_id": row.space_id,
+                "price_display": row.price_display,
+            },
+        ))
+    return _building_redirect(notice=f"{payload.name} saved.")
+
+
+@admin_router.post(
+    "/contacts",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_contact_from_control_room(
+    request: Request,
+    contact_id: str = Form(""),
+    email: str = Form(...),
+    full_name: str = Form(""),
+    phone: str = Form(""),
+    company_name: str = Form(""),
+    relationship_type: str = Form(...),
+    organization: str = Form(""),
+    source_reference: str = Form(""),
+    marketing_status: str = Form("unknown"),
+    consent_confirmed: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    try:
+        contact_payload = ContactInput(
+            email=email,
+            full_name=full_name,
+            phone=phone,
+            company_name=company_name,
+            source="control_room",
+            actor=actor,
+        )
+        relationship_payload = RelationshipInput(
+            relationship_type=relationship_type,
+            organization=organization.strip(),
+            source_reference=source_reference.strip(),
+            actor=actor,
+        )
+        PreferenceInput(
+            marketing_status=marketing_status,
+            source="operator_confirmed" if consent_confirmed else "operator",
+            actor=actor,
+        )
+    except ValidationError as exc:
+        return _building_redirect(error=exc.errors()[0].get("msg", "Invalid contact."))
+    if marketing_status == "subscribed" and not consent_confirmed:
+        return _building_redirect(
+            error="Confirm documented marketing consent before subscribing a contact."
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        normalized_id = contact_id.strip()
+        existing_email = session.execute(
+            select(BuildingContact).where(BuildingContact.email == contact_payload.email)
+        ).scalar_one_or_none()
+        if existing_email and normalized_id and existing_email.id != normalized_id:
+            return _building_redirect(error="That email already belongs to another contact.")
+        row = existing_email or (
+            session.get(BuildingContact, normalized_id) if normalized_id else None
+        )
+        before = {"email": row.email, "status": row.status} if row else {}
+        if row is None:
+            row = BuildingContact(
+                id=normalized_id or str(uuid4()),
+                email=contact_payload.email,
+            )
+        row.email = contact_payload.email
+        row.full_name = contact_payload.full_name.strip()
+        row.phone = contact_payload.phone.strip()
+        row.company_name = contact_payload.company_name.strip()
+        row.source = "control_room"
+        row.status = "active"
+        row.updated_at = _now()
+        session.add(row)
+        session.flush()
+        duplicate_relationship = session.execute(
+            select(BuildingRelationship).where(
+                BuildingRelationship.contact_id == row.id,
+                BuildingRelationship.relationship_type
+                == relationship_payload.relationship_type,
+                BuildingRelationship.organization == relationship_payload.organization,
+                BuildingRelationship.source_reference
+                == relationship_payload.source_reference,
+                BuildingRelationship.status == "active",
+            )
+        ).scalar_one_or_none()
+        if duplicate_relationship is None:
+            session.add(BuildingRelationship(
+                id=str(uuid4()),
+                contact_id=row.id,
+                relationship_type=relationship_payload.relationship_type,
+                status="active",
+                organization=relationship_payload.organization,
+                source_reference=relationship_payload.source_reference,
+            ))
+        preference = session.get(BuildingCommunicationPreference, row.id)
+        if preference is None:
+            preference = BuildingCommunicationPreference(contact_id=row.id)
+        preference.marketing_status = marketing_status
+        preference.marketing_source = (
+            "operator_confirmed" if consent_confirmed else "operator"
+        )
+        preference.marketing_changed_at = _now()
+        preference.updated_by = actor
+        preference.updated_at = _now()
+        session.add(preference)
+        session.add(BuildingAuditEvent(
+            entity_type="contact",
+            entity_id=row.id,
+            action="upserted_from_control_room",
+            actor=actor,
+            before_json=before,
+            after_json={
+                "email": row.email,
+                "relationship_type": relationship_payload.relationship_type,
+                "marketing_status": marketing_status,
+                "consent_confirmed": consent_confirmed,
+            },
+        ))
+    return _building_redirect(notice=f"{contact_payload.full_name or contact_payload.email} saved.")
+
+
+@admin_router.post(
+    "/segments",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_segment_from_control_room(
+    request: Request,
+    segment_id: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(""),
+    relationship_types: list[str] = Form(...),
+    marketing_statuses: list[str] = Form(...),
+    relationship_status: str = Form("active"),
+    is_active: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    try:
+        payload = SegmentInput(
+            id=segment_id.strip(),
+            name=name.strip(),
+            description=description.strip(),
+            relationship_types=relationship_types,
+            relationship_status=relationship_status,
+            marketing_statuses=marketing_statuses,
+            is_active=is_active,
+            actor=actor,
+        )
+    except ValidationError as exc:
+        return _building_redirect(error=exc.errors()[0].get("msg", "Invalid audience."))
+    if not payload.relationship_types:
+        return _building_redirect(error="Select at least one relationship type.")
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingSegment, payload.id)
+        if row is None:
+            row = BuildingSegment(id=payload.id, name=payload.name)
+        row.name = payload.name
+        row.description = payload.description
+        row.rules_json = {
+            "relationship_types": payload.relationship_types,
+            "relationship_status": payload.relationship_status,
+            "marketing_statuses": payload.marketing_statuses,
+        }
+        row.is_active = payload.is_active
+        row.created_by = row.created_by or actor
+        row.updated_at = _now()
+        session.add(row)
+        session.flush()
+        resolved = _resolve_segment(session, row)
+        included = sum(1 for item in resolved if item["included"])
+        excluded = sum(1 for item in resolved if not item["included"])
+        session.add(BuildingAuditEvent(
+            entity_type="segment",
+            entity_id=row.id,
+            action="upserted_from_control_room",
+            actor=actor,
+            after_json={
+                "name": row.name,
+                "rules": row.rules_json,
+                "included_count": included,
+                "excluded_count": excluded,
+            },
+        ))
+    return _building_redirect(
+        notice=f"{payload.name} saved: {included} eligible, {excluded} excluded."
+    )
+
+
+@admin_router.post(
+    "/campaigns",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_campaign_from_control_room(
+    request: Request,
+    campaign_id: str = Form(...),
+    name: str = Form(...),
+    segment_id: str = Form(...),
+    subject: str = Form(...),
+    body_text: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    try:
+        payload = CampaignInput(
+            id=campaign_id.strip(),
+            name=name.strip(),
+            segment_id=segment_id.strip(),
+            subject=subject.strip(),
+            body_text=body_text.strip(),
+            actor=actor,
+        )
+    except ValidationError as exc:
+        return _building_redirect(error=exc.errors()[0].get("msg", "Invalid campaign."))
+    with session_scope(request.app.state.session_factory) as session:
+        if session.get(BuildingSegment, payload.segment_id) is None:
+            return _building_redirect(error="Choose a saved audience.")
+        row = session.get(BuildingCampaign, payload.id)
+        if row and row.status not in {"draft", "previewed"}:
+            return _building_redirect(error="Approved or sent campaigns are immutable.")
+        if row is None:
+            row = BuildingCampaign(
+                id=payload.id,
+                name=payload.name,
+                segment_id=payload.segment_id,
+                subject=payload.subject,
+                body_text=payload.body_text,
+                created_by=actor,
+            )
+        row.name = payload.name
+        row.segment_id = payload.segment_id
+        row.subject = payload.subject
+        row.body_text = payload.body_text
+        row.status = "draft"
+        row.preview_hash = ""
+        row.previewed_at = None
+        row.test_sent_by = ""
+        row.test_sent_at = None
+        row.updated_at = _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=row.id,
+            action="draft_saved_from_control_room",
+            actor=actor,
+            after_json={
+                "name": row.name,
+                "segment_id": row.segment_id,
+                "subject": row.subject,
+            },
+        ))
+    return _building_redirect(notice=f"{payload.name} saved as a draft.")
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/preview",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def preview_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status not in {"draft", "previewed"}:
+            return _building_redirect(error="This campaign can no longer be previewed.")
+        preview = _preview_payload(session, campaign)
+        campaign.preview_hash = preview["preview_hash"]
+        campaign.previewed_at = _now()
+        campaign.status = "previewed"
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="previewed_from_control_room",
+            actor=user.get("email") or "building-operator",
+            after_json={
+                "included_count": preview["included_count"],
+                "excluded_count": preview["excluded_count"],
+                "preview_hash": preview["preview_hash"],
+            },
+        ))
+    return _building_redirect(
+        notice=(
+            f"{campaign.name} previewed: {preview['included_count']} eligible, "
+            f"{preview['excluded_count']} excluded. No email was sent."
+        )
+    )
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/test-send",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def test_send_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    test_email: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        recipient = _normalize_email(test_email)
+    except ValueError as exc:
+        return _building_redirect(error=str(exc))
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status not in {"draft", "previewed"}:
+            return _building_redirect(error="This campaign can no longer be test-sent.")
+        client = ResendClient(request.app.state.settings)
+        if not client.is_configured():
+            return _building_redirect(error="Email delivery is not configured.")
+        try:
+            client.send_message(
+                to=recipient,
+                subject=f"[TEST] {campaign.subject}",
+                text=(
+                    f"{campaign.body_text.rstrip()}\n\n"
+                    "This is a test message. No campaign recipient status was changed."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - surface provider-safe failure
+            return _building_redirect(error=f"Test delivery failed: {str(exc)[:180]}")
+        campaign.test_sent_by = user.get("email") or "building-operator"
+        campaign.test_sent_at = _now()
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="test_sent_from_control_room",
+            actor=campaign.test_sent_by,
+            after_json={"email": recipient},
+        ))
+    return _building_redirect(notice=f"Test message sent to {recipient}.")
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/approve",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def approve_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status != "previewed" or not campaign.preview_hash:
+            return _building_redirect(error="Refresh the final audience preview first.")
+        if campaign.test_sent_at is None:
+            return _building_redirect(error="Send a test message before approval.")
+        preview = _preview_payload(session, campaign)
+        if preview["preview_hash"] != campaign.preview_hash:
+            return _building_redirect(error="Audience changed; refresh the preview again.")
+        if not preview["included"]:
+            return _building_redirect(error="Campaign has no eligible recipients.")
+        session.execute(
+            delete(BuildingCampaignRecipient).where(
+                BuildingCampaignRecipient.campaign_id == campaign.id
+            )
+        )
+        for item in preview["included"]:
+            session.add(BuildingCampaignRecipient(
+                campaign_id=campaign.id,
+                contact_id=item["contact_id"],
+                email=item["email"],
+                full_name=item["full_name"],
+                inclusion_reason=item["reason"],
+            ))
+        campaign.status = "approved"
+        campaign.approved_by = actor
+        campaign.approved_at = _now()
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="approved_from_control_room",
+            actor=actor,
+            after_json={
+                "recipient_count": preview["included_count"],
+                "preview_hash": campaign.preview_hash,
+            },
+        ))
+    return _building_redirect(
+        notice=f"{campaign.name} approved for {preview['included_count']} recipients."
+    )
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/send",
+    dependencies=[Depends(_require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def send_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    secret = str(
+        getattr(request.app.state.settings, "building_campaign_token_secret", "") or ""
+    ).strip()
+    if not secret:
+        return _building_redirect(error="Campaign unsubscribe signing is not configured.")
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status != "approved":
+            return _building_redirect(error="Campaign must be approved before sending.")
+        expected_confirmation = f"SEND {campaign.id}"
+        if confirmation.strip() != expected_confirmation:
+            return _building_redirect(error=f"Type {expected_confirmation} to confirm delivery.")
+        client = ResendClient(request.app.state.settings)
+        if not client.is_configured():
+            return _building_redirect(error="Email delivery is not configured.")
+        recipients = session.execute(
+            select(BuildingCampaignRecipient)
+            .where(BuildingCampaignRecipient.campaign_id == campaign.id)
+            .order_by(BuildingCampaignRecipient.id)
+        ).scalars().all()
+        sent = 0
+        suppressed = 0
+        failed = 0
+        campaign.status = "sending"
+        for recipient in recipients:
+            if recipient.status != "approved":
+                continue
+            preference = session.get(BuildingCommunicationPreference, recipient.contact_id)
+            suppression = session.get(BuildingSuppression, recipient.email)
+            if (
+                preference is None
+                or preference.marketing_status != "subscribed"
+                or (suppression is not None and suppression.scope in {"marketing", "all"})
+            ):
+                recipient.status = "suppressed"
+                recipient.exclusion_reason = (
+                    "No current marketing permission or email is suppressed."
+                )
+                suppressed += 1
+                continue
+            token = _unsubscribe_token(secret, recipient.contact_id, recipient.email)
+            unsubscribe_url = (
+                f"{str(request.base_url).rstrip('/')}/api/public/building/unsubscribe?"
+                + urlencode({"contact_id": recipient.contact_id, "token": token})
+            )
+            try:
+                client.send_message(
+                    to=recipient.email,
+                    subject=campaign.subject,
+                    text=(
+                        f"{campaign.body_text.rstrip()}\n\n"
+                        f"Stop receiving optional Anata Building news: {unsubscribe_url}"
+                    ),
+                )
+                recipient.status = "sent"
+                recipient.provider_message_id = "resend"
+                recipient.sent_at = _now()
+                sent += 1
+            except Exception as exc:  # noqa: BLE001 - record retry evidence
+                recipient.status = "failed"
+                recipient.exclusion_reason = str(exc)[:500]
+                failed += 1
+        campaign.status = "sent_with_errors" if failed else "sent"
+        campaign.sent_at = _now()
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="sent_from_control_room",
+            actor=actor,
+            after_json={"sent": sent, "suppressed": suppressed, "failed": failed},
+        ))
+    return _building_redirect(
+        notice=(
+            f"{campaign.name}: {sent} sent, {suppressed} suppressed, {failed} failed."
+        )
+    )
+
+
 @admin_router.get("", response_class=HTMLResponse)
 def building_control_room(
     request: Request,
+    notice: str = "",
+    error: str = "",
     user: dict = Depends(require_tool("building.manage")),
 ) -> HTMLResponse:
     with session_scope(request.app.state.session_factory) as session:
@@ -1006,6 +1690,9 @@ def building_control_room(
                 }
                 for item in invoice_rows
             ],
+            csrf_token=building_csrf_token(user),
+            notice=notice[:300],
+            error=error[:300],
         )
         return HTMLResponse(html_body)
 
