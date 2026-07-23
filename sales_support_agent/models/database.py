@@ -293,6 +293,14 @@ def _ensure_building_columns(engine: Any) -> None:
                 else "DATETIME"
             ),
         },
+        "building_campaigns": {
+            "scheduled_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+            "scheduled_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+        },
     }
     with engine.begin() as connection:
         for table_name, table_additions in additions.items():

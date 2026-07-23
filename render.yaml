@@ -151,6 +151,10 @@ services:
         -H "Content-Type: application/json" \
         -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
         -d '{"dry_run":false}'
+      curl -sS -X POST "$SALES_SUPPORT_AGENT_URL/api/internal/building/crm/scheduled-campaigns/run" \
+        -H "Content-Type: application/json" \
+        -H "X-Internal-Api-Key: $SALES_AGENT_INTERNAL_API_KEY" \
+        -d '{"dry_run":false,"max_campaigns":10,"actor":"job:building-campaign-scheduler"}'
     envVars:
       - key: SALES_SUPPORT_AGENT_URL
         sync: false

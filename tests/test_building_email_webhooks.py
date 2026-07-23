@@ -153,13 +153,18 @@ class BuildingEmailWebhookTests(unittest.TestCase):
         with patch(
             "sales_support_agent.integrations.resend.requests.post",
             return_value=response,
-        ):
+        ) as post:
             provider_id = client.send_message(
                 to="tenant@example.com",
                 subject="Test",
                 text="Message",
+                idempotency_key="building-campaign/test/1",
             )
         self.assertEqual(provider_id, "email-provider-123")
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Idempotency-Key"],
+            "building-campaign/test/1",
+        )
 
     def test_01_bounce_suppresses_marketing_and_is_idempotent(self) -> None:
         body, headers = self._event("email.bounced", "evt-bounce-1")

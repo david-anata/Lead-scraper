@@ -106,6 +106,21 @@ def _mountain(value: datetime) -> datetime:
     return aware.astimezone(MOUNTAIN)
 
 
+def _utc(value: datetime) -> datetime:
+    """Normalize a database or API timestamp for safe UTC comparison."""
+
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(timezone.utc)
+
+
+def _local_mountain_datetime(value: str) -> datetime:
+    """Interpret an admin datetime-local control in the building's timezone."""
+
+    parsed = datetime.fromisoformat(value)
+    aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=MOUNTAIN)
+    return aware.astimezone(timezone.utc)
+
+
 def _require_internal_key(request: Request, provided: Optional[str]) -> None:
     configured = str(getattr(request.app.state.settings, "internal_api_key", "") or "").strip()
     if not configured:
@@ -247,6 +262,21 @@ class ApprovalInput(BaseModel):
 
 class SendInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
+
+
+class ScheduleInput(BaseModel):
+    scheduled_at: datetime
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class ScheduledRunInput(BaseModel):
+    dry_run: bool = False
+    max_campaigns: int = Field(default=10, ge=1, le=25)
+    actor: str = Field(
+        default="job:building-campaign-scheduler",
+        min_length=1,
+        max_length=255,
+    )
 
 
 class TestSendInput(BaseModel):
@@ -951,6 +981,7 @@ def _deliver_campaign_recipients(
                 to=recipient.email,
                 subject=campaign.subject,
                 text=_campaign_delivery_text(request, campaign, recipient),
+                idempotency_key=f"building-campaign/{campaign.id}/{recipient.id}",
             )
             recipient.status = "sent"
             recipient.provider_message_id = (
@@ -1454,6 +1485,183 @@ def approve_campaign(
             "ok": True,
             "status": campaign.status,
             "recipient_count": preview["included_count"],
+        }
+
+
+@internal_router.post("/campaigns/{campaign_id}/schedule")
+def schedule_campaign(
+    campaign_id: str,
+    payload: ScheduleInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Schedule an approved, frozen recipient snapshot for hourly delivery."""
+
+    _require_internal_key(request, x_internal_api_key)
+    if payload.scheduled_at.tzinfo is None or payload.scheduled_at.utcoffset() is None:
+        raise HTTPException(
+            status_code=422,
+            detail="scheduled_at must include a timezone offset.",
+        )
+    scheduled_at = _utc(payload.scheduled_at)
+    if scheduled_at <= _now():
+        raise HTTPException(status_code=422, detail="scheduled_at must be in the future.")
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found.")
+        if campaign.status != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail="Campaign must be approved before scheduling.",
+            )
+        campaign.status = "scheduled"
+        campaign.scheduled_at = scheduled_at
+        campaign.scheduled_by = payload.actor
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="scheduled",
+            actor=payload.actor,
+            after_json={"scheduled_at": scheduled_at.isoformat()},
+        ))
+        return {
+            "ok": True,
+            "status": campaign.status,
+            "scheduled_at": scheduled_at.isoformat(),
+        }
+
+
+@internal_router.post("/campaigns/{campaign_id}/unschedule")
+def unschedule_campaign(
+    campaign_id: str,
+    payload: SendInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Return a scheduled campaign to its approved state without changing its snapshot."""
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found.")
+        if campaign.status != "scheduled":
+            raise HTTPException(status_code=409, detail="Campaign is not scheduled.")
+        before = {
+            "scheduled_at": (
+                _utc(campaign.scheduled_at).isoformat()
+                if campaign.scheduled_at
+                else None
+            ),
+            "scheduled_by": campaign.scheduled_by,
+        }
+        campaign.status = "approved"
+        campaign.scheduled_at = None
+        campaign.scheduled_by = ""
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="unscheduled",
+            actor=payload.actor,
+            before_json=before,
+            after_json={"status": campaign.status},
+        ))
+        return {"ok": True, "status": campaign.status}
+
+
+@internal_router.post("/scheduled-campaigns/run")
+def run_scheduled_campaigns(
+    payload: ScheduledRunInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Deliver due campaign snapshots while rechecking current permission rules."""
+
+    _require_internal_key(request, x_internal_api_key)
+    run_at = _now()
+    with session_scope(request.app.state.session_factory) as session:
+        due = session.execute(
+            select(BuildingCampaign)
+            .where(
+                BuildingCampaign.status == "scheduled",
+                BuildingCampaign.scheduled_at.is_not(None),
+                BuildingCampaign.scheduled_at <= run_at,
+            )
+            .order_by(BuildingCampaign.scheduled_at, BuildingCampaign.id)
+            .limit(payload.max_campaigns)
+            .with_for_update(skip_locked=True)
+        ).scalars().all()
+        due_payload = [
+            {
+                "campaign_id": campaign.id,
+                "scheduled_at": _utc(campaign.scheduled_at).isoformat(),
+            }
+            for campaign in due
+            if campaign.scheduled_at is not None
+        ]
+        if payload.dry_run or not due:
+            return {
+                "ok": True,
+                "dry_run": payload.dry_run,
+                "due_count": len(due),
+                "campaigns": due_payload,
+                "sent": 0,
+                "suppressed": 0,
+                "failed": 0,
+            }
+
+        if any(campaign.communication_class == "marketing" for campaign in due):
+            _campaign_secret(request)
+        client = ResendClient(request.app.state.settings)
+        if not client.is_configured():
+            raise HTTPException(status_code=503, detail="Email delivery is not configured.")
+
+        totals = {"sent": 0, "suppressed": 0, "failed": 0}
+        completed: list[dict[str, Any]] = []
+        for campaign in due:
+            campaign.status = "sending"
+            counts = _deliver_campaign_recipients(
+                session,
+                request,
+                campaign,
+                client,
+                eligible_statuses={"approved"},
+            )
+            campaign.status = "sent_with_errors" if counts["failed"] else "sent"
+            campaign.sent_at = _now()
+            campaign.updated_at = _now()
+            for key in totals:
+                totals[key] += counts[key]
+            completed.append(
+                {
+                    "campaign_id": campaign.id,
+                    "status": campaign.status,
+                    **counts,
+                }
+            )
+            session.add(BuildingAuditEvent(
+                entity_type="campaign",
+                entity_id=campaign.id,
+                action="scheduled_send_completed",
+                actor=payload.actor,
+                after_json={
+                    "scheduled_at": (
+                        _utc(campaign.scheduled_at).isoformat()
+                        if campaign.scheduled_at
+                        else None
+                    ),
+                    **counts,
+                },
+            ))
+        return {
+            "ok": totals["failed"] == 0,
+            "dry_run": False,
+            "due_count": len(due),
+            "campaigns": completed,
+            **totals,
         }
 
 
@@ -2482,6 +2690,89 @@ def approve_campaign_from_control_room(
 
 
 @admin_router.post(
+    "/campaigns/{campaign_id}/schedule",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def schedule_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    scheduled_at: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    try:
+        scheduled_utc = _local_mountain_datetime(scheduled_at)
+    except ValueError:
+        return _building_redirect(error="Choose a valid Mountain Time delivery date.")
+    if scheduled_utc <= _now():
+        return _building_redirect(error="Choose a future delivery time.")
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status != "approved":
+            return _building_redirect(
+                error="Campaign must be approved before scheduling."
+            )
+        campaign.status = "scheduled"
+        campaign.scheduled_at = scheduled_utc
+        campaign.scheduled_by = actor
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="scheduled_from_control_room",
+            actor=actor,
+            after_json={"scheduled_at": scheduled_utc.isoformat()},
+        ))
+        campaign_name = campaign.name
+    local_label = _mountain(scheduled_utc).strftime("%b %d, %Y at %I:%M %p MT")
+    return _building_redirect(notice=f"{campaign_name} scheduled for {local_label}.")
+
+
+@admin_router.post(
+    "/campaigns/{campaign_id}/unschedule",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def unschedule_campaign_from_control_room(
+    campaign_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    with session_scope(request.app.state.session_factory) as session:
+        campaign = session.get(BuildingCampaign, campaign_id)
+        if campaign is None:
+            return _building_redirect(error="Campaign not found.")
+        if campaign.status != "scheduled":
+            return _building_redirect(error="Campaign is not scheduled.")
+        before = {
+            "scheduled_at": (
+                _utc(campaign.scheduled_at).isoformat()
+                if campaign.scheduled_at
+                else None
+            ),
+            "scheduled_by": campaign.scheduled_by,
+        }
+        campaign.status = "approved"
+        campaign.scheduled_at = None
+        campaign.scheduled_by = ""
+        campaign.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="campaign",
+            entity_id=campaign.id,
+            action="unscheduled_from_control_room",
+            actor=actor,
+            before_json=before,
+            after_json={"status": campaign.status},
+        ))
+        campaign_name = campaign.name
+    return _building_redirect(notice=f"{campaign_name} schedule cancelled.")
+
+
+@admin_router.post(
     "/campaigns/{campaign_id}/send",
     dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
@@ -2855,6 +3146,14 @@ def building_control_room(
                 "recipient_count": recipient_counts.get(item.id, 0),
                 "failed_recipient_count": failed_recipient_counts.get(item.id, 0),
                 "status": item.status,
+                "scheduled_at": (
+                    _mountain(item.scheduled_at).strftime(
+                        "%b %d, %Y · %I:%M %p MT"
+                    )
+                    if item.scheduled_at
+                    else ""
+                ),
+                "scheduled_by": item.scheduled_by,
             }
             for item in campaign_rows
         ]

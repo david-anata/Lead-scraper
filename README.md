@@ -192,8 +192,11 @@ Confirmed bookings also maintain CRM relationships automatically:
   or contract details
 - future-office submissions create an explainable `waitlist` relationship
   rather than mixing those contacts into ordinary office prospects
+- approved campaign snapshots can be sent immediately or scheduled in Mountain
+  Time; the hourly operator job delivers due campaigns and rechecks permission
+  and suppression at delivery time
 - failed campaign deliveries can be retried without resending successful
-  recipients; eligibility and suppression are rechecked at retry time
+  recipients; Resend idempotency keys reduce duplicate sends during retries
 
 ## Daily Automation
 

@@ -215,8 +215,8 @@ Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API
   and community member;
 - marketing permission and suppression state;
 - explainable audience segments;
-- campaign draft, preview, test-send, approval, recipient snapshot, delivery,
-  and unsubscribe state.
+- campaign draft, preview, test-send, approval, recipient snapshot, immediate or
+  scheduled hourly delivery, retry, and unsubscribe state.
 - workspace and event workflows with expiring holds, conflict checks, agreement
   evidence, deposit evidence, confirmation gates, and inventory release.
 - native billing accounts and approved schedules, preview-first Stripe invoice
@@ -226,7 +226,11 @@ Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API
 Authorized building operators can create or update reviewed spaces and
 offerings, add deduplicated CRM relationships, record explicit marketing
 permission, define explainable audiences, and move campaigns through draft,
-preview, test-send, approval, and confirmed delivery without editing code.
+preview, test-send, approval, and immediate or scheduled delivery without
+editing code. Scheduled times are entered in `America/Denver`; delivery runs on
+the next hourly operator cycle. Permission and suppression are rechecked at
+delivery time, and stable Resend idempotency keys protect recipient retries from
+duplicate sends within the provider's idempotency window.
 They can also create reservations, move them through the permitted booking
 states, attach agreement and deposit evidence, create billing accounts and
 draft schedules, approve schedules, and intentionally create a Stripe invoice

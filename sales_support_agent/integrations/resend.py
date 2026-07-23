@@ -30,7 +30,15 @@ class ResendClient:
     def is_configured(self) -> bool:
         return bool(self.api_key and self.from_address)
 
-    def send_message(self, *, to, subject: str, text: str, reply_to: str = "") -> str:
+    def send_message(
+        self,
+        *,
+        to,
+        subject: str,
+        text: str,
+        reply_to: str = "",
+        idempotency_key: str = "",
+    ) -> str:
         """Send a plain-text email. Raises on transport/HTTP error so the caller
         (notify.py) can log and fall through to the next sender."""
         recipients = [to] if isinstance(to, str) else list(to)
@@ -43,13 +51,17 @@ class ResendClient:
         if reply_to:
             payload["reply_to"] = reply_to
 
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+
         response = requests.post(
             _RESEND_ENDPOINT,
             json=payload,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             timeout=15,
         )
         if response.status_code >= 300:

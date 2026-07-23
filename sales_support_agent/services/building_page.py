@@ -264,10 +264,29 @@ def render_building_page(
             )
         if status == "approved":
             return (
+                '<div class="action-stack">'
+                f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/schedule">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<label class="sub" for="campaign-schedule-'
+                f'{campaign_id}">Mountain Time · sends on the next hourly run</label>'
+                f'<input id="campaign-schedule-{campaign_id}" aria-label="Scheduled delivery time in Mountain Time" '
+                'name="scheduled_at" type="datetime-local" required>'
+                '<button class="secondary secondary--small" type="submit">Schedule campaign</button></form>'
                 f'<form class="inline-send" method="post" action="/admin/building/campaigns/{campaign_id}/send">'
                 f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
                 f'<input aria-label="Send confirmation" name="confirmation" required placeholder="SEND {campaign_id}">'
-                '<button class="primary secondary--small" type="submit">Send campaign</button></form>'
+                '<button class="primary secondary--small" type="submit">Send now</button></form>'
+                '</div>'
+            )
+        if status == "scheduled":
+            return (
+                '<div class="action-stack">'
+                f'<span class="sub">Scheduled {_esc(item.get("scheduled_at") or "for the next hourly run")} '
+                f'by {_esc(item.get("scheduled_by") or "an operator")}</span>'
+                f'<form method="post" action="/admin/building/campaigns/{campaign_id}/unschedule">'
+                f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+                '<button class="secondary secondary--small" type="submit">Cancel schedule</button></form>'
+                '</div>'
             )
         if status == "sent_with_errors":
             return (
@@ -284,7 +303,7 @@ def render_building_page(
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("subject"))}</span><span class="sub">{_esc(str(item.get("communication_class") or "marketing").replace("_", " ").title())} · from {_esc(item.get("sender_identity") or "configured sender")}</span></td>
           <td>{_esc(item.get("segment_name") or "—")}</td>
           <td>{_esc(item.get("recipient_count", 0))}{f'<span class="sub">{_esc(item.get("failed_recipient_count", 0))} failed</span>' if item.get("failed_recipient_count") else ''}</td>
-          <td>{_badge(str(item.get("status") or "draft"))}</td>
+          <td>{_badge(str(item.get("status") or "draft"))}{f'<span class="sub">{_esc(item.get("scheduled_at"))}</span>' if item.get("scheduled_at") else ''}</td>
           <td>{campaign_actions(item)}</td>
         </tr>
         """

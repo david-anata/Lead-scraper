@@ -399,6 +399,11 @@ Rules:
 - Audience membership is explainable: an operator can see why a person is in a
   segment.
 - A campaign stores the exact recipient snapshot and template version.
+- An approved snapshot may send immediately or be scheduled in the building's
+  Mountain Time; the due-send job records the scheduler and planned time.
+- Scheduled delivery rechecks current consent, relationship eligibility, and
+  suppression immediately before each message and uses a stable provider
+  idempotency key per recipient.
 - Contacts with missing or ambiguous permission are excluded from promotional
   campaigns by default.
 - Tenant employee lists must have an owner and periodic review so former
@@ -767,8 +772,10 @@ an integration shutdown.
 - Bounce, complaint, and unsubscribe events update suppression state
   idempotently.
 - A campaign records its recipient snapshot, content version, approver, sender,
-  send time, and delivery outcome.
+  scheduled time when applicable, send time, and delivery outcome.
 - Test send and final audience preview are required before a bulk send.
+- Operators can cancel a scheduled send before the hourly delivery job claims
+  it; a cancelled schedule returns to approved without changing its snapshot.
 
 ### Permissions and audit
 
