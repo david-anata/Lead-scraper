@@ -186,6 +186,8 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `PUT /api/internal/building/billing/schedules/{schedule_id}`
 - `POST /api/internal/building/billing/schedules/{schedule_id}/approve`
 - `POST /api/internal/building/billing/invoices`
+- `GET /api/internal/building/billing/qbo-export`
+- `PUT /api/internal/building/billing/invoices/{invoice_id}/accounting-link`
 - `POST /api/integrations/stripe/webhook`
 
 Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API_KEY` is configured.
@@ -228,7 +230,9 @@ Invoice creation defaults to a no-write preview and requires an explicit
 `STRIPE_WEBHOOK_SECRET`, reject stale or invalid signatures, and deduplicate
 provider events. A Stripe-paid invoice is provider-confirmed evidence; it is not
 described as bank-posted cash. Each invoice remains `pending_qbo` until the
-accounting bridge records the QBO result.
+accounting bridge records the reviewed QBO result. The QBO export endpoint
+provides controlled invoice facts, and the accounting-link endpoint requires a
+QBO invoice reference before an item can be called synced or reconciled.
 
 ## Example Requests
 

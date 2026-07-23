@@ -236,6 +236,42 @@ class BuildingBillingTests(unittest.TestCase):
                 now=1000,
             )
 
+    def test_04_qbo_export_and_reviewed_accounting_link(self) -> None:
+        export = self.client.get(
+            "/api/internal/building/billing/qbo-export",
+            headers=self.headers,
+        )
+        self.assertEqual(export.status_code, 200, export.text)
+        self.assertEqual(export.json()["destination"], "quickbooks")
+        self.assertEqual(len(export.json()["invoices"]), 1)
+        invoice_id = export.json()["invoices"][0]["id"]
+        missing_reference = self.client.put(
+            f"/api/internal/building/billing/invoices/{invoice_id}/accounting-link",
+            headers=self.headers,
+            json={
+                "accounting_status": "reconciled",
+                "actor": "bookkeeper@example.com",
+            },
+        )
+        self.assertEqual(missing_reference.status_code, 422)
+        linked = self.client.put(
+            f"/api/internal/building/billing/invoices/{invoice_id}/accounting-link",
+            headers=self.headers,
+            json={
+                "accounting_status": "reconciled",
+                "qbo_invoice_id": "9137",
+                "note": "Matched during parallel close.",
+                "actor": "bookkeeper@example.com",
+            },
+        )
+        self.assertEqual(linked.status_code, 200, linked.text)
+        self.assertEqual(linked.json()["invoice"]["qbo_invoice_id"], "9137")
+        after = self.client.get(
+            "/api/internal/building/billing/qbo-export",
+            headers=self.headers,
+        )
+        self.assertEqual(after.json()["invoices"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

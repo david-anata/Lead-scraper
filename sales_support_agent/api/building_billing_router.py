@@ -115,6 +115,13 @@ class InvoiceRunInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
 
 
+class AccountingLinkInput(BaseModel):
+    qbo_invoice_id: str = Field(default="", max_length=64)
+    accounting_status: Literal["pending_qbo", "synced_qbo", "reconciled", "failed"]
+    note: str = Field(default="", max_length=1000)
+    actor: str = Field(min_length=1, max_length=255)
+
+
 def _invoice_payload(row: BuildingInvoice) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -407,6 +414,93 @@ def list_invoices(
             query = query.where(BuildingInvoice.status == status)
         rows = session.execute(query).scalars().all()
         return {"invoices": [_invoice_payload(row) for row in rows]}
+
+
+@internal_router.get("/qbo-export")
+def qbo_export_queue(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Return controlled invoice facts for the existing QBO accounting process."""
+
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        rows = session.execute(
+            select(BuildingInvoice)
+            .where(BuildingInvoice.accounting_status.in_(["pending_qbo", "failed"]))
+            .order_by(BuildingInvoice.created_at)
+        ).scalars().all()
+        account_ids = {row.billing_account_id for row in rows}
+        accounts = (
+            {
+                row.id: row
+                for row in session.execute(
+                    select(BuildingBillingAccount).where(
+                        BuildingBillingAccount.id.in_(account_ids)
+                    )
+                ).scalars().all()
+            }
+            if account_ids
+            else {}
+        )
+        return {
+            "source": "agent_building",
+            "destination": "quickbooks",
+            "invoices": [
+                {
+                    **_invoice_payload(row),
+                    "account_name": accounts[row.billing_account_id].account_name,
+                    "billing_email": accounts[row.billing_account_id].billing_email,
+                    "qbo_customer_id": accounts[row.billing_account_id].qbo_customer_id,
+                    "description": row.description,
+                    "evidence_note": (
+                        "Provider invoice state; accounting posting must be confirmed in QBO."
+                    ),
+                }
+                for row in rows
+            ],
+        }
+
+
+@internal_router.put("/invoices/{invoice_id}/accounting-link")
+def record_accounting_link(
+    invoice_id: str,
+    payload: AccountingLinkInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Record the reviewed QBO result without pretending Agent is the ledger."""
+
+    _require_internal_key(request, x_internal_api_key)
+    if payload.accounting_status in {"synced_qbo", "reconciled"} and not payload.qbo_invoice_id:
+        raise HTTPException(
+            status_code=422,
+            detail="A QBO invoice ID is required for synced or reconciled status.",
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingInvoice, invoice_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Invoice not found.")
+        before = {
+            "accounting_status": row.accounting_status,
+            "qbo_invoice_id": row.qbo_invoice_id,
+        }
+        row.accounting_status = payload.accounting_status
+        row.qbo_invoice_id = payload.qbo_invoice_id
+        row.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="invoice",
+            entity_id=row.id,
+            action="accounting_link_updated",
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                "accounting_status": row.accounting_status,
+                "qbo_invoice_id": row.qbo_invoice_id,
+                "note": payload.note,
+            },
+        ))
+        return {"ok": True, "invoice": _invoice_payload(row)}
 
 
 @webhook_router.post("/webhook")
