@@ -56,6 +56,16 @@ async def _same_origin_write(request: Request) -> None:
     origin = request.headers.get("origin")
     if origin and urlparse(origin).netloc.lower() != request.url.netloc.lower():
         raise HTTPException(status_code=403, detail="HR form origin does not match.")
+    # Browsers include Origin/Sec-Fetch headers. Non-browser API/test clients
+    # remain compatible, while real browser writes require a session-bound token.
+    if origin or request.headers.get("sec-fetch-mode"):
+        from sales_support_agent.services.auth_deps import get_current_user
+        from sales_support_agent.services.hr.security import valid_csrf_token
+        form = await request.form()
+        if not valid_csrf_token(
+            get_current_user(request), str(form.get("_csrf_token") or "")
+        ):
+            raise HTTPException(status_code=403, detail="HR form security token is invalid.")
 
 
 router = APIRouter(prefix="/admin/hr", dependencies=[Depends(_same_origin_write)])

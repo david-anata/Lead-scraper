@@ -12,6 +12,7 @@ from sales_support_agent.services.admin_nav import (
     render_agent_nav_styles,
 )
 from sales_support_agent.services.hr.store import HR_ROLES, EMPLOYEE_TYPES
+from sales_support_agent.services.hr.security import csrf_token
 
 
 def _esc(v) -> str:
@@ -92,6 +93,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
     is_super = bool((user or {}).get("is_superadmin"))
     nav = render_agent_nav("hr", hr_section=active, permissions=perms, is_superadmin=is_super, user=user)
     styles = render_agent_nav_styles()
+    form_token = csrf_token(user)
     mobile_items = (
         ("dashboard", "Home", "/admin/hr"),
         ("time", "Time", "/admin/hr/time"),
@@ -108,6 +110,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
     return f"""<!doctype html>
 <html lang="en"><head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="hr-csrf-token" content="{_esc(form_token)}">
   <script>document.documentElement.classList.add('hr-js');</script>
   <title>agent | HR — {_esc(title)}</title>
   {render_agent_favicon_links()}
@@ -119,6 +122,16 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   <main class="hr-main">{body}</main>
   <nav class="hr-mobile-nav" aria-label="Employee HR shortcuts">{mobile_nav}</nav>
   <script>
+    var csrfMeta = document.querySelector('meta[name="hr-csrf-token"]');
+    document.querySelectorAll('form[method="post"]').forEach(function(form) {{
+      if (!form.querySelector('input[name="_csrf_token"]') && csrfMeta) {{
+        var csrfInput = document.createElement('input');
+        csrfInput.type = 'hidden';
+        csrfInput.name = '_csrf_token';
+        csrfInput.value = csrfMeta.content;
+        form.appendChild(csrfInput);
+      }}
+    }});
     document.querySelectorAll('.hr-tbl').forEach(function(table) {{
       var headers = Array.from(table.querySelectorAll('thead th')).map(function(th) {{
         return th.textContent.trim();

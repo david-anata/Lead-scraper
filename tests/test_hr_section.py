@@ -526,6 +526,34 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn('href="/admin/hr/pay-statements"', page.text)
         self.assertIn("cell.setAttribute('data-label'", page.text)
         self.assertIn(".hr-js .hr-tbl td::before", page.text)
+        self.assertIn('name="hr-csrf-token"', page.text)
+        self.assertIn("csrfInput.name = '_csrf_token'", page.text)
+
+    def test_browser_hr_writes_require_session_bound_csrf_token(self):
+        import re
+
+        self.client.cookies.set(*self.sa)
+        try:
+            page = self.client.get("/admin/hr/policies")
+            token = re.search(
+                r'name="hr-csrf-token" content="([a-f0-9]+)"', page.text
+            ).group(1)
+            missing = self.client.post(
+                "/admin/hr/policies/acknowledge",
+                data={"attested": "true"},
+                headers={"Origin": "http://testserver"},
+                follow_redirects=False,
+            )
+            self.assertEqual(missing.status_code, 403)
+            accepted = self.client.post(
+                "/admin/hr/policies/acknowledge",
+                data={"attested": "true", "_csrf_token": token},
+                headers={"Origin": "http://testserver"},
+                follow_redirects=False,
+            )
+            self.assertEqual(accepted.status_code, 303)
+        finally:
+            self.client.cookies.clear()
 
     def test_granular_people_permission_does_not_imply_compensation_access(self):
         import uuid
