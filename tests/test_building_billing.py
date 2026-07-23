@@ -8,7 +8,7 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 os.environ.setdefault(
@@ -27,9 +27,11 @@ try:
     from sales_support_agent.models.database import create_session_factory, init_database
     from sales_support_agent.models.entities import (
         BuildingBillingSchedule,
+        BuildingCollectionCase,
         BuildingInvoice,
         BuildingPayment,
         BuildingStripeEvent,
+        BuildingSuppression,
     )
 
     DEPS = True
@@ -307,6 +309,118 @@ class BuildingBillingTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 409)
             create_invoice.assert_not_called()
+
+    def test_06_overdue_collection_queue_and_reminder_are_audited(self) -> None:
+        with self.factory() as session:
+            session.add(BuildingInvoice(
+                id="collection-invoice",
+                billing_account_id="acme",
+                idempotency_key="collection-invoice-key",
+                provider="stripe",
+                provider_invoice_id="in_collection",
+                description="Past-due office membership",
+                status="open",
+                amount_due_cents=125000,
+                amount_paid_cents=25000,
+                currency="usd",
+                due_at=datetime.now(timezone.utc) - timedelta(days=5),
+                hosted_invoice_url="https://invoice.example/collection",
+                created_by="test",
+            ))
+            session.commit()
+        preview = self.client.post(
+            "/api/internal/building/billing/collections/refresh",
+            headers=self.headers,
+            json={
+                "execute": False,
+                "default_owner": "finance@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["would_create_count"], 1)
+        executed = self.client.post(
+            "/api/internal/building/billing/collections/refresh",
+            headers=self.headers,
+            json={
+                "execute": True,
+                "default_owner": "finance@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(executed.status_code, 200, executed.text)
+        self.assertEqual(executed.json()["created_count"], 1)
+        queue = self.client.get(
+            "/api/internal/building/billing/collections",
+            headers=self.headers,
+        )
+        self.assertEqual(queue.status_code, 200, queue.text)
+        case = next(
+            item
+            for item in queue.json()["collections"]
+            if item["invoice_id"] == "collection-invoice"
+        )
+        self.assertEqual(case["outstanding_cents"], 100000)
+        self.assertGreaterEqual(case["days_overdue"], 5)
+        wrong = self.client.post(
+            f"/api/internal/building/billing/collections/{case['id']}/remind",
+            headers=self.headers,
+            json={"confirmation": "send", "actor": "operator@example.com"},
+        )
+        self.assertEqual(wrong.status_code, 409)
+        with patch(
+            "sales_support_agent.api.building_billing_router.ResendClient"
+        ) as resend:
+            resend.return_value.is_configured.return_value = True
+            resend.return_value.send_message.return_value = "email-collection-1"
+            reminded = self.client.post(
+                f"/api/internal/building/billing/collections/{case['id']}/remind",
+                headers=self.headers,
+                json={
+                    "confirmation": f"REMIND {case['id']}",
+                    "next_action_at": (
+                        datetime.now(timezone.utc) + timedelta(days=3)
+                    ).isoformat(),
+                    "actor": "operator@example.com",
+                },
+            )
+        self.assertEqual(reminded.status_code, 200, reminded.text)
+        self.assertEqual(reminded.json()["collection"]["reminder_count"], 1)
+        self.assertEqual(reminded.json()["collection"]["status"], "contacted")
+        resend.return_value.send_message.assert_called_once()
+        with self.factory() as session:
+            session.add(BuildingSuppression(
+                email="billing@acme.example",
+                scope="all",
+                reason="privacy_request",
+            ))
+            session.commit()
+        suppressed = self.client.post(
+            f"/api/internal/building/billing/collections/{case['id']}/remind",
+            headers=self.headers,
+            json={
+                "confirmation": f"REMIND {case['id']}",
+                "next_action_at": (
+                    datetime.now(timezone.utc) + timedelta(days=3)
+                ).isoformat(),
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(suppressed.status_code, 409, suppressed.text)
+        closed = self.client.put(
+            f"/api/internal/building/billing/collections/{case['id']}",
+            headers=self.headers,
+            json={
+                "status": "resolved",
+                "resolution": "Payment received outside Stripe and reconciled.",
+                "actor": "finance@example.com",
+            },
+        )
+        self.assertEqual(closed.status_code, 200, closed.text)
+        with self.factory() as session:
+            saved = session.get(BuildingCollectionCase, case["id"])
+            self.assertEqual(saved.status, "resolved")
+            self.assertEqual(saved.reminder_count, 1)
 
 
 if __name__ == "__main__":

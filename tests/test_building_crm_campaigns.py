@@ -446,6 +446,8 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         self.assertIn("No building contacts yet.", body)
         self.assertIn("No campaigns yet.", body)
         self.assertIn("No native invoices yet.", body)
+        self.assertIn("Collection work", body)
+        self.assertIn("No collection cases.", body)
 
     def test_08_operator_can_save_reviewed_space_and_offering_from_control_room(self) -> None:
         settings = app.state.agent_settings

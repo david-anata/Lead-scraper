@@ -134,6 +134,7 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_billing_accounts",
         "building_billing_schedules",
         "building_invoices",
+        "building_collection_cases",
         "building_payments",
         "building_stripe_events",
     }

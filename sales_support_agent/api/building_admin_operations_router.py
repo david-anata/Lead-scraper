@@ -17,10 +17,16 @@ from pydantic import ValidationError
 from sales_support_agent.api.building_billing_router import (
     BillingAccountInput,
     BillingScheduleInput,
+    CollectionRefreshInput,
+    CollectionReminderInput,
+    CollectionTransitionInput,
     InvoiceRunInput,
     ScheduleApprovalInput,
     approve_billing_schedule,
     create_invoice_from_schedule,
+    refresh_collection_cases,
+    send_collection_reminder,
+    transition_collection_case,
     upsert_billing_account,
     upsert_billing_schedule,
 )
@@ -576,6 +582,96 @@ def create_invoice_from_control_room(
     if result.get("duplicate"):
         return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
     return _redirect(notice="Stripe invoice created; QBO handoff is pending.")
+
+
+@router.post("/billing/collections/refresh", dependencies=FORM_DEPS)
+def refresh_collections_from_control_room(
+    request: Request,
+    default_owner: str = Form(""),
+    user: dict = Depends(require_all_tools("building.manage", "finance")),
+) -> RedirectResponse:
+    try:
+        result = refresh_collection_cases(
+            CollectionRefreshInput(
+                execute=True,
+                default_owner=default_owner.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+    except HTTPException as exc:
+        return _redirect(error=str(exc.detail))
+    return _redirect(
+        notice=(
+            f"Collection aging refreshed: {result.get('created_count', 0)} new "
+            f"case(s), {result.get('existing_case_count', 0)} already tracked."
+        )
+    )
+
+
+@router.post("/billing/collections/{case_id}/transition", dependencies=FORM_DEPS)
+def transition_collection_from_control_room(
+    case_id: str,
+    request: Request,
+    status: str = Form(...),
+    assigned_owner: str = Form(""),
+    next_action_at: str = Form(""),
+    notes: str = Form(""),
+    resolution: str = Form(""),
+    user: dict = Depends(require_all_tools("building.manage", "finance")),
+) -> RedirectResponse:
+    def action() -> None:
+        transition_collection_case(
+            case_id,
+            CollectionTransitionInput(
+                status=status,
+                assigned_owner=assigned_owner.strip(),
+                next_action_at=(
+                    _local_datetime(next_action_at)
+                    if next_action_at.strip()
+                    else None
+                ),
+                notes=notes.strip(),
+                resolution=resolution.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action, f"Collection case moved to {status.replace('_', ' ')}."
+    )
+
+
+@router.post("/billing/collections/{case_id}/remind", dependencies=FORM_DEPS)
+def remind_collection_from_control_room(
+    case_id: str,
+    request: Request,
+    confirmation: str = Form(...),
+    next_action_at: str = Form(""),
+    user: dict = Depends(
+        require_recent_tool("building.manage", "finance", max_age_minutes=30)
+    ),
+) -> RedirectResponse:
+    def action() -> None:
+        send_collection_reminder(
+            case_id,
+            CollectionReminderInput(
+                confirmation=confirmation.strip(),
+                next_action_at=(
+                    _local_datetime(next_action_at)
+                    if next_action_at.strip()
+                    else None
+                ),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(action, "Invoice reminder sent and recorded.")
 
 
 @router.post("/calendar/sync", dependencies=FORM_DEPS)

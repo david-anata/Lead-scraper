@@ -1979,6 +1979,38 @@ class BuildingInvoice(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingCollectionCase(Base):
+    """Audited follow-up state for one outstanding Building invoice."""
+
+    __tablename__ = "building_collection_cases"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    invoice_id: Mapped[str] = mapped_column(
+        ForeignKey("building_invoices.id"), unique=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="")
+    next_action_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    notes: Mapped[str] = mapped_column(Text, default="")
+    reminder_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_reminder_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_reminder_provider_id: Mapped[str] = mapped_column(
+        String(255), default=""
+    )
+    resolution: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class BuildingPayment(Base):
     __tablename__ = "building_payments"
 

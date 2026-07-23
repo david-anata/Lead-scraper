@@ -40,6 +40,7 @@ from sales_support_agent.models.entities import (
     BuildingCampaign,
     BuildingCampaignRecipient,
     BuildingCalendarProjection,
+    BuildingCollectionCase,
     BuildingCommunicationPreference,
     BuildingContact,
     BuildingContactMerge,
@@ -2605,10 +2606,23 @@ def building_control_room(
             .order_by(BuildingInvoice.created_at.desc())
             .limit(100)
         ).scalars().all()
+        collection_case_rows = session.execute(
+            select(BuildingCollectionCase)
+            .order_by(
+                BuildingCollectionCase.status,
+                BuildingCollectionCase.next_action_at,
+                BuildingCollectionCase.created_at,
+            )
+            .limit(200)
+        ).scalars().all()
         billing_account_rows = session.execute(
             select(BuildingBillingAccount)
             .order_by(BuildingBillingAccount.account_name)
         ).scalars().all()
+        billing_accounts_by_id = {
+            item.id: item for item in billing_account_rows
+        }
+        invoices_by_id = {item.id: item for item in invoice_rows}
         billing_schedule_rows = session.execute(
             select(BuildingBillingSchedule)
             .order_by(BuildingBillingSchedule.created_at.desc())
@@ -2912,6 +2926,72 @@ def building_control_room(
                     "hosted_invoice_url": item.hosted_invoice_url,
                 }
                 for item in invoice_rows
+            ],
+            collections=[
+                {
+                    "id": item.id,
+                    "invoice_id": item.invoice_id,
+                    "status": item.status,
+                    "assigned_owner": item.assigned_owner,
+                    "next_action_at": (
+                        item.next_action_at.strftime("%b %d, %Y · %I:%M %p")
+                        if item.next_action_at
+                        else ""
+                    ),
+                    "notes": item.notes,
+                    "reminder_count": item.reminder_count,
+                    "last_reminder_at": (
+                        item.last_reminder_at.strftime("%b %d, %Y · %I:%M %p")
+                        if item.last_reminder_at
+                        else ""
+                    ),
+                    "resolution": item.resolution,
+                    "account_name": (
+                        billing_accounts_by_id[
+                            invoices_by_id[item.invoice_id].billing_account_id
+                        ].account_name
+                        if item.invoice_id in invoices_by_id
+                        and invoices_by_id[item.invoice_id].billing_account_id
+                        in billing_accounts_by_id
+                        else "Unknown account"
+                    ),
+                    "billing_email": (
+                        billing_accounts_by_id[
+                            invoices_by_id[item.invoice_id].billing_account_id
+                        ].billing_email
+                        if item.invoice_id in invoices_by_id
+                        and invoices_by_id[item.invoice_id].billing_account_id
+                        in billing_accounts_by_id
+                        else ""
+                    ),
+                    "currency": (
+                        invoices_by_id[item.invoice_id].currency
+                        if item.invoice_id in invoices_by_id
+                        else "usd"
+                    ),
+                    "outstanding_cents": (
+                        max(
+                            0,
+                            invoices_by_id[item.invoice_id].amount_due_cents
+                            - invoices_by_id[item.invoice_id].amount_paid_cents,
+                        )
+                        if item.invoice_id in invoices_by_id
+                        else 0
+                    ),
+                    "due_at": (
+                        invoices_by_id[item.invoice_id].due_at.strftime("%b %d, %Y")
+                        if item.invoice_id in invoices_by_id
+                        and invoices_by_id[item.invoice_id].due_at
+                        else ""
+                    ),
+                    "hosted_invoice_url": (
+                        invoices_by_id[item.invoice_id].hosted_invoice_url
+                        if item.invoice_id in invoices_by_id
+                        else ""
+                    ),
+                }
+                for item in collection_case_rows
+                if can_finance
             ],
             adjustments=[
                 {

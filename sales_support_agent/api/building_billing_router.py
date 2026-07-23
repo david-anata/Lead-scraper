@@ -16,17 +16,20 @@ from sales_support_agent.integrations.stripe_billing import (
     StripeBillingClient,
     StripeBillingError,
 )
+from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
     BuildingBillingAccount,
     BuildingBillingSchedule,
+    BuildingCollectionCase,
     BuildingContact,
     BuildingDepositEvidence,
     BuildingInvoice,
     BuildingPayment,
     BuildingReservation,
     BuildingStripeEvent,
+    BuildingSuppression,
 )
 
 
@@ -36,6 +39,15 @@ webhook_router = APIRouter(prefix="/api/integrations/stripe", tags=["stripe-webh
 SCHEDULE_TYPES = {"one_time", "monthly", "deposit", "final_balance"}
 COLLECTION_METHODS = {"send_invoice", "charge_automatically"}
 SCHEDULE_STATUSES = {"draft", "approved", "paused", "completed", "cancelled"}
+COLLECTION_STATUSES = {
+    "open",
+    "contacted",
+    "promised",
+    "disputed",
+    "resolved",
+    "waived",
+}
+COLLECTION_TERMINAL_STATUSES = {"resolved", "waived"}
 
 
 def _now() -> datetime:
@@ -122,6 +134,27 @@ class AccountingLinkInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
 
 
+class CollectionRefreshInput(BaseModel):
+    execute: bool = False
+    default_owner: str = Field(default="", max_length=255)
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class CollectionTransitionInput(BaseModel):
+    status: Literal["open", "contacted", "promised", "disputed", "resolved", "waived"]
+    assigned_owner: str = Field(default="", max_length=255)
+    next_action_at: datetime | None = None
+    notes: str = Field(default="", max_length=4000)
+    resolution: str = Field(default="", max_length=4000)
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class CollectionReminderInput(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=255)
+    next_action_at: datetime | None = None
+    actor: str = Field(min_length=1, max_length=255)
+
+
 def _invoice_payload(row: BuildingInvoice) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -139,6 +172,68 @@ def _invoice_payload(row: BuildingInvoice) -> dict[str, Any]:
         "hosted_invoice_url": row.hosted_invoice_url,
         "qbo_invoice_id": row.qbo_invoice_id,
     }
+
+
+def _collection_payload(
+    case: BuildingCollectionCase,
+    invoice: BuildingInvoice,
+    account: BuildingBillingAccount,
+) -> dict[str, Any]:
+    now = _now()
+    due_at = invoice.due_at
+    comparable_due = (
+        due_at.replace(tzinfo=timezone.utc)
+        if due_at is not None and due_at.tzinfo is None
+        else due_at
+    )
+    days_overdue = (
+        max(0, (now.date() - comparable_due.date()).days)
+        if comparable_due
+        else 0
+    )
+    return {
+        "id": case.id,
+        "invoice_id": invoice.id,
+        "billing_account_id": account.id,
+        "account_name": account.account_name,
+        "billing_email": account.billing_email,
+        "status": case.status,
+        "assigned_owner": case.assigned_owner,
+        "next_action_at": (
+            case.next_action_at.isoformat() if case.next_action_at else None
+        ),
+        "notes": case.notes,
+        "reminder_count": case.reminder_count,
+        "last_reminder_at": (
+            case.last_reminder_at.isoformat() if case.last_reminder_at else None
+        ),
+        "resolution": case.resolution,
+        "invoice_status": invoice.status,
+        "amount_due_cents": invoice.amount_due_cents,
+        "amount_paid_cents": invoice.amount_paid_cents,
+        "outstanding_cents": max(
+            0, invoice.amount_due_cents - invoice.amount_paid_cents
+        ),
+        "currency": invoice.currency,
+        "due_at": invoice.due_at.isoformat() if invoice.due_at else None,
+        "days_overdue": days_overdue,
+        "hosted_invoice_url": invoice.hosted_invoice_url,
+    }
+
+
+def _outstanding_overdue_invoices(session) -> list[BuildingInvoice]:
+    now = _now()
+    rows = session.execute(
+        select(BuildingInvoice).where(
+            BuildingInvoice.due_at.is_not(None),
+            BuildingInvoice.due_at < now,
+            BuildingInvoice.amount_paid_cents < BuildingInvoice.amount_due_cents,
+            BuildingInvoice.status.not_in(
+                {"paid", "void", "voided", "uncollectible"}
+            ),
+        )
+    ).scalars().all()
+    return rows
 
 
 @internal_router.put("/accounts/{account_id}")
@@ -511,6 +606,256 @@ def record_accounting_link(
         return {"ok": True, "invoice": _invoice_payload(row)}
 
 
+@internal_router.post("/collections/refresh")
+def refresh_collection_cases(
+    payload: CollectionRefreshInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        invoices = _outstanding_overdue_invoices(session)
+        existing_by_invoice = {
+            item.invoice_id: item
+            for item in session.execute(
+                select(BuildingCollectionCase).where(
+                    BuildingCollectionCase.invoice_id.in_(
+                        [invoice.id for invoice in invoices]
+                    )
+                )
+            ).scalars().all()
+        } if invoices else {}
+        would_create = [
+            invoice for invoice in invoices if invoice.id not in existing_by_invoice
+        ]
+        created = 0
+        if payload.execute:
+            for invoice in would_create:
+                case = BuildingCollectionCase(
+                    id=str(uuid5(NAMESPACE_URL, f"anata-building-collection:{invoice.id}")),
+                    invoice_id=invoice.id,
+                    status="open",
+                    assigned_owner=payload.default_owner.strip(),
+                    next_action_at=_now(),
+                    created_by=payload.actor,
+                )
+                session.add(case)
+                session.add(BuildingAuditEvent(
+                    entity_type="collection_case",
+                    entity_id=case.id,
+                    action="opened_from_aging",
+                    actor=payload.actor,
+                    after_json={
+                        "invoice_id": invoice.id,
+                        "assigned_owner": case.assigned_owner,
+                        "amount_outstanding_cents": (
+                            invoice.amount_due_cents - invoice.amount_paid_cents
+                        ),
+                        "due_at": invoice.due_at.isoformat() if invoice.due_at else None,
+                    },
+                ))
+                created += 1
+        return {
+            "ok": True,
+            "execute": payload.execute,
+            "overdue_invoice_count": len(invoices),
+            "existing_case_count": len(existing_by_invoice),
+            "would_create_count": len(would_create),
+            "created_count": created,
+            "invoice_ids": [invoice.id for invoice in would_create],
+        }
+
+
+@internal_router.get("/collections")
+def list_collection_cases(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        cases = session.execute(
+            select(BuildingCollectionCase).order_by(
+                BuildingCollectionCase.status,
+                BuildingCollectionCase.next_action_at,
+                BuildingCollectionCase.created_at,
+            )
+        ).scalars().all()
+        invoice_ids = [case.invoice_id for case in cases]
+        invoices = {
+            item.id: item
+            for item in session.execute(
+                select(BuildingInvoice).where(BuildingInvoice.id.in_(invoice_ids))
+            ).scalars().all()
+        } if invoice_ids else {}
+        account_ids = {invoice.billing_account_id for invoice in invoices.values()}
+        accounts = {
+            item.id: item
+            for item in session.execute(
+                select(BuildingBillingAccount).where(
+                    BuildingBillingAccount.id.in_(account_ids)
+                )
+            ).scalars().all()
+        } if account_ids else {}
+        return {
+            "collections": [
+                _collection_payload(
+                    case,
+                    invoices[case.invoice_id],
+                    accounts[invoices[case.invoice_id].billing_account_id],
+                )
+                for case in cases
+                if case.invoice_id in invoices
+                and invoices[case.invoice_id].billing_account_id in accounts
+            ]
+        }
+
+
+@internal_router.put("/collections/{case_id}")
+def transition_collection_case(
+    case_id: str,
+    payload: CollectionTransitionInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        case = session.get(BuildingCollectionCase, case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Collection case not found.")
+        if case.status in COLLECTION_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail="Closed collection cases are immutable.")
+        if payload.status in {"contacted", "promised", "disputed"}:
+            if not payload.assigned_owner.strip():
+                raise HTTPException(
+                    status_code=422, detail="Active collection work requires an owner."
+                )
+            if payload.next_action_at is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Active collection work requires a next action time.",
+                )
+        if payload.status in COLLECTION_TERMINAL_STATUSES and not payload.resolution.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Closing a collection case requires a resolution.",
+            )
+        before = {
+            "status": case.status,
+            "assigned_owner": case.assigned_owner,
+            "next_action_at": (
+                case.next_action_at.isoformat() if case.next_action_at else None
+            ),
+        }
+        case.status = payload.status
+        case.assigned_owner = payload.assigned_owner.strip()
+        case.next_action_at = payload.next_action_at
+        case.notes = payload.notes.strip()
+        case.resolution = payload.resolution.strip()
+        case.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="collection_case",
+            entity_id=case.id,
+            action=f"collection_{payload.status}",
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                "status": case.status,
+                "assigned_owner": case.assigned_owner,
+                "next_action_at": (
+                    case.next_action_at.isoformat() if case.next_action_at else None
+                ),
+                "notes": case.notes,
+                "resolution": case.resolution,
+            },
+        ))
+        invoice = session.get(BuildingInvoice, case.invoice_id)
+        account = (
+            session.get(BuildingBillingAccount, invoice.billing_account_id)
+            if invoice
+            else None
+        )
+        if invoice is None or account is None:
+            raise HTTPException(status_code=409, detail="Collection billing evidence is incomplete.")
+        return {"ok": True, "collection": _collection_payload(case, invoice, account)}
+
+
+@internal_router.post("/collections/{case_id}/remind")
+def send_collection_reminder(
+    case_id: str,
+    payload: CollectionReminderInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    expected = f"REMIND {case_id}"
+    if payload.confirmation.strip() != expected:
+        raise HTTPException(status_code=409, detail=f"Type {expected} to confirm.")
+    if payload.next_action_at is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Schedule the next collection follow-up before sending a reminder.",
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        case = session.get(BuildingCollectionCase, case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Collection case not found.")
+        if case.status in COLLECTION_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail="Collection case is already closed.")
+        invoice = session.get(BuildingInvoice, case.invoice_id)
+        if invoice is None:
+            raise HTTPException(status_code=409, detail="Invoice evidence is missing.")
+        if invoice.amount_paid_cents >= invoice.amount_due_cents:
+            raise HTTPException(status_code=409, detail="Invoice no longer has an outstanding balance.")
+        if not invoice.hosted_invoice_url:
+            raise HTTPException(status_code=409, detail="Invoice has no secure payment link.")
+        account = session.get(BuildingBillingAccount, invoice.billing_account_id)
+        if account is None:
+            raise HTTPException(status_code=409, detail="Billing account is missing.")
+        suppression = session.get(BuildingSuppression, account.billing_email)
+        if suppression is not None and suppression.scope == "all":
+            raise HTTPException(status_code=409, detail="All email is suppressed for this address.")
+        client = ResendClient(request.app.state.settings)
+        if not client.is_configured():
+            raise HTTPException(status_code=503, detail="Email delivery is not configured.")
+        outstanding = max(0, invoice.amount_due_cents - invoice.amount_paid_cents)
+        amount = f"{invoice.currency.upper()} {outstanding / 100:,.2f}"
+        provider_id = client.send_message(
+            to=account.billing_email,
+            subject=f"Anata Building invoice reminder — {amount} outstanding",
+            text=(
+                f"Hello,\n\nThis is a reminder that {amount} remains outstanding "
+                f"for {invoice.description}. You can review and pay the invoice "
+                f"securely here:\n{invoice.hosted_invoice_url}\n\n"
+                "If you have already arranged payment or need help, reply to this email."
+            ),
+        )
+        case.status = "contacted"
+        case.reminder_count += 1
+        case.last_reminder_at = _now()
+        case.last_reminder_provider_id = (
+            provider_id if isinstance(provider_id, str) else "resend"
+        )
+        case.next_action_at = payload.next_action_at
+        case.updated_at = _now()
+        session.add(BuildingAuditEvent(
+            entity_type="collection_case",
+            entity_id=case.id,
+            action="reminder_sent",
+            actor=payload.actor,
+            after_json={
+                "invoice_id": invoice.id,
+                "recipient": account.billing_email,
+                "outstanding_cents": outstanding,
+                "provider_message_id": case.last_reminder_provider_id,
+                "reminder_count": case.reminder_count,
+                "next_action_at": (
+                    case.next_action_at.isoformat() if case.next_action_at else None
+                ),
+            },
+        ))
+        return {"ok": True, "collection": _collection_payload(case, invoice, account)}
+
+
 @webhook_router.post("/webhook")
 async def stripe_webhook(
     request: Request,
@@ -636,6 +981,39 @@ async def stripe_webhook(
                                     evidence_json={"invoice_id": invoice.id, "event_id": event_id},
                                     recorded_by="stripe-webhook",
                                 ))
+                if invoice.status in {"paid", "void", "uncollectible"}:
+                    collection_case = session.execute(
+                        select(BuildingCollectionCase).where(
+                            BuildingCollectionCase.invoice_id == invoice.id
+                        )
+                    ).scalar_one_or_none()
+                    if (
+                        collection_case is not None
+                        and collection_case.status not in COLLECTION_TERMINAL_STATUSES
+                    ):
+                        collection_case.status = (
+                            "resolved" if invoice.status == "paid" else "waived"
+                        )
+                        collection_case.resolution = (
+                            "Stripe confirmed the invoice was paid."
+                            if invoice.status == "paid"
+                            else f"Stripe marked the invoice {invoice.status}."
+                        )
+                        collection_case.next_action_at = None
+                        collection_case.updated_at = _now()
+                        session.add(BuildingAuditEvent(
+                            entity_type="collection_case",
+                            entity_id=collection_case.id,
+                            action="closed_from_stripe",
+                            actor="stripe-webhook",
+                            after_json={
+                                "invoice_id": invoice.id,
+                                "invoice_status": invoice.status,
+                                "status": collection_case.status,
+                                "resolution": collection_case.resolution,
+                                "provider_event_id": event_id,
+                            },
+                        ))
                 session.add(BuildingAuditEvent(
                     entity_type="invoice",
                     entity_id=invoice.id,

@@ -45,6 +45,7 @@ def render_building_page(
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
     rate_plans: list[dict[str, Any]] | None = None,
+    collections: list[dict[str, Any]] | None = None,
     tours: list[dict[str, Any]] | None = None,
     contact_merges: list[dict[str, Any]] | None = None,
     privacy_requests: list[dict[str, Any]] | None = None,
@@ -59,6 +60,7 @@ def render_building_page(
     tours = list(tours or [])
     contact_merges = list(contact_merges or [])
     rate_plans = list(rate_plans or [])
+    collections = list(collections or [])
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
@@ -477,6 +479,34 @@ def render_building_page(
         for item in invoices
     ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved billing schedules can create Stripe invoices; QBO remains the accounting destination during transition.</div></td></tr>'
 
+    collection_rows = "".join(
+        f"""<tr>
+          <td><strong>{_esc(item.get("account_name"))}</strong><span class="sub">{_esc(item.get("billing_email"))} · invoice {_esc(item.get("invoice_id"))}</span></td>
+          <td>{_esc(str(item.get("currency") or "usd").upper())} {int(item.get("outstanding_cents") or 0) / 100:,.2f}<span class="sub">Due {_esc(item.get("due_at") or "unknown")}</span></td>
+          <td>{_badge(str(item.get("status") or "open"))}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · next {_esc(item.get("next_action_at") or "not set")}</span></td>
+          <td>{int(item.get("reminder_count") or 0)}<span class="sub">{_esc(item.get("last_reminder_at") or "No reminder sent")}</span></td>
+          <td><details class="row-actions"><summary>Collect</summary>
+            <form method="post" action="/admin/building/billing/collections/{_esc(item.get("id"))}/transition">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <label>State<select name="status"><option value="open">Open</option><option value="contacted">Contacted</option><option value="promised">Payment promised</option><option value="disputed">Disputed</option><option value="resolved">Resolved</option><option value="waived">Waived</option></select></label>
+              <label>Owner<input name="assigned_owner" value="{_esc(item.get("assigned_owner"))}"></label>
+              <label>Next action (Mountain time)<input name="next_action_at" type="datetime-local"></label>
+              <label>Notes<input name="notes" value="{_esc(item.get("notes"))}"></label>
+              <label>Resolution<input name="resolution" placeholder="Required to close"></label>
+              <button class="secondary secondary--small" type="submit">Save collection work</button>
+            </form>
+            <form method="post" action="/admin/building/billing/collections/{_esc(item.get("id"))}/remind">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <label>Next follow-up (Mountain time)<input name="next_action_at" type="datetime-local" required></label>
+              <label>Confirmation<input name="confirmation" required placeholder="REMIND {_esc(item.get("id"))}"></label>
+              <button class="primary secondary--small" type="submit" {'disabled' if not item.get("hosted_invoice_url") or item.get("status") in {"resolved", "waived"} else ''}>Send invoice reminder</button>
+              <span class="sub">Sends only to the billing email with the secure Stripe invoice link.</span>
+            </form>
+          </details></td>
+        </tr>"""
+        for item in collections
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No collection cases.</strong><br>Refresh invoice aging to create reviewed follow-up work for overdue balances.</div></td></tr>'
+
     linked_space_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))}</option>'
         for item in spaces
@@ -685,6 +715,20 @@ def render_building_page(
             "title": item.get("title"),
             "detail": f"{item.get('space_name') or item.get('reservation_id')} · {remaining} required remaining",
             "next": "Complete or explicitly waive required items",
+        })
+    for item in collections:
+        if item.get("status") in {"resolved", "waived"}:
+            continue
+        priority_items.append({
+            "score": 90 if not item.get("assigned_owner") else 72,
+            "type": "Collection",
+            "title": item.get("account_name") or item.get("invoice_id"),
+            "detail": (
+                f"{str(item.get('currency') or 'usd').upper()} "
+                f"{int(item.get('outstanding_cents') or 0) / 100:,.2f} outstanding"
+                f" · {item.get('assigned_owner') or 'unassigned'}"
+            ),
+            "next": "Assign and schedule follow-up" if not item.get("assigned_owner") else "Complete the next collection action",
         })
     priority_items.sort(key=lambda item: (-int(item["score"]), str(item["title"])))
     priority_rows = "".join(
@@ -998,6 +1042,12 @@ def render_building_page(
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
+      {(
+        f'''<section class="panel panel--wide"><div class="panel-head"><div><h2>Collection work</h2><p>Overdue balances become owned follow-up cases. Reminders require typed confirmation and retain delivery evidence.</p></div><span class="count">{len(collections)} cases</span></div>
+        <form class="inline-send" method="post" action="/admin/building/billing/collections/refresh"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="default_owner" placeholder="Default collection owner"><button class="secondary secondary--small" type="submit">Refresh invoice aging</button></form>
+        <div class="table-wrap"><table><thead><tr><th>Account</th><th>Outstanding</th><th>State / owner</th><th>Reminders</th><th>Action</th></tr></thead><tbody>{collection_rows}</tbody></table></div></section>'''
+        if can_finance else ""
+      )}
       {(
         f'''<section class="panel panel--wide">
           <div class="panel-head"><div><h2>Refunds, credits, and write-offs</h2><p>Finance-only, two-person approval. Provider and accounting evidence remain distinct.</p></div><span class="count">{len(adjustments)} records</span></div>

@@ -287,6 +287,13 @@ The public catalog exposes only the currently effective approved projection,
 while proposals can retain the complete approved rate-plan snapshot used for
 the quote.
 
+Overdue Building invoices can be refreshed into audited collection cases with
+an owner, next action, notes, promise/dispute state, and resolution. Reminder
+emails are never automatic: a finance-authorized operator must use the exact
+typed confirmation, the invoice must still have an outstanding balance and a
+secure Stripe link, and an all-email suppression blocks delivery. Stripe paid,
+void, and uncollectible events close matching cases with provider evidence.
+
 Website and assisted-source inquiries remain durable even when HubSpot is
 unavailable. A partial contact or note failure changes the inquiry to
 `crm_sync_needed`, stores the latest error and attempt count, and exposes a
