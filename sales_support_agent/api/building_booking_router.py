@@ -337,6 +337,112 @@ def _complete_tenant_relationship(
     ))
 
 
+def _activate_event_host_relationship(
+    session,
+    reservation: BuildingReservation,
+    *,
+    actor: str,
+) -> BuildingRelationship:
+    if not reservation.contact_id:
+        raise HTTPException(
+            status_code=409,
+            detail="A responsible contact is required before event confirmation.",
+        )
+    contact = session.get(BuildingContact, reservation.contact_id)
+    if contact is None or contact.status != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="The linked event contact must be active before confirmation.",
+        )
+    source_reference = f"reservation:{reservation.id}"
+    relationship = session.execute(
+        select(BuildingRelationship).where(
+            BuildingRelationship.contact_id == contact.id,
+            BuildingRelationship.relationship_type == "event_host",
+            BuildingRelationship.source_reference == source_reference,
+        )
+    ).scalar_one_or_none()
+    if relationship is None:
+        relationship = BuildingRelationship(
+            id=str(uuid4()),
+            contact_id=contact.id,
+            relationship_type="event_host",
+            source_reference=source_reference,
+        )
+    relationship.status = "active"
+    relationship.organization = relationship.organization or contact.company_name
+    relationship.starts_on = reservation.starts_at.date()
+    relationship.ends_on = reservation.ends_at.date()
+    relationship.metadata_json = {
+        **dict(relationship.metadata_json or {}),
+        "reservation_id": reservation.id,
+        "space_id": reservation.space_id,
+        "offering_id": reservation.offering_id or "",
+        "confirmed_at": _now().isoformat(),
+        "confirmed_by": actor,
+    }
+    relationship.updated_at = _now()
+    session.add(relationship)
+    session.add(BuildingAuditEvent(
+        entity_type="relationship",
+        entity_id=relationship.id,
+        action="event_host_confirmed",
+        actor=actor,
+        after_json={
+            "contact_id": contact.id,
+            "reservation_id": reservation.id,
+            "space_id": reservation.space_id,
+            "status": relationship.status,
+            "starts_on": relationship.starts_on.isoformat(),
+            "ends_on": relationship.ends_on.isoformat(),
+        },
+    ))
+    return relationship
+
+
+def _complete_event_host_relationship(
+    session,
+    reservation: BuildingReservation,
+    *,
+    actor: str,
+    outcome: str,
+) -> None:
+    if not reservation.contact_id:
+        return
+    relationship = session.execute(
+        select(BuildingRelationship).where(
+            BuildingRelationship.contact_id == reservation.contact_id,
+            BuildingRelationship.relationship_type == "event_host",
+            BuildingRelationship.source_reference == f"reservation:{reservation.id}",
+        )
+    ).scalar_one_or_none()
+    if relationship is None or relationship.status == "inactive":
+        return
+    relationship.status = "inactive"
+    relationship.ends_on = _now().date()
+    relationship.updated_at = _now()
+    metadata = dict(relationship.metadata_json or {})
+    metadata.update({
+        "closed_at": _now().isoformat(),
+        "closed_by": actor,
+        "outcome": outcome,
+    })
+    relationship.metadata_json = metadata
+    session.add(BuildingAuditEvent(
+        entity_type="relationship",
+        entity_id=relationship.id,
+        action="event_host_completed" if outcome == "completed" else "event_host_cancelled",
+        actor=actor,
+        before_json={"status": "active"},
+        after_json={
+            "status": "inactive",
+            "reservation_id": reservation.id,
+            "outcome": outcome,
+            "ends_on": relationship.ends_on.isoformat(),
+        },
+    ))
+
+
 def _active_conflicts(
     session,
     *,
@@ -557,6 +663,12 @@ def transition_reservation(
                 raise HTTPException(status_code=409, detail="A signed agreement is required.")
             if row.deposit_required and row.deposit_status != "paid":
                 raise HTTPException(status_code=409, detail="A verified deposit is required.")
+            if row.kind == "event":
+                _activate_event_host_relationship(
+                    session,
+                    row,
+                    actor=payload.actor,
+                )
             conflicts = _active_conflicts(
                 session,
                 space_id=row.space_id,
@@ -604,6 +716,16 @@ def transition_reservation(
             )
             row.hold_expires_at = None
         before = row.status
+        if (
+            row.kind == "event"
+            and payload.target_status in {"completed", "cancelled"}
+        ):
+            _complete_event_host_relationship(
+                session,
+                row,
+                actor=payload.actor,
+                outcome=payload.target_status,
+            )
         if (
             row.kind == "workspace"
             and payload.target_status == "completed"

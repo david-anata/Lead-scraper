@@ -167,6 +167,20 @@ Response:
 }
 ```
 
+## Anata Building operations
+
+Agent is the operational source of truth for Anata Building inventory, CRM,
+bookings, agreements, billing evidence, campaigns, and lifecycle checklists.
+
+Confirmed bookings also maintain CRM relationships automatically:
+
+- a workspace becomes an active tenant relationship when occupancy begins and
+  is closed when move-out completes
+- an event must have an active responsible contact before confirmation
+- confirming the event creates a reservation-scoped `event_host` relationship
+- completing or cancelling the event closes that relationship while preserving
+  its history for future event-host audiences
+
 ## Daily Automation
 
 Recommended production scheduler:

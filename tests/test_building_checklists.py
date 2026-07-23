@@ -88,7 +88,7 @@ class BuildingChecklistTests(unittest.TestCase):
                 "id": reservation_id,
                 "kind": kind,
                 "space_id": space_id,
-                "contact_id": "checklist-tenant" if kind == "workspace" else None,
+                "contact_id": "checklist-tenant",
                 "starts_at": self.start.isoformat(),
                 "ends_at": (self.start + timedelta(hours=4)).isoformat(),
                 "attendance": 4,

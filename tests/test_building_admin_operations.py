@@ -94,6 +94,18 @@ class BuildingAdminOperationsTests(unittest.TestCase):
         )
         if space.status_code != 200:
             raise AssertionError(space.text)
+        contact = cls.client.put(
+            "/api/internal/building/crm/contacts/admin-event-host",
+            headers=cls.internal_headers,
+            json={
+                "email": "admin-event-host@example.com",
+                "full_name": "Admin Event Host",
+                "source": "test",
+                "actor": "operator@example.com",
+            },
+        )
+        if contact.status_code != 200:
+            raise AssertionError(contact.text)
 
     def _post(self, path: str, data: dict) -> object:
         response = self.client.post(
@@ -249,6 +261,7 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             {
                 "kind": "event",
                 "space_id": "arena-admin",
+                "contact_id": "admin-event-host",
                 "starts_at": starts.strftime("%Y-%m-%dT%H:%M"),
                 "ends_at": (starts + timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M"),
                 "attendance": "75",

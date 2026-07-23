@@ -17,6 +17,7 @@ try:
         BuildingAvailabilityBlock,
         BuildingDepositEvidence,
         BuildingProposal,
+        BuildingRelationship,
         BuildingReservation,
         BuildingTour,
     )
@@ -56,6 +57,18 @@ class BuildingBookingTests(unittest.TestCase):
                 "capacity": 120,
                 "status": "available",
                 "is_public": True,
+            },
+        )
+        if response.status_code != 200:
+            raise AssertionError(response.text)
+        response = cls.client.put(
+            "/api/internal/building/crm/contacts/event-host",
+            headers=cls.headers,
+            json={
+                "email": "event-host@example.com",
+                "full_name": "Event Host",
+                "source": "test",
+                "actor": "operator@example.com",
             },
         )
         if response.status_code != 200:
@@ -120,6 +133,7 @@ class BuildingBookingTests(unittest.TestCase):
                 "kind": "event",
                 "space_id": "arena",
                 "offering_id": offering_id,
+                "contact_id": "event-host",
                 "starts_at": self.start.isoformat(),
                 "ends_at": (self.start + timedelta(hours=4)).isoformat(),
                 "attendance": attendance,
@@ -251,6 +265,17 @@ class BuildingBookingTests(unittest.TestCase):
             },
         )
         self.assertEqual(deposit.status_code, 201, deposit.text)
+        with self.factory() as session:
+            reservation = session.get(BuildingReservation, "event-one")
+            reservation.contact_id = None
+            session.commit()
+        missing_host = self._transition("event-one", "confirmed")
+        self.assertEqual(missing_host.status_code, 409)
+        self.assertIn("responsible contact", missing_host.json()["detail"])
+        with self.factory() as session:
+            reservation = session.get(BuildingReservation, "event-one")
+            reservation.contact_id = "event-host"
+            session.commit()
         confirmed = self._transition("event-one", "confirmed")
         self.assertEqual(confirmed.status_code, 200, confirmed.text)
         self.assertEqual(confirmed.json()["reservation"]["status"], "confirmed")
@@ -262,12 +287,38 @@ class BuildingBookingTests(unittest.TestCase):
             self.assertEqual(session.query(BuildingProposal).count(), 1)
             self.assertEqual(session.query(BuildingDepositEvidence).count(), 1)
             self.assertEqual(session.query(BuildingAvailabilityBlock).one().state, "booked")
+            relationship = (
+                session.query(BuildingRelationship)
+                .filter_by(
+                    contact_id="event-host",
+                    relationship_type="event_host",
+                    source_reference="reservation:event-one",
+                )
+                .one()
+            )
+            self.assertEqual(relationship.status, "active")
+            self.assertEqual(relationship.starts_on, self.start.date())
+            self.assertEqual(
+                relationship.ends_on,
+                (self.start + timedelta(hours=4)).date(),
+            )
 
     def test_03_cancellation_releases_inventory(self) -> None:
         cancelled = self._transition("event-one", "cancelled", reason="Customer cancelled")
         self.assertEqual(cancelled.status_code, 200, cancelled.text)
         with self.factory() as session:
             self.assertEqual(session.query(BuildingAvailabilityBlock).count(), 0)
+            relationship = (
+                session.query(BuildingRelationship)
+                .filter_by(
+                    contact_id="event-host",
+                    relationship_type="event_host",
+                    source_reference="reservation:event-one",
+                )
+                .one()
+            )
+            self.assertEqual(relationship.status, "inactive")
+            self.assertEqual(relationship.metadata_json["outcome"], "cancelled")
         replacement_hold = self._transition(
             "event-two",
             "soft_hold",
