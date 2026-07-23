@@ -52,6 +52,7 @@ from sales_support_agent.services.building_security import (
     csrf_token as building_csrf_token,
     require_building_form_security,
 )
+from sales_support_agent.services.building_analytics import build_building_analytics
 from sales_support_agent.services.building_page import render_building_page
 
 
@@ -1746,6 +1747,7 @@ def building_control_room(
         ).scalars().all()
         space_names = {item.id: item.name for item in space_rows}
         reservations_by_id = {item.id: item for item in reservation_rows}
+        analytics = build_building_analytics(session)
 
         contacts = [
             {
@@ -1874,6 +1876,10 @@ def building_control_room(
                         ).get("last_error")
                         or ""
                     ),
+                    "lifecycle": dict(
+                        (item.payload_json or {}).get("_lifecycle") or {}
+                    ),
+                    "assigned_owner": item.assigned_owner,
                     "id": item.id,
                 }
                 for item in inquiry_rows
@@ -2008,6 +2014,7 @@ def building_control_room(
                 for item in checklist_rows
             ],
             service_requests=service_requests,
+            analytics=analytics,
             csrf_token=building_csrf_token(user),
             notice=notice[:300],
             error=error[:300],

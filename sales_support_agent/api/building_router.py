@@ -15,6 +15,11 @@ from sales_support_agent.integrations.hubspot import HubSpotClient
 from sales_support_agent.services.building_hubspot_sync import (
     sync_building_inquiry_to_hubspot,
 )
+from sales_support_agent.services.building_analytics import (
+    apply_attribution,
+    build_attribution,
+    build_building_analytics,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -152,9 +157,23 @@ class InquiryInput(BaseModel):
     def clean_text(cls, value: Any) -> str:
         return str(value or "").strip()
 
+    @field_validator("source")
+    @classmethod
+    def normalize_source(cls, value: str) -> str:
+        normalized = re.sub(r"[^a-z0-9_-]+", "_", value.lower()).strip("_")
+        return normalized or "unknown"
+
 
 class InquiryRetryInput(BaseModel):
     actor: str = Field(min_length=1, max_length=255)
+
+
+class InquiryLifecycleInput(BaseModel):
+    target_stage: Literal["responded", "qualified", "closed_won", "closed_lost"]
+    actor: str = Field(min_length=1, max_length=255)
+    assigned_owner: str = Field(default="", max_length=255)
+    channel: Literal["email", "phone", "text", "in_person", "other"] = "email"
+    notes: str = Field(default="", max_length=2000)
 
 
 class SpaceInput(BaseModel):
@@ -374,6 +393,45 @@ def create_inquiry(
             contact.full_name = contact.full_name or inquiry.name
             contact.phone = contact.phone or inquiry.phone
             contact.updated_at = _now()
+        attribution = build_attribution(
+            source=inquiry.source,
+            source_reference=inquiry.source_reference,
+            details={
+                **dict(payload.details or {}),
+                "offering_id": inquiry.offering_id or "",
+            },
+            captured_at=inquiry.created_at,
+        )
+        first_captured_at = inquiry.created_at
+        first_captured_raw = str(payload.details.get("firstCapturedAt") or "").strip()
+        if first_captured_raw:
+            try:
+                first_captured_at = datetime.fromisoformat(
+                    first_captured_raw.replace("Z", "+00:00")
+                )
+            except ValueError:
+                first_captured_at = inquiry.created_at
+        first_attribution = build_attribution(
+            source=str(payload.details.get("firstUtmSource") or inquiry.source),
+            source_reference=str(
+                payload.details.get("firstReferrer") or inquiry.source_reference
+            ),
+            details={
+                "medium": payload.details.get("firstUtmMedium"),
+                "campaign": payload.details.get("firstUtmCampaign"),
+                "content": payload.details.get("firstUtmContent"),
+                "term": payload.details.get("firstUtmTerm"),
+                "landing_page": payload.details.get("firstLandingPage"),
+                "offering_id": inquiry.offering_id or "",
+            },
+            captured_at=first_captured_at,
+        )
+        contact.metadata_json = apply_attribution(
+            inquiry=inquiry,
+            contact_metadata=dict(contact.metadata_json or {}),
+            attribution=attribution,
+            first_attribution=first_attribution,
+        )
         session.add(contact)
         session.flush()
         relationship_type = "event_host" if inquiry.kind == "event" else "prospect"
@@ -407,7 +465,12 @@ def create_inquiry(
             entity_id=inquiry.id,
             action="created",
             actor=actor,
-            after_json={"kind": inquiry.kind, "source": inquiry.source, "offering_id": inquiry.offering_id},
+            after_json={
+                "kind": inquiry.kind,
+                "source": inquiry.source,
+                "offering_id": inquiry.offering_id,
+                "attribution": attribution,
+            },
         ))
 
         client = HubSpotClient(request.app.state.settings)
@@ -464,6 +527,87 @@ def retry_inquiry_hubspot(
             "attempt_count": int(state.get("attempt_count") or 0),
             "error": str(state.get("last_error") or ""),
         }
+
+
+@internal_router.post("/inquiries/{inquiry_id}/lifecycle")
+def update_inquiry_lifecycle(
+    inquiry_id: str,
+    payload: InquiryLifecycleInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Record customer-response and qualification evidence without changing CRM sync state."""
+
+    _require_internal_key(request, x_internal_api_key)
+    transitions = {
+        "new": {"responded", "qualified", "closed_lost"},
+        "responded": {"qualified", "closed_lost"},
+        "qualified": {"closed_won", "closed_lost"},
+        "closed_won": set(),
+        "closed_lost": set(),
+    }
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        inquiry_payload = dict(inquiry.payload_json or {})
+        lifecycle = dict(inquiry_payload.get("_lifecycle") or {})
+        current = str(lifecycle.get("stage") or "new")
+        if payload.target_stage not in transitions.get(current, set()):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot move inquiry from {current} to {payload.target_stage}.",
+            )
+        changed_at = _now()
+        before = dict(lifecycle)
+        lifecycle["stage"] = payload.target_stage
+        lifecycle["last_changed_at"] = changed_at.isoformat()
+        lifecycle["last_changed_by"] = payload.actor
+        lifecycle["last_channel"] = payload.channel
+        if payload.notes.strip():
+            lifecycle["last_notes"] = payload.notes.strip()
+        if payload.target_stage in {"responded", "qualified", "closed_won"}:
+            lifecycle.setdefault("first_responded_at", changed_at.isoformat())
+            lifecycle["last_responded_at"] = changed_at.isoformat()
+            lifecycle["response_count"] = int(lifecycle.get("response_count") or 0) + 1
+        if payload.target_stage in {"qualified", "closed_won"}:
+            lifecycle.setdefault("qualified_at", changed_at.isoformat())
+        if payload.target_stage in {"closed_won", "closed_lost"}:
+            lifecycle["closed_at"] = changed_at.isoformat()
+        inquiry_payload["_lifecycle"] = lifecycle
+        inquiry.payload_json = inquiry_payload
+        if payload.assigned_owner.strip():
+            inquiry.assigned_owner = payload.assigned_owner.strip()
+        inquiry.updated_at = changed_at
+        session.add(inquiry)
+        session.add(BuildingAuditEvent(
+            entity_type="inquiry",
+            entity_id=inquiry.id,
+            action="lifecycle_changed",
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                **lifecycle,
+                "assigned_owner": inquiry.assigned_owner,
+            },
+        ))
+        return {
+            "ok": True,
+            "inquiry_id": inquiry.id,
+            "crm_sync_status": inquiry.status,
+            "lifecycle": lifecycle,
+            "assigned_owner": inquiry.assigned_owner,
+        }
+
+
+@internal_router.get("/analytics")
+def get_building_analytics(
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        return build_building_analytics(session)
 
 
 @internal_router.put("/spaces/{space_id}")

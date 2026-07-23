@@ -199,3 +199,17 @@ class BuildingBookingTests(unittest.TestCase):
         self.assertEqual(third.status_code, 201, third.text)
         skipped = self._transition("event-three", "confirmed")
         self.assertEqual(skipped.status_code, 409)
+
+    def test_05_analytics_uses_stage_history_after_booking_moves_on(self) -> None:
+        response = self.client.get(
+            "/api/internal/building/analytics",
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        analytics = response.json()
+        self.assertEqual(analytics["event_funnel"]["holds"], 2)
+        self.assertEqual(analytics["event_funnel"]["quotes"], 1)
+        self.assertEqual(analytics["event_funnel"]["signed"], 1)
+        self.assertEqual(analytics["event_funnel"]["deposits"], 1)
+        self.assertEqual(analytics["event_funnel"]["confirmed"], 1)
+        self.assertEqual(analytics["operations"]["holds_started"], 2)

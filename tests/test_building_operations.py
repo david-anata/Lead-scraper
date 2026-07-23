@@ -13,7 +13,11 @@ try:
     from fastapi.testclient import TestClient
     from sales_support_agent.main import app
     from sales_support_agent.models.database import create_session_factory, init_database
-    from sales_support_agent.models.entities import BuildingAuditEvent, BuildingInquiry
+    from sales_support_agent.models.entities import (
+        BuildingAuditEvent,
+        BuildingContact,
+        BuildingInquiry,
+    )
     DEPS = True
 except ModuleNotFoundError as exc:
     if exc.name not in {"sqlalchemy", "fastapi"}:
@@ -154,7 +158,16 @@ class BuildingOperationsTests(unittest.TestCase):
             "email": "ada@example.com",
             "preferred_date": "2026-08-15",
             "consent_to_contact": True,
-            "details": {"event_type": "Company gathering"},
+            "details": {
+                "event_type": "Company gathering",
+                "landingPage": "/events?utm_source=google&utm_campaign=summer",
+                "utmSource": "google",
+                "utmMedium": "paid_search",
+                "utmCampaign": "summer",
+                "firstLandingPage": "/",
+                "firstUtmSource": "direct",
+                "firstCapturedAt": "2026-08-01T12:00:00Z",
+            },
         }
         self.assertEqual(
             self.client.post("/api/public/building/inquiries", json=payload).status_code,
@@ -181,6 +194,65 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertTrue(second.json()["duplicate"])
         with self.factory() as session:
             self.assertEqual(session.query(BuildingInquiry).count(), 1)
+            inquiry = session.query(BuildingInquiry).one()
+            contact = session.query(BuildingContact).one()
+            self.assertEqual(
+                inquiry.payload_json["_attribution"]["campaign"], "summer"
+            )
+            self.assertEqual(
+                contact.metadata_json["_building_attribution"]["first_touch"]["source"],
+                "direct",
+            )
+            self.assertEqual(
+                contact.metadata_json["_building_attribution"]["latest_touch"]["source"],
+                "anata-building",
+            )
+
+    def test_inquiry_response_and_qualification_are_audited_separately_from_crm_sync(self) -> None:
+        with self.factory() as session:
+            inquiry = session.query(BuildingInquiry).one()
+            inquiry_id = inquiry.id
+            sync_status = inquiry.status
+        responded = self.client.post(
+            f"/api/internal/building/inquiries/{inquiry_id}/lifecycle",
+            headers=self.internal_headers,
+            json={
+                "target_stage": "responded",
+                "actor": "operator@example.com",
+                "assigned_owner": "operator@example.com",
+                "channel": "phone",
+                "notes": "Discussed the requested event date.",
+            },
+        )
+        self.assertEqual(responded.status_code, 200, responded.text)
+        self.assertEqual(responded.json()["crm_sync_status"], sync_status)
+        self.assertTrue(responded.json()["lifecycle"]["first_responded_at"])
+        qualified = self.client.post(
+            f"/api/internal/building/inquiries/{inquiry_id}/lifecycle",
+            headers=self.internal_headers,
+            json={
+                "target_stage": "qualified",
+                "actor": "operator@example.com",
+                "channel": "email",
+            },
+        )
+        self.assertEqual(qualified.status_code, 200, qualified.text)
+        skipped = self.client.post(
+            f"/api/internal/building/inquiries/{inquiry_id}/lifecycle",
+            headers=self.internal_headers,
+            json={
+                "target_stage": "responded",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(skipped.status_code, 409)
+        analytics = self.client.get(
+            "/api/internal/building/analytics",
+            headers=self.internal_headers,
+        )
+        self.assertEqual(analytics.status_code, 200, analytics.text)
+        self.assertEqual(analytics.json()["inquiries"]["responded"], 1)
+        self.assertEqual(analytics.json()["inquiries"]["by_source"]["anata-building"], 1)
 
     def test_overlapping_availability_is_rejected(self) -> None:
         start = datetime.now(timezone.utc) + timedelta(days=3)

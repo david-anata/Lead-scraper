@@ -212,6 +212,36 @@ class BuildingAdminOperationsTests(unittest.TestCase):
             self.assertEqual(row.status, "completed")
             self.assertTrue(row.resolution)
 
+    def test_00a_operator_records_response_without_hiding_crm_sync_state(self) -> None:
+        with self.factory() as session:
+            inquiry = session.query(BuildingInquiry).filter(
+                BuildingInquiry.email == "assisted-event@example.com"
+            ).one()
+            inquiry_id = inquiry.id
+            crm_status = inquiry.status
+        response = self._post(
+            f"/admin/building/inquiries/{inquiry_id}/lifecycle",
+            {
+                "target_stage": "responded",
+                "assigned_owner": "events@example.com",
+                "channel": "phone",
+                "notes": "Confirmed date, attendance, and decision timeline.",
+            },
+        )
+        self._assert_notice(response)
+        page = self.client.get("/admin/building")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("Building performance", page.text)
+        self.assertIn("Posted collected cash", page.text)
+        with self.factory() as session:
+            inquiry = session.get(BuildingInquiry, inquiry_id)
+            self.assertEqual(inquiry.status, crm_status)
+            self.assertEqual(
+                inquiry.payload_json["_lifecycle"]["stage"],
+                "responded",
+            )
+            self.assertEqual(inquiry.assigned_owner, "events@example.com")
+
     def test_01_operator_completes_guarded_event_booking_evidence(self) -> None:
         starts = datetime.now() + timedelta(days=14)
         created = self._post(

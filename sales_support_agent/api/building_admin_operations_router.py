@@ -36,9 +36,11 @@ from sales_support_agent.api.building_booking_router import (
 )
 from sales_support_agent.api.building_router import (
     InquiryInput,
+    InquiryLifecycleInput,
     InquiryRetryInput,
     create_inquiry,
     retry_inquiry_hubspot,
+    update_inquiry_lifecycle,
 )
 from sales_support_agent.api.building_calendar_router import (
     CalendarSyncInput,
@@ -199,6 +201,36 @@ def create_assisted_inquiry_from_control_room(
     return _run_form_action(
         action,
         "Lead added to the inquiry and CRM response queue.",
+    )
+
+
+@router.post("/inquiries/{inquiry_id}/lifecycle", dependencies=FORM_DEPS)
+def update_inquiry_lifecycle_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    target_stage: str = Form(...),
+    assigned_owner: str = Form(""),
+    channel: str = Form("email"),
+    notes: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        update_inquiry_lifecycle(
+            inquiry_id,
+            InquiryLifecycleInput(
+                target_stage=target_stage,
+                assigned_owner=assigned_owner.strip(),
+                channel=channel,
+                notes=notes.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        f"Inquiry moved to {target_stage.replace('_', ' ')}.",
     )
 
 

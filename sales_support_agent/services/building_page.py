@@ -44,11 +44,13 @@ def render_building_page(
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
+    analytics: dict[str, Any] | None = None,
     can_finance: bool = False,
     csrf_token: str = "",
     notice: str = "",
     error: str = "",
 ) -> str:
+    analytics = dict(analytics or {})
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
@@ -62,7 +64,11 @@ def render_building_page(
         )
     )
     subscribed = sum(1 for item in contacts if item.get("marketing_status") == "subscribed")
-    needs_response = sum(1 for item in inquiries if item.get("status") in {"new", "crm_sync_needed"})
+    needs_response = sum(
+        1
+        for item in inquiries
+        if str((item.get("lifecycle") or {}).get("stage") or "new") == "new"
+    )
     active_reservations = sum(
         1
         for item in reservations
@@ -188,13 +194,42 @@ def render_building_page(
         for item in campaigns
     ) or '<tr><td colspan="5"><div class="empty"><strong>No campaigns yet.</strong><br>Campaigns require a segment preview, test send, and approval before delivery.</div></td></tr>'
 
+    inquiry_stage_transitions = {
+        "new": ("responded", "qualified", "closed_lost"),
+        "responded": ("qualified", "closed_lost"),
+        "qualified": ("closed_won", "closed_lost"),
+        "closed_won": (),
+        "closed_lost": (),
+    }
+
+    def inquiry_lifecycle_action(item: dict[str, Any]) -> str:
+        lifecycle = dict(item.get("lifecycle") or {})
+        current = str(lifecycle.get("stage") or "new")
+        choices = inquiry_stage_transitions.get(current, ())
+        if not choices:
+            return '<span class="sub">Lifecycle complete</span>'
+        return (
+            f'<details class="row-actions"><summary>Record progress</summary>'
+            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/lifecycle">'
+            f'<input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">'
+            f'<label>Next stage<select name="target_stage" required><option value="">Choose</option>'
+            + "".join(
+                f'<option value="{_esc(stage)}">{_esc(stage.replace("_", " "))}</option>'
+                for stage in choices
+            )
+            + f'</select></label><label>Channel<select name="channel"><option value="email">Email</option><option value="phone">Phone</option><option value="text">Text</option><option value="in_person">In person</option><option value="other">Other</option></select></label>'
+            f'<label>Owner<input name="assigned_owner" value="{_esc(item.get("assigned_owner"))}" placeholder="Responsible operator"></label>'
+            '<label>Notes<input name="notes" placeholder="What happened?"></label>'
+            '<button class="secondary secondary--small" type="submit">Save progress</button></form></details>'
+        )
+
     inquiry_rows = "".join(
         f"""
         <tr>
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
           <td>{_esc(item.get("kind"))}</td>
           <td>{_esc(item.get("preferred_date") or "—")}</td>
-          <td>{_badge(str(item.get("status") or "new"))}</td>
+          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")}</span>{inquiry_lifecycle_action(item)}</td>
           <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
           <td>{(
             f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/retry-hubspot"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Retry HubSpot</button><span class="sub">{_esc(item.get("hubspot_error"))} · {int(item.get("hubspot_attempt_count") or 0)} attempt(s)</span></form>'
@@ -209,6 +244,41 @@ def render_building_page(
         """
         for item in inquiries
     ) or '<tr><td colspan="6"><div class="empty"><strong>No building inquiries yet.</strong><br>The public forms remain usable through their safe delivery fallback.</div></td></tr>'
+
+    inquiry_metrics = dict(analytics.get("inquiries") or {})
+    workspace_funnel = dict(analytics.get("workspace_funnel") or {})
+    event_funnel = dict(analytics.get("event_funnel") or {})
+    operation_metrics = dict(analytics.get("operations") or {})
+    finance_metrics = dict(analytics.get("finance") or {})
+    campaign_metrics = dict(analytics.get("campaigns") or {})
+
+    def _metric_value(value: Any, *, suffix: str = "") -> str:
+        if value is None:
+            return "Not enough evidence"
+        return f"{_esc(value)}{suffix}"
+
+    def _pct(value: Any) -> str:
+        if value is None:
+            return "Not enough evidence"
+        return f"{float(value) * 100:.1f}%"
+
+    workspace_funnel_rows = "".join(
+        f'<tr><td>{_esc(label.replace("_", " "))}</td><td><strong>{_esc(value)}</strong></td></tr>'
+        for label, value in workspace_funnel.items()
+    ) or '<tr><td colspan="2">No workspace funnel evidence yet.</td></tr>'
+    event_funnel_rows = "".join(
+        f'<tr><td>{_esc(label.replace("_", " "))}</td><td><strong>{_esc(value)}</strong></td></tr>'
+        for label, value in event_funnel.items()
+    ) or '<tr><td colspan="2">No event funnel evidence yet.</td></tr>'
+    source_performance_rows = "".join(
+        f"""<tr>
+          <td><strong>{_esc(item.get("source"))}</strong></td>
+          <td>{_esc(item.get("inquiries", 0))}</td>
+          <td>${int(item.get("invoiced_cents") or 0) / 100:,.2f}</td>
+          <td>${int(item.get("posted_collected_cents") or 0) / 100:,.2f}</td>
+        </tr>"""
+        for item in finance_metrics.get("by_source", [])
+    ) or '<tr><td colspan="4"><div class="empty"><strong>No attributable revenue yet.</strong><br>Source reporting begins when inquiries connect to bookings and invoices.</div></td></tr>'
 
     reservation_rows = "".join(
         f"""
@@ -415,9 +485,10 @@ def render_building_page(
             "next": "Triage or update the service request",
         })
     for item in inquiries:
-        if item.get("status") not in {"new", "crm_sync_needed"}:
-            continue
+        lifecycle_stage = str((item.get("lifecycle") or {}).get("stage") or "new")
         crm_failed = item.get("status") == "crm_sync_needed"
+        if lifecycle_stage != "new" and not crm_failed:
+            continue
         priority_items.append({
             "score": 75 if crm_failed else 65,
             "type": "Inquiry",
@@ -540,6 +611,21 @@ def render_building_page(
     <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
     <div class="grid">
       <section class="panel panel--wide" id="operator-queue"><div class="panel-head"><div><h2>Operator queue</h2><p>The highest-risk customer, revenue, readiness, and building-service actions in one place.</p></div><span class="count">{len(priority_items)} actions</span></div><div class="table-wrap"><table><thead><tr><th>Workstream</th><th>What needs attention</th><th>Next action</th></tr></thead><tbody>{priority_rows}</tbody></table></div></section>
+      <section class="panel panel--wide" id="building-performance">
+        <div class="panel-head"><div><h2>Building performance</h2><p>All-time funnel evidence with current operating and financial measures. Missing evidence stays visibly missing.</p></div><span class="count">{_esc(inquiry_metrics.get("total", 0))} inquiries</span></div>
+        <div class="metrics" aria-label="Building performance summary">
+          <div class="metric"><span>Median first response</span><strong>{_metric_value(inquiry_metrics.get("median_first_response_hours"), suffix=" hr")}</strong></div>
+          <div class="metric"><span>30-day scheduled utilization</span><strong>{_pct(operation_metrics.get("scheduled_utilization_30d"))}</strong></div>
+          <div class="metric"><span>Posted collected cash</span><strong>${int(finance_metrics.get("posted_collected_cents") or 0) / 100:,.0f}</strong></div>
+          <div class="metric"><span>Overdue receivables</span><strong>${int(finance_metrics.get("overdue_cents") or 0) / 100:,.0f}</strong></div>
+        </div>
+        <div class="grid">
+          <div><h3>Workspace funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{workspace_funnel_rows}</tbody></table></div></div>
+          <div><h3>Event funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{event_funnel_rows}</tbody></table></div></div>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Lead source</th><th>Inquiries</th><th>Invoiced</th><th>Posted collected</th></tr></thead><tbody>{source_performance_rows}</tbody></table></div>
+        <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
+      </section>
       <section class="panel">
         <div class="panel-head"><div><h2>Add or update a space</h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
         <form class="form-grid" method="post" action="/admin/building/spaces">
