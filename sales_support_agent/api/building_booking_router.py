@@ -22,6 +22,7 @@ from sales_support_agent.models.entities import (
     BuildingProposal,
     BuildingReservation,
     BuildingSpace,
+    BuildingTour,
 )
 from sales_support_agent.services.building_calendar import queue_calendar_projection
 from sales_support_agent.services.building_checklists import (
@@ -69,6 +70,7 @@ PROPOSAL_TRANSITIONS = {
     "declined": set(),
     "voided": set(),
 }
+TOUR_TERMINAL_STATUSES = {"completed", "cancelled", "no_show"}
 
 
 def _now() -> datetime:
@@ -138,6 +140,20 @@ class ProposalInput(BaseModel):
     valid_until: date | None = None
     document_url: str = Field(default="", max_length=1024)
     approved_by: str = Field(default="", max_length=255)
+    actor: str = Field(min_length=1, max_length=255)
+
+
+class TourInput(BaseModel):
+    id: str | None = Field(default=None, max_length=64)
+    scheduled_at: datetime
+    duration_minutes: int = Field(default=30, ge=15, le=240)
+    status: Literal["scheduled", "completed", "cancelled", "no_show"] = "scheduled"
+    host: str = Field(default="", max_length=255)
+    meeting_location: str = Field(default="Anata Building", max_length=255)
+    notes: str = Field(default="", max_length=4000)
+    outcome: str = Field(default="", max_length=64)
+    next_step: str = Field(default="", max_length=2000)
+    reason: str = Field(default="", max_length=1000)
     actor: str = Field(min_length=1, max_length=255)
 
 
@@ -341,6 +357,29 @@ def transition_reservation(
                 block.updated_at = _now()
             session.add(block)
             row.hold_expires_at = payload.hold_expires_at
+        if payload.target_status == "tour_scheduled":
+            latest_tour = session.execute(
+                select(BuildingTour)
+                .where(BuildingTour.reservation_id == row.id)
+                .order_by(BuildingTour.scheduled_at.desc())
+            ).scalars().first()
+            if latest_tour is None or latest_tour.status != "scheduled":
+                raise HTTPException(
+                    status_code=409,
+                    detail="A scheduled tour record is required.",
+                )
+        if payload.target_status == "tour_completed":
+            completed_tour = session.execute(
+                select(BuildingTour).where(
+                    BuildingTour.reservation_id == row.id,
+                    BuildingTour.status == "completed",
+                )
+            ).scalars().first()
+            if completed_tour is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A completed tour with an outcome is required.",
+                )
         if payload.target_status in {"proposal_sent", "quote_sent"}:
             latest_proposal = session.execute(
                 select(BuildingProposal)
@@ -424,6 +463,165 @@ def transition_reservation(
             after_json={"status": row.status, "reason": payload.reason},
         ))
         return {"ok": True, "reservation": _reservation_payload(row)}
+
+
+def _tour_payload(row: BuildingTour) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "reservation_id": row.reservation_id,
+        "scheduled_at": row.scheduled_at.isoformat(),
+        "duration_minutes": row.duration_minutes,
+        "status": row.status,
+        "host": row.host,
+        "meeting_location": row.meeting_location,
+        "notes": row.notes,
+        "outcome": row.outcome,
+        "next_step": row.next_step,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "cancelled_at": row.cancelled_at.isoformat() if row.cancelled_at else None,
+    }
+
+
+@router.get("/{reservation_id}/tours")
+def list_tours(
+    reservation_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        if session.get(BuildingReservation, reservation_id) is None:
+            raise HTTPException(status_code=404, detail="Reservation not found.")
+        rows = session.execute(
+            select(BuildingTour)
+            .where(BuildingTour.reservation_id == reservation_id)
+            .order_by(BuildingTour.scheduled_at.desc())
+        ).scalars().all()
+        return {"tours": [_tour_payload(row) for row in rows]}
+
+
+@router.post("/{reservation_id}/tours", status_code=201)
+def create_tour(
+    reservation_id: str,
+    payload: TourInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    if payload.status != "scheduled":
+        raise HTTPException(status_code=422, detail="New tours begin as scheduled.")
+    scheduled_at = payload.scheduled_at
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    if scheduled_at <= _now():
+        raise HTTPException(status_code=422, detail="Tour time must be in the future.")
+    with session_scope(request.app.state.session_factory) as session:
+        reservation = session.get(BuildingReservation, reservation_id)
+        if reservation is None:
+            raise HTTPException(status_code=404, detail="Reservation not found.")
+        if reservation.kind != "workspace":
+            raise HTTPException(status_code=422, detail="Tours belong to workspace journeys.")
+        row = BuildingTour(
+            id=payload.id or str(uuid4()),
+            reservation_id=reservation_id,
+            scheduled_at=scheduled_at,
+            duration_minutes=payload.duration_minutes,
+            status="scheduled",
+            host=payload.host.strip(),
+            meeting_location=payload.meeting_location.strip() or "Anata Building",
+            notes=payload.notes.strip(),
+            created_by=payload.actor,
+            updated_at=_now(),
+        )
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="tour",
+            entity_id=row.id,
+            action="tour_scheduled",
+            actor=payload.actor,
+            after_json={
+                "reservation_id": reservation_id,
+                "scheduled_at": row.scheduled_at.isoformat(),
+                "duration_minutes": row.duration_minutes,
+                "host": row.host,
+            },
+        ))
+        return {"ok": True, "tour": _tour_payload(row)}
+
+
+@router.put("/tours/{tour_id}")
+def update_tour(
+    tour_id: str,
+    payload: TourInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        row = session.get(BuildingTour, tour_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Tour not found.")
+        if row.status in TOUR_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail="Completed or closed tour evidence is immutable.")
+        scheduled_at = payload.scheduled_at
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+        previous_scheduled_at = row.scheduled_at
+        if previous_scheduled_at.tzinfo is None:
+            previous_scheduled_at = previous_scheduled_at.replace(tzinfo=timezone.utc)
+        rescheduled = scheduled_at != previous_scheduled_at
+        if rescheduled and scheduled_at <= _now():
+            raise HTTPException(status_code=422, detail="Rescheduled tour time must be in the future.")
+        if rescheduled and len(payload.reason.strip()) < 5:
+            raise HTTPException(status_code=422, detail="Rescheduling requires a reason.")
+        if payload.status == "completed" and (
+            len(payload.outcome.strip()) < 3 or len(payload.next_step.strip()) < 3
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Completed tours require an outcome and next step.",
+            )
+        if payload.status in {"cancelled", "no_show"} and len(payload.reason.strip()) < 5:
+            raise HTTPException(
+                status_code=422,
+                detail="Cancelled and no-show tours require a reason.",
+            )
+        before = {
+            "scheduled_at": row.scheduled_at.isoformat(),
+            "status": row.status,
+            "host": row.host,
+        }
+        row.scheduled_at = scheduled_at
+        row.duration_minutes = payload.duration_minutes
+        row.status = payload.status
+        row.host = payload.host.strip()
+        row.meeting_location = payload.meeting_location.strip() or "Anata Building"
+        row.notes = payload.notes.strip()
+        row.outcome = payload.outcome.strip()
+        row.next_step = payload.next_step.strip()
+        row.updated_at = _now()
+        if payload.status == "completed":
+            row.completed_at = _now()
+        if payload.status in {"cancelled", "no_show"}:
+            row.cancelled_at = _now()
+        session.add(row)
+        action = "tour_rescheduled" if rescheduled else f"tour_{payload.status}"
+        session.add(BuildingAuditEvent(
+            entity_type="tour",
+            entity_id=row.id,
+            action=action,
+            actor=payload.actor,
+            before_json=before,
+            after_json={
+                "scheduled_at": row.scheduled_at.isoformat(),
+                "status": row.status,
+                "host": row.host,
+                "outcome": row.outcome,
+                "next_step": row.next_step,
+                "reason": payload.reason.strip(),
+            },
+        ))
+        return {"ok": True, "tour": _tour_payload(row)}
 
 
 @router.get("/{reservation_id}/proposals")

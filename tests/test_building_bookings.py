@@ -18,6 +18,7 @@ try:
         BuildingDepositEvidence,
         BuildingProposal,
         BuildingReservation,
+        BuildingTour,
     )
     DEPS = True
 except ModuleNotFoundError as exc:
@@ -55,6 +56,21 @@ class BuildingBookingTests(unittest.TestCase):
                 "capacity": 120,
                 "status": "available",
                 "is_public": True,
+            },
+        )
+        if response.status_code != 200:
+            raise AssertionError(response.text)
+        response = cls.client.put(
+            "/api/internal/building/spaces/tour-office",
+            headers=cls.headers,
+            json={
+                "id": "tour-office",
+                "slug": "tour-office",
+                "name": "Tour Office",
+                "space_type": "private_office",
+                "capacity": 6,
+                "status": "available",
+                "is_public": False,
             },
         )
         if response.status_code != 200:
@@ -261,3 +277,113 @@ class BuildingBookingTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual([item["version"] for item in response.json()["proposals"]], [2, 1])
+
+    def test_07_tour_requires_evidence_and_never_blocks_inventory(self) -> None:
+        created = self.client.post(
+            "/api/internal/building/bookings",
+            headers=self.headers,
+            json={
+                "id": "workspace-tour",
+                "kind": "workspace",
+                "space_id": "tour-office",
+                "starts_at": self.start.isoformat(),
+                "ends_at": (self.start + timedelta(days=365)).isoformat(),
+                "deposit_required": False,
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(self._transition("workspace-tour", "qualified").status_code, 200)
+        blocked = self._transition("workspace-tour", "tour_scheduled")
+        self.assertEqual(blocked.status_code, 409)
+        with self.factory() as session:
+            block_count = session.query(BuildingAvailabilityBlock).count()
+        scheduled_at = datetime.now(timezone.utc) + timedelta(days=3)
+        scheduled = self.client.post(
+            "/api/internal/building/bookings/workspace-tour/tours",
+            headers=self.headers,
+            json={
+                "id": "tour-one",
+                "scheduled_at": scheduled_at.isoformat(),
+                "duration_minutes": 45,
+                "host": "host@example.com",
+                "meeting_location": "Front lobby",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(scheduled.status_code, 201, scheduled.text)
+        self.assertEqual(self._transition("workspace-tour", "tour_scheduled").status_code, 200)
+        with self.factory() as session:
+            self.assertEqual(session.query(BuildingAvailabilityBlock).count(), block_count)
+        missing_reason = self.client.put(
+            "/api/internal/building/bookings/tours/tour-one",
+            headers=self.headers,
+            json={
+                "scheduled_at": (scheduled_at + timedelta(days=1)).isoformat(),
+                "duration_minutes": 45,
+                "status": "scheduled",
+                "host": "host@example.com",
+                "meeting_location": "Front lobby",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(missing_reason.status_code, 422)
+        rescheduled_at = scheduled_at + timedelta(days=1)
+        rescheduled = self.client.put(
+            "/api/internal/building/bookings/tours/tour-one",
+            headers=self.headers,
+            json={
+                "scheduled_at": rescheduled_at.isoformat(),
+                "duration_minutes": 45,
+                "status": "scheduled",
+                "host": "host@example.com",
+                "meeting_location": "Front lobby",
+                "reason": "Customer requested a later date",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(rescheduled.status_code, 200, rescheduled.text)
+        incomplete = self.client.put(
+            "/api/internal/building/bookings/tours/tour-one",
+            headers=self.headers,
+            json={
+                "scheduled_at": rescheduled_at.isoformat(),
+                "duration_minutes": 45,
+                "status": "completed",
+                "host": "host@example.com",
+                "meeting_location": "Front lobby",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(incomplete.status_code, 422)
+        completed = self.client.put(
+            "/api/internal/building/bookings/tours/tour-one",
+            headers=self.headers,
+            json={
+                "scheduled_at": rescheduled_at.isoformat(),
+                "duration_minutes": 45,
+                "status": "completed",
+                "host": "host@example.com",
+                "meeting_location": "Front lobby",
+                "outcome": "good_fit",
+                "next_step": "Prepare office proposal",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(completed.status_code, 200, completed.text)
+        workflow = self._transition("workspace-tour", "tour_completed")
+        self.assertEqual(workflow.status_code, 200, workflow.text)
+        terminal_edit = self.client.put(
+            "/api/internal/building/bookings/tours/tour-one",
+            headers=self.headers,
+            json={
+                "scheduled_at": rescheduled_at.isoformat(),
+                "duration_minutes": 30,
+                "status": "scheduled",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(terminal_edit.status_code, 409)
+        with self.factory() as session:
+            tour = session.get(BuildingTour, "tour-one")
+            self.assertEqual(tour.outcome, "good_fit")

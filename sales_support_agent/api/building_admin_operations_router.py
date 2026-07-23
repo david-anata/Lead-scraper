@@ -29,12 +29,15 @@ from sales_support_agent.api.building_booking_router import (
     DepositInput,
     ProposalInput,
     ReservationInput,
+    TourInput,
     TransitionInput,
     create_reservation,
+    create_tour,
     record_agreement,
     record_deposit,
     record_proposal,
     transition_reservation,
+    update_tour,
 )
 from sales_support_agent.api.building_router import (
     InquiryInput,
@@ -367,6 +370,65 @@ def record_proposal_from_control_room(
         action,
         f"{proposal_type.title()} version {version} recorded as {status}.",
     )
+
+
+@router.post("/reservations/{reservation_id}/tours", dependencies=FORM_DEPS)
+def create_tour_from_control_room(
+    reservation_id: str,
+    request: Request,
+    scheduled_at: str = Form(...),
+    duration_minutes: int = Form(30),
+    host: str = Form(""),
+    meeting_location: str = Form("Anata Building"),
+    notes: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        payload = TourInput(
+            scheduled_at=_local_datetime(scheduled_at),
+            duration_minutes=duration_minutes,
+            status="scheduled",
+            host=host.strip(),
+            meeting_location=meeting_location.strip(),
+            notes=notes.strip(),
+            actor=_actor(user),
+        )
+        create_tour(reservation_id, payload, request, _internal_key(request))
+
+    return _run_form_action(action, "Tour scheduled. Inventory remains unchanged.")
+
+
+@router.post("/tours/{tour_id}", dependencies=FORM_DEPS)
+def update_tour_from_control_room(
+    tour_id: str,
+    request: Request,
+    scheduled_at: str = Form(...),
+    duration_minutes: int = Form(30),
+    status: str = Form(...),
+    host: str = Form(""),
+    meeting_location: str = Form("Anata Building"),
+    notes: str = Form(""),
+    outcome: str = Form(""),
+    next_step: str = Form(""),
+    reason: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        payload = TourInput(
+            scheduled_at=_local_datetime(scheduled_at),
+            duration_minutes=duration_minutes,
+            status=status,
+            host=host.strip(),
+            meeting_location=meeting_location.strip(),
+            notes=notes.strip(),
+            outcome=outcome.strip(),
+            next_step=next_step.strip(),
+            reason=reason.strip(),
+            actor=_actor(user),
+        )
+        update_tour(tour_id, payload, request, _internal_key(request))
+
+    return _run_form_action(action, f"Tour recorded as {status.replace('_', ' ')}.")
 
 
 @router.post("/reservations/{reservation_id}/deposits", dependencies=FORM_DEPS)

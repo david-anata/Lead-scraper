@@ -1781,6 +1781,38 @@ class BuildingProposal(Base):
     )
 
 
+class BuildingTour(Base):
+    """A scheduled workspace tour; it never reserves or blocks inventory."""
+
+    __tablename__ = "building_tours"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    status: Mapped[str] = mapped_column(String(32), default="scheduled", index=True)
+    host: Mapped[str] = mapped_column(String(255), default="")
+    meeting_location: Mapped[str] = mapped_column(String(255), default="Anata Building")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    outcome: Mapped[str] = mapped_column(String(64), default="")
+    next_step: Mapped[str] = mapped_column(Text, default="")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
 class BuildingDepositEvidence(Base):
     __tablename__ = "building_deposit_evidence"
 

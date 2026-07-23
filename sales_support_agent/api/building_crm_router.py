@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 from urllib.parse import urlencode
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -39,6 +40,7 @@ from sales_support_agent.models.entities import (
     BuildingSegment,
     BuildingServiceRequest,
     BuildingSuppression,
+    BuildingTour,
     BuildingInquiry,
     BuildingInvoice,
     BuildingOffering,
@@ -75,6 +77,7 @@ RELATIONSHIP_TYPES = {
 }
 MARKETING_STATUSES = {"unknown", "subscribed", "unsubscribed"}
 CONTACT_STATUSES = {"active", "inactive", "merged"}
+MOUNTAIN = ZoneInfo("America/Denver")
 
 
 def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
@@ -84,6 +87,11 @@ def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _mountain(value: datetime) -> datetime:
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(MOUNTAIN)
 
 
 def _require_internal_key(request: Request, provided: Optional[str]) -> None:
@@ -1701,6 +1709,11 @@ def building_control_room(
         latest_proposals: dict[str, BuildingProposal] = {}
         for proposal in proposal_rows:
             latest_proposals.setdefault(proposal.reservation_id, proposal)
+        tour_rows = session.execute(
+            select(BuildingTour)
+            .order_by(BuildingTour.scheduled_at.desc())
+            .limit(200)
+        ).scalars().all()
         invoice_rows = session.execute(
             select(BuildingInvoice)
             .order_by(BuildingInvoice.created_at.desc())
@@ -2072,6 +2085,28 @@ def building_control_room(
                 for item in checklist_rows
             ],
             service_requests=service_requests,
+            tours=[
+                {
+                    "id": item.id,
+                    "reservation_id": item.reservation_id,
+                    "space_name": space_names.get(
+                        reservations_by_id[item.reservation_id].space_id
+                        if item.reservation_id in reservations_by_id
+                        else "",
+                        "",
+                    ),
+                    "scheduled_at": _mountain(item.scheduled_at).strftime("%Y-%m-%dT%H:%M"),
+                    "scheduled_label": _mountain(item.scheduled_at).strftime("%b %d, %Y · %I:%M %p MT"),
+                    "duration_minutes": item.duration_minutes,
+                    "status": item.status,
+                    "host": item.host,
+                    "meeting_location": item.meeting_location,
+                    "notes": item.notes,
+                    "outcome": item.outcome,
+                    "next_step": item.next_step,
+                }
+                for item in tour_rows
+            ],
             privacy_requests=[
                 {
                     "id": item.id,

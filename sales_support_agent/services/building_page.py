@@ -44,6 +44,7 @@ def render_building_page(
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
+    tours: list[dict[str, Any]] | None = None,
     privacy_requests: list[dict[str, Any]] | None = None,
     analytics: dict[str, Any] | None = None,
     can_finance: bool = False,
@@ -53,6 +54,7 @@ def render_building_page(
 ) -> str:
     analytics = dict(analytics or {})
     privacy_requests = list(privacy_requests or [])
+    tours = list(tours or [])
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
@@ -341,6 +343,20 @@ def render_building_page(
                 <label>Reason<input name="reason" placeholder="Required context"></label>
                 <button class="secondary secondary--small" type="submit">Move workflow</button>
               </form>
+              {(
+                f'''<form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/tours">
+                  <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+                  <label>Tour time<input type="datetime-local" name="scheduled_at" required></label>
+                  <label>Duration<input type="number" name="duration_minutes" min="15" max="240" value="30"></label>
+                  <label>Host<input name="host" placeholder="Tour host"></label>
+                  <label>Meeting location<input name="meeting_location" value="Anata Building"></label>
+                  <label>Notes<textarea name="notes"></textarea></label>
+                  <button class="secondary secondary--small" type="submit">Schedule tour</button>
+                  <span class="sub">Scheduling a tour does not hold or reserve the office.</span>
+                </form>'''
+                if item.get("kind") == "workspace"
+                else ""
+              )}
               <form method="post" action="/admin/building/reservations/{_esc(item.get("id"))}/proposals">
                 <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
                 <label>{'Quote' if item.get("kind") == "event" else 'Proposal'} status<select name="status">{''.join(f'<option value="{state}"{" selected" if state == str((item.get("proposal") or {}).get("status") or "draft") else ""}>{state.title()}</option>' for state in ("draft", "approved", "sent", "accepted", "declined", "voided"))}</select></label>
@@ -377,6 +393,35 @@ def render_building_page(
         """
         for item in reservations
     ) or '<tr><td colspan="7"><div class="empty"><strong>No bookings or holds yet.</strong><br>An inquiry remains a lead until an operator starts the appropriate booking workflow.</div></td></tr>'
+
+    tour_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("space_name") or item.get("reservation_id"))}</strong><span class="sub">{_esc(item.get("meeting_location"))}</span></td>
+          <td>{_esc(item.get("scheduled_label"))}<span class="sub">{_esc(item.get("duration_minutes"))} minutes</span></td>
+          <td>{_badge(str(item.get("status") or "scheduled"))}</td>
+          <td>{_esc(item.get("host") or "Unassigned")}</td>
+          <td>{(
+            f'''<form class="inline-send" method="post" action="/admin/building/tours/{_esc(item.get("id"))}">
+              <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+              <input type="datetime-local" name="scheduled_at" value="{_esc(item.get("scheduled_at"))}" required aria-label="Tour time">
+              <input type="number" name="duration_minutes" min="15" max="240" value="{_esc(item.get("duration_minutes") or 30)}" aria-label="Tour duration">
+              <select name="status" aria-label="Tour status"><option value="scheduled">Scheduled / reschedule</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option><option value="no_show">No show</option></select>
+              <input name="host" value="{_esc(item.get("host"))}" placeholder="Host" aria-label="Tour host">
+              <input name="meeting_location" value="{_esc(item.get("meeting_location"))}" placeholder="Location" aria-label="Meeting location">
+              <input name="outcome" value="{_esc(item.get("outcome"))}" placeholder="Outcome required when complete">
+              <input name="next_step" value="{_esc(item.get("next_step"))}" placeholder="Next step required when complete">
+              <input name="reason" placeholder="Reason for reschedule/cancel/no-show">
+              <textarea name="notes" aria-label="Tour notes">{_esc(item.get("notes"))}</textarea>
+              <button class="secondary secondary--small" type="submit">Update tour</button>
+            </form>'''
+            if item.get("status") == "scheduled"
+            else f'<span class="sub">{_esc(item.get("outcome") or "Closed")} · {_esc(item.get("next_step"))}</span>'
+          )}</td>
+        </tr>
+        """
+        for item in tours
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No tours scheduled.</strong><br>Schedule one from a workspace booking. Tours never block inventory.</div></td></tr>'
 
     invoice_rows = "".join(
         f"""
@@ -844,6 +889,7 @@ def render_building_page(
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, proposal or quote, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Proposal / quote</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Upcoming and recent tours</h2><p>Tour schedule, host, completion outcome, and next step. Tours are visits—not inventory holds.</p></div><span class="count">{len(tours)} tours</span></div><div class="table-wrap"><table><thead><tr><th>Workspace</th><th>Time</th><th>Status</th><th>Host</th><th>Tour action</th></tr></thead><tbody>{tour_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">
           <div><h2>Calendar projection</h2><p>Agent remains authoritative. Approved holds and bookings are queued for Google Calendar; calendar edits never change a booking.</p></div>
