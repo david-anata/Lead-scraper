@@ -13,7 +13,7 @@ try:
     from fastapi.testclient import TestClient
     from sales_support_agent.main import app
     from sales_support_agent.models.database import create_session_factory, init_database
-    from sales_support_agent.models.entities import BuildingInquiry
+    from sales_support_agent.models.entities import BuildingAuditEvent, BuildingInquiry
     DEPS = True
 except ModuleNotFoundError as exc:
     if exc.name not in {"sqlalchemy", "fastapi"}:
@@ -64,7 +64,7 @@ class BuildingOperationsTests(unittest.TestCase):
                 "public_description": "A flexible gathering space.",
                 "internal_notes": "Never public.",
                 "features": ["Stage"],
-                "media": [{"src": "/media/arena-stage.webp", "alt": "The Arena stage"}],
+                "media": [{"src": "/media/legacy.webp", "alt": "Legacy unapproved media"}],
                 "is_public": True,
             },
         )
@@ -90,6 +90,62 @@ class BuildingOperationsTests(unittest.TestCase):
         public = self.client.get("/api/public/building/offerings").json()
         self.assertEqual(public["offerings"][0]["space"]["availability"], "available")
         self.assertNotIn("internal_notes", public["offerings"][0]["space"])
+        self.assertEqual(public["offerings"][0]["space"]["media"], [])
+
+    def test_space_media_requires_review_and_stays_attached_to_exact_space(self) -> None:
+        for media_id, approved, alt, order in (
+            ("arena-gallery", False, "", 1),
+            ("arena-card", True, "Open floor and stage inside The Arena", 0),
+        ):
+            response = self.client.put(
+                f"/api/internal/building/spaces/arena/media/{media_id}",
+                headers=self.internal_headers,
+                json={
+                    "id": media_id,
+                    "src": f"/media/{media_id}.webp",
+                    "kind": "image",
+                    "alt": alt,
+                    "placement": "card" if approved else "gallery",
+                    "sort_order": order,
+                    "approved": approved,
+                    "actor": "media-editor@example.com",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        invalid = self.client.put(
+            "/api/internal/building/spaces/arena/media/missing-alt",
+            headers=self.internal_headers,
+            json={
+                "id": "missing-alt",
+                "src": "http://insecure.example/image.jpg",
+                "approved": True,
+            },
+        )
+        self.assertEqual(invalid.status_code, 422)
+
+        public = self.client.get("/api/public/building/offerings").json()
+        media = public["offerings"][0]["space"]["media"]
+        self.assertEqual([item["id"] for item in media], ["arena-card"])
+        self.assertEqual(media[0]["placement"], "card")
+
+        removed = self.client.request(
+            "DELETE",
+            "/api/internal/building/spaces/arena/media/arena-card",
+            headers=self.internal_headers,
+            json={"actor": "media-editor@example.com", "reason": "Wrong room selected"},
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        public_after = self.client.get("/api/public/building/offerings").json()
+        self.assertEqual(public_after["offerings"][0]["space"]["media"], [])
+        with self.factory() as session:
+            audit = (
+                session.query(BuildingAuditEvent)
+                .filter(BuildingAuditEvent.entity_id == "arena:arena-card")
+                .order_by(BuildingAuditEvent.created_at.desc())
+                .first()
+            )
+            self.assertIsNotNone(audit)
+            self.assertEqual(audit.action, "removed")
 
     def test_inquiry_requires_secret_consent_and_idempotency(self) -> None:
         payload = {

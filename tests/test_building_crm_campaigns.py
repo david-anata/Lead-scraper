@@ -304,6 +304,35 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                 },
             )
             self.assertEqual(space.status_code, 303, space.text)
+            invalid_media = self.client.post(
+                "/admin/building/spaces/office-pilot/media",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "media_id": "office-pilot-card",
+                    "src": "/media/office-pilot.webp",
+                    "placement": "card",
+                    "approved": "true",
+                },
+            )
+            self.assertIn("error=", invalid_media.headers["location"])
+            media = self.client.post(
+                "/admin/building/spaces/office-pilot/media",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "media_id": "office-pilot-card",
+                    "src": "/media/office-pilot.webp",
+                    "kind": "image",
+                    "placement": "card",
+                    "alt": "Natural-light private office at The Anata Building",
+                    "sort_order": "0",
+                    "approved": "true",
+                },
+            )
+            self.assertEqual(media.status_code, 303, media.text)
             offering = self.client.post(
                 "/admin/building/offerings",
                 headers=browser_headers,
@@ -438,6 +467,8 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                 saved_campaign = session.get(BuildingCampaign, "pilot-welcome")
                 self.assertEqual(saved_space.capacity, 4)
                 self.assertTrue(saved_space.is_public)
+                self.assertEqual(saved_space.media_json[0]["id"], "office-pilot-card")
+                self.assertTrue(saved_space.media_json[0]["approved"])
                 self.assertEqual(saved_offering.space_id, saved_space.id)
                 self.assertTrue(saved_offering.is_published)
                 self.assertEqual(saved_contact.full_name, "Pilot Tenant")

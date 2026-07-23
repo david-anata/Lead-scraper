@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.resend import ResendClient
-from sales_support_agent.api.building_router import OfferingInput, SpaceInput
+from sales_support_agent.api.building_router import OfferingInput, SpaceInput, SpaceMediaInput
 from sales_support_agent.api.building_booking_router import (
     EVENT_TRANSITIONS,
     WORKSPACE_TRANSITIONS,
@@ -942,6 +942,106 @@ def save_space_from_control_room(
 
 
 @admin_router.post(
+    "/spaces/{space_id}/media",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_space_media_from_control_room(
+    space_id: str,
+    request: Request,
+    media_id: str = Form(...),
+    src: str = Form(...),
+    kind: str = Form("image"),
+    alt: str = Form(""),
+    placement: str = Form("gallery"),
+    caption: str = Form(""),
+    sort_order: int = Form(0),
+    approved: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = str(user.get("email") or "building-operator")
+    try:
+        payload = SpaceMediaInput(
+            id=media_id.strip().lower(),
+            src=src,
+            kind=kind,
+            alt=alt,
+            placement=placement,
+            caption=caption,
+            sort_order=sort_order,
+            approved=approved,
+            actor=actor,
+        )
+        stored = payload.as_storage_dict()
+    except (ValidationError, ValueError) as exc:
+        message = (
+            exc.errors()[0].get("msg", "Invalid media assignment.")
+            if isinstance(exc, ValidationError)
+            else str(exc)
+        )
+        return _building_redirect(error=message)
+    with session_scope(request.app.state.session_factory) as session:
+        space = session.get(BuildingSpace, space_id)
+        if space is None:
+            return _building_redirect(error="Space not found.")
+        current = [item for item in list(space.media_json or []) if isinstance(item, dict)]
+        before = next((dict(item) for item in current if item.get("id") == payload.id), {})
+        space.media_json = [
+            *[item for item in current if item.get("id") != payload.id],
+            stored,
+        ]
+        space.updated_at = _now()
+        session.add(space)
+        session.add(BuildingAuditEvent(
+            entity_type="space_media",
+            entity_id=f"{space.id}:{payload.id}",
+            action="upserted_from_control_room",
+            actor=actor,
+            before_json=before,
+            after_json=stored,
+        ))
+    state = "approved for public use" if payload.approved else "saved as draft"
+    return _building_redirect(notice=f"{payload.id} {state} on {space_id}.")
+
+
+@admin_router.post(
+    "/spaces/{space_id}/media/{media_id}/remove",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def remove_space_media_from_control_room(
+    space_id: str,
+    media_id: str,
+    request: Request,
+    reason: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    cleaned_reason = reason.strip()
+    if len(cleaned_reason) < 5:
+        return _building_redirect(error="Give a short reason for removing the media assignment.")
+    with session_scope(request.app.state.session_factory) as session:
+        space = session.get(BuildingSpace, space_id)
+        if space is None:
+            return _building_redirect(error="Space not found.")
+        current = [item for item in list(space.media_json or []) if isinstance(item, dict)]
+        before = next((dict(item) for item in current if item.get("id") == media_id), None)
+        if before is None:
+            return _building_redirect(error="Media assignment not found.")
+        space.media_json = [item for item in current if item.get("id") != media_id]
+        space.updated_at = _now()
+        session.add(space)
+        session.add(BuildingAuditEvent(
+            entity_type="space_media",
+            entity_id=f"{space.id}:{media_id}",
+            action="removed_from_control_room",
+            actor=user.get("email") or "building-operator",
+            before_json=before,
+            after_json={"reason": cleaned_reason},
+        ))
+    return _building_redirect(notice=f"{media_id} removed from {space_id}.")
+
+
+@admin_router.post(
     "/offerings",
     dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
@@ -1734,6 +1834,7 @@ def building_control_room(
                     "capacity": item.capacity,
                     "status": item.status,
                     "is_public": item.is_public,
+                    "media": list(item.media_json or []),
                 }
                 for item in space_rows
             ],

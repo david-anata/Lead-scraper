@@ -60,6 +60,41 @@ def _require_internal_key(request: Request, provided: Optional[str]) -> None:
 
 def _space_public_payload(space: BuildingSpace) -> dict[str, Any]:
     safe_status = space.status if space.status in {"available", "turnover"} else "contact"
+    def publishable(item: Any) -> bool:
+        if not isinstance(item, dict) or item.get("approved") is not True:
+            return False
+        media_id = str(item.get("id") or "")
+        src = str(item.get("src") or "").strip()
+        alt = str(item.get("alt") or "").strip()
+        kind = str(item.get("kind") or "image")
+        placement = str(item.get("placement") or "gallery")
+        return bool(
+            re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", media_id)
+            and alt
+            and kind in {"image", "video"}
+            and placement in {"hero", "card", "gallery", "floor_plan"}
+            and (
+                (src.startswith("/") and not src.startswith("//"))
+                or src.startswith("https://")
+            )
+        )
+
+    approved_media = sorted(
+        (
+            {
+                "id": str(item.get("id") or ""),
+                "src": str(item.get("src") or ""),
+                "kind": str(item.get("kind") or "image"),
+                "alt": str(item.get("alt") or ""),
+                "placement": str(item.get("placement") or "gallery"),
+                "caption": str(item.get("caption") or ""),
+                "sort_order": int(item.get("sort_order") or 0),
+            }
+            for item in list(space.media_json or [])
+            if publishable(item)
+        ),
+        key=lambda item: (item["sort_order"], item["id"]),
+    )
     return {
         "id": space.id,
         "slug": space.slug,
@@ -70,7 +105,7 @@ def _space_public_payload(space: BuildingSpace) -> dict[str, Any]:
         "availability": safe_status,
         "description": space.public_description,
         "features": list(space.features_json or []),
-        "media": list(space.media_json or []),
+        "media": approved_media,
         "updated_at": space.updated_at.isoformat(),
     }
 
@@ -142,6 +177,53 @@ class SpaceInput(BaseModel):
         if value not in SPACE_STATUSES:
             raise ValueError("Unsupported space status.")
         return value
+
+
+class SpaceMediaInput(BaseModel):
+    id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=64)
+    src: str = Field(min_length=1, max_length=1000)
+    kind: Literal["image", "video"] = "image"
+    alt: str = Field(default="", max_length=500)
+    placement: Literal["hero", "card", "gallery", "floor_plan"] = "gallery"
+    caption: str = Field(default="", max_length=500)
+    sort_order: int = Field(default=0, ge=0, le=10000)
+    approved: bool = False
+    actor: str = Field(default="internal-api", min_length=1, max_length=255)
+
+    @field_validator("src")
+    @classmethod
+    def valid_src(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not (
+            (cleaned.startswith("/") and not cleaned.startswith("//"))
+            or cleaned.startswith("https://")
+        ):
+            raise ValueError("Media source must be a root-relative path or HTTPS URL.")
+        return cleaned
+
+    @field_validator("alt", "caption", "actor", mode="before")
+    @classmethod
+    def clean_media_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    def as_storage_dict(self) -> dict[str, Any]:
+        if self.approved and not self.alt:
+            raise ValueError("Approved media requires descriptive alt text.")
+        return {
+            "id": self.id,
+            "src": self.src,
+            "kind": self.kind,
+            "alt": self.alt,
+            "placement": self.placement,
+            "caption": self.caption,
+            "sort_order": self.sort_order,
+            "approved": self.approved,
+        }
+
+
+class SpaceMediaDeleteInput(BaseModel):
+    actor: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=5, max_length=500)
 
 
 class OfferingInput(BaseModel):
@@ -421,6 +503,74 @@ def upsert_space(
             actor="internal-api", before_json=before, after_json=_space_public_payload(row),
         ))
         return {"ok": True, "space": _space_public_payload(row)}
+
+
+@internal_router.put("/spaces/{space_id}/media/{media_id}")
+def upsert_space_media(
+    space_id: str,
+    media_id: str,
+    payload: SpaceMediaInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    if payload.id != media_id:
+        raise HTTPException(status_code=422, detail="Media ID does not match route.")
+    try:
+        stored = payload.as_storage_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    with session_scope(request.app.state.session_factory) as session:
+        space = session.get(BuildingSpace, space_id)
+        if space is None:
+            raise HTTPException(status_code=404, detail="Space not found.")
+        current = [item for item in list(space.media_json or []) if isinstance(item, dict)]
+        before = next((dict(item) for item in current if item.get("id") == media_id), {})
+        remaining = [item for item in current if item.get("id") != media_id]
+        space.media_json = [*remaining, stored]
+        space.updated_at = _now()
+        session.add(space)
+        session.add(BuildingAuditEvent(
+            entity_type="space_media",
+            entity_id=f"{space_id}:{media_id}",
+            action="upserted",
+            actor=payload.actor,
+            before_json=before,
+            after_json=stored,
+        ))
+        session.flush()
+        return {"ok": True, "media": stored, "space": _space_public_payload(space)}
+
+
+@internal_router.delete("/spaces/{space_id}/media/{media_id}")
+def delete_space_media(
+    space_id: str,
+    media_id: str,
+    payload: SpaceMediaDeleteInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        space = session.get(BuildingSpace, space_id)
+        if space is None:
+            raise HTTPException(status_code=404, detail="Space not found.")
+        current = [item for item in list(space.media_json or []) if isinstance(item, dict)]
+        before = next((dict(item) for item in current if item.get("id") == media_id), None)
+        if before is None:
+            raise HTTPException(status_code=404, detail="Media assignment not found.")
+        space.media_json = [item for item in current if item.get("id") != media_id]
+        space.updated_at = _now()
+        session.add(space)
+        session.add(BuildingAuditEvent(
+            entity_type="space_media",
+            entity_id=f"{space_id}:{media_id}",
+            action="removed",
+            actor=payload.actor,
+            before_json=before,
+            after_json={"reason": payload.reason},
+        ))
+        return {"ok": True, "removed": media_id}
 
 
 @internal_router.put("/offerings/{offering_id}")

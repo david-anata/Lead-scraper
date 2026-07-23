@@ -87,6 +87,39 @@ def render_building_page(
         for item in spaces
     ) or '<tr><td colspan="5"><div class="empty"><strong>No spaces entered yet.</strong><br>Add the reviewed room inventory before publishing availability.</div></td></tr>'
 
+    media_blocks = "".join(
+        f"""
+        <article class="checklist-card">
+          <div class="checklist-head">
+            <div><strong>{_esc(space.get("name"))}</strong><span class="sub">{len(space.get("media", []))} assigned asset(s)</span></div>
+          </div>
+          <form class="form-grid" method="post" action="/admin/building/spaces/{_esc(space.get("id"))}/media">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <div class="field"><label>Stable media ID</label><input name="media_id" required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="office-201-hero"></div>
+            <div class="field"><label>Asset URL or site path</label><input name="src" required placeholder="/media/office-201.webp"></div>
+            <div class="field"><label>Type</label><select name="kind"><option value="image">Image</option><option value="video">Video</option></select></div>
+            <div class="field"><label>Placement</label><select name="placement"><option value="card">Availability card</option><option value="hero">Page hero</option><option value="gallery">Gallery</option><option value="floor_plan">Floor plan</option></select></div>
+            <div class="field"><label>Order</label><input name="sort_order" type="number" min="0" max="10000" value="0"></div>
+            <div class="field field--wide"><label>Descriptive alt text</label><input name="alt" placeholder="Required before public approval"></div>
+            <div class="field field--wide"><label>Caption</label><input name="caption" placeholder="Optional public context"></div>
+            <div class="form-actions"><label class="check"><input type="checkbox" name="approved" value="true"> Approved for this exact space and public use</label><button class="primary" type="submit">Assign media</button></div>
+          </form>
+          <div class="table-wrap"><table><thead><tr><th>Asset</th><th>Placement</th><th>Approval</th><th>Remove</th></tr></thead><tbody>
+            {''.join(
+                f'''<tr>
+                  <td><strong>{_esc(media.get("id"))}</strong><span class="sub">{_esc(media.get("src"))}</span><span class="sub">{_esc(media.get("alt") or "No alt text")}</span></td>
+                  <td>{_esc(media.get("kind", "image"))} · {_esc(media.get("placement", "gallery"))} · #{_esc(media.get("sort_order", 0))}</td>
+                  <td>{_badge("approved" if media.get("approved") else "draft")}</td>
+                  <td><form class="inline-send" method="post" action="/admin/building/spaces/{_esc(space.get("id"))}/media/{_esc(media.get("id"))}/remove"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><input name="reason" required minlength="5" placeholder="Removal reason"><button class="secondary secondary--small" type="submit">Remove</button></form></td>
+                </tr>'''
+                for media in sorted(space.get("media", []), key=lambda item: (int(item.get("sort_order") or 0), str(item.get("id") or "")))
+            ) or '<tr><td colspan="4"><div class="empty"><strong>No media assigned.</strong><br>Save a draft first, then approve it only after confirming the room and alt text.</div></td></tr>'}
+          </tbody></table></div>
+        </article>
+        """
+        for space in spaces
+    ) or '<div class="empty"><strong>No spaces available for media assignment.</strong><br>Add reviewed inventory first.</div>'
+
     contact_rows = "".join(
         f"""
         <tr>
@@ -702,6 +735,7 @@ def render_building_page(
         else '<section class="panel panel--wide"><div class="panel-head"><div><h2>Financial adjustments</h2><p>Refunds, credits, and write-offs require both Building and Finance access.</p></div></div></section>'
       )}
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Media assignments</h2><p>Attach images and videos to the exact physical space. Draft assets never reach the public site; approval requires descriptive alt text.</p></div></div><div class="checklist-list">{media_blocks}</div></section>
       <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th><th>Action</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
