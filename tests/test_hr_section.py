@@ -119,6 +119,12 @@ class HRSectionTests(unittest.TestCase):
             self.client.cookies.clear()
         self.assertEqual(response.status_code, 403)
 
+    def test_hr_reminder_job_fails_closed_without_internal_key(self):
+        response = self.client.post(
+            "/api/jobs/hr-reminders/run", follow_redirects=False
+        )
+        self.assertEqual(response.status_code, 403)
+
     def test_time_clock_and_pto_pages_are_live(self):
         page = self._get("/admin/hr/time", self.sa)
         self.assertEqual(page.status_code, 200)
