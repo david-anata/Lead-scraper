@@ -77,7 +77,7 @@ services:
       - key: PLAID_SECRET
         sync: false
       - key: PLAID_ENV
-        value: sandbox
+        value: production
       - key: PLAID_TOKEN_SECRET
         sync: false
       - key: PLAID_WEBHOOK_URL
