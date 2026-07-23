@@ -681,13 +681,24 @@ def create_inquiry(
         session.add(contact)
         session.flush()
         relationship_reference = f"inquiry:{inquiry.id}"
+        relationship_type = (
+            "waitlist"
+            if inquiry.kind == "workspace"
+            and str(payload.details.get("intent") or "").strip().lower()
+            == "waitlist"
+            else "prospect"
+        )
         session.add(BuildingRelationship(
             id=str(uuid4()),
             contact_id=contact.id,
-            relationship_type="prospect",
+            relationship_type=relationship_type,
             status="active",
             source_reference=relationship_reference,
-            metadata_json={"inquiry_kind": inquiry.kind, "offering_id": inquiry.offering_id},
+            metadata_json={
+                "inquiry_kind": inquiry.kind,
+                "offering_id": inquiry.offering_id,
+                "intent": str(payload.details.get("intent") or ""),
+            },
         ))
         preference = session.get(BuildingCommunicationPreference, contact.id)
         if preference is None:
@@ -821,40 +832,39 @@ def update_inquiry_lifecycle(
             lifecycle.setdefault("qualified_at", changed_at.isoformat())
         if payload.target_stage in {"closed_won", "closed_lost"}:
             lifecycle["closed_at"] = changed_at.isoformat()
-            prospect = session.execute(
+            inquiry_relationship = session.execute(
                 select(BuildingRelationship).where(
-                    BuildingRelationship.relationship_type == "prospect",
+                    BuildingRelationship.relationship_type.in_(
+                        ("prospect", "waitlist")
+                    ),
                     BuildingRelationship.source_reference == f"inquiry:{inquiry.id}",
                 )
             ).scalar_one_or_none()
-            if prospect is not None and prospect.status == "active":
-                prospect.status = "inactive"
-                prospect.ends_on = changed_at.date()
-                prospect.updated_at = changed_at
-                prospect_metadata = dict(prospect.metadata_json or {})
-                prospect_metadata.update({
+            if inquiry_relationship is not None and inquiry_relationship.status == "active":
+                inquiry_relationship.status = "inactive"
+                inquiry_relationship.ends_on = changed_at.date()
+                inquiry_relationship.updated_at = changed_at
+                relationship_metadata = dict(inquiry_relationship.metadata_json or {})
+                relationship_metadata.update({
                     "closed_at": changed_at.isoformat(),
                     "closed_by": payload.actor,
                     "outcome": (
                         "won" if payload.target_stage == "closed_won" else "lost"
                     ),
                 })
-                prospect.metadata_json = prospect_metadata
+                inquiry_relationship.metadata_json = relationship_metadata
                 session.add(BuildingAuditEvent(
                     entity_type="relationship",
-                    entity_id=prospect.id,
-                    action=(
-                        "prospect_won"
-                        if payload.target_stage == "closed_won"
-                        else "prospect_lost"
-                    ),
+                    entity_id=inquiry_relationship.id,
+                    action=f"{inquiry_relationship.relationship_type}_"
+                    + ("won" if payload.target_stage == "closed_won" else "lost"),
                     actor=payload.actor,
                     before_json={"status": "active"},
                     after_json={
                         "status": "inactive",
                         "inquiry_id": inquiry.id,
-                        "outcome": prospect_metadata["outcome"],
-                        "ends_on": prospect.ends_on.isoformat(),
+                        "outcome": relationship_metadata["outcome"],
+                        "ends_on": inquiry_relationship.ends_on.isoformat(),
                     },
                 ))
         inquiry_payload["_lifecycle"] = lifecycle

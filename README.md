@@ -190,6 +190,8 @@ Confirmed bookings also maintain CRM relationships automatically:
 - private-office availability published to the website is derived from active
   Agent holds and occupancy; known release dates are exposed without customer
   or contract details
+- future-office submissions create an explainable `waitlist` relationship
+  rather than mixing those contacts into ordinary office prospects
 - failed campaign deliveries can be retried without resending successful
   recipients; eligibility and suppression are rechecked at retry time
 
