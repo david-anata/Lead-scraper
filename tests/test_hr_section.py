@@ -477,6 +477,22 @@ class HRSectionTests(unittest.TestCase):
         }, _cookie("val@anatainc.com"))
         self.assertIn("correction_approved", approved.headers["location"])
 
+    def test_reports_include_accountant_registers(self):
+        page = self._get("/admin/hr/reports", self.sa)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("/admin/hr/reports/quarterly-register.csv", page.text)
+        self.assertIn("/admin/hr/reports/year-to-date-register.csv", page.text)
+
+        quarterly = self._get(
+            "/admin/hr/reports/quarterly-register.csv?year=2026&quarter=3", self.sa
+        )
+        self.assertEqual(quarterly.status_code, 200)
+        self.assertIn("gross_wages", quarterly.text)
+        self.assertIn(
+            'filename="anata-hr-quarterly-register-2026-q3.csv"',
+            quarterly.headers["content-disposition"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

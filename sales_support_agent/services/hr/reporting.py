@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import csv
+from datetime import date, timedelta
 from io import StringIO
 
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from sales_support_agent.models.hr import (
     HRContractorProfile,
     HREmployee,
     HREmploymentProfile,
+    HROpeningPayrollBalance,
     HRPayrollCalculation,
     HRPayrollRun,
     HRTaxLiability,
@@ -40,7 +42,9 @@ def _csv(headers: list[str], rows: list[list]) -> str:
     return output.getvalue()
 
 
-def export_csv(kind: str) -> str | None:
+def export_csv(
+    kind: str, *, year: int | None = None, quarter: int | None = None
+) -> str | None:
     with _session() as session:
         if kind == "employees":
             employees = session.query(HREmployee).order_by(HREmployee.email).all()
@@ -89,6 +93,68 @@ def export_csv(kind: str) -> str | None:
                     row.results_json.get("reimbursements_cents", 0) / 100,
                     row.results_json.get("net_cents", 0) / 100, row.snapshot_hash,
                 ] for row in rows],
+            )
+        if kind in {"quarterly-register", "year-to-date-register"}:
+            report_year = year or date.today().year
+            if kind == "quarterly-register":
+                report_quarter = min(max(quarter or 1, 1), 4)
+                start_month = 1 + (report_quarter - 1) * 3
+                start_date = date(report_year, start_month, 1)
+                if report_quarter == 4:
+                    end_date = date(report_year, 12, 31)
+                else:
+                    end_date = date(report_year, start_month + 3, 1) - timedelta(days=1)
+            else:
+                start_date = date(report_year, 1, 1)
+                end_date = date(report_year, 12, 31)
+            runs = {
+                row.base44_id: row for row in session.query(HRPayrollRun).filter(
+                    HRPayrollRun.pay_date >= start_date,
+                    HRPayrollRun.pay_date <= end_date,
+                    HRPayrollRun.status.in_(("approved", "checks_issued", "closed")),
+                ).all()
+            }
+            calculations = session.query(HRPayrollCalculation).filter(
+                HRPayrollCalculation.payroll_run_id.in_(list(runs) or [""])
+            ).order_by(
+                HRPayrollCalculation.employee_email,
+                HRPayrollCalculation.payroll_run_id,
+            ).all()
+            rows = []
+            if kind == "year-to-date-register":
+                for opening in session.query(HROpeningPayrollBalance).filter_by(
+                    tax_year=report_year
+                ).order_by(HROpeningPayrollBalance.employee_email).all():
+                    rows.append([
+                        "opening_balance", "", opening.employee_email, "",
+                        opening.gross_wages_cents / 100,
+                        opening.federal_withheld_cents / 100,
+                        opening.utah_withheld_cents / 100,
+                        opening.employee_ss_withheld_cents / 100,
+                        opening.employee_medicare_withheld_cents / 100,
+                        "", "", opening.source_note,
+                    ])
+            for calculation in calculations:
+                run = runs[calculation.payroll_run_id]
+                result = calculation.results_json or {}
+                rows.append([
+                    "payroll_run", calculation.payroll_run_id,
+                    calculation.employee_email, run.pay_date,
+                    result.get("taxable_gross_cents", 0) / 100,
+                    result.get("federal_cents", 0) / 100,
+                    result.get("utah_cents", 0) / 100,
+                    result.get("social_security_cents", 0) / 100,
+                    result.get("medicare_cents", 0) / 100,
+                    result.get("employer_taxes_cents", 0) / 100,
+                    result.get("net_cents", 0) / 100,
+                    calculation.snapshot_hash,
+                ])
+            return _csv(
+                ["source_type", "run_id", "employee_email", "pay_date",
+                 "gross_wages", "federal_withheld", "utah_withheld",
+                 "employee_social_security", "employee_medicare",
+                 "employer_taxes", "net_pay", "source_or_snapshot"],
+                rows,
             )
         if kind == "liabilities":
             rows = session.query(HRTaxLiability).order_by(HRTaxLiability.due_date).all()

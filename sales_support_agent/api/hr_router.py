@@ -436,13 +436,23 @@ async def hr_reports(request: Request, user: dict = Depends(_pay_guard)):
 
 
 @router.get("/reports/{kind}.csv")
-async def hr_report_csv(kind: str, user: dict = Depends(_pay_guard)):
-    content = reporting.export_csv(kind)
+async def hr_report_csv(
+    kind: str,
+    year: int | None = None,
+    quarter: int | None = None,
+    user: dict = Depends(_pay_guard),
+):
+    content = reporting.export_csv(kind, year=year, quarter=quarter)
     if content is None:
         return PlainTextResponse("Unknown HR export.", status_code=404)
+    suffix = ""
+    if year:
+        suffix += f"-{year}"
+    if quarter:
+        suffix += f"-q{quarter}"
     return PlainTextResponse(
         content, media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="anata-hr-{kind}.csv"',
+        headers={"Content-Disposition": f'attachment; filename="anata-hr-{kind}{suffix}.csv"',
                  "Cache-Control": "no-store"},
     )
 

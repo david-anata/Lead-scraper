@@ -857,6 +857,7 @@ def render_hr_offboarding(employees: list, checklists: list, *, user, flash=None
 
 
 def render_hr_reports(*, user) -> str:
+    today = date.today()
     exports = (
         ("employees", "Employee directory", "Employment status and setup; excludes SSNs."),
         ("time", "Time entries", "Exact punches, hours, and notes."),
@@ -871,10 +872,29 @@ def render_hr_reports(*, user) -> str:
         <td><a class="hr-btn hr-btn-light" href="/admin/hr/reports/{kind}.csv">Download CSV</a></td></tr>"""
         for kind, label, description in exports
     )
+    quarter_options = "".join(
+        f'<option value="{quarter}">Quarter {quarter}</option>'
+        for quarter in range(1, 5)
+    )
     body = f"""<h1 class="hr-h1">HR reports & exports</h1>
     <p class="hr-sub">Portable records for review, backup, accountant handoff, or a future payroll-provider migration.</p>
     <div class="hr-callout warn"><div class="hr-kicker">Sensitive records</div>
     <p>Exports intentionally exclude full Social Security numbers and sealed tax-election data. Store downloaded files securely.</p></div>
+    <div class="hr-grid2">
+      <form method="get" action="/admin/hr/reports/quarterly-register.csv" class="hr-card">
+        <div class="hr-kicker">Accountant handoff</div><h2>Quarterly payroll register</h2>
+        <p class="hr-sub">Approved payroll totals for federal, Utah, and unemployment filing reconciliation.</p>
+        <div class="hr-grid2"><div><label>Year</label><input type="number" name="year" min="2026" value="{today.year}" required></div>
+        <div><label>Quarter</label><select name="quarter">{quarter_options}</select></div></div>
+        <button class="hr-btn" type="submit">Download quarterly register</button>
+      </form>
+      <form method="get" action="/admin/hr/reports/year-to-date-register.csv" class="hr-card">
+        <div class="hr-kicker">Year-end preparation</div><h2>Year-to-date payroll register</h2>
+        <p class="hr-sub">Opening balances plus approved Anata payroll for W-2 and annual reconciliation.</p>
+        <label>Tax year</label><input type="number" name="year" min="2026" value="{today.year}" required>
+        <button class="hr-btn" type="submit">Download year-to-date register</button>
+      </form>
+    </div>
     <table class="hr-tbl"><thead><tr><th>Export</th><th>Action</th></tr></thead><tbody>{rows}</tbody></table>"""
     return hr_shell("Reports", "reports", body, user=user)
 

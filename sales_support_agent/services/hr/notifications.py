@@ -22,6 +22,7 @@ from sales_support_agent.models.hr import (
     HRTimeEntry,
 )
 from sales_support_agent.services.access.notify import _send
+from sales_support_agent.services.hr.store import ensure_annual_compliance_tasks
 
 
 @contextmanager
@@ -40,6 +41,7 @@ def _session():
 def reminder_items(today: date | None = None) -> list[dict]:
     """Return aggregate action items without compensation or sensitive values."""
     today = today or date.today()
+    ensure_annual_compliance_tasks(today.year)
     due_cutoff = today + timedelta(days=7)
     expiry_cutoff = today + timedelta(days=30)
     items: list[dict] = []
