@@ -157,6 +157,11 @@ async def employees_list(request: Request, user: dict = Depends(_guard)):
     ]
     if not _can_view_compensation(user):
         employees = [_hide_compensation(item) for item in employees]
+    else:
+        store.audit_sensitive_read(
+            user.get("email", ""), scope="compensation_directory",
+            purpose="employee list",
+        )
     return HTMLResponse(render_hr_employees(employees, user=user, flash=_flash(request)))
 
 
@@ -545,6 +550,9 @@ async def hr_pto_request(start_date: date = Form(...), end_date: date = Form(...
 
 @router.get("/reports", response_class=HTMLResponse)
 async def hr_reports(request: Request, user: dict = Depends(_reports_guard)):
+    store.audit_sensitive_read(
+        user.get("email", ""), scope="hr_reports", purpose="reports page"
+    )
     return HTMLResponse(render_hr_reports(user=user))
 
 
@@ -558,6 +566,10 @@ async def hr_report_csv(
     content = reporting.export_csv(kind, year=year, quarter=quarter)
     if content is None:
         return PlainTextResponse("Unknown HR export.", status_code=404)
+    store.audit_sensitive_read(
+        user.get("email", ""), scope="hr_export", entity_id=kind,
+        purpose="CSV download",
+    )
     suffix = ""
     if year:
         suffix += f"-{year}"
@@ -575,6 +587,10 @@ async def hr_backup_zip(
     year: int | None = None, user: dict = Depends(_reports_guard)
 ):
     report_year = year or date.today().year
+    store.audit_sensitive_read(
+        user.get("email", ""), scope="hr_backup", entity_id=report_year,
+        purpose="verified backup download",
+    )
     content = reporting.export_backup_zip(year=report_year)
     return Response(
         content,
@@ -839,7 +855,9 @@ async def hr_payroll_liability_action(
 async def hr_payroll_run_review(
     run_id: str, request: Request, user: dict = Depends(_pay_view_guard),
 ):
-    run = payroll_store.payroll_run_detail(run_id)
+    run = payroll_store.payroll_run_detail(
+        run_id, actor=user.get("email", "")
+    )
     if not run:
         return RedirectResponse("/admin/hr/payroll?err=run_not_found", status_code=303)
     return HTMLResponse(render_hr_payroll_run(run, user=user, flash=_flash(request)))
@@ -852,6 +870,10 @@ async def hr_payroll_provider_export(
     content = reporting.payroll_provider_csv(run_id)
     if content is None:
         return PlainTextResponse("Approved payroll not found.", status_code=404)
+    store.audit_sensitive_read(
+        user.get("email", ""), scope="provider_handoff", entity_id=run_id,
+        purpose="provider handoff download",
+    )
     return PlainTextResponse(
         content,
         media_type="text/csv; charset=utf-8",
@@ -951,6 +973,10 @@ async def hr_pay_statement_detail(run_id: str, request: Request,
 
 @router.get("/settings", response_class=HTMLResponse)
 async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
+    store.audit_sensitive_read(
+        user.get("email", ""), scope="payroll_settings",
+        purpose="tax and opening balance review",
+    )
     return HTMLResponse(render_hr_settings(
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
         store.list_employees(),

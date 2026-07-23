@@ -341,6 +341,17 @@ def list_compensation_changes(employee_email: str) -> list[dict]:
         } for row in rows]
 
 
+def audit_sensitive_read(
+    actor: str, *, scope: str, entity_id: object = "", purpose: str = ""
+) -> None:
+    """Record access to compensation, payroll, tax, or export material."""
+    with _session() as session:
+        _audit(
+            session, actor, "sensitive.read", scope, entity_id,
+            {"purpose": purpose[:120]},
+        )
+
+
 def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],
                               title: str = "", manager_email: str = "",
                               classification: str = "nonexempt",

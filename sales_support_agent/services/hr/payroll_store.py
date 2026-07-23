@@ -1132,7 +1132,9 @@ def approve_payroll(run_id: str, *, actor: str, approval_text: str) -> tuple[boo
         return True, "payroll_approved"
 
 
-def payroll_run_detail(run_id: str, *, employee_email: str | None = None) -> dict | None:
+def payroll_run_detail(
+    run_id: str, *, employee_email: str | None = None, actor: str | None = None
+) -> dict | None:
     with _session() as session:
         run = session.query(HRPayrollRun).filter_by(base44_id=run_id).first()
         if not run:
@@ -1143,6 +1145,11 @@ def payroll_run_detail(run_id: str, *, employee_email: str | None = None) -> dic
         calculations = query.order_by(HRPayrollCalculation.employee_email).all()
         if employee_email and calculations:
             _audit(session, employee_email, "pay_statement.viewed", "payroll_run", run_id)
+        elif actor:
+            _audit(
+                session, actor, "sensitive.read", "payroll_run", run_id,
+                {"purpose": "payroll review"},
+            )
         checks = {
             row.employee_email: row for row in session.query(HRPrintedCheck).filter(
                 HRPrintedCheck.payroll_run_id == run_id,
