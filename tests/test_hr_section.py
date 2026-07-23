@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/hr_section_test.db")
@@ -143,6 +144,35 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Payroll control room", page.text)
         self.assertIn("Payroll readiness", page.text)
         self.assertNotIn("compute gross/taxes/net and pay employees", page.text)
+
+    def test_check_and_tax_evidence_actions_redirect_with_result(self):
+        with mock.patch(
+            "sales_support_agent.api.hr_router.payroll_store.issue_printed_check",
+            return_value=(True, "check_issued"),
+        ):
+            issued = self._post("/admin/hr/payroll/runs/pay_test/checks", {
+                "employee_email": "david@anatainc.com", "check_number": "1001",
+            }, self.sa)
+        self.assertEqual(issued.status_code, 303)
+        self.assertEqual(
+            issued.headers["location"],
+            "/admin/hr/payroll/runs/pay_test?ok=check_issued",
+        )
+
+        with mock.patch(
+            "sales_support_agent.api.hr_router.payroll_store.record_liability_action",
+            return_value=(True, "liability_paid"),
+        ):
+            paid = self._post("/admin/hr/payroll/liabilities/17", {
+                "period_date": "2026-08-01", "action": "paid",
+                "confirmation_number": "EFTPS-1", "confirmed_amount": "100.00",
+                "filing_confirmation_number": "", "evidence_note": "Receipt reviewed",
+            }, self.sa)
+        self.assertEqual(paid.status_code, 303)
+        self.assertEqual(
+            paid.headers["location"],
+            "/admin/hr/payroll?period_date=2026-08-01&ok=liability_paid",
+        )
 
     def test_employee_can_only_see_own_employee_record_in_list(self):
         import uuid

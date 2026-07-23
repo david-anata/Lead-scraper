@@ -584,6 +584,10 @@ async def hr_payroll_liability_action(
         confirmed_amount=confirmed_amount, evidence_note=evidence_note,
         actor=user.get("email", ""),
     )
+    return RedirectResponse(
+        f"/admin/hr/payroll?period_date={period_date}&{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
 
 
 @router.get("/payroll/runs/{run_id}", response_class=HTMLResponse)
@@ -604,6 +608,10 @@ async def hr_payroll_issue_check(
     ok, message = payroll_store.issue_printed_check(
         run_id, employee_email=employee_email, check_number=check_number,
         actor=user.get("email", ""),
+    )
+    return RedirectResponse(
+        f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
+        status_code=303,
     )
 
 
@@ -631,10 +639,6 @@ async def hr_payroll_close_run(run_id: str, user: dict = Depends(_pay_guard)):
         f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
         status_code=303,
     )
-    return RedirectResponse(
-        f"/admin/hr/payroll/runs/{run_id}?{'ok' if ok else 'err'}={message}",
-        status_code=303,
-    )
 
 
 @router.get("/pay-statements", response_class=HTMLResponse)
@@ -654,10 +658,6 @@ async def hr_pay_statement_detail(run_id: str, request: Request,
     return HTMLResponse(render_hr_payroll_run(
         run, user=user, employee_view=True, flash=_flash(request)
     ))
-    return RedirectResponse(
-        f"/admin/hr/payroll?period_date={period_date}&{'ok' if ok else 'err'}={message}",
-        status_code=303,
-    )
 
 
 @router.get("/settings", response_class=HTMLResponse)
