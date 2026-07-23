@@ -560,12 +560,11 @@ def create_inquiry(
         )
         session.add(contact)
         session.flush()
-        relationship_type = "event_host" if inquiry.kind == "event" else "prospect"
         relationship_reference = f"inquiry:{inquiry.id}"
         session.add(BuildingRelationship(
             id=str(uuid4()),
             contact_id=contact.id,
-            relationship_type=relationship_type,
+            relationship_type="prospect",
             status="active",
             source_reference=relationship_reference,
             metadata_json={"inquiry_kind": inquiry.kind, "offering_id": inquiry.offering_id},
@@ -700,6 +699,42 @@ def update_inquiry_lifecycle(
             lifecycle.setdefault("qualified_at", changed_at.isoformat())
         if payload.target_stage in {"closed_won", "closed_lost"}:
             lifecycle["closed_at"] = changed_at.isoformat()
+            prospect = session.execute(
+                select(BuildingRelationship).where(
+                    BuildingRelationship.relationship_type == "prospect",
+                    BuildingRelationship.source_reference == f"inquiry:{inquiry.id}",
+                )
+            ).scalar_one_or_none()
+            if prospect is not None and prospect.status == "active":
+                prospect.status = "inactive"
+                prospect.ends_on = changed_at.date()
+                prospect.updated_at = changed_at
+                prospect_metadata = dict(prospect.metadata_json or {})
+                prospect_metadata.update({
+                    "closed_at": changed_at.isoformat(),
+                    "closed_by": payload.actor,
+                    "outcome": (
+                        "won" if payload.target_stage == "closed_won" else "lost"
+                    ),
+                })
+                prospect.metadata_json = prospect_metadata
+                session.add(BuildingAuditEvent(
+                    entity_type="relationship",
+                    entity_id=prospect.id,
+                    action=(
+                        "prospect_won"
+                        if payload.target_stage == "closed_won"
+                        else "prospect_lost"
+                    ),
+                    actor=payload.actor,
+                    before_json={"status": "active"},
+                    after_json={
+                        "status": "inactive",
+                        "inquiry_id": inquiry.id,
+                        "outcome": prospect_metadata["outcome"],
+                        "ends_on": prospect.ends_on.isoformat(),
+                    },
+                ))
         inquiry_payload["_lifecycle"] = lifecycle
         inquiry.payload_json = inquiry_payload
         if payload.assigned_owner.strip():

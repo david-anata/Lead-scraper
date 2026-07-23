@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         _apply_sqlite_compat_migrations(engine)
         ensure_finance_trust_schema(engine)
         _backfill_legacy_settlements(engine)
+        _repair_legacy_building_event_inquiries(session_factory)
         return
 
     # Production deployments use a persistent Postgres database. Running
@@ -104,6 +105,79 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
     _ensure_hr_columns(engine)
+    _repair_legacy_building_event_inquiries(session_factory)
+
+
+def _repair_legacy_building_event_inquiries(
+    session_factory: sessionmaker[Session],
+) -> int:
+    """Reclassify pre-lifecycle event inquiries from hosts to prospects.
+
+    Before confirmed event hosts became reservation-scoped, event inquiries were
+    incorrectly stored as active ``event_host`` relationships. The repair is
+    idempotent and leaves an audit event for every changed relationship.
+    """
+
+    from sales_support_agent.models.entities import (
+        BuildingAuditEvent,
+        BuildingInquiry,
+        BuildingRelationship,
+    )
+
+    repaired = 0
+    with session_factory() as session:
+        legacy_rows = session.execute(
+            select(BuildingRelationship).where(
+                BuildingRelationship.relationship_type == "event_host",
+                BuildingRelationship.source_reference.like("inquiry:%"),
+            )
+        ).scalars().all()
+        for relationship in legacy_rows:
+            inquiry_id = relationship.source_reference.removeprefix("inquiry:")
+            inquiry = session.get(BuildingInquiry, inquiry_id)
+            metadata = dict(relationship.metadata_json or {})
+            lifecycle = dict((inquiry.payload_json or {}).get("_lifecycle") or {}) if inquiry else {}
+            stage = str(lifecycle.get("stage") or "")
+            outcome = ""
+            if stage in {"closed_won", "closed_lost"}:
+                relationship.status = "inactive"
+                outcome = "won" if stage == "closed_won" else "lost"
+                metadata["outcome"] = outcome
+                closed_at = str(lifecycle.get("closed_at") or "")
+                try:
+                    relationship.ends_on = datetime.fromisoformat(
+                        closed_at.replace("Z", "+00:00")
+                    ).date()
+                except ValueError:
+                    relationship.ends_on = date.today()
+            relationship.relationship_type = "prospect"
+            relationship.updated_at = datetime.now(timezone.utc)
+            metadata.update({
+                "legacy_relationship_type": "event_host",
+                "reclassified_by": "system:migration",
+            })
+            relationship.metadata_json = metadata
+            session.add(BuildingAuditEvent(
+                entity_type="relationship",
+                entity_id=relationship.id,
+                action="legacy_event_inquiry_reclassified",
+                actor="system:migration",
+                before_json={"relationship_type": "event_host"},
+                after_json={
+                    "relationship_type": "prospect",
+                    "status": relationship.status,
+                    "inquiry_id": inquiry_id,
+                    "outcome": outcome,
+                },
+            ))
+            repaired += 1
+        if repaired:
+            session.commit()
+            logger.info(
+                "Reclassified %s legacy event inquiry relationship(s) as prospects.",
+                repaired,
+            )
+    return repaired
 
 
 def _ensure_building_tables(engine: Any) -> None:

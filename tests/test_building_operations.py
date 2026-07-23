@@ -12,11 +12,16 @@ os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir()
 try:
     from fastapi.testclient import TestClient
     from sales_support_agent.main import app
-    from sales_support_agent.models.database import create_session_factory, init_database
+    from sales_support_agent.models.database import (
+        _repair_legacy_building_event_inquiries,
+        create_session_factory,
+        init_database,
+    )
     from sales_support_agent.models.entities import (
         BuildingAuditEvent,
         BuildingContact,
         BuildingInquiry,
+        BuildingRelationship,
     )
     DEPS = True
 except ModuleNotFoundError as exc:
@@ -292,6 +297,13 @@ class BuildingOperationsTests(unittest.TestCase):
                 contact.metadata_json["_building_attribution"]["latest_touch"]["source"],
                 "anata-building",
             )
+            relationship = session.query(BuildingRelationship).one()
+            self.assertEqual(relationship.relationship_type, "prospect")
+            self.assertEqual(
+                relationship.metadata_json["inquiry_kind"],
+                "event",
+            )
+            self.assertEqual(relationship.status, "active")
 
     def test_inquiry_response_and_qualification_are_audited_separately_from_crm_sync(self) -> None:
         with self.factory() as session:
@@ -338,6 +350,49 @@ class BuildingOperationsTests(unittest.TestCase):
         self.assertEqual(analytics.status_code, 200, analytics.text)
         self.assertEqual(analytics.json()["inquiries"]["responded"], 1)
         self.assertEqual(analytics.json()["inquiries"]["by_source"]["anata-building"], 1)
+        won = self.client.post(
+            f"/api/internal/building/inquiries/{inquiry_id}/lifecycle",
+            headers=self.internal_headers,
+            json={
+                "target_stage": "closed_won",
+                "actor": "operator@example.com",
+                "channel": "email",
+                "notes": "Converted into the approved event workflow.",
+            },
+        )
+        self.assertEqual(won.status_code, 200, won.text)
+        with self.factory() as session:
+            relationship = session.query(BuildingRelationship).one()
+            self.assertEqual(relationship.status, "inactive")
+            self.assertEqual(relationship.metadata_json["outcome"], "won")
+            self.assertIsNotNone(relationship.ends_on)
+            audit = session.query(BuildingAuditEvent).filter_by(
+                entity_type="relationship",
+                entity_id=relationship.id,
+                action="prospect_won",
+            ).one()
+            self.assertEqual(audit.after_json["inquiry_id"], inquiry_id)
+            relationship.relationship_type = "event_host"
+            relationship.status = "active"
+            relationship.ends_on = None
+            session.commit()
+        self.assertEqual(
+            _repair_legacy_building_event_inquiries(self.factory),
+            1,
+        )
+        with self.factory() as session:
+            relationship = session.query(BuildingRelationship).one()
+            self.assertEqual(relationship.relationship_type, "prospect")
+            self.assertEqual(relationship.status, "inactive")
+            self.assertEqual(relationship.metadata_json["outcome"], "won")
+            self.assertEqual(
+                session.query(BuildingAuditEvent).filter_by(
+                    entity_type="relationship",
+                    entity_id=relationship.id,
+                    action="legacy_event_inquiry_reclassified",
+                ).count(),
+                1,
+            )
 
     def test_overlapping_availability_is_rejected(self) -> None:
         start = datetime.now(timezone.utc) + timedelta(days=3)
