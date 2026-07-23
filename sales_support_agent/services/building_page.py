@@ -41,6 +41,7 @@ def render_building_page(
     billing_accounts: list[dict[str, Any]],
     billing_schedules: list[dict[str, Any]],
     calendar_projections: list[dict[str, Any]],
+    checklists: list[dict[str, Any]],
     csrf_token: str = "",
     notice: str = "",
     error: str = "",
@@ -271,6 +272,34 @@ def render_building_page(
         """
         for item in calendar_projections
     ) or '<tr><td colspan="5"><div class="empty"><strong>No calendar projections queued.</strong><br>Approved holds and confirmed bookings will appear here automatically.</div></td></tr>'
+    checklist_blocks = "".join(
+        f"""
+        <div class="checklist-group">
+          <div class="checklist-head">
+            <div><strong>{_esc(checklist.get("title"))}</strong><span class="sub">{_esc(checklist.get("space_name") or checklist.get("reservation_id"))} · due {_esc(checklist.get("due_at") or "not set")} · owner {_esc(checklist.get("assigned_owner") or "unassigned")}</span></div>
+            {_badge(str(checklist.get("status") or "open"))}
+          </div>
+          <div class="table-wrap"><table><thead><tr><th>Operational item</th><th>State</th><th>Required</th><th>Update</th></tr></thead><tbody>
+            {''.join(
+              f'''<tr>
+                <td><strong>{_esc(item.get("label"))}</strong><span class="sub">{_esc(item.get("completion_reason"))}</span></td>
+                <td>{_badge(str(item.get("status") or "pending"))}</td>
+                <td>{"Yes" if item.get("is_required") else "No"}</td>
+                <td><form class="inline-send" method="post" action="/admin/building/checklists/items/{_esc(item.get("id"))}/status"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><select aria-label="Operational item status" name="status"><option value="completed">Complete</option><option value="waived">Waive</option><option value="pending">Reopen</option></select><input aria-label="Reason for waiver or change" name="reason" placeholder="Reason required to waive"><button class="secondary secondary--small" type="submit">Save</button></form></td>
+              </tr>'''
+              for item in checklist.get("items", [])
+            ) or '<tr><td colspan="4"><div class="empty">No checklist items.</div></td></tr>'}
+          </tbody></table></div>
+          <form class="checklist-add" method="post" action="/admin/building/checklists/{_esc(checklist.get("id"))}/items">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <label>Additional operation<input name="label" required placeholder="Add a booking-specific task"></label>
+            <label class="check"><input type="checkbox" name="is_required" value="true" checked> Required</label>
+            <button class="secondary secondary--small" type="submit">Add item</button>
+          </form>
+        </div>
+        """
+        for checklist in checklists
+    ) or '<div class="empty"><strong>No operational checklists yet.</strong><br>Confirming an event or workspace automatically creates the appropriate readiness checklist.</div>'
     segment_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} ({_esc(item.get("included_count", 0))} eligible)</option>'
         for item in segments
@@ -328,8 +357,9 @@ def render_building_page(
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
     .check{{display:flex;align-items:center;gap:9px;font-size:13px;}} .check input{{width:18px;min-height:18px;}} .check-stack{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;padding:11px;border:1px solid rgba(43,54,68,.14);border-radius:8px;}} .form-actions{{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--border);padding-top:16px;}} .form-note{{font-size:12px;color:rgba(43,54,68,.62);line-height:1.45;}} .primary,.secondary{{min-height:42px;border:0;border-radius:8px;background:var(--ink);color:#fff;padding:0 17px;font-weight:700;cursor:pointer;}} .primary:hover{{background:#17222d;}} .secondary{{border:1px solid var(--border);background:#fff;color:var(--ink);}} .secondary--small{{min-height:34px;padding:0 11px;font-size:12px;white-space:nowrap;}} .action-stack{{display:grid;gap:7px;min-width:210px;}} .inline-send{{display:flex;gap:6px;align-items:center;}} .inline-send input{{min-height:34px;padding:7px 8px;font-size:12px;}}
     .row-actions{{min-width:220px;}} .row-actions summary{{cursor:pointer;font-weight:700;color:#397a9d;}} .row-actions form{{display:grid;gap:7px;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:9px;background:#f8f8f6;}} .row-actions label{{display:grid;gap:4px;}} .row-actions input,.row-actions select{{min-height:34px;padding:7px 8px;font-size:12px;}}
+    .checklist-list{{display:grid;gap:14px;padding:18px 22px;}} .checklist-group{{border:1px solid var(--border);border-radius:10px;overflow:hidden;}} .checklist-head{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 16px;background:#f8f8f6;}} .checklist-add{{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;align-items:end;gap:10px;padding:12px 16px;border-top:1px solid var(--border);}} .checklist-add label:first-of-type{{display:grid;gap:5px;}}
     @media(max-width:900px){{.metrics{{grid-template-columns:1fr 1fr}}.metric:nth-child(2){{border-right:0}}.metric:nth-child(-n+2){{border-bottom:1px solid var(--border)}}.grid{{grid-template-columns:1fr}}.panel--wide{{grid-column:auto}}}}
-    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}.form-grid{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}}}
+    @media(max-width:600px){{.page-head{{align-items:start;flex-direction:column}}.metrics{{grid-template-columns:1fr}}.metric{{border-right:0;border-bottom:1px solid var(--border)!important}}.metric:last-child{{border-bottom:0!important}}.shell{{padding-inline:16px}}.form-grid{{grid-template-columns:1fr}}.field--wide{{grid-column:auto}}.form-actions{{grid-column:auto;align-items:stretch;flex-direction:column}}.checklist-add{{grid-template-columns:1fr;align-items:stretch}}}}
   </style>
 </head>
 <body>
@@ -485,6 +515,10 @@ def render_building_page(
           </form>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Booking</th><th>Desired action</th><th>Sync state</th><th>Google event</th><th>Updated</th></tr></thead><tbody>{calendar_projection_rows}</tbody></table></div>
+      </section>
+      <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Operational readiness</h2><p>Event, move-in, and move-out work stays attached to the booking. Required items must be completed or explicitly waived with a reason.</p></div><span class="count">{sum(1 for item in checklists if item.get("status") == "open")} open</span></div>
+        <div class="checklist-list">{checklist_blocks}</div>
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>

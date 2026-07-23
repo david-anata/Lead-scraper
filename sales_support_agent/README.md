@@ -184,6 +184,9 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `POST /api/internal/building/bookings`
 - `GET /api/internal/building/calendar/projections`
 - `POST /api/internal/building/calendar/sync`
+- `GET /api/internal/building/checklists`
+- `POST /api/internal/building/checklists/{checklist_id}/items`
+- `POST /api/internal/building/checklists/items/{item_id}/status`
 - `PUT /api/internal/building/billing/accounts/{account_id}`
 - `PUT /api/internal/building/billing/schedules/{schedule_id}`
 - `POST /api/internal/building/billing/schedules/{schedule_id}/approve`
@@ -234,6 +237,14 @@ write. Set `BUILDING_GOOGLE_CALENDAR_ID` and
 `BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON`, then share only the intended
 building calendar with that service-account email. Stable Google event IDs make
 retries idempotent; provider failures stay visible and retryable in the queue.
+
+Confirming an event creates an event-readiness and closeout checklist.
+Confirming a workspace creates a move-in checklist, and moving an occupied
+workspace to move-out creates a separate move-out checklist. Defaults cover the
+common handoffs without claiming that insurance, access, refund, or safety
+requirements have been satisfied. Operators can add booking-specific items.
+Checklist completion is derived from its required items; waiving a required
+item requires a reason and records the signed-in operator in the audit trail.
 
 The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires

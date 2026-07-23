@@ -1565,6 +1565,62 @@ class BuildingCalendarProjection(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingOperationalChecklist(Base):
+    """Audited event or tenant-operation checklist linked to one reservation."""
+
+    __tablename__ = "building_operational_checklists"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    checklist_type: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="")
+    due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "ix_building_operational_checklist_unique",
+            "reservation_id",
+            "checklist_type",
+            unique=True,
+        ),
+    )
+
+
+class BuildingOperationalChecklistItem(Base):
+    """One required, completed, or explicitly waived operational action."""
+
+    __tablename__ = "building_operational_checklist_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    checklist_id: Mapped[str] = mapped_column(
+        ForeignKey("building_operational_checklists.id"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    is_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    completion_reason: Mapped[str] = mapped_column(Text, default="")
+    completed_by: Mapped[str] = mapped_column(String(255), default="")
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class BuildingAgreement(Base):
     __tablename__ = "building_agreements"
 

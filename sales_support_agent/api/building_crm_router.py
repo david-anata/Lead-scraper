@@ -37,6 +37,8 @@ from sales_support_agent.models.entities import (
     BuildingInquiry,
     BuildingInvoice,
     BuildingOffering,
+    BuildingOperationalChecklist,
+    BuildingOperationalChecklistItem,
     BuildingReservation,
     BuildingSpace,
 )
@@ -1595,6 +1597,26 @@ def building_control_room(
             .order_by(BuildingCalendarProjection.updated_at.desc())
             .limit(100)
         ).scalars().all()
+        checklist_rows = session.execute(
+            select(BuildingOperationalChecklist)
+            .order_by(
+                BuildingOperationalChecklist.status,
+                BuildingOperationalChecklist.due_at,
+            )
+            .limit(100)
+        ).scalars().all()
+        checklist_item_rows = session.execute(
+            select(BuildingOperationalChecklistItem)
+            .where(
+                BuildingOperationalChecklistItem.checklist_id.in_(
+                    [item.id for item in checklist_rows]
+                )
+            )
+            .order_by(
+                BuildingOperationalChecklistItem.checklist_id,
+                BuildingOperationalChecklistItem.sort_order,
+            )
+        ).scalars().all() if checklist_rows else []
         space_names = {item.id: item.name for item in space_rows}
         reservations_by_id = {item.id: item for item in reservation_rows}
 
@@ -1759,6 +1781,39 @@ def building_control_room(
                     "updated_at": item.updated_at.strftime("%b %d, %Y · %I:%M %p"),
                 }
                 for item in calendar_projection_rows
+            ],
+            checklists=[
+                {
+                    "id": item.id,
+                    "reservation_id": item.reservation_id,
+                    "space_name": space_names.get(
+                        reservations_by_id[item.reservation_id].space_id
+                        if item.reservation_id in reservations_by_id
+                        else "",
+                        "",
+                    ),
+                    "title": item.title,
+                    "checklist_type": item.checklist_type,
+                    "status": item.status,
+                    "assigned_owner": item.assigned_owner,
+                    "due_at": (
+                        item.due_at.strftime("%b %d, %Y · %I:%M %p")
+                        if item.due_at
+                        else ""
+                    ),
+                    "items": [
+                        {
+                            "id": checklist_item.id,
+                            "label": checklist_item.label,
+                            "status": checklist_item.status,
+                            "is_required": checklist_item.is_required,
+                            "completion_reason": checklist_item.completion_reason,
+                        }
+                        for checklist_item in checklist_item_rows
+                        if checklist_item.checklist_id == item.id
+                    ],
+                }
+                for item in checklist_rows
             ],
             csrf_token=building_csrf_token(user),
             notice=notice[:300],

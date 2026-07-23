@@ -253,6 +253,7 @@ class BuildingCrmCampaignTests(unittest.TestCase):
             billing_accounts=[],
             billing_schedules=[],
             calendar_projections=[],
+            checklists=[],
         )
         self.assertIn("Building Control", body)
         self.assertIn("No spaces entered yet.", body)

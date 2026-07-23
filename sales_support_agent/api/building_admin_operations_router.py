@@ -37,6 +37,12 @@ from sales_support_agent.api.building_calendar_router import (
     CalendarSyncInput,
     sync_calendar_projections,
 )
+from sales_support_agent.api.building_checklist_router import (
+    ChecklistItemInput,
+    ChecklistItemStatusInput,
+    add_checklist_item,
+    update_checklist_item_status,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import BuildingBillingSchedule
 from sales_support_agent.services.auth_deps import require_tool
@@ -365,4 +371,53 @@ def sync_calendar_from_control_room(
         )
     return _redirect(
         notice=f"{result.get('synced_count', 0)} calendar item(s) synchronized."
+    )
+
+
+@router.post("/checklists/{checklist_id}/items", dependencies=FORM_DEPS)
+def add_checklist_item_from_control_room(
+    checklist_id: str,
+    request: Request,
+    label: str = Form(...),
+    is_required: bool = Form(False),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        add_checklist_item(
+            checklist_id,
+            ChecklistItemInput(
+                label=label.strip(),
+                is_required=is_required,
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(action, "Operational checklist item added.")
+
+
+@router.post("/checklists/items/{item_id}/status", dependencies=FORM_DEPS)
+def update_checklist_item_from_control_room(
+    item_id: str,
+    request: Request,
+    status: str = Form(...),
+    reason: str = Form(""),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    def action() -> None:
+        update_checklist_item_status(
+            item_id,
+            ChecklistItemStatusInput(
+                status=status,
+                reason=reason.strip(),
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+
+    return _run_form_action(
+        action,
+        f"Operational item marked {status.replace('_', ' ')}.",
     )
