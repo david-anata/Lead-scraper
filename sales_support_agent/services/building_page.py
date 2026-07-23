@@ -238,7 +238,7 @@ def render_building_page(
     campaign_rows = "".join(
         f"""
         <tr>
-          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("subject"))}</span></td>
+          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("subject"))}</span><span class="sub">{_esc(str(item.get("communication_class") or "marketing").replace("_", " ").title())}</span></td>
           <td>{_esc(item.get("segment_name") or "—")}</td>
           <td>{_esc(item.get("recipient_count", 0))}</td>
           <td>{_badge(str(item.get("status") or "draft"))}</td>
@@ -809,6 +809,7 @@ def render_building_page(
           <div class="field"><label for="campaign-id">Stable ID</label><input id="campaign-id" name="campaign_id" required placeholder="tenant-august-update"></div>
           <div class="field"><label for="campaign-name">Internal campaign name</label><input id="campaign-name" name="name" required placeholder="August tenant update"></div>
           <div class="field"><label for="campaign-segment">Audience</label><select id="campaign-segment" name="segment_id" required><option value="">Choose a reviewed audience</option>{segment_options}</select></div>
+          <div class="field"><label for="campaign-class">Message type</label><select id="campaign-class" name="communication_class"><option value="marketing">Optional marketing</option><option value="operational">Required tenant / event operations</option></select><span class="form-note">Operational notices only work with active tenant, tenant employee, or event host audiences. They cannot be used for promotions.</span></div>
           <div class="field"><label for="campaign-subject">Email subject</label><input id="campaign-subject" name="subject" required></div>
           <div class="field field--wide"><label for="campaign-body">Plain-text message</label><textarea id="campaign-body" name="body_text" required placeholder="Warm, useful, and specific."></textarea></div>
           <div class="form-actions"><span class="form-note">This button never sends email.</span><button class="primary" type="submit">Save campaign draft</button></div>

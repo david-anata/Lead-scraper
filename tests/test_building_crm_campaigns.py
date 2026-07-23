@@ -229,6 +229,97 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_05a_operational_notices_use_relationship_and_transactional_permission(self) -> None:
+        self._contact("contact-tenant-two", "tenant-two@example.com", "Terry Tenant")
+        self._relationship("contact-tenant-two", "tenant", "lease:2")
+        self._preference("contact-tenant-two", "unsubscribed")
+        draft = self.client.put(
+            "/api/internal/building/crm/campaigns/tenant-operations-1",
+            headers=self.headers,
+            json={
+                "id": "tenant-operations-1",
+                "name": "Tenant operations",
+                "segment_id": "current-tenants",
+                "communication_class": "operational",
+                "subject": "Required access update",
+                "body_text": "The north entrance will close at 6 p.m.",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(draft.status_code, 200, draft.text)
+        preview = self.client.post(
+            "/api/internal/building/crm/campaigns/tenant-operations-1/preview",
+            headers=self.headers,
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.json()["communication_class"], "operational")
+        self.assertEqual(preview.json()["included_count"], 2)
+        self.assertIn("marketing opt-out does not apply", preview.json()["permission_rule"])
+        with mock.patch(
+            "sales_support_agent.api.building_crm_router.ResendClient"
+        ) as client:
+            client.return_value.is_configured.return_value = True
+            self.client.post(
+                "/api/internal/building/crm/campaigns/tenant-operations-1/test-send",
+                headers=self.headers,
+                json={"email": "operator@example.com", "actor": "operator@example.com"},
+            )
+            approved = self.client.post(
+                "/api/internal/building/crm/campaigns/tenant-operations-1/approve",
+                headers=self.headers,
+                json={
+                    "preview_hash": preview.json()["preview_hash"],
+                    "actor": "approver@example.com",
+                },
+            )
+            self.assertEqual(approved.status_code, 200, approved.text)
+            with self.factory() as session:
+                preference = session.get(
+                    BuildingCommunicationPreference, "contact-tenant"
+                )
+                preference.transactional_allowed = False
+                session.commit()
+            response = self.client.post(
+                "/api/internal/building/crm/campaigns/tenant-operations-1/send",
+                headers=self.headers,
+                json={"actor": "operator@example.com"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["sent"], 1)
+        self.assertEqual(response.json()["suppressed"], 1)
+        delivered_text = client.return_value.send_message.call_args.kwargs["text"]
+        self.assertIn("required operational notice", delivered_text)
+        self.assertNotIn("/unsubscribe", delivered_text)
+
+    def test_05b_operational_campaign_rejects_prospect_audience(self) -> None:
+        prospect_segment = self.client.put(
+            "/api/internal/building/crm/segments/prospects-only",
+            headers=self.headers,
+            json={
+                "id": "prospects-only",
+                "name": "Prospects only",
+                "relationship_types": ["prospect"],
+                "marketing_statuses": ["subscribed"],
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(prospect_segment.status_code, 200, prospect_segment.text)
+        response = self.client.put(
+            "/api/internal/building/crm/campaigns/not-really-operational",
+            headers=self.headers,
+            json={
+                "id": "not-really-operational",
+                "name": "Invalid operational campaign",
+                "segment_id": "prospects-only",
+                "communication_class": "operational",
+                "subject": "Promotion disguised as operations",
+                "body_text": "This must fail closed.",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("active audience", response.text)
+
     def test_06_building_admin_requires_auth_and_is_in_tool_catalog(self) -> None:
         from sales_support_agent.services.access.catalog import ALL_TOOL_KEYS
 

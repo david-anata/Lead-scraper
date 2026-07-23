@@ -268,8 +268,11 @@ The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires
 `BUILDING_CAMPAIGN_TOKEN_SECRET` so unsubscribe links can be signed and verified.
 Marketing messages only include currently subscribed, unsuppressed recipients.
-Transactional tenant and booking messages remain a separate communication
-class and are not disabled by a marketing unsubscribe.
+Required operational notices may only target active tenant, tenant-employee,
+or event-host relationships. They are not disabled by a marketing unsubscribe,
+but still honor operational-email permission and an all-email suppression.
+Record-specific transactional tenant and booking messages remain separate from
+the bulk campaign workflow.
 
 Website and assisted-source inquiries remain durable even when HubSpot is
 unavailable. A partial contact or note failure changes the inquiry to

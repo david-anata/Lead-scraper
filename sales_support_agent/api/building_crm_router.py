@@ -79,6 +79,8 @@ RELATIONSHIP_TYPES = {
 }
 MARKETING_STATUSES = {"unknown", "subscribed", "unsubscribed"}
 CONTACT_STATUSES = {"active", "inactive", "merged"}
+CAMPAIGN_COMMUNICATION_CLASSES = {"marketing", "operational"}
+OPERATIONAL_RELATIONSHIP_TYPES = {"tenant", "tenant_employee", "event_host"}
 MOUNTAIN = ZoneInfo("America/Denver")
 
 
@@ -215,6 +217,7 @@ class CampaignInput(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=255)
     segment_id: str = Field(min_length=1, max_length=64)
+    communication_class: Literal["marketing", "operational"] = "marketing"
     subject: str = Field(min_length=1, max_length=255)
     body_text: str = Field(min_length=1, max_length=20000)
     actor: str = Field(default="", max_length=255)
@@ -282,7 +285,37 @@ def _contact_payload(
     }
 
 
-def _resolve_segment(session, segment: BuildingSegment) -> list[dict[str, Any]]:
+def _validate_campaign_segment(
+    segment: BuildingSegment,
+    communication_class: str,
+) -> None:
+    if communication_class not in CAMPAIGN_COMMUNICATION_CLASSES:
+        raise HTTPException(status_code=422, detail="Unsupported communication class.")
+    if communication_class != "operational":
+        return
+    rules = segment.rules_json or {}
+    relationship_types = set(rules.get("relationship_types") or [])
+    if (
+        not relationship_types
+        or not relationship_types.issubset(OPERATIONAL_RELATIONSHIP_TYPES)
+        or str(rules.get("relationship_status") or "active") != "active"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Operational notices require an active audience limited to tenants, "
+                "tenant employees, or event hosts."
+            ),
+        )
+
+
+def _resolve_segment(
+    session,
+    segment: BuildingSegment,
+    *,
+    communication_class: str = "marketing",
+) -> list[dict[str, Any]]:
+    _validate_campaign_segment(segment, communication_class)
     rules = segment.rules_json or {}
     wanted_types = set(rules.get("relationship_types") or [])
     wanted_relationship_status = str(rules.get("relationship_status") or "active")
@@ -309,10 +342,9 @@ def _resolve_segment(session, segment: BuildingSegment) -> list[dict[str, Any]]:
                 )
             ).scalars().all()
         }
-    suppressions = {
-        item.email
+    suppression_scopes = {
+        item.email: item.scope
         for item in session.execute(select(BuildingSuppression)).scalars().all()
-        if item.scope in {"marketing", "all"}
     }
 
     resolved: list[dict[str, Any]] = []
@@ -337,12 +369,20 @@ def _resolve_segment(session, segment: BuildingSegment) -> list[dict[str, Any]]:
             reasons.append(
                 ", ".join(sorted({item.relationship_type for item in eligible_relationships}))
             )
-        if marketing_status not in wanted_marketing:
-            exclusions.append(f"marketing status is {marketing_status}")
+        if communication_class == "marketing":
+            if marketing_status not in wanted_marketing:
+                exclusions.append(f"marketing status is {marketing_status}")
+            else:
+                reasons.append(f"marketing status is {marketing_status}")
+            if suppression_scopes.get(contact.email) in {"marketing", "all"}:
+                exclusions.append("email is suppressed for marketing")
         else:
-            reasons.append(f"marketing status is {marketing_status}")
-        if contact.email in suppressions:
-            exclusions.append("email is suppressed")
+            if preference is not None and not preference.transactional_allowed:
+                exclusions.append("required operational email is disabled")
+            else:
+                reasons.append("required operational email is allowed")
+            if suppression_scopes.get(contact.email) == "all":
+                exclusions.append("all email is suppressed")
         resolved.append(
             {
                 "contact": contact,
@@ -732,7 +772,11 @@ def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
     segment = session.get(BuildingSegment, campaign.segment_id)
     if segment is None or not segment.is_active:
         raise HTTPException(status_code=422, detail="Campaign segment is unavailable.")
-    resolved = _resolve_segment(session, segment)
+    resolved = _resolve_segment(
+        session,
+        segment,
+        communication_class=campaign.communication_class,
+    )
     included = [
         {
             "contact_id": item["contact"].id,
@@ -756,6 +800,7 @@ def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
         {
             "campaign_id": campaign.id,
             "segment_id": campaign.segment_id,
+            "communication_class": campaign.communication_class,
             "subject": campaign.subject,
             "body_text": campaign.body_text,
             "recipients": included,
@@ -765,12 +810,67 @@ def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
     )
     return {
         "campaign_id": campaign.id,
+        "communication_class": campaign.communication_class,
+        "permission_rule": (
+            "Subscribed marketing contacts only; marketing and all-email suppressions apply."
+            if campaign.communication_class == "marketing"
+            else (
+                "Active tenants, tenant employees, or event hosts with operational email "
+                "allowed; marketing opt-out does not apply, but all-email suppression does."
+            )
+        ),
+        "unsubscribe_behavior": (
+            "Includes the marketing unsubscribe link."
+            if campaign.communication_class == "marketing"
+            else "Does not include a marketing unsubscribe link."
+        ),
         "included": included,
         "excluded": excluded,
         "included_count": len(included),
         "excluded_count": len(excluded),
         "preview_hash": hashlib.sha256(canonical.encode()).hexdigest(),
     }
+
+
+def _current_campaign_eligibility(
+    session,
+    campaign: BuildingCampaign,
+) -> dict[str, dict[str, Any]]:
+    segment = session.get(BuildingSegment, campaign.segment_id)
+    if segment is None or not segment.is_active:
+        return {}
+    return {
+        item["contact"].id: item
+        for item in _resolve_segment(
+            session,
+            segment,
+            communication_class=campaign.communication_class,
+        )
+        if item["included"]
+    }
+
+
+def _campaign_delivery_text(
+    request: Request,
+    campaign: BuildingCampaign,
+    recipient: BuildingCampaignRecipient,
+) -> str:
+    if campaign.communication_class == "operational":
+        return (
+            f"{campaign.body_text.rstrip()}\n\n"
+            "This required operational notice is being sent because of your active "
+            "relationship with The Anata Building."
+        )
+    secret = _campaign_secret(request)
+    token = _unsubscribe_token(secret, recipient.contact_id, recipient.email)
+    unsubscribe_url = (
+        f"{str(request.base_url).rstrip('/')}/api/public/building/unsubscribe?"
+        + urlencode({"contact_id": recipient.contact_id, "token": token})
+    )
+    return (
+        f"{campaign.body_text.rstrip()}\n\n"
+        f"Stop receiving optional Anata Building news: {unsubscribe_url}"
+    )
 
 
 @internal_router.put("/contacts/{contact_id}")
@@ -1015,8 +1115,10 @@ def upsert_campaign(
     if payload.id != campaign_id:
         raise HTTPException(status_code=422, detail="Campaign ID does not match route.")
     with session_scope(request.app.state.session_factory) as session:
-        if session.get(BuildingSegment, payload.segment_id) is None:
+        segment = session.get(BuildingSegment, payload.segment_id)
+        if segment is None:
             raise HTTPException(status_code=422, detail="Unknown segment.")
+        _validate_campaign_segment(segment, payload.communication_class)
         row = session.get(BuildingCampaign, campaign_id)
         if row and row.status not in {"draft", "previewed"}:
             raise HTTPException(status_code=409, detail="Approved or sent campaigns are immutable.")
@@ -1025,12 +1127,14 @@ def upsert_campaign(
                 id=campaign_id,
                 name=payload.name,
                 segment_id=payload.segment_id,
+                communication_class=payload.communication_class,
                 subject=payload.subject,
                 body_text=payload.body_text,
                 created_by=payload.actor,
             )
         row.name = payload.name
         row.segment_id = payload.segment_id
+        row.communication_class = payload.communication_class
         row.subject = payload.subject
         row.body_text = payload.body_text
         row.status = "draft"
@@ -1045,7 +1149,12 @@ def upsert_campaign(
             entity_id=row.id,
             action="draft_saved",
             actor=payload.actor or "internal-api",
-            after_json={"name": row.name, "segment_id": row.segment_id, "subject": row.subject},
+            after_json={
+                "name": row.name,
+                "segment_id": row.segment_id,
+                "communication_class": row.communication_class,
+                "subject": row.subject,
+            },
         ))
         return {"ok": True, "campaign_id": row.id, "status": row.status}
 
@@ -1180,13 +1289,14 @@ def send_campaign(
     x_internal_api_key: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     _require_internal_key(request, x_internal_api_key)
-    secret = _campaign_secret(request)
     with session_scope(request.app.state.session_factory) as session:
         campaign = session.get(BuildingCampaign, campaign_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="Campaign not found.")
         if campaign.status != "approved":
             raise HTTPException(status_code=409, detail="Campaign must be approved before sending.")
+        if campaign.communication_class == "marketing":
+            _campaign_secret(request)
         client = ResendClient(request.app.state.settings)
         if not client.is_configured():
             raise HTTPException(status_code=503, detail="Email delivery is not configured.")
@@ -1195,6 +1305,7 @@ def send_campaign(
             .where(BuildingCampaignRecipient.campaign_id == campaign.id)
             .order_by(BuildingCampaignRecipient.id)
         ).scalars().all()
+        current_eligibility = _current_campaign_eligibility(session, campaign)
         sent = 0
         suppressed = 0
         failed = 0
@@ -1202,30 +1313,19 @@ def send_campaign(
         for recipient in recipients:
             if recipient.status != "approved":
                 continue
-            preference = session.get(BuildingCommunicationPreference, recipient.contact_id)
-            suppression = session.get(BuildingSuppression, recipient.email)
-            if (
-                preference is None
-                or preference.marketing_status != "subscribed"
-                or (suppression is not None and suppression.scope in {"marketing", "all"})
-            ):
+            eligibility = current_eligibility.get(recipient.contact_id)
+            if eligibility is None:
                 recipient.status = "suppressed"
-                recipient.exclusion_reason = "No current marketing permission or email is suppressed."
+                recipient.exclusion_reason = (
+                    "Contact no longer meets the current audience and permission rules."
+                )
                 suppressed += 1
                 continue
-            token = _unsubscribe_token(secret, recipient.contact_id, recipient.email)
-            unsubscribe_url = (
-                f"{str(request.base_url).rstrip('/')}/api/public/building/unsubscribe?"
-                + urlencode({"contact_id": recipient.contact_id, "token": token})
-            )
             try:
                 provider_message_id = client.send_message(
                     to=recipient.email,
                     subject=campaign.subject,
-                    text=(
-                        f"{campaign.body_text.rstrip()}\n\n"
-                        f"Stop receiving optional Anata Building news: {unsubscribe_url}"
-                    ),
+                    text=_campaign_delivery_text(request, campaign, recipient),
                 )
                 recipient.status = "sent"
                 recipient.provider_message_id = (
@@ -1722,6 +1822,7 @@ def save_campaign_from_control_room(
     campaign_id: str = Form(...),
     name: str = Form(...),
     segment_id: str = Form(...),
+    communication_class: str = Form("marketing"),
     subject: str = Form(...),
     body_text: str = Form(...),
     user: dict = Depends(require_tool("building.manage")),
@@ -1732,6 +1833,7 @@ def save_campaign_from_control_room(
             id=campaign_id.strip(),
             name=name.strip(),
             segment_id=segment_id.strip(),
+            communication_class=communication_class.strip(),
             subject=subject.strip(),
             body_text=body_text.strip(),
             actor=actor,
@@ -1739,8 +1841,13 @@ def save_campaign_from_control_room(
     except ValidationError as exc:
         return _building_redirect(error=exc.errors()[0].get("msg", "Invalid campaign."))
     with session_scope(request.app.state.session_factory) as session:
-        if session.get(BuildingSegment, payload.segment_id) is None:
+        segment = session.get(BuildingSegment, payload.segment_id)
+        if segment is None:
             return _building_redirect(error="Choose a saved audience.")
+        try:
+            _validate_campaign_segment(segment, payload.communication_class)
+        except HTTPException as exc:
+            return _building_redirect(error=str(exc.detail))
         row = session.get(BuildingCampaign, payload.id)
         if row and row.status not in {"draft", "previewed"}:
             return _building_redirect(error="Approved or sent campaigns are immutable.")
@@ -1749,12 +1856,14 @@ def save_campaign_from_control_room(
                 id=payload.id,
                 name=payload.name,
                 segment_id=payload.segment_id,
+                communication_class=payload.communication_class,
                 subject=payload.subject,
                 body_text=payload.body_text,
                 created_by=actor,
             )
         row.name = payload.name
         row.segment_id = payload.segment_id
+        row.communication_class = payload.communication_class
         row.subject = payload.subject
         row.body_text = payload.body_text
         row.status = "draft"
@@ -1772,6 +1881,7 @@ def save_campaign_from_control_room(
             after_json={
                 "name": row.name,
                 "segment_id": row.segment_id,
+                "communication_class": row.communication_class,
                 "subject": row.subject,
             },
         ))
@@ -1934,17 +2044,26 @@ def send_campaign_from_control_room(
     user: dict = Depends(require_tool("building.manage")),
 ) -> RedirectResponse:
     actor = user.get("email") or "building-operator"
-    secret = str(
-        getattr(request.app.state.settings, "building_campaign_token_secret", "") or ""
-    ).strip()
-    if not secret:
-        return _building_redirect(error="Campaign unsubscribe signing is not configured.")
     with session_scope(request.app.state.session_factory) as session:
         campaign = session.get(BuildingCampaign, campaign_id)
         if campaign is None:
             return _building_redirect(error="Campaign not found.")
         if campaign.status != "approved":
             return _building_redirect(error="Campaign must be approved before sending.")
+        if (
+            campaign.communication_class == "marketing"
+            and not str(
+                getattr(
+                    request.app.state.settings,
+                    "building_campaign_token_secret",
+                    "",
+                )
+                or ""
+            ).strip()
+        ):
+            return _building_redirect(
+                error="Campaign unsubscribe signing is not configured."
+            )
         expected_confirmation = f"SEND {campaign.id}"
         if confirmation.strip() != expected_confirmation:
             return _building_redirect(error=f"Type {expected_confirmation} to confirm delivery.")
@@ -1956,6 +2075,7 @@ def send_campaign_from_control_room(
             .where(BuildingCampaignRecipient.campaign_id == campaign.id)
             .order_by(BuildingCampaignRecipient.id)
         ).scalars().all()
+        current_eligibility = _current_campaign_eligibility(session, campaign)
         sent = 0
         suppressed = 0
         failed = 0
@@ -1963,32 +2083,19 @@ def send_campaign_from_control_room(
         for recipient in recipients:
             if recipient.status != "approved":
                 continue
-            preference = session.get(BuildingCommunicationPreference, recipient.contact_id)
-            suppression = session.get(BuildingSuppression, recipient.email)
-            if (
-                preference is None
-                or preference.marketing_status != "subscribed"
-                or (suppression is not None and suppression.scope in {"marketing", "all"})
-            ):
+            eligibility = current_eligibility.get(recipient.contact_id)
+            if eligibility is None:
                 recipient.status = "suppressed"
                 recipient.exclusion_reason = (
-                    "No current marketing permission or email is suppressed."
+                    "Contact no longer meets the current audience and permission rules."
                 )
                 suppressed += 1
                 continue
-            token = _unsubscribe_token(secret, recipient.contact_id, recipient.email)
-            unsubscribe_url = (
-                f"{str(request.base_url).rstrip('/')}/api/public/building/unsubscribe?"
-                + urlencode({"contact_id": recipient.contact_id, "token": token})
-            )
             try:
                 provider_message_id = client.send_message(
                     to=recipient.email,
                     subject=campaign.subject,
-                    text=(
-                        f"{campaign.body_text.rstrip()}\n\n"
-                        f"Stop receiving optional Anata Building news: {unsubscribe_url}"
-                    ),
+                    text=_campaign_delivery_text(request, campaign, recipient),
                 )
                 recipient.status = "sent"
                 recipient.provider_message_id = (
@@ -2225,6 +2332,7 @@ def building_control_room(
                 "id": item.id,
                 "name": item.name,
                 "subject": item.subject,
+                "communication_class": item.communication_class,
                 "segment_name": segment_names.get(item.segment_id, ""),
                 "recipient_count": recipient_counts.get(item.id, 0),
                 "status": item.status,
