@@ -232,3 +232,62 @@ class PayrollAuthority(Protocol):
     def status(self, provider_run_id: str) -> ProviderConfirmation:
         """Return the latest authoritative, evidenced state."""
 
+
+def contract_descriptor() -> dict:
+    """Return the public-safe, machine-readable integration requirements."""
+
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "purpose": "authoritative_payroll_service_boundary",
+        "authority_decision": "required_before_production",
+        "environments": ["sandbox", "production"],
+        "capabilities": list(ProviderCapabilities.__dataclass_fields__),
+        "states": [state.value for state in ProviderState],
+        "run_request": {
+            "required": [
+                "idempotency_key",
+                "anata_run_id",
+                "anata_version_hash",
+                "period_start",
+                "period_end",
+                "pay_date",
+                "approved_by",
+                "approved_at",
+                "employees",
+            ],
+            "employee_fields": list(EmployeePayrollInput.__dataclass_fields__),
+            "forbidden_fields": [
+                "ssn",
+                "social_security_number",
+                "bank_account",
+                "bank_routing_number",
+                "identity_document",
+                "w4_elections",
+            ],
+        },
+        "confirmation": {
+            "required": [
+                "provider_run_id",
+                "anata_run_id",
+                "anata_version_hash",
+                "state",
+                "occurred_at",
+                "evidence_reference",
+            ],
+            "authoritative_total_fields": list(
+                AuthoritativeTotals.__dataclass_fields__
+            ),
+        },
+        "production_gates": [
+            "authority_owner_recorded",
+            "production_capabilities_approved",
+            "secure_employee_profiles_ready",
+            "authentication_and_signed_webhooks_verified",
+            "idempotency_and_replay_tests_pass",
+            "independent_calculation_review_complete",
+            "opening_balances_reconciled",
+            "shadow_payroll_zero_unexplained_variance",
+            "david_cutover_approval",
+            "rollback_contingency_tested",
+        ],
+    }

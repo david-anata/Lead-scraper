@@ -13,7 +13,13 @@ from time import monotonic
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 
 from sales_support_agent.services.auth_deps import (
     require_all_tools,
@@ -26,6 +32,7 @@ from sales_support_agent.services.hr import store
 from sales_support_agent.services.hr import payroll_store
 from sales_support_agent.services.hr import workforce
 from sales_support_agent.services.hr import reporting
+from sales_support_agent.services.hr.provider_contract import contract_descriptor
 from sales_support_agent.services.hr.pages import (
     render_hr_coming_soon,
     render_hr_dashboard,
@@ -1044,6 +1051,27 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
         payroll_store.list_opening_balances(2026),
         user=user, flash=_flash(request)
     ))
+
+
+@router.get("/settings/provider-contract.json")
+async def hr_provider_contract(user: dict = Depends(_settings_guard)):
+    """Authenticated contract handoff for the internal payroll team."""
+
+    store.audit_sensitive_read(
+        user.get("email", ""),
+        scope="payroll_provider_contract",
+        purpose="internal payroll integration contract download",
+    )
+    return JSONResponse(
+        contract_descriptor(),
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": (
+                'attachment; filename="anata-internal-payroll-contract-2026-07-23.json"'
+            ),
+        },
+    )
 
 
 @router.post("/settings")

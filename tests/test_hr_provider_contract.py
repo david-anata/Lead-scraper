@@ -10,6 +10,7 @@ from sales_support_agent.services.hr.provider_contract import (
     ProviderConfirmation,
     ProviderManifest,
     ProviderState,
+    contract_descriptor,
     validate_confirmation,
 )
 
@@ -139,3 +140,11 @@ def test_run_payload_rejects_duplicate_employees_and_negative_values():
     with pytest.raises(ValueError, match="cannot be negative"):
         negative.validate()
 
+
+def test_machine_readable_contract_forbids_sensitive_run_fields():
+    descriptor = contract_descriptor()
+    assert descriptor["contract_version"] == "2026-07-23"
+    assert descriptor["authority_decision"] == "required_before_production"
+    assert "ssn" in descriptor["run_request"]["forbidden_fields"]
+    assert "bank_account" in descriptor["run_request"]["forbidden_fields"]
+    assert "taxes_filed" in descriptor["states"]

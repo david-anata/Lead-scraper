@@ -1149,6 +1149,12 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">HR & payroll settings</h1><p class="hr-sub">The policies currently approved for Anata.</p>
+    <section class="hr-callout warn">
+      <div class="hr-kicker">Internal payroll connection</div>
+      <h2>Integration contract ready · authority undecided</h2>
+      <p>Square is deferred. The future internal service must declare whether it owns final calculation, wage distribution, tax payment, and tax filing. Anata will not infer those outcomes.</p>
+      <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">Download machine-readable contract</a>
+    </section>
     <form class="hr-form" method="post" action="/admin/hr/settings/company">
       <div class="hr-kicker">Employer legal profile</div>
       <div class="hr-grid2"><div><label>Legal name</label><input name="legal_name" value="{_esc(company.get('legal_name'))}" required></div>

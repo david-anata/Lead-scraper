@@ -498,6 +498,31 @@ class HRSectionTests(unittest.TestCase):
             quarterly.headers["content-disposition"],
         )
 
+    def test_internal_payroll_contract_download_is_private_and_versioned(self):
+        response = self._get(
+            "/admin/hr/settings/provider-contract.json", self.sa
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(
+            response.json()["authority_decision"],
+            "required_before_production",
+        )
+        self.assertIn("ssn", response.json()["run_request"]["forbidden_fields"])
+        self.assertIn(
+            "anata-internal-payroll-contract-2026-07-23.json",
+            response.headers["content-disposition"],
+        )
+        import uuid
+        employee_email = f"contract-denied-{uuid.uuid4().hex[:8]}@anatainc.com"
+        user_id = access_store.upsert_user(employee_email, "Contract Denied")
+        access_store.set_user_permissions(user_id, ["hr.access"])
+        denied = self._get(
+            "/admin/hr/settings/provider-contract.json",
+            _cookie(employee_email),
+        )
+        self.assertEqual(denied.status_code, 403)
+
     def test_hr_backup_is_private_and_checksum_verifiable(self):
         import hashlib
         import io
