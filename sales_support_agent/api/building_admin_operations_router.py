@@ -33,6 +33,10 @@ from sales_support_agent.api.building_booking_router import (
     record_deposit,
     transition_reservation,
 )
+from sales_support_agent.api.building_router import (
+    InquiryRetryInput,
+    retry_inquiry_hubspot,
+)
 from sales_support_agent.api.building_calendar_router import (
     CalendarSyncInput,
     sync_calendar_projections,
@@ -531,3 +535,28 @@ def record_adjustment_evidence_from_control_room(
         action,
         "Financial adjustment evidence recorded.",
     )
+
+
+@router.post("/inquiries/{inquiry_id}/retry-hubspot", dependencies=FORM_DEPS)
+def retry_inquiry_hubspot_from_control_room(
+    inquiry_id: str,
+    request: Request,
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    try:
+        result = retry_inquiry_hubspot(
+            inquiry_id,
+            InquiryRetryInput(actor=_actor(user)),
+            request,
+            _internal_key(request),
+        )
+    except HTTPException as exc:
+        return _redirect(error=str(exc.detail))
+    if not result.get("ok"):
+        return _redirect(
+            error=(
+                str(result.get("error") or "HubSpot retry failed.")
+                + " The inquiry remains safely queued."
+            )
+        )
+    return _redirect(notice="Inquiry synchronized to HubSpot.")

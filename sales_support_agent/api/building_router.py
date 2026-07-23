@@ -12,6 +12,9 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.hubspot import HubSpotClient
+from sales_support_agent.services.building_hubspot_sync import (
+    sync_building_inquiry_to_hubspot,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
@@ -113,6 +116,10 @@ class InquiryInput(BaseModel):
     @classmethod
     def clean_text(cls, value: Any) -> str:
         return str(value or "").strip()
+
+
+class InquiryRetryInput(BaseModel):
+    actor: str = Field(min_length=1, max_length=255)
 
 
 class SpaceInput(BaseModel):
@@ -319,34 +326,58 @@ def create_inquiry(
 
         client = HubSpotClient(request.app.state.settings)
         if client.is_configured:
-            try:
-                created = client.create_contact({
-                    "email": inquiry.email,
-                    "firstname": inquiry.name,
-                    **({"phone": inquiry.phone} if inquiry.phone else {}),
-                })
-                inquiry.hubspot_contact_id = str((created or {}).get("id", "") or "")
-                contact.hubspot_contact_id = inquiry.hubspot_contact_id
-                if inquiry.hubspot_contact_id:
-                    client.create_contact_note(
-                        contact_id=inquiry.hubspot_contact_id,
-                        body=(
-                            f"Anata Building {inquiry.kind} inquiry."
-                            f"<br>Source: {inquiry.source}"
-                            f"<br>Preferred date: {inquiry.preferred_date or 'Not supplied'}"
-                            f"<br>Agent inquiry ID: {inquiry.id}"
-                        ),
-                    )
-            except Exception as exc:  # noqa: BLE001 - inquiry remains durable for retry
-                inquiry.status = "crm_sync_needed"
-                session.add(BuildingAuditEvent(
-                    entity_type="inquiry",
-                    entity_id=inquiry.id,
-                    action="hubspot_sync_failed",
-                    actor="building-site",
-                    after_json={"error": str(exc)[:500]},
-                ))
+            sync_building_inquiry_to_hubspot(
+                session=session,
+                inquiry=inquiry,
+                contact=contact,
+                client=client,
+                actor="building-site",
+            )
         return {"ok": True, "inquiry_id": inquiry.id, "status": inquiry.status, "duplicate": False}
+
+
+@internal_router.post("/inquiries/{inquiry_id}/retry-hubspot")
+def retry_inquiry_hubspot(
+    inquiry_id: str,
+    payload: InquiryRetryInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    client = HubSpotClient(request.app.state.settings)
+    if not client.is_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="HubSpot is not configured; the inquiry remains queued.",
+        )
+    with session_scope(request.app.state.session_factory) as session:
+        inquiry = session.get(BuildingInquiry, inquiry_id)
+        if inquiry is None:
+            raise HTTPException(status_code=404, detail="Inquiry not found.")
+        contact = session.execute(
+            select(BuildingContact).where(BuildingContact.email == inquiry.email)
+        ).scalar_one_or_none()
+        if contact is None:
+            raise HTTPException(
+                status_code=409,
+                detail="The linked building contact is missing; review the inquiry manually.",
+            )
+        ok = sync_building_inquiry_to_hubspot(
+            session=session,
+            inquiry=inquiry,
+            contact=contact,
+            client=client,
+            actor=payload.actor,
+        )
+        state = dict((inquiry.payload_json or {}).get("_hubspot_sync") or {})
+        return {
+            "ok": ok,
+            "inquiry_id": inquiry.id,
+            "status": inquiry.status,
+            "hubspot_contact_id": inquiry.hubspot_contact_id,
+            "attempt_count": int(state.get("attempt_count") or 0),
+            "error": str(state.get("last_error") or ""),
+        }
 
 
 @internal_router.put("/spaces/{space_id}")

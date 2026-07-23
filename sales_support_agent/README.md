@@ -179,6 +179,7 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/public/building/offerings`
 - `GET /api/public/building/availability`
 - `POST /api/public/building/inquiries`
+- `POST /api/internal/building/inquiries/{inquiry_id}/retry-hubspot`
 - `GET /admin/building`
 - `GET /api/internal/building/bookings`
 - `POST /api/internal/building/bookings`
@@ -256,6 +257,14 @@ server-to-server secret. Campaign delivery additionally requires
 Marketing messages only include currently subscribed, unsuppressed recipients.
 Transactional tenant and booking messages remain a separate communication
 class and are not disabled by a marketing unsubscribe.
+
+Website and assisted-source inquiries remain durable even when HubSpot is
+unavailable. A partial contact or note failure changes the inquiry to
+`crm_sync_needed`, stores the latest error and attempt count, and exposes a
+Retry HubSpot action in Building Control. Retry looks up the contact by exact
+email before creating one and reuses any stored HubSpot contact ID, preventing
+an ordinary retry from creating an uncontrolled duplicate. Success returns the
+inquiry to the new-lead queue and preserves the sync audit history.
 
 An inquiry is not a booking. Event and workspace reservations begin in
 `inquiry` and can move only through their approved state transitions. A

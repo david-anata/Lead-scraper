@@ -1715,6 +1715,21 @@ def building_control_room(
                     ),
                     "status": item.status,
                     "source": item.source,
+                    "source_reference": item.source_reference,
+                    "hubspot_contact_id": item.hubspot_contact_id,
+                    "hubspot_attempt_count": int(
+                        (
+                            (item.payload_json or {}).get("_hubspot_sync") or {}
+                        ).get("attempt_count")
+                        or 0
+                    ),
+                    "hubspot_error": str(
+                        (
+                            (item.payload_json or {}).get("_hubspot_sync") or {}
+                        ).get("last_error")
+                        or ""
+                    ),
+                    "id": item.id,
                 }
                 for item in inquiry_rows
             ],

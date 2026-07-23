@@ -346,6 +346,23 @@ class HubSpotClient:
             json_body={"properties": properties},
         )
 
+    def find_contact_by_email(self, email: str) -> dict[str, Any] | None:
+        """Return the existing HubSpot contact for an exact normalized email."""
+
+        results, _ = self.list_objects(
+            "contacts",
+            properties=CONTACT_PROPERTIES,
+            limit=1,
+            filter_groups=[{
+                "filters": [{
+                    "propertyName": "email",
+                    "operator": "EQ",
+                    "value": str(email or "").strip().lower(),
+                }]
+            }],
+        )
+        return results[0] if results else None
+
     def create_contact(self, properties: dict[str, str]) -> dict[str, Any]:
         """Create a new contact in HubSpot. Returns the created contact object."""
         return self._request(

@@ -161,11 +161,20 @@ def render_building_page(
           <td>{_esc(item.get("kind"))}</td>
           <td>{_esc(item.get("preferred_date") or "—")}</td>
           <td>{_badge(str(item.get("status") or "new"))}</td>
-          <td>{_esc(item.get("source"))}</td>
+          <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
+          <td>{(
+            f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/retry-hubspot"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Retry HubSpot</button><span class="sub">{_esc(item.get("hubspot_error"))} · {int(item.get("hubspot_attempt_count") or 0)} attempt(s)</span></form>'
+            if item.get("status") == "crm_sync_needed"
+            else (
+              f'<span class="sub">HubSpot {_esc(item.get("hubspot_contact_id"))}</span>'
+              if item.get("hubspot_contact_id")
+              else '<span class="sub">No CRM write configured</span>'
+            )
+          )}</td>
         </tr>
         """
         for item in inquiries
-    ) or '<tr><td colspan="5"><div class="empty"><strong>No building inquiries yet.</strong><br>The public forms remain usable through their safe delivery fallback.</div></td></tr>'
+    ) or '<tr><td colspan="6"><div class="empty"><strong>No building inquiries yet.</strong><br>The public forms remain usable through their safe delivery fallback.</div></td></tr>'
 
     reservation_rows = "".join(
         f"""
@@ -530,7 +539,7 @@ def render_building_page(
           <div class="form-actions"><span class="form-note">Saving remains a no-write draft.</span><button class="primary" type="submit">Save schedule draft</button></div>
         </form>
       </section>
-      <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand. Partial CRM failures stay queued without losing the lead.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th><th>CRM recovery</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide">
         <div class="panel-head">
