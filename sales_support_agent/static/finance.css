@@ -645,6 +645,7 @@ input:focus, select:focus, textarea:focus {
 
 .finance-source-readiness__label {
   display: grid;
+  grid-row: span 2;
   align-content: center;
   gap: 3px;
   color: #fff;
@@ -1384,6 +1385,7 @@ input:focus, select:focus, textarea:focus {
   .finance-control__header > div { min-width: 0; width: 100%; }
   .finance-control__tools { width: 100%; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
   .finance-source-readiness { grid-template-columns: 1fr; }
+  .finance-source-readiness__label { grid-row: auto; }
   .finance-source-readiness__item { border-top: 1px solid var(--line); border-left: 0; }
   .finance-trust-gate { grid-template-columns: 6px 1fr; }
   .finance-trust-gate__quality,
