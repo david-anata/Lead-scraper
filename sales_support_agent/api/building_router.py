@@ -8,7 +8,7 @@ from typing import Any, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.hubspot import HubSpotClient
@@ -28,6 +28,7 @@ from sales_support_agent.models.entities import (
     BuildingContact,
     BuildingInquiry,
     BuildingOffering,
+    BuildingRatePlan,
     BuildingRelationship,
     BuildingSuppression,
     BuildingSpace,
@@ -39,6 +40,7 @@ internal_router = APIRouter(prefix="/api/internal/building", tags=["building-int
 
 SPACE_STATUSES = {"available", "soft_hold", "contract_pending", "occupied", "turnover", "maintenance", "unavailable"}
 BLOCK_STATES = {"soft_hold", "contract_pending", "booked", "occupied", "turnover", "maintenance", "unavailable"}
+RATE_PLAN_STATUSES = {"draft", "approved", "retired"}
 INQUIRY_KINDS = {"tour", "event", "workspace"}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -115,17 +117,60 @@ def _space_public_payload(space: BuildingSpace) -> dict[str, Any]:
     }
 
 
-def _offering_public_payload(offering: BuildingOffering, space: BuildingSpace | None) -> dict[str, Any]:
+def _rate_plan_public_payload(rate_plan: BuildingRatePlan | None) -> dict[str, Any] | None:
+    if rate_plan is None:
+        return None
+    return {
+        "id": rate_plan.id,
+        "version": rate_plan.version,
+        "name": rate_plan.name,
+        "currency": rate_plan.currency,
+        "public_price_display": rate_plan.public_price_display,
+        "booking_unit": rate_plan.booking_unit,
+        "minimum_units": rate_plan.minimum_units,
+        "deposit": {
+            "type": rate_plan.deposit_type,
+            "amount_cents": (
+                rate_plan.deposit_amount_cents
+                if rate_plan.deposit_type == "fixed"
+                else None
+            ),
+            "percent": (
+                rate_plan.deposit_percent_bps / 100
+                if rate_plan.deposit_type == "percent"
+                else None
+            ),
+        },
+        "cancellation_policy": rate_plan.cancellation_policy,
+        "included": list(rate_plan.included_json or []),
+        "addons": list(rate_plan.addons_json or []),
+        "effective_from": rate_plan.effective_from.isoformat(),
+        "effective_until": (
+            rate_plan.effective_until.isoformat()
+            if rate_plan.effective_until
+            else None
+        ),
+    }
+
+
+def _offering_public_payload(
+    offering: BuildingOffering,
+    space: BuildingSpace | None,
+    rate_plan: BuildingRatePlan | None = None,
+) -> dict[str, Any]:
     return {
         "id": offering.id,
         "slug": offering.slug,
         "name": offering.name,
         "offering_type": offering.offering_type,
         "description": offering.public_description,
-        "price_display": offering.price_display,
-        "booking_unit": offering.booking_unit,
+        "price_display": (
+            rate_plan.public_price_display if rate_plan else offering.price_display
+        ),
+        "booking_unit": rate_plan.booking_unit if rate_plan else offering.booking_unit,
         "call_to_action": offering.call_to_action,
         "features": list(offering.features_json or []),
+        "rate_plan": _rate_plan_public_payload(rate_plan),
         "space": _space_public_payload(space) if space and space.is_public else None,
         "updated_at": offering.updated_at.isoformat(),
     }
@@ -259,6 +304,48 @@ class OfferingInput(BaseModel):
     is_published: bool = False
 
 
+class RatePlanInput(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    version: int = Field(default=1, ge=1)
+    name: str = Field(min_length=1, max_length=255)
+    status: Literal["draft", "approved", "retired"] = "draft"
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    unit_amount_cents: int = Field(default=0, ge=0)
+    public_price_display: str = Field(default="", max_length=128)
+    booking_unit: str = Field(default="custom", max_length=32)
+    minimum_units: int = Field(default=1, ge=1)
+    deposit_type: Literal["none", "fixed", "percent"] = "none"
+    deposit_amount_cents: int = Field(default=0, ge=0)
+    deposit_percent_bps: int = Field(default=0, ge=0, le=10000)
+    cancellation_policy: str = Field(default="", max_length=4000)
+    included: list[str] = Field(default_factory=list)
+    addons: list[dict[str, Any]] = Field(default_factory=list)
+    effective_from: date
+    effective_until: date | None = None
+    approved_by: str = Field(default="", max_length=255)
+    actor: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def valid_commercial_terms(self) -> "RatePlanInput":
+        if self.effective_until and self.effective_until < self.effective_from:
+            raise ValueError("Rate-plan end date precedes its start date.")
+        if self.deposit_type == "fixed" and self.deposit_amount_cents <= 0:
+            raise ValueError("A fixed deposit requires a positive amount.")
+        if self.deposit_type == "percent" and self.deposit_percent_bps <= 0:
+            raise ValueError("A percentage deposit requires a positive percentage.")
+        if self.status == "approved":
+            if self.unit_amount_cents <= 0:
+                raise ValueError("An approved rate plan requires a positive unit price.")
+            if not self.public_price_display.strip():
+                raise ValueError("An approved rate plan requires public price wording.")
+            if not self.cancellation_policy.strip():
+                raise ValueError("An approved rate plan requires a cancellation policy.")
+            if not self.approved_by.strip():
+                raise ValueError("An approved rate plan requires an approver.")
+        self.currency = self.currency.upper()
+        return self
+
+
 class AvailabilityInput(BaseModel):
     id: str | None = Field(default=None, max_length=64)
     space_id: str = Field(min_length=1, max_length=64)
@@ -283,6 +370,7 @@ class AvailabilityInput(BaseModel):
 @public_router.get("/offerings")
 def list_public_offerings(request: Request) -> dict[str, Any]:
     with session_scope(request.app.state.session_factory) as session:
+        today = _now().date()
         offerings = session.execute(
             select(BuildingOffering)
             .where(BuildingOffering.is_published.is_(True))
@@ -295,9 +383,33 @@ def list_public_offerings(request: Request) -> dict[str, Any]:
                 select(BuildingSpace).where(BuildingSpace.id.in_(space_ids))
             ).scalars().all()
         } if space_ids else {}
+        offering_ids = [item.id for item in offerings]
+        current_rate_plans: dict[str, BuildingRatePlan] = {}
+        if offering_ids:
+            for rate_plan in session.execute(
+                select(BuildingRatePlan)
+                .where(
+                    BuildingRatePlan.offering_id.in_(offering_ids),
+                    BuildingRatePlan.status == "approved",
+                    BuildingRatePlan.effective_from <= today,
+                    (
+                        BuildingRatePlan.effective_until.is_(None)
+                        | (BuildingRatePlan.effective_until >= today)
+                    ),
+                )
+                .order_by(
+                    BuildingRatePlan.offering_id,
+                    BuildingRatePlan.version.desc(),
+                )
+            ).scalars().all():
+                current_rate_plans.setdefault(rate_plan.offering_id, rate_plan)
         return {
             "offerings": [
-                _offering_public_payload(item, spaces.get(item.space_id or ""))
+                _offering_public_payload(
+                    item,
+                    spaces.get(item.space_id or ""),
+                    current_rate_plans.get(item.id),
+                )
                 for item in offerings
             ],
             "updated_at": max((item.updated_at for item in offerings), default=_now()).isoformat(),
@@ -316,7 +428,21 @@ def get_public_offering(slug: str, request: Request) -> dict[str, Any]:
         if offering is None:
             raise HTTPException(status_code=404, detail="Offering not found.")
         space = session.get(BuildingSpace, offering.space_id) if offering.space_id else None
-        return _offering_public_payload(offering, space)
+        today = _now().date()
+        rate_plan = session.execute(
+            select(BuildingRatePlan)
+            .where(
+                BuildingRatePlan.offering_id == offering.id,
+                BuildingRatePlan.status == "approved",
+                BuildingRatePlan.effective_from <= today,
+                (
+                    BuildingRatePlan.effective_until.is_(None)
+                    | (BuildingRatePlan.effective_until >= today)
+                ),
+            )
+            .order_by(BuildingRatePlan.version.desc())
+        ).scalars().first()
+        return _offering_public_payload(offering, space, rate_plan)
 
 
 @public_router.get("/availability")
@@ -760,6 +886,146 @@ def upsert_offering(
         ))
         space = session.get(BuildingSpace, row.space_id) if row.space_id else None
         return {"ok": True, "offering": _offering_public_payload(row, space)}
+
+
+def _rate_plan_internal_payload(row: BuildingRatePlan) -> dict[str, Any]:
+    return {
+        **(_rate_plan_public_payload(row) or {}),
+        "offering_id": row.offering_id,
+        "status": row.status,
+        "unit_amount_cents": row.unit_amount_cents,
+        "deposit_amount_cents": row.deposit_amount_cents,
+        "deposit_percent_bps": row.deposit_percent_bps,
+        "approved_by": row.approved_by,
+        "approved_at": row.approved_at.isoformat() if row.approved_at else None,
+        "created_by": row.created_by,
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+@internal_router.get("/offerings/{offering_id}/rate-plans")
+def list_rate_plans(
+    offering_id: str,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    with session_scope(request.app.state.session_factory) as session:
+        if session.get(BuildingOffering, offering_id) is None:
+            raise HTTPException(status_code=404, detail="Offering not found.")
+        rows = session.execute(
+            select(BuildingRatePlan)
+            .where(BuildingRatePlan.offering_id == offering_id)
+            .order_by(BuildingRatePlan.version.desc())
+        ).scalars().all()
+        return {"rate_plans": [_rate_plan_internal_payload(row) for row in rows]}
+
+
+@internal_router.put("/offerings/{offering_id}/rate-plans/{rate_plan_id}")
+def upsert_rate_plan(
+    offering_id: str,
+    rate_plan_id: str,
+    payload: RatePlanInput,
+    request: Request,
+    x_internal_api_key: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    _require_internal_key(request, x_internal_api_key)
+    if payload.id != rate_plan_id:
+        raise HTTPException(status_code=422, detail="Rate-plan ID does not match route.")
+    with session_scope(request.app.state.session_factory) as session:
+        offering = session.get(BuildingOffering, offering_id)
+        if offering is None:
+            raise HTTPException(status_code=404, detail="Offering not found.")
+        row = session.get(BuildingRatePlan, rate_plan_id)
+        before = _rate_plan_internal_payload(row) if row else {}
+        if row is not None and row.offering_id != offering_id:
+            raise HTTPException(status_code=409, detail="Rate plan belongs to another offering.")
+        if row is not None and row.status in {"approved", "retired"}:
+            if row.status == "approved" and payload.status == "retired":
+                row.status = "retired"
+                row.updated_at = _now()
+                session.add(BuildingAuditEvent(
+                    entity_type="rate_plan",
+                    entity_id=row.id,
+                    action="retired",
+                    actor=payload.actor,
+                    before_json=before,
+                    after_json={"status": "retired"},
+                ))
+                return {"ok": True, "rate_plan": _rate_plan_internal_payload(row)}
+            raise HTTPException(
+                status_code=409,
+                detail="Approved or retired rate-plan terms are immutable; create a new version.",
+            )
+        version_conflict = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == offering_id,
+                BuildingRatePlan.version == payload.version,
+                BuildingRatePlan.id != rate_plan_id,
+            )
+        ).scalar_one_or_none()
+        if version_conflict is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="That rate-plan version already exists for this offering.",
+            )
+        if payload.status == "approved":
+            another_approved = session.execute(
+                select(BuildingRatePlan).where(
+                    BuildingRatePlan.offering_id == offering_id,
+                    BuildingRatePlan.status == "approved",
+                    BuildingRatePlan.id != rate_plan_id,
+                )
+            ).scalar_one_or_none()
+            if another_approved is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Retire the current approved rate plan before approving a replacement.",
+                )
+        if row is None:
+            row = BuildingRatePlan(
+                id=rate_plan_id,
+                offering_id=offering_id,
+                version=payload.version,
+                name=payload.name,
+                effective_from=payload.effective_from,
+                created_by=payload.actor,
+            )
+        for key, value in {
+            "version": payload.version,
+            "name": payload.name.strip(),
+            "status": payload.status,
+            "currency": payload.currency,
+            "unit_amount_cents": payload.unit_amount_cents,
+            "public_price_display": payload.public_price_display.strip(),
+            "booking_unit": payload.booking_unit.strip(),
+            "minimum_units": payload.minimum_units,
+            "deposit_type": payload.deposit_type,
+            "deposit_amount_cents": payload.deposit_amount_cents,
+            "deposit_percent_bps": payload.deposit_percent_bps,
+            "cancellation_policy": payload.cancellation_policy.strip(),
+            "included_json": payload.included,
+            "addons_json": payload.addons,
+            "effective_from": payload.effective_from,
+            "effective_until": payload.effective_until,
+            "updated_at": _now(),
+        }.items():
+            setattr(row, key, value)
+        if payload.status == "approved":
+            row.approved_by = payload.approved_by.strip()
+            row.approved_at = _now()
+        session.add(row)
+        session.flush()
+        after = _rate_plan_internal_payload(row)
+        session.add(BuildingAuditEvent(
+            entity_type="rate_plan",
+            entity_id=row.id,
+            action="approved" if row.status == "approved" else "draft_saved",
+            actor=payload.actor,
+            before_json=before,
+            after_json=after,
+        ))
+        return {"ok": True, "rate_plan": after}
 
 
 @internal_router.post("/availability", status_code=201)

@@ -20,6 +20,7 @@ from sales_support_agent.models.entities import (
     BuildingInquiry,
     BuildingOffering,
     BuildingProposal,
+    BuildingRatePlan,
     BuildingReservation,
     BuildingSpace,
     BuildingTour,
@@ -136,6 +137,7 @@ class ProposalInput(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=3)
     amount_cents: int = Field(default=0, ge=0)
     line_items: list[dict[str, Any]] = Field(default_factory=list)
+    rate_plan_id: str | None = Field(default=None, max_length=64)
     terms_summary: str = Field(default="", max_length=4000)
     valid_until: date | None = None
     document_url: str = Field(default="", max_length=1024)
@@ -648,6 +650,8 @@ def list_proposals(
                 "currency": row.currency,
                 "amount_cents": row.amount_cents,
                 "line_items": list(row.line_items_json or []),
+                "rate_plan_id": row.rate_plan_id,
+                "rate_plan_snapshot": dict(row.rate_plan_snapshot_json or {}),
                 "terms_summary": row.terms_summary,
                 "valid_until": row.valid_until.isoformat() if row.valid_until else None,
                 "document_url": row.document_url,
@@ -691,6 +695,29 @@ def record_proposal(
                 status_code=422,
                 detail=f"{reservation.kind.title()} reservations use {expected_type} records.",
             )
+        selected_rate_plan: BuildingRatePlan | None = None
+        if payload.rate_plan_id:
+            selected_rate_plan = session.get(BuildingRatePlan, payload.rate_plan_id)
+            if selected_rate_plan is None:
+                raise HTTPException(status_code=422, detail="Rate plan not found.")
+            if selected_rate_plan.offering_id != reservation.offering_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Rate plan does not belong to the reservation offering.",
+                )
+            reservation_date = reservation.starts_at.date()
+            if (
+                selected_rate_plan.status != "approved"
+                or selected_rate_plan.effective_from > reservation_date
+                or (
+                    selected_rate_plan.effective_until is not None
+                    and selected_rate_plan.effective_until < reservation_date
+                )
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Rate plan is not approved and effective for this reservation.",
+                )
         row = session.execute(
             select(BuildingProposal).where(
                 BuildingProposal.reservation_id == reservation_id,
@@ -726,6 +753,10 @@ def record_proposal(
                     payload.amount_cents != row.amount_cents,
                     payload.currency.upper() != row.currency,
                     payload.line_items != list(row.line_items_json or []),
+                    (
+                        payload.rate_plan_id is not None
+                        and payload.rate_plan_id != row.rate_plan_id
+                    ),
                     payload.terms_summary.strip() != row.terms_summary,
                     payload.valid_until != row.valid_until,
                     payload.document_url.strip() != row.document_url,
@@ -739,6 +770,32 @@ def record_proposal(
             row.currency = payload.currency.upper()
             row.amount_cents = payload.amount_cents
             row.line_items_json = payload.line_items
+            if selected_rate_plan is not None:
+                row.rate_plan_id = selected_rate_plan.id
+                row.rate_plan_snapshot_json = {
+                    "id": selected_rate_plan.id,
+                    "version": selected_rate_plan.version,
+                    "name": selected_rate_plan.name,
+                    "offering_id": selected_rate_plan.offering_id,
+                    "currency": selected_rate_plan.currency,
+                    "unit_amount_cents": selected_rate_plan.unit_amount_cents,
+                    "public_price_display": selected_rate_plan.public_price_display,
+                    "booking_unit": selected_rate_plan.booking_unit,
+                    "minimum_units": selected_rate_plan.minimum_units,
+                    "deposit_type": selected_rate_plan.deposit_type,
+                    "deposit_amount_cents": selected_rate_plan.deposit_amount_cents,
+                    "deposit_percent_bps": selected_rate_plan.deposit_percent_bps,
+                    "cancellation_policy": selected_rate_plan.cancellation_policy,
+                    "included": list(selected_rate_plan.included_json or []),
+                    "addons": list(selected_rate_plan.addons_json or []),
+                    "effective_from": selected_rate_plan.effective_from.isoformat(),
+                    "effective_until": (
+                        selected_rate_plan.effective_until.isoformat()
+                        if selected_rate_plan.effective_until
+                        else None
+                    ),
+                    "snapshotted_at": _now().isoformat(),
+                }
             row.terms_summary = payload.terms_summary.strip()
             row.valid_until = payload.valid_until
             row.document_url = payload.document_url.strip()
@@ -772,6 +829,8 @@ def record_proposal(
                 "status": row.status,
                 "amount_cents": row.amount_cents,
                 "currency": row.currency,
+                "rate_plan_id": row.rate_plan_id,
+                "rate_plan_snapshot": dict(row.rate_plan_snapshot_json or {}),
                 "document_url": row.document_url,
                 "approved_by": row.approved_by,
             },

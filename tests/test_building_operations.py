@@ -151,6 +151,91 @@ class BuildingOperationsTests(unittest.TestCase):
             self.assertIsNotNone(audit)
             self.assertEqual(audit.action, "removed")
 
+    def test_rate_plans_are_versioned_approved_and_publicly_redacted(self) -> None:
+        invalid = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v1",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v1",
+                "version": 1,
+                "name": "Arena standard",
+                "status": "approved",
+                "currency": "USD",
+                "unit_amount_cents": 250000,
+                "public_price_display": "From $2,500",
+                "booking_unit": "event",
+                "minimum_units": 1,
+                "deposit_type": "percent",
+                "deposit_percent_bps": 5000,
+                "effective_from": "2026-01-01",
+                "approved_by": "approver@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+        approved = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v1",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v1",
+                "version": 1,
+                "name": "Arena standard",
+                "status": "approved",
+                "currency": "USD",
+                "unit_amount_cents": 250000,
+                "public_price_display": "From $2,500",
+                "booking_unit": "event",
+                "minimum_units": 1,
+                "deposit_type": "percent",
+                "deposit_percent_bps": 5000,
+                "cancellation_policy": "Deposit is non-refundable within 30 days.",
+                "included": ["Tables", "Chairs"],
+                "addons": [{"name": "Extra cleaning", "amount_cents": 15000}],
+                "effective_from": "2026-01-01",
+                "approved_by": "approver@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        public = self.client.get("/api/public/building/offerings/arena-events")
+        self.assertEqual(public.status_code, 200, public.text)
+        rate_plan = public.json()["rate_plan"]
+        self.assertEqual(public.json()["price_display"], "From $2,500")
+        self.assertEqual(rate_plan["deposit"]["percent"], 50.0)
+        self.assertNotIn("unit_amount_cents", rate_plan)
+        self.assertNotIn("approved_by", rate_plan)
+        overlapping = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v2",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v2",
+                "version": 2,
+                "name": "Arena standard 2027",
+                "status": "approved",
+                "unit_amount_cents": 275000,
+                "public_price_display": "From $2,750",
+                "cancellation_policy": "Deposit is non-refundable within 30 days.",
+                "effective_from": "2027-01-01",
+                "approved_by": "approver@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(overlapping.status_code, 409, overlapping.text)
+        retire = self.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-v1",
+            headers=self.internal_headers,
+            json={
+                "id": "arena-v1",
+                "version": 1,
+                "name": "Arena standard",
+                "status": "retired",
+                "effective_from": "2026-01-01",
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(retire.status_code, 200, retire.text)
+        self.assertEqual(retire.json()["rate_plan"]["status"], "retired")
+
     def test_inquiry_requires_secret_consent_and_idempotency(self) -> None:
         payload = {
             "kind": "event",

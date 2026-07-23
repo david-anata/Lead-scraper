@@ -98,6 +98,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
         Base.metadata.create_all(bind=engine)
     _apply_postgres_compat_migrations(engine)
     _ensure_building_tables(engine)
+    _ensure_building_columns(engine)
     _ensure_finance_settlement_tables(engine)
     ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
@@ -111,6 +112,7 @@ def _ensure_building_tables(engine: Any) -> None:
     table_names = {
         "building_spaces",
         "building_offerings",
+        "building_rate_plans",
         "building_availability_blocks",
         "building_inquiries",
         "building_audit_events",
@@ -138,6 +140,28 @@ def _ensure_building_tables(engine: Any) -> None:
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
+
+
+def _ensure_building_columns(engine: Any) -> None:
+    """Add new Building columns without rewriting persistent operational tables."""
+
+    inspector = inspect(engine)
+    if "building_proposals" not in inspector.get_table_names():
+        return
+    existing = {
+        column["name"]
+        for column in inspector.get_columns("building_proposals")
+    }
+    additions = {
+        "rate_plan_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "rate_plan_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+    }
+    with engine.begin() as connection:
+        for column_name, ddl in additions.items():
+            if column_name not in existing:
+                connection.execute(text(
+                    f"ALTER TABLE building_proposals ADD COLUMN {column_name} {ddl}"
+                ))
 
 
 def _ensure_hr_tables(engine: Any) -> None:

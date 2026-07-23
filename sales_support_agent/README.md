@@ -279,6 +279,14 @@ list owner and a review-through date. Missing or overdue roster reviews exclude
 the relationship from campaign audiences until an operator renews the review
 or marks the relationship inactive; every review is retained in the audit log.
 
+Building offerings may now carry versioned commercial rate plans. Drafts hold
+internal unit pricing, public wording, minimum units, deposits, included items,
+add-ons, cancellation terms, and effective dates. Approval requires complete
+commercial terms and locks the version; replacement terms require a new version.
+The public catalog exposes only the currently effective approved projection,
+while proposals can retain the complete approved rate-plan snapshot used for
+the quote.
+
 Website and assisted-source inquiries remain durable even when HubSpot is
 unavailable. A partial contact or note failure changes the inquiry to
 `crm_sync_needed`, stores the latest error and attempt count, and exposes a

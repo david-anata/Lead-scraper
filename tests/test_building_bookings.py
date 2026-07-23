@@ -61,6 +61,41 @@ class BuildingBookingTests(unittest.TestCase):
         if response.status_code != 200:
             raise AssertionError(response.text)
         response = cls.client.put(
+            "/api/internal/building/offerings/arena-events",
+            headers=cls.headers,
+            json={
+                "id": "arena-events",
+                "slug": "arena-events",
+                "name": "Arena events",
+                "offering_type": "event",
+                "space_id": "arena",
+                "is_published": True,
+            },
+        )
+        if response.status_code != 200:
+            raise AssertionError(response.text)
+        response = cls.client.put(
+            "/api/internal/building/offerings/arena-events/rate-plans/arena-rate-v1",
+            headers=cls.headers,
+            json={
+                "id": "arena-rate-v1",
+                "version": 1,
+                "name": "Arena event rate",
+                "status": "approved",
+                "unit_amount_cents": 250000,
+                "public_price_display": "From $2,500",
+                "booking_unit": "event",
+                "deposit_type": "percent",
+                "deposit_percent_bps": 5000,
+                "cancellation_policy": "Deposit is non-refundable within 30 days.",
+                "effective_from": "2020-01-01",
+                "approved_by": "approver@example.com",
+                "actor": "operator@example.com",
+            },
+        )
+        if response.status_code != 200:
+            raise AssertionError(response.text)
+        response = cls.client.put(
             "/api/internal/building/spaces/tour-office",
             headers=cls.headers,
             json={
@@ -76,7 +111,7 @@ class BuildingBookingTests(unittest.TestCase):
         if response.status_code != 200:
             raise AssertionError(response.text)
 
-    def _create(self, reservation_id: str, *, attendance: int = 80, deposit_required: bool = True):
+    def _create(self, reservation_id: str, *, attendance: int = 80, deposit_required: bool = True, offering_id: str | None = None):
         return self.client.post(
             "/api/internal/building/bookings",
             headers=self.headers,
@@ -84,6 +119,7 @@ class BuildingBookingTests(unittest.TestCase):
                 "id": reservation_id,
                 "kind": "event",
                 "space_id": "arena",
+                "offering_id": offering_id,
                 "starts_at": self.start.isoformat(),
                 "ends_at": (self.start + timedelta(hours=4)).isoformat(),
                 "attendance": attendance,
@@ -103,7 +139,7 @@ class BuildingBookingTests(unittest.TestCase):
             },
         )
 
-    def _proposal(self, reservation_id: str, status: str, *, version: int = 1, amount_cents: int = 250000, document_url: str = "https://example.com/quote-v1.pdf"):
+    def _proposal(self, reservation_id: str, status: str, *, version: int = 1, amount_cents: int = 250000, document_url: str = "https://example.com/quote-v1.pdf", rate_plan_id: str | None = None):
         return self.client.post(
             f"/api/internal/building/bookings/{reservation_id}/proposals",
             headers=self.headers,
@@ -112,6 +148,7 @@ class BuildingBookingTests(unittest.TestCase):
                 "status": status,
                 "proposal_type": "quote",
                 "amount_cents": amount_cents,
+                "rate_plan_id": rate_plan_id,
                 "line_items": [{"description": "Event package", "amount_cents": amount_cents}],
                 "terms_summary": "Four-hour event package.",
                 "valid_until": (self.start.date() - timedelta(days=1)).isoformat(),
@@ -387,3 +424,26 @@ class BuildingBookingTests(unittest.TestCase):
         with self.factory() as session:
             tour = session.get(BuildingTour, "tour-one")
             self.assertEqual(tour.outcome, "good_fit")
+
+    def test_08_proposal_snapshots_the_effective_approved_rate_plan(self) -> None:
+        created = self._create("event-rate-snapshot", offering_id="arena-events")
+        self.assertEqual(created.status_code, 201, created.text)
+        draft = self._proposal(
+            "event-rate-snapshot",
+            "draft",
+            rate_plan_id="arena-rate-v1",
+        )
+        self.assertEqual(draft.status_code, 201, draft.text)
+        with self.factory() as session:
+            proposal = session.query(BuildingProposal).filter(
+                BuildingProposal.reservation_id == "event-rate-snapshot"
+            ).one()
+            self.assertEqual(proposal.rate_plan_id, "arena-rate-v1")
+            self.assertEqual(
+                proposal.rate_plan_snapshot_json["deposit_percent_bps"],
+                5000,
+            )
+            self.assertEqual(
+                proposal.rate_plan_snapshot_json["cancellation_policy"],
+                "Deposit is non-refundable within 30 days.",
+            )

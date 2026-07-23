@@ -1329,6 +1329,53 @@ class BuildingOffering(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingRatePlan(Base):
+    """Versioned commercial terms for one Building offering."""
+
+    __tablename__ = "building_rate_plans"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    offering_id: Mapped[str] = mapped_column(
+        ForeignKey("building_offerings.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    unit_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    public_price_display: Mapped[str] = mapped_column(String(128), default="")
+    booking_unit: Mapped[str] = mapped_column(String(32), default="custom")
+    minimum_units: Mapped[int] = mapped_column(Integer, default=1)
+    deposit_type: Mapped[str] = mapped_column(String(32), default="none")
+    deposit_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    deposit_percent_bps: Mapped[int] = mapped_column(Integer, default=0)
+    cancellation_policy: Mapped[str] = mapped_column(Text, default="")
+    included_json: Mapped[list] = mapped_column(JSON, default=list)
+    addons_json: Mapped[list] = mapped_column(JSON, default=list)
+    effective_from: Mapped[date] = mapped_column(Date, index=True)
+    effective_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_building_rate_plan_version",
+            "offering_id",
+            "version",
+            unique=True,
+        ),
+    )
+
+
 class BuildingAvailabilityBlock(Base):
     __tablename__ = "building_availability_blocks"
 
@@ -1775,6 +1822,8 @@ class BuildingProposal(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     amount_cents: Mapped[int] = mapped_column(Integer, default=0)
     line_items_json: Mapped[list] = mapped_column(JSON, default=list)
+    rate_plan_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    rate_plan_snapshot_json: Mapped[dict] = mapped_column(JSON, default=dict)
     terms_summary: Mapped[str] = mapped_column(Text, default="")
     valid_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
     document_url: Mapped[str] = mapped_column(String(1024), default="")

@@ -21,6 +21,7 @@ try:
         BuildingCommunicationPreference,
         BuildingContact,
         BuildingOffering,
+        BuildingRatePlan,
         BuildingSegment,
         BuildingSpace,
         BuildingSuppression,
@@ -533,6 +534,33 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                 },
             )
             self.assertEqual(offering.status_code, 303, offering.text)
+            rate_plan = self.client.post(
+                "/admin/building/rate-plans",
+                headers=browser_headers,
+                follow_redirects=False,
+                data={
+                    "_csrf_token": token,
+                    "offering_id": "office-pilot-membership",
+                    "rate_plan_id": "office-pilot-v1",
+                    "version": "1",
+                    "name": "Pilot office monthly",
+                    "status": "approved",
+                    "currency": "USD",
+                    "unit_amount_cents": "125000",
+                    "public_price_display": "From $1,250/month",
+                    "booking_unit": "month",
+                    "minimum_units": "1",
+                    "deposit_type": "fixed",
+                    "deposit_amount_cents": "125000",
+                    "deposit_percent": "0",
+                    "cancellation_policy": "Thirty days written notice.",
+                    "included": "Conference access, mail service",
+                    "addons_json": "[]",
+                    "effective_from": "2026-01-01",
+                    "effective_until": "",
+                },
+            )
+            self.assertEqual(rate_plan.status_code, 303, rate_plan.text)
             contact = self.client.post(
                 "/admin/building/contacts",
                 headers=browser_headers,
@@ -638,6 +666,7 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                 saved_offering = session.get(
                     BuildingOffering, "office-pilot-membership"
                 )
+                saved_rate_plan = session.get(BuildingRatePlan, "office-pilot-v1")
                 saved_contact = session.execute(
                     select(BuildingContact).where(
                         BuildingContact.email == "pilot-tenant@example.com"
@@ -651,6 +680,8 @@ class BuildingCrmCampaignTests(unittest.TestCase):
                 self.assertTrue(saved_space.media_json[0]["approved"])
                 self.assertEqual(saved_offering.space_id, saved_space.id)
                 self.assertTrue(saved_offering.is_published)
+                self.assertEqual(saved_rate_plan.status, "approved")
+                self.assertEqual(saved_rate_plan.deposit_amount_cents, 125000)
                 self.assertEqual(saved_contact.full_name, "Pilot Tenant")
                 self.assertTrue(saved_segment.is_active)
                 self.assertEqual(saved_campaign.status, "sent")

@@ -18,7 +18,12 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.resend import ResendClient
-from sales_support_agent.api.building_router import OfferingInput, SpaceInput, SpaceMediaInput
+from sales_support_agent.api.building_router import (
+    OfferingInput,
+    RatePlanInput,
+    SpaceInput,
+    SpaceMediaInput,
+)
 from sales_support_agent.api.building_booking_router import (
     EVENT_TRANSITIONS,
     WORKSPACE_TRANSITIONS,
@@ -46,6 +51,7 @@ from sales_support_agent.models.entities import (
     BuildingInquiry,
     BuildingInvoice,
     BuildingOffering,
+    BuildingRatePlan,
     BuildingOperationalChecklist,
     BuildingOperationalChecklistItem,
     BuildingPrivacyRequest,
@@ -1749,6 +1755,169 @@ def save_offering_from_control_room(
 
 
 @admin_router.post(
+    "/rate-plans",
+    dependencies=[Depends(require_building_form_security)],
+    response_class=RedirectResponse,
+)
+def save_rate_plan_from_control_room(
+    request: Request,
+    offering_id: str = Form(...),
+    rate_plan_id: str = Form(...),
+    version: int = Form(1),
+    name: str = Form(...),
+    status: str = Form("draft"),
+    currency: str = Form("USD"),
+    unit_amount_cents: int = Form(0),
+    public_price_display: str = Form(""),
+    booking_unit: str = Form("custom"),
+    minimum_units: int = Form(1),
+    deposit_type: str = Form("none"),
+    deposit_amount_cents: int = Form(0),
+    deposit_percent: float = Form(0),
+    cancellation_policy: str = Form(""),
+    included: str = Form(""),
+    addons_json: str = Form("[]"),
+    effective_from: date = Form(...),
+    effective_until: date | None = Form(None),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    actor = user.get("email") or "building-operator"
+    try:
+        addons = json.loads(addons_json or "[]")
+        if not isinstance(addons, list):
+            raise ValueError("Add-ons must be a JSON list.")
+        payload = RatePlanInput(
+            id=rate_plan_id.strip(),
+            version=version,
+            name=name.strip(),
+            status=status,
+            currency=currency,
+            unit_amount_cents=unit_amount_cents,
+            public_price_display=public_price_display.strip(),
+            booking_unit=booking_unit.strip(),
+            minimum_units=minimum_units,
+            deposit_type=deposit_type,
+            deposit_amount_cents=deposit_amount_cents,
+            deposit_percent_bps=round(deposit_percent * 100),
+            cancellation_policy=cancellation_policy.strip(),
+            included=[item.strip() for item in included.split(",") if item.strip()],
+            addons=addons,
+            effective_from=effective_from,
+            effective_until=effective_until,
+            approved_by=actor if status == "approved" else "",
+            actor=actor,
+        )
+    except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+        detail = (
+            exc.errors()[0].get("msg", "Invalid rate plan.")
+            if isinstance(exc, ValidationError)
+            else str(exc)
+        )
+        return _building_redirect(error=detail)
+    with session_scope(request.app.state.session_factory) as session:
+        if session.get(BuildingOffering, offering_id) is None:
+            return _building_redirect(error="Offering not found.")
+        row = session.get(BuildingRatePlan, payload.id)
+        before = (
+            {"status": row.status, "version": row.version, "name": row.name}
+            if row
+            else {}
+        )
+        if row is not None and row.offering_id != offering_id:
+            return _building_redirect(error="Rate plan belongs to another offering.")
+        if row is not None and row.status in {"approved", "retired"}:
+            if row.status == "approved" and payload.status == "retired":
+                row.status = "retired"
+                row.updated_at = _now()
+                session.add(BuildingAuditEvent(
+                    entity_type="rate_plan",
+                    entity_id=row.id,
+                    action="retired_from_control_room",
+                    actor=actor,
+                    before_json=before,
+                    after_json={"status": "retired"},
+                ))
+                return _building_redirect(notice=f"{row.name} retired.")
+            return _building_redirect(
+                error="Approved or retired terms are locked; create a new version."
+            )
+        conflict = session.execute(
+            select(BuildingRatePlan).where(
+                BuildingRatePlan.offering_id == offering_id,
+                BuildingRatePlan.version == payload.version,
+                BuildingRatePlan.id != payload.id,
+            )
+        ).scalar_one_or_none()
+        if conflict is not None:
+            return _building_redirect(error="That version already exists.")
+        if payload.status == "approved":
+            current = session.execute(
+                select(BuildingRatePlan).where(
+                    BuildingRatePlan.offering_id == offering_id,
+                    BuildingRatePlan.status == "approved",
+                    BuildingRatePlan.id != payload.id,
+                )
+            ).scalar_one_or_none()
+            if current is not None:
+                return _building_redirect(
+                    error="Retire the current approved rate plan first."
+                )
+        if row is None:
+            row = BuildingRatePlan(
+                id=payload.id,
+                offering_id=offering_id,
+                version=payload.version,
+                name=payload.name,
+                effective_from=payload.effective_from,
+                created_by=actor,
+            )
+        for key, value in {
+            "version": payload.version,
+            "name": payload.name,
+            "status": payload.status,
+            "currency": payload.currency,
+            "unit_amount_cents": payload.unit_amount_cents,
+            "public_price_display": payload.public_price_display,
+            "booking_unit": payload.booking_unit,
+            "minimum_units": payload.minimum_units,
+            "deposit_type": payload.deposit_type,
+            "deposit_amount_cents": payload.deposit_amount_cents,
+            "deposit_percent_bps": payload.deposit_percent_bps,
+            "cancellation_policy": payload.cancellation_policy,
+            "included_json": payload.included,
+            "addons_json": payload.addons,
+            "effective_from": payload.effective_from,
+            "effective_until": payload.effective_until,
+            "updated_at": _now(),
+        }.items():
+            setattr(row, key, value)
+        if payload.status == "approved":
+            row.approved_by = actor
+            row.approved_at = _now()
+        session.add(row)
+        session.add(BuildingAuditEvent(
+            entity_type="rate_plan",
+            entity_id=row.id,
+            action=(
+                "approved_from_control_room"
+                if payload.status == "approved"
+                else "draft_saved_from_control_room"
+            ),
+            actor=actor,
+            before_json=before,
+            after_json={
+                "offering_id": offering_id,
+                "version": row.version,
+                "status": row.status,
+                "unit_amount_cents": row.unit_amount_cents,
+                "deposit_type": row.deposit_type,
+                "effective_from": row.effective_from.isoformat(),
+            },
+        ))
+    return _building_redirect(notice=f"{payload.name} saved as {payload.status}.")
+
+
+@admin_router.post(
     "/contacts",
     dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
@@ -2354,6 +2523,12 @@ def building_control_room(
         offering_rows = session.execute(
             select(BuildingOffering).order_by(BuildingOffering.name)
         ).scalars().all()
+        rate_plan_rows = session.execute(
+            select(BuildingRatePlan).order_by(
+                BuildingRatePlan.offering_id,
+                BuildingRatePlan.version.desc(),
+            )
+        ).scalars().all()
         contact_rows = session.execute(
             select(BuildingContact).order_by(BuildingContact.full_name, BuildingContact.email)
         ).scalars().all()
@@ -2613,9 +2788,36 @@ def building_control_room(
                     "id": item.id,
                     "name": item.name,
                     "space_id": item.space_id,
+                    "offering_id": item.offering_id,
                     "is_published": item.is_published,
                 }
                 for item in offering_rows
+            ],
+            rate_plans=[
+                {
+                    "id": item.id,
+                    "offering_id": item.offering_id,
+                    "version": item.version,
+                    "name": item.name,
+                    "status": item.status,
+                    "currency": item.currency,
+                    "unit_amount_cents": item.unit_amount_cents,
+                    "public_price_display": item.public_price_display,
+                    "booking_unit": item.booking_unit,
+                    "minimum_units": item.minimum_units,
+                    "deposit_type": item.deposit_type,
+                    "deposit_amount_cents": item.deposit_amount_cents,
+                    "deposit_percent_bps": item.deposit_percent_bps,
+                    "cancellation_policy": item.cancellation_policy,
+                    "effective_from": item.effective_from.isoformat(),
+                    "effective_until": (
+                        item.effective_until.isoformat()
+                        if item.effective_until
+                        else ""
+                    ),
+                    "approved_by": item.approved_by,
+                }
+                for item in rate_plan_rows
             ],
             contacts=contacts,
             segments=segments,
@@ -2669,6 +2871,7 @@ def building_control_room(
                             "status": latest_proposals[item.id].status,
                             "currency": latest_proposals[item.id].currency,
                             "amount_cents": latest_proposals[item.id].amount_cents,
+                            "rate_plan_id": latest_proposals[item.id].rate_plan_id,
                             "line_item": str(
                                 (
                                     list(latest_proposals[item.id].line_items_json or [{}])[0]

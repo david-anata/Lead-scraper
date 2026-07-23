@@ -341,6 +341,7 @@ def record_proposal_from_control_room(
     status: str = Form(...),
     proposal_type: str = Form(...),
     amount: str = Form("0"),
+    rate_plan_id: str = Form(""),
     line_item: str = Form(""),
     terms_summary: str = Form(""),
     valid_until: str = Form(""),
@@ -353,6 +354,7 @@ def record_proposal_from_control_room(
             status=status,
             proposal_type=proposal_type,
             amount_cents=_dollars_to_cents(amount),
+            rate_plan_id=rate_plan_id.strip() or None,
             line_items=(
                 [{"description": line_item.strip(), "amount_cents": _dollars_to_cents(amount)}]
                 if line_item.strip()

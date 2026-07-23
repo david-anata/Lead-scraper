@@ -44,6 +44,7 @@ def render_building_page(
     calendar_projections: list[dict[str, Any]],
     checklists: list[dict[str, Any]],
     service_requests: list[dict[str, Any]],
+    rate_plans: list[dict[str, Any]] | None = None,
     tours: list[dict[str, Any]] | None = None,
     contact_merges: list[dict[str, Any]] | None = None,
     privacy_requests: list[dict[str, Any]] | None = None,
@@ -57,6 +58,7 @@ def render_building_page(
     privacy_requests = list(privacy_requests or [])
     tours = list(tours or [])
     contact_merges = list(contact_merges or [])
+    rate_plans = list(rate_plans or [])
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
     favicons = render_agent_favicon_links()
@@ -396,6 +398,11 @@ def render_building_page(
                 <input type="hidden" name="proposal_type" value="{'quote' if item.get("kind") == "event" else 'proposal'}">
                 <label>Version<input type="number" name="version" min="1" value="{_esc((item.get("proposal") or {}).get("version") or 1)}"></label>
                 <label>Amount<input name="amount" inputmode="decimal" required value="{int((item.get("proposal") or {}).get("amount_cents") or 0) / 100:.2f}"></label>
+                <label>Approved rate plan<select name="rate_plan_id"><option value="">No rate plan snapshot</option>{''.join(
+                  f'<option value="{_esc(plan.get("id"))}"{" selected" if plan.get("id") == (item.get("proposal") or {}).get("rate_plan_id") else ""}>{_esc(plan.get("name"))} · v{_esc(plan.get("version"))}</option>'
+                  for plan in rate_plans
+                  if plan.get("offering_id") == item.get("offering_id") and plan.get("status") == "approved"
+                )}</select></label>
                 <label>Line item<input name="line_item" value="{_esc((item.get("proposal") or {}).get("line_item"))}" placeholder="Office rent or event package"></label>
                 <label>Valid until<input type="date" name="valid_until" value="{_esc((item.get("proposal") or {}).get("valid_until"))}"></label>
                 <label>Document URL<input type="url" name="document_url" value="{_esc((item.get("proposal") or {}).get("document_url"))}" placeholder="Required before sent"></label>
@@ -482,6 +489,28 @@ def render_building_page(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("full_name") or item.get("email"))}</option>'
         for item in contacts if item.get("status") != "merged"
     )
+    offering_names = {
+        str(item.get("id") or ""): str(item.get("name") or item.get("id") or "")
+        for item in offerings
+    }
+    rate_plan_rows = "".join(
+        f"""<tr>
+          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(offering_names.get(str(item.get("offering_id") or ""), item.get("offering_id")))} · v{_esc(item.get("version"))}</span></td>
+          <td>{_esc(item.get("currency"))} {int(item.get("unit_amount_cents") or 0) / 100:,.2f}<span class="sub">{_esc(item.get("public_price_display"))} · per {_esc(item.get("booking_unit"))}</span></td>
+          <td>{_esc(str(item.get("deposit_type") or "none").title())}<span class="sub">{(
+            f'{int(item.get("deposit_percent_bps") or 0) / 100:g}%'
+            if item.get("deposit_type") == "percent"
+            else (
+              f'{_esc(item.get("currency"))} {int(item.get("deposit_amount_cents") or 0) / 100:,.2f}'
+              if item.get("deposit_type") == "fixed"
+              else "No deposit"
+            )
+          )}</span></td>
+          <td>{_esc(item.get("effective_from"))} – {_esc(item.get("effective_until") or "ongoing")}</td>
+          <td>{_badge(str(item.get("status") or "draft"))}<span class="sub">{_esc(item.get("approved_by"))}</span></td>
+        </tr>"""
+        for item in rate_plans
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No reviewed rate plans yet.</strong><br>Create commercial terms before quoting deposits or cancellation rules.</div></td></tr>'
     billing_account_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("account_name"))}</option>'
         for item in billing_accounts
@@ -793,6 +822,32 @@ def render_building_page(
           <div class="field field--wide"><label for="offering-features">Included features</label><input id="offering-features" name="features" placeholder="Conference access, mail service, Boom Standard"></div>
           <div class="field field--wide"><label for="offering-description">Public description</label><textarea id="offering-description" name="public_description" placeholder="Warm, specific copy for the public offering."></textarea></div>
           <div class="form-actions"><span class="form-note">Publish only after the linked space, price wording, and copy have been reviewed.</span><label class="check"><input type="checkbox" name="is_published" value="true"> Publish offering</label><button class="primary" type="submit">Save offering</button></div>
+        </form>
+      </section>
+      <section class="panel panel--wide">
+        <div class="panel-head"><div><h2>Commercial rate plans</h2><p>Version pricing, deposits, included items, and cancellation terms. Approved versions are locked.</p></div><span class="count">{len(rate_plans)} versions</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Plan</th><th>Price</th><th>Deposit</th><th>Effective</th><th>State</th></tr></thead><tbody>{rate_plan_rows}</tbody></table></div>
+        <form class="form-grid" method="post" action="/admin/building/rate-plans">
+          <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+          <div class="field"><label for="rate-offering">Offering</label><select id="rate-offering" name="offering_id" required><option value="">Choose offering</option>{offering_options}</select></div>
+          <div class="field"><label for="rate-id">Stable rate-plan ID</label><input id="rate-id" name="rate_plan_id" required placeholder="arena-events-v1"></div>
+          <div class="field"><label for="rate-version">Version</label><input id="rate-version" name="version" type="number" min="1" value="1" required></div>
+          <div class="field"><label for="rate-name">Internal name</label><input id="rate-name" name="name" required placeholder="Arena standard"></div>
+          <div class="field"><label for="rate-status">State</label><select id="rate-status" name="status"><option value="draft">Draft</option><option value="approved">Approve and lock</option><option value="retired">Retire existing approved plan</option></select></div>
+          <div class="field"><label for="rate-currency">Currency</label><input id="rate-currency" name="currency" value="USD" maxlength="3" required></div>
+          <div class="field"><label for="rate-amount">Internal unit price (cents)</label><input id="rate-amount" name="unit_amount_cents" type="number" min="0" value="0" required></div>
+          <div class="field"><label for="rate-public-price">Public price wording</label><input id="rate-public-price" name="public_price_display" placeholder="From $2,500/event"></div>
+          <div class="field"><label for="rate-unit">Booking unit</label><select id="rate-unit" name="booking_unit"><option value="custom">Custom</option><option value="month">Month</option><option value="day">Day</option><option value="hour">Hour</option><option value="event">Event</option><option value="term">Term</option></select></div>
+          <div class="field"><label for="rate-minimum">Minimum units</label><input id="rate-minimum" name="minimum_units" type="number" min="1" value="1"></div>
+          <div class="field"><label for="rate-deposit-type">Deposit</label><select id="rate-deposit-type" name="deposit_type"><option value="none">None</option><option value="fixed">Fixed amount</option><option value="percent">Percentage</option></select></div>
+          <div class="field"><label for="rate-deposit-amount">Fixed deposit (cents)</label><input id="rate-deposit-amount" name="deposit_amount_cents" type="number" min="0" value="0"></div>
+          <div class="field"><label for="rate-deposit-percent">Deposit percent</label><input id="rate-deposit-percent" name="deposit_percent" type="number" min="0" max="100" step="0.01" value="0"></div>
+          <div class="field"><label for="rate-from">Effective from</label><input id="rate-from" name="effective_from" type="date" required></div>
+          <div class="field"><label for="rate-until">Effective until</label><input id="rate-until" name="effective_until" type="date"></div>
+          <div class="field field--wide"><label for="rate-included">Included items</label><input id="rate-included" name="included" placeholder="Tables, chairs, standard cleaning"></div>
+          <div class="field field--wide"><label for="rate-addons">Add-ons (JSON list)</label><textarea id="rate-addons" name="addons_json">[]</textarea></div>
+          <div class="field field--wide"><label for="rate-cancellation">Cancellation policy</label><textarea id="rate-cancellation" name="cancellation_policy" placeholder="Required before approval."></textarea></div>
+          <div class="form-actions"><span class="form-note">Approval locks the commercial terms. Create a new version for later changes.</span><button class="primary" type="submit">Save rate plan</button></div>
         </form>
       </section>
       <section class="panel">
