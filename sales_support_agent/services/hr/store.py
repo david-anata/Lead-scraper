@@ -24,6 +24,7 @@ from sales_support_agent.models.database import get_engine
 from sales_support_agent.models.hr import (
     HRAuditEvent,
     HRComplianceTask,
+    HRCompensationChange,
     HREmployee,
     HREmployeeHandbook,
     HRHandbookAcknowledgement,
@@ -293,6 +294,51 @@ def update_employee(emp_id: int, *, actor: str = "system", **fields) -> bool:
         _audit(s, actor, "employee.updated", "employee", emp_id,
                {"fields": sorted(k for k in fields if k not in {"ssn", "bank_account"})})
         return True
+
+
+def record_compensation_change(
+    employee_email: str, *, effective_date: date, prior: dict, new: dict,
+    reason: str, actor: str,
+) -> tuple[bool, str]:
+    """Append a deliberate pay change after the employee update succeeds."""
+    if not effective_date or not reason.strip() or prior == new:
+        return False, "compensation_change_invalid"
+    with _session() as session:
+        row = HRCompensationChange(
+            employee_email=employee_email.strip().lower(),
+            effective_date=effective_date,
+            prior_json=prior,
+            new_json=new,
+            reason=reason.strip(),
+            changed_by=actor.strip().lower(),
+        )
+        session.add(row)
+        session.flush()
+        _audit(session, actor, "compensation.changed", "compensation_change", row.id, {
+            "employee_email": row.employee_email,
+            "effective_date": effective_date.isoformat(),
+            "changed_fields": sorted(
+                key for key in set(prior) | set(new)
+                if prior.get(key) != new.get(key)
+            ),
+        })
+    return True, "compensation_change_recorded"
+
+
+def list_compensation_changes(employee_email: str) -> list[dict]:
+    with _session() as session:
+        rows = session.query(HRCompensationChange).filter_by(
+            employee_email=employee_email.strip().lower()
+        ).order_by(
+            HRCompensationChange.effective_date.desc(),
+            HRCompensationChange.id.desc(),
+        ).all()
+        return [{
+            "id": row.id, "effective_date": row.effective_date,
+            "prior": dict(row.prior_json or {}), "new": dict(row.new_json or {}),
+            "reason": row.reason, "changed_by": row.changed_by,
+            "created_at": row.created_at,
+        } for row in rows]
 
 
 def upsert_employment_profile(employee_email: str, *, hire_date: Optional[date],

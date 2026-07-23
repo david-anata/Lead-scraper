@@ -346,6 +346,7 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
     action = "/admin/hr/employees/new" if is_new else f"/admin/hr/employees/{e['id']}"
     title = "Add employee" if is_new else f"Edit {e.get('full_name','')}"
     employment = e.get("employment") or {}
+    compensation_history = e.get("compensation_history") or []
 
     def _sel(name, options, current):
         opts = "".join(
@@ -392,12 +393,25 @@ def render_hr_employee_form(employee: Optional[dict], teams: list, *, user, erro
         <div><label>Pay basis</label>{_sel("pay_basis", ("hourly","fixed_semimonthly"), employment.get("pay_basis","hourly"))}</div>
         <div><label>Standard weekly hours</label><input type="number" min="0" step="0.01" name="standard_weekly_hours" value="{_esc(employment.get('standard_weekly_hours','40'))}"></div>
       </div>
+      <div class="hr-callout warn">
+        <div class="hr-kicker">Required when pay changes</div>
+        <div class="hr-grid2"><div><label>Pay change effective date</label><input type="date" name="compensation_effective_date"></div>
+        <div><label>Business reason</label><input name="compensation_reason" maxlength="500" placeholder="Required only when changing pay"></div></div>
+      </div>
       <label>Phone</label><input name="phone" value="{_esc(e.get('phone',''))}" placeholder="(555) 123-4567">
       <div class="hr-actions">
         <button type="submit" class="hr-btn">{"Add employee" if is_new else "Save changes"}</button>
         <a class="hr-btn hr-btn-light" href="/admin/hr/employees">Cancel</a>
       </div>
     </form>
+    {"" if is_new else f'''
+    <section style="margin-top:24px"><h2>Compensation history</h2>
+    <p class="hr-sub">Append-only effective-dated changes. Current pay is never silently overwritten.</p>
+    <table class="hr-tbl"><thead><tr><th>Effective</th><th>Previous</th><th>New</th><th>Reason</th><th>Changed by</th></tr></thead>
+    <tbody>{''.join(
+        f"<tr><td>{_esc(item['effective_date'])}</td><td>{_esc(item['prior'])}</td><td>{_esc(item['new'])}</td><td>{_esc(item['reason'])}</td><td>{_esc(item['changed_by'])}</td></tr>"
+        for item in compensation_history
+    ) or '<tr><td colspan="5" class="hr-empty">No pay changes recorded yet.</td></tr>'}</tbody></table></section>'''}
     {"" if is_new else f'''
     <form class="hr-form" method="post" action="/admin/hr/employees/{e["id"]}/invite" style="margin-top:18px">
       <div class="hr-kicker">Secure onboarding</div>

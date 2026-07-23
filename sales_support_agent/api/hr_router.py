@@ -172,6 +172,7 @@ async def employee_edit(emp_id: int, request: Request, user: dict = Depends(_peo
     emp = store.get_employee(emp_id)
     if not emp:
         return RedirectResponse("/admin/hr/employees", status_code=303)
+    emp["compensation_history"] = store.list_compensation_changes(emp["email"])
     return HTMLResponse(render_hr_employee_form(emp, store.list_teams(), user=user))
 
 
@@ -191,6 +192,8 @@ async def employee_update(
     classification: str = Form("nonexempt"),
     pay_basis: str = Form("hourly"),
     fixed_pay_per_period: str = Form("0"),
+    compensation_effective_date: date | None = Form(None),
+    compensation_reason: str = Form(""),
     standard_weekly_hours: float = Form(40),
     phone: str = Form(""),
     status: str = Form("active"),
@@ -199,6 +202,34 @@ async def employee_update(
     employee = store.get_employee(emp_id)
     if not employee:
         return RedirectResponse("/admin/hr/employees?err=not_found", status_code=303)
+    employment = employee.get("employment") or {}
+    prior_compensation = {
+        "employee_type": employee.get("employee_type", ""),
+        "hourly_rate_cents": int(employee.get("hourly_rate_cents") or 0),
+        "annual_salary_cents": int(employee.get("annual_salary_cents") or 0),
+        "pay_basis": employment.get("pay_basis", ""),
+        "fixed_pay_per_period_cents": int(
+            employment.get("fixed_pay_per_period_cents") or 0
+        ),
+    }
+    new_compensation = {
+        "employee_type": employee_type,
+        "hourly_rate_cents": store.dollars_to_cents(hourly_rate),
+        "annual_salary_cents": store.dollars_to_cents(annual_salary),
+        "pay_basis": pay_basis,
+        "fixed_pay_per_period_cents": store.dollars_to_cents(fixed_pay_per_period),
+    }
+    compensation_changed = prior_compensation != new_compensation
+    if compensation_changed and (
+        not compensation_effective_date or not compensation_reason.strip()
+    ):
+        employee["compensation_history"] = store.list_compensation_changes(
+            employee["email"]
+        )
+        return HTMLResponse(render_hr_employee_form(
+            employee, store.list_teams(), user=user,
+            error="Pay changes require an effective date and business reason.",
+        ), status_code=422)
     store.update_employee(emp_id, full_name=full_name, hr_role=hr_role,
                           employee_type=employee_type, team_id=team_id or None,
                           hourly_rate=hourly_rate, annual_salary=annual_salary,
@@ -210,6 +241,12 @@ async def employee_update(
         standard_weekly_hours=standard_weekly_hours,
         standard_period_hours=86.67, actor=user.get("email", "system"),
     )
+    if compensation_changed:
+        store.record_compensation_change(
+            employee["email"], effective_date=compensation_effective_date,
+            prior=prior_compensation, new=new_compensation,
+            reason=compensation_reason, actor=user.get("email", "system"),
+        )
     return RedirectResponse(f"/admin/hr/employees/{emp_id}?ok=employment_saved", status_code=303)
 
 

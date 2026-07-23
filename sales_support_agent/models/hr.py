@@ -341,6 +341,20 @@ class HREmploymentProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class HRCompensationChange(Base):
+    """Effective-dated, append-only compensation history."""
+
+    __tablename__ = "hr_compensation_changes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_email: Mapped[str] = mapped_column(String(255), index=True)
+    effective_date: Mapped[date] = mapped_column(Date, index=True)
+    prior_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    new_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str] = mapped_column(Text)
+    changed_by: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class HREmployeeOnboarding(Base):
     """Progress and evidence for employee-owned and employer-owned onboarding."""
 

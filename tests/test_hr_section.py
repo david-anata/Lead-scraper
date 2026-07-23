@@ -567,6 +567,45 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("Hourly rate", page.text)
 
+    def test_compensation_change_requires_effective_date_and_keeps_history(self):
+        import uuid
+        employee_email = f"pay-change-{uuid.uuid4().hex[:8]}@anatainc.com"
+        employee_id = hr_store.create_employee(
+            email=employee_email, full_name="Pay Change", hourly_rate="20"
+        )
+        missing = self._post(
+            f"/admin/hr/employees/{employee_id}",
+            {
+                "full_name": "Pay Change", "hr_role": "employee",
+                "employee_type": "hourly", "hourly_rate": "22",
+                "annual_salary": "0", "pay_basis": "hourly",
+                "fixed_pay_per_period": "0", "standard_weekly_hours": "40",
+                "status": "active",
+            },
+            self.sa,
+        )
+        self.assertEqual(missing.status_code, 422)
+        self.assertIn("effective date and business reason", missing.text)
+
+        saved = self._post(
+            f"/admin/hr/employees/{employee_id}",
+            {
+                "full_name": "Pay Change", "hr_role": "employee",
+                "employee_type": "hourly", "hourly_rate": "22",
+                "annual_salary": "0", "pay_basis": "hourly",
+                "fixed_pay_per_period": "0", "standard_weekly_hours": "40",
+                "status": "active",
+                "compensation_effective_date": "2026-08-01",
+                "compensation_reason": "Approved merit increase",
+            },
+            self.sa,
+        )
+        self.assertEqual(saved.status_code, 303)
+        history = hr_store.list_compensation_changes(employee_email)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["prior"]["hourly_rate_cents"], 2000)
+        self.assertEqual(history[0]["new"]["hourly_rate_cents"], 2200)
+
 
 if __name__ == "__main__":
     unittest.main()
