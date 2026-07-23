@@ -20,6 +20,7 @@ try:
     )
     from sales_support_agent.models.entities import (
         BuildingAuditEvent,
+        BuildingAvailabilityBlock,
         BuildingContact,
         BuildingInquiry,
         BuildingRelationship,
@@ -158,6 +159,88 @@ class BuildingOperationsTests(unittest.TestCase):
             )
             self.assertIsNotNone(audit)
             self.assertEqual(audit.action, "removed")
+
+    def test_private_office_public_availability_follows_agent_blocks(self) -> None:
+        space = self.client.put(
+            "/api/internal/building/spaces/office-availability",
+            headers=self.internal_headers,
+            json={
+                "id": "office-availability",
+                "slug": "office-availability",
+                "name": "Availability Office",
+                "space_type": "private_office",
+                "status": "available",
+                "is_public": True,
+            },
+        )
+        self.assertEqual(space.status_code, 200, space.text)
+        offering = self.client.put(
+            "/api/internal/building/offerings/office-availability",
+            headers=self.internal_headers,
+            json={
+                "id": "office-availability",
+                "slug": "office-availability",
+                "name": "Availability Office",
+                "offering_type": "private_office",
+                "space_id": "office-availability",
+                "is_published": True,
+            },
+        )
+        self.assertEqual(offering.status_code, 200, offering.text)
+        baseline = self.client.get(
+            "/api/public/building/offerings/office-availability"
+        )
+        self.assertEqual(baseline.json()["space"]["availability"], "available")
+
+        now = datetime.now(timezone.utc)
+        held = self.client.post(
+            "/api/internal/building/availability",
+            headers=self.internal_headers,
+            json={
+                "id": "office-availability-block",
+                "space_id": "office-availability",
+                "state": "soft_hold",
+                "starts_at": (now + timedelta(days=7)).isoformat(),
+                "ends_at": (now + timedelta(days=37)).isoformat(),
+                "expires_at": (now + timedelta(days=1)).isoformat(),
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(held.status_code, 201, held.text)
+        held_public = self.client.get(
+            "/api/public/building/offerings/office-availability"
+        ).json()["space"]
+        self.assertEqual(held_public["availability"], "contact")
+        self.assertIsNone(held_public["available_from"])
+
+        with self.factory() as session:
+            block = session.get(
+                BuildingAvailabilityBlock,
+                "office-availability-block",
+            )
+            block.expires_at = now - timedelta(minutes=1)
+            session.commit()
+        expired_public = self.client.get(
+            "/api/public/building/offerings/office-availability"
+        ).json()["space"]
+        self.assertEqual(expired_public["availability"], "available")
+
+        with self.factory() as session:
+            block = session.get(
+                BuildingAvailabilityBlock,
+                "office-availability-block",
+            )
+            block.state = "occupied"
+            block.expires_at = None
+            session.commit()
+        occupied_public = self.client.get(
+            "/api/public/building/offerings/office-availability"
+        ).json()["space"]
+        self.assertEqual(occupied_public["availability"], "turnover")
+        self.assertEqual(
+            occupied_public["available_from"],
+            (now + timedelta(days=37)).date().isoformat(),
+        )
 
     def test_rate_plans_are_versioned_approved_and_publicly_redacted(self) -> None:
         invalid = self.client.put(

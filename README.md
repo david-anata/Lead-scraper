@@ -187,6 +187,9 @@ Confirmed bookings also maintain CRM relationships automatically:
   to match the operating team
 - the hourly operator job expires due soft holds, releases their availability,
   queues calendar cleanup, and preserves an audit record
+- private-office availability published to the website is derived from active
+  Agent holds and occupancy; known release dates are exposed without customer
+  or contract details
 - failed campaign deliveries can be retried without resending successful
   recipients; eligibility and suppression are rechecked at retry time
 

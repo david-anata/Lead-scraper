@@ -65,8 +65,16 @@ def _require_internal_key(request: Request, provided: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Invalid internal API key.")
 
 
-def _space_public_payload(space: BuildingSpace) -> dict[str, Any]:
-    safe_status = space.status if space.status in {"available", "turnover"} else "contact"
+def _space_public_payload(
+    space: BuildingSpace,
+    *,
+    availability: str | None = None,
+    available_from: date | None = None,
+    availability_updated_at: datetime | None = None,
+) -> dict[str, Any]:
+    safe_status = availability or (
+        space.status if space.status in {"available", "turnover"} else "contact"
+    )
     def publishable(item: Any) -> bool:
         if not isinstance(item, dict) or item.get("approved") is not True:
             return False
@@ -110,11 +118,59 @@ def _space_public_payload(space: BuildingSpace) -> dict[str, Any]:
         "floor": space.floor,
         "capacity": space.capacity or None,
         "availability": safe_status,
+        "available_from": available_from.isoformat() if available_from else None,
         "description": space.public_description,
         "features": list(space.features_json or []),
         "media": approved_media,
-        "updated_at": space.updated_at.isoformat(),
+        "updated_at": max(
+            space.updated_at,
+            availability_updated_at or space.updated_at,
+        ).isoformat(),
     }
+
+
+def _public_space_availability(
+    session,
+    space: BuildingSpace,
+) -> tuple[str, date | None, datetime]:
+    """Return a redacted availability state derived from Agent inventory."""
+
+    base = space.status if space.status in {"available", "turnover"} else "contact"
+    if space.space_type != "private_office" or base != "available":
+        return base, None, space.updated_at
+    now = _now()
+    rows = session.execute(
+        select(BuildingAvailabilityBlock)
+        .where(
+            BuildingAvailabilityBlock.space_id == space.id,
+            (
+                BuildingAvailabilityBlock.ends_at.is_(None)
+                | (BuildingAvailabilityBlock.ends_at > now)
+            ),
+        )
+        .order_by(BuildingAvailabilityBlock.starts_at)
+    ).scalars().all()
+    active_rows: list[BuildingAvailabilityBlock] = []
+    for row in rows:
+        expires_at = row.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if row.state == "soft_hold" and expires_at and expires_at <= now:
+            continue
+        active_rows.append(row)
+    if not active_rows:
+        return "available", None, space.updated_at
+    updated_at = max(
+        [space.updated_at, *(item.updated_at for item in active_rows)]
+    )
+    if any(
+        item.state in {"soft_hold", "contract_pending", "maintenance", "unavailable"}
+        for item in active_rows
+    ):
+        return "contact", None, updated_at
+    dated_ends = [item.ends_at for item in active_rows if item.ends_at is not None]
+    available_from = max(dated_ends).date() if dated_ends else None
+    return "turnover" if available_from else "contact", available_from, updated_at
 
 
 def _rate_plan_public_payload(rate_plan: BuildingRatePlan | None) -> dict[str, Any] | None:
@@ -157,6 +213,8 @@ def _offering_public_payload(
     offering: BuildingOffering,
     space: BuildingSpace | None,
     rate_plan: BuildingRatePlan | None = None,
+    *,
+    space_availability: tuple[str, date | None, datetime] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": offering.id,
@@ -171,7 +229,16 @@ def _offering_public_payload(
         "call_to_action": offering.call_to_action,
         "features": list(offering.features_json or []),
         "rate_plan": _rate_plan_public_payload(rate_plan),
-        "space": _space_public_payload(space) if space and space.is_public else None,
+        "space": (
+            _space_public_payload(
+                space,
+                availability=space_availability[0],
+                available_from=space_availability[1],
+                availability_updated_at=space_availability[2],
+            )
+            if space and space.is_public and space_availability
+            else (_space_public_payload(space) if space and space.is_public else None)
+        ),
         "updated_at": offering.updated_at.isoformat(),
     }
 
@@ -409,6 +476,14 @@ def list_public_offerings(request: Request) -> dict[str, Any]:
                     item,
                     spaces.get(item.space_id or ""),
                     current_rate_plans.get(item.id),
+                    space_availability=(
+                        _public_space_availability(
+                            session,
+                            spaces[item.space_id],
+                        )
+                        if item.space_id in spaces
+                        else None
+                    ),
                 )
                 for item in offerings
             ],
@@ -442,7 +517,16 @@ def get_public_offering(slug: str, request: Request) -> dict[str, Any]:
             )
             .order_by(BuildingRatePlan.version.desc())
         ).scalars().first()
-        return _offering_public_payload(offering, space, rate_plan)
+        return _offering_public_payload(
+            offering,
+            space,
+            rate_plan,
+            space_availability=(
+                _public_space_availability(session, space)
+                if space
+                else None
+            ),
+        )
 
 
 @public_router.get("/availability")
@@ -454,7 +538,16 @@ def list_public_availability(request: Request) -> dict[str, Any]:
             .order_by(BuildingSpace.name)
         ).scalars().all()
         return {
-            "spaces": [_space_public_payload(space) for space in spaces],
+            "spaces": [
+                _space_public_payload(
+                    space,
+                    availability=projection[0],
+                    available_from=projection[1],
+                    availability_updated_at=projection[2],
+                )
+                for space in spaces
+                for projection in [_public_space_availability(session, space)]
+            ],
             "updated_at": max((space.updated_at for space in spaces), default=_now()).isoformat(),
         }
 
