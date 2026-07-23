@@ -40,6 +40,8 @@ services:
         value: "150"
       - key: SALES_AGENT_DB_URL
         sync: false
+      - key: HR_PII_SECRET
+        sync: false
       - key: FULFILLMENT_CS_REPORTS_DIR
         sync: false
       - key: HUBSPOT_API_TOKEN

@@ -5,14 +5,17 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import date
 
 os.environ.setdefault("SALES_AGENT_DB_URL", "sqlite:///" + tempfile.gettempdir() + "/hr_section_test.db")
+os.environ.setdefault("HR_PII_SECRET", "test-only-hr-pii-secret")
 
 try:
     from fastapi.testclient import TestClient
     from sales_support_agent.main import app
     from sales_support_agent.services.access import store as access_store
     from sales_support_agent.services.admin_auth import create_user_session_token
+    from sales_support_agent.services.hr import store as hr_store
     DEPS = True
 except ModuleNotFoundError as exc:
     if exc.name not in {"sqlalchemy", "fastapi"}:
@@ -30,6 +33,13 @@ class HRSectionTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.sa = _cookie("david@anatainc.com", "David", "admin")  # superadmin
+        if not hr_store.get_employee_by_email("david@anatainc.com"):
+            hr_store.create_employee(email="david@anatainc.com", full_name="David")
+        hr_store.upsert_employment_profile(
+            "david@anatainc.com", hire_date=date(2026, 1, 1),
+            classification="exempt", pay_basis="fixed_semimonthly",
+            fixed_pay_per_period="1000", actor="test",
+        )
 
     def _get(self, path, cookie):
         self.client.cookies.set(*cookie)
@@ -92,7 +102,21 @@ class HRSectionTests(unittest.TestCase):
         access_store.set_user_permissions(uid, ["hr.access"])
         ck = _cookie("hronly@anatainc.com")
         self.assertEqual(self._get("/admin/hr/employees", ck).status_code, 200)   # allowed
+        self.assertEqual(self._get("/admin/hr/employees/new", ck).status_code, 403)
+        self.assertEqual(self._get("/admin/hr/teams", ck).status_code, 403)
         self.assertEqual(self._get("/admin/hr/payroll", ck).status_code, 403)     # blocked
+
+    def test_cross_site_hr_write_is_rejected(self):
+        self.client.cookies.set(*self.sa)
+        try:
+            response = self.client.post(
+                "/admin/hr/time/clock", data={"action": "in"},
+                headers={"Origin": "https://malicious.example"},
+                follow_redirects=False,
+            )
+        finally:
+            self.client.cookies.clear()
+        self.assertEqual(response.status_code, 403)
 
     def test_time_clock_and_pto_pages_are_live(self):
         page = self._get("/admin/hr/time", self.sa)
@@ -117,8 +141,88 @@ class HRSectionTests(unittest.TestCase):
         page = self._get("/admin/hr/payroll", self.sa)
         self.assertEqual(page.status_code, 200)
         self.assertIn("Payroll control room", page.text)
-        self.assertIn("Not ready for final approval", page.text)
+        self.assertIn("Payroll readiness", page.text)
         self.assertNotIn("compute gross/taxes/net and pay employees", page.text)
+
+    def test_employee_can_only_see_own_employee_record_in_list(self):
+        import uuid
+        self_email = f"self-{uuid.uuid4().hex[:8]}@anatainc.com"
+        other = f"private-{uuid.uuid4().hex[:8]}@anatainc.com"
+        hr_store.create_employee(email=self_email, full_name="Self Person")
+        hr_store.create_employee(email=other, full_name="Private Person")
+        uid = access_store.upsert_user(self_email, "Self Person")
+        access_store.set_user_permissions(uid, ["hr.access"])
+        page = self._get("/admin/hr/employees", _cookie(self_email))
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(self_email, page.text)
+        self.assertNotIn(other, page.text)
+
+        dashboard = self._get("/admin/hr", _cookie(self_email))
+        self.assertNotIn("Active employees", dashboard.text)
+        self.assertIn("Onboarding steps", dashboard.text)
+
+    def test_holiday_calendar_observes_weekend_rule_and_excludes_overtime(self):
+        holidays = hr_store.paid_holidays(2026)
+        independence = next(row for row in holidays if row["name"] == "Independence Day")
+        self.assertEqual(independence["actual_date"], date(2026, 7, 4))
+        self.assertEqual(independence["observed_date"], date(2026, 7, 3))
+
+    def test_secure_onboarding_saves_sealed_w4(self):
+        profile = self._post("/admin/hr/onboarding/profile", {
+            "phone": "8015550100", "address_line1": "1 Main", "city": "Salt Lake City",
+            "state": "UT", "zip_code": "84101", "emergency_name": "Val",
+            "emergency_relationship": "Coworker", "emergency_phone": "8015550199",
+        }, self.sa)
+        self.assertEqual(profile.status_code, 303)
+        w4 = self._post("/admin/hr/onboarding/w4", {
+            "ssn": "123-45-6789", "filing_status": "single",
+            "exempt": "false", "attested": "true",
+        }, self.sa)
+        self.assertEqual(w4.status_code, 303)
+        self.assertIn("ok=w4_saved", w4.headers["location"])
+        state = hr_store.get_onboarding("david@anatainc.com")
+        self.assertTrue(state["profile_complete"])
+        self.assertTrue(state["w4_complete"])
+
+    def test_onboarding_correction_preserves_submission_and_shows_employee_reason(self):
+        self._post("/admin/hr/onboarding/profile", {
+            "address_line1": "1 Main", "city": "Salt Lake City", "state": "UT",
+            "zip_code": "84101", "emergency_name": "Val",
+            "emergency_relationship": "Coworker", "emergency_phone": "8015550199",
+        }, self.sa)
+        employee = hr_store.get_employee_by_email("david@anatainc.com")
+        requested = self._post(
+            f"/admin/hr/employees/{employee['id']}/onboarding-correction",
+            {"reason": "Please confirm the emergency phone number."}, self.sa,
+        )
+        self.assertIn("onboarding_correction_requested", requested.headers["location"])
+        state = hr_store.get_onboarding("david@anatainc.com")
+        self.assertEqual(state["status"], "correction_requested")
+        self.assertTrue(state["profile_complete"])
+        page = self._get("/admin/hr/onboarding", self.sa)
+        self.assertIn("Correction requested", page.text)
+        self.assertIn("confirm the emergency phone number", page.text)
+
+    def test_time_correction_requires_another_reviewer(self):
+        self._post("/admin/hr/time/clock", {"action": "in"}, self.sa)
+        self._post("/admin/hr/time/clock", {"action": "out"}, self.sa)
+        entry = hr_store.list_time_entries("david@anatainc.com", limit=1)[0]
+        requested = self._post(f"/admin/hr/time/{entry['id']}/correction", {
+            "proposed_start": "09:00", "proposed_stop": "17:00", "reason": "Missed exact times",
+        }, self.sa)
+        self.assertIn("correction_requested", requested.headers["location"])
+        correction = hr_store.list_time_corrections("david@anatainc.com")[0]
+        own = self._post(f"/admin/hr/time/corrections/{correction['id']}/decision", {
+            "decision": "approved", "reviewer_reason": "Looks right",
+        }, self.sa)
+        self.assertIn("self_approval_blocked", own.headers["location"])
+
+        val_id = access_store.upsert_user("val@anatainc.com", "Val")
+        access_store.set_user_permissions(val_id, ["hr.access", "hr.payroll"])
+        approved = self._post(f"/admin/hr/time/corrections/{correction['id']}/decision", {
+            "decision": "approved", "reviewer_reason": "Reviewed against schedule",
+        }, _cookie("val@anatainc.com"))
+        self.assertIn("correction_approved", approved.headers["location"])
 
 
 if __name__ == "__main__":

@@ -80,6 +80,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _register_models()
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(bind=engine)
+        _ensure_hr_columns(engine)
         _apply_sqlite_compat_migrations(engine)
         ensure_finance_trust_schema(engine)
         _backfill_legacy_settlements(engine)
@@ -100,6 +101,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     ensure_finance_trust_schema(engine)
     _backfill_legacy_settlements(engine)
     _ensure_hr_tables(engine)
+    _ensure_hr_columns(engine)
 
 
 def _ensure_hr_tables(engine: Any) -> None:
@@ -113,6 +115,45 @@ def _ensure_hr_tables(engine: Any) -> None:
     hr_tables = [t for name, t in Base.metadata.tables.items() if name.startswith("hr_")]
     if hr_tables:
         Base.metadata.create_all(bind=engine, tables=hr_tables, checkfirst=True)
+
+
+def _ensure_hr_columns(engine: Any) -> None:
+    """Apply additive HR columns to databases created by earlier releases."""
+    inspector = inspect(engine)
+    if "hr_tax_elections" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("hr_tax_elections")}
+    if "exempt_from_federal_withholding" not in columns:
+        default = "FALSE" if engine.dialect.name == "postgresql" else "0"
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE hr_tax_elections "
+                "ADD COLUMN exempt_from_federal_withholding BOOLEAN "
+                f"NOT NULL DEFAULT {default}"
+            ))
+    additions = {
+        "hr_time_entries": {
+            "elapsed_seconds": "INTEGER NOT NULL DEFAULT 0",
+        },
+        "hr_tax_liabilities": {
+            "confirmed_amount_cents": "INTEGER",
+            "filing_confirmation_number": "VARCHAR(128) NOT NULL DEFAULT ''",
+        },
+        "hr_company_profiles": {
+            "utah_withholding_payment_frequency": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+        },
+    }
+    inspector = inspect(engine)
+    for table_name, table_columns in additions.items():
+        if table_name not in inspector.get_table_names():
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table_name)}
+        with engine.begin() as connection:
+            for column_name, ddl in table_columns.items():
+                if column_name not in existing:
+                    connection.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"
+                    ))
 
 
 def _ensure_finance_settlement_tables(engine: Any) -> None:

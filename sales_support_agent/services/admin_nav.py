@@ -78,10 +78,15 @@ _NAV_SECTIONS = [
     _NavSection("hr", "HR", "hr", [
         _NavSubpage("hr.access", "Dashboard", "/admin/hr", "dashboard"),
         _NavSubpage("hr.access", "Employees", "/admin/hr/employees", "employees"),
-        _NavSubpage("hr.access", "Teams", "/admin/hr/teams", "teams"),
+        _NavSubpage("hr.access", "My onboarding", "/admin/hr/onboarding", "onboarding"),
+        _NavSubpage("hr.access", "Policies", "/admin/hr/policies", "policies"),
+        _NavSubpage("hr.payroll", "Teams", "/admin/hr/teams", "teams"),
         _NavSubpage("hr.access", "Time & PTO", "/admin/hr/time", "time"),
+        _NavSubpage("hr.access", "Pay statements", "/admin/hr/pay-statements", "pay_statements"),
         _NavSubpage("hr.payroll", "Payroll", "/admin/hr/payroll", "payroll"),
-        _NavSubpage("hr.access", "Reports", "/admin/hr/reports", "reports"),
+        _NavSubpage("hr.payroll", "Contractors", "/admin/hr/contractors", "contractors"),
+        _NavSubpage("hr.payroll", "Offboarding", "/admin/hr/offboarding", "offboarding"),
+        _NavSubpage("hr.payroll", "Reports", "/admin/hr/reports", "reports"),
         _NavSubpage("hr.payroll", "Settings", "/admin/hr/settings", "settings"),
     ]),
     # Access/Team management is intentionally NOT a primary nav section — it lives

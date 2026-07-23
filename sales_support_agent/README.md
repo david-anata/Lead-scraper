@@ -310,3 +310,44 @@ See the implementation and rollout playbook in [`sales_support_agent/TEAM_SOP.md
 For a click-by-click production launch guide using the same stack pattern as the lead builder app, see [`sales_support_agent/LIVE_ROLLOUT_GUIDE.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/LIVE_ROLLOUT_GUIDE.md).
 
 For the Amazon-first deck workflow and shared brand package usage, see [`sales_support_agent/docs/amazon_first_sales_deck.md`](/Users/davidnarayan/Documents/Playground/Lead-scraper/sales_support_agent/docs/amazon_first_sales_deck.md).
+# Anata HR and payroll control room
+
+The `/admin/hr` section is a right-sized people and payroll operating system for
+Anata's Utah team. It is intentionally provider-independent:
+
+- Agent records employment setup, secure onboarding, W-4 elections, I-9 review,
+  policy acknowledgements, exact time, corrections, PTO, and paid holidays.
+- Payroll is semimonthly: the 1st–15th is paid on the 20th; the 16th–month end
+  is paid on the following 5th. Saturday pay dates move to Friday and Sunday pay
+  dates move to Monday. The overtime week is Sunday–Saturday.
+- The calculation engine uses effective-dated 2026 IRS Publication 15/15-T and
+  Utah Publication 14 rules. A qualified payroll/tax reviewer must confirm the
+  setup before the application will prepare payroll.
+- Preparation creates an immutable calculation version. Another authorized
+  person must type the approval statement. Preparation and approval never move
+  money or represent taxes as paid.
+- Manual checks create employee-only pay statements. Tax liabilities remain
+  due until payment and filing confirmations are recorded and reconciled.
+- Wise contractor payments are prepared, approved, and reconciled separately
+  from W-2 payroll. The current implementation records Wise evidence but does
+  not call the Wise API or initiate transfers.
+- Finance/Plaid is not part of this implementation. No Finance records are
+  created or changed by HR.
+
+There is currently no external payroll provider integration. Plaid is not a
+payroll provider. A future provider adapter can receive approved payroll
+snapshots, but it must not bypass the existing readiness and human-approval
+controls.
+
+Set `HR_PII_SECRET` to a long, production-only secret before collecting W-4
+information. Without it, W-4 storage fails closed. Existing databases receive
+additive HR tables and columns at startup.
+
+Before the first live payroll, complete `/admin/hr/settings`:
+
+1. enter reviewed 2026 opening balances for every W-2 employee;
+2. enter the Utah unemployment rate from the employer notice;
+3. verify EFTPS, Utah TAP, and Utah unemployment portal access;
+4. have a qualified reviewer confirm the 2026 calculations;
+5. complete each employee's employment setup and W-4;
+6. resolve all open punches, time corrections, and payroll inputs.
