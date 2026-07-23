@@ -33,6 +33,10 @@ from sales_support_agent.api.building_booking_router import (
     record_deposit,
     transition_reservation,
 )
+from sales_support_agent.api.building_calendar_router import (
+    CalendarSyncInput,
+    sync_calendar_projections,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import BuildingBillingSchedule
 from sales_support_agent.services.auth_deps import require_tool
@@ -330,3 +334,35 @@ def create_invoice_from_control_room(
     if result.get("duplicate"):
         return _redirect(notice="That scheduled invoice already exists; no duplicate was created.")
     return _redirect(notice="Stripe invoice created; QBO handoff is pending.")
+
+
+@router.post("/calendar/sync", dependencies=FORM_DEPS)
+def sync_calendar_from_control_room(
+    request: Request,
+    confirmation: str = Form(...),
+    user: dict = Depends(require_tool("building.manage")),
+) -> RedirectResponse:
+    if confirmation.strip() != "SYNC CALENDAR":
+        return _redirect(error="Type SYNC CALENDAR to update Google Calendar.")
+    try:
+        result = sync_calendar_projections(
+            CalendarSyncInput(
+                execute=True,
+                max_items=25,
+                actor=_actor(user),
+            ),
+            request,
+            _internal_key(request),
+        )
+    except HTTPException as exc:
+        return _redirect(error=str(exc.detail))
+    if result.get("failed_count"):
+        return _redirect(
+            error=(
+                f"{result.get('failed_count')} calendar item(s) need retry; "
+                "review the calendar projection queue."
+            )
+        )
+    return _redirect(
+        notice=f"{result.get('synced_count', 0)} calendar item(s) synchronized."
+    )

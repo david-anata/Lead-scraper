@@ -182,6 +182,8 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /admin/building`
 - `GET /api/internal/building/bookings`
 - `POST /api/internal/building/bookings`
+- `GET /api/internal/building/calendar/projections`
+- `POST /api/internal/building/calendar/sync`
 - `PUT /api/internal/building/billing/accounts/{account_id}`
 - `PUT /api/internal/building/billing/schedules/{schedule_id}`
 - `POST /api/internal/building/billing/schedules/{schedule_id}/approve`
@@ -223,6 +225,15 @@ type `INVOICE {schedule_id}` and is still blocked when the schedule is not yet
 due, has not been approved, or Stripe is not configured.
 Browser writes are same-origin and session-token protected; consequential
 changes retain the signed-in operator in the audit trail.
+
+Approved holds and confirmed reservations enter a durable calendar projection
+queue. Agent remains the booking source of truth: a Google Calendar edit or
+deletion never changes a reservation. Calendar sync is previewable through the
+internal API and requires `SYNC CALENDAR` in Building Control before an external
+write. Set `BUILDING_GOOGLE_CALENDAR_ID` and
+`BUILDING_GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON`, then share only the intended
+building calendar with that service-account email. Stable Google event IDs make
+retries idempotent; provider failures stay visible and retryable in the queue.
 
 The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires

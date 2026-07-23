@@ -1539,6 +1539,32 @@ class BuildingReservation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class BuildingCalendarProjection(Base):
+    """Outbox state for projecting authoritative Agent reservations to a calendar."""
+
+    __tablename__ = "building_calendar_projections"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), unique=True, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), default="google_calendar")
+    desired_action: Mapped[str] = mapped_column(String(16), default="upsert", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    provider_event_id: Mapped[str] = mapped_column(String(255), default="")
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class BuildingAgreement(Base):
     __tablename__ = "building_agreements"
 

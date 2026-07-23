@@ -28,6 +28,7 @@ from sales_support_agent.models.entities import (
     BuildingBillingSchedule,
     BuildingCampaign,
     BuildingCampaignRecipient,
+    BuildingCalendarProjection,
     BuildingCommunicationPreference,
     BuildingContact,
     BuildingRelationship,
@@ -1589,7 +1590,13 @@ def building_control_room(
             .order_by(BuildingBillingSchedule.created_at.desc())
             .limit(100)
         ).scalars().all()
+        calendar_projection_rows = session.execute(
+            select(BuildingCalendarProjection)
+            .order_by(BuildingCalendarProjection.updated_at.desc())
+            .limit(100)
+        ).scalars().all()
         space_names = {item.id: item.name for item in space_rows}
+        reservations_by_id = {item.id: item for item in reservation_rows}
 
         contacts = [
             {
@@ -1735,6 +1742,23 @@ def building_control_room(
                     ),
                 }
                 for item in billing_schedule_rows
+            ],
+            calendar_projections=[
+                {
+                    "reservation_id": item.reservation_id,
+                    "space_name": space_names.get(
+                        reservations_by_id[item.reservation_id].space_id
+                        if item.reservation_id in reservations_by_id
+                        else "",
+                        "",
+                    ),
+                    "desired_action": item.desired_action,
+                    "status": item.status,
+                    "provider_event_id": item.provider_event_id,
+                    "last_error": item.last_error,
+                    "updated_at": item.updated_at.strftime("%b %d, %Y · %I:%M %p"),
+                }
+                for item in calendar_projection_rows
             ],
             csrf_token=building_csrf_token(user),
             notice=notice[:300],

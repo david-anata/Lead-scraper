@@ -22,6 +22,7 @@ from sales_support_agent.models.entities import (
     BuildingReservation,
     BuildingSpace,
 )
+from sales_support_agent.services.building_calendar import queue_calendar_projection
 
 
 router = APIRouter(prefix="/api/internal/building/bookings", tags=["building-bookings"])
@@ -360,6 +361,7 @@ def transition_reservation(
         before = row.status
         row.status = payload.target_status
         row.updated_at = _now()
+        queue_calendar_projection(session, row)
         session.add(BuildingAuditEvent(
             entity_type="reservation",
             entity_id=row.id,

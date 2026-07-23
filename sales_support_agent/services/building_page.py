@@ -19,8 +19,10 @@ def _esc(value: Any) -> str:
 
 def _badge(value: str) -> str:
     normalized = str(value or "unknown").replace("_", " ")
-    tone = "ok" if normalized in {"available", "active", "subscribed", "sent"} else (
+    tone = "bad" if normalized in {"error", "failed", "blocked"} else (
+        "ok" if normalized in {"available", "active", "subscribed", "sent", "synced"} else (
         "warn" if normalized in {"soft hold", "previewed", "approved", "sending", "unknown"} else "muted"
+        )
     )
     return f'<span class="badge badge--{tone}">{_esc(normalized)}</span>'
 
@@ -38,6 +40,7 @@ def render_building_page(
     invoices: list[dict[str, Any]],
     billing_accounts: list[dict[str, Any]],
     billing_schedules: list[dict[str, Any]],
+    calendar_projections: list[dict[str, Any]],
     csrf_token: str = "",
     notice: str = "",
     error: str = "",
@@ -256,6 +259,18 @@ def render_building_page(
         """
         for item in billing_schedules
     ) or '<tr><td colspan="5"><div class="empty"><strong>No billing schedules yet.</strong><br>Create a reviewed draft, then approve it before any provider invoice can be created.</div></td></tr>'
+    calendar_projection_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("space_name") or item.get("reservation_id"))}</strong><span class="sub">{_esc(item.get("reservation_id"))}</span></td>
+          <td>{_esc(item.get("desired_action"))}</td>
+          <td>{_badge(str(item.get("status") or "pending"))}<span class="sub">{_esc(item.get("last_error"))}</span></td>
+          <td>{_esc(item.get("provider_event_id") or "Not created")}</td>
+          <td>{_esc(item.get("updated_at") or "—")}</td>
+        </tr>
+        """
+        for item in calendar_projections
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No calendar projections queued.</strong><br>Approved holds and confirmed bookings will appear here automatically.</div></td></tr>'
     segment_options = "".join(
         f'<option value="{_esc(item.get("id"))}">{_esc(item.get("name"))} ({_esc(item.get("included_count", 0))} eligible)</option>'
         for item in segments
@@ -307,7 +322,7 @@ def render_building_page(
     td{{padding:15px 18px;border-top:1px solid rgba(43,54,68,.09);vertical-align:top;}}
     .sub{{display:block;margin-top:4px;color:rgba(43,54,68,.58);font-size:12px;max-width:380px;}}
     .badge{{display:inline-block;border-radius:99px;padding:5px 8px;font-size:11px;font-weight:700;text-transform:capitalize;background:#edf0f2;}}
-    .badge--ok{{background:#e4f4f1;color:#11665f;}} .badge--warn{{background:#fff0d2;color:#845407;}} .badge--muted{{background:#edf0f2;color:#56616d;}}
+    .badge--ok{{background:#e4f4f1;color:#11665f;}} .badge--warn{{background:#fff0d2;color:#845407;}} .badge--bad{{background:#fff0ed;color:#8b2f23;}} .badge--muted{{background:#edf0f2;color:#56616d;}}
     .empty{{padding:18px 0;color:rgba(43,54,68,.62);line-height:1.55;}}
     .form-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:20px 22px;}} .field{{display:grid;gap:6px;}} .field--wide{{grid-column:1/-1;}}
     label{{font-size:12px;font-weight:700;color:rgba(43,54,68,.72);}} input,select,textarea{{box-sizing:border-box;width:100%;min-height:42px;border:1px solid rgba(43,54,68,.22);border-radius:8px;background:#fff;padding:10px 11px;color:var(--ink);font:inherit;}} textarea{{min-height:92px;resize:vertical;}} input:focus,select:focus,textarea:focus{{outline:3px solid rgba(133,187,218,.34);border-color:#397a9d;}}
@@ -460,6 +475,17 @@ def render_building_page(
       </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Agreement</th><th>Deposit</th><th>Actions</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide">
+        <div class="panel-head">
+          <div><h2>Calendar projection</h2><p>Agent remains authoritative. Approved holds and bookings are queued for Google Calendar; calendar edits never change a booking.</p></div>
+          <form class="inline-send" method="post" action="/admin/building/calendar/sync">
+            <input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}">
+            <input aria-label="Calendar sync confirmation" name="confirmation" required placeholder="SYNC CALENDAR">
+            <button class="secondary secondary--small" type="submit">Sync pending</button>
+          </form>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Booking</th><th>Desired action</th><th>Sync state</th><th>Google event</th><th>Updated</th></tr></thead><tbody>{calendar_projection_rows}</tbody></table></div>
+      </section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing schedules</h2><p>Drafts are editable; approved schedules are locked and provider writes require typed confirmation.</p></div><span class="count">{len(billing_schedules)} schedules</span></div><div class="table-wrap"><table><thead><tr><th>Schedule</th><th>Amount</th><th>Next invoice</th><th>Status</th><th>Action</th></tr></thead><tbody>{billing_schedule_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
