@@ -272,27 +272,46 @@ def list_opening_balances(tax_year: int) -> list[dict]:
 
 def add_payroll_input(*, employee_email: str, period_start: date, period_end: date,
                       input_type: str, amount: str, taxable: bool,
-                      description: str, actor: str) -> tuple[bool, str]:
-    allowed = {"bonus", "commission", "reimbursement", "deduction", "contractor_fee"}
+                      description: str, source_reference: str = "",
+                      recurring: bool = False, actor: str) -> tuple[bool, str]:
+    allowed = {
+        "bonus", "commission", "reimbursement", "deduction", "garnishment",
+        "holiday_adjustment", "manual_correction",
+    }
     if input_type not in allowed:
         return False, "invalid_input"
     from sales_support_agent.services.hr.store import dollars_to_cents
     amount_cents = dollars_to_cents(amount)
-    if amount_cents <= 0:
+    if amount_cents <= 0 or not (description or "").strip():
         return False, "invalid_input"
     if input_type == "reimbursement":
         taxable = False
+        if not (source_reference or "").strip():
+            return False, "reimbursement_evidence_required"
+    if recurring and input_type not in {"deduction", "garnishment"}:
+        return False, "recurring_input_invalid"
     with _session() as session:
         employee = session.query(HREmployee).filter_by(
             email=(employee_email or "").strip().lower()
         ).first()
         if not employee:
             return False, "employee_not_found"
+        if input_type == "reimbursement" and session.query(HRPayrollInput).filter(
+            HRPayrollInput.employee_email == employee.email,
+            HRPayrollInput.input_type == "reimbursement",
+            HRPayrollInput.source_reference == source_reference.strip(),
+            HRPayrollInput.status != "rejected",
+        ).first():
+            return False, "duplicate_receipt"
+        recurrence_key = f"rec_{secrets.token_hex(10)}" if recurring else ""
         row = HRPayrollInput(
             employee_email=employee.email, pay_period_start=period_start,
             pay_period_end=period_end, input_type=input_type,
             amount_cents=amount_cents, taxable=taxable,
-            description=(description or "").strip(), submitted_by=actor,
+            description=(description or "").strip(),
+            source_reference=(source_reference or "").strip(),
+            recurring=bool(recurring), recurrence_key=recurrence_key,
+            submitted_by=actor,
         )
         session.add(row)
         session.flush()
@@ -323,18 +342,70 @@ def decide_payroll_input(input_id: int, *, decision: str, actor: str) -> tuple[b
         return True, f"input_{decision}"
 
 
+def _carry_forward_recurring_inputs(period_start: date, period_end: date) -> None:
+    """Create one reviewable copy of each explicitly recurring deduction."""
+    with _session() as session:
+        prior_rows = session.query(HRPayrollInput).filter(
+            HRPayrollInput.recurring.is_(True),
+            HRPayrollInput.status == "approved",
+            HRPayrollInput.pay_period_end < period_start,
+            HRPayrollInput.recurrence_key != "",
+        ).order_by(
+            HRPayrollInput.recurrence_key, HRPayrollInput.pay_period_end.desc()
+        ).all()
+        latest_by_key: dict[str, HRPayrollInput] = {}
+        for row in prior_rows:
+            latest_by_key.setdefault(row.recurrence_key, row)
+        existing_keys = {
+            row[0] for row in session.query(HRPayrollInput.recurrence_key).filter_by(
+                pay_period_start=period_start, pay_period_end=period_end
+            ).all() if row[0]
+        }
+        for key, prior in latest_by_key.items():
+            if key in existing_keys:
+                continue
+            carried = HRPayrollInput(
+                employee_email=prior.employee_email, pay_period_start=period_start,
+                pay_period_end=period_end, input_type=prior.input_type,
+                amount_cents=prior.amount_cents, taxable=prior.taxable,
+                description=prior.description, source_reference=prior.source_reference,
+                recurring=True, recurrence_key=key, status="pending",
+                submitted_by="system",
+            )
+            session.add(carried)
+            session.flush()
+            _audit(session, "system", "payroll.input_carried_forward",
+                   "payroll_input", carried.id, {"source_input_id": prior.id})
+
+
 def list_payroll_inputs(period_start: date, period_end: date) -> list[dict]:
+    _carry_forward_recurring_inputs(period_start, period_end)
     with _session() as session:
         rows = session.query(HRPayrollInput).filter_by(
             pay_period_start=period_start, pay_period_end=period_end
         ).order_by(HRPayrollInput.created_at.desc()).all()
-        return [{
-            "id": row.id, "employee_email": row.employee_email,
-            "input_type": row.input_type, "amount_cents": row.amount_cents,
-            "amount": cents_to_dollars(row.amount_cents), "taxable": row.taxable,
-            "description": row.description, "status": row.status,
-            "submitted_by": row.submitted_by, "reviewed_by": row.reviewed_by,
-        } for row in rows]
+        results = []
+        for row in rows:
+            prior = session.query(HRPayrollInput).filter(
+                HRPayrollInput.employee_email == row.employee_email,
+                HRPayrollInput.input_type == row.input_type,
+                HRPayrollInput.status == "approved",
+                HRPayrollInput.pay_period_end < period_start,
+            ).order_by(HRPayrollInput.pay_period_end.desc()).first()
+            unusual = bool(
+                prior and prior.amount_cents
+                and abs(row.amount_cents - prior.amount_cents) / prior.amount_cents > 0.25
+            )
+            results.append({
+                "id": row.id, "employee_email": row.employee_email,
+                "input_type": row.input_type, "amount_cents": row.amount_cents,
+                "amount": cents_to_dollars(row.amount_cents), "taxable": row.taxable,
+                "description": row.description, "source_reference": row.source_reference,
+                "recurring": row.recurring, "recurrence_key": row.recurrence_key,
+                "unusual_change": unusual, "status": row.status,
+                "submitted_by": row.submitted_by, "reviewed_by": row.reviewed_by,
+            })
+        return results
 
 
 def _period_context(containing: date) -> tuple:
@@ -479,14 +550,38 @@ def control_room(containing: date) -> dict:
         runs = session.query(HRPayrollRun).filter_by(
             pay_period_start=period.start_date, pay_period_end=period.end_date
         ).order_by(HRPayrollRun.id.desc()).all()
-        run_rows = [{
-            "id": row.base44_id, "status": row.status,
-            "gross": cents_to_dollars(row.total_gross_cents),
-            "net": cents_to_dollars(row.total_net_cents),
-            "taxes": cents_to_dollars(row.total_taxes_cents),
-            "cash_impact": cents_to_dollars(row.total_net_cents + row.total_taxes_cents),
-            "employee_count": row.employee_count, "initiated_by": row.initiated_by,
-        } for row in runs]
+        run_rows = []
+        for row in runs:
+            try:
+                meta = json.loads(row.notes or "{}")
+            except json.JSONDecodeError:
+                meta = {}
+            employer_cost = int(meta.get(
+                "total_employer_cost_cents",
+                row.total_net_cents + row.total_taxes_cents,
+            ))
+            previous = session.query(HRPayrollRun).filter(
+                HRPayrollRun.pay_date < row.pay_date,
+                HRPayrollRun.status.in_(("approved", "checks_issued", "closed")),
+            ).order_by(HRPayrollRun.pay_date.desc(), HRPayrollRun.id.desc()).first()
+            comparison = None
+            if previous and previous.total_gross_cents:
+                comparison = round(
+                    (row.total_gross_cents - previous.total_gross_cents)
+                    / previous.total_gross_cents * 100, 1
+                )
+            run_rows.append({
+                "id": row.base44_id, "status": row.status,
+                "gross": cents_to_dollars(row.total_gross_cents),
+                "net": cents_to_dollars(row.total_net_cents),
+                "taxes": cents_to_dollars(row.total_taxes_cents),
+                "deductions": cents_to_dollars(
+                    int(meta.get("total_deduction_liability_cents", 0))
+                ),
+                "cash_impact": cents_to_dollars(employer_cost),
+                "gross_change_percent": comparison,
+                "employee_count": row.employee_count, "initiated_by": row.initiated_by,
+            })
         liabilities = session.query(HRTaxLiability).filter(
             HRTaxLiability.payroll_run_id.in_([row.base44_id for row in runs])
         ).order_by(HRTaxLiability.due_date, HRTaxLiability.agency).all() if runs else []
@@ -563,7 +658,10 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
         return False, "payroll_blocked"
     run_id = "pay_" + secrets.token_hex(12)
     calculations = []
-    totals = {"gross": 0, "net": 0, "taxes": 0}
+    totals = {
+        "gross": 0, "net": 0, "taxes": 0, "deductions": 0,
+        "reimbursements": 0, "employer_taxes": 0,
+    }
     with _session() as session:
         source_hash = _period_source_hash(session, period, employees, inputs, settings)
         for employee in employees:
@@ -615,7 +713,9 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
             ]
             taxable_additions = sum(
                 item["amount_cents"] for item in emp_inputs
-                if item["input_type"] in {"bonus", "commission"} and item["taxable"]
+                if item["input_type"] in {
+                    "bonus", "commission", "holiday_adjustment", "manual_correction"
+                } and item["taxable"]
             )
             reimbursements = sum(
                 item["amount_cents"] for item in emp_inputs
@@ -623,7 +723,7 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
             )
             deductions = sum(
                 item["amount_cents"] for item in emp_inputs
-                if item["input_type"] == "deduction"
+                if item["input_type"] in {"deduction", "garnishment"}
             )
             taxable_gross = gross_parts["gross_cents"] + taxable_additions
             election = session.query(HRTaxElection).filter(
@@ -692,6 +792,9 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
                     + unemployment["utah_ui_cents"]
                 ),
             }
+            results["total_employer_cost_cents"] = (
+                taxable_gross + reimbursements + results["employer_taxes_cents"]
+            )
             input_snapshot = {
                 "period_start": period.start_date.isoformat(),
                 "period_end": period.end_date.isoformat(), "pay_date": period.pay_date.isoformat(),
@@ -700,6 +803,10 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
                 "pto_hours": str(approved_pto), "payroll_inputs": emp_inputs,
             }
             trace = {"federal": federal["trace"], "utah": utah["trace"],
+                     "supplemental_wages": {
+                         "amount_cents": taxable_additions,
+                         "method": "aggregate with regular wages",
+                     },
                      "fica": {**fica, "ytd_before_cents": ss_ytd_cents},
                      "unemployment": {
                          **unemployment, "futa_ytd_before_cents": futa_ytd_cents,
@@ -714,6 +821,9 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
             totals["gross"] += taxable_gross
             totals["net"] += net
             totals["taxes"] += employee_taxes + results["employer_taxes_cents"]
+            totals["deductions"] += deductions
+            totals["reimbursements"] += reimbursements
+            totals["employer_taxes"] += results["employer_taxes_cents"]
         run = HRPayrollRun(
             base44_id=run_id, pay_period_start=period.start_date,
             pay_period_end=period.end_date, pay_date=period.pay_date,
@@ -722,6 +832,14 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
             employee_count=len(calculations), initiated_by=actor,
             notes=json.dumps({
                 "source_hash": source_hash, "rule_version": "2026.1",
+                "total_check_cash_cents": totals["net"],
+                "total_tax_liability_cents": totals["taxes"],
+                "total_deduction_liability_cents": totals["deductions"],
+                "total_reimbursements_cents": totals["reimbursements"],
+                "total_employer_cost_cents": (
+                    totals["gross"] + totals["reimbursements"]
+                    + totals["employer_taxes"]
+                ),
                 "statement": "Prepared snapshot; no money moved and no taxes filed.",
             }, sort_keys=True),
         )
@@ -887,14 +1005,39 @@ def payroll_run_detail(run_id: str, *, employee_email: str | None = None) -> dic
                 HRPrintedCheck.status != "voided",
             ).all()
         }
+        try:
+            run_meta = json.loads(run.notes or "{}")
+        except json.JSONDecodeError:
+            run_meta = {}
+        display_gross = run.total_gross_cents
+        display_net = run.total_net_cents
+        display_taxes = run.total_taxes_cents
+        display_deductions = int(run_meta.get("total_deduction_liability_cents", 0))
+        display_cost = int(run_meta.get(
+            "total_employer_cost_cents",
+            run.total_net_cents + run.total_taxes_cents,
+        ))
+        if employee_email and calculations:
+            employee_results = calculations[0].results_json or {}
+            display_gross = int(employee_results.get("taxable_gross_cents", 0))
+            display_net = int(employee_results.get("net_cents", 0))
+            display_deductions = int(employee_results.get("deductions_cents", 0))
+            display_taxes = sum(int(employee_results.get(key, 0)) for key in (
+                "federal_cents", "utah_cents", "social_security_cents",
+                "medicare_cents", "employer_taxes_cents",
+            ))
+            display_cost = int(employee_results.get(
+                "total_employer_cost_cents", display_net + display_taxes
+            ))
         return {
             "id": run.base44_id, "status": run.status,
             "period_start": run.pay_period_start, "period_end": run.pay_period_end,
             "pay_date": run.pay_date, "prepared_by": run.initiated_by,
-            "gross": cents_to_dollars(run.total_gross_cents),
-            "net": cents_to_dollars(run.total_net_cents),
-            "taxes": cents_to_dollars(run.total_taxes_cents),
-            "cash_impact": cents_to_dollars(run.total_net_cents + run.total_taxes_cents),
+            "gross": cents_to_dollars(display_gross),
+            "net": cents_to_dollars(display_net),
+            "taxes": cents_to_dollars(display_taxes),
+            "deductions": cents_to_dollars(display_deductions),
+            "cash_impact": cents_to_dollars(display_cost),
             "calculations": [{
                 "employee_email": row.employee_email, "inputs": row.inputs_json or {},
                 "results": row.results_json or {}, "trace": row.trace_json or {},

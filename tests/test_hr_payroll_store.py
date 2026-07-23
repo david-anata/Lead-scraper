@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from sales_support_agent.models.database import Base
 from sales_support_agent.models.hr import (
+    HREmployee,
     HRPayrollApproval,
+    HRPayrollCalculation,
+    HRPayrollInput,
     HRPayrollRun,
     HRPrintedCheck,
 )
@@ -103,3 +106,92 @@ def test_reissue_is_atomic_and_preserves_original_evidence():
         assert replacement.status == "ready"
         assert replacement.net_pay_cents == original.net_pay_cents
         assert "Damaged check" in replacement.notes
+
+
+def test_employee_statement_summary_uses_only_that_employee():
+    engine = _engine()
+    run = _run()
+    run.status = "closed"
+    run.total_gross_cents = 300000
+    run.total_net_cents = 250000
+    run.total_taxes_cents = 50000
+    with Session(engine) as session:
+        session.add(run)
+        session.add_all([
+            HRPayrollCalculation(
+                payroll_run_id="pay_test", employee_email="one@anatainc.com",
+                version=1, inputs_json={}, snapshot_hash="one",
+                results_json={
+                    "taxable_gross_cents": 100000, "net_cents": 80000,
+                    "federal_cents": 7000, "utah_cents": 3000,
+                    "social_security_cents": 6200, "medicare_cents": 1450,
+                    "employer_taxes_cents": 9000, "deductions_cents": 2350,
+                    "total_employer_cost_cents": 109000,
+                },
+            ),
+            HRPayrollCalculation(
+                payroll_run_id="pay_test", employee_email="two@anatainc.com",
+                version=1, inputs_json={}, snapshot_hash="two",
+                results_json={
+                    "taxable_gross_cents": 200000, "net_cents": 170000,
+                    "employer_taxes_cents": 18000,
+                    "total_employer_cost_cents": 218000,
+                },
+            ),
+        ])
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        statement = payroll_store.payroll_run_detail(
+            "pay_test", employee_email="one@anatainc.com"
+        )
+
+    assert statement is not None
+    assert statement["gross"] == "1,000.00"
+    assert statement["net"] == "800.00"
+    assert statement["cash_impact"] == "1,090.00"
+    assert len(statement["calculations"]) == 1
+    assert statement["calculations"][0]["employee_email"] == "one@anatainc.com"
+
+
+def test_reimbursement_evidence_and_recurring_deduction_controls():
+    engine = _engine()
+    with Session(engine) as session:
+        session.add(HREmployee(
+            email="employee@anatainc.com", full_name="Employee", status="active"
+        ))
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        assert payroll_store.add_payroll_input(
+            employee_email="employee@anatainc.com",
+            period_start=date(2026, 7, 1), period_end=date(2026, 7, 15),
+            input_type="reimbursement", amount="50", taxable=False,
+            description="Office supplies", source_reference="", actor="val@anatainc.com",
+        ) == (False, "reimbursement_evidence_required")
+        assert payroll_store.add_payroll_input(
+            employee_email="employee@anatainc.com",
+            period_start=date(2026, 7, 1), period_end=date(2026, 7, 15),
+            input_type="deduction", amount="25", taxable=False,
+            description="Employee-authorized deduction", recurring=True,
+            actor="val@anatainc.com",
+        ) == (True, "input_added")
+
+    with Session(engine) as session:
+        prior = session.query(HRPayrollInput).one()
+        prior.status = "approved"
+        session.commit()
+
+    with mock.patch.object(payroll_store, "get_engine", return_value=engine):
+        current = payroll_store.list_payroll_inputs(
+            date(2026, 7, 16), date(2026, 7, 31)
+        )
+        repeated = payroll_store.list_payroll_inputs(
+            date(2026, 7, 16), date(2026, 7, 31)
+        )
+
+    assert len(current) == 1
+    assert current[0]["recurring"] is True
+    assert current[0]["status"] == "pending"
+    assert current[0]["submitted_by"] == "system"
+    assert len(repeated) == 1

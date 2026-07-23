@@ -125,6 +125,9 @@ def _flash(flash: Optional[str]) -> str:
         "input_added": "Payroll input added for another person's review.",
         "input_approved": "Payroll input approved.",
         "input_rejected": "Payroll input rejected.",
+        "reimbursement_evidence_required": "Add the reimbursement receipt or evidence reference.",
+        "duplicate_receipt": "That reimbursement evidence reference is already in payroll.",
+        "recurring_input_invalid": "Only deductions and garnishments can carry forward.",
         "payroll_blocked": "Resolve every blocking item before preparing payroll.",
         "approval_attestation_required": "Type the approval statement exactly as shown.",
         "payroll_approved": "Payroll approved. No money or tax payment was sent.",
@@ -506,18 +509,20 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     input_rows = "".join(
         f"""<tr><td>{_esc(item['employee_email'])}</td><td>{_esc(item['input_type'])}</td>
         <td>${_esc(item['amount'])}</td><td>{'Taxable' if item['taxable'] else 'Non-taxable'}</td>
-        <td>{_esc(item['status'])}</td><td>{_esc(item['description'] or '—')}</td>
+        <td>{_esc(item['status'])}{' · Review unusual change' if item.get('unusual_change') else ''}</td>
+        <td>{_esc(item['description'] or '—')}<br><span class="hr-sub">{_esc(item.get('source_reference') or 'No separate evidence reference')}{' · recurring' if item.get('recurring') else ''}</span></td>
         <td>{f'<form class="hr-inline" method="post" action="/admin/hr/payroll/inputs/{item["id"]}/decision"><input type="hidden" name="period_date" value="{period.start_date}"><button class="hr-btn" name="decision" value="approved">Approve</button><button class="hr-btn hr-btn-light" name="decision" value="rejected">Reject</button></form>' if item["status"] == "pending" else '—'}</td></tr>"""
         for item in control["inputs"]
     ) or '<tr><td colspan="7" class="hr-empty">No bonus, commission, reimbursement, deduction, or fee inputs.</td></tr>'
     run_rows = "".join(
         f"""<tr><td>{_esc(run['id'])}</td><td>{_esc(run['status'])}</td>
-        <td>${_esc(run['gross'])}</td><td>${_esc(run['taxes'])}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
+        <td>${_esc(run['gross'])}{f'<br><span class="hr-sub">{run["gross_change_percent"]:+.1f}% vs prior</span>' if run.get("gross_change_percent") is not None else ''}</td>
+        <td>${_esc(run['taxes'])}</td><td>${_esc(run.get('deductions'))}</td><td>${_esc(run['net'])}</td><td>${_esc(run['cash_impact'])}</td>
         <td>{run['employee_count']}</td><td>{_esc(run['initiated_by'])}</td>
         <td><a href="/admin/hr/payroll/runs/{_esc(run['id'])}">Review details</a>
         {f'<form method="post" action="/admin/hr/payroll/{run["id"]}/approve"><label>Type exactly: I approve this payroll</label><input name="approval_text" required autocomplete="off"><input type="hidden" name="period_date" value="{period.start_date}"><button class="hr-btn" type="submit">Approve prepared payroll</button></form>' if run["status"] == "prepared" else ''}</td></tr>"""
         for run in control["runs"]
-    ) or '<tr><td colspan="9" class="hr-empty">No prepared versions for this period.</td></tr>'
+    ) or '<tr><td colspan="10" class="hr-empty">No prepared versions for this period.</td></tr>'
     liability_rows = "".join(
         f"""<tr><td>{_esc(item['agency'])}</td><td>{_esc(item['liability_type'])}</td>
         <td>${_esc(item['amount'])}</td><td>{_esc(item['due_date'])}</td><td>{_esc(item['status'])}</td>
@@ -555,10 +560,12 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     <form class="hr-form" method="post" action="/admin/hr/payroll/inputs">
       <input type="hidden" name="period_date" value="{period.start_date}">
       <div class="hr-grid2"><div><label>Employee</label><select name="employee_email" required>{employee_options}</select></div>
-      <div><label>Type</label><select name="input_type"><option value="bonus">Bonus</option><option value="commission">Commission</option><option value="reimbursement">Reimbursement</option><option value="deduction">Deduction</option><option value="contractor_fee">Contractor flat fee</option></select></div></div>
+      <div><label>Type</label><select name="input_type"><option value="bonus">Bonus</option><option value="commission">Commission</option><option value="reimbursement">Accountable reimbursement</option><option value="deduction">Voluntary/standard deduction</option><option value="garnishment">Mandatory garnishment</option><option value="holiday_adjustment">Holiday adjustment</option><option value="manual_correction">Manual pay correction</option></select></div></div>
       <div class="hr-grid2"><div><label>Amount</label><input name="amount" inputmode="decimal" required></div>
       <div><label><input type="checkbox" name="taxable" value="true" checked style="width:auto"> Taxable</label></div></div>
-      <label>Description and source</label><input name="description" required maxlength="255">
+      <label>Business reason</label><input name="description" required maxlength="255">
+      <label>Receipt, order, or evidence reference</label><input name="source_reference" maxlength="255" placeholder="Required for reimbursements">
+      <label><input type="checkbox" name="recurring" value="true" style="width:auto"> Carry forward for review each period (deductions and garnishments only)</label>
       <button class="hr-btn" type="submit">Add for review</button>
     </form>
     <form method="post" action="/admin/hr/payroll/prepare" style="margin:24px 0">
@@ -566,7 +573,7 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <button class="hr-btn" type="submit"{'' if readiness['ready'] else ' disabled'}>Prepare immutable payroll version</button>
     </form>
     <h2>Prepared and approved versions</h2>
-    <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Gross</th><th>Tax cash impact</th><th>Employee net</th><th>Total cash required</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
+    <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Gross</th><th>Tax liability</th><th>Deduction liability</th><th>Employee check cash</th><th>Total employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
     <h2>Tax payment and filing reconciliation</h2>
     <p class="hr-sub">Amounts are liabilities until confirmation evidence is recorded. Paid and filed are separate facts.</p>
     <table class="hr-tbl"><thead><tr><th>Agency</th><th>Type</th><th>Amount</th><th>Due</th><th>Status</th><th>Evidence action</th></tr></thead><tbody>{liability_rows}</tbody></table>
@@ -608,16 +615,19 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
         <td>${money(results.get('federal_cents'))}</td><td>${money(results.get('utah_cents'))}</td>
         <td>${money(results.get('social_security_cents'))}</td><td>${money(results.get('medicare_cents'))}</td>
         <td>${money(results.get('deductions_cents'))}</td><td>${money(results.get('reimbursements_cents'))}</td>
-        <td>${money(results.get('net_cents'))}</td><td>{check_action}</td></tr>"""
+        <td>${money(results.get('net_cents'))}</td>
+        <td>${money(results.get('employer_taxes_cents'))}</td>
+        <td>${money(results.get('total_employer_cost_cents'))}</td><td>{check_action}</td></tr>"""
     body = f"""
     {_flash(flash)}
     <h1 class="hr-h1">{'Pay statement' if employee_view else 'Payroll version review'}</h1>
     <p class="hr-sub">{_esc(run['period_start'])}–{_esc(run['period_end'])}, payday {_esc(run['pay_date'])}. Status: {_esc(run['status'])}.</p>
     <div class="hr-cards"><div class="hr-card"><div class="n">${_esc(run['gross'])}</div><div class="l">Gross wages</div></div>
-    <div class="hr-card"><div class="n">${_esc(run['taxes'])}</div><div class="l">Tax cash impact</div></div>
-    <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">Employee net</div></div>
-    <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">Total cash required</div></div></div>
-    <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Employee</th><th>Regular</th><th>OT</th><th>Holiday</th><th>PTO</th><th>Gross</th><th>Federal</th><th>Utah</th><th>Social Security</th><th>Medicare</th><th>Other deductions</th><th>Reimbursements</th><th>Net</th><th>Payment record</th></tr></thead><tbody>{rows}</tbody></table></div>
+    <div class="hr-card"><div class="n">${_esc(run['taxes'])}</div><div class="l">Tax liability</div></div>
+    <div class="hr-card"><div class="n">${_esc(run['deductions'])}</div><div class="l">Deduction liability</div></div>
+    <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">Employee check cash</div></div>
+    <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">Total employer cost</div></div></div>
+    <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Employee</th><th>Regular</th><th>OT</th><th>Holiday</th><th>PTO</th><th>Gross</th><th>Federal</th><th>Utah</th><th>Social Security</th><th>Medicare</th><th>Other deductions</th><th>Reimbursements</th><th>Net</th><th>Employer taxes</th><th>Employer cost</th><th>Payment record</th></tr></thead><tbody>{rows}</tbody></table></div>
     <p class="hr-sub">Calculation version: immutable snapshot. A recorded check is not marked cleared until separate reconciliation evidence exists.</p>
     {f'<form method="post" action="/admin/hr/payroll/runs/{_esc(run["id"])}/close"><button class="hr-btn" type="submit">Close fully reconciled payroll</button></form>' if not employee_view and run["status"] == "checks_issued" else ''}
     <a class="hr-btn hr-btn-light" href="{'/admin/hr/payroll' if not employee_view else '/admin/hr/pay-statements'}">Back</a>

@@ -142,6 +142,11 @@ def _ensure_hr_columns(engine: Any) -> None:
         "hr_company_profiles": {
             "utah_withholding_payment_frequency": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
         },
+        "hr_payroll_inputs": {
+            "source_reference": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "recurring": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "recurrence_key": "VARCHAR(64) NOT NULL DEFAULT ''",
+        },
     }
     inspector = inspect(engine)
     for table_name, table_columns in additions.items():

@@ -50,6 +50,12 @@ class HRSchemaTests(unittest.TestCase):
             row["name"] for row in inspect(db.get_engine()).get_columns("hr_time_entries")
         }
         self.assertIn("elapsed_seconds", time_columns)
+        input_columns = {
+            row["name"] for row in inspect(db.get_engine()).get_columns("hr_payroll_inputs")
+        }
+        self.assertTrue({
+            "source_reference", "recurring", "recurrence_key"
+        }.issubset(input_columns))
 
     def test_employee_money_in_cents_and_base44_id(self) -> None:
         Sess = db.create_session_factory(os.environ["SALES_AGENT_DB_URL"])

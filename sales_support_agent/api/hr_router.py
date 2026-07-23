@@ -516,13 +516,15 @@ async def hr_payroll_input(
     period_date: date = Form(...), employee_email: str = Form(""),
     input_type: str = Form(""), amount: str = Form(""),
     taxable: bool = Form(False), description: str = Form(""),
+    source_reference: str = Form(""), recurring: bool = Form(False),
     user: dict = Depends(_pay_guard),
 ):
     period = payroll_store.semimonthly_period(period_date)
     ok, message = payroll_store.add_payroll_input(
         employee_email=employee_email, period_start=period.start_date,
         period_end=period.end_date, input_type=input_type, amount=amount,
-        taxable=taxable, description=description, actor=user.get("email", ""),
+        taxable=taxable, description=description, source_reference=source_reference,
+        recurring=recurring, actor=user.get("email", ""),
     )
     return RedirectResponse(
         f"/admin/hr/payroll?period_date={period_date}&{'ok' if ok else 'err'}={message}",
