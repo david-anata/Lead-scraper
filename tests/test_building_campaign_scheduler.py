@@ -120,6 +120,7 @@ class BuildingCampaignSchedulerTests(unittest.TestCase):
                     preview_hash="a" * 64,
                     approved_by="approver@example.com",
                     approved_at=datetime.now(timezone.utc),
+                    sender_identity="Anata Building <hello@example.com>",
                     created_by="operator@example.com",
                 )
             )
@@ -228,20 +229,28 @@ class BuildingCampaignSchedulerTests(unittest.TestCase):
                 "scheduled",
             )
 
-        with mock.patch(
-            "sales_support_agent.api.building_crm_router.ResendClient"
-        ) as client:
-            client.return_value.is_configured.return_value = True
-            client.return_value.send_message.return_value = "provider-message-1"
-            delivered = self.client.post(
-                "/api/internal/building/crm/scheduled-campaigns/run",
-                headers=self.headers,
-                json={
-                    "dry_run": False,
-                    "max_campaigns": 10,
-                    "actor": "job:test-scheduler",
-                },
-            )
+        original_settings = app.state.settings
+        app.state.settings = dataclasses.replace(
+            original_settings,
+            resend_from="Changed Sender <changed@example.com>",
+        )
+        try:
+            with mock.patch(
+                "sales_support_agent.api.building_crm_router.ResendClient"
+            ) as client:
+                client.return_value.is_configured.return_value = True
+                client.return_value.send_message.return_value = "provider-message-1"
+                delivered = self.client.post(
+                    "/api/internal/building/crm/scheduled-campaigns/run",
+                    headers=self.headers,
+                    json={
+                        "dry_run": False,
+                        "max_campaigns": 10,
+                        "actor": "job:test-scheduler",
+                    },
+                )
+        finally:
+            app.state.settings = original_settings
         self.assertEqual(delivered.status_code, 200, delivered.text)
         self.assertEqual(delivered.json()["sent"], 1)
         self.assertEqual(delivered.json()["suppressed"], 1)
@@ -250,12 +259,17 @@ class BuildingCampaignSchedulerTests(unittest.TestCase):
             send_kwargs["idempotency_key"],
             "building-campaign/scheduled-news/1",
         )
+        self.assertEqual(
+            send_kwargs["from_address"],
+            "Anata Building <hello@example.com>",
+        )
 
         with self.factory() as session:
             campaign = session.get(BuildingCampaign, "scheduled-news")
             self.assertEqual(campaign.status, "sent")
             self.assertIsNotNone(campaign.scheduled_at)
             self.assertEqual(campaign.scheduled_by, "operator@example.com")
+            self.assertEqual(campaign.sent_by, "job:test-scheduler")
             recipients = {
                 row.contact_id: row
                 for row in session.query(BuildingCampaignRecipient).all()

@@ -1051,6 +1051,21 @@ def _campaign_delivery_text(
     )
 
 
+def _approved_campaign_sender(campaign: BuildingCampaign) -> str:
+    """Return the sender frozen with approval, failing closed for legacy rows."""
+
+    sender = str(campaign.sender_identity or "").strip()
+    if not sender:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Campaign has no approved sender snapshot. Create and approve a "
+                "replacement campaign before delivery."
+            ),
+        )
+    return sender
+
+
 def _deliver_campaign_recipients(
     session,
     request: Request,
@@ -1082,6 +1097,7 @@ def _deliver_campaign_recipients(
                 subject=campaign.subject,
                 text=_campaign_delivery_text(request, campaign, recipient),
                 idempotency_key=f"building-campaign/{campaign.id}/{recipient.id}",
+                from_address=_approved_campaign_sender(campaign),
             )
             recipient.status = "sent"
             recipient.provider_message_id = (
@@ -1441,6 +1457,8 @@ def upsert_campaign(
         row.previewed_at = None
         row.test_sent_by = ""
         row.test_sent_at = None
+        row.sender_identity = ""
+        row.sent_by = ""
         row.updated_at = _now()
         session.add(row)
         session.add(BuildingAuditEvent(
@@ -1573,13 +1591,18 @@ def approve_campaign(
         campaign.status = "approved"
         campaign.approved_by = payload.actor
         campaign.approved_at = _now()
+        campaign.sender_identity = preview["sender_identity"]
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
             entity_type="campaign",
             entity_id=campaign.id,
             action="approved",
             actor=payload.actor,
-            after_json={"recipient_count": preview["included_count"], "preview_hash": payload.preview_hash},
+            after_json={
+                "recipient_count": preview["included_count"],
+                "preview_hash": payload.preview_hash,
+                "sender_identity": campaign.sender_identity,
+            },
         ))
         return {
             "ok": True,
@@ -1615,6 +1638,7 @@ def schedule_campaign(
                 status_code=409,
                 detail="Campaign must be approved before scheduling.",
             )
+        _approved_campaign_sender(campaign)
         campaign.status = "scheduled"
         campaign.scheduled_at = scheduled_at
         campaign.scheduled_by = payload.actor
@@ -1715,8 +1739,12 @@ def run_scheduled_campaigns(
 
         if any(campaign.communication_class == "marketing" for campaign in due):
             _campaign_secret(request)
+        approved_senders = [
+            _approved_campaign_sender(campaign)
+            for campaign in due
+        ]
         client = ResendClient(request.app.state.settings)
-        if not client.is_configured():
+        if not client.is_configured(from_address=approved_senders[0]):
             raise HTTPException(status_code=503, detail="Email delivery is not configured.")
 
         totals = {"sent": 0, "suppressed": 0, "failed": 0}
@@ -1731,6 +1759,7 @@ def run_scheduled_campaigns(
                 eligible_statuses={"approved"},
             )
             campaign.status = "sent_with_errors" if counts["failed"] else "sent"
+            campaign.sent_by = payload.actor
             campaign.sent_at = _now()
             campaign.updated_at = _now()
             for key in totals:
@@ -1781,8 +1810,9 @@ def send_campaign(
             raise HTTPException(status_code=409, detail="Campaign must be approved before sending.")
         if campaign.communication_class == "marketing":
             _campaign_secret(request)
+        approved_sender = _approved_campaign_sender(campaign)
         client = ResendClient(request.app.state.settings)
-        if not client.is_configured():
+        if not client.is_configured(from_address=approved_sender):
             raise HTTPException(status_code=503, detail="Email delivery is not configured.")
         campaign.status = "sending"
         counts = _deliver_campaign_recipients(
@@ -1796,6 +1826,7 @@ def send_campaign(
         suppressed = counts["suppressed"]
         failed = counts["failed"]
         campaign.status = "sent_with_errors" if failed else "sent"
+        campaign.sent_by = payload.actor
         campaign.sent_at = _now()
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
@@ -1833,8 +1864,9 @@ def retry_campaign_failures(
             )
         if campaign.communication_class == "marketing":
             _campaign_secret(request)
+        approved_sender = _approved_campaign_sender(campaign)
         client = ResendClient(request.app.state.settings)
-        if not client.is_configured():
+        if not client.is_configured(from_address=approved_sender):
             raise HTTPException(status_code=503, detail="Email delivery is not configured.")
         campaign.status = "sending"
         counts = _deliver_campaign_recipients(
@@ -1845,6 +1877,7 @@ def retry_campaign_failures(
             eligible_statuses={"failed"},
         )
         campaign.status = "sent_with_errors" if counts["failed"] else "sent"
+        campaign.sent_by = campaign.sent_by or payload.actor
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
             entity_type="campaign",
@@ -2932,6 +2965,8 @@ def save_campaign_from_control_room(
         row.previewed_at = None
         row.test_sent_by = ""
         row.test_sent_at = None
+        row.sender_identity = ""
+        row.sent_by = ""
         row.updated_at = _now()
         session.add(row)
         session.add(BuildingAuditEvent(
@@ -3085,6 +3120,7 @@ def approve_campaign_from_control_room(
         campaign.status = "approved"
         campaign.approved_by = actor
         campaign.approved_at = _now()
+        campaign.sender_identity = preview["sender_identity"]
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
             entity_type="campaign",
@@ -3094,6 +3130,7 @@ def approve_campaign_from_control_room(
             after_json={
                 "recipient_count": preview["included_count"],
                 "preview_hash": campaign.preview_hash,
+                "sender_identity": campaign.sender_identity,
             },
         ))
     return _building_redirect(
@@ -3127,6 +3164,10 @@ def schedule_campaign_from_control_room(
             return _building_redirect(
                 error="Campaign must be approved before scheduling."
             )
+        try:
+            approved_sender = _approved_campaign_sender(campaign)
+        except HTTPException as exc:
+            return _building_redirect(error=str(exc.detail))
         campaign.status = "scheduled"
         campaign.scheduled_at = scheduled_utc
         campaign.scheduled_by = actor
@@ -3216,11 +3257,15 @@ def send_campaign_from_control_room(
             return _building_redirect(
                 error="Campaign unsubscribe signing is not configured."
             )
+        try:
+            approved_sender = _approved_campaign_sender(campaign)
+        except HTTPException as exc:
+            return _building_redirect(error=str(exc.detail))
         expected_confirmation = f"SEND {campaign.id}"
         if confirmation.strip() != expected_confirmation:
             return _building_redirect(error=f"Type {expected_confirmation} to confirm delivery.")
         client = ResendClient(request.app.state.settings)
-        if not client.is_configured():
+        if not client.is_configured(from_address=approved_sender):
             return _building_redirect(error="Email delivery is not configured.")
         campaign.status = "sending"
         counts = _deliver_campaign_recipients(
@@ -3234,6 +3279,7 @@ def send_campaign_from_control_room(
         suppressed = counts["suppressed"]
         failed = counts["failed"]
         campaign.status = "sent_with_errors" if failed else "sent"
+        campaign.sent_by = actor
         campaign.sent_at = _now()
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
@@ -3279,8 +3325,12 @@ def retry_campaign_failures_from_control_room(
             ).strip()
         ):
             return _building_redirect(error="Campaign unsubscribe signing is not configured.")
+        try:
+            approved_sender = _approved_campaign_sender(campaign)
+        except HTTPException as exc:
+            return _building_redirect(error=str(exc.detail))
         client = ResendClient(request.app.state.settings)
-        if not client.is_configured():
+        if not client.is_configured(from_address=approved_sender):
             return _building_redirect(error="Email delivery is not configured.")
         campaign.status = "sending"
         counts = _deliver_campaign_recipients(
@@ -3291,6 +3341,7 @@ def retry_campaign_failures_from_control_room(
             eligible_statuses={"failed"},
         )
         campaign.status = "sent_with_errors" if counts["failed"] else "sent"
+        campaign.sent_by = campaign.sent_by or actor
         campaign.updated_at = _now()
         session.add(BuildingAuditEvent(
             entity_type="campaign",
@@ -3558,7 +3609,14 @@ def building_control_room(
                 "name": item.name,
                 "subject": item.subject,
                 "communication_class": item.communication_class,
-                "sender_identity": request.app.state.settings.resend_from,
+                "sender_identity": (
+                    item.sender_identity
+                    or (
+                        request.app.state.settings.resend_from
+                        if item.status in {"draft", "previewed"}
+                        else "Approval missing sender snapshot"
+                    )
+                ),
                 "segment_name": segment_names.get(item.segment_id, ""),
                 "recipient_count": recipient_counts.get(item.id, 0),
                 "failed_recipient_count": failed_recipient_counts.get(item.id, 0),
@@ -3571,6 +3629,7 @@ def building_control_room(
                     else ""
                 ),
                 "scheduled_by": item.scheduled_by,
+                "sent_by": item.sent_by,
             }
             for item in campaign_rows
         ]

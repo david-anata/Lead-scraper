@@ -159,11 +159,16 @@ class BuildingEmailWebhookTests(unittest.TestCase):
                 subject="Test",
                 text="Message",
                 idempotency_key="building-campaign/test/1",
+                from_address="Approved Sender <approved@example.com>",
             )
         self.assertEqual(provider_id, "email-provider-123")
         self.assertEqual(
             post.call_args.kwargs["headers"]["Idempotency-Key"],
             "building-campaign/test/1",
+        )
+        self.assertEqual(
+            post.call_args.kwargs["json"]["from"],
+            "Approved Sender <approved@example.com>",
         )
 
     def test_01_bounce_suppresses_marketing_and_is_idempotent(self) -> None:

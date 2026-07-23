@@ -274,6 +274,12 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         )
         self.assertEqual(approved.status_code, 200, approved.text)
         self.assertEqual(approved.json()["recipient_count"], 1)
+        with self.factory() as session:
+            campaign = session.get(BuildingCampaign, "tenant-news-1")
+            self.assertEqual(
+                campaign.sender_identity,
+                "Anata Building <hello@example.com>",
+            )
 
     def test_03_send_rechecks_suppression_after_approval(self) -> None:
         self._preference("contact-tenant", "unsubscribed")

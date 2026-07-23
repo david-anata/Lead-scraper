@@ -295,12 +295,14 @@ def _ensure_building_columns(engine: Any) -> None:
             ),
         },
         "building_campaigns": {
+            "sender_identity": "VARCHAR(255) NOT NULL DEFAULT ''",
             "scheduled_at": (
                 "TIMESTAMP WITH TIME ZONE"
                 if engine.dialect.name == "postgresql"
                 else "DATETIME"
             ),
             "scheduled_by": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "sent_by": "VARCHAR(255) NOT NULL DEFAULT ''",
         },
     }
     with engine.begin() as connection:

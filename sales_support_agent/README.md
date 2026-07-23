@@ -230,7 +230,9 @@ preview, test-send, approval, and immediate or scheduled delivery without
 editing code. Scheduled times are entered in `America/Denver`; delivery runs on
 the next hourly operator cycle. Permission and suppression are rechecked at
 delivery time, and stable Resend idempotency keys protect recipient retries from
-duplicate sends within the provider's idempotency window.
+duplicate sends within the provider's idempotency window. Approval also freezes
+the reviewed sender identity; immediate, scheduled, and retry delivery use that
+snapshot even if the service-level sender configuration changes later.
 Reviewed tenant, employee, event-host, and community rosters can also be pasted
 as CSV. The preview normalizes and deduplicates up to 500 rows, reports new
 versus matched contacts, and changes nothing until an operator types the exact

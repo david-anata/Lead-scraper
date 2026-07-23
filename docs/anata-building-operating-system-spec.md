@@ -399,6 +399,8 @@ Rules:
 - Audience membership is explainable: an operator can see why a person is in a
   segment.
 - A campaign stores the exact recipient snapshot and template version.
+- Approval freezes the reviewed sender identity; later provider configuration
+  changes cannot silently alter an approved immediate or scheduled send.
 - An approved snapshot may send immediately or be scheduled in the building's
   Mountain Time; the due-send job records the scheduler and planned time.
 - Scheduled delivery rechecks current consent, relationship eligibility, and

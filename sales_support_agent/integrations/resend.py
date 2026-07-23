@@ -27,8 +27,8 @@ class ResendClient:
         self.api_key = (getattr(settings, "resend_api_key", "") or "").strip()
         self.from_address = (getattr(settings, "resend_from", "") or "").strip()
 
-    def is_configured(self) -> bool:
-        return bool(self.api_key and self.from_address)
+    def is_configured(self, *, from_address: str = "") -> bool:
+        return bool(self.api_key and (from_address.strip() or self.from_address))
 
     def send_message(
         self,
@@ -38,12 +38,13 @@ class ResendClient:
         text: str,
         reply_to: str = "",
         idempotency_key: str = "",
+        from_address: str = "",
     ) -> str:
         """Send a plain-text email. Raises on transport/HTTP error so the caller
         (notify.py) can log and fall through to the next sender."""
         recipients = [to] if isinstance(to, str) else list(to)
         payload = {
-            "from": self.from_address,
+            "from": from_address.strip() or self.from_address,
             "to": recipients,
             "subject": subject,
             "text": text,
