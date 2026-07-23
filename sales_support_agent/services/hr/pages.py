@@ -46,12 +46,16 @@ _HR_STYLES = """
   .hr-kicker { font:700 11px Montserrat,Inter,sans-serif; letter-spacing:.06em; text-transform:uppercase; color:#52606d; }
   .hr-stack { display:grid; gap:14px; }
   .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .hr-dashboard-action { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px 20px; background:#fff; border:1px solid rgba(43,54,68,.1); border-radius:14px; }
+  .hr-dashboard-action .hr-sub { margin:0; max-width:720px; }
   .hr-btn-danger { background:#8b3a32; }
   @media (max-width: 768px) {
     .hr-main { padding:22px 16px 36px; }
     .hr-grid2 { grid-template-columns:1fr; }
     .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
     .hr-actions { flex-direction:column; }
+    .hr-dashboard-action { align-items:stretch; flex-direction:column; }
+    .hr-dashboard-action .hr-btn { min-height:44px; text-align:center; }
     .hr-tbl, .hr-tbl tbody, .hr-tbl tr, .hr-tbl td { display:block; width:100%; box-sizing:border-box; }
     .hr-tbl thead { display:none; }
     .hr-tbl tr { padding:10px 0; border-bottom:1px solid rgba(43,54,68,.1); }
@@ -108,8 +112,10 @@ def render_hr_dashboard(stats: dict, *, user, flash=None) -> str:
       <div class="hr-card"><div class="n">{stats.get('onboarding_incomplete',0)}</div><div class="l">Onboarding pending</div></div>
       <div class="hr-card"><div class="n">{stats.get('total_employees',0)}</div><div class="l">Total records</div></div>
     </div>
-    <div class="hr-row-head"><div></div><a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a></div>
-    <p class="hr-sub" style="margin-top:0">Use the HR navigation above to manage people, time, payroll readiness, and reporting.</p>
+    <section class="hr-dashboard-action" aria-label="HR next action">
+      <p class="hr-sub">Add your first employee record, or use the HR navigation above to manage people, time, payroll readiness, and reporting.</p>
+      <a class="hr-btn" href="/admin/hr/employees/new">+ Add employee</a>
+    </section>
     """
     return hr_shell("Dashboard", "dashboard", body, user=user)
 

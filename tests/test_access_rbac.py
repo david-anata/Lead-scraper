@@ -1072,6 +1072,21 @@ class NavAccessSafetyTests(unittest.TestCase):
         nav = render_agent_nav(is_superadmin=True)
         self._assert_all_hrefs_accessible(nav, set(), is_superadmin=True)
 
+    def test_shell_has_skip_link_and_semantic_account_menu(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav = render_agent_nav(
+            "hr",
+            permissions={"hr.access"},
+            user={"name": "Admin User", "email": "admin@anatainc.com", "permissions": {"hr.access"}},
+        )
+
+        self.assertIn('class="agent-skip-link" href="#agent-main-content"', nav)
+        self.assertIn('id="agent-main-content" tabindex="-1"', nav)
+        self.assertIn('<details class="user-chip">', nav)
+        self.assertIn('aria-label="Account menu for Admin User"', nav)
+        self.assertNotIn('onclick="this.toggleAttribute', nav)
+
     def test_cs_only_user_primary_points_at_cs_not_sales(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
         nav = render_agent_nav("fulfillment_dashboard", permissions={"fulfillment.dashboard"})

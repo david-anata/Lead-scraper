@@ -128,6 +128,22 @@ def render_agent_nav_styles() -> str:
         outline-offset: 2px;
         box-shadow: 0 0 0 3px rgba(133,187,218,.48);
       }
+      .agent-skip-link {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        z-index: 1000;
+        padding: 10px 14px;
+        border-radius: 9px;
+        background: #2B3644;
+        color: #fff;
+        font: 700 13px "Montserrat", sans-serif;
+        text-decoration: none;
+        transform: translateY(-150%);
+        transition: transform 120ms ease;
+      }
+      .agent-skip-link:focus { transform: translateY(0); }
+      #agent-main-content { scroll-margin-top: 126px; }
       .topbar {
         padding: 0;
         border-bottom: 1px solid rgba(43, 54, 68, 0.10);
@@ -263,7 +279,17 @@ def render_agent_nav_styles() -> str:
         cursor: pointer;
         user-select: none;
         transition: border-color 120ms ease, box-shadow 120ms ease;
+        justify-self: end;
+        width: max-content;
       }
+      .user-chip > summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        list-style: none;
+        outline: none;
+      }
+      .user-chip > summary::-webkit-details-marker { display: none; }
       .user-chip:hover {
         border-color: rgba(43, 54, 68, 0.22);
         box-shadow: 0 4px 12px rgba(43, 54, 68, 0.08);
@@ -306,8 +332,7 @@ def render_agent_nav_styles() -> str:
         padding: 6px;
         z-index: 100;
       }
-      .user-chip:focus-within .user-dropdown,
-      .user-chip[data-open] .user-dropdown {
+      .user-chip[open] .user-dropdown {
         display: block;
       }
       .user-dropdown-profile {
@@ -392,6 +417,18 @@ def render_agent_nav_styles() -> str:
         .topbar-inner > .top-actions { grid-column:1 / -1; grid-row:2; }
         .topbar-section-row { padding-inline:16px; }
         .topbar-section-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+        .top-actions,
+        .topbar-section-row {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(43,54,68,.28) transparent;
+        }
+        .top-actions::-webkit-scrollbar,
+        .topbar-section-row::-webkit-scrollbar { display:block; height:3px; }
+        .top-actions::-webkit-scrollbar-thumb,
+        .topbar-section-row::-webkit-scrollbar-thumb { background:rgba(43,54,68,.28); border-radius:99px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
       }
     """
 
@@ -429,9 +466,11 @@ def _user_chip_html(user: Optional[dict]) -> str:
         settings_link = '<a href="/admin/settings"><span class="ud-icon">&#9881;&#65039;</span> Settings</a>'
 
     show_name_line = bool(name_raw and name_raw != (user.get("email") or ""))
-    return f"""<div class="user-chip" tabindex="0" onclick="this.toggleAttribute('data-open')" title="{email or name}">
-      {avatar}
-      <span class="user-chip-caret">&#9660;</span>
+    return f"""<details class="user-chip">
+      <summary title="{email or name}" aria-label="Account menu for {name}">
+        {avatar}
+        <span class="user-chip-caret" aria-hidden="true">&#9660;</span>
+      </summary>
       <div class="user-dropdown">
         <div class="user-dropdown-profile">
           {f'<div class="user-dropdown-profile-name">{name}</div>' if show_name_line else ""}
@@ -442,7 +481,7 @@ def _user_chip_html(user: Optional[dict]) -> str:
         {settings_link}
         <a href="/admin/logout" class="logout-link"><span class="ud-icon">&#8594;</span> Log out</a>
       </div>
-    </div>"""
+    </details>"""
 
 
 def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", hr_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
@@ -541,6 +580,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     # only in the profile dropdown ("Team"), so the top bar stays identical on
     # every page.
     return f"""
+    <a class="agent-skip-link" href="#agent-main-content">Skip to content</a>
     <header class="topbar">
       <div class="topbar-shell">
         <div class="topbar-inner">
@@ -553,4 +593,5 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         {active_section_row}
       </div>
     </header>
+    <div id="agent-main-content" tabindex="-1"></div>
     """
