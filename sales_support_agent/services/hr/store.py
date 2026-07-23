@@ -391,6 +391,45 @@ def list_compliance_tasks() -> list[dict]:
         } for row in rows]
 
 
+def ensure_annual_compliance_tasks(year: int) -> None:
+    """Create the known filing checklist; a reviewer still confirms actual deadlines."""
+    def next_weekday(value: date) -> date:
+        while value.weekday() >= 5:
+            value += timedelta(days=1)
+        return value
+
+    quarterly_due = (
+        next_weekday(date(year, 4, 30)),
+        next_weekday(date(year, 7, 31)),
+        next_weekday(date(year, 10, 31)),
+        next_weekday(date(year + 1, 1, 31)),
+    )
+    tasks: list[tuple[str, date]] = []
+    for quarter, due_date in enumerate(quarterly_due, start=1):
+        tasks.extend([
+            (f"federal_941_{year}_q{quarter}", due_date),
+            (f"utah_tc941e_{year}_q{quarter}", due_date),
+            (f"utah_ui_wage_report_{year}_q{quarter}", due_date),
+        ])
+    annual_due = next_weekday(date(year + 1, 1, 31))
+    tasks.extend([
+        (f"federal_940_{year}", annual_due),
+        (f"federal_w2_w3_{year}", annual_due),
+        (f"utah_annual_reconciliation_{year}", annual_due),
+    ])
+    with _session() as session:
+        existing = {
+            row[0] for row in session.query(HRComplianceTask.task_type).filter(
+                HRComplianceTask.task_type.in_([task[0] for task in tasks])
+            ).all()
+        }
+        for task_type, due_date in tasks:
+            if task_type not in existing:
+                session.add(HRComplianceTask(
+                    employee_email="", task_type=task_type, due_date=due_date
+                ))
+
+
 def record_compliance_task(
     task_id: int, *, action: str, confirmation_reference: str,
     evidence_note: str, actor: str

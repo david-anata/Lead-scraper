@@ -453,6 +453,7 @@ async def hr_compliance(
     user: dict = Depends(_pay_guard),
 ):
     safe_year = min(max(year, 2026), date.today().year + 2)
+    store.ensure_annual_compliance_tasks(safe_year)
     return HTMLResponse(render_hr_compliance(
         store.list_compliance_tasks(),
         payroll_store.annual_payroll_calendar(safe_year),

@@ -882,9 +882,26 @@ def render_hr_reports(*, user) -> str:
 def render_hr_compliance(
     tasks: list, calendar_rows: list, *, year: int, user, flash=None
 ) -> str:
+    def compliance_label(task_type: str) -> str:
+        if task_type == "utah_new_hire_report":
+            return "Utah new-hire report"
+        labels = (
+            ("federal_941_", "Federal Form 941"),
+            ("utah_tc941e_", "Utah TC-941E"),
+            ("utah_ui_wage_report_", "Utah UI wage report"),
+            ("federal_940_", "Federal Form 940"),
+            ("federal_w2_w3_", "Federal W-2/W-3"),
+            ("utah_annual_reconciliation_", "Utah annual reconciliation"),
+        )
+        for prefix, label in labels:
+            if task_type.startswith(prefix):
+                suffix = task_type.removeprefix(prefix).replace("_q", " Q")
+                return f"{label} · {suffix}"
+        return task_type
+
     task_rows = "".join(
-        f"""<tr><td>{_esc(item['employee_email'])}</td>
-        <td>{'Utah new-hire report' if item['task_type'] == 'utah_new_hire_report' else _esc(item['task_type'])}</td>
+        f"""<tr><td>{_esc(item['employee_email'] or 'Anata LLC')}</td>
+        <td>{_esc(compliance_label(item['task_type']))}</td>
         <td>{_esc(item['due_date'])}{' · OVERDUE' if item.get('overdue') else ''}</td>
         <td>{_esc(item['status'])}</td>
         <td>{_esc(item.get('confirmation_reference') or '—')}<br><span class="hr-sub">{_esc(item.get('evidence_note') or 'No evidence recorded')}</span></td>

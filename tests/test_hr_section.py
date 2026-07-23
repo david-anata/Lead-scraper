@@ -232,6 +232,16 @@ class HRSectionTests(unittest.TestCase):
         self.assertIn("Authoritative semimonthly schedule: 24 periods", page.text)
         self.assertIn("2026-08-20", page.text)
         self.assertIn("2026-09-04", page.text)
+        self.assertIn("Federal Form 941", page.text)
+        self.assertIn("Utah TC-941E", page.text)
+        self.assertIn("Federal W-2/W-3", page.text)
+        tasks = hr_store.list_compliance_tasks()
+        annual = [item for item in tasks if "2026" in item["task_type"]]
+        self.assertEqual(len(annual), 15)
+        q4 = next(
+            item for item in annual if item["task_type"] == "federal_941_2026_q4"
+        )
+        self.assertEqual(q4["due_date"], date(2027, 2, 1))
 
     def test_qualified_review_requires_named_external_evidence(self):
         invalid = self._post("/admin/hr/settings/qualified-review", {
