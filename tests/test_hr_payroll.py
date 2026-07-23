@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from sales_support_agent.services.hr.payroll import (
     hourly_gross,
+    period_overtime,
     periods_for_year,
     semimonthly_period,
     weekly_overtime,
@@ -43,3 +44,22 @@ def test_sunday_saturday_overtime_does_not_include_holiday_or_pto():
         "pto_cents": 8000,
         "gross_cents": 119000,
     }
+
+
+def test_period_overtime_includes_prior_days_from_same_workweek():
+    # August 1, 2026 is Saturday. Forty hours from the preceding Sunday–Friday
+    # make Saturday's in-period work overtime even though those earlier hours
+    # belong to the prior semimonthly pay period.
+    hours = {
+        date(2026, 7, 27): Decimal("8"),
+        date(2026, 7, 28): Decimal("8"),
+        date(2026, 7, 29): Decimal("8"),
+        date(2026, 7, 30): Decimal("8"),
+        date(2026, 7, 31): Decimal("8"),
+        date(2026, 8, 1): Decimal("8"),
+    }
+    regular, overtime = period_overtime(
+        hours, date(2026, 8, 1), date(2026, 8, 15)
+    )
+    assert regular == Decimal("0")
+    assert overtime == Decimal("8")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from datetime import timedelta
 from decimal import Decimal
 import hashlib
 import json
@@ -37,8 +38,8 @@ from sales_support_agent.models.hr import (
 from sales_support_agent.services.hr.payroll import (
     hourly_gross,
     payroll_readiness,
+    period_overtime,
     semimonthly_period,
-    weekly_overtime,
 )
 from sales_support_agent.services.hr.store import (
     cents_to_dollars,
@@ -338,6 +339,9 @@ def list_payroll_inputs(period_start: date, period_end: date) -> list[dict]:
 
 def _period_context(containing: date) -> tuple:
     period = semimonthly_period(containing)
+    workweek_start = period.start_date - timedelta(
+        days=(period.start_date.weekday() + 1) % 7
+    )
     settings = get_payroll_settings()
     employees = [
         employee for employee in list_employees(include_inactive=False)
@@ -349,7 +353,7 @@ def _period_context(containing: date) -> tuple:
         open_entries = [{
             "employee_email": row.employee_email, "date": row.date,
         } for row in session.query(HRTimeEntry).filter(
-            HRTimeEntry.date >= period.start_date, HRTimeEntry.date <= period.end_date,
+            HRTimeEntry.date >= workweek_start, HRTimeEntry.date <= period.end_date,
             HRTimeEntry.stop_time == "",
         ).all()]
         corrections = [{
@@ -429,9 +433,12 @@ def _period_source_hash(session: Session, period, employees: list[dict],
                         inputs: list[dict], settings: dict) -> str:
     """Hash every mutable source that can change a prepared payroll."""
     emails = [employee["email"] for employee in employees]
+    workweek_start = period.start_date - timedelta(
+        days=(period.start_date.weekday() + 1) % 7
+    )
     time_rows = session.query(HRTimeEntry).filter(
         HRTimeEntry.employee_email.in_(emails),
-        HRTimeEntry.date >= period.start_date, HRTimeEntry.date <= period.end_date,
+        HRTimeEntry.date >= workweek_start, HRTimeEntry.date <= period.end_date,
     ).order_by(HRTimeEntry.id).all()
     pto_rows = session.query(HRPTORequest).filter(
         HRPTORequest.employee_email.in_(emails),
@@ -562,9 +569,12 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
         for employee in employees:
             email = employee["email"]
             employment = employee.get("employment") or {}
+            workweek_start = period.start_date - timedelta(
+                days=(period.start_date.weekday() + 1) % 7
+            )
             entries = session.query(HRTimeEntry).filter(
                 HRTimeEntry.employee_email == email,
-                HRTimeEntry.date >= period.start_date,
+                HRTimeEntry.date >= workweek_start,
                 HRTimeEntry.date <= period.end_date,
             ).all()
             hours_by_date: dict[date, Decimal] = {}
@@ -574,7 +584,9 @@ def prepare_payroll(containing: date, *, actor: str) -> tuple[bool, str]:
                     if row.elapsed_seconds else Decimal(str(row.hours or 0))
                 )
                 hours_by_date[row.date] = hours_by_date.get(row.date, Decimal("0")) + exact_hours
-            regular_hours, overtime_hours = weekly_overtime(hours_by_date)
+            regular_hours, overtime_hours = period_overtime(
+                hours_by_date, period.start_date, period.end_date
+            )
             approved_pto = Decimal(str(session.query(
                 func.coalesce(func.sum(HRPTORequest.hours), 0)
             ).filter(

@@ -68,6 +68,31 @@ def weekly_overtime(hours_by_date: dict[date, Decimal]) -> tuple[Decimal, Decima
     return total - overtime, overtime
 
 
+def period_overtime(
+    hours_by_date: dict[date, Decimal], period_start: date, period_end: date
+) -> tuple[Decimal, Decimal]:
+    """Allocate worked hours inside a period using complete Sunday–Saturday weeks.
+
+    Hours before a semimonthly boundary can make the first in-period hours
+    overtime. Later days cannot retroactively change earlier hours, so callers
+    need the full workweek start through the period end.
+    """
+    regular_in_period = Decimal("0")
+    overtime_in_period = Decimal("0")
+    week_running: dict[date, Decimal] = {}
+    for worked_date in sorted(hours_by_date):
+        hours = max(Decimal("0"), Decimal(hours_by_date[worked_date]))
+        sunday = worked_date - timedelta(days=(worked_date.weekday() + 1) % 7)
+        prior = week_running.get(sunday, Decimal("0"))
+        regular = min(hours, max(Decimal("0"), Decimal("40") - prior))
+        overtime = hours - regular
+        week_running[sunday] = prior + hours
+        if period_start <= worked_date <= period_end:
+            regular_in_period += regular
+            overtime_in_period += overtime
+    return regular_in_period, overtime_in_period
+
+
 def hourly_gross(*, rate_cents: int, regular_hours: Decimal,
                  overtime_hours: Decimal = Decimal("0"),
                  holiday_hours: Decimal = Decimal("0"),
