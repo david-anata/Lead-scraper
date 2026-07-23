@@ -238,7 +238,7 @@ def render_building_page(
     campaign_rows = "".join(
         f"""
         <tr>
-          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("subject"))}</span><span class="sub">{_esc(str(item.get("communication_class") or "marketing").replace("_", " ").title())}</span></td>
+          <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("subject"))}</span><span class="sub">{_esc(str(item.get("communication_class") or "marketing").replace("_", " ").title())} · from {_esc(item.get("sender_identity") or "configured sender")}</span></td>
           <td>{_esc(item.get("segment_name") or "—")}</td>
           <td>{_esc(item.get("recipient_count", 0))}</td>
           <td>{_badge(str(item.get("status") or "draft"))}</td>

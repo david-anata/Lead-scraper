@@ -159,6 +159,10 @@ class BuildingCrmCampaignTests(unittest.TestCase):
         )
         self.assertEqual(preview.status_code, 200, preview.text)
         self.assertEqual(preview.json()["included_count"], 1)
+        self.assertEqual(
+            preview.json()["sender_identity"],
+            "Anata Building <hello@example.com>",
+        )
         with mock.patch(
             "sales_support_agent.api.building_crm_router.ResendClient"
         ) as client:

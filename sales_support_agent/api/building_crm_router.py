@@ -768,7 +768,12 @@ def merge_contacts_from_control_room(
         return _building_redirect(error=str(detail))
 
 
-def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
+def _preview_payload(
+    session,
+    campaign: BuildingCampaign,
+    *,
+    sender_identity: str,
+) -> dict[str, Any]:
     segment = session.get(BuildingSegment, campaign.segment_id)
     if segment is None or not segment.is_active:
         raise HTTPException(status_code=422, detail="Campaign segment is unavailable.")
@@ -801,6 +806,7 @@ def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
             "campaign_id": campaign.id,
             "segment_id": campaign.segment_id,
             "communication_class": campaign.communication_class,
+            "sender_identity": sender_identity,
             "subject": campaign.subject,
             "body_text": campaign.body_text,
             "recipients": included,
@@ -810,6 +816,7 @@ def _preview_payload(session, campaign: BuildingCampaign) -> dict[str, Any]:
     )
     return {
         "campaign_id": campaign.id,
+        "sender_identity": sender_identity,
         "communication_class": campaign.communication_class,
         "permission_rule": (
             "Subscribed marketing contacts only; marketing and all-email suppressions apply."
@@ -1172,7 +1179,11 @@ def preview_campaign(
             raise HTTPException(status_code=404, detail="Campaign not found.")
         if campaign.status not in {"draft", "previewed"}:
             raise HTTPException(status_code=409, detail="Campaign can no longer be previewed.")
-        preview = _preview_payload(session, campaign)
+        preview = _preview_payload(
+            session,
+            campaign,
+            sender_identity=request.app.state.settings.resend_from,
+        )
         campaign.preview_hash = preview["preview_hash"]
         campaign.previewed_at = _now()
         campaign.status = "previewed"
@@ -1245,7 +1256,11 @@ def approve_campaign(
             raise HTTPException(status_code=409, detail="Preview changed; preview the campaign again.")
         if campaign.test_sent_at is None:
             raise HTTPException(status_code=409, detail="Send a test message before approval.")
-        preview = _preview_payload(session, campaign)
+        preview = _preview_payload(
+            session,
+            campaign,
+            sender_identity=request.app.state.settings.resend_from,
+        )
         if preview["preview_hash"] != payload.preview_hash:
             raise HTTPException(status_code=409, detail="Audience changed; preview the campaign again.")
         if not preview["included"]:
@@ -1904,7 +1919,11 @@ def preview_campaign_from_control_room(
             return _building_redirect(error="Campaign not found.")
         if campaign.status not in {"draft", "previewed"}:
             return _building_redirect(error="This campaign can no longer be previewed.")
-        preview = _preview_payload(session, campaign)
+        preview = _preview_payload(
+            session,
+            campaign,
+            sender_identity=request.app.state.settings.resend_from,
+        )
         campaign.preview_hash = preview["preview_hash"]
         campaign.previewed_at = _now()
         campaign.status = "previewed"
@@ -1995,7 +2014,11 @@ def approve_campaign_from_control_room(
             return _building_redirect(error="Refresh the final audience preview first.")
         if campaign.test_sent_at is None:
             return _building_redirect(error="Send a test message before approval.")
-        preview = _preview_payload(session, campaign)
+        preview = _preview_payload(
+            session,
+            campaign,
+            sender_identity=request.app.state.settings.resend_from,
+        )
         if preview["preview_hash"] != campaign.preview_hash:
             return _building_redirect(error="Audience changed; refresh the preview again.")
         if not preview["included"]:
@@ -2333,6 +2356,7 @@ def building_control_room(
                 "name": item.name,
                 "subject": item.subject,
                 "communication_class": item.communication_class,
+                "sender_identity": request.app.state.settings.resend_from,
                 "segment_name": segment_names.get(item.segment_id, ""),
                 "recipient_count": recipient_counts.get(item.id, 0),
                 "status": item.status,
