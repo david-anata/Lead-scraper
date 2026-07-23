@@ -1707,7 +1707,7 @@ def render_login_page(*, error_message: str = "", show_google_button: bool = Fal
         flex-direction: column;
       }}
       .shell {{
-        max-width: 1160px;
+        max-width: 1320px;
         margin: 0 auto;
         padding: 32px 24px 48px;
         width: 100%;
@@ -2223,13 +2223,8 @@ def render_dashboard_page(data: DashboardData, *, user: dict | None = None) -> s
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{
-        /* PR53: bumped 1180 → 1480 across the admin pages (sales-decks
-           and main dashboard share this shell rule). The intake form
-           on /admin/sales-decks gets meaningful breathing room at the
-           wider container, and side-by-side layouts (Your listing today /
-           Best-seller benchmark) read better. Capped at 1480 (not 100%)
-           so content doesn't sprawl on ultrawide monitors. */
-        max-width: 1480px;
+        /* Canonical authenticated application canvas. */
+        max-width: 1320px;
         margin: 0 auto;
         padding: 28px 24px 64px;
       }}
@@ -4718,13 +4713,8 @@ def render_sales_deck_page(data: DashboardData, *, user: Optional[dict] = None, 
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{
-        /* PR53: bumped 1180 → 1480 across the admin pages (sales-decks
-           and main dashboard share this shell rule). The intake form
-           on /admin/sales-decks gets meaningful breathing room at the
-           wider container, and side-by-side layouts (Your listing today /
-           Best-seller benchmark) read better. Capped at 1480 (not 100%)
-           so content doesn't sprawl on ultrawide monitors. */
-        max-width: 1480px;
+        /* Canonical authenticated application canvas. */
+        max-width: 1320px;
         margin: 0 auto;
         padding: 28px 24px 64px;
       }}
@@ -7112,9 +7102,9 @@ def render_executive_page(data: ExecutiveData, *, user: dict | None = None) -> s
       a {{ color: var(--dark-blue); text-decoration: none; }}
       {render_agent_nav_styles()}
       .shell {{
-        max-width: 1280px;
+        max-width: 1320px;
         margin: 0 auto;
-        padding: 32px 20px 72px;
+        padding: 32px 24px 72px;
       }}
       .workspace {{
         background: var(--white);

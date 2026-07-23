@@ -41,9 +41,11 @@ def _fmt_mtn(iso_str: str, date_only: bool = False) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         mtn = dt.astimezone(ZoneInfo("America/Denver"))
+        date_label = f"{mtn.strftime('%b')} {mtn.day}, {mtn.year}"
         if date_only:
-            return mtn.strftime("%b %-d, %Y")
-        return mtn.strftime("%b %-d, %Y · %-I:%M %p %Z")
+            return date_label
+        time_label = f"{mtn.hour % 12 or 12}:{mtn.strftime('%M %p %Z')}"
+        return f"{date_label} · {time_label}"
     except Exception:
         return iso_str[:16].replace("T", " ")
 

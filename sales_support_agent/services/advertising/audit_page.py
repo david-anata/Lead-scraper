@@ -29,7 +29,7 @@ def _esc(value: object) -> str:
 def _week_label() -> str:
     today = date.today()
     monday = today - timedelta(days=today.weekday())
-    return f"Week of {monday.strftime('%b %-d')}"
+    return f"Week of {monday.strftime('%b')} {monday.day}"
 
 
 def _page(
@@ -58,7 +58,7 @@ def _page(
       body {{ margin: 0; background: var(--light-brown); color: var(--dark-blue); font-family: "Inter","Segoe UI",sans-serif; }}
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
-      .shell {{ max-width: 1280px; margin: 0 auto; padding: 28px 18px 64px; }}
+      .shell {{ max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; }}
       .workspace {{ background: var(--white); border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 18px 40px var(--shadow); padding: 26px; }}
       .page-header {{ padding-bottom: 18px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }}
       .eyebrow {{ display: inline-block; padding: 10px 15px; border-radius: 6px; background: var(--dark-blue); color: var(--white);

@@ -104,7 +104,7 @@ def _deal_not_found_page(request: Request) -> str:
       *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
       a{{color:var(--dark-blue);}}
       {nav_styles}
-      .shell{{max-width:1180px;margin:0 auto;padding:48px 18px;}}
+      .shell{{max-width:1320px;margin:0 auto;padding:48px 24px;}}
       .workspace{{background:var(--white);border:1px solid var(--border);border-radius:20px;box-shadow:0 18px 40px var(--shadow);padding:32px 28px;}}
       h1{{font-family:"Montserrat",sans-serif;font-weight:800;font-size:24px;margin:0 0 10px;}}
     </style>
@@ -146,7 +146,7 @@ def _render_sales_operator_unavailable(request: Request, message: str) -> str:
       *{{box-sizing:border-box;}} body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
       a{{color:var(--dark-blue);}}
       {nav_styles}
-      .shell{{max-width:1180px;margin:0 auto;padding:48px 18px;}}
+      .shell{{max-width:1320px;margin:0 auto;padding:48px 24px;}}
       .workspace{{background:var(--white);border:1px solid var(--border);border-radius:20px;box-shadow:0 18px 40px var(--shadow);padding:32px 28px;}}
       h1{{font-family:"Montserrat",sans-serif;font-weight:800;font-size:24px;margin:0 0 10px;}}
       .note{{margin:16px 0 0;padding:14px 16px;border-radius:14px;background:rgba(133,187,218,0.14);border:1px solid rgba(43,54,68,0.08);}}

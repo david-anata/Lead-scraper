@@ -1304,7 +1304,7 @@ def _page_shell(title: str, body: str) -> str:
       body {{ margin: 0; background: var(--anata-sand-soft); color: var(--ink); font-family: "Inter", "Segoe UI", sans-serif; }}
       a {{ color: var(--anata-ink); }}
       {render_agent_nav_styles()}
-      .shell {{ max-width: 1180px; margin: 0 auto; padding: 28px 18px 64px; display: grid; gap: 20px; }}
+      .shell {{ max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; display: grid; gap: 20px; }}
       .hero {{ display: grid; gap: 20px; grid-template-columns: minmax(0,1.2fr) minmax(300px,.8fr); align-items: start; }}
       .card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 26px; padding: 24px; box-shadow: 0 18px 40px var(--anata-shadow); }}
       .eyebrow {{ margin: 0; text-transform: uppercase; letter-spacing: .18em; font-size: 12px; font-weight: 800; color: var(--accent); font-family: "Montserrat", sans-serif; }}
@@ -1424,9 +1424,9 @@ def _inject_admin_nav_into_report_html(report_html: str, *, active: str = "repor
         color: #2b3644;
       }
       .admin-report-shell {
-        max-width: 1180px;
+        max-width: 1320px;
         margin: 0 auto;
-        padding: 28px 18px 64px;
+        padding: 28px 24px 64px;
       }
       @media (max-width: 900px) {
         .admin-report-shell {

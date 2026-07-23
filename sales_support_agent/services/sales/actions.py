@@ -63,7 +63,13 @@ def _days_ago(dt: Optional[datetime], as_of: datetime) -> Optional[int]:
 def _fmt_date(dt: Optional[datetime]) -> str:
     if dt is None:
         return "Never"
-    return _aware(dt).strftime("%b %-d, %Y")
+    value = _aware(dt)
+    return f"{value.strftime('%b')} {value.day}, {value.year}"
+
+
+def _fmt_long_date(dt: datetime) -> str:
+    value = _aware(dt)
+    return f"{value.strftime('%B')} {value.day}, {value.year}"
 
 
 def _deal_portal_url(deal_id: str, portal_id: str) -> str:
@@ -91,7 +97,7 @@ def _build_review_note(
     last_touch = _fmt_date(deal.last_meaningful_touch_at)
 
     lines = [
-        f"📋 Sales Director Review — {as_of.strftime('%B %-d, %Y')}",
+        f"📋 Sales Director Review — {_fmt_long_date(as_of)}",
         "",
         f"Stage: {stage}",
         f"Amount: {amount}",
@@ -154,7 +160,7 @@ def compute_pending_actions(
             confidence="mid",
             severity="warning",
             category="close_date",
-            label=f"Push close date → {new_date.strftime('%b %-d, %Y')}",
+            label=f"Push close date → {_fmt_date(new_date)}",
             description=f"Close date was {_fmt_date(close)} — {overdue_days} days overdue. "
                         "Extend 30 days so this deal stays in the active pipeline.",
             hubspot_object_type="deals",
@@ -172,7 +178,7 @@ def compute_pending_actions(
             confidence="mid",
             severity="warning",
             category="close_date",
-            label=f"Set close date → {new_date.strftime('%b %-d, %Y')}",
+            label=f"Set close date → {_fmt_date(new_date)}",
             description="No close date set. Adding one keeps this deal correctly ordered on the board "
                         "and visible in forecasts.",
             hubspot_object_type="deals",

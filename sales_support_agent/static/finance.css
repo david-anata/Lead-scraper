@@ -36,7 +36,7 @@ body {
 a { color: var(--anata-ink); }
 
 .shell {
-  max-width: 1180px;
+  max-width: 1320px;
   margin: 0 auto;
   padding: 28px 18px 64px;
   display: grid;
@@ -499,7 +499,7 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 4px 12px rgba(43,54,68,.04);
 }
 
-.finance-subnav-inner { max-width: 1180px; margin: 0 auto; }
+.finance-subnav-inner { max-width: 1320px; margin: 0 auto; }
 
 /* Inline edit — brand token colors, not hardcoded */
 .inline-edit-wrap { position: relative; display: inline-block; }

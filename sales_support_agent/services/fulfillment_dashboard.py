@@ -362,9 +362,9 @@ def _page_shell(*, title: str, eyebrow: str, heading: str, intro: str, body: str
       a {{ color: var(--dark-blue); }}
       {render_agent_nav_styles()}
       .shell {{
-        max-width: 1180px;
+        max-width: 1320px;
         margin: 0 auto;
-        padding: 28px 18px 64px;
+        padding: 28px 24px 64px;
       }}
       .workspace {{
         background: var(--white);

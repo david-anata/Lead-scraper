@@ -210,7 +210,7 @@ def render_rep_dashboard_page(
 <style>
 {render_agent_nav_styles()}
 body {{ margin:0; font-family:"Inter",sans-serif; background:#f9f7f3; color:#2B3644; }}
-.page {{ max-width:1180px; margin:0 auto; padding:32px 24px; }}
+.page {{ max-width:1320px; margin:0 auto; padding:32px 24px; }}
 h1 {{ font-family:"Montserrat",sans-serif; font-size:24px; font-weight:900; margin:0 0 4px; }}
 .subtitle {{ font-size:13px; color:#888; margin:0 0 24px; }}
 .stats {{ display:flex; gap:16px; flex-wrap:wrap; margin-bottom:28px; }}

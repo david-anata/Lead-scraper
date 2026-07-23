@@ -53,7 +53,7 @@ def _fmt_money(cents: int) -> str:
 def _fmt_date(dt: Optional[datetime]) -> str:
     if dt is None:
         return "—"
-    return dt.strftime("%b %-d, %Y")
+    return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
 
 
 def _aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -664,7 +664,7 @@ _STYLES = """
     font-family:"Inter","Segoe UI",sans-serif; }
   a { color:var(--dark-blue); }
   __NAV__
-  .shell { max-width:1180px; margin:0 auto; padding:24px 18px 64px; }
+  .shell { max-width:1320px; margin:0 auto; padding:24px 24px 64px; }
   .crumbs { font-size:12.5px; margin:0 0 12px; }
   .crumbs a { color:rgba(43,54,68,0.6); text-decoration:none; }
   .workspace { background:var(--white); border:1px solid var(--border);
