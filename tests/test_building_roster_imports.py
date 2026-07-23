@@ -140,6 +140,13 @@ class BuildingRosterImportTests(unittest.TestCase):
             self.assertEqual(session.query(BuildingContact).count(), 1)
             roster_id = roster.id
 
+        review_page = self.client.get("/admin/building")
+        self.assertEqual(review_page.status_code, 200, review_page.text)
+        self.assertIn("Review exact contacts", review_page.text)
+        self.assertIn("existing@example.com", review_page.text)
+        self.assertIn("new@example.com", review_page.text)
+        self.assertIn(f"IMPORT {roster_id}", review_page.text)
+
         wrong = self.client.post(
             f"/admin/building/roster-imports/{roster_id}/apply",
             headers=self.browser_headers,
