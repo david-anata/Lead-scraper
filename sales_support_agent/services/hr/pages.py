@@ -114,6 +114,7 @@ def _flash(flash: Optional[str]) -> str:
         "pto_setup_required": "Your employment and PTO eligibility must be configured first.",
         "pto_not_eligible": "The requested date is before your PTO eligibility date.",
         "pto_insufficient": "The request exceeds your available PTO balance.",
+        "pto_split_period_required": "Submit separate PTO requests on each side of the 15th/16th payroll boundary.",
         "pii_secret_missing": "Secure tax storage is not configured. Ask David or Val to finish setup.",
         "invalid_w4": "Review the SSN and W-4 selections.",
         "attestation_required": "You must complete and sign your own attestation.",

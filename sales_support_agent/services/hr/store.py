@@ -1042,6 +1042,12 @@ def create_pto_request(employee_email: str, *, start_date: date, end_date: date,
                        hours: float, reason: str, actor: str) -> tuple[bool, str]:
     if end_date < start_date or hours <= 0:
         return False, "invalid_request"
+    from sales_support_agent.services.hr.payroll import semimonthly_period
+    if (
+        semimonthly_period(start_date).start_date
+        != semimonthly_period(end_date).start_date
+    ):
+        return False, "pto_split_period_required"
     email = (employee_email or "").strip().lower()
     with _session() as s:
         employment = s.query(HREmploymentProfile).filter_by(employee_email=email).first()
