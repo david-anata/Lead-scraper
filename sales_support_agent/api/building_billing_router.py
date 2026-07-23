@@ -300,6 +300,14 @@ def create_invoice_from_schedule(
             raise HTTPException(status_code=404, detail="Billing schedule not found.")
         if schedule.status != "approved":
             raise HTTPException(status_code=409, detail="Billing schedule must be approved.")
+        if schedule.next_invoice_on and schedule.next_invoice_on > _now().date():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The next scheduled invoice date has not arrived. "
+                    "Change the reviewed schedule instead of billing early."
+                ),
+            )
         account = session.get(BuildingBillingAccount, schedule.billing_account_id)
         if account is None or account.status != "active":
             raise HTTPException(status_code=409, detail="Billing account is unavailable.")

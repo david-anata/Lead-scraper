@@ -214,6 +214,13 @@ Authorized building operators can create or update reviewed spaces and
 offerings, add deduplicated CRM relationships, record explicit marketing
 permission, define explainable audiences, and move campaigns through draft,
 preview, test-send, approval, and confirmed delivery without editing code.
+They can also create reservations, move them through the permitted booking
+states, attach agreement and deposit evidence, create billing accounts and
+draft schedules, approve schedules, and intentionally create a Stripe invoice
+from the same control room. Browser-entered reservation times are interpreted
+in `America/Denver` and stored in UTC. Invoice creation requires the operator to
+type `INVOICE {schedule_id}` and is still blocked when the schedule is not yet
+due, has not been approved, or Stripe is not configured.
 Browser writes are same-origin and session-token protected; consequential
 changes retain the signed-in operator in the audit trail.
 

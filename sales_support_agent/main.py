@@ -36,6 +36,9 @@ from sales_support_agent.api.building_billing_router import (
     internal_router as building_billing_internal_router,
     webhook_router as building_stripe_webhook_router,
 )
+from sales_support_agent.api.building_admin_operations_router import (
+    router as building_admin_operations_router,
+)
 from sales_support_agent.api.cashflow_router import plaid_webhook_router, router as cashflow_router
 from sales_support_agent.api.qbo_auth_router import router as qbo_auth_router
 from sales_support_agent.api.fulfillment_deck_router import (
@@ -105,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(building_booking_router)
     app.include_router(building_billing_internal_router)
     app.include_router(building_stripe_webhook_router)
+    app.include_router(building_admin_operations_router)
 
     # RBAC: per-tool authorization gate + friendly 403 handler.
     from sales_support_agent.services.access.middleware import install_access_middleware

@@ -7,7 +7,7 @@ import hmac
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
@@ -17,9 +17,15 @@ from sqlalchemy import delete, select
 
 from sales_support_agent.integrations.resend import ResendClient
 from sales_support_agent.api.building_router import OfferingInput, SpaceInput
+from sales_support_agent.api.building_booking_router import (
+    EVENT_TRANSITIONS,
+    WORKSPACE_TRANSITIONS,
+)
 from sales_support_agent.models.database import session_scope
 from sales_support_agent.models.entities import (
     BuildingAuditEvent,
+    BuildingBillingAccount,
+    BuildingBillingSchedule,
     BuildingCampaign,
     BuildingCampaignRecipient,
     BuildingCommunicationPreference,
@@ -34,10 +40,9 @@ from sales_support_agent.models.entities import (
     BuildingSpace,
 )
 from sales_support_agent.services.auth_deps import require_tool
-from sales_support_agent.services.auth_deps import get_current_user
 from sales_support_agent.services.building_security import (
     csrf_token as building_csrf_token,
-    valid_csrf_token as valid_building_csrf_token,
+    require_building_form_security,
 )
 from sales_support_agent.services.building_page import render_building_page
 
@@ -59,20 +64,6 @@ RELATIONSHIP_TYPES = {
 }
 MARKETING_STATUSES = {"unknown", "subscribed", "unsubscribed"}
 CONTACT_STATUSES = {"active", "inactive", "merged"}
-
-
-async def _require_building_form_security(request: Request) -> None:
-    if (request.headers.get("sec-fetch-site") or "").lower() == "cross-site":
-        raise HTTPException(status_code=403, detail="Cross-site building write rejected.")
-    origin = request.headers.get("origin")
-    if origin and urlparse(origin).netloc.lower() != request.url.netloc.lower():
-        raise HTTPException(status_code=403, detail="Building form origin does not match.")
-    if origin or request.headers.get("sec-fetch-mode"):
-        form = await request.form()
-        if not valid_building_csrf_token(
-            get_current_user(request), str(form.get("_csrf_token") or "")
-        ):
-            raise HTTPException(status_code=403, detail="Building form security token is invalid.")
 
 
 def _building_redirect(*, notice: str = "", error: str = "") -> RedirectResponse:
@@ -861,7 +852,7 @@ def send_campaign(
 
 @admin_router.post(
     "/spaces",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def save_space_from_control_room(
@@ -944,7 +935,7 @@ def save_space_from_control_room(
 
 @admin_router.post(
     "/offerings",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def save_offering_from_control_room(
@@ -1029,7 +1020,7 @@ def save_offering_from_control_room(
 
 @admin_router.post(
     "/contacts",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def save_contact_from_control_room(
@@ -1147,7 +1138,7 @@ def save_contact_from_control_room(
 
 @admin_router.post(
     "/segments",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def save_segment_from_control_room(
@@ -1215,7 +1206,7 @@ def save_segment_from_control_room(
 
 @admin_router.post(
     "/campaigns",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def save_campaign_from_control_room(
@@ -1281,7 +1272,7 @@ def save_campaign_from_control_room(
 
 @admin_router.post(
     "/campaigns/{campaign_id}/preview",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def preview_campaign_from_control_room(
@@ -1321,7 +1312,7 @@ def preview_campaign_from_control_room(
 
 @admin_router.post(
     "/campaigns/{campaign_id}/test-send",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def test_send_campaign_from_control_room(
@@ -1369,7 +1360,7 @@ def test_send_campaign_from_control_room(
 
 @admin_router.post(
     "/campaigns/{campaign_id}/approve",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def approve_campaign_from_control_room(
@@ -1425,7 +1416,7 @@ def approve_campaign_from_control_room(
 
 @admin_router.post(
     "/campaigns/{campaign_id}/send",
-    dependencies=[Depends(_require_building_form_security)],
+    dependencies=[Depends(require_building_form_security)],
     response_class=RedirectResponse,
 )
 def send_campaign_from_control_room(
@@ -1589,6 +1580,15 @@ def building_control_room(
             .order_by(BuildingInvoice.created_at.desc())
             .limit(100)
         ).scalars().all()
+        billing_account_rows = session.execute(
+            select(BuildingBillingAccount)
+            .order_by(BuildingBillingAccount.account_name)
+        ).scalars().all()
+        billing_schedule_rows = session.execute(
+            select(BuildingBillingSchedule)
+            .order_by(BuildingBillingSchedule.created_at.desc())
+            .limit(100)
+        ).scalars().all()
         space_names = {item.id: item.name for item in space_rows}
 
         contacts = [
@@ -1650,7 +1650,15 @@ def building_control_room(
                 }
                 for item in space_rows
             ],
-            offerings=[{"id": item.id} for item in offering_rows],
+            offerings=[
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "space_id": item.space_id,
+                    "is_published": item.is_published,
+                }
+                for item in offering_rows
+            ],
             contacts=contacts,
             segments=segments,
             campaigns=campaigns,
@@ -1669,12 +1677,21 @@ def building_control_room(
             ],
             reservations=[
                 {
+                    "id": item.id,
+                    "space_id": item.space_id,
                     "space_name": space_names.get(item.space_id, item.space_id),
                     "kind": item.kind,
                     "starts_at": item.starts_at.strftime("%b %d, %Y · %I:%M %p"),
                     "status": item.status,
                     "agreement_status": item.agreement_status,
                     "deposit_status": item.deposit_status,
+                    "allowed_next": sorted(
+                        (
+                            EVENT_TRANSITIONS
+                            if item.kind == "event"
+                            else WORKSPACE_TRANSITIONS
+                        ).get(item.status, set())
+                    ),
                 }
                 for item in reservation_rows
             ],
@@ -1689,6 +1706,35 @@ def building_control_room(
                     "hosted_invoice_url": item.hosted_invoice_url,
                 }
                 for item in invoice_rows
+            ],
+            billing_accounts=[
+                {
+                    "id": item.id,
+                    "account_name": item.account_name,
+                    "billing_email": item.billing_email,
+                    "status": item.status,
+                    "stripe_customer_id": item.stripe_customer_id,
+                    "qbo_customer_id": item.qbo_customer_id,
+                }
+                for item in billing_account_rows
+            ],
+            billing_schedules=[
+                {
+                    "id": item.id,
+                    "billing_account_id": item.billing_account_id,
+                    "reservation_id": item.reservation_id,
+                    "schedule_type": item.schedule_type,
+                    "description": item.description,
+                    "amount_cents": item.amount_cents,
+                    "currency": item.currency,
+                    "status": item.status,
+                    "next_invoice_on": (
+                        item.next_invoice_on.isoformat()
+                        if item.next_invoice_on
+                        else ""
+                    ),
+                }
+                for item in billing_schedule_rows
             ],
             csrf_token=building_csrf_token(user),
             notice=notice[:300],

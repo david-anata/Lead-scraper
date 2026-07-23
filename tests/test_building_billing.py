@@ -8,7 +8,7 @@ import os
 import tempfile
 import time
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import patch
 
 os.environ.setdefault(
@@ -271,6 +271,42 @@ class BuildingBillingTests(unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(after.json()["invoices"], [])
+
+    def test_05_future_schedule_cannot_bill_early(self) -> None:
+        future_date = date.today() + timedelta(days=30)
+        schedule = self.client.put(
+            "/api/internal/building/billing/schedules/acme-future",
+            headers=self.headers,
+            json={
+                "id": "acme-future",
+                "billing_account_id": "acme",
+                "schedule_type": "one_time",
+                "description": "Future reviewed charge",
+                "amount_cents": 25000,
+                "starts_on": future_date.isoformat(),
+                "actor": "operator@example.com",
+            },
+        )
+        self.assertEqual(schedule.status_code, 200, schedule.text)
+        approved = self.client.post(
+            "/api/internal/building/billing/schedules/acme-future/approve",
+            headers=self.headers,
+            json={"actor": "approver@example.com"},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        with patch.object(StripeBillingClient, "create_invoice") as create_invoice:
+            response = self.client.post(
+                "/api/internal/building/billing/invoices",
+                headers=self.headers,
+                json={
+                    "schedule_id": "acme-future",
+                    "idempotency_key": "acme-future-charge",
+                    "execute": True,
+                    "actor": "operator@example.com",
+                },
+            )
+            self.assertEqual(response.status_code, 409)
+            create_invoice.assert_not_called()
 
 
 if __name__ == "__main__":
