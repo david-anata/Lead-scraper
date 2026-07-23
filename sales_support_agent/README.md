@@ -180,6 +180,8 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /api/public/building/availability`
 - `POST /api/public/building/inquiries`
 - `GET /admin/building`
+- `GET /api/internal/building/bookings`
+- `POST /api/internal/building/bookings`
 
 Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API_KEY` is configured.
 
@@ -195,6 +197,8 @@ Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API
 - explainable audience segments;
 - campaign draft, preview, test-send, approval, recipient snapshot, delivery,
   and unsubscribe state.
+- workspace and event workflows with expiring holds, conflict checks, agreement
+  evidence, deposit evidence, confirmation gates, and inventory release.
 
 The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires
@@ -202,6 +206,12 @@ server-to-server secret. Campaign delivery additionally requires
 Marketing messages only include currently subscribed, unsuppressed recipients.
 Transactional tenant and booking messages remain a separate communication
 class and are not disabled by a marketing unsubscribe.
+
+An inquiry is not a booking. Event and workspace reservations begin in
+`inquiry` and can move only through their approved state transitions. A
+confirmed reservation requires signed-agreement evidence and, when configured,
+verified deposit evidence. Cancelling, expiring, or completing the workflow
+releases the linked availability block while retaining the audit history.
 
 ## Example Requests
 

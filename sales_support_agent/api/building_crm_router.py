@@ -28,6 +28,7 @@ from sales_support_agent.models.entities import (
     BuildingSuppression,
     BuildingInquiry,
     BuildingOffering,
+    BuildingReservation,
     BuildingSpace,
 )
 from sales_support_agent.services.auth_deps import require_tool
@@ -893,6 +894,12 @@ def building_control_room(
             .order_by(BuildingInquiry.created_at.desc())
             .limit(50)
         ).scalars().all()
+        reservation_rows = session.execute(
+            select(BuildingReservation)
+            .order_by(BuildingReservation.starts_at)
+            .limit(100)
+        ).scalars().all()
+        space_names = {item.id: item.name for item in space_rows}
 
         contacts = [
             {
@@ -969,6 +976,17 @@ def building_control_room(
                     "source": item.source,
                 }
                 for item in inquiry_rows
+            ],
+            reservations=[
+                {
+                    "space_name": space_names.get(item.space_id, item.space_id),
+                    "kind": item.kind,
+                    "starts_at": item.starts_at.strftime("%b %d, %Y · %I:%M %p"),
+                    "status": item.status,
+                    "agreement_status": item.agreement_status,
+                    "deposit_status": item.deposit_status,
+                }
+                for item in reservation_rows
             ],
         )
         return HTMLResponse(html_body)

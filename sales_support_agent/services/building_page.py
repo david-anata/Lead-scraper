@@ -34,6 +34,7 @@ def render_building_page(
     segments: list[dict[str, Any]],
     campaigns: list[dict[str, Any]],
     inquiries: list[dict[str, Any]],
+    reservations: list[dict[str, Any]],
 ) -> str:
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
@@ -49,6 +50,11 @@ def render_building_page(
     )
     subscribed = sum(1 for item in contacts if item.get("marketing_status") == "subscribed")
     needs_response = sum(1 for item in inquiries if item.get("status") in {"new", "crm_sync_needed"})
+    active_reservations = sum(
+        1
+        for item in reservations
+        if item.get("status") not in {"completed", "cancelled", "expired"}
+    )
 
     space_rows = "".join(
         f"""
@@ -112,6 +118,19 @@ def render_building_page(
         for item in inquiries
     ) or '<tr><td colspan="5"><div class="empty"><strong>No building inquiries yet.</strong><br>The public forms remain usable through their safe delivery fallback.</div></td></tr>'
 
+    reservation_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("space_name"))}</strong><span class="sub">{_esc(item.get("kind"))}</span></td>
+          <td>{_esc(item.get("starts_at"))}</td>
+          <td>{_badge(str(item.get("status") or "inquiry"))}</td>
+          <td>{_badge(str(item.get("agreement_status") or "not started"))}</td>
+          <td>{_badge(str(item.get("deposit_status") or "not started"))}</td>
+        </tr>
+        """
+        for item in reservations
+    ) or '<tr><td colspan="5"><div class="empty"><strong>No bookings or holds yet.</strong><br>An inquiry remains a lead until an operator starts the appropriate booking workflow.</div></td></tr>'
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -168,13 +187,14 @@ def render_building_page(
       <div class="metric"><span>Available spaces</span><strong>{availability.get("available", 0)}</strong></div>
       <div class="metric"><span>Needs response</span><strong>{needs_response}</strong></div>
       <div class="metric"><span>Tenant relationships</span><strong>{active_tenants}</strong></div>
-      <div class="metric"><span>Marketing subscribers</span><strong>{subscribed}</strong></div>
+      <div class="metric"><span>Active bookings</span><strong>{active_reservations}</strong></div>
     </section>
     <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
     <div class="grid">
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Agreement</th><th>Deposit</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
-      <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
+      <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Campaigns</h2><p>Draft, preview, approval, and delivery state.</p></div><span class="count">{len(campaigns)} campaigns</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Audience</th><th>Recipients</th><th>Status</th></tr></thead><tbody>{campaign_rows}</tbody></table></div></section>
     </div>

@@ -121,6 +121,9 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_segments",
         "building_campaigns",
         "building_campaign_recipients",
+        "building_reservations",
+        "building_agreements",
+        "building_deposit_evidence",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:

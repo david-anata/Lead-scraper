@@ -1502,3 +1502,80 @@ class BuildingCampaignRecipient(Base):
     __table_args__ = (
         Index("ix_building_campaign_recipient_unique", "campaign_id", "contact_id", unique=True),
     )
+
+
+class BuildingReservation(Base):
+    __tablename__ = "building_reservations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="inquiry", index=True)
+    inquiry_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_inquiries.id"), nullable=True, index=True
+    )
+    contact_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_contacts.id"), nullable=True, index=True
+    )
+    offering_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_offerings.id"), nullable=True, index=True
+    )
+    space_id: Mapped[str] = mapped_column(ForeignKey("building_spaces.id"), index=True)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    hold_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    attendance: Mapped[int] = mapped_column(Integer, default=0)
+    agreement_status: Mapped[str] = mapped_column(String(32), default="not_started", index=True)
+    deposit_status: Mapped[str] = mapped_column(String(32), default="not_started", index=True)
+    deposit_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    assigned_owner: Mapped[str] = mapped_column(String(255), default="")
+    requirements_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(String(64), default="agent")
+    source_reference: Mapped[str] = mapped_column(String(255), default="")
+    calendar_event_id: Mapped[str] = mapped_column(String(255), default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingAgreement(Base):
+    __tablename__ = "building_agreements"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="")
+    provider_reference: Mapped[str] = mapped_column(String(255), default="")
+    template_name: Mapped[str] = mapped_column(String(255), default="")
+    document_url: Mapped[str] = mapped_column(String(1024), default="")
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    signed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_building_agreement_version", "reservation_id", "version", unique=True),
+    )
+
+
+class BuildingDepositEvidence(Base):
+    __tablename__ = "building_deposit_evidence"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(
+        ForeignKey("building_reservations.id"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="due", index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    provider: Mapped[str] = mapped_column(String(64), default="")
+    provider_reference: Mapped[str] = mapped_column(String(255), default="", index=True)
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    recorded_by: Mapped[str] = mapped_column(String(255), default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
