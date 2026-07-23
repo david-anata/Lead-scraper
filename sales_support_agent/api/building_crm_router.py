@@ -824,7 +824,7 @@ def send_campaign(
                 + urlencode({"contact_id": recipient.contact_id, "token": token})
             )
             try:
-                client.send_message(
+                provider_message_id = client.send_message(
                     to=recipient.email,
                     subject=campaign.subject,
                     text=(
@@ -833,7 +833,11 @@ def send_campaign(
                     ),
                 )
                 recipient.status = "sent"
-                recipient.provider_message_id = "resend"
+                recipient.provider_message_id = (
+                    provider_message_id
+                    if isinstance(provider_message_id, str) and provider_message_id
+                    else "resend"
+                )
                 recipient.sent_at = _now()
                 sent += 1
             except Exception as exc:  # noqa: BLE001 - record and preserve retry evidence
@@ -1583,7 +1587,7 @@ def send_campaign_from_control_room(
                 + urlencode({"contact_id": recipient.contact_id, "token": token})
             )
             try:
-                client.send_message(
+                provider_message_id = client.send_message(
                     to=recipient.email,
                     subject=campaign.subject,
                     text=(
@@ -1592,7 +1596,11 @@ def send_campaign_from_control_room(
                     ),
                 )
                 recipient.status = "sent"
-                recipient.provider_message_id = "resend"
+                recipient.provider_message_id = (
+                    provider_message_id
+                    if isinstance(provider_message_id, str) and provider_message_id
+                    else "resend"
+                )
                 recipient.sent_at = _now()
                 sent += 1
             except Exception as exc:  # noqa: BLE001 - record retry evidence
@@ -1652,7 +1660,7 @@ def building_control_room(
                 ).scalars().all()
             }
         suppressions = {
-            item.email
+            item.email: item.reason
             for item in session.execute(select(BuildingSuppression)).scalars().all()
         }
         segment_rows = session.execute(
@@ -1748,6 +1756,14 @@ def building_control_room(
         space_names = {item.id: item.name for item in space_rows}
         reservations_by_id = {item.id: item for item in reservation_rows}
         analytics = build_building_analytics(session)
+        analytics.setdefault("campaigns", {})["delivery_feedback"] = (
+            "configured"
+            if str(
+                getattr(request.app.state.settings, "resend_webhook_secret", "")
+                or ""
+            ).strip()
+            else "not_configured"
+        )
 
         contacts = [
             {
@@ -1767,6 +1783,7 @@ def building_control_room(
                     else "unknown"
                 ),
                 "suppressed": item.email in suppressions,
+                "suppression_reason": suppressions.get(item.email, ""),
             }
             for item in contact_rows
         ]

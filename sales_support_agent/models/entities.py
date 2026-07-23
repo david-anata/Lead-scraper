@@ -1504,6 +1504,29 @@ class BuildingCampaignRecipient(Base):
     )
 
 
+class BuildingEmailEvent(Base):
+    """One authenticated, idempotent provider delivery event."""
+
+    __tablename__ = "building_email_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), default="resend")
+    provider_event_id: Mapped[str] = mapped_column(
+        String(255), unique=True, index=True
+    )
+    provider_message_id: Mapped[str] = mapped_column(String(255), default="", index=True)
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    email: Mapped[str] = mapped_column(String(255), default="", index=True)
+    campaign_recipient_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("building_campaign_recipients.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="processed", index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+
+
 class BuildingReservation(Base):
     __tablename__ = "building_reservations"
 

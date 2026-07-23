@@ -15,6 +15,7 @@ from sales_support_agent.models.entities import (
     BuildingCampaign,
     BuildingCampaignRecipient,
     BuildingDepositEvidence,
+    BuildingEmailEvent,
     BuildingInquiry,
     BuildingInvoice,
     BuildingPayment,
@@ -150,6 +151,7 @@ def build_building_analytics(session, *, now: datetime | None = None) -> dict[st
     payments = session.execute(select(BuildingPayment)).scalars().all()
     campaigns = session.execute(select(BuildingCampaign)).scalars().all()
     recipients = session.execute(select(BuildingCampaignRecipient)).scalars().all()
+    email_events = session.execute(select(BuildingEmailEvent)).scalars().all()
     spaces = session.execute(select(BuildingSpace)).scalars().all()
 
     reached, reached_at = _stage_history(audits)
@@ -311,6 +313,7 @@ def build_building_analytics(session, *, now: datetime | None = None) -> dict[st
     capacity_hours = len(rentable_spaces) * 30 * 24
 
     recipient_counts = Counter(item.status for item in recipients)
+    provider_event_counts = Counter(item.event_type for item in email_events)
     return {
         "generated_at": generated_at.isoformat(),
         "inquiries": {
@@ -356,6 +359,7 @@ def build_building_analytics(session, *, now: datetime | None = None) -> dict[st
                 1 for item in campaigns if item.status in {"sent", "sent_with_errors"}
             ),
             "recipient_statuses": dict(sorted(recipient_counts.items())),
+            "provider_event_counts": dict(sorted(provider_event_counts.items())),
             "engagement_tracking": "not_configured",
         },
     }

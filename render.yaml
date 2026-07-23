@@ -64,6 +64,8 @@ services:
         value: https://anata-building.vercel.app
       - key: BUILDING_CAMPAIGN_TOKEN_SECRET
         sync: false
+      - key: RESEND_WEBHOOK_SECRET
+        sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET

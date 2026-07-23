@@ -30,7 +30,7 @@ class ResendClient:
     def is_configured(self) -> bool:
         return bool(self.api_key and self.from_address)
 
-    def send_message(self, *, to, subject: str, text: str, reply_to: str = "") -> None:
+    def send_message(self, *, to, subject: str, text: str, reply_to: str = "") -> str:
         """Send a plain-text email. Raises on transport/HTTP error so the caller
         (notify.py) can log and fall through to the next sender."""
         recipients = [to] if isinstance(to, str) else list(to)
@@ -56,3 +56,7 @@ class ResendClient:
             raise RuntimeError(
                 f"Resend send failed ({response.status_code}): {response.text[:300]}"
             )
+        try:
+            return str((response.json() or {}).get("id") or "")
+        except ValueError:
+            return ""

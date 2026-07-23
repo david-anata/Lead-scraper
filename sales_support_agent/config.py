@@ -177,6 +177,7 @@ class Settings:
     building_site_intake_key: str = ""
     building_public_base_url: str = "https://anata-building.vercel.app"
     building_campaign_token_secret: str = ""
+    resend_webhook_secret: str = ""
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_api_base_url: str = "https://api.stripe.com"
@@ -525,6 +526,7 @@ def load_settings() -> Settings:
             os.getenv("BUILDING_CAMPAIGN_TOKEN_SECRET", "").strip()
             or os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "").strip()
         ),
+        resend_webhook_secret=os.getenv("RESEND_WEBHOOK_SECRET", "").strip(),
         stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", "").strip(),
         stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET", "").strip(),
         stripe_api_base_url=(

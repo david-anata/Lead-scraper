@@ -132,7 +132,7 @@ def render_building_page(
           <td><strong>{_esc(item.get("full_name") or item.get("email"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
           <td>{_esc(", ".join(sorted({rel.get("type", "") for rel in item.get("relationships", []) if rel.get("type")})) or "No relationship")}</td>
           <td>{_badge(str(item.get("marketing_status") or "unknown"))}</td>
-          <td>{_badge("suppressed") if item.get("suppressed") else "Allowed"}</td>
+          <td>{_badge("suppressed") if item.get("suppressed") else "Allowed"}<span class="sub">{_esc(item.get("suppression_reason"))}</span></td>
         </tr>
         """
         for item in contacts
@@ -624,7 +624,7 @@ def render_building_page(
           <div><h3>Event funnel</h3><div class="table-wrap"><table><thead><tr><th>Stage reached</th><th>Count</th></tr></thead><tbody>{event_funnel_rows}</tbody></table></div></div>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Lead source</th><th>Inquiries</th><th>Invoiced</th><th>Posted collected</th></tr></thead><tbody>{source_performance_rows}</tbody></table></div>
-        <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
+        <p class="sub">Hold expiration: {_pct(operation_metrics.get("hold_expiration_rate"))} · Contract cycle: {_metric_value(operation_metrics.get("median_contract_cycle_hours"), suffix=" hr")} · Deposit cycle: {_metric_value(operation_metrics.get("median_deposit_cycle_hours"), suffix=" hr")} · Delivery feedback: {_esc(str(campaign_metrics.get("delivery_feedback") or "not configured").replace("_", " "))} · Campaign engagement telemetry: {_esc(str(campaign_metrics.get("engagement_tracking") or "not configured").replace("_", " "))}</p>
       </section>
       <section class="panel">
         <div class="panel-head"><div><h2>Add or update a space</h2><p>Save reviewed physical inventory. Publishing remains a separate choice.</p></div></div>
