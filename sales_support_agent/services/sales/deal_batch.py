@@ -476,7 +476,7 @@ def render_batch_cleanup_page(
       body{{margin:0;background:var(--light-brown);color:var(--dark-blue);font-family:"Inter","Segoe UI",sans-serif;}}
       a{{color:var(--accent);text-decoration:none;}}
       a:hover{{text-decoration:underline;}}
-      .shell{{max-width:1120px;margin:0 auto;padding:36px 18px;}}
+      .shell{{max-width:1320px;margin:0 auto;padding:36px 24px;}}
       .workspace{{background:var(--white);border:1px solid var(--border);border-radius:20px;
                   box-shadow:0 18px 40px var(--shadow);padding:32px 28px;}}
       h1{{font-family:"Montserrat",sans-serif;font-weight:800;font-size:26px;margin:0 0 6px;}}

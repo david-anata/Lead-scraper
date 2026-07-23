@@ -88,7 +88,7 @@ def _styles() -> str:
       body { margin: 0; background: var(--light-brown); color: var(--text); font-family: "Inter","Segoe UI",sans-serif; }
       a { color: var(--dark-blue); text-decoration: none; }
       __NAV__
-      .shell { max-width: 1080px; margin: 0 auto; padding: 32px 20px 72px; }
+      .shell { max-width: 1320px; margin: 0 auto; padding: 32px 24px 72px; }
       .workspace { background: var(--white); border: 1px solid var(--border); border-radius: 28px; box-shadow: 0 18px 40px var(--shadow); padding: 32px; }
       h1, h2, h3 { font-family: "Montserrat", sans-serif; color: var(--dark-blue); }
       h1 { font-size: 30px; margin: 0 0 4px; }

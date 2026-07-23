@@ -1876,7 +1876,7 @@ def render_operator_page(snapshot: dict[str, Any], *, user: Optional[dict[str, A
       body {{ margin:0; background:var(--light-brown); color:var(--dark-blue); font-family:"Inter","Segoe UI",sans-serif; }}
       a {{ color:var(--dark-blue); }}
       {nav_styles}
-      .shell {{ max-width:1260px; margin:0 auto; padding:28px 18px 64px; }}
+      .shell {{ max-width:1320px; margin:0 auto; padding:28px 24px 64px; }}
       .workspace {{ background:var(--white); border:1px solid var(--border); border-radius:20px; box-shadow:0 18px 40px var(--shadow); padding:26px 28px 30px; }}
       .hero {{ background:linear-gradient(135deg,#10233d 0%,#294566 100%); color:#fff; }}
       .hero .eyebrow,.hero .muted,.hero p,.hero a {{ color:#fff; }}

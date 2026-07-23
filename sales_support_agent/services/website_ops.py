@@ -1821,7 +1821,7 @@ def render_report_page(settings: Settings, mode: str, slug: str, *, user: dict |
     debug_panel = ""
     if MVP_MODE_ACTIVE and debug_insights:
         debug_panel = (
-            "<section style=\"max-width:1200px;margin:24px auto 0;padding:0 20px;\">"
+            "<section style=\"max-width:1320px;margin:24px auto 0;padding:0 24px;\">"
             "<div style=\"background:#fff;border:1px solid rgba(25,55,109,0.12);border-radius:24px;padding:24px;box-shadow:0 16px 40px rgba(24,39,75,0.08);\">"
             "<p style=\"margin:0 0 8px;font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#5d6b82;\">Generation trace</p>"
             "<h2 style=\"margin:0 0 12px;font-size:28px;line-height:1.1;color:#16233b;\">Per-page generation trace</h2>"

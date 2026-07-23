@@ -34,7 +34,7 @@ _BASE_STYLES = """
   a { color:var(--dark-blue); }
   __NAV__
   .shell { max-width:760px; margin:0 auto; padding:48px 20px 72px; }
-  .shell-wide { max-width:1140px; margin:0 auto; padding:40px 20px 72px; }
+  .shell-wide { max-width:1320px; margin:0 auto; padding:40px 24px 72px; }
   .card { background:var(--white); border:1px solid var(--border); border-radius:24px;
     box-shadow:0 18px 40px var(--shadow); padding:40px; text-align:center; }
   h1 { font-family:"Montserrat",sans-serif; color:var(--dark-blue); font-size:26px; margin:8px 0; }
