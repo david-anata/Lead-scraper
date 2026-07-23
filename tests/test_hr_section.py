@@ -244,6 +244,20 @@ class HRSectionTests(unittest.TestCase):
         self.assertNotIn('value="married_joint" selected', page.text)
         self.assertNotIn('value="head_household" selected', page.text)
 
+    def test_onboarding_without_employee_record_uses_recoverable_app_shell(self):
+        import uuid
+        email = f"missing-employee-{uuid.uuid4().hex[:8]}@anatainc.com"
+        uid = access_store.upsert_user(email, "Missing Employee")
+        access_store.set_user_permissions(uid, ["hr.access"])
+
+        page = self._get("/admin/hr/onboarding", _cookie(email))
+
+        self.assertEqual(page.status_code, 404)
+        self.assertIn("Your employee record is not ready yet.", page.text)
+        self.assertIn('href="/admin/hr"', page.text)
+        self.assertIn("topbar-section-band", page.text)
+        self.assertNotEqual(page.text.strip(), "Employee record not found.")
+
     def test_w4_correction_prefills_safe_fields_but_never_full_ssn(self):
         saved = self._post("/admin/hr/onboarding/w4", {
             "ssn": "123-45-6789", "filing_status": "married_joint",

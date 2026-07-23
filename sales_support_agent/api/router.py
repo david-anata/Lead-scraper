@@ -770,6 +770,7 @@ def admin_logout(request: Request) -> RedirectResponse:
 
 
 @router.get("/admin", response_class=HTMLResponse)
+@router.get("/admin/sales/fix-queue", response_class=HTMLResponse)
 def admin_dashboard(request: Request) -> Response:
     _require_admin_enabled(request)
     if not _is_admin_authenticated(request):

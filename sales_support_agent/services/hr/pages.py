@@ -89,6 +89,30 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
 </body></html>"""
 
 
+def render_hr_employee_record_missing(*, user: Optional[dict]) -> str:
+    """Render a recoverable onboarding state when no HR employee record exists."""
+    return hr_shell(
+        "Onboarding unavailable",
+        "onboarding",
+        """
+        <section aria-labelledby="hr-onboarding-unavailable-title">
+          <div class="hr-kicker">Secure onboarding</div>
+          <h1 class="hr-h1" id="hr-onboarding-unavailable-title">Your employee record is not ready yet.</h1>
+          <p class="hr-sub">
+            HR must create your employee record before you can complete onboarding.
+            No information was submitted or changed.
+          </p>
+          <div class="hr-callout warn" role="status">
+            Ask an HR administrator to add your employee profile using the same email
+            address you use to sign in.
+          </div>
+          <a class="hr-btn hr-btn-light" href="/admin/hr">Return to HR</a>
+        </section>
+        """,
+        user=user,
+    )
+
+
 def _flash(flash: Optional[str]) -> str:
     msgs = {
         "created": "✓ Employee added.",

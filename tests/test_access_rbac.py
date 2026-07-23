@@ -1149,6 +1149,17 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn(">Sales Decks</a>", nav)
         self.assertNotIn(">Sales Assets</a>", nav)
 
+    def test_sales_fix_queue_uses_canonical_sales_route(self) -> None:
+        from sales_support_agent.services.admin_nav import render_agent_nav
+
+        nav = render_agent_nav(
+            "sales",
+            sales_section="sales",
+            permissions={"sales.deals", "sales.priorities"},
+        )
+        self.assertIn('href="/admin/sales/fix-queue"', nav)
+        self.assertNotIn('href="/admin">Fix Queue</a>', nav)
+
     def test_superadmin_only_advertising_subpage_is_hidden_from_non_superadmins(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
         member_nav = render_agent_nav(permissions={"advertising.audit"})

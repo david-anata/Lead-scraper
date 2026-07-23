@@ -25,6 +25,7 @@ from sales_support_agent.services.hr.pages import (
     render_hr_employees,
     render_hr_invitation,
     render_hr_onboarding,
+    render_hr_employee_record_missing,
     render_hr_payroll_control,
     render_hr_payroll_run,
     render_hr_pay_statements,
@@ -201,7 +202,10 @@ async def employee_onboarding(request: Request, user: dict = Depends(_guard)):
     email = (user.get("email") or "").strip().lower()
     employee = store.get_employee_by_email(email)
     if not employee:
-        return HTMLResponse("Employee record not found.", status_code=404)
+        return HTMLResponse(
+            render_hr_employee_record_missing(user=user),
+            status_code=404,
+        )
     return HTMLResponse(render_hr_onboarding(
         employee, store.get_onboarding(email),
         tax_election=store.get_current_tax_election(email),

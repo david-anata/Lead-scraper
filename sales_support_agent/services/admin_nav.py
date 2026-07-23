@@ -49,7 +49,7 @@ _NAV_SECTIONS = [
         _NavSubpage("sales.deals", "Control Room", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
-        _NavSubpage("sales.priorities", "Fix Queue", "/admin", "sales"),
+        _NavSubpage("sales.priorities", "Fix Queue", "/admin/sales/fix-queue", "sales"),
         _NavSubpage("sales.decks", "Sales Decks", "/admin/sales-decks", "sales_decks"),
     ]),
     _NavSection("website_ops", "Website Ops", "website_ops", [
