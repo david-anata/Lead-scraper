@@ -240,8 +240,10 @@ class BuildingCrmCampaignTests(unittest.TestCase):
             campaigns=[],
             inquiries=[],
             reservations=[],
+            invoices=[],
         )
         self.assertIn("Building Control", body)
         self.assertIn("No spaces entered yet.", body)
         self.assertIn("No building contacts yet.", body)
         self.assertIn("No campaigns yet.", body)
+        self.assertIn("No native invoices yet.", body)

@@ -35,6 +35,7 @@ def render_building_page(
     campaigns: list[dict[str, Any]],
     inquiries: list[dict[str, Any]],
     reservations: list[dict[str, Any]],
+    invoices: list[dict[str, Any]],
 ) -> str:
     nav = render_agent_nav("building", user=user)
     nav_styles = render_agent_nav_styles()
@@ -54,6 +55,11 @@ def render_building_page(
         1
         for item in reservations
         if item.get("status") not in {"completed", "cancelled", "expired"}
+    )
+    open_invoice_cents = sum(
+        max(0, int(item.get("amount_due_cents") or 0) - int(item.get("amount_paid_cents") or 0))
+        for item in invoices
+        if item.get("status") not in {"paid", "void", "uncollectible"}
     )
 
     space_rows = "".join(
@@ -131,6 +137,20 @@ def render_building_page(
         for item in reservations
     ) or '<tr><td colspan="5"><div class="empty"><strong>No bookings or holds yet.</strong><br>An inquiry remains a lead until an operator starts the appropriate booking workflow.</div></td></tr>'
 
+    invoice_rows = "".join(
+        f"""
+        <tr>
+          <td><strong>{_esc(item.get("description"))}</strong></td>
+          <td>{_esc(str(item.get("currency") or "usd").upper())} {int(item.get("amount_due_cents") or 0) / 100:,.2f}</td>
+          <td>{_esc(str(item.get("currency") or "usd").upper())} {int(item.get("amount_paid_cents") or 0) / 100:,.2f}</td>
+          <td>{_badge(str(item.get("status") or "draft"))}</td>
+          <td>{_badge(str(item.get("accounting_status") or "pending qbo"))}</td>
+          <td>{f'<a href="{_esc(item.get("hosted_invoice_url"))}" target="_blank" rel="noreferrer">Open ↗</a>' if item.get("hosted_invoice_url") else "—"}</td>
+        </tr>
+        """
+        for item in invoices
+    ) or '<tr><td colspan="6"><div class="empty"><strong>No native invoices yet.</strong><br>Approved billing schedules can create Stripe invoices; QBO remains the accounting destination during transition.</div></td></tr>'
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -187,12 +207,13 @@ def render_building_page(
       <div class="metric"><span>Available spaces</span><strong>{availability.get("available", 0)}</strong></div>
       <div class="metric"><span>Needs response</span><strong>{needs_response}</strong></div>
       <div class="metric"><span>Tenant relationships</span><strong>{active_tenants}</strong></div>
-      <div class="metric"><span>Active bookings</span><strong>{active_reservations}</strong></div>
+      <div class="metric"><span>Open invoicing</span><strong>${open_invoice_cents / 100:,.0f}</strong></div>
     </section>
     <div class="notice"><strong>Data readiness:</strong> public availability stays conservative until reviewed spaces and offerings are entered. Campaign delivery stays locked behind permission, preview, approval, suppression, and provider configuration.</div>
     <div class="grid">
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Incoming inquiries</h2><p>New workspace, tour, and event demand.</p></div><span class="count">{len(inquiries)} records</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Journey</th><th>Preferred date</th><th>Status</th><th>Source</th></tr></thead><tbody>{inquiry_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Bookings and holds</h2><p>Commercial state, agreement evidence, and deposit readiness stay distinct.</p></div><span class="count">{active_reservations} active</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Starts</th><th>Workflow</th><th>Agreement</th><th>Deposit</th></tr></thead><tbody>{reservation_rows}</tbody></table></div></section>
+      <section class="panel panel--wide"><div class="panel-head"><div><h2>Billing and collections</h2><p>Provider-confirmed payment evidence stays separate from the QBO accounting handoff.</p></div><span class="count">{len(invoices)} invoices</span></div><div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Due</th><th>Paid</th><th>Collection</th><th>Accounting</th><th>Link</th></tr></thead><tbody>{invoice_rows}</tbody></table></div></section>
       <section class="panel panel--wide"><div class="panel-head"><div><h2>Inventory</h2><p>Agent-owned space status and public readiness.</p></div><span class="count">{len(spaces)} spaces · {len(offerings)} offerings</span></div><div class="table-wrap"><table><thead><tr><th>Space</th><th>Floor</th><th>Capacity</th><th>Status</th><th>Visibility</th></tr></thead><tbody>{space_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>CRM and email list</h2><p>Relationships, permission, and suppression. {subscribed} subscribed.</p></div><span class="count">{len(contacts)} contacts</span></div><div class="table-wrap"><table><thead><tr><th>Contact</th><th>Relationships</th><th>Marketing</th><th>Delivery</th></tr></thead><tbody>{contact_rows}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><div><h2>Audiences</h2><p>Explainable tenant and community segments.</p></div><span class="count">{len(segments)} segments</span></div><div class="table-wrap"><table><thead><tr><th>Audience</th><th>Relationships</th><th>Eligible</th><th>Status</th></tr></thead><tbody>{segment_rows}</tbody></table></div></section>

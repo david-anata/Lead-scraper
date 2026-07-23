@@ -64,6 +64,12 @@ services:
         value: https://anata-building.vercel.app
       - key: BUILDING_CAMPAIGN_TOKEN_SECRET
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_API_BASE_URL
+        value: https://api.stripe.com
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
         sync: false
       - key: GOOGLE_SHEETS_SALES_RANGE

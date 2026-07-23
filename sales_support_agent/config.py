@@ -177,6 +177,9 @@ class Settings:
     building_site_intake_key: str = ""
     building_public_base_url: str = "https://anata-building.vercel.app"
     building_campaign_token_secret: str = ""
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_api_base_url: str = "https://api.stripe.com"
     # HubSpot — the sales system source of truth (replacing ClickUp for sales).
     # Private-app token; same env var the legacy fulfillment hubspot_sync used.
     hubspot_api_token: str = ""
@@ -521,6 +524,12 @@ def load_settings() -> Settings:
         building_campaign_token_secret=(
             os.getenv("BUILDING_CAMPAIGN_TOKEN_SECRET", "").strip()
             or os.getenv("ADMIN_DASHBOARD_SESSION_SECRET", "").strip()
+        ),
+        stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", "").strip(),
+        stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET", "").strip(),
+        stripe_api_base_url=(
+            os.getenv("STRIPE_API_BASE_URL", "https://api.stripe.com").strip().rstrip("/")
+            or "https://api.stripe.com"
         ),
         marketing_booking_url=os.getenv("MARKETING_BOOKING_URL", "").strip(),
         discovery_snapshot_path=Path(

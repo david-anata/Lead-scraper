@@ -124,6 +124,11 @@ def _ensure_building_tables(engine: Any) -> None:
         "building_reservations",
         "building_agreements",
         "building_deposit_evidence",
+        "building_billing_accounts",
+        "building_billing_schedules",
+        "building_invoices",
+        "building_payments",
+        "building_stripe_events",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:

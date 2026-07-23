@@ -182,6 +182,11 @@ uvicorn sales_support_agent.main:app --host 0.0.0.0 --port 8010 --reload
 - `GET /admin/building`
 - `GET /api/internal/building/bookings`
 - `POST /api/internal/building/bookings`
+- `PUT /api/internal/building/billing/accounts/{account_id}`
+- `PUT /api/internal/building/billing/schedules/{schedule_id}`
+- `POST /api/internal/building/billing/schedules/{schedule_id}/approve`
+- `POST /api/internal/building/billing/invoices`
+- `POST /api/integrations/stripe/webhook`
 
 Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API_KEY` is configured.
 
@@ -199,6 +204,9 @@ Protected POST routes accept `X-Internal-Api-Key` when `SALES_AGENT_INTERNAL_API
   and unsubscribe state.
 - workspace and event workflows with expiring holds, conflict checks, agreement
   evidence, deposit evidence, confirmation gates, and inventory release.
+- native billing accounts and approved schedules, preview-first Stripe invoice
+  creation, provider-confirmed payment evidence, and an explicit QBO accounting
+  handoff state.
 
 The public building website uses `BUILDING_SITE_INTAKE_KEY`, a dedicated
 server-to-server secret. Campaign delivery additionally requires
@@ -212,6 +220,15 @@ An inquiry is not a booking. Event and workspace reservations begin in
 confirmed reservation requires signed-agreement evidence and, when configured,
 verified deposit evidence. Cancelling, expiring, or completing the workflow
 releases the linked availability block while retaining the audit history.
+
+Billing schedules begin as editable drafts and become immutable after approval.
+Invoice creation defaults to a no-write preview and requires an explicit
+`execute: true` request plus an idempotency key. Stripe writes fail closed unless
+`STRIPE_SECRET_KEY` is configured. Webhooks require
+`STRIPE_WEBHOOK_SECRET`, reject stale or invalid signatures, and deduplicate
+provider events. A Stripe-paid invoice is provider-confirmed evidence; it is not
+described as bank-posted cash. Each invoice remains `pending_qbo` until the
+accounting bridge records the QBO result.
 
 ## Example Requests
 

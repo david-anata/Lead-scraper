@@ -27,6 +27,7 @@ from sales_support_agent.models.entities import (
     BuildingSegment,
     BuildingSuppression,
     BuildingInquiry,
+    BuildingInvoice,
     BuildingOffering,
     BuildingReservation,
     BuildingSpace,
@@ -899,6 +900,11 @@ def building_control_room(
             .order_by(BuildingReservation.starts_at)
             .limit(100)
         ).scalars().all()
+        invoice_rows = session.execute(
+            select(BuildingInvoice)
+            .order_by(BuildingInvoice.created_at.desc())
+            .limit(100)
+        ).scalars().all()
         space_names = {item.id: item.name for item in space_rows}
 
         contacts = [
@@ -987,6 +993,18 @@ def building_control_room(
                     "deposit_status": item.deposit_status,
                 }
                 for item in reservation_rows
+            ],
+            invoices=[
+                {
+                    "description": item.description,
+                    "status": item.status,
+                    "accounting_status": item.accounting_status,
+                    "amount_due_cents": item.amount_due_cents,
+                    "amount_paid_cents": item.amount_paid_cents,
+                    "currency": item.currency,
+                    "hosted_invoice_url": item.hosted_invoice_url,
+                }
+                for item in invoice_rows
             ],
         )
         return HTMLResponse(html_body)

@@ -1579,3 +1579,110 @@ class BuildingDepositEvidence(Base):
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     recorded_by: Mapped[str] = mapped_column(String(255), default="")
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingBillingAccount(Base):
+    __tablename__ = "building_billing_accounts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contact_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_contacts.id"), nullable=True, index=True
+    )
+    account_name: Mapped[str] = mapped_column(String(255))
+    billing_email: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    qbo_customer_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingBillingSchedule(Base):
+    __tablename__ = "building_billing_schedules"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    billing_account_id: Mapped[str] = mapped_column(
+        ForeignKey("building_billing_accounts.id"), index=True
+    )
+    reservation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_reservations.id"), nullable=True, index=True
+    )
+    schedule_type: Mapped[str] = mapped_column(String(32), index=True)
+    description: Mapped[str] = mapped_column(String(512))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(8), default="usd")
+    collection_method: Mapped[str] = mapped_column(String(32), default="send_invoice")
+    days_until_due: Mapped[int] = mapped_column(Integer, default=7)
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    starts_on: Mapped[date] = mapped_column(Date)
+    ends_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    next_invoice_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
+    last_invoice_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_by: Mapped[str] = mapped_column(String(255), default="")
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingInvoice(Base):
+    __tablename__ = "building_invoices"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    billing_account_id: Mapped[str] = mapped_column(
+        ForeignKey("building_billing_accounts.id"), index=True
+    )
+    billing_schedule_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_billing_schedules.id"), nullable=True, index=True
+    )
+    reservation_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("building_reservations.id"), nullable=True, index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="stripe")
+    provider_invoice_id: Mapped[str] = mapped_column(String(128), default="", unique=True, index=True)
+    qbo_invoice_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    description: Mapped[str] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    accounting_status: Mapped[str] = mapped_column(
+        String(32), default="pending_qbo", index=True
+    )
+    amount_due_cents: Mapped[int] = mapped_column(Integer)
+    amount_paid_cents: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="usd")
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    hosted_invoice_url: Mapped[str] = mapped_column(String(1024), default="")
+    provider_payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingPayment(Base):
+    __tablename__ = "building_payments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    invoice_id: Mapped[str] = mapped_column(ForeignKey("building_invoices.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="stripe")
+    provider_payment_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(8), default="usd")
+    evidence_class: Mapped[str] = mapped_column(String(32), default="provider_confirmed")
+    posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class BuildingStripeEvent(Base):
+    __tablename__ = "building_stripe_events"
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="received", index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
