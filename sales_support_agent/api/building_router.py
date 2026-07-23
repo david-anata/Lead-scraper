@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -487,6 +487,29 @@ def create_inquiry(
         if payload.offering_id and session.get(BuildingOffering, payload.offering_id) is None:
             raise HTTPException(status_code=422, detail="Unknown offering.")
 
+        received_at = _now()
+        configured_owner = str(
+            getattr(request.app.state.settings, "building_default_lead_owner", "")
+            or ""
+        ).strip()
+        superadmins = tuple(
+            getattr(request.app.state.settings, "rbac_superadmin_emails", ())
+            or ()
+        )
+        assigned_owner = configured_owner or (
+            str(superadmins[0]).strip() if superadmins else "building-operator"
+        )
+        response_sla_hours = max(
+            1,
+            int(
+                getattr(
+                    request.app.state.settings,
+                    "building_response_sla_hours",
+                    4,
+                )
+                or 4
+            ),
+        )
         inquiry = BuildingInquiry(
             id=str(uuid4()),
             idempotency_key=dedupe_key,
@@ -500,7 +523,11 @@ def create_inquiry(
             preferred_date=payload.preferred_date,
             consent_to_contact=True,
             consent_to_marketing=payload.consent_to_marketing,
+            assigned_owner=assigned_owner,
+            response_due_at=received_at + timedelta(hours=response_sla_hours),
             payload_json=payload.details,
+            created_at=received_at,
+            updated_at=received_at,
         )
         session.add(inquiry)
         session.flush()
@@ -595,6 +622,8 @@ def create_inquiry(
                 "source": inquiry.source,
                 "offering_id": inquiry.offering_id,
                 "attribution": attribution,
+                "assigned_owner": inquiry.assigned_owner,
+                "response_due_at": inquiry.response_due_at.isoformat(),
             },
         ))
 

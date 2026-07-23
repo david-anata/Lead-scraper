@@ -19,7 +19,7 @@ def _esc(value: Any) -> str:
 
 def _badge(value: str) -> str:
     normalized = str(value or "unknown").replace("_", " ")
-    tone = "bad" if normalized in {"error", "failed", "blocked"} else (
+    tone = "bad" if normalized in {"error", "failed", "blocked", "overdue"} else (
         "ok" if normalized in {"available", "active", "subscribed", "sent", "synced"} else (
         "warn" if normalized in {"soft hold", "previewed", "approved", "sending", "unknown"} else "muted"
         )
@@ -326,7 +326,7 @@ def render_building_page(
           <td><strong>{_esc(item.get("name"))}</strong><span class="sub">{_esc(item.get("email"))}</span></td>
           <td>{_esc(item.get("kind"))}</td>
           <td>{_esc(item.get("preferred_date") or "—")}</td>
-          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")}</span>{inquiry_lifecycle_action(item)}</td>
+          <td>{_badge(str((item.get("lifecycle") or {}).get("stage") or "new"))}{_badge("overdue") if item.get("response_overdue") else ""}<span class="sub">{_esc(item.get("assigned_owner") or "Unassigned")} · respond by {_esc(item.get("response_due_at") or "not set")}</span>{inquiry_lifecycle_action(item)}</td>
           <td>{_esc(item.get("source"))}<span class="sub">{_esc(item.get("source_reference"))}</span></td>
           <td>{(
             f'<form method="post" action="/admin/building/inquiries/{_esc(item.get("id"))}/retry-hubspot"><input type="hidden" name="_csrf_token" value="{_esc(csrf_token)}"><button class="secondary secondary--small" type="submit">Retry HubSpot</button><span class="sub">{_esc(item.get("hubspot_error"))} · {int(item.get("hubspot_attempt_count") or 0)} attempt(s)</span></form>'
@@ -702,10 +702,13 @@ def render_building_page(
         if lifecycle_stage != "new" and not crm_failed:
             continue
         priority_items.append({
-            "score": 75 if crm_failed else 65,
+            "score": 95 if item.get("response_overdue") else (75 if crm_failed else 65),
             "type": "Inquiry",
             "title": item.get("name") or item.get("email"),
-            "detail": f"{item.get('kind', 'lead')} · {item.get('source', 'unknown source')}",
+            "detail": (
+                f"{item.get('kind', 'lead')} · {item.get('source', 'unknown source')}"
+                f" · respond by {item.get('response_due_at') or 'not set'}"
+            ),
             "next": "Retry HubSpot" if crm_failed else "Respond and qualify",
         })
     for item in calendar_projections:

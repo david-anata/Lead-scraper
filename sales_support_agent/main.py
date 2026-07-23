@@ -67,7 +67,12 @@ from sales_support_agent.api.fulfillment_deck_router import (
 from sales_support_agent.api.fulfillment_public_router import router as fulfillment_public_router
 from sales_support_agent.api.router import router
 from sales_support_agent.config import load_settings
-from sales_support_agent.models.database import create_session_factory, init_cashflow_db, init_database
+from sales_support_agent.models.database import (
+    backfill_building_inquiry_assignments,
+    create_session_factory,
+    init_cashflow_db,
+    init_database,
+)
 
 
 def create_app() -> FastAPI:
@@ -75,6 +80,19 @@ def create_app() -> FastAPI:
     settings = load_settings()
     session_factory = create_session_factory(settings.sales_agent_db_url)
     init_database(session_factory)
+    configured_building_owner = (
+        settings.building_default_lead_owner
+        or (
+            settings.rbac_superadmin_emails[0]
+            if settings.rbac_superadmin_emails
+            else "building-operator"
+        )
+    )
+    backfill_building_inquiry_assignments(
+        session_factory,
+        default_owner=configured_building_owner,
+        response_sla_hours=settings.building_response_sla_hours,
+    )
     init_cashflow_db(settings.sales_agent_db_url)
 
     # RBAC: seed the never-lockable super-admin(s).

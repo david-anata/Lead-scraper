@@ -14,6 +14,7 @@ try:
     from sales_support_agent.main import app
     from sales_support_agent.models.database import (
         _repair_legacy_building_event_inquiries,
+        backfill_building_inquiry_assignments,
         create_session_factory,
         init_database,
     )
@@ -44,6 +45,8 @@ class BuildingOperationsTests(unittest.TestCase):
             app.state.settings,
             internal_api_key="internal-test-key",
             building_site_intake_key="building-test-key",
+            building_default_lead_owner="events@example.com",
+            building_response_sla_hours=6,
             hubspot_api_token="",
         )
         cls.factory = factory
@@ -304,6 +307,40 @@ class BuildingOperationsTests(unittest.TestCase):
                 "event",
             )
             self.assertEqual(relationship.status, "active")
+            self.assertEqual(inquiry.assigned_owner, "events@example.com")
+            self.assertAlmostEqual(
+                (inquiry.response_due_at - inquiry.created_at).total_seconds(),
+                6 * 60 * 60,
+                delta=1,
+            )
+            created_audit = session.query(BuildingAuditEvent).filter_by(
+                entity_type="inquiry",
+                entity_id=inquiry.id,
+                action="created",
+            ).one()
+            self.assertEqual(
+                created_audit.after_json["assigned_owner"],
+                "events@example.com",
+            )
+            inquiry.assigned_owner = ""
+            inquiry.response_due_at = None
+            session.commit()
+        self.assertEqual(
+            backfill_building_inquiry_assignments(
+                self.factory,
+                default_owner="legacy-owner@example.com",
+                response_sla_hours=2,
+            ),
+            1,
+        )
+        with self.factory() as session:
+            inquiry = session.query(BuildingInquiry).one()
+            self.assertEqual(inquiry.assigned_owner, "legacy-owner@example.com")
+            self.assertAlmostEqual(
+                (inquiry.response_due_at - inquiry.created_at).total_seconds(),
+                2 * 60 * 60,
+                delta=1,
+            )
 
     def test_inquiry_response_and_qualification_are_audited_separately_from_crm_sync(self) -> None:
         with self.factory() as session:

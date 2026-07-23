@@ -2971,6 +2971,29 @@ def building_control_room(
                         (item.payload_json or {}).get("_lifecycle") or {}
                     ),
                     "assigned_owner": item.assigned_owner,
+                    "response_due_at": (
+                        _mountain(item.response_due_at).strftime(
+                            "%b %d, %Y · %I:%M %p MT"
+                        )
+                        if item.response_due_at
+                        else ""
+                    ),
+                    "response_overdue": bool(
+                        item.response_due_at
+                        and str(
+                            (
+                                (item.payload_json or {}).get("_lifecycle") or {}
+                            ).get("stage")
+                            or "new"
+                        )
+                        == "new"
+                        and (
+                            item.response_due_at.replace(tzinfo=timezone.utc)
+                            if item.response_due_at.tzinfo is None
+                            else item.response_due_at
+                        )
+                        < _now()
+                    ),
                     "id": item.id,
                 }
                 for item in inquiry_rows

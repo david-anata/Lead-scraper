@@ -80,6 +80,7 @@ def init_database(session_factory: sessionmaker[Session]) -> None:
     _register_models()
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(bind=engine)
+        _ensure_building_columns(engine)
         _ensure_hr_columns(engine)
         _apply_sqlite_compat_migrations(engine)
         ensure_finance_trust_schema(engine)
@@ -180,6 +181,64 @@ def _repair_legacy_building_event_inquiries(
     return repaired
 
 
+def backfill_building_inquiry_assignments(
+    session_factory: sessionmaker[Session],
+    *,
+    default_owner: str,
+    response_sla_hours: int,
+) -> int:
+    """Assign open legacy inquiries and give them a deterministic response due time."""
+
+    from sales_support_agent.models.entities import BuildingAuditEvent, BuildingInquiry
+
+    owner = str(default_owner or "").strip() or "building-operator"
+    sla_hours = max(1, int(response_sla_hours or 4))
+    repaired = 0
+    with session_factory() as session:
+        inquiries = session.execute(select(BuildingInquiry)).scalars().all()
+        for inquiry in inquiries:
+            lifecycle = dict((inquiry.payload_json or {}).get("_lifecycle") or {})
+            if str(lifecycle.get("stage") or "new") in {"closed_won", "closed_lost"}:
+                continue
+            before = {
+                "assigned_owner": inquiry.assigned_owner,
+                "response_due_at": (
+                    inquiry.response_due_at.isoformat()
+                    if inquiry.response_due_at
+                    else None
+                ),
+            }
+            changed = False
+            if not inquiry.assigned_owner.strip():
+                inquiry.assigned_owner = owner
+                changed = True
+            if inquiry.response_due_at is None:
+                inquiry.response_due_at = inquiry.created_at + timedelta(hours=sla_hours)
+                changed = True
+            if not changed:
+                continue
+            inquiry.updated_at = datetime.now(timezone.utc)
+            session.add(BuildingAuditEvent(
+                entity_type="inquiry",
+                entity_id=inquiry.id,
+                action="assignment_backfilled",
+                actor="system:migration",
+                before_json=before,
+                after_json={
+                    "assigned_owner": inquiry.assigned_owner,
+                    "response_due_at": inquiry.response_due_at.isoformat(),
+                },
+            ))
+            repaired += 1
+        if repaired:
+            session.commit()
+            logger.info(
+                "Assigned owner and response deadline to %s open building inquiry(s).",
+                repaired,
+            )
+    return repaired
+
+
 def _ensure_building_tables(engine: Any) -> None:
     """Create additive Anata Building tables on persistent databases."""
 
@@ -221,22 +280,33 @@ def _ensure_building_columns(engine: Any) -> None:
     """Add new Building columns without rewriting persistent operational tables."""
 
     inspector = inspect(engine)
-    if "building_proposals" not in inspector.get_table_names():
-        return
-    existing = {
-        column["name"]
-        for column in inspector.get_columns("building_proposals")
-    }
+    table_names = set(inspector.get_table_names())
     additions = {
-        "rate_plan_id": "VARCHAR(64) NOT NULL DEFAULT ''",
-        "rate_plan_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+        "building_proposals": {
+            "rate_plan_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "rate_plan_snapshot_json": "JSON NOT NULL DEFAULT '{}'",
+        },
+        "building_inquiries": {
+            "response_due_at": (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "DATETIME"
+            ),
+        },
     }
     with engine.begin() as connection:
-        for column_name, ddl in additions.items():
-            if column_name not in existing:
-                connection.execute(text(
-                    f"ALTER TABLE building_proposals ADD COLUMN {column_name} {ddl}"
-                ))
+        for table_name, table_additions in additions.items():
+            if table_name not in table_names:
+                continue
+            existing = {
+                column["name"]
+                for column in inspector.get_columns(table_name)
+            }
+            for column_name, ddl in table_additions.items():
+                if column_name not in existing:
+                    connection.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"
+                    ))
 
 
 def _ensure_hr_tables(engine: Any) -> None:

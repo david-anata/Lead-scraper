@@ -182,6 +182,9 @@ Confirmed bookings also maintain CRM relationships automatically:
   its history for future event-host audiences
 - event and workspace inquiries remain prospects until their commercial
   workflow closes; an event inquiry alone is never treated as a confirmed host
+- new inquiries receive an owner and response deadline immediately; configure
+  `BUILDING_DEFAULT_LEAD_OWNER` and `BUILDING_RESPONSE_SLA_HOURS` (default `4`)
+  to match the operating team
 - failed campaign deliveries can be retried without resending successful
   recipients; eligibility and suppression are rechecked at retry time
 

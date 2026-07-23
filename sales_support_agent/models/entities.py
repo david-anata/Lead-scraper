@@ -1411,6 +1411,9 @@ class BuildingInquiry(Base):
     preferred_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="new", index=True)
     assigned_owner: Mapped[str] = mapped_column(String(255), default="")
+    response_due_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     consent_to_contact: Mapped[bool] = mapped_column(Boolean, default=False)
     consent_to_marketing: Mapped[bool] = mapped_column(Boolean, default=False)
     hubspot_contact_id: Mapped[str] = mapped_column(String(64), default="")

@@ -176,6 +176,8 @@ class Settings:
     clickup_ar_list_id: str = "901113065688"
     building_site_intake_key: str = ""
     building_public_base_url: str = "https://anata-building.vercel.app"
+    building_default_lead_owner: str = ""
+    building_response_sla_hours: int = 4
     building_campaign_token_secret: str = ""
     resend_webhook_secret: str = ""
     stripe_secret_key: str = ""
@@ -521,6 +523,13 @@ def load_settings() -> Settings:
         building_public_base_url=(
             os.getenv("BUILDING_PUBLIC_BASE_URL", "https://anata-building.vercel.app").strip().rstrip("/")
             or "https://anata-building.vercel.app"
+        ),
+        building_default_lead_owner=os.getenv(
+            "BUILDING_DEFAULT_LEAD_OWNER", ""
+        ).strip(),
+        building_response_sla_hours=max(
+            1,
+            int((os.getenv("BUILDING_RESPONSE_SLA_HOURS", "4") or "4").strip()),
         ),
         building_campaign_token_secret=(
             os.getenv("BUILDING_CAMPAIGN_TOKEN_SECRET", "").strip()
