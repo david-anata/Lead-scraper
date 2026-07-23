@@ -307,6 +307,9 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("Payroll control room", page.text)
         self.assertIn("Payroll readiness", page.text)
+        self.assertIn("Anata planning estimates", page.text)
+        self.assertIn("outside payroll provider's authoritative result", page.text)
+        self.assertIn("Estimated tax liability", page.text)
         self.assertNotIn("compute gross/taxes/net and pay employees", page.text)
 
     def test_check_and_tax_evidence_actions_redirect_with_result(self):

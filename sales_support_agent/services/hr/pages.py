@@ -748,7 +748,8 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
     </form>
     <div class="hr-callout {'ok' if readiness['ready'] else 'warn'}"><div class="hr-kicker">Payroll readiness</div>
       <h2 style="margin:6px 0">{status_label}</h2><ul>{blockers}</ul>
-      <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p></div>
+      <p>No bank transfer, check, tax payment, or filing occurs from preparation.</p>
+      <p><strong>Calculation authority:</strong> gross, withholding, net pay, and employer cost shown here are Anata planning estimates until matched to an outside payroll provider's authoritative result.</p></div>
     <div class="hr-cards">
       <div class="hr-card"><div class="n">{_esc(period.pay_date)}</div><div class="l">Payday</div></div>
       <div class="hr-card"><div class="n">{len(control['employees'])}</div><div class="l">W-2 employees</div></div>
@@ -772,9 +773,9 @@ def render_hr_payroll_control(control: dict, *, user, flash=None) -> str:
       <button class="hr-btn" type="submit"{'' if readiness['ready'] else ' disabled'}>Prepare immutable payroll version</button>
     </form>
     <h2>Prepared and approved versions</h2>
-    <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Gross</th><th>Tax liability</th><th>Deduction liability</th><th>Employee check cash</th><th>Total employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
+    <table class="hr-tbl"><thead><tr><th>Version ID</th><th>Status</th><th>Estimated gross</th><th>Estimated tax liability</th><th>Deduction liability</th><th>Estimated employee check cash</th><th>Estimated employer cost</th><th>People</th><th>Prepared by</th><th>Approval</th></tr></thead><tbody>{run_rows}</tbody></table>
     <h2>Tax payment and filing reconciliation</h2>
-    <p class="hr-sub">Amounts are liabilities until confirmation evidence is recorded. Paid and filed are separate facts.</p>
+    <p class="hr-sub">Anata creates planning liability estimates after approval. Replace or reconcile them against the payroll provider's authoritative totals before recording outside payments and filings. Paid and filed are separate facts.</p>
     <table class="hr-tbl"><thead><tr><th>Agency</th><th>Type</th><th>Amount</th><th>Due</th><th>Status</th><th>Evidence action</th></tr></thead><tbody>{liability_rows}</tbody></table>
     <div class="hr-callout"><div class="hr-kicker">Approved operating rules</div>
       <ul><li>Semimonthly: 1st–15th paid the 20th; 16th–month end paid the following 5th.</li>
@@ -818,6 +819,8 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
         <td>${money(results.get('employer_taxes_cents'))}</td>
         <td>${money(results.get('total_employer_cost_cents'))}</td><td>{check_action}</td></tr>"""
     handoff = run.get("provider_handoff") or {}
+    provider_matched = handoff.get("status") == "matched"
+    amount_label = "" if provider_matched else "Estimated "
     variance = handoff.get("variance") or {}
     variance_rows = "".join(
         f"<li>{_esc(key.replace('_cents', '').replace('_', ' ').title())}: "
@@ -850,11 +853,12 @@ def render_hr_payroll_run(run: dict, *, user, employee_view=False, flash=None) -
     {_flash(flash)}
     <h1 class="hr-h1">{'Pay statement' if employee_view else 'Payroll version review'}</h1>
     <p class="hr-sub">{_esc(run['period_start'])}–{_esc(run['period_end'])}, payday {_esc(run['pay_date'])}. Status: {_esc(run['status'])}.</p>
-    <div class="hr-cards"><div class="hr-card"><div class="n">${_esc(run['gross'])}</div><div class="l">Gross wages</div></div>
-    <div class="hr-card"><div class="n">${_esc(run['taxes'])}</div><div class="l">Tax liability</div></div>
+    <div class="hr-cards"><div class="hr-card"><div class="n">${_esc(run['gross'])}</div><div class="l">{amount_label}gross wages</div></div>
+    <div class="hr-card"><div class="n">${_esc(run['taxes'])}</div><div class="l">{amount_label}tax liability</div></div>
     <div class="hr-card"><div class="n">${_esc(run['deductions'])}</div><div class="l">Deduction liability</div></div>
-    <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">Employee check cash</div></div>
-    <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">Total employer cost</div></div></div>
+    <div class="hr-card"><div class="n">${_esc(run['net'])}</div><div class="l">{amount_label}employee check cash</div></div>
+    <div class="hr-card"><div class="n">${_esc(run['cash_impact'])}</div><div class="l">{amount_label}employer cost</div></div></div>
+    {'' if provider_matched else '<div class="hr-callout warn"><strong>Provider comparison pending.</strong> Anata still calculates every line so you can prepare and review payroll, but the outside payroll provider must be the authority for final withholding, filings, and distribution.</div>'}
     {provider_panel}
     <div style="overflow-x:auto"><table class="hr-tbl"><thead><tr><th>Employee</th><th>Regular</th><th>OT</th><th>Holiday</th><th>PTO</th><th>Gross</th><th>Federal</th><th>Utah</th><th>Social Security</th><th>Medicare</th><th>Other deductions</th><th>Reimbursements</th><th>Net</th><th>Employer taxes</th><th>Employer cost</th><th>Payment record</th></tr></thead><tbody>{rows}</tbody></table></div>
     <p class="hr-sub">Calculation version: immutable snapshot. A recorded check is not marked cleared until separate reconciliation evidence exists.</p>
