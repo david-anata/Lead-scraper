@@ -1,5 +1,4 @@
-"""HR section pages — rendered with agent's top nav PLUS a section-local
-left-side menu (new pattern; the rest of agent is top-bar only)."""
+"""HR section pages rendered inside the universal Agent navigation shell."""
 
 from __future__ import annotations
 
@@ -18,31 +17,8 @@ def _esc(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
-# Left-nav items: (key, label, href, requires_payroll). `built` items render
-# real pages; the rest show a "coming soon" placeholder so the menu is complete.
-_HR_NAV = [
-    ("dashboard", "Dashboard", "/admin/hr", False),
-    ("employees", "Employees", "/admin/hr/employees", False),
-    ("teams", "Teams", "/admin/hr/teams", False),
-    ("time", "Time & Timesheets", "/admin/hr/time", False),
-    ("payroll", "Payroll", "/admin/hr/payroll", True),
-    ("reports", "Reports", "/admin/hr/reports", False),
-    ("settings", "Settings", "/admin/hr/settings", True),
-]
-
 _HR_STYLES = """
-  .hr-wrap { display: flex; gap: 0; align-items: stretch; max-width: 1320px; margin: 0 auto; }
-  .hr-side { width: 232px; flex: 0 0 232px; padding: 26px 14px; border-right: 1px solid rgba(43,54,68,0.1); }
-  .hr-side-title { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
-                   color: rgba(43,54,68,0.45); padding: 0 12px 12px; }
-  .hr-side a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px;
-               color: #2b3644; text-decoration: none; font-weight: 500; font-size: 14.5px; margin-bottom: 2px; }
-  .hr-side a:hover { background: rgba(43,54,68,0.05); }
-  .hr-side a.active { background: #2b3644; color: #fff; }
-  .hr-side a .muted-tag { margin-left: auto; font-size: 10px; font-weight: 600; color: rgba(43,54,68,0.4);
-                          border: 1px solid rgba(43,54,68,0.18); border-radius: 6px; padding: 1px 6px; }
-  .hr-side a.active .muted-tag { color: rgba(255,255,255,0.6); border-color: rgba(255,255,255,0.3); }
-  .hr-main { flex: 1; min-width: 0; padding: 28px 30px; }
+  .hr-main { width:min(100%,1320px); min-width:0; margin:0 auto; padding:32px 24px 64px; }
   .hr-h1 { font-family: Montserrat, Inter, sans-serif; font-weight: 800; font-size: 26px; margin: 0 0 4px; color: #1c2430; }
   .hr-sub { color: rgba(43,54,68,0.6); font-size: 14px; margin: 0 0 24px; }
   .hr-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap: 16px; margin-bottom: 28px; }
@@ -72,10 +48,6 @@ _HR_STYLES = """
   .hr-inline { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .hr-btn-danger { background:#8b3a32; }
   @media (max-width: 768px) {
-    .hr-wrap { display:block; }
-    .hr-side { width:auto; padding:10px 14px; border-right:0; border-bottom:1px solid rgba(43,54,68,.1); overflow-x:auto; display:flex; gap:4px; }
-    .hr-side-title { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
-    .hr-side a { white-space:nowrap; margin:0; }
     .hr-main { padding:22px 16px 36px; }
     .hr-grid2 { grid-template-columns:1fr; }
     .hr-actions .hr-btn { width:100%; text-align:center; box-sizing:border-box; min-height:44px; }
@@ -88,24 +60,10 @@ _HR_STYLES = """
 """
 
 
-def _side_nav(active: str, *, can_payroll: bool) -> str:
-    items = []
-    for key, label, href, needs_payroll in _HR_NAV:
-        if needs_payroll and not can_payroll:
-            continue
-        cls = "active" if key == active else ""
-        items.append(f'<a class="{cls}" href="{href}">{_esc(label)}</a>')
-    return f"""<aside class="hr-side">
-      <div class="hr-side-title">Human Resources</div>
-      {''.join(items)}
-    </aside>"""
-
-
 def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str:
     perms = (user or {}).get("permissions") or set()
     is_super = bool((user or {}).get("is_superadmin"))
-    can_payroll = is_super or "hr.payroll" in perms
-    nav = render_agent_nav("hr", permissions=perms, is_superadmin=is_super, user=user)
+    nav = render_agent_nav("hr", hr_section=active, permissions=perms, is_superadmin=is_super, user=user)
     styles = render_agent_nav_styles()
     return f"""<!doctype html>
 <html lang="en"><head>
@@ -117,10 +75,7 @@ def hr_shell(title: str, active: str, body: str, *, user: Optional[dict]) -> str
   <style>{styles}{_HR_STYLES}</style>
 </head><body>
   {nav}
-  <div class="hr-wrap">
-    {_side_nav(active, can_payroll=can_payroll)}
-    <main class="hr-main">{body}</main>
-  </div>
+  <main class="hr-main">{body}</main>
 </body></html>"""
 
 

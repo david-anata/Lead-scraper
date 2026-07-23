@@ -50,7 +50,8 @@ class HRSectionTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("HR Dashboard", r.text)
         self.assertIn(">HR<", r.text)              # HR in the top nav
-        self.assertIn("Human Resources", r.text)   # left-side menu present
+        self.assertIn('aria-label="HR pages"', r.text)
+        self.assertNotIn('class="hr-side"', r.text)
 
     def test_create_and_list_employee(self):
         import uuid

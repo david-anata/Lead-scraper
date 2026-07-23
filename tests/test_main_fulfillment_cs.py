@@ -327,13 +327,12 @@ class MainFulfillmentCSTests(unittest.TestCase):
     def test_nav_shows_renamed_fulfillment_section(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
 
-        # Full access (superadmin) — the Fulfillment primary carries a caret,
-        # with sub-pages in both the dropdown and active-section row.
+        # Full access uses one primary link and one consistent contextual row.
         nav_html = render_agent_nav("fulfillment", is_superadmin=True)
-        self.assertIn(">Fulfillment<span", nav_html)
+        self.assertIn(">Fulfillment</a>", nav_html)
         self.assertNotIn("Fulfillment CS</a>", nav_html)
         # Fulfillment pages are visible and directly reachable.
-        self.assertIn("nav-dropdown", nav_html)
+        self.assertNotIn("nav-dropdown", nav_html)
         self.assertIn("topbar-section-row", nav_html)
         self.assertIn('href="/admin/fulfillment/sales"', nav_html)
         self.assertIn('href="/admin/fulfillment/cs/"', nav_html)

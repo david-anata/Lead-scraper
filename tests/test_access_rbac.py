@@ -1079,15 +1079,15 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn('href="/admin/fulfillment/cs/"', nav)
         self.assertNotIn('href="/admin/fulfillment/sales"', nav)
 
-    def test_cs_dashboard_plus_reports_renders_dropdown(self) -> None:
+    def test_cs_dashboard_plus_reports_renders_context_row(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
         nav = render_agent_nav(
             "fulfillment_dashboard",
             permissions={"fulfillment.dashboard", "fulfillment.reports"},
         )
-        # >=2 accessible CS pages -> a dropdown and visible section row of pills,
-        # none pointing at /sales.
-        self.assertIn("nav-dropdown", nav)
+        # Multiple accessible pages share one visible contextual row, none
+        # pointing at an inaccessible sales page.
+        self.assertNotIn("nav-dropdown", nav)
         self.assertIn("topbar-section-row", nav)
         self.assertIn('href="/admin/fulfillment/cs/"', nav)
         self.assertIn('href="/admin/fulfillment/cs/reports/"', nav)
@@ -1107,18 +1107,18 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertIn(">CS Action Queue</a>", nav)
         self.assertIn(">CS Reports</a>", nav)
 
-    def test_single_accessible_page_section_has_no_dropdown(self) -> None:
+    def test_single_accessible_page_section_has_no_context_row(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
         # finance has exactly one subpage -> plain link, no .nav-dropdown markup.
         nav = render_agent_nav(permissions={"finance"})
         self.assertIn('href="/admin/finances"', nav)
         self.assertNotIn("nav-dropdown", nav)
 
-    def test_multi_accessible_page_section_renders_dropdown(self) -> None:
+    def test_multi_accessible_page_section_uses_context_row(self) -> None:
         from sales_support_agent.services.admin_nav import render_agent_nav
-        # website_ops with 2+ tools -> dropdown with the right pills.
-        nav = render_agent_nav(permissions={"website_ops.seo", "website_ops.queue"})
-        self.assertIn("nav-dropdown", nav)
+        nav = render_agent_nav("website_ops", permissions={"website_ops.seo", "website_ops.queue"})
+        self.assertNotIn("nav-dropdown", nav)
+        self.assertIn("topbar-section-row", nav)
         self.assertIn('href="/admin/website-ops"', nav)
         self.assertIn('href="/admin/website-ops/queue"', nav)
         # reports tool not held -> its pill must not appear.
@@ -1138,7 +1138,7 @@ class NavAccessSafetyTests(unittest.TestCase):
         self.assertNotIn('href="/admin/advertising/profit-calculator"', member_nav)
         self.assertNotIn('href="/admin/advertising/bulk-profitability"', member_nav)
 
-        super_nav = render_agent_nav(is_superadmin=True)
+        super_nav = render_agent_nav("advertising", is_superadmin=True)
         self.assertIn('href="/admin/advertising/profit-calculator"', super_nav)
         self.assertIn('href="/admin/advertising/bulk-profitability"', super_nav)
 

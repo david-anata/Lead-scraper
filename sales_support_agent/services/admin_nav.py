@@ -76,7 +76,13 @@ _NAV_SECTIONS = [
         _NavSubpage("fulfillment.reports", "CS Reports", "/admin/fulfillment/cs/reports/", "fulfillment_reports"),
     ]),
     _NavSection("hr", "HR", "hr", [
-        _NavSubpage("hr.access", "HR", "/admin/hr", "hr"),
+        _NavSubpage("hr.access", "Dashboard", "/admin/hr", "dashboard"),
+        _NavSubpage("hr.access", "Employees", "/admin/hr/employees", "employees"),
+        _NavSubpage("hr.access", "Teams", "/admin/hr/teams", "teams"),
+        _NavSubpage("hr.access", "Time & PTO", "/admin/hr/time", "time"),
+        _NavSubpage("hr.payroll", "Payroll", "/admin/hr/payroll", "payroll"),
+        _NavSubpage("hr.access", "Reports", "/admin/hr/reports", "reports"),
+        _NavSubpage("hr.payroll", "Settings", "/admin/hr/settings", "settings"),
     ]),
     # Access/Team management is intentionally NOT a primary nav section — it lives
     # only in the profile dropdown ("Team"). Keeps the top nav identical on every
@@ -109,29 +115,41 @@ def render_agent_favicon_links() -> str:
 
 def render_agent_nav_styles() -> str:
     return """
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #f9f7f3;
+        color: #2B3644;
+        font-family: "Inter", "Roboto", "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      :where(a,button,input,select,textarea,summary,[tabindex]):focus-visible {
+        outline: 2px solid #2B3644;
+        outline-offset: 2px;
+        box-shadow: 0 0 0 3px rgba(133,187,218,.48);
+      }
       .topbar {
-        padding: 16px 24px;
+        padding: 0;
         border-bottom: 1px solid rgba(43, 54, 68, 0.10);
-        background: rgba(249, 247, 243, 0.94);
-        backdrop-filter: blur(12px);
+        background: #ffffff;
         position: sticky;
         top: 0;
-        z-index: 20;
-        box-shadow: 0 8px 24px rgba(43, 54, 68, 0.05);
+        z-index: 50;
+        box-shadow: 0 6px 20px rgba(43, 54, 68, 0.05);
       }
       .topbar-inner {
-        max-width: 1180px;
+        width: 100%;
+        max-width: 1320px;
         margin: 0 auto;
-        display: flex;
-        justify-content: space-between;
+        min-height: 64px;
+        padding: 10px 24px;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: center;
-        gap: 16px;
+        gap: 22px;
       }
       .topbar-shell {
-        max-width: 1180px;
-        margin: 0 auto;
-        display: grid;
-        gap: 10px;
+        width: 100%;
       }
       .brandmark {
         display: inline-flex;
@@ -139,7 +157,7 @@ def render_agent_nav_styles() -> str:
         gap: 0;
         font-family: "Montserrat", sans-serif;
         font-weight: 900;
-        font-size: 28px;
+        font-size: 25px;
         line-height: 1;
         letter-spacing: -0.03em;
         color: #2B3644;
@@ -151,122 +169,73 @@ def render_agent_nav_styles() -> str:
       .top-actions {
         display: flex;
         align-items: center;
-        gap: 10px;
-        flex-wrap: wrap;
+        gap: 4px;
+        min-width: 0;
+        overflow-x: auto;
+        scrollbar-width: none;
       }
+      .top-actions::-webkit-scrollbar { display: none; }
       .top-actions--secondary {
-        gap: 8px;
+        gap: 4px;
       }
       .top-link {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 42px;
-        padding: 0 16px;
-        border-radius: 999px;
-        background: #fff;
-        border: 1px solid rgba(43, 54, 68, 0.12);
+        min-height: 36px;
+        padding: 0 12px;
+        border-radius: 9px;
+        background: transparent;
+        border: 1px solid transparent;
         color: #2B3644;
         font-family: "Montserrat", sans-serif;
         font-weight: 700;
-        font-size: 13px;
+        font-size: 12px;
+        white-space: nowrap;
         text-decoration: none;
-        transition: background 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+        transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
       }
       .top-link:hover {
-        background: #ffffff;
-        border-color: rgba(43, 54, 68, 0.22);
-        box-shadow: 0 8px 18px rgba(43, 54, 68, 0.08);
-        transform: translateY(-1px);
+        background: rgba(43, 54, 68, 0.06);
+        border-color: rgba(43, 54, 68, 0.08);
       }
       .top-link.active {
         background: #2B3644;
         border-color: #2B3644;
         color: #fff;
-        box-shadow: 0 10px 22px rgba(43, 54, 68, 0.16);
+        box-shadow: none;
       }
       .top-link--secondary {
-        min-height: 36px;
-        padding: 0 14px;
-        background: rgba(255, 255, 255, 0.62);
-        border-color: rgba(43, 54, 68, 0.08);
+        min-height: 32px;
+        padding: 0 11px;
+        background: transparent;
+        border-color: transparent;
         font-size: 12px;
-        letter-spacing: 0.02em;
       }
       .top-link--secondary.active {
         background: rgba(133, 187, 218, 0.22);
         border-color: rgba(133, 187, 218, 0.52);
         color: #2B3644;
-        box-shadow: inset 0 0 0 1px rgba(133, 187, 218, 0.16);
-      }
-      /* Primary nav item with an access-safe sub-page dropdown */
-      .nav-item {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-      }
-      .nav-item > .top-link {
-        gap: 6px;
-      }
-      .nav-caret {
-        font-size: 9px;
-        line-height: 1;
-        margin-left: 2px;
-        opacity: 0.55;
-      }
-      .nav-dropdown {
-        position: absolute;
-        top: calc(100% + 6px);
-        left: 0;
-        display: none;
-        min-width: 200px;
-        background: #fff;
-        border: 1px solid rgba(43, 54, 68, 0.12);
-        border-radius: 14px;
-        box-shadow: 0 16px 40px rgba(43, 54, 68, 0.14);
-        padding: 6px;
-        z-index: 100;
-      }
-      /* Invisible hover "bridge" so the 6px gap doesn't close the menu. */
-      .nav-dropdown::before {
-        content: "";
-        position: absolute;
-        top: -8px;
-        left: 0;
-        right: 0;
-        height: 8px;
-      }
-      .nav-item:hover .nav-dropdown,
-      .nav-item:focus-within .nav-dropdown,
-      .nav-item[data-open] .nav-dropdown {
-        display: block;
-      }
-      .nav-dropdown .top-link--secondary {
-        display: flex;
-        width: 100%;
-        justify-content: flex-start;
-        border-radius: 8px;
-        margin: 2px 0;
-        background: transparent;
-        border-color: transparent;
-      }
-      .nav-dropdown .top-link--secondary:hover {
-        background: rgba(43, 54, 68, 0.05);
-        border-color: transparent;
-        transform: none;
-        box-shadow: none;
+        box-shadow: inset 0 -2px 0 #85BBDA;
       }
       .topbar-divider {
         height: 1px;
-        background: linear-gradient(90deg, rgba(43, 54, 68, 0.10) 0%, rgba(43, 54, 68, 0.04) 100%);
+        background: rgba(43, 54, 68, 0.08);
       }
       .topbar-section-row {
+        width: 100%;
+        max-width: 1320px;
+        margin: 0 auto;
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding-top: 2px;
+        gap: 12px;
+        min-height: 48px;
+        padding: 7px 24px;
         overflow-x: auto;
+        scrollbar-width: none;
+        background: #f9f7f3;
       }
+      .topbar-section-row::-webkit-scrollbar { display:none; }
       .topbar-section-label {
         font-family: "Montserrat", sans-serif;
         font-size: 10px;
@@ -283,8 +252,8 @@ def render_agent_nav_styles() -> str:
         align-items: center;
         gap: 5px;
         padding: 0 10px 0 5px;
-        min-height: 42px;
-        border-radius: 999px;
+        min-height: 38px;
+        border-radius: 10px;
         background: #fff;
         border: 1px solid rgba(43, 54, 68, 0.12);
         font-family: "Montserrat", sans-serif;
@@ -413,20 +382,16 @@ def render_agent_nav_styles() -> str:
         background: rgba(139,76,66,0.06);
       }
       @media (max-width: 960px) {
-        .topbar-inner,
-        .top-actions {
-          flex-wrap: wrap;
-        }
+        .topbar-inner { gap: 12px; padding-inline: 16px; }
         .brandmark {
-          font-size: 34px;
+          font-size: 24px;
         }
-        /* On touch, hover can't open the menu — rely on the [data-open] tap path
-           (the .nav-item is tabindex/onclick toggleable). Keep panels readable. */
-        .nav-dropdown {
-          left: 0;
-          right: auto;
-          max-width: calc(100vw - 48px);
-        }
+      }
+      @media (max-width: 760px) {
+        .topbar-inner { grid-template-columns:auto 1fr auto; padding-bottom:8px; }
+        .topbar-inner > .top-actions { grid-column:1 / -1; grid-row:2; }
+        .topbar-section-row { padding-inline:16px; }
+        .topbar-section-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
       }
     """
 
@@ -480,7 +445,7 @@ def _user_chip_html(user: Optional[dict]) -> str:
     </div>"""
 
 
-def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
+def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_section: str = "", advertising_section: str = "", executive_section: str = "", fulfillment_section: str = "", hr_section: str = "", permissions: Optional[set] = None, is_superadmin: bool = False, user: Optional[dict] = None) -> str:
     # Per-tool nav filtering. When neither permissions nor is_superadmin is
     # supplied, we keep the legacy "show everything" behaviour (the routes
     # themselves are still guarded server-side). The Access admin link is the
@@ -530,7 +495,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         "executive": executive_section or ("executive" if active == "executive" else active),
         "finance": active,
         "fulfillment": fulfillment_section or (website_ops_section if website_ops_section.startswith("fulfillment_") else "") or ("fulfillment_sales" if active == "fulfillment" else active),
-        "hr": active,
+        "hr": hr_section or ("dashboard" if active == "hr" else active.removeprefix("hr_")),
     }
 
     nav_items: list = []
@@ -553,29 +518,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
             active_section_subpages = accessible
             active_section_current = current
 
-        if len(accessible) == 1:
-            # Single reachable page — plain link, no caret/dropdown.
-            nav_items.append(_nav_item(accessible[0].label, primary_href, active=is_primary_active))
-            continue
-
-        # >=2 reachable pages — non-navigating trigger + caret + dropdown of pills.
-        # The trigger is a <span> (not <a>) so clicking the header label only
-        # opens/closes the dropdown; navigation happens via the pills inside.
-        active_class = " active" if is_primary_active else ""
-        primary_trigger = (
-            f'<span class="top-link{active_class}" style="cursor:default;user-select:none">'
-            f'{section.label}<span class="nav-caret">&#9660;</span></span>'
-        )
-        pills = "".join(
-            _nav_item(sp.label, sp.href, active=(current == sp.active_key), extra_class="top-link--secondary")
-            for sp in accessible
-        )
-        nav_items.append(
-            f"""<div class="nav-item" tabindex="0" onclick="this.toggleAttribute('data-open')">
-              {primary_trigger}
-              <div class="nav-dropdown">{pills}</div>
-            </div>"""
-        )
+        primary_label = accessible[0].label if len(accessible) == 1 else section.label
+        nav_items.append(_nav_item(primary_label, primary_href, active=is_primary_active))
 
     active_section_row = ""
     if active_section_subpages:
@@ -601,7 +545,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
       <div class="topbar-shell">
         <div class="topbar-inner">
           <a class="brandmark" href="/admin">agent<span class="dot">.</span></a>
-          <nav class="top-actions">
+          <nav class="top-actions" aria-label="Main navigation">
             {"".join(nav_items)}
           </nav>
           {_user_chip_html(user)}
