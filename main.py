@@ -4327,6 +4327,44 @@ async def admin_run_lead_build(request: Request) -> Response:
     )
 
 
+@app.get("/admin/api/outbound/brands.csv", response_model=None)
+def admin_outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
+    """Pull ICP-matched, not-yet-contacted brands from StoreLeads and return them
+    as a CSV to import into Clay. Sends nothing and pushes nothing. Used on the
+    Launch plan before Clay webhooks unlock on Growth.
+    """
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    import outbound_pipeline as _op
+
+    api_key, _clay_webhook = _op.load_config_from_env()
+    if not api_key:
+        return JSONResponse(status_code=400, content={"detail": "STORELEADS_API_KEY is not set on the server."})
+
+    processed = load_processed_domains()
+    try:
+        result = _op.run_storeleads_to_clay(
+            api_key=api_key,
+            clay_webhook_url="",  # CSV mode: always dry-run, never push
+            processed_domains=processed,
+            max_new=max(1, min(int(max_new or 100), 500)),
+            dry_run=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface a clean error to the operator
+        logger.exception("[outbound] StoreLeads CSV build failed")
+        return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
+
+    csv_text = _op.leads_to_csv(result.leads)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="anata_clay_brands.csv"'},
+    )
+
+
 @app.get("/admin/api/sync-dashboard/status")
 def admin_sync_dashboard_status(request: Request) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()

@@ -263,3 +263,27 @@ def load_config_from_env() -> tuple[str, str]:
     api_key = (os.getenv("STORELEADS_API_KEY") or "").strip()
     clay_webhook_url = (os.getenv("CLAY_WEBHOOK_URL") or "").strip()
     return api_key, clay_webhook_url
+
+
+# Column order for the CSV that gets imported into Clay (used on the Launch plan,
+# before webhooks unlock on Growth). These are the fields Clay needs to run its
+# enrichment and the two prompts.
+CLAY_CSV_COLUMNS = ("domain", "brand", "niche", "country", "estimated_sales_yearly_cents", "categories")
+
+
+def leads_to_csv(leads: list[dict[str, Any]]) -> str:
+    """Serialize matched leads to CSV text for manual import into Clay."""
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=CLAY_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for lead in leads:
+        row = dict(lead)
+        # Flatten anything non-scalar so the CSV stays clean.
+        cats = row.get("categories")
+        if isinstance(cats, (list, tuple)):
+            row["categories"] = ", ".join(str(c) for c in cats)
+        writer.writerow(row)
+    return buf.getvalue()

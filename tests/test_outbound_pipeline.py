@@ -140,5 +140,20 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(r.pushed, 0)
 
 
+class TestLeadsToCsv(unittest.TestCase):
+    def test_csv_has_header_and_rows(self):
+        leads = [op.to_clay_lead(_store(name="a.com")), op.to_clay_lead(_store(name="b.com", categories=["Pet", "Toys"]))]
+        csv_text = op.leads_to_csv(leads)
+        lines = csv_text.strip().splitlines()
+        self.assertEqual(lines[0], ",".join(op.CLAY_CSV_COLUMNS))
+        self.assertEqual(len(lines), 3)  # header + 2 rows
+        self.assertIn("a.com", csv_text)
+        self.assertIn("Pet, Toys", csv_text)  # list categories flattened
+
+    def test_empty_leads_still_has_header(self):
+        csv_text = op.leads_to_csv([])
+        self.assertEqual(csv_text.strip(), ",".join(op.CLAY_CSV_COLUMNS))
+
+
 if __name__ == "__main__":
     unittest.main()
