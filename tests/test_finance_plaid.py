@@ -165,6 +165,99 @@ def test_disconnect_failure_preserves_credential_and_connected_state():
     assert item.disconnected_at is None
 
 
+def _seed_plaid_transaction(engine, *, source_id: str, status: str = "posted") -> str:
+    from sales_support_agent.models.database import insert_cash_event
+    now = datetime.now(timezone.utc)
+    event_id = f"plaid-event-{source_id}"
+    with engine.begin() as connection:
+        insert_cash_event(
+            connection, id=event_id, source="plaid", source_id=source_id,
+            record_kind="transaction", event_type="outflow", category="uncategorized",
+            name="First Platypus charge", description="First Platypus charge",
+            vendor_or_customer="First Platypus charge", amount_cents=4200,
+            status=status, confidence="confirmed", bank_reference=source_id,
+            created_at=now, updated_at=now,
+        )
+    return event_id
+
+
+def _event_status(engine, event_id: str) -> str:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT status FROM cash_events WHERE id=:id"), {"id": event_id}
+        ).scalar_one()
+
+
+def test_disconnect_releases_item_when_plaid_cannot_recognize_token():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    local_id = store_item(
+        item_id="sandbox-stranded-item",
+        access_token="sandbox-access-token",
+        token_secret="test-token-secret",
+        actor="qa@example.com",
+        display_name="First Platypus Bank",
+    )
+    fake_txn = _seed_plaid_transaction(finance_engine, source_id="txn-fake-1")
+    # Plaid rejects a Sandbox token used against Production with this code.
+    client = SimpleNamespace(remove_item=lambda token: (_ for _ in ()).throw(
+        PlaidError("access token invalid", code="INVALID_ACCESS_TOKEN")
+    ))
+
+    disconnect_item(
+        local_id,
+        settings=SimpleNamespace(plaid_token_secret="test-token-secret"),
+        actor="qa@example.com",
+        client=client,
+    )
+
+    with finance_engine.connect() as connection:
+        item = connection.execute(text(
+            "SELECT status, sealed_access_token, disconnected_at FROM plaid_items WHERE id=:id"
+        ), {"id": local_id}).one()
+        evidence = connection.execute(text(
+            "SELECT evidence_json FROM finance_action_audit WHERE entity_id=:id"
+        ), {"id": local_id}).scalar_one()
+    assert item.status == "disconnected"
+    assert item.sealed_access_token == ""
+    assert item.disconnected_at is not None
+    assert json.loads(evidence)["forced"] is True
+    assert json.loads(evidence)["plaid_code"] == "INVALID_ACCESS_TOKEN"
+    # The stranded connection's imported transactions stop counting.
+    assert _event_status(finance_engine, fake_txn) == "removed"
+
+
+def test_disconnect_keeps_transactions_while_another_bank_stays_connected():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    stranded = store_item(
+        item_id="sandbox-stranded", access_token="sandbox-access-token",
+        token_secret="test-token-secret", actor="qa@example.com",
+        display_name="First Platypus Bank",
+    )
+    store_item(
+        item_id="live-real-bank", access_token="real-access-token",
+        token_secret="test-token-secret", actor="qa@example.com",
+        display_name="Real Bank",
+    )
+    live_txn = _seed_plaid_transaction(finance_engine, source_id="txn-real-1")
+    client = SimpleNamespace(remove_item=lambda token: (_ for _ in ()).throw(
+        PlaidError("access token invalid", code="INVALID_ACCESS_TOKEN")
+    ))
+
+    disconnect_item(
+        stranded,
+        settings=SimpleNamespace(plaid_token_secret="test-token-secret"),
+        actor="qa@example.com",
+        client=client,
+    )
+
+    # A live bank remains, so no transactions are touched.
+    assert _event_status(finance_engine, live_txn) == "posted"
+
+
 def _signed_webhook(raw_body: bytes, *, issued_at: int | None = None):
     private_key = ec.generate_private_key(ec.SECP256R1())
     key_data = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key()))

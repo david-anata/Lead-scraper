@@ -293,19 +293,51 @@ def create_update_link_token(
     )
 
 
+# Plaid error codes that mean the Item/token is not something Plaid can act on:
+# the credential is invalid or belongs to another environment (e.g. a Sandbox
+# token used against Production), or the Item is already gone. Plaid will never
+# "confirm" removal of these, so refusing to release them locally would strand
+# the connection forever. Everything NOT in this set (network errors, rate
+# limits, transient item errors) still blocks disconnect, so a real, live bank
+# is never dropped by mistake.
+_UNRECOVERABLE_REMOVE_CODES = frozenset({
+    "INVALID_ACCESS_TOKEN",
+    "ITEM_NOT_FOUND",
+})
+
+
 def disconnect_item(
     local_item_id: str, *, settings: Any, actor: str,
     client: PlaidClient | None = None,
 ) -> None:
-    """Revoke a Plaid Item, destroy its credential, and append an audit event."""
+    """Revoke a Plaid Item, destroy its credential, and append an audit event.
+
+    Normally the local record is cleared only after Plaid confirms removal, so
+    a live bank is never dropped on a transient failure. The exception is a
+    credential Plaid cannot recognize at all (invalid, or created in another
+    environment): that connection can never be confirmed, so it is released
+    locally and the audit event records that Plaid did not confirm.
+    """
     item = _item_row(local_item_id)
     if item.get("disconnected_at") or not item.get("sealed_access_token"):
         return
     access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     api = client or PlaidClient(settings)
-    result = api.remove_item(access_token)
+    request_id = ""
+    forced_code = ""
+    try:
+        result = api.remove_item(access_token)
+        request_id = str(result.get("request_id") or "")
+    except PlaidError as exc:
+        if exc.code not in _UNRECOVERABLE_REMOVE_CODES:
+            raise
+        forced_code = exc.code
+        logger.warning(
+            "Plaid item released without confirmation item_id=%s code=%s",
+            local_item_id, forced_code,
+        )
     now = datetime.now(timezone.utc)
-    request_id = str(result.get("request_id") or "")
+    removed_transactions = 0
     with get_engine().begin() as connection:
         connection.execute(text("""
             UPDATE plaid_items
@@ -317,6 +349,23 @@ def disconnect_item(
             UPDATE plaid_accounts SET active=FALSE, updated_at=:now
             WHERE plaid_item_id=:id
         """), {"id": local_item_id, "now": now})
+        # Once no connected bank remains, the transactions this connection
+        # imported must stop influencing cash decisions. They are marked
+        # 'removed', never hard-deleted, so the change is fully reversible.
+        # Per-item attribution is not stored on cash events, so cleanup is
+        # scoped to "no live bank remains" to avoid touching a real bank's
+        # rows: always disconnect a stranded test bank before connecting the
+        # real one so this cleanup is unambiguous.
+        remaining = connection.execute(text("""
+            SELECT COUNT(*) FROM plaid_items
+            WHERE disconnected_at IS NULL AND status='connected'
+        """)).scalar() or 0
+        if not remaining:
+            removed = connection.execute(text("""
+                UPDATE cash_events SET status='removed', updated_at=:now
+                WHERE source='plaid' AND status <> 'removed'
+            """), {"now": now})
+            removed_transactions = int(removed.rowcount or 0)
         connection.execute(text("""
             INSERT INTO finance_action_audit (
                 id, scope_key, action_type, entity_type, entity_id, actor,
@@ -327,10 +376,18 @@ def disconnect_item(
             )
         """), {
             "audit_id": str(uuid4()), "item_id": local_item_id,
-            "actor": actor or "system", "evidence": json.dumps({"request_id": request_id}),
-            "now": now,
+            "actor": actor or "system", "now": now,
+            "evidence": json.dumps({
+                "request_id": request_id,
+                "forced": bool(forced_code),
+                "plaid_code": forced_code,
+                "removed_transactions": removed_transactions,
+            }),
         })
-    logger.info("Plaid item disconnected item_id=%s request_id=%s", local_item_id, request_id)
+    logger.info(
+        "Plaid item disconnected item_id=%s request_id=%s forced=%s removed_transactions=%d",
+        local_item_id, request_id, bool(forced_code), removed_transactions,
+    )
 
 
 def stale_connected_item_ids(*, max_age_hours: int = 6) -> list[str]:
