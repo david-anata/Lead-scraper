@@ -308,33 +308,48 @@ _UNRECOVERABLE_REMOVE_CODES = frozenset({
 
 def disconnect_item(
     local_item_id: str, *, settings: Any, actor: str,
-    client: PlaidClient | None = None,
+    client: PlaidClient | None = None, force: bool = False,
 ) -> None:
     """Revoke a Plaid Item, destroy its credential, and append an audit event.
 
     Normally the local record is cleared only after Plaid confirms removal, so
-    a live bank is never dropped on a transient failure. The exception is a
-    credential Plaid cannot recognize at all (invalid, or created in another
-    environment): that connection can never be confirmed, so it is released
-    locally and the audit event records that Plaid did not confirm.
+    a live bank is never dropped on a transient failure. Two exceptions release
+    the connection locally even without Plaid's confirmation:
+
+    * a credential Plaid cannot recognize at all (invalid, or created in another
+      environment) can never be confirmed, so holding it forever is a bug; and
+    * ``force=True``, an explicit operator escape hatch for a stuck connection,
+      which still attempts Plaid revocation best-effort but never blocks on it.
+
+    The audit event records when Plaid did not confirm the removal.
     """
     item = _item_row(local_item_id)
     if item.get("disconnected_at") or not item.get("sealed_access_token"):
         return
-    access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     api = client or PlaidClient(settings)
     request_id = ""
     forced_code = ""
     try:
+        access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
         result = api.remove_item(access_token)
         request_id = str(result.get("request_id") or "")
     except PlaidError as exc:
-        if exc.code not in _UNRECOVERABLE_REMOVE_CODES:
+        if not force and exc.code not in _UNRECOVERABLE_REMOVE_CODES:
             raise
         forced_code = exc.code
         logger.warning(
-            "Plaid item released without confirmation item_id=%s code=%s",
-            local_item_id, forced_code,
+            "Plaid item released without confirmation item_id=%s code=%s force=%s",
+            local_item_id, forced_code, force,
+        )
+    except Exception as exc:
+        # A force removal must succeed even if the stored credential can no
+        # longer be unsealed (for example the token secret was rotated).
+        if not force:
+            raise
+        forced_code = "force_release"
+        logger.warning(
+            "Plaid item force-released after local error item_id=%s error=%s",
+            local_item_id, type(exc).__name__,
         )
     now = datetime.now(timezone.utc)
     removed_transactions = 0

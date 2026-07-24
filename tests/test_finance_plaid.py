@@ -258,6 +258,42 @@ def test_disconnect_keeps_transactions_while_another_bank_stays_connected():
     assert _event_status(finance_engine, live_txn) == "posted"
 
 
+def test_force_disconnect_releases_item_that_normal_disconnect_cannot():
+    factory = create_session_factory("sqlite:///:memory:")
+    init_database(factory)
+    finance_engine = factory.kw["bind"]
+    local_id = store_item(
+        item_id="sandbox-force-item", access_token="sandbox-access-token",
+        token_secret="test-token-secret", actor="qa@example.com",
+        display_name="First Platypus Bank",
+    )
+    fake_txn = _seed_plaid_transaction(finance_engine, source_id="txn-force-1")
+    # A code that is NOT auto-releasable: normal disconnect must keep blocking.
+    client = SimpleNamespace(remove_item=lambda token: (_ for _ in ()).throw(
+        PlaidError("removal failed", code="ITEM_ERROR")
+    ))
+    settings = SimpleNamespace(plaid_token_secret="test-token-secret")
+
+    with pytest.raises(PlaidError):
+        disconnect_item(local_id, settings=settings, actor="qa@example.com", client=client)
+
+    # Force clears it locally regardless of what Plaid returns.
+    disconnect_item(local_id, settings=settings, actor="qa@example.com", client=client, force=True)
+
+    with finance_engine.connect() as connection:
+        item = connection.execute(text(
+            "SELECT status, sealed_access_token, disconnected_at FROM plaid_items WHERE id=:id"
+        ), {"id": local_id}).one()
+        evidence = connection.execute(text(
+            "SELECT evidence_json FROM finance_action_audit WHERE entity_id=:id"
+        ), {"id": local_id}).scalar_one()
+    assert item.status == "disconnected"
+    assert item.sealed_access_token == ""
+    assert item.disconnected_at is not None
+    assert json.loads(evidence)["forced"] is True
+    assert _event_status(finance_engine, fake_txn) == "removed"
+
+
 def _signed_webhook(raw_body: bytes, *, issued_at: int | None = None):
     private_key = ec.generate_private_key(ec.SECP256R1())
     key_data = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key()))

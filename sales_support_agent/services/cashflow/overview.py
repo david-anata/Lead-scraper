@@ -2403,7 +2403,13 @@ async def render_cashflow_overview_page(
                 f'onsubmit="return confirm(\'Disconnect this bank? Plaid access will be revoked, the stored credential will be removed, and the bank will stop refreshing.\');">'
                 f'<button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form>'
             )
-            action = f'<div class="finance-plaid-item-actions">{reconnect_action}{disconnect_action}</div>'
+            force_disconnect_action = (
+                f'<form method="post" action="/admin/finances/plaid/items/{item_id}/disconnect" '
+                f'onsubmit="return confirm(\'Force remove this bank? Use this only for a stuck connection. It clears the bank here even if Plaid does not confirm, and imported transactions stop counting once no bank remains connected.\');">'
+                f'<input type="hidden" name="force" value="1">'
+                f'<button class="btn btn-secondary btn-sm" type="submit">Force remove</button></form>'
+            )
+            action = f'<div class="finance-plaid-item-actions">{reconnect_action}{disconnect_action}{force_disconnect_action}</div>'
             item_rows.append(
                 f'<li class="finance-plaid-item{state_class}"><div><strong>{name}</strong>'
                 f'<span>{account_count} account(s) &middot; {state_text}</span></div>{action}</li>'
