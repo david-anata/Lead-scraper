@@ -2904,7 +2904,15 @@ async def render_cashflow_overview_page(
         button.textContent = 'Preparing...';
         try {{
           const response = await fetch('/admin/finances/plaid/items/' + encodeURIComponent(itemId) + '/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
-          if (!response.ok) throw new Error('Bank reconnect is not ready.');
+          if (!response.ok) {{
+            let reason = 'Bank reconnect is not ready.';
+            try {{
+              const errBody = await response.json();
+              const detail = errBody && errBody.detail;
+              if (detail && detail.message) reason = 'Plaid could not start the reconnect: ' + detail.message + (detail.code ? ' [' + detail.code + ']' : '');
+            }} catch (parseErr) {{}}
+            throw new Error(reason);
+          }}
           const payload = await response.json();
           if (!window.Plaid) throw new Error('Secure bank connection could not load.');
           const handler = window.Plaid.create({{
@@ -2936,7 +2944,15 @@ async def render_cashflow_overview_page(
         if (plaidError) {{ plaidError.hidden = true; plaidError.textContent = ''; }}
         try {{
           const tokenResponse = await fetch('/admin/finances/plaid/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
-          if (!tokenResponse.ok) throw new Error('Bank connection is not ready. Check Plaid setup.');
+          if (!tokenResponse.ok) {{
+            let reason = 'Bank connection is not ready. Check Plaid setup.';
+            try {{
+              const errBody = await tokenResponse.json();
+              const detail = errBody && errBody.detail;
+              if (detail && detail.message) reason = 'Plaid could not start the connection: ' + detail.message + (detail.code ? ' [' + detail.code + ']' : '');
+            }} catch (parseErr) {{}}
+            throw new Error(reason);
+          }}
           const tokenData = await tokenResponse.json();
           if (!window.Plaid) throw new Error('Secure bank connection could not load.');
           sessionStorage.setItem(plaidOAuthTokenKey, tokenData.link_token);
