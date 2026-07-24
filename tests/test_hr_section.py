@@ -523,6 +523,62 @@ class HRSectionTests(unittest.TestCase):
         )
         self.assertEqual(denied.status_code, 403)
 
+    def test_handbook_publication_is_versioned_and_employee_acknowledges_current(self):
+        import uuid
+
+        version = f"test-{uuid.uuid4().hex[:8]}"
+        published = self._post(
+            "/admin/hr/settings/handbook",
+            {
+                "title": "Anata Employee Handbook",
+                "version": version,
+                "file_url": "https://docs.google.com/document/d/example",
+                "attested": "true",
+            },
+            self.sa,
+        )
+        self.assertIn("ok=handbook_published", published.headers["location"])
+
+        page = self._get("/admin/hr/policies", self.sa)
+        self.assertIn(version, page.text)
+        self.assertIn("Open handbook securely", page.text)
+        self.assertIn("Acknowledgement required", page.text)
+
+        acknowledged = self._post(
+            "/admin/hr/policies/acknowledge",
+            {"attested": "true"},
+            self.sa,
+        )
+        self.assertIn("ok=policy_acknowledged", acknowledged.headers["location"])
+        history = hr_store.list_handbooks()
+        current = next(item for item in history if item["version"] == version)
+        self.assertTrue(current["is_active"])
+        self.assertGreaterEqual(current["acknowledgement_count"], 1)
+
+        duplicate = self._post(
+            "/admin/hr/settings/handbook",
+            {
+                "title": "Duplicate",
+                "version": version,
+                "file_url": "https://docs.google.com/document/d/duplicate",
+                "attested": "true",
+            },
+            self.sa,
+        )
+        self.assertIn("err=handbook_version_exists", duplicate.headers["location"])
+
+        unsafe = self._post(
+            "/admin/hr/settings/handbook",
+            {
+                "title": "Unsafe",
+                "version": f"{version}-unsafe",
+                "file_url": "javascript:alert(1)",
+                "attested": "true",
+            },
+            self.sa,
+        )
+        self.assertIn("err=handbook_invalid", unsafe.headers["location"])
+
     def test_hr_backup_is_private_and_checksum_verifiable(self):
         import hashlib
         import io

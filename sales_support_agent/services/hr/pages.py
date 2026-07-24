@@ -265,6 +265,10 @@ def _flash(flash: Optional[str]) -> str:
         "offboarding_complete": "Offboarding completed and the employee was made inactive.",
         "policy_acknowledged": "Current policy version acknowledged.",
         "policy_already_acknowledged": "You already acknowledged this policy version.",
+        "policy_changed": "The handbook changed before acknowledgement. Review the current version and try again.",
+        "handbook_published": "New handbook version published. Employees must acknowledge this version.",
+        "handbook_invalid": "Enter a unique version, a secure HTTPS handbook link, and confirm publication.",
+        "handbook_version_exists": "That handbook version already exists. Publish a new version label.",
         "compliance_confirmed": "Compliance submission evidence recorded.",
         "compliance_reopened": "Compliance task reopened for follow-up.",
         "compliance_evidence_required": "Add a note describing the evidence reviewed.",
@@ -1094,8 +1098,15 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
         f"Acknowledged {_esc(policy.get('acknowledged_at'))}"
         if policy.get("acknowledged") else "Acknowledgement required"
     )
+    handbook_link = (
+        f'''<section class="hr-callout"><div class="hr-kicker">Current employee handbook</div>
+        <p>Open and read the complete handbook before acknowledging this version.</p>
+        <a class="hr-btn hr-btn-light" href="{_esc(policy.get('file_url'))}" target="_blank" rel="noopener noreferrer">Open handbook securely</a></section>'''
+        if str(policy.get("file_url") or "").startswith("https://") else ""
+    )
     body = f"""{_flash(flash)}<h1 class="hr-h1">{_esc(policy['title'])}</h1>
     <p class="hr-sub">Version {_esc(policy['version'])} · {ack}</p>
+    {handbook_link}
     <div class="hr-stack">
       <section class="hr-callout"><h2>Timekeeping and overtime</h2><p>Hourly employees clock in and out for the day using exact time. The workweek is Sunday through Saturday. Overtime should be approved in advance, but all time actually worked must be reported and will be paid.</p></section>
       <section class="hr-callout"><h2>PTO</h2><p>W-2 employees accrue one PTO hour for each 52 paid hours, up to 40 hours. Accrual starts on the hire date; use begins after 90 days. Balances cannot go negative. PTO is paid at the base rate and does not count as hours worked for overtime.</p></section>
@@ -1110,11 +1121,18 @@ def render_hr_policies(policy: dict, *, user, flash=None) -> str:
 
 
 def render_hr_settings(settings: dict, company: dict, employees: list, opening_balances: list,
-                       *, user, flash=None) -> str:
+                       handbooks: list, *, user, flash=None) -> str:
     checked = lambda key: " checked" if settings.get(key) else ""
     review = settings.get("qualified_review") or {}
     balance_by_email = {row["employee_email"]: row for row in opening_balances}
     balance_forms = ""
+    handbook_rows = "".join(
+        f"""<tr><td>{_esc(item['version'])}</td><td>{_esc(item['title'])}</td>
+        <td>{'Active — acknowledgement required' if item['is_active'] else 'Superseded'}</td>
+        <td>{item['acknowledgement_count']}</td><td>{_esc(item['uploaded_by'])}</td>
+        <td><a href="{_esc(item['file_url'])}" target="_blank" rel="noopener noreferrer">Open</a></td></tr>"""
+        for item in handbooks
+    ) or '<tr><td colspan="6" class="hr-empty">The built-in operating policy will be used until a handbook is published.</td></tr>'
     for employee in employees:
         if employee.get("employee_type") == "contractor":
             continue
@@ -1155,6 +1173,19 @@ def render_hr_settings(settings: dict, company: dict, employees: list, opening_b
       <h2>Integration contract ready · authority undecided</h2>
       <p>Square is deferred. The future internal service must declare whether it owns final calculation, wage distribution, tax payment, and tax filing. Anata will not infer those outcomes.</p>
       <a class="hr-btn hr-btn-light" href="/admin/hr/settings/provider-contract.json">Download machine-readable contract</a>
+    </section>
+    <section class="hr-card">
+      <div class="hr-kicker">Employee handbook</div>
+      <h2>Publish a version for acknowledgement</h2>
+      <p class="hr-sub">Publishing retires the prior active version but preserves its acknowledgements. The secure document itself remains in your approved company document store.</p>
+      <form class="hr-form" method="post" action="/admin/hr/settings/handbook">
+        <div class="hr-grid2"><div><label>Handbook title</label><input name="title" required maxlength="255" placeholder="Anata Employee Handbook"></div>
+        <div><label>Unique version</label><input name="version" required maxlength="32" placeholder="2026.1"></div></div>
+        <label>Secure HTTPS document link</label><input type="url" name="file_url" required pattern="https://.*" placeholder="https://docs.google.com/...">
+        <label><input type="checkbox" name="attested" value="true" required style="width:auto"> I reviewed this exact document and intend to require employee acknowledgement.</label>
+        <button class="hr-btn" type="submit">Publish handbook version</button>
+      </form>
+      <table class="hr-tbl"><thead><tr><th>Version</th><th>Title</th><th>Status</th><th>Acknowledged</th><th>Published by</th><th>Document</th></tr></thead><tbody>{handbook_rows}</tbody></table>
     </section>
     <form class="hr-form" method="post" action="/admin/hr/settings/company">
       <div class="hr-kicker">Employer legal profile</div>

@@ -89,6 +89,17 @@ def update_operator() -> None:
         replace(document, old, new)
     insert_before(
         document,
+        "12. Offboarding",
+        [
+            ("Publish and track the employee handbook", "Heading 2"),
+            ("Open HR → Settings → Employee handbook. Enter the handbook title, a new unique version label, and the secure HTTPS link to the exact document employees must read.", "Normal"),
+            ("Review the document yourself, check the publication confirmation, and publish. The prior version becomes superseded but its acknowledgements remain in history.", "Normal"),
+            ("Employees open HR → Policies, read the linked handbook, and acknowledge that exact version. The settings table shows the acknowledgement count; the daily HR reminder reports outstanding active employees without exposing their names in email.", "Normal"),
+            ("Never replace the file behind an existing version link. Correct the document, assign a new version, and publish it so employees receive a fresh acknowledgement requirement.", "Normal"),
+        ],
+    )
+    insert_before(
+        document,
         "13. Troubleshooting quick reference",
         [
             ("Compliance calendar and reminders", "Heading 2"),
@@ -167,6 +178,15 @@ def update_employee() -> None:
             ("6. Use HR on your phone", "Heading 1"),
             ("Use the bottom shortcuts: Home for open tasks, Time for clocking and PTO, Pay for issued statements, and Profile for onboarding and secure forms.", "Normal"),
             ("Tables scroll sideways inside the record when needed. Your full Social Security number and sealed tax form are never displayed in those tables or downloads.", "Normal"),
+        ],
+    )
+    insert_before(
+        document,
+        "Need help?",
+        [
+            ("7. Read and acknowledge the current handbook", "Heading 1"),
+            ("Open Policies, select Open handbook securely, and read the complete current version. Return to HR and acknowledge only after you have read that exact version.", "Normal"),
+            ("A new handbook version requires a new acknowledgement. If the link is unavailable or the document appears different from the version shown in HR, stop and tell David or Val.", "Normal"),
         ],
     )
     document.save(EMPLOYEE)

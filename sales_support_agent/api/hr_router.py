@@ -1049,6 +1049,7 @@ async def hr_settings(request: Request, user: dict = Depends(_settings_guard)):
         payroll_store.get_payroll_settings(), payroll_store.get_company_profile(),
         store.list_employees(),
         payroll_store.list_opening_balances(2026),
+        store.list_handbooks(),
         user=user, flash=_flash(request)
     ))
 
@@ -1094,6 +1095,28 @@ async def hr_settings_save(
     except ValueError:
         return RedirectResponse("/admin/hr/settings?err=invalid_input", status_code=303)
     return RedirectResponse("/admin/hr/settings?ok=settings_saved", status_code=303)
+
+
+@router.post("/settings/handbook")
+async def hr_handbook_publish(
+    title: str = Form(""),
+    version: str = Form(""),
+    file_url: str = Form(""),
+    attested: bool = Form(False),
+    user: dict = Depends(_settings_guard),
+    _rate_limit: None = Depends(_sensitive_rate_limit),
+):
+    ok, message = store.publish_handbook(
+        title=title,
+        version=version,
+        file_url=file_url,
+        actor=user.get("email", ""),
+        attested=attested,
+    )
+    return RedirectResponse(
+        f"/admin/hr/settings?{'ok' if ok else 'err'}={message}",
+        status_code=303,
+    )
 
 
 @router.post("/settings/company")
