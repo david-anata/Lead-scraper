@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 from typing import Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
@@ -116,7 +117,10 @@ def current_policy(employee_email: str) -> dict:
     email = (employee_email or "").strip().lower()
     with _session() as session:
         row = session.query(HREmployeeHandbook).filter_by(
-            version=CURRENT_POLICY_VERSION, is_active=True
+            is_active=True
+        ).order_by(
+            HREmployeeHandbook.created_at.desc(),
+            HREmployeeHandbook.id.desc(),
         ).first()
         if not row:
             row = HREmployeeHandbook(
@@ -132,9 +136,80 @@ def current_policy(employee_email: str) -> dict:
         ).first()
         return {
             "id": row.base44_id, "title": row.title, "version": row.version,
+            "file_url": row.file_url,
             "acknowledged": bool(acknowledged),
             "acknowledged_at": acknowledged.acknowledged_at if acknowledged else None,
         }
+
+
+def list_handbooks() -> list[dict]:
+    """Return immutable handbook versions and acknowledgement totals."""
+
+    with _session() as session:
+        rows = session.query(HREmployeeHandbook).order_by(
+            HREmployeeHandbook.created_at.desc(),
+            HREmployeeHandbook.id.desc(),
+        ).all()
+        return [{
+            "id": row.base44_id,
+            "title": row.title,
+            "version": row.version,
+            "file_url": row.file_url,
+            "is_active": row.is_active,
+            "uploaded_by": row.uploaded_by,
+            "created_at": row.created_at,
+            "acknowledgement_count": session.query(
+                func.count(HRHandbookAcknowledgement.id)
+            ).filter_by(handbook_id=row.base44_id).scalar() or 0,
+        } for row in rows]
+
+
+def publish_handbook(
+    *, title: str, version: str, file_url: str, actor: str, attested: bool
+) -> tuple[bool, str]:
+    """Publish one immutable handbook version and retire the previous active one."""
+
+    clean_title = (title or "").strip()
+    clean_version = (version or "").strip()
+    clean_url = (file_url or "").strip()
+    parsed = urlparse(clean_url)
+    if (
+        not attested
+        or not clean_title
+        or not clean_version
+        or len(clean_title) > 255
+        or len(clean_version) > 32
+        or parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+    ):
+        return False, "handbook_invalid"
+    with _session() as session:
+        if session.query(HREmployeeHandbook).filter_by(
+            version=clean_version
+        ).first():
+            return False, "handbook_version_exists"
+        for existing in session.query(HREmployeeHandbook).filter_by(
+            is_active=True
+        ).all():
+            existing.is_active = False
+        row = HREmployeeHandbook(
+            base44_id=f"handbook_{secrets.token_hex(12)}",
+            title=clean_title,
+            file_url=clean_url,
+            version=clean_version,
+            uploaded_by=(actor or "").strip().lower(),
+            is_active=True,
+        )
+        session.add(row)
+        session.flush()
+        _audit(session, actor, "policy.published", "handbook", row.base44_id, {
+            "title": clean_title,
+            "version": clean_version,
+            "file_host": parsed.hostname,
+        })
+        return True, "handbook_published"
 
 
 def acknowledge_current_policy(employee_email: str, *, actor: str,
@@ -144,6 +219,11 @@ def acknowledge_current_policy(employee_email: str, *, actor: str,
         return False, "attestation_required"
     policy = current_policy(email)
     with _session() as session:
+        active_policy = session.query(HREmployeeHandbook).filter_by(
+            base44_id=policy["id"], is_active=True
+        ).first()
+        if not active_policy:
+            return False, "policy_changed"
         if session.query(HRHandbookAcknowledgement).filter_by(
             handbook_id=policy["id"], employee_email=email
         ).first():

@@ -15,7 +15,9 @@ from sales_support_agent.models.hr import (
     HRComplianceTask,
     HRContractorProfile,
     HREmployee,
+    HREmployeeHandbook,
     HREmployeeOnboarding,
+    HRHandbookAcknowledgement,
     HRPTORequest,
     HRTaxLiability,
     HRTimeCorrection,
@@ -46,6 +48,25 @@ def reminder_items(today: date | None = None) -> list[dict]:
     expiry_cutoff = today + timedelta(days=30)
     items: list[dict] = []
     with _session() as session:
+        active_handbook = session.query(HREmployeeHandbook).filter_by(
+            is_active=True
+        ).order_by(
+            HREmployeeHandbook.created_at.desc(),
+            HREmployeeHandbook.id.desc(),
+        ).first()
+        handbook_pending = 0
+        if active_handbook:
+            active_employees = {
+                row[0] for row in session.query(HREmployee.email).filter_by(
+                    status="active"
+                ).all()
+            }
+            acknowledged = {
+                row[0] for row in session.query(
+                    HRHandbookAcknowledgement.employee_email
+                ).filter_by(handbook_id=active_handbook.base44_id).all()
+            }
+            handbook_pending = len(active_employees - acknowledged)
         counts = (
             (
                 session.query(func.count(HREmployeeOnboarding.id)).filter(
@@ -106,6 +127,11 @@ def reminder_items(today: date | None = None) -> list[dict]:
                 ).scalar() or 0,
                 "I-9 document expiration(s) fall within 30 days",
                 "/admin/hr/employees",
+            ),
+            (
+                handbook_pending,
+                "employee handbook acknowledgement(s) are outstanding",
+                "/admin/hr/policies",
             ),
         )
         for count, label, path in counts:
