@@ -1520,3 +1520,13 @@ input:focus, select:focus, textarea:focus {
 .finance-book-rules { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
 .finance-book-rules li { margin: 3px 0; }
 .finance-book-rules code { background: var(--surface-2, #f3f4f6); padding: 1px 4px; border-radius: 3px; }
+
+/* Cash timeline */
+.finance-timeline { margin-bottom: 18px; }
+.finance-timeline-table td { font-size: 13px; }
+.finance-timeline-table tbody tr:hover { background: var(--surface-2, #f8fafc); }
+.finance-timeline-in { color: #1f7a34; }
+.finance-timeline-out { color: #a12020; }
+.finance-timeline-open td { background: var(--surface-2, #f8fafc); font-size: 12px; }
+.finance-timeline-negative td { background: #fdf3f3; }
+.finance-timeline-negative td:last-child { color: #a12020; font-weight: 600; }

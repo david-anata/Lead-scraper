@@ -22,6 +22,79 @@ def _action_options(selected: str = "write_off") -> str:
     )
 
 
+def _render_overdue_matcher() -> str:
+    """Overdue bills with the bank payments that may already have settled them."""
+    from sales_support_agent.services.cashflow.payment_finder import (
+        find_overdue_needing_payment,
+        find_payment_candidates,
+    )
+
+    try:
+        overdue = find_overdue_needing_payment(limit=25)
+    except Exception:
+        return ""
+    if not overdue:
+        return ""
+
+    blocks = []
+    for bill in overdue:
+        bill_id = html.escape(str(bill["id"]), quote=True)
+        try:
+            found = find_payment_candidates(bill["id"])
+            candidates = found["candidates"]
+        except Exception:
+            candidates = []
+
+        if candidates:
+            rows = []
+            for candidate in candidates:
+                pair = html.escape(candidate["transaction_id"] + "|" + bill["id"], quote=True)
+                gap = candidate["amount_gap_cents"]
+                closeness = "exact amount" if candidate["exact_amount"] else "off by " + _money(gap)
+                day_gap = candidate["day_gap"]
+                timing = (str(day_gap) + " day(s) from the due date") if day_gap is not None else "date unknown"
+                rows.append(
+                    "<tr><td>" + html.escape(candidate["name"])
+                    + "<br><small>" + html.escape(candidate["source"]) + "</small></td>"
+                    + '<td style="text-align:right">' + _money(candidate["amount_cents"]) + "</td>"
+                    + "<td>" + html.escape(candidate["paid_on"]) + "</td>"
+                    + "<td><small>" + closeness + " &middot; " + timing + "</small></td>"
+                    + '<td><form method="post" action="/admin/finances/matches/confirm">'
+                    + '<input type="hidden" name="pair" value="' + pair + '">'
+                    + '<button type="submit" class="btn btn-secondary btn-sm">This paid it</button>'
+                    + "</form></td></tr>"
+                )
+            candidate_html = (
+                '<table class="finance-accounts-table" style="margin-top:8px">'
+                + "<thead><tr><th>Bank payment</th><th style=\"text-align:right\">Amount</th>"
+                + "<th>Paid</th><th>How close</th><th></th></tr></thead>"
+                + "<tbody>" + "".join(rows) + "</tbody></table>"
+            )
+        else:
+            candidate_html = (
+                '<p style="font-size:13px;color:#6b7a8d;margin:8px 0 0">'
+                + "No bank payment near this amount was found, so this one looks genuinely unpaid "
+                + "(or was paid from an account that is not connected).</p>"
+            )
+
+        blocks.append(f"""
+        <details class="card">
+          <summary><strong>{html.escape(str(bill['name']))}</strong>
+            &nbsp;{_money(bill['amount_cents'])} &middot; due {html.escape(str(bill['due_date']))}
+            &middot; {bill['days_overdue']} days overdue
+            {'&middot; ' + str(len(candidates)) + ' possible payment(s)' if candidates else '&middot; no match found'}
+          </summary>
+          {candidate_html}
+        </details>""")
+
+    return f"""
+    <h2 style="margin-top:22px">Overdue bills: find the payment</h2>
+    <p class="page-sub">These have no linked payment yet, which is what inflates "required out".
+       If one was already paid, link it here instead of writing it off. Vendor names are ignored
+       on purpose so check payments can still be found.</p>
+    {''.join(blocks)}"""
+
+
 def render_review_page(*, flash: str = "") -> str:
     from sales_support_agent.services.cashflow.bulk_resolve import latest_batch, list_review_items
 
@@ -53,7 +126,8 @@ def render_review_page(*, flash: str = "") -> str:
         <h1>Needs review</h1>
         <p class="page-sub">Obligations that are pausing cash decisions</p>
         <div class="card"><p style="margin:0">Nothing needs review. Cash decisions are unblocked.</p></div>
-        {undo_html}"""
+        {undo_html}
+        {_render_overdue_matcher()}"""
         return _page_shell("Needs review", "review", body, flash=flash)
 
     groups_html = []
@@ -104,7 +178,8 @@ def render_review_page(*, flash: str = "") -> str:
         </div>
       </div>
     </form>
-    {undo_html}"""
+    {undo_html}
+    {_render_overdue_matcher()}"""
     return _page_shell("Needs review", "review", body, flash=flash)
 
 
