@@ -130,8 +130,8 @@ def outbound_brands_page(request: Request) -> Response:
           <li><b>Review before send:</b> approve the copy and eyeball a small test batch. Only then turn the campaign on.</li>
         </ol>
         {key_note}
-        <div class="note">Never email a brand twice. Dedup memory is being wired in;
-        until then, keep the CSVs you have already loaded so you do not re-import the same brands.</div>
+        <div class="note">Never email a brand twice: every brand you download here is
+        remembered, and future downloads automatically skip it. You will only ever get fresh brands.</div>
     """
     # Tiny inline script so the count box updates the download link. Kept minimal.
     body += """
@@ -157,22 +157,36 @@ def outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
     a brand may appear across runs until that is wired; the CSV is a preview only.
     """
     import outbound_pipeline as _op
+    from sales_support_agent.models.database import get_engine
+    from sales_support_agent.services import outbound_memory
 
     api_key, _clay = _op.load_config_from_env()
     if not api_key:
         return JSONResponse(status_code=400, content={"detail": "STORELEADS_API_KEY is not set on this service."})
 
+    # Never-email-twice: skip brands already exported, then remember the new ones.
+    try:
+        engine = get_engine()
+    except Exception:  # noqa: BLE001 — dedup is best-effort; build anyway
+        engine = None
+    already = outbound_memory.load_contacted(engine) if engine is not None else set()
+
     try:
         result = _op.run_storeleads_to_clay(
             api_key=api_key,
             clay_webhook_url="",  # dry-run: build the list, push nothing
-            processed_domains=set(),
+            processed_domains=already,
             max_new=max(1, min(int(max_new or 100), 500)),
             dry_run=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] StoreLeads CSV build failed")
         return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
+
+    if engine is not None and result.leads:
+        outbound_memory.record_contacted(
+            engine, (lead.get("domain") for lead in result.leads), source="csv_export"
+        )
 
     return Response(
         content=_op.leads_to_csv(result.leads),
