@@ -1229,6 +1229,7 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
                 default="Refresh the required source and resolve its data issues.",
             )),
             "issues": trust_issues,
+            "payable_issues": _control_value(trust_gate, "payable_issues", default=[]),
         },
         "data_quality": {
             "status": _status_key(_control_value(data_quality, "status", "state", default="unknown")),
@@ -2508,6 +2509,69 @@ def _render_collections() -> str:
     )
 
 
+_TRUST_REASON_LABELS = {
+    "missing settlement evidence": "No matching bank payment found yet",
+    "ambiguous match": "More than one possible bank match",
+    "source conflict": "Source figures disagree",
+    "missing from ClickUp source": "No longer present in ClickUp",
+    "ClickUp completion lacks settlement evidence": "Marked done, no bank proof",
+    "missing amount": "Missing amount",
+    "missing date": "Missing date",
+    "stale source evidence": "Source not refreshed recently",
+}
+
+
+def _render_trust_check(cash: dict, trust_gate: dict) -> str:
+    """Reconcile cash and receivables to source, and break down blockers."""
+    from sales_support_agent.services.cashflow.trust_check import build_trust_check
+    try:
+        tc = build_trust_check(
+            cash_on_hand_cents=cash.get("cash_on_hand_cents"),
+            payable_issues=trust_gate.get("payable_issues"),
+        )
+    except Exception:
+        return ""
+
+    if tc["cash_matches"] is True:
+        cash_cls, cash_note = "finance-plan-ok", " This matches the cash-on-hand shown above."
+    elif tc["cash_matches"] is False:
+        cash_cls = "finance-plan-short"
+        cash_note = " This differs from cash-on-hand by " + _money(abs(tc["cash_gap_cents"])) + ", worth a look."
+    else:
+        cash_cls, cash_note = "", ""
+    cash_block = (
+        '<div class="' + cash_cls + '">Connected accounts total ' + _money(tc["account_total_cents"])
+        + ' (checking ' + _money(tc["spendable_cents"]) + ' + savings/other ' + _money(tc["reserve_cents"])
+        + ') across ' + str(tc["account_count"]) + ' account(s).' + cash_note + '</div>'
+    )
+
+    recv_block = (
+        '<p class="finance-trust-line">Overdue money owed to you, from your books: <strong>'
+        + _money(tc["ar_total_cents"]) + '</strong> across ' + str(tc["ar_count"]) + ' invoice(s).</p>'
+    )
+
+    if tc["obligation_issue_count"]:
+        items = "".join(
+            '<li>' + html.escape(_TRUST_REASON_LABELS.get(reason, reason)) + ': <strong>' + str(count) + '</strong></li>'
+            for reason, count in tc["obligation_reason_counts"].items()
+        )
+        oblig_block = (
+            '<p class="finance-trust-line">' + str(tc["obligation_issue_count"])
+            + ' obligation(s) are pausing cash decisions, by reason:</p>'
+            + '<ul class="finance-trust-reasons">' + items + '</ul>'
+            + '<p class="finance-accounts-asof">Records excluded from the trend math (transfers and duplicates) '
+            + 'are normal and are not counted here.</p>'
+        )
+    else:
+        oblig_block = '<p class="finance-plan-ok">No obligations are blocking cash decisions.</p>'
+
+    return (
+        '<section class="finance-source-row finance-trust-check"><div style="width:100%">'
+        + '<strong>Trust check</strong><span>How each number ties back to its source.</span>'
+        + cash_block + recv_block + oblig_block + '</div></section>'
+    )
+
+
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
@@ -2578,6 +2642,7 @@ async def render_cashflow_overview_page(
     )
     trust_gate = state["trust_gate"]
     trust_ready = trust_gate["ready"]
+    trust_check_html = _render_trust_check(cash, trust_gate)
     # CFO recommendations are opt-in: any absent, errored, or failed contract
     # leaves evidence visible but disables decision controls.
     decision_actions_allowed = trust_ready is True and not control_error
@@ -3108,6 +3173,7 @@ async def render_cashflow_overview_page(
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        {trust_check_html}
         {todays_plan_html}
         {vendors_html}
         {bill_audit_html}
