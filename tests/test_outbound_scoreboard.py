@@ -88,3 +88,34 @@ class TestRender(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeroKpiTests(unittest.TestCase):
+    """Positive reply rate is the hero metric (briefs: judge on positive, not raw)."""
+
+    def _board(self, **kw):
+        return sb.compute_scoreboard({"sent": 1000, "replies": 40,
+                                      "positive_replies": kw.get("pos", 2),
+                                      "bounces": 10})
+
+    def test_hero_shows_positive_rate_and_kpi_label(self):
+        out = sb.render_scoreboard_body(self._board(pos=2))
+        self.assertIn("our #1 KPI", out)
+        self.assertIn("0.2%", out)  # 2/1000
+
+    def test_below_target_is_warned(self):
+        out = sb.render_scoreboard_body(self._board(pos=2))
+        self.assertIn("ob-hero--warn", out)
+        self.assertIn("number to move", out)
+
+    def test_at_target_is_good(self):
+        out = sb.render_scoreboard_body(self._board(pos=20))  # 2.0% >= 1.0 target
+        self.assertIn("ob-hero--good", out)
+
+    def test_not_connected_hero_is_honest(self):
+        out = sb.render_scoreboard_body(sb.compute_scoreboard(None))
+        self.assertIn("not connected", out)
+
+    def test_raw_reply_rate_is_demoted_to_context(self):
+        out = sb.render_scoreboard_body(self._board(pos=2))
+        self.assertIn("all replies, good and bad", out)

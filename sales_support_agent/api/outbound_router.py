@@ -115,8 +115,17 @@ def outbound_scoreboard(request: Request) -> Response:
     import outbound_scoreboard as _sb
     import outbound_bottlenecks as _bn
     import outbound_efficacy as _ef
+    import outbound_compliance as _cp
 
     board = _sb.get_scoreboard(_sb.load_instantly_key())
+
+    # Guardrails from the outbound briefs: what is provably OK, broken, or still
+    # needs a one-time human confirmation in Instantly/Clay.
+    checks = _cp.compute_compliance(
+        positive_rate=board.positive_rate,
+        bounce_rate=board.bounce_rate,
+        connected=board.connected,
+    )
 
     # Capacity + bottlenecks (from env inputs + the live reply rate).
     bottlenecks = _bn.get_bottlenecks(
@@ -137,11 +146,13 @@ def outbound_scoreboard(request: Request) -> Response:
         <h1>Outbound scoreboard</h1>
         <p class="sub">Your machine, and how it is performing. Reads live from Instantly.</p>
         {_sb.render_scoreboard_body(board)}
+        {_cp.render_compliance_html(checks)}
         {_bn.render_bottlenecks_html(bottlenecks)}
         {_ef.render_efficacy_html(efficacy)}
         {_NURTURE_HTML}
     """
-    extra_css = _sb.SCOREBOARD_CSS + _bn.BOTTLENECK_CSS + _ef.EFFICACY_CSS + _NURTURE_CSS
+    extra_css = (_sb.SCOREBOARD_CSS + _cp.COMPLIANCE_CSS + _bn.BOTTLENECK_CSS
+                 + _ef.EFFICACY_CSS + _NURTURE_CSS)
     return HTMLResponse(_shell_page(
         request, active="outbound_scoreboard", title="Outbound Scoreboard",
         extra_css=extra_css, body=body,

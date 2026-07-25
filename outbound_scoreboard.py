@@ -155,6 +155,15 @@ def _fmt_pct(v: Optional[float]) -> str:
 # Scoped CSS for the scoreboard body. Shared by the standalone page and the
 # shell-wrapped page on agent.anatainc.com, so the tiles look identical in both.
 SCOREBOARD_CSS = """
+  .ob-hero { max-width:900px; background:#fff; border:1px solid #e5e7eb; border-left:6px solid #2B3644;
+    border-radius:14px; padding:20px 22px; display:grid; gap:4px; margin:0 0 14px; }
+  .ob-hero-label { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#6b7280; font-weight:800; }
+  .ob-hero strong { font-size:44px; line-height:1.05; }
+  .ob-hero small { color:#6b7280; font-size:14px; }
+  .ob-hero--good { border-left-color:#0a7d33; }
+  .ob-hero--good strong { color:#0a7d33; }
+  .ob-hero--warn { border-left-color:#b54708; }
+  .ob-hero--warn strong { color:#b54708; }
   .ob-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; max-width:900px; }
   .ob-tile { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px 18px; display:grid; gap:4px; }
   .ob-tile-label { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#6b7280; font-weight:700; }
@@ -168,30 +177,61 @@ SCOREBOARD_CSS = """
 """
 
 
+def positive_reply_target() -> float:
+    """Our target for the #1 KPI. Tunable without a code change."""
+    raw = (os.getenv("OUTBOUND_POSITIVE_REPLY_TARGET_PCT") or "").strip()
+    try:
+        return float(raw) if raw else 1.0
+    except ValueError:
+        return 1.0
+
+
+def _hero(board: Scoreboard) -> str:
+    """Positive reply rate is THE number. The briefs are explicit: a high raw
+    reply rate full of 'no thanks' is a false win, so this is what we judge on."""
+    if not board.connected or board.positive_rate is None:
+        value, note, cls = "not connected", html.escape(board.reason or "Connect Instantly."), ""
+    else:
+        target = positive_reply_target()
+        value = f"{board.positive_rate}%"
+        if board.positive_rate >= target:
+            note, cls = f"At or above our {target}% target.", " ob-hero--good"
+        else:
+            note, cls = (
+                f"Below our {target}% target. This is the number to move.", " ob-hero--warn")
+    return (
+        f'<div class="ob-hero{cls}">'
+        f'<span class="ob-hero-label">Positive reply rate &middot; our #1 KPI</span>'
+        f'<strong>{html.escape(value)}</strong>'
+        f'<small>{note}</small></div>'
+    )
+
+
 def render_scoreboard_body(board: Scoreboard) -> str:
-    """Just the tiles + headline + niche table — no <html> wrapper. The router
-    drops this into the app shell; the standalone page wraps it below."""
+    """Just the hero + tiles + niche table — no <html> wrapper. The router drops
+    this into the app shell; the standalone page wraps it below."""
     if not board.connected:
         tiles = (
             _tile("Sent", "not connected") + _tile("Reply rate", "not connected")
-            + _tile("Positive", "not connected") + _tile("Bounce", "not connected")
+            + _tile("Bounce", "not connected") + _tile("Per booked call", "not connected")
         )
         headline = (
             '<p class="ob-headline">Connect Instantly to see your numbers. '
             f'{html.escape(board.reason)}</p>'
         )
     else:
+        epc = board.emails_per_booked_call
         tiles = (
             _tile("Sent", f"{board.sent:,}")
-            + _tile("Reply rate", _fmt_pct(board.reply_rate))
-            + _tile("Positive", _fmt_pct(board.positive_rate))
+            + _tile("Reply rate", _fmt_pct(board.reply_rate), "all replies, good and bad")
             + _tile("Bounce", _fmt_pct(board.bounce_rate))
+            + _tile("Per booked call", f"~{epc:,}" if epc is not None else "-",
+                    "emails per booked call")
         )
-        epc = board.emails_per_booked_call
-        epc_text = f"~{epc:,} emails per booked call" if epc is not None else (
-            "emails per booked call: fills in once sales calls are connected"
+        headline = (
+            '<p class="ob-headline">Reply rate is context. Positive reply rate is the '
+            'scoreboard: change one thing at a time and judge it on the number above.</p>'
         )
-        headline = f'<p class="ob-headline">{html.escape(epc_text)}</p>'
 
     niche_rows = "".join(
         f"<tr><td>{html.escape(n.niche)}</td><td>{n.sent:,}</td><td>{_fmt_pct(n.positive_rate)}</td></tr>"
@@ -199,6 +239,7 @@ def render_scoreboard_body(board: Scoreboard) -> str:
     ) or '<tr><td colspan="3">No niche data yet.</td></tr>'
 
     return f"""
+  {_hero(board)}
   <div class="ob-tiles">{tiles}</div>
   {headline}
   <h2 style="font-size:15px; margin:24px 0 8px;">By niche (which to double down on)</h2>
