@@ -661,6 +661,10 @@ class PlaidAccount(Base):
     mask: Mapped[str] = mapped_column(String(8), default="")
     account_type: Mapped[str] = mapped_column(String(32), default="")
     subtype: Mapped[str] = mapped_column(String(64), default="")
+    # Whether this account's balance counts as spendable cash. Defaults from
+    # the Plaid subtype (checking => spendable, everything else => reserve) and
+    # can be overridden by the operator without being reset on the next sync.
+    cash_role: Mapped[str] = mapped_column(String(16), default="reserve")  # spendable | reserve | excluded
     currency: Mapped[str] = mapped_column(String(16), default="USD")
     current_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     available_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -668,6 +672,66 @@ class PlaidAccount(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class Vendor(Base):
+    """A payee with declared terms, a committed total, and a payoff date.
+
+    Payoff progress is computed from matched bank outflows at read time; this
+    table only stores operator-declared terms and never moves money.
+    """
+
+    __tablename__ = "finance_vendors"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    terms_type: Mapped[str] = mapped_column(String(16), default="recurring")  # one_off | recurring
+    payment_amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    frequency: Mapped[str] = mapped_column(String(16), default="month")  # week|biweekly|month|quarter|year|once
+    total_committed_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    match_terms: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceAuditDismissal(Base):
+    """A dismissed bill-audit finding, so it stays quiet on the next run."""
+
+    __tablename__ = "finance_audit_dismissals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    fingerprint: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class FinanceCollectionDraft(Base):
+    """Status of a collection message per customer and channel.
+
+    The draft text is regenerated on demand; this row only tracks whether the
+    operator has sent or skipped a given customer/channel. Nothing here sends a
+    message: the app drafts, the operator sends.
+    """
+
+    __tablename__ = "finance_collection_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    customer_key: Mapped[str] = mapped_column(String(255), index=True)
+    channel: Mapped[str] = mapped_column(String(16), default="email")  # email | sms
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | sent | skipped
+    amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_collection_draft_scope_customer_channel", "scope_key", "customer_key", "channel", unique=True),
+    )
 
 
 class FinanceActionAudit(Base):

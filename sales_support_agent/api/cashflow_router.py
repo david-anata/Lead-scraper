@@ -484,6 +484,88 @@ async def plaid_disconnect_item(request: Request, item_id: str, force: bool = Fo
     )
 
 
+@router.post("/plaid/accounts/{account_id}/cash-role")
+async def plaid_set_account_cash_role(request: Request, account_id: str, role: str = Form(...)):
+    """Reclassify one bank account as spendable cash, reserve, or excluded."""
+    from sales_support_agent.services.cashflow.accounts_view import set_cash_role
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        applied = await asyncio.to_thread(set_cash_role, account_id, role, actor=actor)
+    except ValueError as exc:
+        return _redirect_finance_error(f"That account could not be updated: {exc}")
+    label = {"spendable": "spendable cash", "reserve": "savings/reserve", "excluded": "not counted"}.get(applied, applied)
+    return _redirect_finance_home(f"Account updated. It now counts as {label}.")
+
+
+def _vendor_form_data(form: Any) -> dict:
+    return {
+        "name": form.get("name", ""),
+        "terms_type": form.get("terms_type", "recurring"),
+        "payment_amount_cents": _money_to_cents(form.get("payment_amount", "") or "") or None,
+        "frequency": form.get("frequency", "month"),
+        "total_committed_cents": _money_to_cents(form.get("total_committed", "") or "") or None,
+        "start_date": form.get("start_date", ""),
+        "end_date": form.get("end_date", ""),
+        "match_terms": form.get("match_terms", ""),
+        "notes": form.get("notes", ""),
+    }
+
+
+@router.post("/vendors")
+async def create_vendor_endpoint(request: Request):
+    from sales_support_agent.services.cashflow.vendors import create_vendor
+    form = await request.form()
+    try:
+        await asyncio.to_thread(create_vendor, _vendor_form_data(form))
+    except ValueError as exc:
+        return _redirect_finance_error(f"Vendor could not be saved: {exc}")
+    return _redirect_finance_home("Vendor added.")
+
+
+@router.post("/vendors/{vendor_id}")
+async def update_vendor_endpoint(request: Request, vendor_id: str):
+    from sales_support_agent.services.cashflow.vendors import update_vendor
+    form = await request.form()
+    try:
+        await asyncio.to_thread(update_vendor, vendor_id, _vendor_form_data(form))
+    except ValueError as exc:
+        return _redirect_finance_error(f"Vendor could not be updated: {exc}")
+    return _redirect_finance_home("Vendor updated.")
+
+
+@router.post("/vendors/{vendor_id}/delete")
+async def delete_vendor_endpoint(request: Request, vendor_id: str):
+    from sales_support_agent.services.cashflow.vendors import deactivate_vendor
+    await asyncio.to_thread(deactivate_vendor, vendor_id)
+    return _redirect_finance_home("Vendor removed.")
+
+
+@router.post("/audit/dismiss")
+async def audit_dismiss_endpoint(request: Request, fingerprint: str = Form(...)):
+    from sales_support_agent.services.cashflow.bill_audit import dismiss_finding
+    await asyncio.to_thread(dismiss_finding, fingerprint)
+    return _redirect_finance_home("Audit item dismissed. It will stay quiet next time.")
+
+
+@router.post("/collections/mark")
+async def collections_mark_endpoint(
+    request: Request,
+    customer_key: str = Form(...),
+    channel: str = Form(...),
+    status: str = Form(...),
+):
+    """Record that a collection message was sent or skipped. Never sends it."""
+    from sales_support_agent.services.cashflow.collections import set_draft_status
+    try:
+        await asyncio.to_thread(set_draft_status, customer_key, channel, status)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not update that message: {exc}")
+    verb = {"sent": "marked as sent", "skipped": "skipped", "draft": "reset to draft"}.get(status, status)
+    return _redirect_finance_home(f"Reminder {verb}.")
+
+
 @router.post("/assistant/preview")
 async def finance_assistant_preview(request: Request):
     """Turn plain English into a server-side draft; this never writes money."""

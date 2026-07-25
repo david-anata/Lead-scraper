@@ -2251,6 +2251,263 @@ def _load_finance_control_inputs(settings: Any = None) -> tuple[Any, Any]:
     return load_income_pattern_decisions(), load_finance_source_connections(settings)
 
 
+def _render_vendor_fields(vendor: dict | None = None) -> str:
+    """Shared field set for the add-vendor and per-vendor edit forms."""
+    v = vendor or {}
+
+    def _val(key: str) -> str:
+        raw = v.get(key)
+        return html.escape("" if raw is None else str(raw), quote=True)
+
+    def _cents_val(key: str) -> str:
+        cents = v.get(key)
+        return "" if cents in (None, "") else f"{int(cents) / 100:.2f}"
+
+    terms = str(v.get("terms_type") or "recurring")
+    freq = str(v.get("frequency") or "month")
+    terms_labels = {"recurring": "Recurring", "one_off": "One-off"}
+    terms_opts = "".join(
+        '<option value="' + t + '"' + (" selected" if t == terms else "") + '>' + terms_labels[t] + '</option>'
+        for t in ("recurring", "one_off")
+    )
+    freq_opts = "".join(
+        '<option value="' + f + '"' + (" selected" if f == freq else "") + '>' + f.title() + '</option>'
+        for f in ("week", "biweekly", "month", "quarter", "year", "once")
+    )
+    return (
+        '<div class="finance-vendor-fields">'
+        + '<label>Name<input name="name" value="' + _val("name") + '" required></label>'
+        + '<label>Terms<select name="terms_type">' + terms_opts + '</select></label>'
+        + '<label>Payment each<input name="payment_amount" value="' + _cents_val("payment_amount_cents") + '" placeholder="0.00"></label>'
+        + '<label>Frequency<select name="frequency">' + freq_opts + '</select></label>'
+        + '<label>Total owed<input name="total_committed" value="' + _cents_val("total_committed_cents") + '" placeholder="blank = ongoing"></label>'
+        + '<label>Start<input name="start_date" type="date" value="' + _val("start_date") + '"></label>'
+        + '<label>End / payoff<input name="end_date" type="date" value="' + _val("end_date") + '"></label>'
+        + '<label>Match words in bank<input name="match_terms" value="' + _val("match_terms") + '" placeholder="fora, stripe capital"></label>'
+        + '</div>'
+    )
+
+
+def _render_vendors_section() -> str:
+    """Render the Vendors area: a payoff-tracking table plus add/edit forms."""
+    from sales_support_agent.services.cashflow.vendors import list_vendors_with_progress
+    try:
+        vendors = list_vendors_with_progress()
+    except Exception:
+        vendors = []
+
+    rows = []
+    for v in vendors:
+        vid = html.escape(str(v["id"]), quote=True)
+        name = html.escape(str(v.get("name") or "Vendor"))
+        pay = v.get("payment_amount_cents")
+        if str(v.get("terms_type")) == "recurring" and pay:
+            terms_txt = _money(int(pay)) + " / " + html.escape(str(v.get("frequency") or "month"))
+        else:
+            terms_txt = "One-off"
+        total = v.get("total_committed_cents")
+        total_txt = _money(int(total)) if total else "ongoing"
+        paid_txt = _money(int(v.get("paid_cents") or 0))
+        pct = v.get("percent_bps")
+        if pct is not None:
+            pct_int = min(100, round(int(pct) / 100))
+            progress = ' <small>(' + str(pct_int) + '%)</small><div class="finance-vendor-bar"><span style="width:' + str(pct_int) + '%"></span></div>'
+        else:
+            progress = ""
+        payoff = html.escape(str(v.get("payoff_date") or "ongoing"))
+        edit = (
+            '<details class="finance-vendor-edit"><summary>Edit</summary>'
+            + '<form method="post" action="/admin/finances/vendors/' + vid + '">'
+            + _render_vendor_fields(v)
+            + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-secondary btn-sm">Save</button></div></form>'
+            + '<form method="post" action="/admin/finances/vendors/' + vid + '/delete" '
+            + 'onsubmit="return confirm(\'Remove this vendor?\');">'
+            + '<button type="submit" class="btn btn-secondary btn-sm">Remove</button></form></details>'
+        )
+        rows.append(
+            '<tr><td>' + name + '</td><td>' + terms_txt + '</td>'
+            + '<td class="finance-accounts-amount">' + total_txt + '</td>'
+            + '<td class="finance-accounts-amount">' + paid_txt + progress + '</td>'
+            + '<td>' + payoff + '</td><td>' + edit + '</td></tr>'
+        )
+
+    if rows:
+        table = (
+            '<table class="finance-accounts-table finance-vendors-table"><thead><tr>'
+            + '<th>Vendor</th><th>Terms</th><th>Total</th><th>Paid</th><th>Payoff</th><th></th>'
+            + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+        )
+    else:
+        table = '<p class="finance-accounts-asof">No vendors yet. Add one to track its terms and payoff.</p>'
+
+    add_form = (
+        '<details class="finance-vendor-add"><summary>+ Add a vendor</summary>'
+        + '<form method="post" action="/admin/finances/vendors">'
+        + _render_vendor_fields(None)
+        + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-primary btn-sm">Save vendor</button></div></form></details>'
+    )
+    return (
+        '<section class="finance-source-row finance-vendors"><div style="width:100%">'
+        + '<strong>Vendors</strong><span>Terms, totals, and payoff dates, tracked from your real payments.</span>'
+        + table + add_form + '</div></section>'
+    )
+
+
+def _render_todays_plan() -> str:
+    """Render the pay-in-order plan with coverage and savings-shortfall math."""
+    from sales_support_agent.services.cashflow.todays_plan import build_todays_plan
+    try:
+        plan = build_todays_plan(order="due")
+    except Exception:
+        return ""
+
+    if not plan["items"]:
+        header = (
+            '<div class="finance-plan-head"><div><span>Spendable checking</span><strong>'
+            + _money(plan["spendable_cents"]) + '</strong></div></div>'
+        )
+        return (
+            '<section class="finance-source-row finance-todays-plan"><div style="width:100%">'
+            + '<strong>Today\'s plan</strong>' + header
+            + '<p class="finance-accounts-asof">Nothing due. You are clear.</p></div></section>'
+        )
+
+    if plan["shortfall_cents"] > 0:
+        banner = (
+            '<div class="finance-plan-short">Short by ' + _money(plan["shortfall_cents"])
+            + ' &mdash; move ' + _money(plan["shortfall_cents"]) + ' from savings to cover everything.</div>'
+        )
+    else:
+        banner = '<div class="finance-plan-ok">Checking covers everything due.</div>'
+
+    rows = []
+    for index, item in enumerate(plan["items"], start=1):
+        covered = '<span class="finance-plan-yes">Covered</span>' if item["covered"] else '<span class="finance-plan-no">Short</span>'
+        due = html.escape(item["due_date"] or "")
+        vendor = html.escape(item["vendor_or_customer"] or "")
+        rows.append(
+            '<tr' + ('' if item["covered"] else ' class="finance-plan-uncovered"') + '>'
+            + '<td>' + str(index) + '</td>'
+            + '<td>' + html.escape(item["name"]) + '</td>'
+            + '<td>' + vendor + '</td>'
+            + '<td class="finance-accounts-amount">' + _money(item["amount_cents"]) + '</td>'
+            + '<td>' + due + '</td>'
+            + '<td>' + covered + '</td></tr>'
+        )
+
+    header = (
+        '<div class="finance-plan-head">'
+        + '<div><span>Spendable checking</span><strong>' + _money(plan["spendable_cents"]) + '</strong></div>'
+        + '<div><span>Due</span><strong>' + _money(plan["total_due_cents"]) + '</strong></div>'
+        + '</div>'
+    )
+    table = (
+        '<table class="finance-accounts-table finance-plan-table"><thead><tr>'
+        + '<th>#</th><th>Pay this</th><th>Vendor</th><th>Amount</th><th>Due</th><th>Covered?</th>'
+        + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+    )
+    return (
+        '<section class="finance-source-row finance-todays-plan"><div style="width:100%">'
+        + '<strong>Today\'s plan</strong><span>What to pay, in order, and whether checking covers it.</span>'
+        + header + banner + table + '</div></section>'
+    )
+
+
+def _render_bill_audit() -> str:
+    """Render the bill audit: a short list of leaks with a dismiss per item."""
+    from sales_support_agent.services.cashflow.bill_audit import run_bill_audit
+    try:
+        findings = run_bill_audit()
+    except Exception:
+        return ""
+
+    if not findings:
+        body = '<p class="finance-accounts-asof">Nothing unusual. Bills look under control.</p>'
+        heading = "All clear"
+    else:
+        items = []
+        for finding in findings:
+            fp = html.escape(str(finding["fingerprint"]), quote=True)
+            sev = html.escape(str(finding.get("severity") or "medium"))
+            items.append(
+                '<li class="finance-audit-item finance-audit-' + sev + '">'
+                + '<div><strong>' + html.escape(str(finding["title"])) + '</strong>'
+                + '<span>' + html.escape(str(finding["detail"])) + '</span></div>'
+                + '<form method="post" action="/admin/finances/audit/dismiss">'
+                + '<input type="hidden" name="fingerprint" value="' + fp + '">'
+                + '<button type="submit" class="btn btn-secondary btn-sm">Dismiss</button></form></li>'
+            )
+        body = '<ul class="finance-audit-list">' + "".join(items) + '</ul>'
+        count = len(findings)
+        heading = str(count) + (" thing to look at" if count == 1 else " things to look at")
+    return (
+        '<section class="finance-source-row finance-bill-audit"><div style="width:100%">'
+        + '<strong>Bill audit</strong><span>' + heading + '</span>' + body + '</div></section>'
+    )
+
+
+def _render_collections() -> str:
+    """Render overdue customers with review-and-mark draft messages."""
+    from sales_support_agent.services.cashflow.collections import build_collections
+    try:
+        data = build_collections()
+    except Exception:
+        return ""
+
+    if not data["customers"]:
+        return (
+            '<section class="finance-source-row finance-collections"><div style="width:100%">'
+            + '<strong>Who owes you</strong><span>Nobody is past due right now.</span></div></section>'
+        )
+
+    def _status_badge(status: str) -> str:
+        if status == "sent":
+            return '<span class="finance-collect-sent">Sent</span>'
+        if status == "skipped":
+            return '<span class="finance-collect-skip">Skipped</span>'
+        return ""
+
+    def _channel_block(cust_key: str, label: str, channel: str, status: str, subject: str, body: str) -> str:
+        subject_html = ('<p class="finance-collect-subject">' + html.escape(subject) + '</p>') if subject else ""
+        mark = (
+            '<form method="post" action="/admin/finances/collections/mark" class="finance-collect-actions">'
+            + '<input type="hidden" name="customer_key" value="' + html.escape(cust_key, quote=True) + '">'
+            + '<input type="hidden" name="channel" value="' + channel + '">'
+            + '<button type="submit" name="status" value="sent" class="btn btn-secondary btn-sm">Mark as sent</button>'
+            + '<button type="submit" name="status" value="skipped" class="btn btn-secondary btn-sm">Skip</button></form>'
+        )
+        return (
+            '<details class="finance-collect-draft"><summary>Review ' + label + ' ' + _status_badge(status) + '</summary>'
+            + subject_html
+            + '<textarea class="finance-collect-body" rows="6" readonly>' + html.escape(body) + '</textarea>'
+            + mark + '</details>'
+        )
+
+    rows = []
+    for cust in data["customers"]:
+        key = str(cust["customer_key"])
+        email = _channel_block(key, "email", "email", cust["email_status"], cust["email"]["subject"], cust["email"]["body"])
+        sms = _channel_block(key, "text", "sms", cust["sms_status"], "", cust["sms"]["body"])
+        rows.append(
+            '<tr><td>' + html.escape(str(cust["customer"])) + '</td>'
+            + '<td class="finance-accounts-amount">' + _money(int(cust["owed_cents"])) + '</td>'
+            + '<td>' + str(cust["days_late"]) + ' days late</td>'
+            + '<td>' + email + sms + '</td></tr>'
+        )
+
+    table = (
+        '<table class="finance-accounts-table finance-collections-table"><thead><tr>'
+        + '<th>Customer</th><th>Owes</th><th>Late</th><th>Draft to review</th>'
+        + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+    )
+    heading = _money(data["total_owed_cents"]) + " across " + str(data["customer_count"]) + " customer(s)"
+    return (
+        '<section class="finance-source-row finance-collections"><div style="width:100%">'
+        + '<strong>Who owes you</strong><span>' + heading + '. Drafts are ready to review; nothing sends on its own.</span>'
+        + table + '</div></section>'
+    )
+
+
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
@@ -2438,6 +2695,58 @@ async def render_cashflow_overview_page(
         plaid_status_text = "Plaid credentials must be added to the production service"
         plaid_action_text = "Plaid setup required"
         plaid_button_disabled = " disabled"
+
+    # Per-account cash view (spendable checking vs reserve), grouped by bank.
+    from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
+    try:
+        accounts_overview = load_accounts_overview()
+    except Exception:
+        accounts_overview = {"spendable_cents": 0, "reserve_cents": 0, "as_of": "", "account_count": 0, "banks": []}
+    plaid_accounts_html = ""
+    if accounts_overview["account_count"]:
+        _role_labels = {"spendable": "Spendable", "reserve": "Reserve", "excluded": "Not counted"}
+        _acct_rows = []
+        for _bank in accounts_overview["banks"]:
+            _acct_rows.append(
+                '<tr class="finance-accounts-bankrow"><td colspan="4"><strong>'
+                + html.escape(str(_bank["display_name"])) + '</strong></td></tr>'
+            )
+            for _acct in _bank["accounts"]:
+                _mask = (" &middot; &bull;&bull;" + html.escape(_acct["mask"])) if _acct["mask"] else ""
+                _type = html.escape((str(_acct["subtype"] or _acct["account_type"] or "")).title())
+                _role = str(_acct["cash_role"])
+                _options = "".join(
+                    '<option value="' + _r + '"' + (" selected" if _r == _role else "") + '>' + _role_labels[_r] + '</option>'
+                    for _r in ("spendable", "reserve", "excluded")
+                )
+                _acct_id = html.escape(str(_acct["id"]), quote=True)
+                _acct_rows.append(
+                    '<tr><td>' + html.escape(str(_acct["name"])) + _mask + '</td>'
+                    + '<td>' + _type + '</td>'
+                    + '<td class="finance-accounts-amount">' + _money(_acct["balance_cents"]) + '</td>'
+                    + '<td><form method="post" class="finance-account-role-form" '
+                    + 'action="/admin/finances/plaid/accounts/' + _acct_id + '/cash-role">'
+                    + '<select name="role" aria-label="How this account counts">' + _options + '</select>'
+                    + '<button type="submit" class="btn btn-secondary btn-sm">Set</button></form></td></tr>'
+                )
+        _as_of = html.escape(accounts_overview["as_of"] or "")
+        _as_of_html = ('<p class="finance-accounts-asof">Balances as of ' + _as_of + '</p>') if _as_of else ""
+        plaid_accounts_html = (
+            '<div class="finance-accounts">'
+            + '<div class="finance-accounts-totals">'
+            + '<div><span>Spendable cash (checking)</span><strong>' + _money(accounts_overview["spendable_cents"]) + '</strong></div>'
+            + '<div><span>Savings &amp; reserves</span><strong>' + _money(accounts_overview["reserve_cents"]) + '</strong></div>'
+            + '</div>'
+            + '<table class="finance-accounts-table"><thead><tr>'
+            + '<th>Bank / Account</th><th>Type</th><th>Balance</th><th>Counts as</th>'
+            + '</tr></thead><tbody>' + "".join(_acct_rows) + '</tbody></table>'
+            + _as_of_html + '</div>'
+        )
+
+    vendors_html = _render_vendors_section()
+    todays_plan_html = _render_todays_plan()
+    bill_audit_html = _render_bill_audit()
+    collections_drafts_html = _render_collections()
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -2798,7 +3107,11 @@ async def render_cashflow_overview_page(
 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
-        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        {todays_plan_html}
+        {vendors_html}
+        {bill_audit_html}
+        {collections_drafts_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>

@@ -462,14 +462,19 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                     continue
                 active_ids.add(external_id)
                 balances = account.get("balances") or {}
+                subtype = str(account.get("subtype") or "")
+                # Default cash role from subtype on first insert only; the
+                # ON CONFLICT UPDATE deliberately omits cash_role so a manual
+                # reclassification survives every future sync.
+                default_cash_role = "spendable" if subtype.lower() == "checking" else "reserve"
                 connection.execute(text("""
                     INSERT INTO plaid_accounts (
                         id, plaid_item_id, external_account_id, name, official_name, mask,
-                        account_type, subtype, currency, current_balance_cents,
+                        account_type, subtype, cash_role, currency, current_balance_cents,
                         available_balance_cents, balance_as_of, active, created_at, updated_at
                     ) VALUES (
                         :id, :item_id, :external_id, :name, :official_name, :mask,
-                        :account_type, :subtype, :currency, :current, :available,
+                        :account_type, :subtype, :cash_role, :currency, :current, :available,
                         :now, TRUE, :now, :now
                     ) ON CONFLICT(external_account_id) DO UPDATE SET
                         name=:name, official_name=:official_name, mask=:mask,
@@ -483,7 +488,7 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                     "official_name": str(account.get("official_name") or ""),
                     "mask": str(account.get("mask") or "")[-4:],
                     "account_type": str(account.get("type") or ""),
-                    "subtype": str(account.get("subtype") or ""),
+                    "subtype": subtype, "cash_role": default_cash_role,
                     "currency": str(balances.get("iso_currency_code") or "USD"),
                     "current": _cents(balances.get("current")),
                     "available": _cents(balances.get("available")), "now": now,
