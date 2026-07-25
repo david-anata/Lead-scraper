@@ -451,7 +451,7 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
     access_token = unseal_token(settings.plaid_token_secret, str(item["sealed_access_token"]))
     api = client or PlaidClient(settings)
     now = datetime.now(timezone.utc)
-    counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0}
+    counts = {"accounts": 0, "added": 0, "modified": 0, "removed": 0, "matched": 0}
     try:
         accounts_payload = api.accounts_get(access_token)
         with get_engine().begin() as connection:
@@ -517,6 +517,18 @@ def sync_item(local_item_id: str, *, settings: Any, client: PlaidClient | None =
                 break
         with get_engine().begin() as connection:
             connection.execute(text("UPDATE plaid_items SET transactions_cursor=:cursor, status='connected', last_success_at=:now, last_error_code='', updated_at=:now WHERE id=:id"), {"cursor": cursor, "now": now, "id": local_item_id})
+
+        # Connect the payments we just imported to the bills they settled.
+        # Without this an imported payment never becomes settlement evidence,
+        # which is what leaves obligations stuck in "no matching bank payment".
+        # Only high-confidence, non-protected matches are automatic.
+        if counts["added"] or counts["modified"]:
+            try:
+                from sales_support_agent.services.cashflow.plaid_match import auto_match_on_sync
+                match_result = auto_match_on_sync(actor="plaid-sync")
+                counts["matched"] = int(match_result.get("confirmed") or 0)
+            except Exception as exc:
+                logger.warning("Plaid auto-match after sync failed item_id=%s: %s", local_item_id, exc)
     except Exception as exc:
         code = exc.code if isinstance(exc, PlaidError) else "sync_error"
         with get_engine().begin() as connection:

@@ -2521,6 +2521,65 @@ _TRUST_REASON_LABELS = {
 }
 
 
+def _render_match_review() -> str:
+    """Propose bank-payment-to-bill matches for confirmation, plus batch undo."""
+    from sales_support_agent.services.cashflow.plaid_match import latest_run, propose_matches
+    try:
+        proposals = propose_matches()
+        run = latest_run()
+    except Exception:
+        return ""
+
+    undo_html = ""
+    if run:
+        run_id = html.escape(str(run["id"]), quote=True)
+        undo_html = (
+            '<form method="post" action="/admin/finances/matches/undo/' + run_id + '" '
+            + 'class="finance-match-undo" onsubmit="return confirm(\'Undo the last batch of matches?\');">'
+            + '<span>Last batch matched ' + str(int(run.get("confirmed_count") or 0)) + ' payment(s).</span>'
+            + '<button type="submit" class="btn btn-secondary btn-sm">Undo that batch</button></form>'
+        )
+
+    if not proposals:
+        body = (
+            '<p class="finance-accounts-asof">No new payments to match. '
+            + 'Confident matches are made automatically when the bank refreshes.</p>'
+        )
+        return (
+            '<section class="finance-source-row finance-match-review"><div style="width:100%">'
+            + '<strong>Payment matching</strong><span>Bank payments linked to the bills they paid.</span>'
+            + body + undo_html + '</div></section>'
+        )
+
+    rows = []
+    for proposal in proposals:
+        pair = html.escape(proposal["transaction_id"] + "|" + proposal["obligation_id"], quote=True)
+        checked = "" if proposal["protected"] else " checked"
+        conf_cls = "finance-match-high" if proposal["confidence"] == "high" else "finance-match-medium"
+        note = " (needs your OK: protected)" if proposal["protected"] else ""
+        rows.append(
+            '<tr><td><input type="checkbox" name="pair" value="' + pair + '"' + checked + '></td>'
+            + '<td>' + html.escape(proposal["obligation_name"]) + '<br><small>'
+            + _money(proposal["obligation_amount_cents"]) + ' due ' + html.escape(proposal["obligation_due_date"]) + '</small></td>'
+            + '<td>' + html.escape(proposal["transaction_name"]) + '<br><small>'
+            + _money(proposal["transaction_amount_cents"]) + ' on ' + html.escape(proposal["transaction_date"]) + '</small></td>'
+            + '<td class="' + conf_cls + '">' + proposal["confidence"].title() + html.escape(note) + '</td></tr>'
+        )
+
+    return (
+        '<section class="finance-source-row finance-match-review"><div style="width:100%">'
+        + '<strong>Payment matching</strong><span>' + str(len(proposals))
+        + ' bank payment(s) look like they settled a bill. Confirm to record them as paid.</span>'
+        + '<form method="post" action="/admin/finances/matches/confirm">'
+        + '<table class="finance-accounts-table finance-match-table"><thead><tr>'
+        + '<th></th><th>Bill expected</th><th>Bank payment found</th><th>Confidence</th>'
+        + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+        + '<div class="finance-vendor-actions">'
+        + '<button type="submit" class="btn btn-primary btn-sm">Confirm selected matches</button></div></form>'
+        + undo_html + '</div></section>'
+    )
+
+
 def _render_trust_check(cash: dict, trust_gate: dict) -> str:
     """Reconcile cash and receivables to source, and break down blockers."""
     from sales_support_agent.services.cashflow.trust_check import build_trust_check
@@ -2559,6 +2618,9 @@ def _render_trust_check(cash: dict, trust_gate: dict) -> str:
             '<p class="finance-trust-line">' + str(tc["obligation_issue_count"])
             + ' obligation(s) are pausing cash decisions, by reason:</p>'
             + '<ul class="finance-trust-reasons">' + items + '</ul>'
+            + '<div class="finance-vendor-actions">'
+            + '<a class="btn btn-primary btn-sm" href="/admin/finances/review">'
+            + 'Clear these in bulk</a></div>'
             + '<p class="finance-accounts-asof">Records excluded from the trend math (transfers and duplicates) '
             + 'are normal and are not counted here.</p>'
         )
@@ -2643,6 +2705,7 @@ async def render_cashflow_overview_page(
     trust_gate = state["trust_gate"]
     trust_ready = trust_gate["ready"]
     trust_check_html = _render_trust_check(cash, trust_gate)
+    match_review_html = _render_match_review()
     # CFO recommendations are opt-in: any absent, errored, or failed contract
     # leaves evidence visible but disables decision controls.
     decision_actions_allowed = trust_ready is True and not control_error
@@ -3174,6 +3237,7 @@ async def render_cashflow_overview_page(
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         {trust_check_html}
+        {match_review_html}
         {todays_plan_html}
         {vendors_html}
         {bill_audit_html}

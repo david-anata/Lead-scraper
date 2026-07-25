@@ -1493,3 +1493,10 @@ input:focus, select:focus, textarea:focus {
 .finance-trust-line { margin: 8px 0 4px; font-size: 13px; }
 .finance-trust-reasons { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
 .finance-trust-reasons li { margin: 2px 0; }
+
+/* Payment matching */
+.finance-match-table td { vertical-align: middle; font-size: 12px; }
+.finance-match-table small { color: var(--muted, #6b7280); }
+.finance-match-high { color: #1f7a34; font-weight: 600; }
+.finance-match-medium { color: #b8860b; font-weight: 600; }
+.finance-match-undo { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--muted, #6b7280); }
