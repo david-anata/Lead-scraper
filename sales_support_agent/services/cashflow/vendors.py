@@ -9,6 +9,7 @@ this module never moves money.
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
@@ -30,6 +31,22 @@ def _match_terms_list(raw: str) -> list[str]:
         if term:
             parts.append(term)
     return parts
+
+
+def _term_matcher(terms: list[str]) -> Optional[re.Pattern[str]]:
+    """Compile terms into a whole-word matcher.
+
+    Plain substring matching over-matches badly on short terms: "von" would
+    claim VONAGE, and "rent" would claim PARENT, silently inflating what a
+    vendor looks like it has been paid. Word boundaries keep "von" matching
+    VON HILL while leaving VONAGE alone.
+    """
+    if not terms:
+        return None
+    return re.compile(
+        "|".join(r"\b" + re.escape(term) + r"\b" for term in terms),
+        re.IGNORECASE,
+    )
 
 
 def _parse_date(value: Any) -> Optional[date]:
@@ -149,18 +166,19 @@ def _matched_outflows(connection: Any) -> list[dict[str, Any]]:
 
 def _vendor_progress(vendor: dict[str, Any], outflows: list[dict[str, Any]]) -> dict[str, Any]:
     terms = _match_terms_list(vendor.get("match_terms", ""))
+    matcher = _term_matcher(terms)
     start = _parse_date(vendor.get("start_date"))
     paid_cents = 0
     matched_count = 0
     last_paid: Optional[date] = None
-    if terms:
+    if matcher is not None:
         for row in outflows:
             haystack = " ".join([
                 str(row.get("name") or ""),
                 str(row.get("vendor_or_customer") or ""),
                 str(row.get("description") or ""),
             ]).lower()
-            if not any(term in haystack for term in terms):
+            if not matcher.search(haystack):
                 continue
             paid_on = _parse_date(row.get("paid_on"))
             if start and paid_on and paid_on < start:

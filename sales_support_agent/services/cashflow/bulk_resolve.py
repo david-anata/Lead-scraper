@@ -222,7 +222,7 @@ def preview_bulk_action(event_ids: list[str], action: str) -> dict[str, Any]:
     with get_engine().connect() as connection:
         rows = connection.execute(text(f"""
             SELECT id, name, vendor_or_customer, amount_cents, commitment_type,
-                   workflow_status, archived_at
+                   event_type, workflow_status, archived_at
             FROM cash_events WHERE id IN ({placeholders})
         """), params).fetchall()  # noqa: S608 - placeholders are generated, values bound
 
@@ -235,6 +235,16 @@ def preview_bulk_action(event_ids: list[str], action: str) -> dict[str, Any]:
             "name": str(row.get("name") or row.get("vendor_or_customer") or "Obligation"),
             "amount_cents": int(row.get("amount_cents") or 0),
         }
+        # A receivable action must never land on a bill, and vice versa.
+        is_inflow = str(row.get("event_type") or "") == "inflow"
+        receivable_action = action in RECEIVABLE_ACTIONS
+        if action != "archive_historical" and is_inflow != receivable_action:
+            entry["why_skipped"] = (
+                "that action is for money owed to you"
+                if receivable_action else "that action is for bills, not receivables"
+            )
+            skipped.append(entry)
+            continue
         if str(row.get("commitment_type") or "").lower() in PROTECTED_TYPES:
             entry["why_skipped"] = "protected (payroll, tax, or debt)"
             skipped.append(entry)
