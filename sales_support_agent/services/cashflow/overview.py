@@ -2413,6 +2413,39 @@ def _render_todays_plan() -> str:
     )
 
 
+def _render_bill_audit() -> str:
+    """Render the bill audit: a short list of leaks with a dismiss per item."""
+    from sales_support_agent.services.cashflow.bill_audit import run_bill_audit
+    try:
+        findings = run_bill_audit()
+    except Exception:
+        return ""
+
+    if not findings:
+        body = '<p class="finance-accounts-asof">Nothing unusual. Bills look under control.</p>'
+        heading = "All clear"
+    else:
+        items = []
+        for finding in findings:
+            fp = html.escape(str(finding["fingerprint"]), quote=True)
+            sev = html.escape(str(finding.get("severity") or "medium"))
+            items.append(
+                '<li class="finance-audit-item finance-audit-' + sev + '">'
+                + '<div><strong>' + html.escape(str(finding["title"])) + '</strong>'
+                + '<span>' + html.escape(str(finding["detail"])) + '</span></div>'
+                + '<form method="post" action="/admin/finances/audit/dismiss">'
+                + '<input type="hidden" name="fingerprint" value="' + fp + '">'
+                + '<button type="submit" class="btn btn-secondary btn-sm">Dismiss</button></form></li>'
+            )
+        body = '<ul class="finance-audit-list">' + "".join(items) + '</ul>'
+        count = len(findings)
+        heading = str(count) + (" thing to look at" if count == 1 else " things to look at")
+    return (
+        '<section class="finance-source-row finance-bill-audit"><div style="width:100%">'
+        + '<strong>Bill audit</strong><span>' + heading + '</span>' + body + '</div></section>'
+    )
+
+
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
@@ -2650,6 +2683,7 @@ async def render_cashflow_overview_page(
 
     vendors_html = _render_vendors_section()
     todays_plan_html = _render_todays_plan()
+    bill_audit_html = _render_bill_audit()
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -3013,6 +3047,7 @@ async def render_cashflow_overview_page(
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         {todays_plan_html}
         {vendors_html}
+        {bill_audit_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>

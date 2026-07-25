@@ -542,6 +542,13 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     return _redirect_finance_home("Vendor removed.")
 
 
+@router.post("/audit/dismiss")
+async def audit_dismiss_endpoint(request: Request, fingerprint: str = Form(...)):
+    from sales_support_agent.services.cashflow.bill_audit import dismiss_finding
+    await asyncio.to_thread(dismiss_finding, fingerprint)
+    return _redirect_finance_home("Audit item dismissed. It will stay quiet next time.")
+
+
 @router.post("/assistant/preview")
 async def finance_assistant_preview(request: Request):
     """Turn plain English into a server-side draft; this never writes money."""

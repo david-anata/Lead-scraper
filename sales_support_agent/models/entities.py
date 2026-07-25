@@ -699,6 +699,17 @@ class Vendor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceAuditDismissal(Base):
+    """A dismissed bill-audit finding, so it stays quiet on the next run."""
+
+    __tablename__ = "finance_audit_dismissals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    fingerprint: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class FinanceActionAudit(Base):
     """Append-only evidence for trust-sensitive Finance mutations."""
 
