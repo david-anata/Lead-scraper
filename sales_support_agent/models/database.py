@@ -396,6 +396,8 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_vendors",
         "finance_audit_dismissals",
         "finance_collection_drafts",
+        "finance_match_runs",
+        "finance_match_run_items",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:

@@ -542,6 +542,40 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     return _redirect_finance_home("Vendor removed.")
 
 
+@router.post("/matches/confirm")
+async def matches_confirm_endpoint(request: Request):
+    """Confirm selected bank-payment-to-bill matches as one undoable batch."""
+    from sales_support_agent.services.cashflow.plaid_match import confirm_matches
+
+    form = await request.form()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    pairs: list[tuple[str, str]] = []
+    for raw in form.getlist("pair"):
+        transaction_id, _, obligation_id = str(raw).partition("|")
+        if transaction_id and obligation_id:
+            pairs.append((transaction_id, obligation_id))
+    if not pairs:
+        return _redirect_finance_error("No matches were selected.")
+    result = await asyncio.to_thread(confirm_matches, pairs, actor=actor)
+    if result["failed"]:
+        return _redirect_finance_home(
+            f"Matched {result['confirmed']} payment(s); {result['failed']} could not be matched."
+        )
+    return _redirect_finance_home(f"Matched {result['confirmed']} payment(s) to their bills.")
+
+
+@router.post("/matches/undo/{run_id}")
+async def matches_undo_endpoint(request: Request, run_id: str):
+    """Reverse every match made by one batch."""
+    from sales_support_agent.services.cashflow.plaid_match import undo_run
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    result = await asyncio.to_thread(undo_run, run_id, actor=actor)
+    return _redirect_finance_home(f"Undid {result['reversed']} match(es).")
+
+
 @router.post("/audit/dismiss")
 async def audit_dismiss_endpoint(request: Request, fingerprint: str = Form(...)):
     from sales_support_agent.services.cashflow.bill_audit import dismiss_finding

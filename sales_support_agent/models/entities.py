@@ -699,6 +699,36 @@ class Vendor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceMatchRun(Base):
+    """One batch of bank-payment-to-obligation matches, undoable as a unit."""
+
+    __tablename__ = "finance_match_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual | sync
+    actor: Mapped[str] = mapped_column(String(255), default="system")
+    proposed_count: Mapped[int] = mapped_column(Integer, default=0)
+    confirmed_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    undone_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceMatchRunItem(Base):
+    """One confirmed match inside a run, kept so the run can be reversed."""
+
+    __tablename__ = "finance_match_run_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("finance_match_runs.id"), index=True)
+    allocation_id: Mapped[str] = mapped_column(String(64), default="")
+    obligation_event_id: Mapped[str] = mapped_column(String(64), default="")
+    transaction_event_id: Mapped[str] = mapped_column(String(64), default="")
+    score_bps: Mapped[int] = mapped_column(Integer, default=0)
+    reversed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class FinanceAuditDismissal(Base):
     """A dismissed bill-audit finding, so it stays quiet on the next run."""
 
