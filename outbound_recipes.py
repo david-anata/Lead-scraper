@@ -77,6 +77,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "churned_tool.window_days": 30,
 }
 
+# Reasons that mention a time window must be regenerated when that window is
+# retuned, because this text is what the prospect actually reads.
+_REASON_TEMPLATES: dict[str, str] = {
+    "new_growth_app": "They added a growth or conversion tool in the last {days} days",
+    "churned_tool": "They removed a growth tool in the last {days} days, so the problem is still open",
+    "plan_upgrade": "They upgraded their store plan in the last {days} days, which usually means new budget",
+    "replatformed": "They moved platforms in the last {days} days, so vendors are being chosen right now",
+}
+
 TUNABLE_LABELS: dict[str, str] = {
     "new_growth_app.window_days": "Just installed: how many days back still counts",
     "churned_tool.tools_per_day": "Just dropped: how many tools to check each day",
@@ -127,6 +136,15 @@ class Recipe:
         if self.client_filter is None:
             return True
         return self.client_filter(store, now or datetime.now(timezone.utc), settings)
+
+    def reason_for(self, settings: Optional[dict[str, Any]] = None) -> str:
+        """The 'why now' line, kept truthful when a window is retuned. This text
+        reaches the prospect, so it must never claim a window we did not use."""
+        tmpl = _REASON_TEMPLATES.get(self.key)
+        if not tmpl:
+            return self.reason
+        days = _int(settings, f"{self.key}.window_days")
+        return tmpl.format(days=days, weeks=max(1, round(days / 7)))
 
     def cap(self, settings: Optional[dict[str, Any]] = None) -> int:
         return _int(settings, f"{self.key}.max_per_run") or self.max_per_run
@@ -289,7 +307,7 @@ def daily_plan(now: Optional[datetime] = None,
         "weekday": now.strftime("%A"),
         "recipes": [
             {"key": r.key, "label": r.label, "tier": r.tier,
-             "reason": r.reason, "max_per_run": r.cap(settings)}
+             "reason": r.reason_for(settings), "max_per_run": r.cap(settings)}
             for r in todays
         ],
         "planned_total": sum(r.cap(settings) for r in todays),

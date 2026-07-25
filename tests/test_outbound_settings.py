@@ -100,6 +100,38 @@ class TunablesChangeBehaviourTests(unittest.TestCase):
                                                   {"new_growth_app.enabled": "false"})]
         self.assertNotIn("new_growth_app", keys)
 
+    def test_reason_follows_the_tuned_window(self):
+        """The reason reaches the prospect, so it must never claim a window we
+        did not actually use."""
+        r = rc.recipe("new_growth_app")
+        self.assertIn("14 days", r.reason_for(None))
+        self.assertIn("30 days", r.reason_for({"new_growth_app.window_days": 30}))
+        self.assertNotIn("two weeks", r.reason_for({"new_growth_app.window_days": 30}))
+
+    def test_reason_without_a_window_is_unchanged(self):
+        self.assertEqual(rc.recipe("icp_baseline").reason_for({}),
+                         rc.recipe("icp_baseline").reason)
+
+    def test_tagged_lead_uses_the_tuned_reason(self):
+        import outbound_pipeline as op
+        store = {"name": "a.com", "merchant_name": "B", "platform": "shopify",
+                 "country_code": "US", "estimated_sales_yearly": 5_000_000_00,
+                 "categories": "Beauty & Skincare", "tags": "",
+                 "contact_info": [{"type": "email", "value": "a@b.com"}],
+                 "apps": [{"platform": "shopify", "token": "triplewhale-1",
+                           "installed_at": "2026-07-05T00:00:00Z"}]}
+
+        def fetch(api_key, *, page=0, page_size=50, extra_params=None, **kw):
+            return [store] if page == 0 else []
+
+        res = op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="", processed_domains=set(), max_new=5,
+            throttle_seconds=0, recipe=rc.recipe("new_growth_app"), now=WED,
+            settings={"new_growth_app.window_days": 30}, fetch_page=fetch,
+        )
+        self.assertEqual(len(res.leads), 1)
+        self.assertIn("30 days", res.leads[0]["reason"])
+
     def test_defaults_still_apply_when_settings_absent(self):
         self.assertEqual(rc.recipe("icp_baseline").cap(None), 25)
         self.assertTrue(rc.recipe("icp_baseline").enabled(None))

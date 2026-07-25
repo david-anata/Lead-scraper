@@ -354,7 +354,7 @@ def outbound_lead_ops(request: Request) -> Response:
         rows.append(
             f"<tr><td class='lo-tier lo-{r.tier}'>{r.tier}</td>"
             f"<td><b>{html.escape(r.label)}</b><br>"
-            f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason)}</span></td>"
+            f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason_for(tunables))}</span></td>"
             f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
             f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a></td></tr>"
         )

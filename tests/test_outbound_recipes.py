@@ -133,7 +133,7 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertEqual(r.recipe, "churned_tool")
         lead = r.leads[0]
         self.assertEqual(lead["recipe"], "churned_tool")
-        self.assertEqual(lead["reason"], rc.recipe("churned_tool").reason)
+        self.assertEqual(lead["reason"], rc.recipe("churned_tool").reason_for(None))
         self.assertEqual(lead["signals"][0], lead["reason"])
 
     def test_recipe_column_is_in_the_csv(self):

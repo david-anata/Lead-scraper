@@ -492,10 +492,11 @@ def run_storeleads_to_clay(
             if recipe is not None:
                 # The recipe is why this brand surfaced now, so it leads the
                 # reason and is carried through for per-recipe measurement.
+                reason = recipe.reason_for(settings)
                 lead["recipe"] = recipe.key
-                lead["reason"] = recipe.reason
-                lead["signals"] = [recipe.reason] + [
-                    s for s in lead.get("signals", []) if s != recipe.reason
+                lead["reason"] = reason
+                lead["signals"] = [reason] + [
+                    s for s in lead.get("signals", []) if s != reason
                 ]
             if lead.get("tier") == "X":
                 continue  # public company / out of profile — drop
