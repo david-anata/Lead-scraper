@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
@@ -138,18 +139,32 @@ def to_clay_lead(store: dict[str, Any]) -> dict[str, Any]:
 
 # ---- thin network layer (injectable for tests) -------------------------------
 
+def _retry_after_seconds(resp: "requests.Response") -> Optional[float]:
+    raw = resp.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def fetch_storeleads_page(
     api_key: str,
     *,
     page: int = 0,
     page_size: int = 50,
     timeout: int = 30,
+    max_retries: int = 4,
 ) -> list[dict[str, Any]]:
     """Fetch one page of Shopify stores from StoreLeads, newest-ranked first.
 
     Server-side we narrow to the platform and sort by rank; the authoritative
     ICP filtering (revenue, country, category, tags, email) happens client-side
     in store_matches_icp so it stays exact regardless of StoreLeads filter quirks.
+
+    Retries politely on 429 (rate limit), honoring Retry-After when present, with
+    exponential backoff otherwise.
     """
     params = {
         "f:p": "shopify",
@@ -161,19 +176,26 @@ def fetch_storeleads_page(
             "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
         )),
     }
-    resp = requests.get(
-        f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}",
-        headers={"Authorization": f"Bearer {api_key}"},
-        params=params,
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    # StoreLeads returns the store array under "domains" (list endpoint).
-    if isinstance(payload, dict):
-        return payload.get("domains") or payload.get("results") or []
-    if isinstance(payload, list):
-        return payload
+    for attempt in range(max_retries + 1):
+        resp = requests.get(
+            f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+            timeout=timeout,
+        )
+        if resp.status_code == 429 and attempt < max_retries:
+            wait = _retry_after_seconds(resp) or (2 ** attempt)
+            logger.warning("[outbound] StoreLeads rate-limited (page %s); waiting %ss", page, wait)
+            time.sleep(min(wait, 30))
+            continue
+        resp.raise_for_status()
+        payload = resp.json()
+        # StoreLeads returns the store array under "domains" (list endpoint).
+        if isinstance(payload, dict):
+            return payload.get("domains") or payload.get("results") or []
+        if isinstance(payload, list):
+            return payload
+        return []
     return []
 
 
@@ -199,6 +221,7 @@ class PipelineResult:
     skipped_already_contacted: int = 0
     leads: list[dict[str, Any]] = field(default_factory=list)
     dry_run: bool = False
+    partial: bool = False  # True if StoreLeads cut us off (rate limit) mid-run
 
 
 def run_storeleads_to_clay(
@@ -209,12 +232,17 @@ def run_storeleads_to_clay(
     max_new: int = 100,
     max_pages: int = 40,
     dry_run: bool = False,
+    throttle_seconds: float = 1.5,
     fetch_page: Optional[Callable[..., list[dict[str, Any]]]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
 ) -> PipelineResult:
     """Pull ICP brands from StoreLeads, drop already-contacted ones, push the
     rest to Clay. With dry_run=True (or no Clay webhook) nothing is pushed; the
     matched leads are returned for preview.
+
+    Paces requests (throttle_seconds between pages) to stay under StoreLeads'
+    rate limit. If StoreLeads still cuts us off, returns the brands gathered so
+    far and flags the result partial, instead of failing the whole pull.
     """
     fetch_page = fetch_page or fetch_storeleads_page
     push = push or push_to_clay
@@ -225,7 +253,15 @@ def run_storeleads_to_clay(
     for page in range(max_pages):
         if result.fresh >= max_new:
             break
-        stores = fetch_page(api_key, page=page)
+        if page > 0 and throttle_seconds:
+            time.sleep(throttle_seconds)
+        try:
+            stores = fetch_page(api_key, page=page)
+        except Exception as exc:  # noqa: BLE001 — return partial instead of failing
+            logger.warning("[outbound] StoreLeads page %s failed, returning %s brands gathered: %s",
+                           page, len(result.leads), exc)
+            result.partial = True
+            break
         if not stores:
             break
         for store in stores:

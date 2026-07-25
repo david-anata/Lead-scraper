@@ -89,7 +89,7 @@ class TestRunPipeline(unittest.TestCase):
 
         r = op.run_storeleads_to_clay(
             api_key="x", clay_webhook_url="https://clay/webhook",
-            processed_domains=set(), max_new=100,
+            processed_domains=set(), max_new=100, throttle_seconds=0,
             fetch_page=self._fetch_two_pages(), push=push,
         )
         self.assertEqual(r.fresh, 3)
@@ -99,7 +99,7 @@ class TestRunPipeline(unittest.TestCase):
     def test_skips_already_contacted(self):
         r = op.run_storeleads_to_clay(
             api_key="x", clay_webhook_url="https://clay/webhook",
-            processed_domains={"a.com"}, max_new=100,
+            processed_domains={"a.com"}, max_new=100, throttle_seconds=0,
             fetch_page=self._fetch_two_pages(), push=lambda u, l: {"pushed": len(l)},
         )
         self.assertEqual(r.skipped_already_contacted, 1)
@@ -122,7 +122,7 @@ class TestRunPipeline(unittest.TestCase):
 
         r = op.run_storeleads_to_clay(
             api_key="x", clay_webhook_url="https://clay/webhook",
-            processed_domains=set(), max_new=100, dry_run=True,
+            processed_domains=set(), max_new=100, dry_run=True, throttle_seconds=0,
             fetch_page=self._fetch_two_pages(), push=push,
         )
         self.assertTrue(r.dry_run)
@@ -133,7 +133,7 @@ class TestRunPipeline(unittest.TestCase):
     def test_no_webhook_is_dry_run(self):
         r = op.run_storeleads_to_clay(
             api_key="x", clay_webhook_url="",
-            processed_domains=set(), max_new=100,
+            processed_domains=set(), max_new=100, throttle_seconds=0,
             fetch_page=self._fetch_two_pages(), push=lambda u, l: {"pushed": len(l)},
         )
         self.assertTrue(r.dry_run)
