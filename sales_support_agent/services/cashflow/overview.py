@@ -2429,6 +2429,84 @@ def _todays_plan_inner() -> str:
     return header + banner + table + order_note
 
 
+def _render_cash_timeline() -> str:
+    """Next 14 days in date order with a running balance after every item."""
+    from sales_support_agent.services.cashflow.cash_timeline import build_cash_timeline
+    try:
+        timeline = build_cash_timeline(days=14)
+    except Exception:
+        return ""
+
+    overdue = timeline.get("overdue") or {}
+    overdue_html = ""
+    if int(overdue.get("count") or 0):
+        overdue_html = (
+            '<div class="finance-plan-short">'
+            + str(int(overdue["count"])) + ' overdue bill(s) worth '
+            + _money(int(overdue.get("amount_cents") or 0))
+            + ' are not in this list because their date has passed. Some are likely already paid '
+            + 'but never linked to the payment. '
+            + '<a href="/admin/finances/review">Review and match them</a>.</div>'
+        )
+
+    if not timeline["entries"]:
+        return (
+            '<section class="card finance-timeline" id="finance-timeline">'
+            + '<div class="finance-card-head"><div><p class="finance-eyebrow">Next 14 days</p>'
+            + '<h2>Money in and out</h2></div></div>' + overdue_html
+            + '<p class="finance-accounts-asof">Nothing scheduled in the next 14 days.</p></section>'
+        )
+
+    rows = [
+        '<tr class="finance-timeline-open"><td></td><td>Starting cash (checking)</td>'
+        + '<td></td><td></td>'
+        + '<td class="finance-accounts-amount"><strong>' + _money(timeline["opening_cents"]) + '</strong></td></tr>'
+    ]
+    for entry in timeline["entries"]:
+        money_in = _money(entry["amount_cents"]) if entry["direction"] == "in" else ""
+        money_out = _money(entry["amount_cents"]) if entry["direction"] == "out" else ""
+        row_class = ' class="finance-timeline-negative"' if entry["negative"] else ""
+        rows.append(
+            '<tr' + row_class + '>'
+            + '<td>' + html.escape(entry["date"]) + '</td>'
+            + '<td>' + html.escape(entry["name"]) + '</td>'
+            + '<td class="finance-accounts-amount finance-timeline-in">' + money_in + '</td>'
+            + '<td class="finance-accounts-amount finance-timeline-out">' + money_out + '</td>'
+            + '<td class="finance-accounts-amount">' + _money(entry["running_cents"]) + '</td></tr>'
+        )
+
+    if timeline["goes_negative"]:
+        warning = (
+            '<div class="finance-plan-short">Cash goes negative on '
+            + html.escape(timeline["lowest_on"]) + ', reaching '
+            + _money(timeline["lowest_cents"]) + '. Move money from savings or move a payment.</div>'
+        )
+    else:
+        warning = (
+            '<div class="finance-plan-ok">Stays positive all 14 days. Lowest point '
+            + _money(timeline["lowest_cents"]) + ' on ' + html.escape(timeline["lowest_on"]) + '.</div>'
+        )
+
+    totals = (
+        '<div class="finance-accounts-totals">'
+        + '<div><span>Coming in</span><strong>' + _money(timeline["total_in_cents"]) + '</strong></div>'
+        + '<div><span>Going out</span><strong>' + _money(timeline["total_out_cents"]) + '</strong></div>'
+        + '<div><span>Cash in 14 days</span><strong>' + _money(timeline["closing_cents"]) + '</strong></div>'
+        + '</div>'
+    )
+    return (
+        '<section class="card finance-timeline" id="finance-timeline">'
+        + '<div class="finance-card-head"><div><p class="finance-eyebrow">Next 14 days</p>'
+        + '<h2>Money in and out</h2>'
+        + '<p class="finance-queue-helper">Every expected item in date order, with what is left after each one.</p>'
+        + '</div></div>'
+        + totals + warning + overdue_html
+        + '<table class="finance-accounts-table finance-timeline-table"><thead><tr>'
+        + '<th>Date</th><th>Item</th><th>In</th><th>Out</th><th>Balance after</th>'
+        + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></section>'
+    )
+
+
 def _render_daily_cockpit() -> str:
     """Main-page card: spendable cash, the pay plan, and the review shortcut."""
     from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
@@ -3070,6 +3148,7 @@ async def render_cashflow_overview_page(
 
     vendors_html = _render_vendors_section()
     daily_cockpit_html = _render_daily_cockpit()
+    cash_timeline_html = _render_cash_timeline()
     bill_audit_html = _render_bill_audit()
     bookkeeping_html = _render_bookkeeping()
     collections_drafts_html = _render_collections()
@@ -3295,6 +3374,7 @@ async def render_cashflow_overview_page(
       </section>
 
       {daily_cockpit_html}
+      {cash_timeline_html}
 
       <section class="card finance-money-queue" id="finance-queue" aria-labelledby="money-queue-title">
         <div class="section-head">
