@@ -75,7 +75,7 @@ class TestRunPipeline(unittest.TestCase):
             1: [_store(name="c.com", categories="Coffee & Tea")],
         }
 
-        def fetch(api_key, *, page=0, page_size=50):
+        def fetch(api_key, *, page=0, page_size=50, **kw):
             return pages.get(page, [])
 
         return fetch

@@ -9,6 +9,7 @@ this router just exposes them. Read-only and dry-run: nothing sends, nothing pus
 
 from __future__ import annotations
 
+import html
 import logging
 
 from fastapi import APIRouter, Request
@@ -231,14 +232,21 @@ def outbound_brands_page(request: Request) -> Response:
 
 
 @router.get("/admin/api/outbound/brands.csv", response_class=Response)
-def outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
+def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") -> Response:
     """Pull ICP-matched brands from StoreLeads and return them as a CSV to import
     into Clay. Sends nothing. Dedup state is not yet shared with this service, so
     a brand may appear across runs until that is wired; the CSV is a preview only.
     """
     import outbound_pipeline as _op
+    import outbound_recipes as _rx
     from sales_support_agent.models.database import get_engine
     from sales_support_agent.services import outbound_memory
+
+    # Validate the request before the environment, so a typo'd recipe always
+    # reports as a typo rather than as a missing key.
+    chosen = _rx.recipe(recipe) if recipe else None
+    if recipe and chosen is None:
+        return JSONResponse(status_code=400, content={"detail": f"Unknown recipe '{recipe}'."})
 
     api_key, _clay = _op.load_config_from_env()
     if not api_key:
@@ -251,27 +259,130 @@ def outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
         engine = None
     already = outbound_memory.load_contacted(engine) if engine is not None else set()
 
+    cap = chosen.max_per_run if chosen else max(1, min(int(max_new or 100), 500))
     try:
         result = _op.run_storeleads_to_clay(
             api_key=api_key,
             clay_webhook_url="",  # dry-run: build the list, push nothing
             processed_domains=already,
-            max_new=max(1, min(int(max_new or 100), 500)),
+            max_new=cap,
             dry_run=True,
+            recipe=chosen,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] StoreLeads CSV build failed")
         return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
 
-    if engine is not None and result.leads:
-        # Record full leads (domain + tier + signals) for dedup AND efficacy.
-        outbound_memory.record_leads(engine, result.leads, source="csv_export")
+    if engine is not None:
+        if result.leads:
+            # Record full leads (domain + tier + signals) for dedup AND efficacy.
+            outbound_memory.record_leads(engine, result.leads, source=result.recipe or "csv_export")
+        # Log the pull itself, so Lead Ops shows what we pulled and when.
+        outbound_memory.record_run(
+            engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
+            matched=result.matched_icp, fresh=result.fresh,
+            skipped_seen=result.skipped_already_contacted, partial=result.partial,
+        )
 
     return Response(
         content=_op.leads_to_csv(result.leads),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="anata_clay_brands.csv"'},
     )
+
+
+_LEADOPS_CSS = """
+  .lo-h { font-size:13px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#6b7280; margin:22px 0 8px; }
+  .lo-table { border-collapse:collapse; width:100%; max-width:1000px; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
+  .lo-table th, .lo-table td { text-align:left; padding:10px 14px; border-bottom:1px solid #f0f0f3; font-size:14px; vertical-align:top; }
+  .lo-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
+  .lo-tier { font-weight:800; }
+  .lo-A { color:#0a7d33; } .lo-B { color:#b54708; } .lo-C { color:#6b7280; }
+  .lo-btn { display:inline-block; padding:7px 14px; border-radius:9px; background:#2B3644; color:#fff;
+    font-family:"Montserrat",sans-serif; font-weight:800; font-size:12px; text-decoration:none; white-space:nowrap; }
+  .lo-btn:hover { background:#1f2833; color:#fff; }
+  .lo-note { margin:10px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
+  .lo-today { padding:14px 16px; border-radius:14px; background:rgba(133,187,218,.14); border:1px solid rgba(43,54,68,.08); font-size:15px; }
+"""
+
+
+@router.get("/admin/outbound/lead-ops", response_class=HTMLResponse)
+def outbound_lead_ops(request: Request) -> Response:
+    """What we pull, when it fires, and what every past pull returned."""
+    import outbound_recipes as _rx
+
+    plan = _rx.daily_plan()
+    todays_keys = {r["key"] for r in plan["recipes"]}
+
+    if plan["recipes"]:
+        today_line = (
+            f"Today is {plan['weekday']}. {len(plan['recipes'])} pull(s) scheduled, "
+            f"up to {plan['planned_total']} fresh brands."
+        )
+    else:
+        today_line = (
+            f"Today is {plan['weekday']}. Nothing scheduled - we do not pull on weekends "
+            "because we do not send on weekends."
+        )
+
+    rows = []
+    for r in _rx.RECIPES:
+        due = "Today" if r.key in todays_keys else ("Tue / Wed" if r.cadence == "weekly" else "Weekdays")
+        rows.append(
+            f"<tr><td class='lo-tier lo-{r.tier}'>{r.tier}</td>"
+            f"<td><b>{html.escape(r.label)}</b><br>"
+            f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason)}</span></td>"
+            f"<td>{html.escape(due)}</td><td>{r.max_per_run}</td>"
+            f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a></td></tr>"
+        )
+
+    # Past pulls, so we can see what each recipe actually returns over time.
+    try:
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.services import outbound_memory
+        runs = outbound_memory.load_runs(get_engine(), limit=25)
+    except Exception:  # noqa: BLE001
+        runs = []
+
+    if runs:
+        run_rows = "".join(
+            f"<tr><td>{html.escape(str(x['ran_at'])[:16])}</td><td>{html.escape(x['recipe'] or '-')}</td>"
+            f"<td>{x['scanned']:,}</td><td>{x['matched']:,}</td><td><b>{x['fresh']:,}</b></td>"
+            f"<td>{x['skipped_seen']:,}</td>"
+            f"<td>{'cut short' if x['partial'] else 'complete'}</td></tr>"
+            for x in runs
+        )
+    else:
+        run_rows = "<tr><td colspan='7'>No pulls yet. Use a Pull now button above.</td></tr>"
+
+    body = f"""
+        <h1>Lead ops</h1>
+        <p class="sub">What we pull from StoreLeads, what makes it fire, and what every
+        pull actually returned. Building the list only - nothing here sends.</p>
+
+        <div class="lo-today">{html.escape(today_line)}</div>
+
+        <p class="lo-h">Pull recipes</p>
+        <table class="lo-table">
+          <thead><tr><th>Tier</th><th>Recipe / why now</th><th>Runs</th><th>Cap</th><th></th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+        <p class="lo-note">Triggers run Tuesday and Wednesday because StoreLeads refreshes
+        its data weekly on Monday. The core ICP pull runs every weekday to keep volume steady.
+        Caps are deliberately small: frequent and low beats one big blast.</p>
+
+        <p class="lo-h">Recent pulls</p>
+        <table class="lo-table">
+          <thead><tr><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Status</th></tr></thead>
+          <tbody>{run_rows}</tbody>
+        </table>
+        <p class="lo-note">Fresh is what you actually get: brands that fit, that we have
+        never contacted before. Already seen is the never-email-twice memory doing its job.</p>
+    """
+    return HTMLResponse(_shell_page(
+        request, active="outbound_leadops", title="Outbound Lead Ops",
+        extra_css=_LEADOPS_CSS, body=body,
+    ))
 
 
 @router.post("/admin/api/outbound/nurture", response_class=JSONResponse)

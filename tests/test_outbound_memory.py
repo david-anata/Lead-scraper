@@ -66,5 +66,46 @@ class OutboundMemoryTests(unittest.TestCase):
         self.assertEqual(m.record_leads(object(), [{"domain": "a.com"}]), 0)
 
 
+class RunTrackingTests(unittest.TestCase):
+    """Every pull is logged so we can see what we pulled, when, and from where."""
+
+    def _engine(self):
+        return create_engine("sqlite://", future=True)
+
+    def test_starts_with_no_runs(self):
+        self.assertEqual(m.load_runs(self._engine()), [])
+
+    def test_records_and_reads_back_a_run(self):
+        e = self._engine()
+        ok = m.record_run(e, recipe="new_growth_app", scanned=200, matched=40,
+                          fresh=25, skipped_seen=15)
+        self.assertTrue(ok)
+        runs = m.load_runs(e)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["recipe"], "new_growth_app")
+        self.assertEqual(runs[0]["scanned"], 200)
+        self.assertEqual(runs[0]["fresh"], 25)
+        self.assertFalse(runs[0]["partial"])
+
+    def test_partial_flag_survives(self):
+        e = self._engine()
+        m.record_run(e, recipe="x", scanned=1, matched=1, fresh=1,
+                     skipped_seen=0, partial=True, note="rate limited")
+        r = m.load_runs(e)[0]
+        self.assertTrue(r["partial"])
+        self.assertEqual(r["note"], "rate limited")
+
+    def test_limit_is_respected(self):
+        e = self._engine()
+        for i in range(5):
+            m.record_run(e, recipe=f"r{i}", scanned=1, matched=1, fresh=1, skipped_seen=0)
+        self.assertEqual(len(m.load_runs(e, limit=3)), 3)
+
+    def test_fails_open_on_bad_engine(self):
+        self.assertFalse(m.record_run(object(), recipe="x", scanned=0, matched=0,
+                                      fresh=0, skipped_seen=0))
+        self.assertEqual(m.load_runs(object()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

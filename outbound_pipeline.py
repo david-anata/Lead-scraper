@@ -354,12 +354,14 @@ def fetch_storeleads_page(
     page_size: int = 50,
     timeout: int = 30,
     max_retries: int = 4,
+    extra_params: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     """Fetch one page of Shopify stores from StoreLeads, newest-ranked first.
 
-    Server-side we narrow to the platform and sort by rank; the authoritative
-    ICP filtering (revenue, country, category, tags, email) happens client-side
-    in store_matches_icp so it stays exact regardless of StoreLeads filter quirks.
+    extra_params carries a recipe's server-side filters (see outbound_recipes),
+    which is what turns a static list into a timed trigger. The authoritative ICP
+    filtering still happens client-side in store_matches_icp, so a StoreLeads
+    filter quirk can never widen our target.
 
     Retries politely on 429 (rate limit), honoring Retry-After when present, with
     exponential backoff otherwise.
@@ -377,6 +379,9 @@ def fetch_storeleads_page(
             "plan", "created_at", "features",
         )),
     }
+    if extra_params:
+        # Recipe filters win over the defaults (e.g. a recipe's own sort order).
+        params.update({k: v for k, v in extra_params.items() if v is not None})
     for attempt in range(max_retries + 1):
         resp = requests.get(
             f"{STORELEADS_BASE_URL}{STORELEADS_DOMAIN_PATH}",
@@ -423,6 +428,7 @@ class PipelineResult:
     leads: list[dict[str, Any]] = field(default_factory=list)
     dry_run: bool = False
     partial: bool = False  # True if StoreLeads cut us off (rate limit) mid-run
+    recipe: str = ""       # which pull recipe sourced this batch
 
 
 def run_storeleads_to_clay(
@@ -434,6 +440,8 @@ def run_storeleads_to_clay(
     max_pages: int = 40,
     dry_run: bool = False,
     throttle_seconds: float = 1.5,
+    recipe: Optional[Any] = None,
+    now: Optional[datetime] = None,
     fetch_page: Optional[Callable[..., list[dict[str, Any]]]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
 ) -> PipelineResult:
@@ -449,7 +457,12 @@ def run_storeleads_to_clay(
     push = push or push_to_clay
 
     result = PipelineResult(dry_run=dry_run or not clay_webhook_url)
+    result.recipe = getattr(recipe, "key", "") if recipe else ""
     seen_this_run: set[str] = set()
+
+    # A recipe supplies the server-side filters that make this pull a timed
+    # trigger (see outbound_recipes); without one we pull the broad ICP list.
+    extra = recipe.params(now) if recipe is not None else None
 
     for page in range(max_pages):
         if result.fresh >= max_new:
@@ -457,7 +470,7 @@ def run_storeleads_to_clay(
         if page > 0 and throttle_seconds:
             time.sleep(throttle_seconds)
         try:
-            stores = fetch_page(api_key, page=page)
+            stores = fetch_page(api_key, page=page, extra_params=extra)
         except Exception as exc:  # noqa: BLE001 — return partial instead of failing
             logger.warning("[outbound] StoreLeads page %s failed, returning %s brands gathered: %s",
                            page, len(result.leads), exc)
@@ -470,7 +483,15 @@ def run_storeleads_to_clay(
             if not store_matches_icp(store):
                 continue
             result.matched_icp += 1
-            lead = to_clay_lead(store)
+            lead = to_clay_lead(store, now=now)
+            if recipe is not None:
+                # The recipe is why this brand surfaced now, so it leads the
+                # reason and is carried through for per-recipe measurement.
+                lead["recipe"] = recipe.key
+                lead["reason"] = recipe.reason
+                lead["signals"] = [recipe.reason] + [
+                    s for s in lead.get("signals", []) if s != recipe.reason
+                ]
             if lead.get("tier") == "X":
                 continue  # public company / out of profile — drop
             domain = lead["domain"]
@@ -510,7 +531,7 @@ def load_config_from_env() -> tuple[str, str]:
 # Column order for the CSV that gets imported into Clay (used on the Launch plan,
 # before webhooks unlock on Growth). These are the fields Clay needs to run its
 # enrichment and the two prompts.
-CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "score", "estimated_sales_yearly_cents", "categories")
+CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "recipe", "score", "estimated_sales_yearly_cents", "categories")
 
 
 def leads_to_csv(leads: list[dict[str, Any]]) -> str:

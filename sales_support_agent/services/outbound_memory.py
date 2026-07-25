@@ -47,8 +47,81 @@ _ALTERS = (
 )
 
 
+_RUNS_TABLE = "outbound_pull_runs"
+
+# One row per pull, so we can see what we pulled, when, from which recipe, and
+# how it converted from scanned -> matched -> fresh.
+_CREATE_RUNS_SQL = f"""
+CREATE TABLE IF NOT EXISTS {_RUNS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe TEXT,
+    scanned INTEGER,
+    matched INTEGER,
+    fresh INTEGER,
+    skipped_seen INTEGER,
+    partial INTEGER,
+    note TEXT,
+    ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+# Postgres needs a different auto-increment keyword than SQLite.
+_CREATE_RUNS_SQL_PG = _CREATE_RUNS_SQL.replace(
+    "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
+)
+_INSERT_RUN_SQL = (
+    f"INSERT INTO {_RUNS_TABLE} (recipe, scanned, matched, fresh, skipped_seen, partial, note) "
+    "VALUES (:recipe, :scanned, :matched, :fresh, :skipped_seen, :partial, :note)"
+)
+_SELECT_RUNS_SQL = (
+    f"SELECT recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at "
+    f"FROM {_RUNS_TABLE} ORDER BY ran_at DESC"
+)
+
+
 def _norm(domain: str) -> str:
     return str(domain or "").strip().lower()
+
+
+def ensure_runs_table(engine) -> None:
+    is_pg = "postgres" in str(getattr(engine, "url", "")).lower()
+    sql = _CREATE_RUNS_SQL_PG if is_pg else _CREATE_RUNS_SQL
+    with engine.begin() as conn:
+        conn.execute(text(sql))
+
+
+def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
+               skipped_seen: int, partial: bool = False, note: str = "") -> bool:
+    """Log one pull. Best-effort: a failure here must never break a pull."""
+    try:
+        ensure_runs_table(engine)
+        with engine.begin() as conn:
+            conn.execute(text(_INSERT_RUN_SQL), {
+                "recipe": recipe or "", "scanned": int(scanned), "matched": int(matched),
+                "fresh": int(fresh), "skipped_seen": int(skipped_seen),
+                "partial": 1 if partial else 0, "note": note or "",
+            })
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] record_run failed")
+        return False
+
+
+def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
+    """Most recent pulls first. Empty list on error."""
+    try:
+        ensure_runs_table(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(_SELECT_RUNS_SQL)).fetchall()
+        out = []
+        for r in rows[:limit]:
+            out.append({
+                "recipe": r[0], "scanned": r[1], "matched": r[2], "fresh": r[3],
+                "skipped_seen": r[4], "partial": bool(r[5]), "note": r[6], "ran_at": r[7],
+            })
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_runs failed")
+        return []
 
 
 def ensure_table(engine) -> None:
