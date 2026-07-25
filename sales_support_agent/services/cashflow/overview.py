@@ -2811,17 +2811,23 @@ def _render_bookkeeping() -> str:
         for item in pending:
             event_id = html.escape(str(item["id"]), quote=True)
             guess = str(item["guess"] or "")
-            options = "".join(
-                '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
-                + category.title() + '</option>'
-                for category in _BOOKKEEPING_CATEGORIES
+            # Never pre-select when there is no real guess: the first option
+            # would show as chosen and a click-through would misfile everything
+            # as that category.
+            options = (
+                '<option value="" ' + ("selected" if not guess else "") + '>&mdash; choose &mdash;</option>'
+                + "".join(
+                    '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
+                    + category.title() + '</option>'
+                    for category in _BOOKKEEPING_CATEGORIES
+                )
             )
             rows.append(
                 '<tr><td>' + html.escape(str(item["name"]))
                 + '<br><small>' + _money(item["amount_cents"]) + ' on ' + html.escape(item["posted_on"]) + '</small></td>'
                 + '<td><form method="post" action="/admin/finances/bookkeeping/file" class="finance-book-form">'
                 + '<input type="hidden" name="event_id" value="' + event_id + '">'
-                + '<select name="category">' + options + '</select>'
+                + '<select name="category" required>' + options + '</select>'
                 + '<label class="finance-book-always"><input type="checkbox" name="always" value="true"> always</label>'
                 + '<button type="submit" class="btn btn-secondary btn-sm">File</button>'
                 + '</form></td></tr>'

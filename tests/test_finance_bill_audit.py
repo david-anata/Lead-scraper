@@ -36,9 +36,11 @@ def _kinds(findings):
 
 
 def test_detects_duplicate_charge():
+    """A duplicate now has to clear a bar: a big charge from a merchant we do
+    not see often. Two small same-day charges are ordinary shopping."""
     engine = _setup()
-    _add(engine, cid="d1", name="Adobe", amount=52_99, day=date(2026, 7, 3))
-    _add(engine, cid="d2", name="Adobe", amount=52_99, day=date(2026, 7, 3))
+    _add(engine, cid="d1", name="Eliteworks", amount=3200_00, day=date(2026, 7, 3))
+    _add(engine, cid="d2", name="Eliteworks", amount=3200_00, day=date(2026, 7, 3))
     findings = run_bill_audit(as_of=AS_OF)
     assert "duplicate" in _kinds(findings)
     dup = next(f for f in findings if f["kind"] == "duplicate")
@@ -46,10 +48,12 @@ def test_detects_duplicate_charge():
 
 
 def test_detects_price_creep():
+    """Measured as recent-window against prior-window, so both need charges."""
     engine = _setup()
-    _add(engine, cid="c1", name="Comcast", amount=110_00, day=date(2026, 3, 1))
-    _add(engine, cid="c2", name="Comcast", amount=120_00, day=date(2026, 5, 1))
-    _add(engine, cid="c3", name="Comcast", amount=139_00, day=date(2026, 7, 1))
+    for index, day in enumerate([date(2026, 3, 5), date(2026, 3, 20), date(2026, 4, 5)]):
+        _add(engine, cid=f"old{index}", name="Comcast", amount=110_00, day=day)
+    for index, day in enumerate([date(2026, 6, 5), date(2026, 6, 20), date(2026, 7, 5)]):
+        _add(engine, cid=f"new{index}", name="Comcast", amount=139_00, day=day)
     findings = run_bill_audit(as_of=AS_OF)
     assert "price_creep" in _kinds(findings)
 
@@ -76,8 +80,8 @@ def test_detects_category_spike():
 
 def test_dismissed_finding_stays_hidden_on_rerun():
     engine = _setup()
-    _add(engine, cid="d1", name="Adobe", amount=52_99, day=date(2026, 7, 3))
-    _add(engine, cid="d2", name="Adobe", amount=52_99, day=date(2026, 7, 3))
+    _add(engine, cid="d1", name="Eliteworks", amount=3200_00, day=date(2026, 7, 3))
+    _add(engine, cid="d2", name="Eliteworks", amount=3200_00, day=date(2026, 7, 3))
     findings = run_bill_audit(as_of=AS_OF)
     dup = next(f for f in findings if f["kind"] == "duplicate")
 

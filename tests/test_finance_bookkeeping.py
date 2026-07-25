@@ -130,3 +130,36 @@ def test_filing_requires_a_category_and_a_real_transaction():
         file_transaction("t1", "   ")
     with pytest.raises(ValueError):
         file_transaction("nope", "supplies")
+
+
+# --- transfers and the no-guess default -----------------------------------
+
+def test_internal_transfers_never_reach_the_filing_queue():
+    engine = _setup()
+    _txn(engine, cid="t1", name="Home banking Withdrawal Transfer to S0050", amount=25000_00)
+    _txn(engine, cid="t2", name="To Share 58", amount=144995_17)
+    _txn(engine, cid="real", name="MYSTERY VENDOR", amount=500_00)
+
+    ids = [item["id"] for item in list_needs_decision()]
+    assert ids == ["real"], "moving your own money is not an expense to categorise"
+
+
+def test_transfers_are_not_counted_as_needing_a_decision():
+    engine = _setup()
+    _txn(engine, cid="t1", name="Home banking Withdrawal Transfer to S0050", amount=25000_00)
+    assert file_transactions()["needs_decision"] == 0
+
+
+def test_an_unknown_merchant_gets_no_guess_so_nothing_is_preselected():
+    engine = _setup()
+    _txn(engine, cid="t1", name="Madison Bicycle Shop", amount=500_00)
+    item = list_needs_decision()[0]
+    assert item["guess"] == "", "a blank guess means the form must not preselect a category"
+
+
+def test_filing_without_choosing_a_category_is_refused():
+    engine = _setup()
+    _txn(engine, cid="t1", name="KFC", amount=500_00)
+    for bad in ("", "   ", "uncategorized", "other"):
+        with pytest.raises(ValueError, match="choose a category"):
+            file_transaction("t1", bad)

@@ -21,6 +21,7 @@ from uuid import uuid4
 from sqlalchemy import text
 
 from sales_support_agent.models.database import get_engine
+from sales_support_agent.services.cashflow.transfers import is_internal_transfer
 
 UNFILED_CATEGORIES = {"", "uncategorized", "other"}
 QBO_WRITEBACK_STATUS = "not_connected"
@@ -63,7 +64,12 @@ def _unfiled_transactions(limit: int = 500) -> list[dict[str, Any]]:
             ORDER BY COALESCE(effective_date, due_date) DESC
             LIMIT :limit
         """), {"limit": limit}).fetchall()  # noqa: S608 - fixed internal allowlist
-    return [dict(row._mapping) for row in rows]
+    # Moving money between the operator's own accounts is not an expense, so it
+    # must never sit in a queue asking what category it belongs to.
+    return [
+        dict(row._mapping) for row in rows
+        if not is_internal_transfer(dict(row._mapping))
+    ]
 
 
 def _haystack(row: dict[str, Any]) -> str:
@@ -147,8 +153,8 @@ def file_transaction(
 ) -> dict[str, Any]:
     """File one transaction, optionally teaching a rule so it is never asked again."""
     category = _normalise(category)
-    if not category:
-        raise ValueError("a category is required")
+    if not category or category in UNFILED_CATEGORIES:
+        raise ValueError("choose a category first")
     now = datetime.now(timezone.utc)
     rule_created = ""
     with get_engine().begin() as connection:
