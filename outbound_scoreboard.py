@@ -152,7 +152,25 @@ def _fmt_pct(v: Optional[float]) -> str:
     return f"{v}%" if v is not None else "not connected"
 
 
-def render_scoreboard_html(board: Scoreboard) -> str:
+# Scoped CSS for the scoreboard body. Shared by the standalone page and the
+# shell-wrapped page on agent.anatainc.com, so the tiles look identical in both.
+SCOREBOARD_CSS = """
+  .ob-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; max-width:900px; }
+  .ob-tile { background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px 18px; display:grid; gap:4px; }
+  .ob-tile-label { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#6b7280; font-weight:700; }
+  .ob-tile strong { font-size:24px; }
+  .ob-tile small { color:#6b7280; }
+  .ob-headline { margin:20px 0; font-size:16px; font-weight:600; }
+  .ob-table { border-collapse:collapse; width:100%; max-width:900px; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
+  .ob-table th, .ob-table td { text-align:left; padding:10px 14px; border-bottom:1px solid #f0f0f3; font-size:14px; }
+  .ob-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
+  @media (max-width:640px) { .ob-tiles { grid-template-columns:repeat(2,1fr); } }
+"""
+
+
+def render_scoreboard_body(board: Scoreboard) -> str:
+    """Just the tiles + headline + niche table — no <html> wrapper. The router
+    drops this into the app shell; the standalone page wraps it below."""
     if not board.connected:
         tiles = (
             _tile("Sent", "not connected") + _tile("Reply rate", "not connected")
@@ -180,30 +198,29 @@ def render_scoreboard_html(board: Scoreboard) -> str:
         for n in board.niches
     ) or '<tr><td colspan="3">No niche data yet.</td></tr>'
 
+    return f"""
+  <div class="ob-tiles">{tiles}</div>
+  {headline}
+  <h2 style="font-size:15px; margin:24px 0 8px;">By niche (which to double down on)</h2>
+  <table class="ob-table"><thead><tr><th>Niche</th><th>Sent</th><th>Positive %</th></tr></thead>
+  <tbody>{niche_rows}</tbody></table>"""
+
+
+def render_scoreboard_html(board: Scoreboard) -> str:
+    """Standalone page (used by the root app). agent.anatainc.com wraps
+    render_scoreboard_body in the shell instead."""
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Outbound Scoreboard</title>
 <style>
   body {{ font-family: -apple-system, Segoe UI, sans-serif; background:#f7f7f9; color:#1c2230; margin:0; padding:32px; }}
   h1 {{ font-size:22px; margin:0 0 4px; }}
   .ob-sub {{ color:#6b7280; margin:0 0 24px; }}
-  .ob-tiles {{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; max-width:900px; }}
-  .ob-tile {{ background:#fff; border:1px solid #e5e7eb; border-radius:14px; padding:16px 18px; display:grid; gap:4px; }}
-  .ob-tile-label {{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#6b7280; font-weight:700; }}
-  .ob-tile strong {{ font-size:24px; }}
-  .ob-tile small {{ color:#6b7280; }}
-  .ob-headline {{ margin:20px 0; font-size:16px; font-weight:600; }}
-  table {{ border-collapse:collapse; width:100%; max-width:900px; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }}
-  th, td {{ text-align:left; padding:10px 14px; border-bottom:1px solid #f0f0f3; font-size:14px; }}
-  th {{ background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }}
+  {SCOREBOARD_CSS}
 </style></head>
 <body>
   <h1>Outbound scoreboard</h1>
   <p class="ob-sub">Your machine, and how it is performing.</p>
-  <div class="ob-tiles">{tiles}</div>
-  {headline}
-  <h2 style="font-size:15px; margin:24px 0 8px;">By niche (which to double down on)</h2>
-  <table><thead><tr><th>Niche</th><th>Sent</th><th>Positive %</th></tr></thead>
-  <tbody>{niche_rows}</tbody></table>
+  {render_scoreboard_body(board)}
 </body></html>"""
 
 

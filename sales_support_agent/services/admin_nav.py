@@ -69,6 +69,10 @@ _NAV_SECTIONS = [
         _NavSubpage("advertising.audit", "Profit Calculator", "/admin/advertising/profit-calculator", "advertising_profit_calculator", superadmin_only=True),
         _NavSubpage("advertising.audit", "Bulk Planner", "/admin/advertising/bulk-profitability", "advertising_bulk_profitability", superadmin_only=True),
     ]),
+    _NavSection("outbound", "Outbound", "outbound", [
+        _NavSubpage("outbound.scoreboard", "Scoreboard", "/admin/outbound/scoreboard", "outbound_scoreboard"),
+        _NavSubpage("outbound.scoreboard", "Brand List", "/admin/outbound/brands", "outbound_brands"),
+    ]),
     _NavSection("executive", "Executive", "executive", [
         _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
         _NavSubpage("executive.brand_analysis", "Brand Analysis", "/admin/executive/brand-analysis", "brand_analysis"),
@@ -534,6 +538,8 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "building"
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
+    if active in {"outbound", "outbound_scoreboard", "outbound_brands"}:
+        primary_active = "outbound"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"
     if active in {"fulfillment", "fulfillment_sales", "fulfillment_dashboard", "fulfillment_reports", "fulfillment_latest"}:
@@ -553,6 +559,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         "executive": executive_section or ("executive" if active == "executive" else active),
         "finance": active,
         "building": active,
+        "outbound": active,
         "fulfillment": fulfillment_section or (website_ops_section if website_ops_section.startswith("fulfillment_") else "") or ("fulfillment_sales" if active == "fulfillment" else active),
         "hr": hr_section or ("dashboard" if active == "hr" else active.removeprefix("hr_")),
     }

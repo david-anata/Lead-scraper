@@ -64,6 +64,7 @@ TOOL_CATALOG: tuple[Tool, ...] = (
     Tool("hr.payroll.submit", "HR — record payment/provider actions", "HR", ()),
     Tool("hr.settings.manage", "HR — manage payroll settings", "HR", ()),
     Tool("hr.audit.view", "HR — view audit and exports", "HR", ()),
+    Tool("outbound.scoreboard", "Outbound machine", "Outbound", ("/admin/outbound", "/admin/api/outbound")),
     Tool("access.manage", "People and access", "Access", ("/admin/access",)),
 )
 
