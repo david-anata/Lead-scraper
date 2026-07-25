@@ -286,7 +286,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
             engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
             matched=result.matched_icp, fresh=result.fresh,
             skipped_seen=result.skipped_already_contacted, partial=result.partial,
-            config_version=version,
+            config_version=version, delivery="file",
         )
 
     return Response(
@@ -315,6 +315,9 @@ _LEADOPS_CSS = """
   .lo-save { padding:10px 18px; border:none; border-radius:10px; background:#2B3644; color:#fff; font-weight:800; font-size:14px; cursor:pointer; }
   .lo-msg { margin:10px 0 0; font-size:14px; font-weight:600; }
   .lo-ver { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(43,54,68,.08); font-size:12px; font-weight:800; }
+  .lo-clay { margin:10px 0 0; padding:12px 16px; border-radius:14px; background:#fff;
+    border:1px solid var(--border); font-size:14px; }
+  .lo-push { border:none; cursor:pointer; font-family:"Montserrat",sans-serif; }
   .lo-today { padding:14px 16px; border-radius:14px; background:rgba(133,187,218,.14); border:1px solid rgba(43,54,68,.08); font-size:15px; }
 """
 
@@ -323,6 +326,7 @@ _LEADOPS_CSS = """
 def outbound_lead_ops(request: Request) -> Response:
     """What we pull, when it fires, and what every past pull returned."""
     import outbound_recipes as _rx
+    import outbound_clay as _cl
     from sales_support_agent.services import outbound_settings as _st
 
     try:
@@ -335,6 +339,20 @@ def outbound_lead_ops(request: Request) -> Response:
 
     plan = _rx.daily_plan(settings=tunables)
     todays_keys = {r["key"] for r in plan["recipes"]}
+
+    _clay_url, _ = _cl.load_clay_config()
+    try:
+        from sales_support_agent.services import outbound_memory as _mem
+        _used = _mem.total_delivered(_eng)
+    except Exception:  # noqa: BLE001
+        _used = 0
+    if _clay_url:
+        clay_strip = (f"<b>Clay: connected.</b> {html.escape(_cl.budget_note(_used))} "
+                      "Send to Clay puts brands straight into your table, no file needed.")
+    else:
+        clay_strip = ("<b>Clay: not connected.</b> Add the webhook address on Render as "
+                      "CLAY_WEBHOOK_URL and the Send to Clay buttons switch on. "
+                      "Pull now and the file download work either way.")
 
     if plan["recipes"]:
         today_line = (
@@ -356,7 +374,10 @@ def outbound_lead_ops(request: Request) -> Response:
             f"<td><b>{html.escape(r.label)}</b><br>"
             f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason_for(tunables))}</span></td>"
             f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
-            f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a></td></tr>"
+            f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a>"
+            + (f" <button class='lo-btn lo-push' data-recipe='{r.key}' type='button'>Send to Clay</button>"
+               if _clay_url else "")
+            + "</td></tr>"
         )
 
     # Past pulls, so we can see what each recipe actually returns over time.
@@ -372,12 +393,14 @@ def outbound_lead_ops(request: Request) -> Response:
             f"<tr><td>{html.escape(str(x['ran_at'])[:16])}</td><td>{html.escape(x['recipe'] or '-')}</td>"
             f"<td>{x['scanned']:,}</td><td>{x['matched']:,}</td><td><b>{x['fresh']:,}</b></td>"
             f"<td>{x['skipped_seen']:,}</td>"
+            f"<td>{'Clay' if x.get('delivery') == 'clay' else 'file'}"
+            + (f" ({x.get('delivered')})" if x.get('delivery') == 'clay' else "") + "</td>"
             f"<td>{'cut short' if x['partial'] else 'complete'}</td>"
             f"<td>v{x.get('config_version') or 0}</td></tr>"
             for x in runs
         )
     else:
-        run_rows = "<tr><td colspan='8'>No pulls yet. Use a Pull now button above.</td></tr>"
+        run_rows = "<tr><td colspan='9'>No pulls yet. Use a Pull now button above.</td></tr>"
 
 
     # Tuning: the numbers an operator should be able to change without a deploy.
@@ -404,6 +427,9 @@ def outbound_lead_ops(request: Request) -> Response:
         pull actually returned. Building the list only - nothing here sends.</p>
 
         <div class="lo-today">{html.escape(today_line)}</div>
+        <div class="lo-clay">{clay_strip}</div>
+
+        <p class="lo-msg" id="push-msg"></p>
 
         <p class="lo-h">Pull recipes</p>
         <table class="lo-table">
@@ -416,7 +442,7 @@ def outbound_lead_ops(request: Request) -> Response:
 
         <p class="lo-h">Recent pulls</p>
         <table class="lo-table">
-          <thead><tr><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Status</th><th>Settings</th></tr></thead>
+          <thead><tr><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Delivered</th><th>Status</th><th>Settings</th></tr></thead>
           <tbody>{run_rows}</tbody>
         </table>
         <p class="lo-note">Fresh is what you actually get: brands that fit, that we have
@@ -440,6 +466,26 @@ def outbound_lead_ops(request: Request) -> Response:
           <thead><tr><th>Version</th><th>When</th><th>Setting</th><th>Change</th><th>Note</th><th>Who</th></tr></thead>
           <tbody>{change_rows}</tbody>
         </table>
+        <script>
+          (function(){{
+            var msg=document.getElementById('push-msg');
+            document.querySelectorAll('.lo-push').forEach(function(b){{
+              b.addEventListener('click', function(){{
+                var fd=new FormData(); fd.append('recipe', b.dataset.recipe);
+                msg.textContent='Pulling and sending to Clay...';
+                b.disabled=true;
+                fetch('/admin/api/outbound/push', {{method:'POST', body:fd}})
+                  .then(function(r){{return r.json();}})
+                  .then(function(d){{
+                    msg.textContent = d.summary || (d.reason || 'Done.');
+                    b.disabled=false;
+                    setTimeout(function(){{location.reload();}}, 2500);
+                  }})
+                  .catch(function(){{ msg.textContent='Could not reach the server.'; b.disabled=false; }});
+              }});
+            }});
+          }})();
+        </script>
         <script>
           (function(){{
             var btn=document.getElementById('s_save'), msg=document.getElementById('s_msg');
@@ -468,6 +514,85 @@ def outbound_lead_ops(request: Request) -> Response:
         request, active="outbound_leadops", title="Outbound Lead Ops",
         extra_css=_LEADOPS_CSS, body=body,
     ))
+
+
+@router.post("/admin/api/outbound/push", response_class=JSONResponse)
+async def outbound_push_to_clay(request: Request) -> Response:
+    """Pull one recipe and send it straight to Clay, no file in between.
+
+    Only brands Clay actually accepted are marked as contacted, so a rejected
+    brand comes back on the next pull rather than being silently lost.
+    """
+    import outbound_pipeline as _op
+    import outbound_recipes as _rx
+    import outbound_clay as _cl
+    from sales_support_agent.services import outbound_memory, outbound_settings as _st
+
+    form = await request.form()
+    key = str(form.get("recipe") or "").strip()
+    chosen = _rx.recipe(key) if key else None
+    if key and chosen is None:
+        return JSONResponse(status_code=400, content={"ok": False, "reason": f"Unknown recipe '{key}'."})
+
+    webhook_url, token = _cl.load_clay_config()
+    if not webhook_url:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "Clay is not connected yet. Add the webhook address on "
+                                   "Render as CLAY_WEBHOOK_URL to turn this on."})
+
+    api_key, _ = _op.load_config_from_env()
+    if not api_key:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "STORELEADS_API_KEY is not set on this service."})
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+
+    tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
+    version = _st.config_version(engine) if engine is not None else 0
+    already = outbound_memory.load_contacted(engine)
+    used = outbound_memory.total_delivered(engine)
+
+    try:
+        result = _op.run_storeleads_to_clay(
+            api_key=api_key, clay_webhook_url="", processed_domains=already,
+            max_new=chosen.cap(tunables) if chosen else 25, dry_run=True,
+            recipe=chosen, settings=tunables,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[outbound] pull before Clay push failed")
+        return JSONResponse(status_code=502, content={"ok": False, "reason": f"StoreLeads fetch failed: {exc}"})
+
+    pushed = _cl.push_leads(webhook_url, result.leads, token=token, config_version=version,
+                            used_submissions=used)
+
+    # ONLY what Clay accepted counts as contacted.
+    if engine is not None:
+        accepted = {d for d in pushed.accepted_domains if d}
+        if accepted:
+            outbound_memory.record_leads(
+                engine, [l for l in result.leads if l.get("domain") in accepted],
+                source=result.recipe or "clay_push")
+        outbound_memory.record_run(
+            engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
+            matched=result.matched_icp, fresh=result.fresh,
+            skipped_seen=result.skipped_already_contacted, partial=result.partial,
+            config_version=version, delivery="clay", delivered=pushed.accepted,
+            note=pushed.reason[:200],
+        )
+
+    return JSONResponse(content={
+        "ok": pushed.rejected == 0,
+        "found": result.fresh,
+        "accepted": pushed.accepted,
+        "rejected": pushed.rejected,
+        "skipped_already_contacted": result.skipped_already_contacted,
+        "summary": (f"Found {result.fresh} fresh brands. " + pushed.summary
+                    if result.fresh else "No fresh brands to send right now."),
+    })
 
 
 @router.post("/admin/api/outbound/settings", response_class=JSONResponse)

@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS {_RUNS_TABLE} (
     skipped_seen INTEGER,
     partial INTEGER,
     config_version INTEGER,
+    delivery TEXT,
+    delivered INTEGER,
     note TEXT,
     ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -70,13 +72,17 @@ _CREATE_RUNS_SQL_PG = _CREATE_RUNS_SQL.replace(
     "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
 )
 _INSERT_RUN_SQL = (
-    f"INSERT INTO {_RUNS_TABLE} (recipe, scanned, matched, fresh, skipped_seen, partial, config_version, note) "
-    "VALUES (:recipe, :scanned, :matched, :fresh, :skipped_seen, :partial, :config_version, :note)"
+    f"INSERT INTO {_RUNS_TABLE} (recipe, scanned, matched, fresh, skipped_seen, partial, config_version, delivery, delivered, note) "
+    "VALUES (:recipe, :scanned, :matched, :fresh, :skipped_seen, :partial, :config_version, :delivery, :delivered, :note)"
 )
 # Best-effort upgrade for runs tables created before versioning existed.
-_RUN_ALTERS = (f"ALTER TABLE {_RUNS_TABLE} ADD COLUMN config_version INTEGER",)
+_RUN_ALTERS = (
+    f"ALTER TABLE {_RUNS_TABLE} ADD COLUMN config_version INTEGER",
+    f"ALTER TABLE {_RUNS_TABLE} ADD COLUMN delivery TEXT",
+    f"ALTER TABLE {_RUNS_TABLE} ADD COLUMN delivered INTEGER",
+)
 _SELECT_RUNS_SQL = (
-    f"SELECT recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at, config_version "
+    f"SELECT recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at, config_version, delivery, delivered "
     f"FROM {_RUNS_TABLE} ORDER BY ran_at DESC"
 )
 
@@ -100,7 +106,8 @@ def ensure_runs_table(engine) -> None:
 
 def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
                skipped_seen: int, partial: bool = False, note: str = "",
-               config_version: int = 0) -> bool:
+               config_version: int = 0, delivery: str = "file",
+               delivered: int = 0) -> bool:
     """Log one pull. Best-effort: a failure here must never break a pull."""
     if engine is None:
         return False
@@ -112,11 +119,28 @@ def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
                 "fresh": int(fresh), "skipped_seen": int(skipped_seen),
                 "partial": 1 if partial else 0, "note": note or "",
                 "config_version": int(config_version or 0),
+                "delivery": delivery or "file", "delivered": int(delivered or 0),
             })
         return True
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] record_run failed")
         return False
+
+
+def total_delivered(engine) -> int:
+    """How many rows we have actually pushed to Clay, for the budget guard."""
+    if engine is None:
+        return 0
+    try:
+        ensure_runs_table(engine)
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                f"SELECT COALESCE(SUM(delivered), 0) FROM {_RUNS_TABLE} WHERE delivery = 'clay'"
+            )).fetchone()
+        return int(row[0] or 0)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] total_delivered failed")
+        return 0
 
 
 def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
@@ -133,6 +157,8 @@ def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
                 "recipe": r[0], "scanned": r[1], "matched": r[2], "fresh": r[3],
                 "skipped_seen": r[4], "partial": bool(r[5]), "note": r[6], "ran_at": r[7],
                 "config_version": r[8] if len(r) > 8 else 0,
+                "delivery": (r[9] if len(r) > 9 else None) or "file",
+                "delivered": (r[10] if len(r) > 10 else 0) or 0,
             })
         return out
     except Exception:  # noqa: BLE001
