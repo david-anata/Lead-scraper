@@ -605,6 +605,42 @@ def health(request: Request) -> ApiMessage:
         "plaid_secret_hex_only": plaid_secret_shape["hex_only"],
         "plaid_token_secret_present": bool(getattr(settings, "plaid_token_secret", "")),
     }
+
+    # Opt-in live probe (?plaid_probe=1): ask Plaid directly whether the
+    # configured keys are accepted, in BOTH environments, and report only the
+    # resulting status code — never the keys. This distinguishes wrong-
+    # environment keys (accepted in one, rejected in the other) from a
+    # production account that is not yet activated (rejected in both).
+    if request.query_params.get("plaid_probe") == "1":
+        redirect_uri = str(getattr(settings, "plaid_redirect_uri", "") or "")
+
+        def _probe(base_url: str, *, with_redirect: bool = False) -> str:
+            try:
+                payload = {
+                    "client_id": str(getattr(settings, "plaid_client_id", "") or ""),
+                    "secret": str(getattr(settings, "plaid_secret", "") or ""),
+                    "user": {"client_user_id": "health-probe"},
+                    "client_name": "Anata Finance",
+                    "country_codes": ["US"],
+                    "language": "en",
+                    "products": ["transactions"],
+                }
+                if with_redirect and redirect_uri:
+                    payload["redirect_uri"] = redirect_uri
+                response = requests.post(f"{base_url}/link/token/create", json=payload, timeout=20)
+                data = response.json()
+                if data.get("link_token"):
+                    return "accepted"
+                return str(data.get("error_code") or f"http_{response.status_code}")
+            except Exception:
+                return "network_error"
+
+        plaid_details["plaid_redirect_uri"] = redirect_uri
+        plaid_details["plaid_probe"] = {
+            "sandbox": _probe("https://sandbox.plaid.com"),
+            "production": _probe("https://production.plaid.com"),
+            "production_with_redirect_uri": _probe("https://production.plaid.com", with_redirect=True),
+        }
     return ApiMessage(
         status="ok",
         message="healthy",
