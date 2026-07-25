@@ -1487,3 +1487,9 @@ input:focus, select:focus, textarea:focus {
 .finance-collect-actions { display: flex; gap: 8px; margin-top: 6px; }
 .finance-collect-sent { color: #1f7a34; font-size: 11px; }
 .finance-collect-skip { color: #9ca3af; font-size: 11px; }
+
+/* Trust check */
+.finance-trust-check .finance-plan-ok, .finance-trust-check .finance-plan-short { margin: 8px 0; }
+.finance-trust-line { margin: 8px 0 4px; font-size: 13px; }
+.finance-trust-reasons { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+.finance-trust-reasons li { margin: 2px 0; }
