@@ -381,3 +381,22 @@ value is ever empty the email still reads correctly - it just loses the opening 
 
 `{{sendingAccountFirstName}}` means the sign-off automatically matches whichever mailbox
 sends, so David and Gabe can both send from this one campaign.
+
+## Confirmed against Instantly's official docs
+Sources: help.instantly.ai `/articles/6384663-how-to-use-spintax` and
+`/articles/6687668-liquid-syntax`.
+
+- **Spintax is `{{RANDOM | option1 | option2 | option3}}`.** Double braces, pipe separated.
+  Plain `{a|b}` is not spintax in Instantly and prints literally.
+- **Spintax renders in Preview**, so it can be verified before launch. The docs say to
+  always preview before launching.
+- **Variables nest inside spintax:**
+  `{{RANDOM | Quick question {{firstName}} | Worth a look, {{companyName}}}}`
+- **Fallbacks chain with pipes:** `{{firstName | lastName | there}}` tries firstName,
+  then lastName, then prints "there".
+- **Variable names are case sensitive and must match the imported column exactly.**
+  This is why `{{first_name}}` never filled: the field is `firstName`.
+- System variables available: `sendingAccountName`, `sendingAccountFirstName`,
+  `sendingAccountEmail`, `sequence_email_opened`.
+- Liquid conditionals are supported, e.g.
+  `{% if position == "founder" %}...{% endif %}` - useful later for role-based lines.
