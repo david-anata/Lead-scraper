@@ -2251,6 +2251,108 @@ def _load_finance_control_inputs(settings: Any = None) -> tuple[Any, Any]:
     return load_income_pattern_decisions(), load_finance_source_connections(settings)
 
 
+def _render_vendor_fields(vendor: dict | None = None) -> str:
+    """Shared field set for the add-vendor and per-vendor edit forms."""
+    v = vendor or {}
+
+    def _val(key: str) -> str:
+        raw = v.get(key)
+        return html.escape("" if raw is None else str(raw), quote=True)
+
+    def _cents_val(key: str) -> str:
+        cents = v.get(key)
+        return "" if cents in (None, "") else f"{int(cents) / 100:.2f}"
+
+    terms = str(v.get("terms_type") or "recurring")
+    freq = str(v.get("frequency") or "month")
+    terms_labels = {"recurring": "Recurring", "one_off": "One-off"}
+    terms_opts = "".join(
+        '<option value="' + t + '"' + (" selected" if t == terms else "") + '>' + terms_labels[t] + '</option>'
+        for t in ("recurring", "one_off")
+    )
+    freq_opts = "".join(
+        '<option value="' + f + '"' + (" selected" if f == freq else "") + '>' + f.title() + '</option>'
+        for f in ("week", "biweekly", "month", "quarter", "year", "once")
+    )
+    return (
+        '<div class="finance-vendor-fields">'
+        + '<label>Name<input name="name" value="' + _val("name") + '" required></label>'
+        + '<label>Terms<select name="terms_type">' + terms_opts + '</select></label>'
+        + '<label>Payment each<input name="payment_amount" value="' + _cents_val("payment_amount_cents") + '" placeholder="0.00"></label>'
+        + '<label>Frequency<select name="frequency">' + freq_opts + '</select></label>'
+        + '<label>Total owed<input name="total_committed" value="' + _cents_val("total_committed_cents") + '" placeholder="blank = ongoing"></label>'
+        + '<label>Start<input name="start_date" type="date" value="' + _val("start_date") + '"></label>'
+        + '<label>End / payoff<input name="end_date" type="date" value="' + _val("end_date") + '"></label>'
+        + '<label>Match words in bank<input name="match_terms" value="' + _val("match_terms") + '" placeholder="fora, stripe capital"></label>'
+        + '</div>'
+    )
+
+
+def _render_vendors_section() -> str:
+    """Render the Vendors area: a payoff-tracking table plus add/edit forms."""
+    from sales_support_agent.services.cashflow.vendors import list_vendors_with_progress
+    try:
+        vendors = list_vendors_with_progress()
+    except Exception:
+        vendors = []
+
+    rows = []
+    for v in vendors:
+        vid = html.escape(str(v["id"]), quote=True)
+        name = html.escape(str(v.get("name") or "Vendor"))
+        pay = v.get("payment_amount_cents")
+        if str(v.get("terms_type")) == "recurring" and pay:
+            terms_txt = _money(int(pay)) + " / " + html.escape(str(v.get("frequency") or "month"))
+        else:
+            terms_txt = "One-off"
+        total = v.get("total_committed_cents")
+        total_txt = _money(int(total)) if total else "ongoing"
+        paid_txt = _money(int(v.get("paid_cents") or 0))
+        pct = v.get("percent_bps")
+        if pct is not None:
+            pct_int = min(100, round(int(pct) / 100))
+            progress = ' <small>(' + str(pct_int) + '%)</small><div class="finance-vendor-bar"><span style="width:' + str(pct_int) + '%"></span></div>'
+        else:
+            progress = ""
+        payoff = html.escape(str(v.get("payoff_date") or "ongoing"))
+        edit = (
+            '<details class="finance-vendor-edit"><summary>Edit</summary>'
+            + '<form method="post" action="/admin/finances/vendors/' + vid + '">'
+            + _render_vendor_fields(v)
+            + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-secondary btn-sm">Save</button></div></form>'
+            + '<form method="post" action="/admin/finances/vendors/' + vid + '/delete" '
+            + 'onsubmit="return confirm(\'Remove this vendor?\');">'
+            + '<button type="submit" class="btn btn-secondary btn-sm">Remove</button></form></details>'
+        )
+        rows.append(
+            '<tr><td>' + name + '</td><td>' + terms_txt + '</td>'
+            + '<td class="finance-accounts-amount">' + total_txt + '</td>'
+            + '<td class="finance-accounts-amount">' + paid_txt + progress + '</td>'
+            + '<td>' + payoff + '</td><td>' + edit + '</td></tr>'
+        )
+
+    if rows:
+        table = (
+            '<table class="finance-accounts-table finance-vendors-table"><thead><tr>'
+            + '<th>Vendor</th><th>Terms</th><th>Total</th><th>Paid</th><th>Payoff</th><th></th>'
+            + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+        )
+    else:
+        table = '<p class="finance-accounts-asof">No vendors yet. Add one to track its terms and payoff.</p>'
+
+    add_form = (
+        '<details class="finance-vendor-add"><summary>+ Add a vendor</summary>'
+        + '<form method="post" action="/admin/finances/vendors">'
+        + _render_vendor_fields(None)
+        + '<div class="finance-vendor-actions"><button type="submit" class="btn btn-primary btn-sm">Save vendor</button></div></form></details>'
+    )
+    return (
+        '<section class="finance-source-row finance-vendors"><div style="width:100%">'
+        + '<strong>Vendors</strong><span>Terms, totals, and payoff dates, tracked from your real payments.</span>'
+        + table + add_form + '</div></section>'
+    )
+
+
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
@@ -2485,6 +2587,8 @@ async def render_cashflow_overview_page(
             + '</tr></thead><tbody>' + "".join(_acct_rows) + '</tbody></table>'
             + _as_of_html + '</div>'
         )
+
+    vendors_html = _render_vendors_section()
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -2846,6 +2950,7 @@ async def render_cashflow_overview_page(
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        {vendors_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>

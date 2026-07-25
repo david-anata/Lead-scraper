@@ -674,6 +674,31 @@ class PlaidAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class Vendor(Base):
+    """A payee with declared terms, a committed total, and a payoff date.
+
+    Payoff progress is computed from matched bank outflows at read time; this
+    table only stores operator-declared terms and never moves money.
+    """
+
+    __tablename__ = "finance_vendors"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    terms_type: Mapped[str] = mapped_column(String(16), default="recurring")  # one_off | recurring
+    payment_amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    frequency: Mapped[str] = mapped_column(String(16), default="month")  # week|biweekly|month|quarter|year|once
+    total_committed_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    match_terms: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class FinanceActionAudit(Base):
     """Append-only evidence for trust-sensitive Finance mutations."""
 

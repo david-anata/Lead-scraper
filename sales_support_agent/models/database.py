@@ -393,6 +393,7 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_savings_review_events",
         "plaid_items",
         "plaid_accounts",
+        "finance_vendors",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
