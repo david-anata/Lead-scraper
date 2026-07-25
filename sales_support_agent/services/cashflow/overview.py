@@ -2652,6 +2652,99 @@ def _render_match_review() -> str:
     )
 
 
+_BOOKKEEPING_CATEGORIES = (
+    "software", "supplies", "payroll", "rent", "utilities", "insurance",
+    "loan", "debt", "fees", "meals", "travel", "advertising", "contractor",
+    "taxes", "revenue", "transfer", "other",
+)
+
+
+def _render_bookkeeping() -> str:
+    """Filing status, the short decision queue, and the taught rules."""
+    from sales_support_agent.services.cashflow.bookkeeping import (
+        bookkeeping_summary,
+        list_needs_decision,
+        list_rules,
+    )
+    try:
+        summary = bookkeeping_summary()
+        pending = list_needs_decision(limit=25)
+        rules = list_rules()
+    except Exception:
+        return ""
+
+    if not summary["total_transactions"]:
+        return ""
+
+    head = (
+        '<div class="finance-accounts-totals">'
+        + '<div><span>Filed automatically</span><strong>' + str(summary["filed"])
+        + ' of ' + str(summary["total_transactions"]) + '</strong></div>'
+        + '<div><span>Need a decision</span><strong>' + str(summary["needs_decision"]) + '</strong></div>'
+        + '<div><span>Rules you taught</span><strong>' + str(summary["rule_count"]) + '</strong></div>'
+        + '</div>'
+        + '<form method="post" action="/admin/finances/bookkeeping/file-all" class="finance-vendor-actions">'
+        + '<button type="submit" class="btn btn-secondary btn-sm">File everything it can</button></form>'
+    )
+
+    if pending:
+        rows = []
+        for item in pending:
+            event_id = html.escape(str(item["id"]), quote=True)
+            guess = str(item["guess"] or "")
+            options = "".join(
+                '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
+                + category.title() + '</option>'
+                for category in _BOOKKEEPING_CATEGORIES
+            )
+            rows.append(
+                '<tr><td>' + html.escape(str(item["name"]))
+                + '<br><small>' + _money(item["amount_cents"]) + ' on ' + html.escape(item["posted_on"]) + '</small></td>'
+                + '<td><form method="post" action="/admin/finances/bookkeeping/file" class="finance-book-form">'
+                + '<input type="hidden" name="event_id" value="' + event_id + '">'
+                + '<select name="category">' + options + '</select>'
+                + '<label class="finance-book-always"><input type="checkbox" name="always" value="true"> always</label>'
+                + '<button type="submit" class="btn btn-secondary btn-sm">File</button>'
+                + '</form></td></tr>'
+            )
+        queue = (
+            '<table class="finance-accounts-table finance-book-table"><thead><tr>'
+            + '<th>Transaction</th><th>File it as</th></tr></thead><tbody>'
+            + "".join(rows) + '</tbody></table>'
+            + '<p class="finance-accounts-asof">Tick "always" to teach a rule so this merchant files itself next time.</p>'
+        )
+    else:
+        queue = '<p class="finance-plan-ok">Everything is filed. Nothing needs a decision.</p>'
+
+    if rules:
+        rule_items = []
+        for rule in rules[:12]:
+            rule_id = html.escape(str(rule["id"]), quote=True)
+            rule_items.append(
+                '<li><code>' + html.escape(str(rule.get("match_pattern") or "")) + '</code> &rarr; '
+                + html.escape(str(rule.get("category") or "")) + ' <small>(' + str(int(rule.get("hit_count") or 0)) + ' uses)</small> '
+                + '<form method="post" action="/admin/finances/bookkeeping/rules/' + rule_id + '/delete" class="finance-plan-move">'
+                + '<button type="submit" title="Remove rule">&times;</button></form></li>'
+            )
+        rules_html = (
+            '<details class="finance-vendor-edit"><summary>Rules you taught ('
+            + str(len(rules)) + ')</summary><ul class="finance-book-rules">'
+            + "".join(rule_items) + '</ul></details>'
+        )
+    else:
+        rules_html = ""
+
+    writeback = (
+        '<p class="finance-accounts-asof">QuickBooks write-back: <strong>not connected</strong>. '
+        + 'Bookkeeping stays inside this app; nothing is written to QuickBooks.</p>'
+    )
+    return (
+        '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
+        + '<strong>Bookkeeping</strong><span>Transactions file themselves; only real unknowns ask you.</span>'
+        + head + queue + rules_html + writeback + '</div></section>'
+    )
+
+
 def _render_trust_check(cash: dict, trust_gate: dict) -> str:
     """Reconcile cash and receivables to source, and break down blockers."""
     from sales_support_agent.services.cashflow.trust_check import build_trust_check
@@ -2946,6 +3039,7 @@ async def render_cashflow_overview_page(
     vendors_html = _render_vendors_section()
     daily_cockpit_html = _render_daily_cockpit()
     bill_audit_html = _render_bill_audit()
+    bookkeeping_html = _render_bookkeeping()
     collections_drafts_html = _render_collections()
 
     gap = cash["funding_gap_cents"]
@@ -3314,6 +3408,7 @@ async def render_cashflow_overview_page(
         {match_review_html}
         {vendors_html}
         {bill_audit_html}
+        {bookkeeping_html}
         {collections_drafts_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>

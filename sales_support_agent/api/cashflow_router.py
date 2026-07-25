@@ -550,6 +550,49 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     return _redirect_finance_home("Vendor removed.")
 
 
+@router.post("/bookkeeping/file-all")
+async def bookkeeping_file_all_endpoint(request: Request):
+    """File every transaction that can be filed confidently."""
+    from sales_support_agent.services.cashflow.bookkeeping import file_transactions
+
+    result = await asyncio.to_thread(file_transactions)
+    filed = result["filed_by_rule"] + result["filed_by_keyword"]
+    return _redirect_finance_home(
+        f"Filed {filed} transaction(s); {result['needs_decision']} still need a decision."
+    )
+
+
+@router.post("/bookkeeping/file")
+async def bookkeeping_file_endpoint(
+    request: Request,
+    event_id: str = Form(...),
+    category: str = Form(...),
+    always: bool = Form(False),
+):
+    """File one transaction, optionally teaching a rule for next time."""
+    from sales_support_agent.services.cashflow.bookkeeping import file_transaction
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(
+            file_transaction, event_id, category, always=always, actor=actor,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not file that: {exc}")
+    if result["rule_id"]:
+        return _redirect_finance_home("Filed, and it will file itself from now on.")
+    return _redirect_finance_home("Filed.")
+
+
+@router.post("/bookkeeping/rules/{rule_id}/delete")
+async def bookkeeping_rule_delete_endpoint(request: Request, rule_id: str):
+    from sales_support_agent.services.cashflow.bookkeeping import delete_rule
+
+    await asyncio.to_thread(delete_rule, rule_id)
+    return _redirect_finance_home("Rule removed.")
+
+
 @router.post("/plan/move")
 async def plan_move_endpoint(
     request: Request, event_id: str = Form(...), direction: str = Form(...),

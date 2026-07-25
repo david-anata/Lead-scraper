@@ -761,6 +761,21 @@ class FinanceBulkBatchItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceBookingRule(Base):
+    """An operator-taught filing rule: when the text matches, use this category."""
+
+    __tablename__ = "finance_booking_rules"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    match_pattern: Mapped[str] = mapped_column(String(255), default="", index=True)
+    category: Mapped[str] = mapped_column(String(64), default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="system")
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class FinanceAuditDismissal(Base):
     """A dismissed bill-audit finding, so it stays quiet on the next run."""
 
