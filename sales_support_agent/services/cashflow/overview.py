@@ -2439,6 +2439,53 @@ async def render_cashflow_overview_page(
         plaid_action_text = "Plaid setup required"
         plaid_button_disabled = " disabled"
 
+    # Per-account cash view (spendable checking vs reserve), grouped by bank.
+    from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
+    try:
+        accounts_overview = load_accounts_overview()
+    except Exception:
+        accounts_overview = {"spendable_cents": 0, "reserve_cents": 0, "as_of": "", "account_count": 0, "banks": []}
+    plaid_accounts_html = ""
+    if accounts_overview["account_count"]:
+        _role_labels = {"spendable": "Spendable", "reserve": "Reserve", "excluded": "Not counted"}
+        _acct_rows = []
+        for _bank in accounts_overview["banks"]:
+            _acct_rows.append(
+                '<tr class="finance-accounts-bankrow"><td colspan="4"><strong>'
+                + html.escape(str(_bank["display_name"])) + '</strong></td></tr>'
+            )
+            for _acct in _bank["accounts"]:
+                _mask = (" &middot; &bull;&bull;" + html.escape(_acct["mask"])) if _acct["mask"] else ""
+                _type = html.escape((str(_acct["subtype"] or _acct["account_type"] or "")).title())
+                _role = str(_acct["cash_role"])
+                _options = "".join(
+                    '<option value="' + _r + '"' + (" selected" if _r == _role else "") + '>' + _role_labels[_r] + '</option>'
+                    for _r in ("spendable", "reserve", "excluded")
+                )
+                _acct_id = html.escape(str(_acct["id"]), quote=True)
+                _acct_rows.append(
+                    '<tr><td>' + html.escape(str(_acct["name"])) + _mask + '</td>'
+                    + '<td>' + _type + '</td>'
+                    + '<td class="finance-accounts-amount">' + _money(_acct["balance_cents"]) + '</td>'
+                    + '<td><form method="post" class="finance-account-role-form" '
+                    + 'action="/admin/finances/plaid/accounts/' + _acct_id + '/cash-role">'
+                    + '<select name="role" aria-label="How this account counts">' + _options + '</select>'
+                    + '<button type="submit" class="btn btn-secondary btn-sm">Set</button></form></td></tr>'
+                )
+        _as_of = html.escape(accounts_overview["as_of"] or "")
+        _as_of_html = ('<p class="finance-accounts-asof">Balances as of ' + _as_of + '</p>') if _as_of else ""
+        plaid_accounts_html = (
+            '<div class="finance-accounts">'
+            + '<div class="finance-accounts-totals">'
+            + '<div><span>Spendable cash (checking)</span><strong>' + _money(accounts_overview["spendable_cents"]) + '</strong></div>'
+            + '<div><span>Savings &amp; reserves</span><strong>' + _money(accounts_overview["reserve_cents"]) + '</strong></div>'
+            + '</div>'
+            + '<table class="finance-accounts-table"><thead><tr>'
+            + '<th>Bank / Account</th><th>Type</th><th>Balance</th><th>Counts as</th>'
+            + '</tr></thead><tbody>' + "".join(_acct_rows) + '</tbody></table>'
+            + _as_of_html + '</div>'
+        )
+
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
     calculation_unavailable = control_error or not cash["balance_available"]
@@ -2798,7 +2845,7 @@ async def render_cashflow_overview_page(
 
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
-        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>

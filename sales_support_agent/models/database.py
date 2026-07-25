@@ -398,6 +398,39 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
+    _ensure_plaid_account_columns(engine)
+
+
+def _ensure_plaid_account_columns(engine: Any) -> None:
+    """Add the additive ``cash_role`` column to an existing plaid_accounts table.
+
+    ``create_all`` never alters existing tables, so a table created before this
+    column existed needs an explicit, idempotent ALTER. New rows default to
+    'reserve'; existing rows are backfilled from their Plaid subtype so checking
+    accounts immediately count as spendable cash.
+    """
+    inspector = inspect(engine)
+    if "plaid_accounts" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("plaid_accounts")}
+    if "cash_role" in columns:
+        return
+    if engine.dialect.name == "postgresql":
+        add_stmt = (
+            "ALTER TABLE plaid_accounts "
+            "ADD COLUMN IF NOT EXISTS cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
+        )
+    elif engine.dialect.name == "sqlite":
+        add_stmt = "ALTER TABLE plaid_accounts ADD COLUMN cash_role VARCHAR(16) NOT NULL DEFAULT 'reserve'"
+    else:
+        return
+    with engine.begin() as connection:
+        connection.execute(text(add_stmt))
+        connection.execute(text(
+            "UPDATE plaid_accounts SET cash_role='spendable' "
+            "WHERE LOWER(COALESCE(subtype, ''))='checking'"
+        ))
+
 
 def _backfill_legacy_settlements(engine: Any) -> None:
     """Convert legacy matched bank rows into amount-based, idempotent evidence."""

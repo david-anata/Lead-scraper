@@ -1431,3 +1431,18 @@ input:focus, select:focus, textarea:focus {
   .finance-review-guide__steps dl > div { grid-template-columns: 1fr; gap: 2px; }
   .finance-skeleton-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* Multi-bank account view: spendable cash + per-account table */
+.finance-accounts { margin-top: 12px; }
+.finance-accounts-totals { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 10px; }
+.finance-accounts-totals > div { display: flex; flex-direction: column; }
+.finance-accounts-totals span { font-size: 12px; color: var(--muted, #6b7280); }
+.finance-accounts-totals strong { font-size: 18px; }
+.finance-accounts-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.finance-accounts-table th { text-align: left; font-weight: 600; color: var(--muted, #6b7280); padding: 6px 8px; border-bottom: 1px solid var(--border, #e5e7eb); }
+.finance-accounts-table td { padding: 6px 8px; border-bottom: 1px solid var(--border, #f1f1f4); vertical-align: middle; }
+.finance-accounts-bankrow td { background: var(--surface-2, #f8fafc); font-size: 12px; }
+.finance-accounts-amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.finance-account-role-form { display: inline-flex; gap: 6px; align-items: center; }
+.finance-account-role-form select { padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border, #d1d5db); }
+.finance-accounts-asof { margin-top: 8px; font-size: 11px; color: var(--muted, #9ca3af); }

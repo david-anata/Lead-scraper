@@ -661,6 +661,10 @@ class PlaidAccount(Base):
     mask: Mapped[str] = mapped_column(String(8), default="")
     account_type: Mapped[str] = mapped_column(String(32), default="")
     subtype: Mapped[str] = mapped_column(String(64), default="")
+    # Whether this account's balance counts as spendable cash. Defaults from
+    # the Plaid subtype (checking => spendable, everything else => reserve) and
+    # can be overridden by the operator without being reset on the next sync.
+    cash_role: Mapped[str] = mapped_column(String(16), default="reserve")  # spendable | reserve | excluded
     currency: Mapped[str] = mapped_column(String(16), default="USD")
     current_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     available_balance_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

@@ -484,6 +484,21 @@ async def plaid_disconnect_item(request: Request, item_id: str, force: bool = Fo
     )
 
 
+@router.post("/plaid/accounts/{account_id}/cash-role")
+async def plaid_set_account_cash_role(request: Request, account_id: str, role: str = Form(...)):
+    """Reclassify one bank account as spendable cash, reserve, or excluded."""
+    from sales_support_agent.services.cashflow.accounts_view import set_cash_role
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        applied = await asyncio.to_thread(set_cash_role, account_id, role, actor=actor)
+    except ValueError as exc:
+        return _redirect_finance_error(f"That account could not be updated: {exc}")
+    label = {"spendable": "spendable cash", "reserve": "savings/reserve", "excluded": "not counted"}.get(applied, applied)
+    return _redirect_finance_home(f"Account updated. It now counts as {label}.")
+
+
 @router.post("/assistant/preview")
 async def finance_assistant_preview(request: Request):
     """Turn plain English into a server-side draft; this never writes money."""
