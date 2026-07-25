@@ -20,6 +20,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Optional
 
 import requests
@@ -124,13 +125,210 @@ def _has_email(store: dict[str, Any]) -> bool:
     return False
 
 
-def to_clay_lead(store: dict[str, Any]) -> dict[str, Any]:
-    """Shape a matched store into the payload Clay's table expects."""
+# ---- signal scoring (docs/outbound/08) ---------------------------------------
+# Each brand gets a fit score from weighted signals, a Tier (A/B/C), and a
+# human "why now" reason that also seeds Clay's personalization. Pure function of
+# the store record so it is fully unit-testable without a live key.
+
+ICP_SCORE_RECENT_DAYS = 45          # "installed recently" window for the trigger
+ICP_SCORE_PLAN_CHANGE_DAYS = 180    # "upgraded plan recently" window
+ICP_TIER_A_MIN = 8
+ICP_TIER_B_MIN = 4
+
+# Ad pixels that prove live paid spend (StoreLeads technology names, lowercased).
+_AD_PIXEL_TECHS = (
+    "facebook pixel", "google ads pixel", "tiktok pixel", "pinterest pixel",
+    "bing ads", "criteo", "snap pixel",
+)
+# CRO / testing / analytics apps: brand already cares about conversion.
+_CRO_APP_HINTS = (
+    "intelligems", "rebuy", "triple whale", "triplewhale", "polar", "lucky orange",
+    "hotjar", "clarity", "kno", "octane", "boost ai", "boost commerce",
+)
+# App-store categories that mean "acquisition budget" or "conversion focus".
+_ADS_APP_CATS = ("ads", "affiliate")
+_CRO_APP_CATS = (
+    "analytics", "site optimization", "pricing optimization", "conversion",
+    "upsell", "search and filters", "surveys",
+)
+# Enterprise analytics that signal an existing agency / in-house team (deprioritize).
+_ENTERPRISE_TECH = ("monetate", "ometria", "bloomreach", "dynamic yield")
+
+
+def _parse_sl_date(value: Any) -> Optional[datetime]:
+    """Parse a StoreLeads date ('2026-07-07T00:00:00' or '...Z') to aware UTC."""
+    if not value:
+        return None
+    raw = str(value).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _tech_names(store: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for t in store.get("technologies") or []:
+        if isinstance(t, dict) and t.get("name"):
+            out.add(str(t["name"]).strip().lower())
+    return out
+
+
+def _app_records(store: dict[str, Any]) -> list[dict[str, Any]]:
+    return [a for a in (store.get("apps") or []) if isinstance(a, dict)]
+
+
+def _app_text(app: dict[str, Any]) -> str:
+    cats = app.get("categories") or []
+    return " ".join([str(app.get("name") or ""), str(app.get("token") or ""),
+                     " ".join(str(c) for c in cats)]).lower()
+
+
+def _has_ad_pixels(store: dict[str, Any]) -> int:
+    techs = _tech_names(store)
+    return sum(1 for p in _AD_PIXEL_TECHS if any(p in t for t in techs))
+
+
+def _has_cro_app(store: dict[str, Any]) -> bool:
+    for app in _app_records(store):
+        text = _app_text(app)
+        if any(h in text for h in _CRO_APP_HINTS):
+            return True
+        cats = " ".join(str(c) for c in (app.get("categories") or [])).lower()
+        if any(c in cats for c in _CRO_APP_CATS):
+            return True
+    return False
+
+
+def _has_ads_or_affiliate_app(store: dict[str, Any]) -> bool:
+    for app in _app_records(store):
+        cats = " ".join(str(c) for c in (app.get("categories") or [])).lower()
+        if any(c in cats for c in _ADS_APP_CATS):
+            return True
+    return False
+
+
+def _recent_growth_app_install(store: dict[str, Any], now: datetime) -> bool:
+    """Any ads / analytics / CRO app installed within the recent window = a fresh
+    project and moving budget: the strongest 'why now' trigger."""
+    for app in _app_records(store):
+        installed = _parse_sl_date(app.get("installed_at"))
+        if not installed:
+            continue
+        if (now - installed).days > ICP_SCORE_RECENT_DAYS or (now - installed).days < 0:
+            continue
+        cats = " ".join(str(c) for c in (app.get("categories") or [])).lower()
+        text = _app_text(app)
+        if any(c in cats for c in (*_ADS_APP_CATS, *_CRO_APP_CATS)) or any(h in text for h in _CRO_APP_HINTS):
+            return True
+    return False
+
+
+def _recent_plan_upgrade(store: dict[str, Any], now: datetime) -> bool:
+    changed = _parse_sl_date(store.get("last_plan_change_at"))
+    if not changed or (now - changed).days > ICP_SCORE_PLAN_CHANGE_DAYS or (now - changed).days < 0:
+        return False
+    return "plus" in str(store.get("plan") or "").lower()
+
+
+def _healthy_app_spend(store: dict[str, Any]) -> bool:
+    spend = store.get("monthly_app_spend")
+    return isinstance(spend, (int, float)) and 300_00 <= spend <= 3_000_00
+
+
+def _has_trending_tag(store: dict[str, Any]) -> bool:
+    tags = " ".join(str(t) for t in (store.get("tags") or [])).lower()
+    return "trending" in tags
+
+
+def _is_public_company(store: dict[str, Any]) -> bool:
+    feats = " ".join(str(f) for f in (store.get("features") or [])).lower()
+    return "public company" in feats
+
+
+def _has_enterprise_stack(store: dict[str, Any]) -> bool:
+    techs = _tech_names(store)
+    return any(e in t for e in _ENTERPRISE_TECH for t in techs)
+
+
+def score_store(store: dict[str, Any], *, now: Optional[datetime] = None) -> dict[str, Any]:
+    """Return {score, tier, reason, signals[], excluded} for a store.
+
+    Ordered so the most compelling 'why now' trigger becomes the reason/opener.
+    """
+    now = now or datetime.now(timezone.utc)
+    score = 0
+    signals: list[str] = []
+
+    # Timing triggers first (they make the best opener).
+    if _recent_growth_app_install(store, now):
+        score += 3
+        signals.append("Added a growth or CRO app in the last 45 days")
+    if _recent_plan_upgrade(store, now):
+        score += 2
+        signals.append("Upgraded their store plan recently")
+    if _has_trending_tag(store):
+        score += 1
+        signals.append("Trending on social right now")
+
+    # Spend-is-happening (there is waste to audit).
+    pixels = _has_ad_pixels(store)
+    if pixels >= 2:
+        score += 3
+        signals.append("Runs Meta and Google ads")
+    if pixels >= 3:
+        score += 2
+        signals.append("Advertises across three or more channels")
+    if _has_ads_or_affiliate_app(store):
+        score += 2
+        signals.append("Has ad or affiliate apps installed")
+    if _healthy_app_spend(store):
+        score += 1
+        signals.append("Invests in a healthy growth app stack")
+
+    # Believes in CVR (easy conversation).
+    if _has_cro_app(store):
+        score += 3
+        signals.append("Already uses conversion or testing tools")
+
+    # Anti-signals.
+    excluded = _is_public_company(store)
+    if _has_enterprise_stack(store):
+        score -= 2
+        signals.append("Runs an enterprise analytics stack")
+    if pixels == 0:
+        score -= 2
+        signals.append("No ad pixel found")
+
+    if excluded:
+        tier = "X"
+    elif score >= ICP_TIER_A_MIN:
+        tier = "A"
+    elif score >= ICP_TIER_B_MIN:
+        tier = "B"
+    else:
+        tier = "C"
+
+    positive = [s for s in signals if s not in
+                ("Runs an enterprise analytics stack", "No ad pixel found")]
+    reason = positive[0] if positive else "Fits our ICP, thin buying signals"
+    return {"score": score, "tier": tier, "reason": reason, "signals": signals, "excluded": excluded}
+
+
+def to_clay_lead(store: dict[str, Any], *, now: Optional[datetime] = None) -> dict[str, Any]:
+    """Shape a matched store into the payload Clay's table expects, with the
+    fit score, Tier, and 'why now' reason attached for ranking + personalization."""
+    scored = score_store(store, now=now)
     return {
         "domain": str(store.get("name") or "").strip().lower(),
         "brand": str(store.get("merchant_name") or store.get("name") or "").strip(),
         "niche": store_niche(store),
         "country": _normalize_country(str(store.get("country_code") or "")),
+        "tier": scored["tier"],
+        "score": scored["score"],
+        "reason": scored["reason"],
+        "signals": scored["signals"],
         "estimated_sales_yearly_cents": store.get("estimated_sales_yearly"),
         "categories": store.get("categories"),
         "apps": store.get("apps"),
@@ -174,6 +372,9 @@ def fetch_storeleads_page(
         "fields": ",".join((
             "name", "merchant_name", "platform", "country_code",
             "estimated_sales_yearly", "categories", "tags", "contact_info", "apps",
+            # Richer fields the signal scorer reads (docs/outbound/08).
+            "technologies", "monthly_app_spend", "last_plan_change_at",
+            "plan", "created_at", "features",
         )),
     }
     for attempt in range(max_retries + 1):
@@ -270,6 +471,8 @@ def run_storeleads_to_clay(
                 continue
             result.matched_icp += 1
             lead = to_clay_lead(store)
+            if lead.get("tier") == "X":
+                continue  # public company / out of profile — drop
             domain = lead["domain"]
             if not domain or domain in seen_this_run:
                 continue
@@ -281,6 +484,9 @@ def run_storeleads_to_clay(
             result.fresh += 1
             if result.fresh >= max_new:
                 break
+
+    # Rank hottest first so Tier A brands lead the CSV / the push.
+    result.leads.sort(key=lambda l: l.get("score", 0), reverse=True)
 
     if not result.dry_run and result.leads:
         outcome = push(clay_webhook_url, result.leads)
@@ -304,7 +510,7 @@ def load_config_from_env() -> tuple[str, str]:
 # Column order for the CSV that gets imported into Clay (used on the Launch plan,
 # before webhooks unlock on Growth). These are the fields Clay needs to run its
 # enrichment and the two prompts.
-CLAY_CSV_COLUMNS = ("domain", "brand", "niche", "country", "estimated_sales_yearly_cents", "categories")
+CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "score", "estimated_sales_yearly_cents", "categories")
 
 
 def leads_to_csv(leads: list[dict[str, Any]]) -> str:
