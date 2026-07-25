@@ -1530,3 +1530,7 @@ input:focus, select:focus, textarea:focus {
 .finance-timeline-open td { background: var(--surface-2, #f8fafc); font-size: 12px; }
 .finance-timeline-negative td { background: #fdf3f3; }
 .finance-timeline-negative td:last-child { color: #a12020; font-weight: 600; }
+
+/* Review page: cleanup + receivable actions */
+.finance-cleanup-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border, #eef1f5); }
+.finance-receivable-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

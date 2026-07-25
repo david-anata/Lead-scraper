@@ -517,6 +517,7 @@ def _vendor_form_data(form: Any) -> dict:
         "start_date": form.get("start_date", ""),
         "end_date": form.get("end_date", ""),
         "match_terms": form.get("match_terms", ""),
+        "running_account": str(form.get("running_account", "")).lower() in {"true", "on", "1", "yes"},
         "notes": form.get("notes", ""),
     }
 
@@ -691,6 +692,73 @@ async def review_preview_endpoint(request: Request):
     except ValueError as exc:
         return _redirect_review_error(str(exc))
     return HTMLResponse(await asyncio.to_thread(render_review_preview, preview))
+
+
+@router.post("/review/cleanup-preview", response_class=HTMLResponse)
+async def review_cleanup_preview_endpoint(
+    request: Request, older_than_days: int = Form(90), event_type: str = Form("outflow"),
+):
+    """Preview archiving everything older than the cutoff. Writes nothing."""
+    from sales_support_agent.services.cashflow.bulk_resolve import (
+        list_historical_backlog,
+        preview_bulk_action,
+    )
+    from sales_support_agent.services.cashflow.review_page import render_review_preview
+
+    backlog = await asyncio.to_thread(
+        list_historical_backlog, older_than_days=int(older_than_days), event_type=str(event_type),
+    )
+    if not backlog["actionable_ids"]:
+        return _redirect_review_error(
+            f"Nothing older than {int(older_than_days)} days needs archiving."
+        )
+    preview = await asyncio.to_thread(
+        preview_bulk_action, backlog["actionable_ids"], "archive_historical",
+    )
+    preview["cutoff_note"] = (
+        f"Everything dated before {backlog['cutoff_date']} with no linked payment"
+    )
+    return HTMLResponse(await asyncio.to_thread(render_review_preview, preview))
+
+
+@router.post("/review/snooze")
+async def review_snooze_endpoint(
+    request: Request, until: str = Form(...), event_id: list[str] = Form(default=[]),
+):
+    """Hide the ticked items until a date."""
+    from datetime import date as _date
+
+    from sales_support_agent.services.cashflow.bulk_resolve import snooze_events
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        until_date = _date.fromisoformat(str(until)[:10])
+    except ValueError:
+        return _redirect_review_error("That snooze date could not be read.")
+    result = await asyncio.to_thread(snooze_events, list(event_id), until=until_date, actor=actor)
+    return _redirect_review_home(f"{result['snoozed']} item(s) hidden until {until_date.isoformat()}.")
+
+
+@router.post("/review/follow-up")
+async def review_follow_up_endpoint(
+    request: Request, follow_up_on: str = Form(...), event_id: list[str] = Form(default=[]),
+):
+    """Keep chasing the ticked items and come back on a date."""
+    from datetime import date as _date
+
+    from sales_support_agent.services.cashflow.bulk_resolve import set_follow_up
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        follow_date = _date.fromisoformat(str(follow_up_on)[:10])
+    except ValueError:
+        return _redirect_review_error("That follow-up date could not be read.")
+    result = await asyncio.to_thread(set_follow_up, list(event_id), follow_up_on=follow_date, actor=actor)
+    return _redirect_review_home(
+        f"{result['scheduled']} item(s) kept open with a follow-up on {follow_date.isoformat()}."
+    )
 
 
 @router.post("/review/apply")

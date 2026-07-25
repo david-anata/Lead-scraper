@@ -22,6 +22,117 @@ def _action_options(selected: str = "write_off") -> str:
     )
 
 
+def _render_historical_cleanup() -> str:
+    """Start-fresh cleanup: archive everything older than the chosen cutoff."""
+    from sales_support_agent.services.cashflow.bulk_resolve import list_historical_backlog
+
+    try:
+        out = list_historical_backlog(event_type="outflow")
+        inc = list_historical_backlog(event_type="inflow")
+    except Exception:
+        return ""
+    if not out["actionable_count"] and not inc["actionable_count"]:
+        return ""
+
+    def _row(label: str, data: dict, event_type: str) -> str:
+        if not data["actionable_count"]:
+            return ""
+        protected_note = (
+            f" &middot; {data['protected_count']} protected item(s) will be skipped"
+            if data["protected_count"] else ""
+        )
+        return f"""
+        <form method="post" action="/admin/finances/review/cleanup-preview" class="finance-cleanup-row">
+          <input type="hidden" name="event_type" value="{event_type}">
+          <div>
+            <strong>{label}</strong>
+            <p style="margin:2px 0 0;font-size:13px;color:#6b7a8d">
+              {data['actionable_count']} item(s) worth {_money(data['amount_cents'])},
+              dated before {html.escape(data['cutoff_date'])}{protected_note}
+            </p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="font-size:12px;color:#6b7a8d">Older than
+              <select name="older_than_days">
+                <option value="90" selected>90 days</option>
+                <option value="60">60 days</option>
+                <option value="180">180 days</option>
+                <option value="365">1 year</option>
+              </select>
+            </label>
+            <button type="submit" class="btn btn-secondary">Preview cleanup</button>
+          </div>
+        </form>"""
+
+    return f"""
+    <div class="card" style="background:rgba(43,54,68,0.02)">
+      <h2>Start fresh: archive old items</h2>
+      <p style="font-size:13px;color:#6b7a8d;margin:0 0 10px">
+        These are past their date with no linked payment. Archiving does not claim they were paid,
+        it says they are no longer an actionable forecast. Reversible, and you see the full list first.
+      </p>
+      {_row("Old bills (money out)", out, "outflow")}
+      {_row("Old receivables (money in)", inc, "inflow")}
+    </div>"""
+
+
+def _render_old_receivables() -> str:
+    """Old money owed to us, with the four ways to resolve it."""
+    from sales_support_agent.services.cashflow.bulk_resolve import list_historical_backlog
+
+    try:
+        data = list_historical_backlog(event_type="inflow", older_than_days=60)
+    except Exception:
+        return ""
+    if not data["items"]:
+        return ""
+
+    rows = []
+    for item in data["items"][:40]:
+        item_id = html.escape(str(item["id"]), quote=True)
+        rows.append(
+            f'<tr><td><input type="checkbox" name="event_id" value="{item_id}"></td>'
+            + "<td>" + html.escape(str(item["name"])) + "</td>"
+            + '<td style="text-align:right">' + _money(item["amount_cents"]) + "</td>"
+            + "<td>" + html.escape(str(item["due_date"])) + "</td></tr>"
+        )
+
+    return f"""
+    <h2 style="margin-top:22px">Old money owed to you</h2>
+    <p class="page-sub">{data['actionable_count']} item(s) worth {_money(data['amount_cents'])}
+       are more than 60 days past due. Tick some, then choose what to do.</p>
+    <form method="post" id="receivable-form">
+      <div class="card">
+        <table class="finance-accounts-table">
+          <thead><tr><th></th><th>Customer / invoice</th>
+            <th style="text-align:right">Amount</th><th>Due</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+      </div>
+      <div class="card">
+        <p style="margin:0 0 10px;font-size:13px"><strong>What do you want to do with the ticked items?</strong></p>
+        <div class="finance-receivable-actions">
+          <button type="submit" formaction="/admin/finances/review/preview" name="action" value="uncollectible"
+                  class="btn btn-secondary">Write off as uncollectible</button>
+          <button type="submit" formaction="/admin/finances/review/preview" name="action" value="invoiced_in_error"
+                  class="btn btn-secondary">Cancel, invoiced in error</button>
+        </div>
+        <div class="finance-receivable-actions" style="margin-top:10px">
+          <label style="font-size:12px;color:#6b7a8d">Snooze until
+            <input type="date" name="until"></label>
+          <button type="submit" formaction="/admin/finances/review/snooze" class="btn btn-secondary">Snooze</button>
+          <label style="font-size:12px;color:#6b7a8d">Keep chasing, follow up on
+            <input type="date" name="follow_up_on"></label>
+          <button type="submit" formaction="/admin/finances/review/follow-up" class="btn btn-secondary">Keep chasing</button>
+        </div>
+        <p style="font-size:12px;color:#6b7a8d;margin:10px 0 0">
+          Write off and cancel both show you a preview and ask for a reason first. Reminder emails
+          for the ones you keep chasing live in the collections panel on the finance page.
+        </p>
+      </div>
+    </form>"""
+
+
 def _render_overdue_matcher() -> str:
     """Overdue bills with the bank payments that may already have settled them."""
     from sales_support_agent.services.cashflow.payment_finder import (
@@ -127,7 +238,9 @@ def render_review_page(*, flash: str = "") -> str:
         <p class="page-sub">Obligations that are pausing cash decisions</p>
         <div class="card"><p style="margin:0">Nothing needs review. Cash decisions are unblocked.</p></div>
         {undo_html}
-        {_render_overdue_matcher()}"""
+        {_render_historical_cleanup()}
+        {_render_overdue_matcher()}
+        {_render_old_receivables()}"""
         return _page_shell("Needs review", "review", body, flash=flash)
 
     groups_html = []
@@ -179,7 +292,9 @@ def render_review_page(*, flash: str = "") -> str:
       </div>
     </form>
     {undo_html}
-    {_render_overdue_matcher()}"""
+    {_render_historical_cleanup()}
+    {_render_overdue_matcher()}
+    {_render_old_receivables()}"""
     return _page_shell("Needs review", "review", body, flash=flash)
 
 
@@ -219,6 +334,7 @@ def render_review_preview(preview: dict[str, Any]) -> str:
     <p class="page-sub">Read what changes, give a reason, then confirm. Nothing has changed yet.</p>
     <div class="card">
       <h2>What will change</h2>
+      {'<p style="font-size:13px;color:#6b7a8d;margin:0 0 8px">' + html.escape(str(preview.get('cutoff_note'))) + '</p>' if preview.get('cutoff_note') else ''}
       <ul style="font-size:14px">
         <li><strong>{preview['eligible_count']}</strong> obligation(s) will be marked
             &quot;{html.escape(str(preview['action_label']))}&quot; and leave the review queue.</li>
