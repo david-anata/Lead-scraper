@@ -206,26 +206,37 @@ async def _run_finance_sync(settings, *, label: str = "manual") -> None:
 
     logger.info("[Finance sync/%s] Starting...", label)
 
-    # 1. ClickUp
-    try:
-        from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
-        cu_result = await _asyncio.to_thread(sync_clickup_finance, settings)
-        logger.info(
-            "[Finance sync/%s] ClickUp: %d inserted, %d skipped, %d errors",
-            label, cu_result.rows_inserted, cu_result.rows_skipped_duplicate, len(cu_result.errors),
-        )
-    except Exception as exc:
-        logger.warning("[Finance sync/%s] ClickUp sync failed: %s", label, exc)
+    # 1. ClickUp — skipped once native recurring schedules replace it
+    if getattr(settings, "disable_clickup_finance_sync", False):
+        logger.info("[Finance sync/%s] ClickUp: disabled, native schedules are the source", label)
+    else:
+        try:
+            from sales_support_agent.services.cashflow.clickup_sync import sync_clickup_finance
+            cu_result = await _asyncio.to_thread(sync_clickup_finance, settings)
+            logger.info(
+                "[Finance sync/%s] ClickUp: %d inserted, %d skipped, %d errors",
+                label, cu_result.rows_inserted, cu_result.rows_skipped_duplicate, len(cu_result.errors),
+            )
+        except Exception as exc:
+            logger.warning("[Finance sync/%s] ClickUp sync failed: %s", label, exc)
 
     # 2. Template expansion (pick up new templates from ClickUp sync above)
     try:
         from sales_support_agent.services.cashflow.obligations import generate_upcoming_from_templates
         created = await _asyncio.to_thread(
             generate_upcoming_from_templates,
-            horizon_days=400,
+            # Enough to forecast the quarter without manufacturing a year of
+            # obligations that would age into debt.
+            horizon_days=60,
             advance_template=True,
         )
         logger.info("[Finance sync/%s] Template expansion: %d events created/verified", label, len(created))
+        from sales_support_agent.services.cashflow.obligations import (
+            supersede_stale_template_occurrences,
+        )
+        rolled = await _asyncio.to_thread(supersede_stale_template_occurrences)
+        if rolled:
+            logger.info("[Finance sync/%s] Recurring rolled forward: %d superseded", label, len(rolled))
     except Exception as exc:
         logger.warning("[Finance sync/%s] Template expansion failed: %s", label, exc)
 
