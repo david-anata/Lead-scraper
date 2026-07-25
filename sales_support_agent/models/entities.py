@@ -467,6 +467,9 @@ class CashEvent(Base):
     snoozed_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     # Still chasing: the date to come back to this one.
     follow_up_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # How many times this has been pushed out. Repeated deferral is a signal
+    # that the answer is really "write it off", so it is surfaced, not hidden.
+    defer_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Provider-reported lifecycle is evidence, not canonical settlement truth.
     # ``status`` remains derived from allocations / explicit local decisions.
