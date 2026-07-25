@@ -154,8 +154,26 @@ def _canonical_bank_history(
     ]
 
 
+# Workflow states that mean the obligation is resolved and must stop
+# influencing forward cash figures.
+_RESOLVED_WORKFLOW_STATUSES = {"written_off", "cancelled", "canceled", "bank_verified"}
+
+
 def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     if _is_transaction(row):
+        return False
+    # An archived obligation is resolved: written off, cancelled, or cleared as
+    # historical. It must stop counting as a cash requirement, otherwise a
+    # cleanup appears to do nothing to the headline figures. Archiving is the
+    # single authority here because the operator-facing actions set it.
+    if row.get("archived_at"):
+        return False
+    # A resolved workflow state counts even if the legacy status was left alone.
+    if str(row.get("workflow_status") or "").lower() in _RESOLVED_WORKFLOW_STATUSES:
+        return False
+    # Hidden until a chosen date: still owed, deliberately out of sight.
+    snoozed_until = _as_date(row.get("snoozed_until"))
+    if snoozed_until is not None and snoozed_until > date.today():
         return False
     status = str(row.get("status") or "planned").lower()
     if status == "completed":

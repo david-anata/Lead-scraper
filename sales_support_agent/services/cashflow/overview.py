@@ -1197,6 +1197,8 @@ def _normalise_renderer_state(control: Any, fallback: dict[str, Any]) -> dict[st
             "incoming_confirmed_cents": _cents(_control_value(cash, "incoming_confirmed_cents", "confirmed_incoming_cents", default=fallback_cash["incoming_confirmed_cents"])),
             "incoming_expected_cents": _cents(_control_value(cash, "incoming_expected_cents", "expected_incoming_cents", default=fallback_cash["incoming_expected_cents"])),
             "required_out_cents": _cents(_control_value(cash, "required_out_cents", "required_outgoing_cents", "outgoing_cents", default=fallback_cash["required_out_cents"])),
+            "historical_backlog_cents": _cents(_control_value(cash, "historical_backlog_cents", default=0)),
+            "historical_backlog_count": int(_control_value(cash, "historical_backlog_count", default=0) or 0),
             "exposure_out_cents": _cents(_control_value(cash, "exposure_out_cents", "outgoing_exposure_cents", default=fallback_cash["exposure_out_cents"])),
             "safe_to_commit_cents": max(0, _cents(_control_value(cash, "safe_to_commit_cents", default=fallback_cash["safe_to_commit_cents"]))),
             "funding_gap_cents": max(0, _cents(_control_value(cash, "funding_gap_cents", default=fallback_cash["funding_gap_cents"]))),
@@ -3160,6 +3162,16 @@ async def render_cashflow_overview_page(
     bookkeeping_html = _render_bookkeeping()
     collections_drafts_html = _render_collections()
 
+    # Money excluded from required-out must never disappear silently.
+    _backlog_cents = int(cash.get("historical_backlog_cents") or 0)
+    _backlog_count = int(cash.get("historical_backlog_count") or 0)
+    backlog_note = (
+        (" &middot; plus " + _money(_backlog_cents) + " in " + str(_backlog_count)
+         + " item(s) over 90 days old, not counted here "
+         + '(<a href="/admin/finances/review">review</a>)')
+        if _backlog_cents else ""
+    )
+
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
     calculation_unavailable = control_error or not cash["balance_available"]
@@ -3364,7 +3376,7 @@ async def render_cashflow_overview_page(
         </article>
         <article class="finance-cash-metric">
           <span>Required out 14 days</span><strong class="amount-out">{_money(cash['required_out_cents'])}</strong>
-          <small>Required &middot; +{_money(cash['exposure_out_cents'])} exposure</small>
+          <small>Required &middot; +{_money(cash['exposure_out_cents'])} exposure{backlog_note}</small>
         </article>
         <article class="finance-cash-metric {'is-gap' if gap else 'is-safe'}">
           <span>{fourth_label}</span><strong>{fourth_value}</strong><small>{fourth_note}</small>
