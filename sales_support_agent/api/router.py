@@ -581,6 +581,30 @@ def health(request: Request) -> ApiMessage:
             }
     except Exception as exc:
         ticket1_details = {"lead_mirror_ticket1_validation_error": str(exc)}
+
+    def _plaid_key_shape(value: object) -> dict:
+        """Report a key's shape for debugging without ever exposing its value."""
+        text_value = str(value or "")
+        return {
+            "len": len(text_value),
+            "hex_only": bool(text_value) and all(c in "0123456789abcdefABCDEF" for c in text_value),
+        }
+
+    plaid_client_shape = _plaid_key_shape(getattr(settings, "plaid_client_id", ""))
+    plaid_secret_shape = _plaid_key_shape(getattr(settings, "plaid_secret", ""))
+    plaid_details = {
+        "plaid_environment": str(getattr(settings, "plaid_environment", "") or ""),
+        "plaid_configured": bool(
+            getattr(settings, "plaid_client_id", "")
+            and getattr(settings, "plaid_secret", "")
+            and getattr(settings, "plaid_token_secret", "")
+        ),
+        "plaid_client_id_len": plaid_client_shape["len"],
+        "plaid_client_id_hex_only": plaid_client_shape["hex_only"],
+        "plaid_secret_len": plaid_secret_shape["len"],
+        "plaid_secret_hex_only": plaid_secret_shape["hex_only"],
+        "plaid_token_secret_present": bool(getattr(settings, "plaid_token_secret", "")),
+    }
     return ApiMessage(
         status="ok",
         message="healthy",
@@ -599,6 +623,7 @@ def health(request: Request) -> ApiMessage:
             "deck_generator_configured": brand_package_path.exists(),
             "deck_brand_package_path": str(brand_package_path),
             **wms_runtime_diagnostics(),
+            **plaid_details,
             **db_details,
             **ticket1_details,
         },

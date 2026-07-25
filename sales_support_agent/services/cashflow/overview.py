@@ -2403,7 +2403,13 @@ async def render_cashflow_overview_page(
                 f'onsubmit="return confirm(\'Disconnect this bank? Plaid access will be revoked, the stored credential will be removed, and the bank will stop refreshing.\');">'
                 f'<button class="btn btn-secondary btn-sm" type="submit">Disconnect</button></form>'
             )
-            action = f'<div class="finance-plaid-item-actions">{reconnect_action}{disconnect_action}</div>'
+            force_disconnect_action = (
+                f'<form method="post" action="/admin/finances/plaid/items/{item_id}/disconnect" '
+                f'onsubmit="return confirm(\'Force remove this bank? Use this only for a stuck connection. It clears the bank here even if Plaid does not confirm, and imported transactions stop counting once no bank remains connected.\');">'
+                f'<input type="hidden" name="force" value="1">'
+                f'<button class="btn btn-secondary btn-sm" type="submit">Force remove</button></form>'
+            )
+            action = f'<div class="finance-plaid-item-actions">{reconnect_action}{disconnect_action}{force_disconnect_action}</div>'
             item_rows.append(
                 f'<li class="finance-plaid-item{state_class}"><div><strong>{name}</strong>'
                 f'<span>{account_count} account(s) &middot; {state_text}</span></div>{action}</li>'
@@ -2898,7 +2904,15 @@ async def render_cashflow_overview_page(
         button.textContent = 'Preparing...';
         try {{
           const response = await fetch('/admin/finances/plaid/items/' + encodeURIComponent(itemId) + '/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
-          if (!response.ok) throw new Error('Bank reconnect is not ready.');
+          if (!response.ok) {{
+            let reason = 'Bank reconnect is not ready.';
+            try {{
+              const errBody = await response.json();
+              const detail = errBody && errBody.detail;
+              if (detail && detail.message) reason = 'Plaid could not start the reconnect: ' + detail.message + (detail.code ? ' [' + detail.code + ']' : '');
+            }} catch (parseErr) {{}}
+            throw new Error(reason);
+          }}
           const payload = await response.json();
           if (!window.Plaid) throw new Error('Secure bank connection could not load.');
           const handler = window.Plaid.create({{
@@ -2930,7 +2944,15 @@ async def render_cashflow_overview_page(
         if (plaidError) {{ plaidError.hidden = true; plaidError.textContent = ''; }}
         try {{
           const tokenResponse = await fetch('/admin/finances/plaid/link-token', {{method:'POST', headers:{{'Accept':'application/json'}}}});
-          if (!tokenResponse.ok) throw new Error('Bank connection is not ready. Check Plaid setup.');
+          if (!tokenResponse.ok) {{
+            let reason = 'Bank connection is not ready. Check Plaid setup.';
+            try {{
+              const errBody = await tokenResponse.json();
+              const detail = errBody && errBody.detail;
+              if (detail && detail.message) reason = 'Plaid could not start the connection: ' + detail.message + (detail.code ? ' [' + detail.code + ']' : '');
+            }} catch (parseErr) {{}}
+            throw new Error(reason);
+          }}
           const tokenData = await tokenResponse.json();
           if (!window.Plaid) throw new Error('Secure bank connection could not load.');
           sessionStorage.setItem(plaidOAuthTokenKey, tokenData.link_token);

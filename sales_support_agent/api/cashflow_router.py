@@ -458,19 +458,26 @@ async def plaid_update_link_token(request: Request, item_id: str):
 
 
 @router.post("/plaid/items/{item_id}/disconnect")
-async def plaid_disconnect_item(request: Request, item_id: str):
-    """Revoke a bank connection and destroy its reusable Plaid credential."""
+async def plaid_disconnect_item(request: Request, item_id: str, force: bool = Form(False)):
+    """Revoke a bank connection and destroy its reusable Plaid credential.
+
+    ``force`` clears a stuck connection locally without waiting for Plaid to
+    confirm removal, for the case where Plaid can never confirm (an invalid or
+    wrong-environment credential).
+    """
     from sales_support_agent.services.cashflow.plaid import PlaidError, disconnect_item
 
     user = get_current_user(request) or {}
     actor = str(user.get("email") or user.get("id") or "finance-operator")
     try:
         await asyncio.to_thread(
-            disconnect_item, item_id, settings=_finance_settings(request), actor=actor,
+            disconnect_item, item_id, settings=_finance_settings(request),
+            actor=actor, force=force,
         )
     except PlaidError as exc:
         return _redirect_finance_error(
-            "The bank is still connected because Plaid could not confirm removal. Please try again."
+            "Plaid could not confirm removal, so the bank was kept. If it stays "
+            "stuck, use Force remove to clear it here."
         )
     return _redirect_finance_home(
         "Bank disconnected. Its Plaid credential was removed and it will no longer refresh."
