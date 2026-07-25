@@ -4365,6 +4365,22 @@ def admin_outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
     )
 
 
+@app.get("/admin/outbound/scoreboard", response_class=HTMLResponse)
+def admin_outbound_scoreboard(request: Request) -> Response:
+    """One page showing how the outbound machine is performing. Reads Instantly
+    now; Clay and sales numbers slot in as they connect. Read-only, sends nothing.
+    """
+    admin_settings = load_admin_dashboard_settings()
+    token = request.cookies.get(admin_settings.admin_cookie_name, "")
+    if not validate_admin_session_token(admin_settings, token):
+        return JSONResponse(status_code=401, content={"detail": "Admin login required."})
+
+    import outbound_scoreboard as _sb
+
+    board = _sb.get_scoreboard(_sb.load_instantly_key())
+    return HTMLResponse(_sb.render_scoreboard_html(board))
+
+
 @app.get("/admin/api/sync-dashboard/status")
 def admin_sync_dashboard_status(request: Request) -> JSONResponse:
     admin_settings = load_admin_dashboard_settings()
