@@ -159,3 +159,54 @@ def test_vendor_terms_match_whole_words_only():
     assert by_name["Von Hill"]["paid_cents"] == 2400_00
     assert by_name["Rent"]["matched_count"] == 1
     assert by_name["Rent"]["paid_cents"] == 12000_00
+
+
+# --- Deferral must come back and demand a decision ------------------------
+
+def test_a_deferral_returns_on_its_date_and_counts_itself():
+    from sales_support_agent.services.cashflow.bulk_resolve import (
+        list_due_followups,
+        set_follow_up,
+    )
+
+    engine = _setup()
+    _add(engine, "ar", 12000_00, event_type="inflow", days_ahead=-120)
+
+    # Pushed into the future: off the plate.
+    snooze_events(["ar"], until=TODAY + timedelta(days=10), actor="qa")
+    assert list_due_followups()["count"] == 0
+
+    # Date arrives: it comes back and demands a decision.
+    set_follow_up(["ar"], follow_up_on=TODAY, actor="qa")
+    due = list_due_followups()
+    assert due["count"] == 1
+    assert due["items"][0]["defer_count"] == 2, "each deferral must be counted"
+
+
+def test_repeated_deferral_is_flagged_rather_than_allowed_to_rot():
+    from sales_support_agent.services.cashflow.bulk_resolve import (
+        list_due_followups,
+        set_follow_up,
+    )
+
+    engine = _setup()
+    _add(engine, "ar", 500_00, event_type="inflow", days_ahead=-200)
+    for _ in range(3):
+        set_follow_up(["ar"], follow_up_on=TODAY, actor="qa")
+
+    due = list_due_followups()
+    assert due["items"][0]["nagging"] is True
+    assert due["nagging_count"] == 1
+
+
+def test_resolving_a_deferred_item_stops_it_coming_back():
+    from sales_support_agent.services.cashflow.bulk_resolve import list_due_followups
+
+    engine = _setup()
+    _add(engine, "ar", 500_00, event_type="inflow", days_ahead=-200)
+    snooze_events(["ar"], until=TODAY, actor="qa")
+    assert list_due_followups()["count"] == 1
+
+    apply_bulk_action(["ar"], "uncollectible", reason="not collectible", actor="qa")
+    assert list_due_followups()["count"] == 0, "a resolved item must not return"
+    assert _figures()[1] == 0

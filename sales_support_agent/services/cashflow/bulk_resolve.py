@@ -164,9 +164,12 @@ def snooze_events(
     now = datetime.now(timezone.utc)
     with get_engine().begin() as connection:
         for event_id in ids:
-            connection.execute(text(
-                "UPDATE cash_events SET snoozed_until=:until, updated_at=:now WHERE id=:id"
-            ), {"until": until.isoformat(), "now": now, "id": event_id})
+            connection.execute(text("""
+                UPDATE cash_events
+                SET snoozed_until=:until, follow_up_on=NULL,
+                    defer_count=COALESCE(defer_count,0)+1, updated_at=:now
+                WHERE id=:id
+            """), {"until": until.isoformat(), "now": now, "id": event_id})
         connection.execute(text("""
             INSERT INTO finance_action_audit (
                 id, scope_key, action_type, entity_type, entity_id, actor,
@@ -191,9 +194,12 @@ def set_follow_up(
     now = datetime.now(timezone.utc)
     with get_engine().begin() as connection:
         for event_id in ids:
-            connection.execute(text(
-                "UPDATE cash_events SET follow_up_on=:date, updated_at=:now WHERE id=:id"
-            ), {"date": follow_up_on.isoformat(), "now": now, "id": event_id})
+            connection.execute(text("""
+                UPDATE cash_events
+                SET follow_up_on=:date, snoozed_until=NULL,
+                    defer_count=COALESCE(defer_count,0)+1, updated_at=:now
+                WHERE id=:id
+            """), {"date": follow_up_on.isoformat(), "now": now, "id": event_id})
         connection.execute(text("""
             INSERT INTO finance_action_audit (
                 id, scope_key, action_type, entity_type, entity_id, actor,
@@ -206,6 +212,52 @@ def set_follow_up(
                "evidence": json.dumps({"count": len(ids), "follow_up_on": follow_up_on.isoformat()}),
                "now": now})
     return {"scheduled": len(ids), "follow_up_on": follow_up_on.isoformat()}
+
+
+def list_due_followups(*, as_of: Optional[date] = None, limit: int = 100) -> dict[str, Any]:
+    """Deferred items whose date has arrived and that now need a decision.
+
+    A deferral is only honest if it comes back. Anything snoozed or set for
+    follow-up reappears here on its date, carrying how many times it has been
+    pushed out, so repeated deferral becomes visible instead of quiet rot.
+    """
+    as_of = as_of or date.today()
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("""
+            SELECT id, name, vendor_or_customer, amount_cents, due_date, event_type,
+                   snoozed_until, follow_up_on, COALESCE(defer_count, 0) AS defer_count
+            FROM cash_events
+            WHERE record_kind <> 'transaction'
+              AND archived_at IS NULL
+              AND COALESCE(amount_cents,0) > 0
+              AND (
+                    (snoozed_until IS NOT NULL AND snoozed_until <= :as_of)
+                 OR (follow_up_on  IS NOT NULL AND follow_up_on  <= :as_of)
+              )
+            ORDER BY COALESCE(follow_up_on, snoozed_until)
+            LIMIT :limit
+        """), {"as_of": as_of.isoformat(), "limit": limit}).fetchall()
+
+    items = []
+    for raw in rows:
+        row = dict(raw._mapping)
+        deferrals = int(row.get("defer_count") or 0)
+        items.append({
+            "id": str(row["id"]),
+            "name": str(row.get("name") or row.get("vendor_or_customer") or "Item"),
+            "amount_cents": int(row.get("amount_cents") or 0),
+            "due_date": str(row.get("due_date") or "")[:10],
+            "event_type": str(row.get("event_type") or "outflow"),
+            "came_back_on": str(row.get("follow_up_on") or row.get("snoozed_until") or "")[:10],
+            "defer_count": deferrals,
+            "nagging": deferrals >= 3,
+        })
+    return {
+        "count": len(items),
+        "amount_cents": sum(item["amount_cents"] for item in items),
+        "nagging_count": sum(1 for item in items if item["nagging"]),
+        "items": items,
+    }
 
 
 def preview_bulk_action(event_ids: list[str], action: str) -> dict[str, Any]:
@@ -308,7 +360,8 @@ def apply_bulk_action(
                    "amount": item["amount_cents"], "now": now})
             connection.execute(text("""
                 UPDATE cash_events
-                SET workflow_status=:status, archived_at=:now, updated_at=:now
+                SET workflow_status=:status, archived_at=:now,
+                    snoozed_until=NULL, follow_up_on=NULL, updated_at=:now
                 WHERE id=:id
             """), {"status": target_status, "now": now, "id": item["id"]})
 

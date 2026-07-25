@@ -22,6 +22,72 @@ def _action_options(selected: str = "write_off") -> str:
     )
 
 
+def _render_due_followups() -> str:
+    """Deferred items whose date has arrived. A deferral must come back."""
+    from sales_support_agent.services.cashflow.bulk_resolve import list_due_followups
+
+    try:
+        data = list_due_followups()
+    except Exception:
+        return ""
+    if not data["count"]:
+        return ""
+
+    rows = []
+    for item in data["items"]:
+        item_id = html.escape(str(item["id"]), quote=True)
+        if item["nagging"]:
+            nag = (f'<span style="color:#a12020"> deferred {item["defer_count"]}x '
+                   "&mdash; time to decide</span>")
+        elif item["defer_count"] > 1:
+            nag = f'<span style="color:#6b7a8d"> deferred {item["defer_count"]}x</span>'
+        else:
+            nag = ""
+        direction = "owed to you" if item["event_type"] == "inflow" else "you owe"
+        rows.append(
+            f'<tr><td><input type="checkbox" name="event_id" value="{item_id}"></td>'
+            + "<td>" + html.escape(str(item["name"])) + nag + "</td>"
+            + '<td style="text-align:right">' + _money(item["amount_cents"]) + "</td>"
+            + "<td>" + html.escape(direction) + "</td>"
+            + "<td>" + html.escape(str(item["came_back_on"])) + "</td></tr>"
+        )
+
+    nag_banner = ""
+    if data["nagging_count"]:
+        nag_banner = (
+            '<div class="finance-plan-short">' + str(data["nagging_count"])
+            + " item(s) have been pushed out three or more times. "
+            + "That usually means the honest answer is write it off.</div>"
+        )
+
+    return f"""
+    <div class="card" style="border-left:3px solid #d1a343">
+      <h2>Back on your plate: {data['count']} item(s), {_money(data['amount_cents'])}</h2>
+      <p style="font-size:13px;color:#6b7a8d;margin:0 0 10px">
+        You deferred these and the date has arrived. Each one needs a decision now.
+        Pushing it out again is allowed, but it is counted.
+      </p>
+      {nag_banner}
+      <form method="post">
+        <table class="finance-accounts-table">
+          <thead><tr><th></th><th>Item</th><th style="text-align:right">Amount</th>
+            <th>Direction</th><th>Came back</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>
+        <div class="finance-receivable-actions" style="margin-top:10px">
+          <button type="submit" formaction="/admin/finances/review/preview" name="action"
+                  value="uncollectible" class="btn btn-secondary">Write off (owed to you)</button>
+          <button type="submit" formaction="/admin/finances/review/preview" name="action"
+                  value="write_off" class="btn btn-secondary">Write off (you owe)</button>
+          <label style="font-size:12px;color:#6b7a8d">Push out again to
+            <input type="date" name="follow_up_on"></label>
+          <button type="submit" formaction="/admin/finances/review/follow-up"
+                  class="btn btn-secondary">Defer again</button>
+        </div>
+      </form>
+    </div>"""
+
+
 def _render_historical_cleanup() -> str:
     """Start-fresh cleanup: archive everything older than the chosen cutoff."""
     from sales_support_agent.services.cashflow.bulk_resolve import list_historical_backlog
@@ -237,6 +303,7 @@ def render_review_page(*, flash: str = "") -> str:
         <h1>Needs review</h1>
         <p class="page-sub">Obligations that are pausing cash decisions</p>
         <div class="card"><p style="margin:0">Nothing needs review. Cash decisions are unblocked.</p></div>
+        {_render_due_followups()}
         {undo_html}
         {_render_historical_cleanup()}
         {_render_overdue_matcher()}
@@ -272,6 +339,7 @@ def render_review_page(*, flash: str = "") -> str:
 
     body = f"""
     <h1>Needs review</h1>
+    {_render_due_followups()}
     <p class="page-sub">{data['total']} obligation(s) are pausing cash decisions. Tick items, choose an action, then preview.</p>
     <form method="post" action="/admin/finances/review/preview">
       {''.join(groups_html)}
