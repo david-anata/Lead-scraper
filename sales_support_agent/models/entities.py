@@ -461,6 +461,8 @@ class CashEvent(Base):
     )
     created_by: Mapped[str] = mapped_column(String(255), default="system", server_default="system")
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Operator-chosen pay position; null means use the automatic order.
+    manual_pay_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Provider-reported lifecycle is evidence, not canonical settlement truth.
     # ``status`` remains derived from allocations / explicit local decisions.

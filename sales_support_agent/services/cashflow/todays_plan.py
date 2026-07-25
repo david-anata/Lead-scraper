@@ -30,6 +30,60 @@ def _due_date(row: dict[str, Any]) -> Optional[date]:
         return None
 
 
+def move_in_pay_order(event_id: str, direction: str) -> dict[str, Any]:
+    """Move one bill up or down in the pay order and persist the whole order.
+
+    The current on-screen order is written down first, so a single move never
+    reshuffles anything else. Advice only: this changes the suggested order,
+    never a payment.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    from sales_support_agent.models.database import get_engine
+
+    direction = str(direction or "").lower()
+    if direction not in {"up", "down"}:
+        raise ValueError("direction must be up or down")
+
+    plan = build_todays_plan()
+    ids = [item["id"] for item in plan["items"]]
+    if event_id not in ids:
+        raise ValueError("that bill is not in the current plan")
+
+    index = ids.index(event_id)
+    swap_with = index - 1 if direction == "up" else index + 1
+    if swap_with < 0 or swap_with >= len(ids):
+        return {"moved": False, "order": ids}
+    ids[index], ids[swap_with] = ids[swap_with], ids[index]
+
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as connection:
+        for position, row_id in enumerate(ids, start=1):
+            connection.execute(text(
+                "UPDATE cash_events SET manual_pay_order=:pos, updated_at=:now WHERE id=:id"
+            ), {"pos": position, "now": now, "id": row_id})
+    return {"moved": True, "order": ids}
+
+
+def clear_manual_pay_order() -> int:
+    """Drop the hand-set order and go back to the automatic one."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    from sales_support_agent.models.database import get_engine
+
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as connection:
+        result = connection.execute(text(
+            "UPDATE cash_events SET manual_pay_order=NULL, updated_at=:now "
+            "WHERE manual_pay_order IS NOT NULL"
+        ), {"now": now})
+    return int(result.rowcount or 0)
+
+
 def build_todays_plan(*, order: str = "due", horizon_days: Optional[int] = None) -> dict[str, Any]:
     """Return the ordered pay list plus coverage and savings-shortfall math."""
     from sales_support_agent.services.cashflow.obligations import list_obligations
@@ -56,7 +110,17 @@ def build_todays_plan(*, order: str = "due", horizon_days: Optional[int] = None)
         cutoff = date.today() + timedelta(days=horizon_days)
         bills = [b for b in bills if (_due_date(b) or _FAR_FUTURE) <= cutoff]
 
-    if order == "priority":
+    # A hand-set order wins over any automatic order. Items the operator has
+    # not positioned keep their automatic place behind the positioned ones.
+    has_manual = any(b.get("manual_pay_order") is not None for b in bills)
+    if has_manual:
+        order = "manual"
+        bills.sort(key=lambda b: (
+            0 if b.get("manual_pay_order") is not None else 1,
+            int(b.get("manual_pay_order") or 0),
+            _due_date(b) or _FAR_FUTURE,
+        ))
+    elif order == "priority":
         bills.sort(key=lambda b: (
             _PRIORITY_RANK.get(str(b.get("pay_priority") or "review").lower(), 2),
             _due_date(b) or _FAR_FUTURE,
@@ -84,6 +148,11 @@ def build_todays_plan(*, order: str = "due", horizon_days: Optional[int] = None)
             "pay_priority": str(bill.get("pay_priority") or "review"),
             "covered": covered,
         })
+
+    for index, item in enumerate(items):
+        item["position"] = index + 1
+        item["is_first"] = index == 0
+        item["is_last"] = index == len(items) - 1
 
     total_due = sum(int(b.get("amount_cents") or 0) for b in bills)
     shortfall = max(0, total_due - spendable)

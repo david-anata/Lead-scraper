@@ -586,7 +586,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
                     ADD COLUMN IF NOT EXISTS source_open_amount_cents INTEGER NULL,
                     ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ NULL,
                     ADD COLUMN IF NOT EXISTS match_status VARCHAR(16) NOT NULL DEFAULT '',
-                    ADD COLUMN IF NOT EXISTS match_candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb
+                    ADD COLUMN IF NOT EXISTS match_candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    ADD COLUMN IF NOT EXISTS manual_pay_order INTEGER NULL
             """))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_cash_events_source_status ON cash_events(source_status)"
@@ -605,6 +606,7 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "source_updated_at": "ALTER TABLE cash_events ADD COLUMN source_updated_at DATETIME",
         "match_status": "ALTER TABLE cash_events ADD COLUMN match_status VARCHAR(16) NOT NULL DEFAULT ''",
         "match_candidates_json": "ALTER TABLE cash_events ADD COLUMN match_candidates_json JSON NOT NULL DEFAULT '[]'",
+        "manual_pay_order": "ALTER TABLE cash_events ADD COLUMN manual_pay_order INTEGER",
     }
     with db_engine.begin() as connection:
         for column, statement in statements.items():

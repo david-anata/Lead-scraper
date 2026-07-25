@@ -550,6 +550,29 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     return _redirect_finance_home("Vendor removed.")
 
 
+@router.post("/plan/move")
+async def plan_move_endpoint(
+    request: Request, event_id: str = Form(...), direction: str = Form(...),
+):
+    """Move one bill up or down in the suggested pay order."""
+    from sales_support_agent.services.cashflow.todays_plan import move_in_pay_order
+
+    try:
+        await asyncio.to_thread(move_in_pay_order, event_id, direction)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not reorder: {exc}")
+    return _redirect_finance_home("Pay order updated.")
+
+
+@router.post("/plan/order/reset")
+async def plan_order_reset_endpoint(request: Request):
+    """Go back to the automatic pay order."""
+    from sales_support_agent.services.cashflow.todays_plan import clear_manual_pay_order
+
+    cleared = await asyncio.to_thread(clear_manual_pay_order)
+    return _redirect_finance_home(f"Back to the automatic order ({cleared} cleared).")
+
+
 @router.get("/review", response_class=HTMLResponse)
 async def review_page_endpoint(request: Request, flash: str = ""):
     """The grouped review list for clearing blocked obligations in batches."""
