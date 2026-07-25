@@ -11,8 +11,9 @@ without dedup. Losing a run's dedup is a nuisance; a 500 on send-day is not.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Iterable
+from typing import Any, Iterable
 
 from sqlalchemy import text
 
@@ -26,11 +27,24 @@ _CREATE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {_TABLE} (
     domain TEXT PRIMARY KEY,
     source TEXT,
+    tier TEXT,
+    signals TEXT,
     first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
 _SELECT_SQL = f"SELECT domain FROM {_TABLE}"
+_SELECT_PUSHED_SQL = f"SELECT domain, tier, signals FROM {_TABLE}"
 _INSERT_SQL = f"INSERT INTO {_TABLE} (domain, source) VALUES (:domain, :source) ON CONFLICT (domain) DO NOTHING"
+_INSERT_LEAD_SQL = (
+    f"INSERT INTO {_TABLE} (domain, source, tier, signals) "
+    "VALUES (:domain, :source, :tier, :signals) ON CONFLICT (domain) DO NOTHING"
+)
+# Best-effort upgrade for tables created before tier/signals existed. SQLite and
+# Postgres both accept ADD COLUMN; we swallow the "already exists" error.
+_ALTERS = (
+    f"ALTER TABLE {_TABLE} ADD COLUMN tier TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN signals TEXT",
+)
 
 
 def _norm(domain: str) -> str:
@@ -40,6 +54,12 @@ def _norm(domain: str) -> str:
 def ensure_table(engine) -> None:
     with engine.begin() as conn:
         conn.execute(text(_CREATE_SQL))
+    for stmt in _ALTERS:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception:  # noqa: BLE001 — column already exists on upgraded DBs
+            pass
 
 
 def load_contacted(engine) -> set[str]:
@@ -68,3 +88,50 @@ def record_contacted(engine, domains: Iterable[str], *, source: str = "csv_expor
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] record_contacted failed; %s domains not saved", len(payload))
         return 0
+
+
+def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export") -> int:
+    """Remember pushed leads WITH their tier + signals, for dedup AND per-signal
+    efficacy. De-dupes by domain within the batch; existing domains are left as-is.
+    Best-effort: returns 0 on error rather than raising."""
+    seen: dict[str, dict[str, Any]] = {}
+    for lead in leads:
+        dom = _norm(lead.get("domain"))
+        if not dom or dom in seen:
+            continue
+        seen[dom] = {
+            "domain": dom,
+            "source": source,
+            "tier": lead.get("tier"),
+            "signals": json.dumps(lead.get("signals") or []),
+        }
+    payload = list(seen.values())
+    if not payload:
+        return 0
+    try:
+        ensure_table(engine)
+        with engine.begin() as conn:
+            conn.execute(text(_INSERT_LEAD_SQL), payload)
+        return len(payload)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] record_leads failed; %s leads not saved", len(payload))
+        return 0
+
+
+def load_pushed(engine) -> list[dict[str, Any]]:
+    """Return [{domain, tier, signals[]}] for every pushed brand. Empty on error."""
+    try:
+        ensure_table(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(_SELECT_PUSHED_SQL)).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                sigs = json.loads(r[2]) if r[2] else []
+            except (ValueError, TypeError):
+                sigs = []
+            out.append({"domain": r[0], "tier": r[1], "signals": sigs})
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_pushed failed; returning empty")
+        return []

@@ -42,6 +42,29 @@ class OutboundMemoryTests(unittest.TestCase):
     def test_record_fails_open_on_bad_engine(self):
         self.assertEqual(m.record_contacted(object(), ["a.com"]), 0)  # no crash
 
+    def test_record_leads_persists_tier_and_signals(self):
+        e = self._engine()
+        n = m.record_leads(e, [
+            {"domain": "A.com", "tier": "A", "signals": ["Runs Meta and Google ads"]},
+            {"domain": "b.com", "tier": "C", "signals": []},
+        ])
+        self.assertEqual(n, 2)
+        pushed = {p["domain"]: p for p in m.load_pushed(e)}
+        self.assertEqual(pushed["a.com"]["tier"], "A")
+        self.assertEqual(pushed["a.com"]["signals"], ["Runs Meta and Google ads"])
+        self.assertEqual(pushed["b.com"]["signals"], [])
+
+    def test_record_leads_also_dedups_future_pulls(self):
+        e = self._engine()
+        m.record_leads(e, [{"domain": "seen.com", "tier": "B", "signals": ["x"]}])
+        self.assertIn("seen.com", m.load_contacted(e))
+
+    def test_load_pushed_empty_on_bad_engine(self):
+        self.assertEqual(m.load_pushed(object()), [])
+
+    def test_record_leads_fails_open_on_bad_engine(self):
+        self.assertEqual(m.record_leads(object(), [{"domain": "a.com"}]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

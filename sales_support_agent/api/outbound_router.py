@@ -63,19 +63,88 @@ def _shell_page(request: Request, *, active: str, title: str, extra_css: str, bo
 </html>"""
 
 
+_NURTURE_CSS = """
+  .nur-wrap { max-width:900px; margin:26px 0 0; padding:18px 20px; background:#fff;
+    border:1px solid #e5e7eb; border-radius:14px; }
+  .nur-h { font-size:13px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#6b7280; margin:0 0 10px; }
+  .nur-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .nur-row input, .nur-row select { padding:9px 11px; border:1px solid #e5e7eb; border-radius:10px; font-size:14px; }
+  .nur-row input[type=email] { min-width:240px; }
+  .nur-btn { padding:10px 18px; border:none; border-radius:10px; background:#2B3644; color:#fff;
+    font-weight:800; font-size:14px; cursor:pointer; }
+  .nur-msg { margin:10px 0 0; font-size:14px; }
+"""
+
+_NURTURE_HTML = """
+    <div class="nur-wrap">
+      <p class="nur-h">Reply outcome &rarr; HubSpot nurture</p>
+      <div class="nur-row">
+        <input id="nur-email" type="email" placeholder="contact@brand.com">
+        <input id="nur-brand" type="text" placeholder="Brand (optional)">
+        <select id="nur-outcome">
+          <option value="follow_up">Follow up later</option>
+          <option value="no_show">No show</option>
+        </select>
+        <button class="nur-btn" id="nur-go" type="button">Add to nurture</button>
+      </div>
+      <p class="nur-msg" id="nur-msg"></p>
+    </div>
+    <script>
+      (function(){
+        var b=document.getElementById('nur-go'), msg=document.getElementById('nur-msg');
+        b.addEventListener('click', function(){
+          var fd=new FormData();
+          fd.append('email', document.getElementById('nur-email').value);
+          fd.append('brand', document.getElementById('nur-brand').value);
+          fd.append('outcome', document.getElementById('nur-outcome').value);
+          msg.textContent='Working...';
+          fetch('/admin/api/outbound/nurture', {method:'POST', body:fd})
+            .then(function(r){ return r.json(); })
+            .then(function(d){ msg.textContent = d.ok
+              ? 'Added. They will get the nurture sequence.'
+              : ('Could not add: ' + (d.reason||'unknown')); })
+            .catch(function(){ msg.textContent='Could not reach the server.'; });
+        });
+      })();
+    </script>
+"""
+
+
 @router.get("/admin/outbound/scoreboard", response_class=HTMLResponse)
 def outbound_scoreboard(request: Request) -> Response:
     import outbound_scoreboard as _sb
+    import outbound_bottlenecks as _bn
+    import outbound_efficacy as _ef
 
     board = _sb.get_scoreboard(_sb.load_instantly_key())
+
+    # Capacity + bottlenecks (from env inputs + the live reply rate).
+    bottlenecks = _bn.get_bottlenecks(
+        reply_rate_pct=board.reply_rate if board.connected else None,
+        emails_per_booked_call=board.emails_per_booked_call if board.connected else None,
+    )
+
+    # By-signal efficacy (counts from what we've pushed; rates once outcomes exist).
+    try:
+        from sales_support_agent.models.database import get_engine
+        from sales_support_agent.services import outbound_memory
+        pushed = outbound_memory.load_pushed(get_engine())
+    except Exception:  # noqa: BLE001
+        pushed = []
+    efficacy = _ef.compute_signal_efficacy(pushed, outcomes={})
+
     body = f"""
         <h1>Outbound scoreboard</h1>
         <p class="sub">Your machine, and how it is performing. Reads live from Instantly.</p>
         {_sb.render_scoreboard_body(board)}
+        {_bn.render_bottlenecks_html(bottlenecks)}
+        {_ef.render_efficacy_html(efficacy)}
+        {_NURTURE_HTML}
     """
+    extra_css = _sb.SCOREBOARD_CSS + _bn.BOTTLENECK_CSS + _ef.EFFICACY_CSS + _NURTURE_CSS
     return HTMLResponse(_shell_page(
         request, active="outbound_scoreboard", title="Outbound Scoreboard",
-        extra_css=_sb.SCOREBOARD_CSS, body=body,
+        extra_css=extra_css, body=body,
     ))
 
 
@@ -123,7 +192,7 @@ def outbound_brands_page(request: Request) -> Response:
 
         <h2 style="font-size:15px;margin:20px 0 6px;">What to do with it</h2>
         <ol class="steps">
-          <li><b>Download</b> the CSV above. Each row is a brand that fits our ICP and has a contact route Clay can work from.</li>
+          <li><b>Download</b> the CSV above. Each brand is ranked Tier A, B, or C with the reason it was picked (hottest first), fits our ICP, and has a contact route Clay can work from.</li>
           <li><b>Import into Clay</b> (Add data &rarr; Import CSV) into your enrichment table. Clay finds the decision-maker and a verified email.</li>
           <li><b>Let the two prompts run</b> in Clay: the Sales Fit column qualifies, the Personalization column writes the opener.</li>
           <li><b>Push qualified rows to Instantly</b> from Clay, into your warmed campaign.</li>
@@ -184,12 +253,30 @@ def outbound_brands_csv(request: Request, max_new: int = 100) -> Response:
         return JSONResponse(status_code=502, content={"detail": f"StoreLeads fetch failed: {exc}"})
 
     if engine is not None and result.leads:
-        outbound_memory.record_contacted(
-            engine, (lead.get("domain") for lead in result.leads), source="csv_export"
-        )
+        # Record full leads (domain + tier + signals) for dedup AND efficacy.
+        outbound_memory.record_leads(engine, result.leads, source="csv_export")
 
     return Response(
         content=_op.leads_to_csv(result.leads),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="anata_clay_brands.csv"'},
     )
+
+
+@router.post("/admin/api/outbound/nurture", response_class=JSONResponse)
+async def outbound_nurture_enroll(request: Request) -> Response:
+    """Enroll a follow-up / no-show contact into the HubSpot nurture."""
+    from sales_support_agent.integrations.hubspot import HubSpotClient
+    from sales_support_agent.services import outbound_nurture
+
+    form = await request.form()
+    email = str(form.get("email") or "").strip()
+    outcome = str(form.get("outcome") or "").strip()
+    brand = str(form.get("brand") or "").strip() or None
+
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:
+        return JSONResponse(status_code=500, content={"ok": False, "reason": "Settings unavailable."})
+    client = HubSpotClient(settings)
+    result = outbound_nurture.enroll_contact(client, email=email, outcome=outcome, brand=brand)
+    return JSONResponse(status_code=(200 if result.get("ok") else 400), content=result)
