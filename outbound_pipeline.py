@@ -32,7 +32,7 @@ STORELEADS_DOMAIN_PATH = "/domain"
 
 # ---- ICP (mirrors the coded target + docs/outbound/03) -----------------------
 ICP_MIN_YEARLY_SALES_CENTS = 1_000_000_00      # ~$1M/yr floor
-ICP_MAX_YEARLY_SALES_CENTS = 15_000_000_00     # ~$15M/yr ceiling
+ICP_MAX_YEARLY_SALES_CENTS = 20_000_000_00     # ~$20M/yr ceiling (David: "under 20M is who we want")
 ICP_ALLOWED_COUNTRIES = {"US", "GB", "UK", "CA", "AU"}
 ICP_ALLOWED_PLATFORMS = {"shopify"}
 
@@ -537,7 +537,7 @@ def load_config_from_env() -> tuple[str, str]:
 # Column order for the CSV that gets imported into Clay (used on the Launch plan,
 # before webhooks unlock on Growth). These are the fields Clay needs to run its
 # enrichment and the two prompts.
-CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "recipe", "score", "estimated_sales_yearly_cents", "categories")
+CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "recipe", "score", "revenue_usd", "categories")
 
 # The CSV header we WRITE for each field. These are named to match the Clay table's
 # existing columns exactly, so Clay auto-maps on import instead of creating a second
@@ -547,7 +547,7 @@ CLAY_CSV_HEADERS = {
     "brand": "Merchant Name",
     "domain": "Domain",
     "reason": "personalization",
-    "estimated_sales_yearly_cents": "revenue_cents",
+    "revenue_usd": "revenue_usd",
 }
 
 
@@ -566,6 +566,12 @@ def leads_to_csv(leads: list[dict[str, Any]]) -> str:
     writer.writerow({f: clay_header(f) for f in CLAY_CSV_COLUMNS})
     for lead in leads:
         row = dict(lead)
+        # Revenue is stored in cents; a person reading the sheet needs dollars,
+        # otherwise $8.4M reads as 835227012 and looks a hundred times too big.
+        try:
+            row["revenue_usd"] = int(lead.get("estimated_sales_yearly_cents") or 0) // 100
+        except (TypeError, ValueError):
+            row["revenue_usd"] = 0
         # Flatten anything non-scalar so the CSV stays clean.
         cats = row.get("categories")
         if isinstance(cats, (list, tuple)):

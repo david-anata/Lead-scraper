@@ -35,7 +35,7 @@ class TestIcpGate(unittest.TestCase):
         self.assertEqual(op.store_niche(_store()), "beauty_wellness")
 
     def test_revenue_above_ceiling_rejected(self):
-        self.assertFalse(op.store_matches_icp(_store(estimated_sales_yearly=20_000_000_00)))
+        self.assertFalse(op.store_matches_icp(_store(estimated_sales_yearly=25_000_000_00)))
 
     def test_revenue_below_floor_rejected(self):
         self.assertFalse(op.store_matches_icp(_store(estimated_sales_yearly=200_000_00)))
@@ -156,13 +156,23 @@ class TestLeadsToCsv(unittest.TestCase):
         self.assertNotIn("domain", cols)
         self.assertNotIn("reason", cols)
 
+    def test_revenue_is_exported_in_dollars_not_cents(self):
+        """Cents in a human-read column makes an $8.4M brand look like $835M."""
+        import csv as _csv, io as _io
+        lead = op.to_clay_lead(_store(name="a.com", estimated_sales_yearly=835_227_012))
+        rows = list(_csv.DictReader(_io.StringIO(op.leads_to_csv([lead]))))
+        self.assertEqual(rows[0]["revenue_usd"], "8352270")   # $8.35M, readable
+
+    def test_ceiling_is_twenty_million(self):
+        self.assertTrue(op.store_matches_icp(_store(estimated_sales_yearly=19_000_000_00)))
+        self.assertFalse(op.store_matches_icp(_store(estimated_sales_yearly=21_000_000_00)))
+
     def test_row_values_still_line_up_with_the_renamed_headers(self):
+        import csv as _csv, io as _io
         lead = op.to_clay_lead(_store(name="a.com"))
-        lines = op.leads_to_csv([lead]).strip().splitlines()
-        header = lines[0].split(",")
-        row = lines[1].split(",")
-        self.assertEqual(row[header.index("Domain")], "a.com")
-        self.assertEqual(row[header.index("Merchant Name")], "Good Brand")
+        rows = list(_csv.DictReader(_io.StringIO(op.leads_to_csv([lead]))))
+        self.assertEqual(rows[0]["Domain"], "a.com")
+        self.assertEqual(rows[0]["Merchant Name"], "Good Brand")
 
     def test_csv_has_header_and_rows(self):
         leads = [op.to_clay_lead(_store(name="a.com")), op.to_clay_lead(_store(name="b.com", categories=["Pet", "Toys"]))]
