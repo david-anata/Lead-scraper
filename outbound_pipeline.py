@@ -442,6 +442,7 @@ def run_storeleads_to_clay(
     throttle_seconds: float = 1.5,
     recipe: Optional[Any] = None,
     now: Optional[datetime] = None,
+    settings: Optional[dict[str, Any]] = None,
     fetch_page: Optional[Callable[..., list[dict[str, Any]]]] = None,
     push: Optional[Callable[..., dict[str, Any]]] = None,
 ) -> PipelineResult:
@@ -462,7 +463,7 @@ def run_storeleads_to_clay(
 
     # A recipe supplies the server-side filters that make this pull a timed
     # trigger (see outbound_recipes); without one we pull the broad ICP list.
-    extra = recipe.params(now) if recipe is not None else None
+    extra = recipe.params(now, settings) if recipe is not None else None
 
     for page in range(max_pages):
         if result.fresh >= max_new:
@@ -482,7 +483,7 @@ def run_storeleads_to_clay(
             result.scanned += 1
             # A recipe may re-check the trigger here when StoreLeads cannot
             # express it as a single filter (see outbound_recipes.Recipe.keeps).
-            if recipe is not None and not recipe.keeps(store, now):
+            if recipe is not None and not recipe.keeps(store, now, settings):
                 continue
             if not store_matches_icp(store):
                 continue

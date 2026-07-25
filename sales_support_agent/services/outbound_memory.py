@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS {_RUNS_TABLE} (
     fresh INTEGER,
     skipped_seen INTEGER,
     partial INTEGER,
+    config_version INTEGER,
     note TEXT,
     ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -69,11 +70,13 @@ _CREATE_RUNS_SQL_PG = _CREATE_RUNS_SQL.replace(
     "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
 )
 _INSERT_RUN_SQL = (
-    f"INSERT INTO {_RUNS_TABLE} (recipe, scanned, matched, fresh, skipped_seen, partial, note) "
-    "VALUES (:recipe, :scanned, :matched, :fresh, :skipped_seen, :partial, :note)"
+    f"INSERT INTO {_RUNS_TABLE} (recipe, scanned, matched, fresh, skipped_seen, partial, config_version, note) "
+    "VALUES (:recipe, :scanned, :matched, :fresh, :skipped_seen, :partial, :config_version, :note)"
 )
+# Best-effort upgrade for runs tables created before versioning existed.
+_RUN_ALTERS = (f"ALTER TABLE {_RUNS_TABLE} ADD COLUMN config_version INTEGER",)
 _SELECT_RUNS_SQL = (
-    f"SELECT recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at "
+    f"SELECT recipe, scanned, matched, fresh, skipped_seen, partial, note, ran_at, config_version "
     f"FROM {_RUNS_TABLE} ORDER BY ran_at DESC"
 )
 
@@ -87,11 +90,20 @@ def ensure_runs_table(engine) -> None:
     sql = _CREATE_RUNS_SQL_PG if is_pg else _CREATE_RUNS_SQL
     with engine.begin() as conn:
         conn.execute(text(sql))
+    for stmt in _RUN_ALTERS:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception:  # noqa: BLE001 — column already present
+            pass
 
 
 def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
-               skipped_seen: int, partial: bool = False, note: str = "") -> bool:
+               skipped_seen: int, partial: bool = False, note: str = "",
+               config_version: int = 0) -> bool:
     """Log one pull. Best-effort: a failure here must never break a pull."""
+    if engine is None:
+        return False
     try:
         ensure_runs_table(engine)
         with engine.begin() as conn:
@@ -99,6 +111,7 @@ def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
                 "recipe": recipe or "", "scanned": int(scanned), "matched": int(matched),
                 "fresh": int(fresh), "skipped_seen": int(skipped_seen),
                 "partial": 1 if partial else 0, "note": note or "",
+                "config_version": int(config_version or 0),
             })
         return True
     except Exception:  # noqa: BLE001
@@ -107,7 +120,9 @@ def record_run(engine, *, recipe: str, scanned: int, matched: int, fresh: int,
 
 
 def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
-    """Most recent pulls first. Empty list on error."""
+    """Most recent pulls first. Empty list when there is no database or on error."""
+    if engine is None:
+        return []
     try:
         ensure_runs_table(engine)
         with engine.connect() as conn:
@@ -117,6 +132,7 @@ def load_runs(engine, limit: int = 30) -> list[dict[str, Any]]:
             out.append({
                 "recipe": r[0], "scanned": r[1], "matched": r[2], "fresh": r[3],
                 "skipped_seen": r[4], "partial": bool(r[5]), "note": r[6], "ran_at": r[7],
+                "config_version": r[8] if len(r) > 8 else 0,
             })
         return out
     except Exception:  # noqa: BLE001
@@ -137,6 +153,8 @@ def ensure_table(engine) -> None:
 
 def load_contacted(engine) -> set[str]:
     """Return every domain we have already exported/contacted. Empty set on error."""
+    if engine is None:
+        return set()
     try:
         ensure_table(engine)
         with engine.connect() as conn:
@@ -193,6 +211,8 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
 
 def load_pushed(engine) -> list[dict[str, Any]]:
     """Return [{domain, tier, signals[]}] for every pushed brand. Empty on error."""
+    if engine is None:
+        return []
     try:
         ensure_table(engine)
         with engine.connect() as conn:

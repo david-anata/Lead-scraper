@@ -93,3 +93,39 @@ just-installed trigger; `Billy Reid` (billyreid.com, apparel, US, ~$14.9M/yr) fr
 - Add a second churn recipe so two tools are checked per day instead of one.
 - Once per-recipe booked calls exist on the scoreboard, drop whichever recipe is not
   earning its place rather than guessing.
+
+---
+
+## Tuning and trackable segmentation
+
+Everything worth retuning is now editable on the Lead Ops page. No code change, no deploy:
+
+- how many days back a "just installed" still counts (default 14)
+- how many churn tools we check per day (default 1)
+- the lookback window for plan upgrade, replatformed and churn
+- the minimum follower growth percent for social surge
+- the per-recipe cap, and whether a recipe is live at all
+
+### Why a date and a note is not enough
+A note tells you *that* something changed. It cannot tell you whether last week's booked
+calls came from the old settings or the new ones, because pulls straddle the change.
+
+So every change **bumps a settings version**, and **every pull records the version it ran
+under**. That turns "did widening the window help?" into a question you can answer by
+comparing v3 pulls against v4 pulls, instead of arguing from memory.
+
+The change log records, for each change: the version, when, which setting, the old and new
+value, the note explaining why, and who made it. A change that does not actually change a
+value is ignored, so the log never fills with noise.
+
+### How to use it
+1. Change a number on Lead Ops, write **why** in the note, save. The version bumps.
+2. Let it run for a week.
+3. Compare the runs at the new version against the old one. When per-recipe booked calls
+   land on the scoreboard, this becomes a straight before-and-after read.
+
+### The two tuning moves we already know we want
+- **Widen "just installed" from 14 to 30 days.** It returned only 4 brands from 550 scanned.
+- **Check 2 churn tools a day instead of 1.** One tool a day found nothing on its first run.
+
+Both are now one edit each, with the note explaining the reasoning, rather than a code change.

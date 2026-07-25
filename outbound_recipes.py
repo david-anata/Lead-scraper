@@ -59,6 +59,48 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+# ---- tunables ----------------------------------------------------------------
+# Everything an operator should be able to change without a code deploy. Stored
+# in the database and edited on the Lead Ops page; these are only the fallbacks.
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "new_growth_app.window_days": 14,     # how recent an install still counts
+    "churned_tool.tools_per_day": 1,      # how many tools we check for churn daily
+    "new_growth_app.max_per_run": 40,
+    "churned_tool.max_per_run": 30,
+    "plan_upgrade.max_per_run": 30,
+    "replatformed.max_per_run": 25,
+    "social_surge.max_per_run": 25,
+    "icp_baseline.max_per_run": 25,
+    "social_surge.min_growth_pct": 25,
+    "plan_upgrade.window_days": 60,
+    "replatformed.window_days": 90,
+    "churned_tool.window_days": 30,
+}
+
+TUNABLE_LABELS: dict[str, str] = {
+    "new_growth_app.window_days": "Just installed: how many days back still counts",
+    "churned_tool.tools_per_day": "Just dropped: how many tools to check each day",
+    "churned_tool.window_days": "Just dropped: how many days back still counts",
+    "plan_upgrade.window_days": "Plan upgrade: how many days back still counts",
+    "replatformed.window_days": "Replatformed: how many days back still counts",
+    "social_surge.min_growth_pct": "Social surge: minimum follower growth percent",
+}
+
+
+def setting(settings: Optional[dict[str, Any]], key: str) -> Any:
+    """Read a tunable, falling back to the shipped default."""
+    if settings and key in settings and settings[key] not in (None, ""):
+        return settings[key]
+    return DEFAULT_SETTINGS.get(key)
+
+
+def _int(settings: Optional[dict[str, Any]], key: str) -> int:
+    try:
+        return int(setting(settings, key))
+    except (TypeError, ValueError):
+        return int(DEFAULT_SETTINGS.get(key) or 0)
+
+
 @dataclass(frozen=True)
 class Recipe:
     key: str
@@ -67,27 +109,37 @@ class Recipe:
     tier: str                   # expected heat: A hottest
     cadence: str                # "weekly" (trigger) or "daily" (baseline)
     max_per_run: int
-    build: Callable[[datetime], dict[str, Any]] = field(repr=False)
+    build: Callable[..., dict[str, Any]] = field(repr=False)
     # Some triggers cannot be expressed as a single StoreLeads filter, so the
     # server narrows and this re-checks each row. Verified live 25 Jul: the
     # app install/uninstall filters accept ONE app id, not a list, so a list
     # silently returns zero rows.
-    client_filter: Optional[Callable[[dict[str, Any], datetime], bool]] = field(
-        default=None, repr=False)
+    client_filter: Optional[Callable[..., bool]] = field(default=None, repr=False)
 
-    def params(self, now: Optional[datetime] = None) -> dict[str, Any]:
+    def params(self, now: Optional[datetime] = None,
+               settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         """Full StoreLeads query for this recipe at a point in time."""
         now = now or datetime.now(timezone.utc)
-        return {**BASE_FILTERS, **self.build(now)}
+        return {**BASE_FILTERS, **self.build(now, settings)}
 
-    def keeps(self, store: dict[str, Any], now: Optional[datetime] = None) -> bool:
+    def keeps(self, store: dict[str, Any], now: Optional[datetime] = None,
+              settings: Optional[dict[str, Any]] = None) -> bool:
         if self.client_filter is None:
             return True
-        return self.client_filter(store, now or datetime.now(timezone.utc))
+        return self.client_filter(store, now or datetime.now(timezone.utc), settings)
+
+    def cap(self, settings: Optional[dict[str, Any]] = None) -> int:
+        return _int(settings, f"{self.key}.max_per_run") or self.max_per_run
+
+    def enabled(self, settings: Optional[dict[str, Any]] = None) -> bool:
+        val = setting(settings, f"{self.key}.enabled")
+        return True if val is None else str(val).lower() not in ("0", "false", "no", "off")
 
 
-def _installed_recently(store: dict[str, Any], now: datetime, days: int = 14) -> bool:
+def _installed_recently(store: dict[str, Any], now: datetime,
+                        settings: Optional[dict[str, Any]] = None) -> bool:
     """True if the store installed one of our growth apps inside the window."""
+    days = _int(settings, "new_growth_app.window_days")
     for app in store.get("apps") or []:
         if not isinstance(app, dict):
             continue
@@ -109,8 +161,8 @@ def _installed_recently(store: dict[str, Any], now: datetime, days: int = 14) ->
     return False
 
 
-def _new_growth_app(now: datetime) -> dict[str, Any]:
-    # Server narrows to "has one of these apps"; the 14-day window is applied
+def _new_growth_app(now: datetime, settings=None) -> dict[str, Any]:
+    # Server narrows to "has one of these apps"; the install window is applied
     # client-side because f:app_installed_at only accepts a single app id.
     return {
         "f:an": ",".join(GROWTH_APP_TOKENS),
@@ -119,40 +171,50 @@ def _new_growth_app(now: datetime) -> dict[str, Any]:
     }
 
 
-def _churned_tool(now: datetime) -> dict[str, Any]:
-    # f:app_uninstalled_at takes ONE app id, so we rotate through the list by
-    # day. Over a few weeks this covers every tool without ever sending a list.
-    token = GROWTH_APP_TOKENS[now.timetuple().tm_yday % len(GROWTH_APP_TOKENS)]
+def churn_tokens_for(now: datetime, settings=None) -> list[str]:
+    """Which tools we check for churn today. f:app_uninstalled_at takes ONE app
+    id, so we rotate; checking more per day widens coverage at the cost of more
+    calls."""
+    per_day = max(1, _int(settings, "churned_tool.tools_per_day"))
+    start = (now.timetuple().tm_yday * per_day) % len(GROWTH_APP_TOKENS)
+    return [GROWTH_APP_TOKENS[(start + i) % len(GROWTH_APP_TOKENS)]
+            for i in range(min(per_day, len(GROWTH_APP_TOKENS)))]
+
+
+def _churned_tool(now: datetime, settings=None) -> dict[str, Any]:
     return {
-        "f:app_uninstalled_at": token,
-        "f:app_uninstalled_at:min": _iso(now - timedelta(days=30)),
+        "f:app_uninstalled_at": churn_tokens_for(now, settings)[0],
+        "f:app_uninstalled_at:min": _iso(
+            now - timedelta(days=_int(settings, "churned_tool.window_days"))),
         "sort": "-er,rank",
     }
 
 
-def _plan_upgrade(now: datetime) -> dict[str, Any]:
+def _plan_upgrade(now: datetime, settings=None) -> dict[str, Any]:
     return {
         "f:plan": "Shopify Plus",
-        "f:last_plan_change_at:min": _iso(now - timedelta(days=60)),
+        "f:last_plan_change_at:min": _iso(
+            now - timedelta(days=_int(settings, "plan_upgrade.window_days"))),
         "sort": "-lplancat,rank",
     }
 
 
-def _replatformed(now: datetime) -> dict[str, Any]:
+def _replatformed(now: datetime, settings=None) -> dict[str, Any]:
     return {
-        "f:last_platform_change_at:min": _iso(now - timedelta(days=90)),
+        "f:last_platform_change_at:min": _iso(
+            now - timedelta(days=_int(settings, "replatformed.window_days"))),
         "sort": "-er,rank",
     }
 
 
-def _social_surge(now: datetime) -> dict[str, Any]:
+def _social_surge(now: datetime, settings=None) -> dict[str, Any]:
     return {
-        "f:tiktokfollowers30dpmin": 25,     # +25% followers in 30 days
+        "f:tiktokfollowers30dpmin": _int(settings, "social_surge.min_growth_pct"),
         "sort": "-fc30dp_10,rank",
     }
 
 
-def _icp_baseline(now: datetime) -> dict[str, Any]:
+def _icp_baseline(now: datetime, settings=None) -> dict[str, Any]:
     return {"sort": "-er,rank"}
 
 
@@ -203,29 +265,32 @@ def recipe(key: str) -> Optional[Recipe]:
     return _BY_KEY.get(key)
 
 
-def recipes_for_day(weekday: int) -> list[Recipe]:
+def recipes_for_day(weekday: int, settings: Optional[dict[str, Any]] = None) -> list[Recipe]:
     """Which recipes run on a given weekday (Mon=0). StoreLeads refreshes weekly
     on Monday, so triggers are pulled Tue/Wed once the new rows have landed;
-    the baseline runs every weekday to keep volume steady."""
+    the baseline runs every weekday to keep volume steady. Recipes switched off
+    in settings never run."""
     if weekday >= 5:            # weekends: no sending, so no pulling
         return []
-    out = [r for r in RECIPES if r.cadence == "daily"]
+    live = [r for r in RECIPES if r.enabled(settings)]
+    out = [r for r in live if r.cadence == "daily"]
     if weekday in (1, 2):       # Tuesday, Wednesday
-        out = [r for r in RECIPES if r.cadence == "weekly"] + out
+        out = [r for r in live if r.cadence == "weekly"] + out
     return out
 
 
-def daily_plan(now: Optional[datetime] = None) -> dict[str, Any]:
+def daily_plan(now: Optional[datetime] = None,
+               settings: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """What we intend to pull today, and why. Drives the app's Lead Ops page."""
     now = now or datetime.now(timezone.utc)
-    todays = recipes_for_day(now.weekday())
+    todays = recipes_for_day(now.weekday(), settings)
     return {
         "date": now.date().isoformat(),
         "weekday": now.strftime("%A"),
         "recipes": [
             {"key": r.key, "label": r.label, "tier": r.tier,
-             "reason": r.reason, "max_per_run": r.max_per_run}
+             "reason": r.reason, "max_per_run": r.cap(settings)}
             for r in todays
         ],
-        "planned_total": sum(r.max_per_run for r in todays),
+        "planned_total": sum(r.cap(settings) for r in todays),
     }

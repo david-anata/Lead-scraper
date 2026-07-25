@@ -259,7 +259,10 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
         engine = None
     already = outbound_memory.load_contacted(engine) if engine is not None else set()
 
-    cap = chosen.max_per_run if chosen else max(1, min(int(max_new or 100), 500))
+    from sales_support_agent.services import outbound_settings as _st
+    tunables = _st.effective(engine, _rx.DEFAULT_SETTINGS) if engine is not None else _rx.DEFAULT_SETTINGS
+    version = _st.config_version(engine) if engine is not None else 0
+    cap = chosen.cap(tunables) if chosen else max(1, min(int(max_new or 100), 500))
     try:
         result = _op.run_storeleads_to_clay(
             api_key=api_key,
@@ -268,6 +271,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
             max_new=cap,
             dry_run=True,
             recipe=chosen,
+            settings=tunables,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[outbound] StoreLeads CSV build failed")
@@ -282,6 +286,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
             engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
             matched=result.matched_icp, fresh=result.fresh,
             skipped_seen=result.skipped_already_contacted, partial=result.partial,
+            config_version=version,
         )
 
     return Response(
@@ -302,6 +307,14 @@ _LEADOPS_CSS = """
     font-family:"Montserrat",sans-serif; font-weight:800; font-size:12px; text-decoration:none; white-space:nowrap; }
   .lo-btn:hover { background:#1f2833; color:#fff; }
   .lo-note { margin:10px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
+  .lo-form { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin:8px 0 0; }
+  .lo-field { display:flex; flex-direction:column; gap:4px; }
+  .lo-field label { font-size:12px; font-weight:700; color:rgba(43,54,68,.7); }
+  .lo-field input { width:110px; padding:8px 10px; border:1px solid var(--border); border-radius:9px; font-size:14px; }
+  .lo-field.wide input { width:280px; }
+  .lo-save { padding:10px 18px; border:none; border-radius:10px; background:#2B3644; color:#fff; font-weight:800; font-size:14px; cursor:pointer; }
+  .lo-msg { margin:10px 0 0; font-size:14px; font-weight:600; }
+  .lo-ver { display:inline-block; padding:2px 8px; border-radius:999px; background:rgba(43,54,68,.08); font-size:12px; font-weight:800; }
   .lo-today { padding:14px 16px; border-radius:14px; background:rgba(133,187,218,.14); border:1px solid rgba(43,54,68,.08); font-size:15px; }
 """
 
@@ -310,8 +323,17 @@ _LEADOPS_CSS = """
 def outbound_lead_ops(request: Request) -> Response:
     """What we pull, when it fires, and what every past pull returned."""
     import outbound_recipes as _rx
+    from sales_support_agent.services import outbound_settings as _st
 
-    plan = _rx.daily_plan()
+    try:
+        from sales_support_agent.models.database import get_engine
+        _eng = get_engine()
+    except Exception:  # noqa: BLE001
+        _eng = None
+    tunables = _st.effective(_eng, _rx.DEFAULT_SETTINGS)
+    version = _st.config_version(_eng)
+
+    plan = _rx.daily_plan(settings=tunables)
     todays_keys = {r["key"] for r in plan["recipes"]}
 
     if plan["recipes"]:
@@ -328,32 +350,53 @@ def outbound_lead_ops(request: Request) -> Response:
     rows = []
     for r in _rx.RECIPES:
         due = "Today" if r.key in todays_keys else ("Tue / Wed" if r.cadence == "weekly" else "Weekdays")
+        cap_now = r.cap(tunables)
         rows.append(
             f"<tr><td class='lo-tier lo-{r.tier}'>{r.tier}</td>"
             f"<td><b>{html.escape(r.label)}</b><br>"
             f"<span style='color:rgba(43,54,68,.6)'>{html.escape(r.reason)}</span></td>"
-            f"<td>{html.escape(due)}</td><td>{r.max_per_run}</td>"
+            f"<td>{html.escape(due)}</td><td>{cap_now}</td>"
             f"<td><a class='lo-btn' href='/admin/api/outbound/brands.csv?recipe={r.key}'>Pull now</a></td></tr>"
         )
 
     # Past pulls, so we can see what each recipe actually returns over time.
     try:
-        from sales_support_agent.models.database import get_engine
         from sales_support_agent.services import outbound_memory
-        runs = outbound_memory.load_runs(get_engine(), limit=25)
+        runs = outbound_memory.load_runs(_eng, limit=25)
+        changes = _st.load_changes(_eng, limit=20)
     except Exception:  # noqa: BLE001
-        runs = []
+        runs, changes = [], []
 
     if runs:
         run_rows = "".join(
             f"<tr><td>{html.escape(str(x['ran_at'])[:16])}</td><td>{html.escape(x['recipe'] or '-')}</td>"
             f"<td>{x['scanned']:,}</td><td>{x['matched']:,}</td><td><b>{x['fresh']:,}</b></td>"
             f"<td>{x['skipped_seen']:,}</td>"
-            f"<td>{'cut short' if x['partial'] else 'complete'}</td></tr>"
+            f"<td>{'cut short' if x['partial'] else 'complete'}</td>"
+            f"<td>v{x.get('config_version') or 0}</td></tr>"
             for x in runs
         )
     else:
-        run_rows = "<tr><td colspan='7'>No pulls yet. Use a Pull now button above.</td></tr>"
+        run_rows = "<tr><td colspan='8'>No pulls yet. Use a Pull now button above.</td></tr>"
+
+
+    # Tuning: the numbers an operator should be able to change without a deploy.
+    tune_fields = "".join(
+        f'<div class="lo-field"><label for="s_{k}">{html.escape(lbl)}</label>'
+        f'<input id="s_{k}" data-key="{k}" type="number" min="1" value="{html.escape(str(tunables.get(k, "")))}"></div>'
+        for k, lbl in _rx.TUNABLE_LABELS.items()
+    )
+
+    if changes:
+        change_rows = "".join(
+            f"<tr><td>v{c['version']}</td><td>{html.escape(str(c['changed_at'])[:16])}</td>"
+            f"<td>{html.escape(_rx.TUNABLE_LABELS.get(c['key'], c['key']))}</td>"
+            f"<td>{html.escape(str(c['old_value'] or '-'))} &rarr; <b>{html.escape(str(c['new_value']))}</b></td>"
+            f"<td>{html.escape(c['note'] or '-')}</td><td>{html.escape(c['changed_by'] or '-')}</td></tr>"
+            for c in changes
+        )
+    else:
+        change_rows = "<tr><td colspan='6'>No changes yet. Settings are at their defaults.</td></tr>"
 
     body = f"""
         <h1>Lead ops</h1>
@@ -373,16 +416,89 @@ def outbound_lead_ops(request: Request) -> Response:
 
         <p class="lo-h">Recent pulls</p>
         <table class="lo-table">
-          <thead><tr><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Status</th></tr></thead>
+          <thead><tr><th>When</th><th>Recipe</th><th>Scanned</th><th>Fit ICP</th><th>Fresh</th><th>Already seen</th><th>Status</th><th>Settings</th></tr></thead>
           <tbody>{run_rows}</tbody>
         </table>
         <p class="lo-note">Fresh is what you actually get: brands that fit, that we have
-        never contacted before. Already seen is the never-email-twice memory doing its job.</p>
+        never contacted before. Already seen is the never-email-twice memory doing its job.
+        Settings shows which tuning version each pull ran under.</p>
+
+        <p class="lo-h">Tuning <span class="lo-ver">now on v{version}</span></p>
+        <div class="lo-form">
+          {tune_fields}
+          <div class="lo-field wide"><label for="s_note">Why are you changing it?</label>
+            <input id="s_note" type="text" placeholder="e.g. widening to lift the just-installed yield"></div>
+          <button class="lo-save" id="s_save" type="button">Save changes</button>
+        </div>
+        <p class="lo-msg" id="s_msg"></p>
+        <p class="lo-note">Changing anything here bumps the settings version. Every pull records
+        the version it ran under, so you can compare results before and after a change instead
+        of guessing whether it helped.</p>
+
+        <p class="lo-h">Change log</p>
+        <table class="lo-table">
+          <thead><tr><th>Version</th><th>When</th><th>Setting</th><th>Change</th><th>Note</th><th>Who</th></tr></thead>
+          <tbody>{change_rows}</tbody>
+        </table>
+        <script>
+          (function(){{
+            var btn=document.getElementById('s_save'), msg=document.getElementById('s_msg');
+            btn.addEventListener('click', function(){{
+              var fd=new FormData();
+              document.querySelectorAll('input[data-key]').forEach(function(i){{
+                fd.append(i.dataset.key, i.value);
+              }});
+              fd.append('note', document.getElementById('s_note').value);
+              msg.textContent='Saving...';
+              fetch('/admin/api/outbound/settings', {{method:'POST', body:fd}})
+                .then(function(r){{return r.json();}})
+                .then(function(d){{
+                  if(!d.ok){{ msg.textContent='Could not save: '+(d.reason||'unknown'); return; }}
+                  msg.textContent = d.changed
+                    ? ('Saved. Now on v'+d.version+'. Reloading...')
+                    : 'Nothing changed.';
+                  if(d.changed) setTimeout(function(){{location.reload();}}, 900);
+                }})
+                .catch(function(){{ msg.textContent='Could not reach the server.'; }});
+            }});
+          }})();
+        </script>
     """
     return HTMLResponse(_shell_page(
         request, active="outbound_leadops", title="Outbound Lead Ops",
         extra_css=_LEADOPS_CSS, body=body,
     ))
+
+
+@router.post("/admin/api/outbound/settings", response_class=JSONResponse)
+async def outbound_save_settings(request: Request) -> Response:
+    """Save tuning changes. Only real differences are stored, and each one is
+    logged against a new settings version so results stay attributable."""
+    import outbound_recipes as _rx
+    from sales_support_agent.services import outbound_settings as _st
+
+    form = await request.form()
+    note = str(form.get("note") or "").strip()
+    updates = {k: str(form.get(k)).strip() for k in _rx.TUNABLE_LABELS if form.get(k) not in (None, "")}
+    # Reject nonsense before it reaches a live pull.
+    for k, v in list(updates.items()):
+        try:
+            if int(v) < 1:
+                return JSONResponse(status_code=400, content={
+                    "ok": False, "reason": f"{_rx.TUNABLE_LABELS[k]} must be 1 or more."})
+        except ValueError:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "reason": f"{_rx.TUNABLE_LABELS[k]} must be a whole number."})
+
+    user = get_current_user(request) or {}
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    result = _st.apply_changes(engine, updates, note=note,
+                               changed_by=str(user.get("email") or ""))
+    return JSONResponse(status_code=(200 if result.get("ok") else 400), content=result)
 
 
 @router.post("/admin/api/outbound/nurture", response_class=JSONResponse)
