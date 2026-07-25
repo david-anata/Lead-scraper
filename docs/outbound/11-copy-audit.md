@@ -265,3 +265,38 @@ The preview is blank because the campaign has **no leads**. To prove the syntax 
 3. Send the test to yourself and read it on a phone.
 4. Confirm the spintax braces are gone in the received email. If you can still see `{` or
    `|` in the delivered message, the spintax did not render and it must be fixed before send.
+
+---
+
+# LOADED INTO INSTANTLY - 25 Jul 2026
+
+v3 is now live in campaign `Anata // Claude`
+(`56a13f93-a364-40f9-ab83-5b19a93f8eb1`). Written directly into all three steps and
+verified by reading the campaign's own saved state back, not just the editor view.
+
+| Step | Subject | Delay | State |
+|---|---|---|---|
+| 1 | `{quick question\|worth a look?\|one thing i noticed\|mind if i ask}` | day 0 | v3 loaded |
+| 2 | blank, so it threads under email 1 | +3 days | v3 loaded |
+| 3 | blank, so it threads | +2 days | v3 loaded, keep switched OFF until baseline is beaten |
+
+Verified after a full page reload:
+- **Zero load-bearing variables.** `{{niche}}` and `{{brand_clean}}` are gone from all
+  three emails, so a missing value can never produce broken English again.
+- **No links anywhere**, including email 1.
+- `[[clay_line]]` present in email 1 as the single personalization slot.
+- Sender signs off as `David Narayan` (full name, per Playbook 8).
+- Spintax intact throughout.
+
+## Two things left, both one click each
+1. **Gap between email 2 and 3 is 2 days; make it 4.** The delay field would not accept a
+   programmatic change, so it needs a manual edit on the Step 2 card. Day 0 / 3 / 7 is the
+   target. Not a blocker: 2 days is tight but not a rule violation.
+2. **Add one test lead** (your own email, a first name, any brand) in the Leads tab. The
+   Add Leads dialog does not render for automation. Once a lead exists, open Preview and
+   confirm the name fills in and no sentence has a gap. Then send yourself the test and
+   check the delivered mail contains no `{` or `|` characters, which would mean spintax
+   did not render.
+
+If Gabe's mailboxes are also attached to this campaign, change the sign-off on email 1 so
+it is not always David's name.
