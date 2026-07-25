@@ -668,6 +668,38 @@ async def plan_order_reset_endpoint(request: Request):
     return _redirect_finance_home(f"Back to the automatic order ({cleared} cleared).")
 
 
+@router.get("/import", response_class=HTMLResponse)
+async def schedule_import_page(request: Request, flash: str = ""):
+    """Review the schedule rebuilt from existing ClickUp data. Writes nothing."""
+    from sales_support_agent.services.cashflow.import_page import render_import_page
+
+    return HTMLResponse(await asyncio.to_thread(render_import_page, flash=flash))
+
+
+@router.post("/import/apply")
+async def schedule_import_apply(request: Request):
+    """Create the chosen schedules and vendors, then archive what was selected."""
+    from sales_support_agent.services.cashflow.schedule_import import apply_import
+
+    form = await request.form()
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(
+            apply_import,
+            schedule_keys=[str(v) for v in form.getlist("schedule_key")],
+            archive_ids=[str(v) for v in form.getlist("archive_id")],
+            keep_ids=[str(v) for v in form.getlist("keep_id")],
+            actor=actor,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(f"The import could not run: {exc}")
+    return _redirect_finance_home(
+        f"Created {result['templates_created']} schedule(s) and {result['vendors_created']} vendor(s); "
+        f"archived {result['archived']} old item(s)."
+    )
+
+
 @router.get("/review", response_class=HTMLResponse)
 async def review_page_endpoint(request: Request, flash: str = ""):
     """The grouped review list for clearing blocked obligations in batches."""

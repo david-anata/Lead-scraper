@@ -470,6 +470,9 @@ class CashEvent(Base):
     # How many times this has been pushed out. Repeated deferral is a signal
     # that the answer is really "write it off", so it is surfaced, not hidden.
     defer_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # auto = leaves the bank without action; manual = needs the operator to pay.
+    # Blank means inherit the vendor's default.
+    payment_method: Mapped[str] = mapped_column(String(16), default="", server_default="")
 
     # Provider-reported lifecycle is evidence, not canonical settlement truth.
     # ``status`` remains derived from allocations / explicit local decisions.
@@ -705,6 +708,10 @@ class Vendor(Base):
     # Pay-as-you-go: we pay into this vendor in pieces, so track a running
     # balance rather than expecting one payment to settle one bill.
     running_account: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Default way this vendor gets paid. Individual bills may override it.
+    # Defaults to manual: being wrong that way costs a minute, whereas a wrong
+    # "auto" means we silently reserve cash and never tell the operator to pay.
+    payment_method: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
     notes: Mapped[str] = mapped_column(Text, default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

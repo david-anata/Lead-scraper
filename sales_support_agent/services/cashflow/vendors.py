@@ -88,11 +88,11 @@ def create_vendor(data: dict[str, Any]) -> str:
             INSERT INTO finance_vendors (
                 id, scope_key, name, terms_type, payment_amount_cents, frequency,
                 total_committed_cents, start_date, end_date, match_terms, notes,
-                running_account, active, created_at, updated_at
+                running_account, payment_method, active, created_at, updated_at
             ) VALUES (
                 :id, 'default', :name, :terms_type, :payment, :frequency,
                 :total, :start_date, :end_date, :match_terms, :notes,
-                :running_account, TRUE, :now, :now
+                :running_account, :payment_method, TRUE, :now, :now
             )
         """), {
             "id": vendor_id, "name": name, "terms_type": terms_type,
@@ -103,7 +103,9 @@ def create_vendor(data: dict[str, Any]) -> str:
             "end_date": _parse_date(data.get("end_date")),
             "match_terms": str(data.get("match_terms") or "").strip(),
             "notes": str(data.get("notes") or "").strip(),
-            "running_account": bool(data.get("running_account")), "now": now,
+            "running_account": bool(data.get("running_account")),
+            "payment_method": ("auto" if str(data.get("payment_method", "")).lower() == "auto" else "manual"),
+            "now": now,
         })
     return vendor_id
 
@@ -125,7 +127,8 @@ def update_vendor(vendor_id: str, data: dict[str, Any]) -> None:
                 name=:name, terms_type=:terms_type, payment_amount_cents=:payment,
                 frequency=:frequency, total_committed_cents=:total,
                 start_date=:start_date, end_date=:end_date, match_terms=:match_terms,
-                notes=:notes, running_account=:running_account, updated_at=:now
+                notes=:notes, running_account=:running_account,
+                payment_method=:payment_method, updated_at=:now
             WHERE id=:id
         """), {
             "id": vendor_id, "name": name, "terms_type": terms_type,
@@ -136,7 +139,9 @@ def update_vendor(vendor_id: str, data: dict[str, Any]) -> None:
             "end_date": _parse_date(data.get("end_date")),
             "match_terms": str(data.get("match_terms") or "").strip(),
             "notes": str(data.get("notes") or "").strip(),
-            "running_account": bool(data.get("running_account")), "now": now,
+            "running_account": bool(data.get("running_account")),
+            "payment_method": ("auto" if str(data.get("payment_method", "")).lower() == "auto" else "manual"),
+            "now": now,
         })
     if result.rowcount == 0:
         raise ValueError("vendor not found")

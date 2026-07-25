@@ -330,6 +330,8 @@ def create_recurring_template(
     frequency: str,
     next_due_date: date,
     day_of_month: Optional[int] = None,
+    confidence: str = "estimated",
+    notes: str = "",
 ) -> dict[str, Any]:
     from sales_support_agent.models.database import get_engine
     from sqlalchemy import text
@@ -338,15 +340,19 @@ def create_recurring_template(
     now = datetime.utcnow()
 
     with get_engine().begin() as conn:
+        # confidence and notes are NOT NULL with only a Python-side default, so
+        # this raw INSERT has to supply them explicitly or it fails outright.
         conn.execute(
             text("""
                 INSERT INTO recurring_templates (
                     id, name, vendor_or_customer, event_type, category,
-                    amount_cents, frequency, next_due_date, day_of_month,
+                    amount_cents, confidence, notes, clickup_task_id,
+                    frequency, next_due_date, day_of_month,
                     is_active, created_at, updated_at
                 ) VALUES (
                     :id, :name, :vendor_or_customer, :event_type, :category,
-                    :amount_cents, :frequency, :next_due_date, :day_of_month,
+                    :amount_cents, :confidence, :notes, '',
+                    :frequency, :next_due_date, :day_of_month,
                     TRUE, :now, :now
                 )
             """),
@@ -357,6 +363,8 @@ def create_recurring_template(
                 "event_type": event_type,
                 "category": category,
                 "amount_cents": amount_cents,
+                "confidence": confidence,
+                "notes": notes,
                 "frequency": frequency,
                 "next_due_date": next_due_date.isoformat(),
                 "day_of_month": day_of_month,

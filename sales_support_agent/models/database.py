@@ -418,7 +418,7 @@ def _ensure_vendor_columns(engine: Any) -> None:
     if "finance_vendors" not in set(inspector.get_table_names()):
         return
     columns = {column["name"] for column in inspector.get_columns("finance_vendors")}
-    if "running_account" in columns:
+    if "running_account" in columns and "payment_method" in columns:
         return
     if engine.dialect.name == "postgresql":
         statement = (
@@ -430,7 +430,12 @@ def _ensure_vendor_columns(engine: Any) -> None:
     else:
         return
     with engine.begin() as connection:
-        connection.execute(text(statement))
+        if "running_account" not in columns:
+            connection.execute(text(statement))
+        if "payment_method" not in columns:
+            connection.execute(text(
+                "ALTER TABLE finance_vendors ADD COLUMN payment_method VARCHAR(16) NOT NULL DEFAULT 'manual'"
+            ))
 
 
 def _ensure_collection_draft_columns(engine: Any) -> None:
@@ -643,7 +648,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
                     ADD COLUMN IF NOT EXISTS manual_pay_order INTEGER NULL,
                     ADD COLUMN IF NOT EXISTS snoozed_until DATE NULL,
                     ADD COLUMN IF NOT EXISTS follow_up_on DATE NULL,
-                    ADD COLUMN IF NOT EXISTS defer_count INTEGER NOT NULL DEFAULT 0
+                    ADD COLUMN IF NOT EXISTS defer_count INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS payment_method VARCHAR(16) NOT NULL DEFAULT ''
             """))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_cash_events_source_status ON cash_events(source_status)"
@@ -666,6 +672,7 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "snoozed_until": "ALTER TABLE cash_events ADD COLUMN snoozed_until DATE",
         "follow_up_on": "ALTER TABLE cash_events ADD COLUMN follow_up_on DATE",
         "defer_count": "ALTER TABLE cash_events ADD COLUMN defer_count INTEGER NOT NULL DEFAULT 0",
+        "payment_method": "ALTER TABLE cash_events ADD COLUMN payment_method VARCHAR(16) NOT NULL DEFAULT ''",
     }
     with db_engine.begin() as connection:
         for column, statement in statements.items():
