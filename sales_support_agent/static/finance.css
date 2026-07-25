@@ -1457,3 +1457,14 @@ input:focus, select:focus, textarea:focus {
 .finance-vendor-actions { display: flex; gap: 8px; margin-top: 6px; }
 .finance-vendor-edit summary, .finance-vendor-add summary { cursor: pointer; font-size: 12px; color: var(--accent, #2f6feb); }
 .finance-vendor-add { margin-top: 12px; }
+
+/* Today's plan */
+.finance-plan-head { display: flex; gap: 24px; flex-wrap: wrap; margin: 8px 0; }
+.finance-plan-head > div { display: flex; flex-direction: column; }
+.finance-plan-head span { font-size: 12px; color: var(--muted, #6b7280); }
+.finance-plan-head strong { font-size: 18px; }
+.finance-plan-short { background: #fdecec; color: #a12020; border-radius: 8px; padding: 8px 12px; font-weight: 600; margin-bottom: 8px; }
+.finance-plan-ok { background: #eaf6ec; color: #1f7a34; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
+.finance-plan-uncovered td { background: #fdf3f3; }
+.finance-plan-yes { color: #1f7a34; }
+.finance-plan-no { color: #a12020; font-weight: 600; }

@@ -2353,6 +2353,66 @@ def _render_vendors_section() -> str:
     )
 
 
+def _render_todays_plan() -> str:
+    """Render the pay-in-order plan with coverage and savings-shortfall math."""
+    from sales_support_agent.services.cashflow.todays_plan import build_todays_plan
+    try:
+        plan = build_todays_plan(order="due")
+    except Exception:
+        return ""
+
+    if not plan["items"]:
+        header = (
+            '<div class="finance-plan-head"><div><span>Spendable checking</span><strong>'
+            + _money(plan["spendable_cents"]) + '</strong></div></div>'
+        )
+        return (
+            '<section class="finance-source-row finance-todays-plan"><div style="width:100%">'
+            + '<strong>Today\'s plan</strong>' + header
+            + '<p class="finance-accounts-asof">Nothing due. You are clear.</p></div></section>'
+        )
+
+    if plan["shortfall_cents"] > 0:
+        banner = (
+            '<div class="finance-plan-short">Short by ' + _money(plan["shortfall_cents"])
+            + ' &mdash; move ' + _money(plan["shortfall_cents"]) + ' from savings to cover everything.</div>'
+        )
+    else:
+        banner = '<div class="finance-plan-ok">Checking covers everything due.</div>'
+
+    rows = []
+    for index, item in enumerate(plan["items"], start=1):
+        covered = '<span class="finance-plan-yes">Covered</span>' if item["covered"] else '<span class="finance-plan-no">Short</span>'
+        due = html.escape(item["due_date"] or "")
+        vendor = html.escape(item["vendor_or_customer"] or "")
+        rows.append(
+            '<tr' + ('' if item["covered"] else ' class="finance-plan-uncovered"') + '>'
+            + '<td>' + str(index) + '</td>'
+            + '<td>' + html.escape(item["name"]) + '</td>'
+            + '<td>' + vendor + '</td>'
+            + '<td class="finance-accounts-amount">' + _money(item["amount_cents"]) + '</td>'
+            + '<td>' + due + '</td>'
+            + '<td>' + covered + '</td></tr>'
+        )
+
+    header = (
+        '<div class="finance-plan-head">'
+        + '<div><span>Spendable checking</span><strong>' + _money(plan["spendable_cents"]) + '</strong></div>'
+        + '<div><span>Due</span><strong>' + _money(plan["total_due_cents"]) + '</strong></div>'
+        + '</div>'
+    )
+    table = (
+        '<table class="finance-accounts-table finance-plan-table"><thead><tr>'
+        + '<th>#</th><th>Pay this</th><th>Vendor</th><th>Amount</th><th>Due</th><th>Covered?</th>'
+        + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+    )
+    return (
+        '<section class="finance-source-row finance-todays-plan"><div style="width:100%">'
+        + '<strong>Today\'s plan</strong><span>What to pay, in order, and whether checking covers it.</span>'
+        + header + banner + table + '</div></section>'
+    )
+
+
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
@@ -2589,6 +2649,7 @@ async def render_cashflow_overview_page(
         )
 
     vendors_html = _render_vendors_section()
+    todays_plan_html = _render_todays_plan()
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -2950,6 +3011,7 @@ async def render_cashflow_overview_page(
       <dialog id="finance-update-modal" class="finance-modal">
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
+        {todays_plan_html}
         {vendors_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
