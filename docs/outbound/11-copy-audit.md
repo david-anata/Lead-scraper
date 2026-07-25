@@ -400,3 +400,38 @@ Sources: help.instantly.ai `/articles/6384663-how-to-use-spintax` and
   `sendingAccountEmail`, `sequence_email_opened`.
 - Liquid conditionals are supported, e.g.
   `{% if position == "founder" %}...{% endif %}` - useful later for role-based lines.
+
+---
+
+# LIVE AND VERIFIED - 25 Jul 2026
+
+The corrected, Instantly-native copy is saved in campaign `Anata // Claude`
+(`56a13f93-a364-40f9-ab83-5b19a93f8eb1`). Confirmed by reloading the page and reading
+the campaign back from the server:
+
+| Check | Result |
+|---|---|
+| Subject line 1 | `{{RANDOM \| quick question \| worth a look? \| one thing i noticed \| mind if i ask}}` |
+| Old `{a\|b}` spintax anywhere | none |
+| Old `[[clay_line]]` anywhere | none |
+| Send gaps | day 0, +3 days, +4 days |
+| Sign-off | `{{sendingAccountFirstName}}` so it matches the sending mailbox |
+
+## How it had to be saved (worth knowing for next time)
+The "Save" button in the email toolbar fires **no network request at all** - it is a
+decorative editor button. Typing into the editor also does nothing lasting, because the
+editor is redrawn from the app's own state and discards outside edits. The change only
+persisted once it went through the app's own update path, which fires a real
+`PATCH /api/v2/campaigns/<id>`.
+
+Practical takeaway for a human doing this by hand: after editing, **click onto a different
+step and then reload the page to confirm the change actually stuck.** Do not trust the
+editor showing your text.
+
+## Still to do
+1. **Add one test lead** (own email + a first name) in the Leads tab, then open Preview.
+   Spintax renders in Preview per Instantly's docs, so the braces should disappear and a
+   name should appear. If braces are still visible, stop and fix before sending.
+2. **Confirm the `{{personalization}}` name matches Clay's column exactly.** Instantly
+   variable names are case sensitive and must match the imported column. A mismatch means
+   a silently blank opening line.
