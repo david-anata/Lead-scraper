@@ -550,6 +550,123 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     return _redirect_finance_home("Vendor removed.")
 
 
+@router.post("/collections/contact")
+async def collections_contact_endpoint(
+    request: Request,
+    customer_key: str = Form(...),
+    email: str = Form(""),
+    phone: str = Form(""),
+):
+    """Save where to reach one customer about overdue money."""
+    from sales_support_agent.services.cashflow.collections import set_contact
+
+    try:
+        await asyncio.to_thread(set_contact, customer_key, email=email, phone=phone)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not save that contact: {exc}")
+    return _redirect_finance_home("Contact saved.")
+
+
+@router.post("/collections/send")
+async def collections_send_endpoint(
+    request: Request,
+    customer_key: str = Form(...),
+    subject: str = Form(...),
+    body: str = Form(...),
+    mode: str = Form("real"),
+):
+    """Send one reminder email. One customer per click; never in bulk."""
+    from sales_support_agent.services.cashflow.collections import send_email_reminder
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    to_override = actor if str(mode) == "test" and "@" in actor else ""
+    if str(mode) == "test" and not to_override:
+        return _redirect_finance_error("No address to send your test to.")
+    try:
+        result = await asyncio.to_thread(
+            send_email_reminder,
+            customer_key,
+            subject=subject,
+            body=body,
+            settings=_finance_settings(request),
+            actor=actor,
+            to_override=to_override,
+            force=str(mode) == "resend",
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    if result.get("test"):
+        return _redirect_finance_home(f"Test sent to {result['recipient']}.")
+    return _redirect_finance_home(f"Reminder sent to {result['recipient']}.")
+
+
+@router.post("/bookkeeping/file-all")
+async def bookkeeping_file_all_endpoint(request: Request):
+    """File every transaction that can be filed confidently."""
+    from sales_support_agent.services.cashflow.bookkeeping import file_transactions
+
+    result = await asyncio.to_thread(file_transactions)
+    filed = result["filed_by_rule"] + result["filed_by_keyword"]
+    return _redirect_finance_home(
+        f"Filed {filed} transaction(s); {result['needs_decision']} still need a decision."
+    )
+
+
+@router.post("/bookkeeping/file")
+async def bookkeeping_file_endpoint(
+    request: Request,
+    event_id: str = Form(...),
+    category: str = Form(...),
+    always: bool = Form(False),
+):
+    """File one transaction, optionally teaching a rule for next time."""
+    from sales_support_agent.services.cashflow.bookkeeping import file_transaction
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(
+            file_transaction, event_id, category, always=always, actor=actor,
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not file that: {exc}")
+    if result["rule_id"]:
+        return _redirect_finance_home("Filed, and it will file itself from now on.")
+    return _redirect_finance_home("Filed.")
+
+
+@router.post("/bookkeeping/rules/{rule_id}/delete")
+async def bookkeeping_rule_delete_endpoint(request: Request, rule_id: str):
+    from sales_support_agent.services.cashflow.bookkeeping import delete_rule
+
+    await asyncio.to_thread(delete_rule, rule_id)
+    return _redirect_finance_home("Rule removed.")
+
+
+@router.post("/plan/move")
+async def plan_move_endpoint(
+    request: Request, event_id: str = Form(...), direction: str = Form(...),
+):
+    """Move one bill up or down in the suggested pay order."""
+    from sales_support_agent.services.cashflow.todays_plan import move_in_pay_order
+
+    try:
+        await asyncio.to_thread(move_in_pay_order, event_id, direction)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not reorder: {exc}")
+    return _redirect_finance_home("Pay order updated.")
+
+
+@router.post("/plan/order/reset")
+async def plan_order_reset_endpoint(request: Request):
+    """Go back to the automatic pay order."""
+    from sales_support_agent.services.cashflow.todays_plan import clear_manual_pay_order
+
+    cleared = await asyncio.to_thread(clear_manual_pay_order)
+    return _redirect_finance_home(f"Back to the automatic order ({cleared} cleared).")
+
+
 @router.get("/review", response_class=HTMLResponse)
 async def review_page_endpoint(request: Request, flash: str = ""):
     """The grouped review list for clearing blocked obligations in batches."""

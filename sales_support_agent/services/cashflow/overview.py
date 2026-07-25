@@ -2354,8 +2354,8 @@ def _render_vendors_section() -> str:
     )
 
 
-def _render_todays_plan() -> str:
-    """Render the pay-in-order plan with coverage and savings-shortfall math."""
+def _todays_plan_inner() -> str:
+    """The pay-in-order plan body: coverage, shortfall, and reorder controls."""
     from sales_support_agent.services.cashflow.todays_plan import build_todays_plan
     try:
         plan = build_todays_plan(order="due")
@@ -2363,14 +2363,10 @@ def _render_todays_plan() -> str:
         return ""
 
     if not plan["items"]:
-        header = (
+        return (
             '<div class="finance-plan-head"><div><span>Spendable checking</span><strong>'
             + _money(plan["spendable_cents"]) + '</strong></div></div>'
-        )
-        return (
-            '<section class="finance-source-row finance-todays-plan"><div style="width:100%">'
-            + '<strong>Today\'s plan</strong>' + header
-            + '<p class="finance-accounts-asof">Nothing due. You are clear.</p></div></section>'
+            + '<p class="finance-accounts-asof">Nothing due. You are clear.</p>'
         )
 
     if plan["shortfall_cents"] > 0:
@@ -2382,19 +2378,42 @@ def _render_todays_plan() -> str:
         banner = '<div class="finance-plan-ok">Checking covers everything due.</div>'
 
     rows = []
-    for index, item in enumerate(plan["items"], start=1):
+    for item in plan["items"]:
         covered = '<span class="finance-plan-yes">Covered</span>' if item["covered"] else '<span class="finance-plan-no">Short</span>'
-        due = html.escape(item["due_date"] or "")
-        vendor = html.escape(item["vendor_or_customer"] or "")
+        item_id = html.escape(str(item["id"]), quote=True)
+
+        def _move_button(direction: str, glyph: str, disabled: bool) -> str:
+            if disabled:
+                return '<span class="finance-plan-move-off">' + glyph + '</span>'
+            return (
+                '<form method="post" action="/admin/finances/plan/move" class="finance-plan-move">'
+                + '<input type="hidden" name="event_id" value="' + item_id + '">'
+                + '<input type="hidden" name="direction" value="' + direction + '">'
+                + '<button type="submit" title="Move ' + direction + '">' + glyph + '</button></form>'
+            )
+
+        controls = (
+            _move_button("up", "&#9650;", bool(item.get("is_first")))
+            + _move_button("down", "&#9660;", bool(item.get("is_last")))
+        )
         rows.append(
             '<tr' + ('' if item["covered"] else ' class="finance-plan-uncovered"') + '>'
-            + '<td>' + str(index) + '</td>'
+            + '<td class="finance-plan-controls">' + controls + '</td>'
+            + '<td>' + str(item.get("position") or "") + '</td>'
             + '<td>' + html.escape(item["name"]) + '</td>'
-            + '<td>' + vendor + '</td>'
             + '<td class="finance-accounts-amount">' + _money(item["amount_cents"]) + '</td>'
-            + '<td>' + due + '</td>'
+            + '<td>' + html.escape(item["due_date"] or "") + '</td>'
             + '<td>' + covered + '</td></tr>'
         )
+
+    if plan["order"] == "manual":
+        order_note = (
+            '<form method="post" action="/admin/finances/plan/order/reset" class="finance-plan-order-note">'
+            + '<span>Your hand-set order is in use.</span>'
+            + '<button type="submit" class="btn btn-secondary btn-sm">Back to soonest due</button></form>'
+        )
+    else:
+        order_note = '<p class="finance-accounts-asof">Order: soonest due first. Use the arrows to set your own.</p>'
 
     header = (
         '<div class="finance-plan-head">'
@@ -2404,13 +2423,66 @@ def _render_todays_plan() -> str:
     )
     table = (
         '<table class="finance-accounts-table finance-plan-table"><thead><tr>'
-        + '<th>#</th><th>Pay this</th><th>Vendor</th><th>Amount</th><th>Due</th><th>Covered?</th>'
+        + '<th></th><th>#</th><th>Pay this</th><th>Amount</th><th>Due</th><th>Covered?</th>'
         + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
     )
+    return header + banner + table + order_note
+
+
+def _render_daily_cockpit() -> str:
+    """Main-page card: spendable cash, the pay plan, and the review shortcut."""
+    from sales_support_agent.services.cashflow.accounts_view import load_accounts_overview
+    from sales_support_agent.services.cashflow.bulk_resolve import list_review_items
+
+    plan_inner = _todays_plan_inner()
+    if not plan_inner:
+        return ""
+    try:
+        accounts = load_accounts_overview()
+    except Exception:
+        accounts = {"spendable_cents": 0, "reserve_cents": 0, "account_count": 0}
+    try:
+        review_total = int(list_review_items()["total"])
+    except Exception:
+        review_total = 0
+
+    if accounts["account_count"]:
+        cash_strip = (
+            '<div class="finance-accounts-totals">'
+            + '<div><span>Spendable cash (checking)</span><strong>' + _money(accounts["spendable_cents"]) + '</strong></div>'
+            + '<div><span>Savings &amp; reserves</span><strong>' + _money(accounts["reserve_cents"]) + '</strong></div>'
+            + '<div><span>Connected accounts</span><strong>' + str(accounts["account_count"]) + '</strong></div>'
+            + '</div>'
+        )
+    else:
+        cash_strip = ""
+
+    review_link = ""
+    if review_total:
+        review_link = (
+            '<div class="finance-vendor-actions"><a class="btn btn-secondary btn-sm" '
+            + 'href="/admin/finances/review">' + str(review_total)
+            + ' item(s) need review &mdash; clear them in bulk</a></div>'
+        )
+
+    return (
+        '<section class="card finance-daily-cockpit" id="finance-daily-plan">'
+        + '<div class="finance-card-head"><div><p class="finance-eyebrow">Today</p>'
+        + '<h2>Cash and what to pay</h2>'
+        + '<p class="finance-queue-helper">Spendable checking, the pay order, and whether it is covered.</p></div></div>'
+        + cash_strip + plan_inner + review_link + '</section>'
+    )
+
+
+def _render_todays_plan() -> str:
+    """Panel version of the plan, kept for the Update money surface."""
+    inner = _todays_plan_inner()
+    if not inner:
+        return ""
     return (
         '<section class="finance-source-row finance-todays-plan"><div style="width:100%">'
         + '<strong>Today\'s plan</strong><span>What to pay, in order, and whether checking covers it.</span>'
-        + header + banner + table + '</div></section>'
+        + inner + '</div></section>'
     )
 
 
@@ -2468,32 +2540,63 @@ def _render_collections() -> str:
             return '<span class="finance-collect-skip">Skipped</span>'
         return ""
 
-    def _channel_block(cust_key: str, label: str, channel: str, status: str, subject: str, body: str) -> str:
-        subject_html = ('<p class="finance-collect-subject">' + html.escape(subject) + '</p>') if subject else ""
-        mark = (
-            '<form method="post" action="/admin/finances/collections/mark" class="finance-collect-actions">'
-            + '<input type="hidden" name="customer_key" value="' + html.escape(cust_key, quote=True) + '">'
-            + '<input type="hidden" name="channel" value="' + channel + '">'
-            + '<button type="submit" name="status" value="sent" class="btn btn-secondary btn-sm">Mark as sent</button>'
-            + '<button type="submit" name="status" value="skipped" class="btn btn-secondary btn-sm">Skip</button></form>'
+    def _email_block(cust: dict) -> str:
+        key = html.escape(str(cust["customer_key"]), quote=True)
+        status = str(cust["email_status"])
+        contact = str(cust.get("contact_email") or "")
+        subject = str(cust["email"]["subject"])
+        body = str(cust["email"]["body"])
+
+        if not contact:
+            return (
+                '<details class="finance-collect-draft"><summary>Add an email to send &#9888;</summary>'
+                + '<form method="post" action="/admin/finances/collections/contact" class="finance-collect-actions">'
+                + '<input type="hidden" name="customer_key" value="' + key + '">'
+                + '<input name="email" type="email" placeholder="billing@customer.com" required>'
+                + '<button type="submit" class="btn btn-secondary btn-sm">Save email</button></form></details>'
+            )
+
+        already_sent = status == "sent"
+        send_label = "Send again" if already_sent else "Send now"
+        send_mode = "resend" if already_sent else "real"
+        confirm = (
+            "return confirm('Send this reminder to " + contact.replace("'", "") + "?');"
         )
         return (
-            '<details class="finance-collect-draft"><summary>Review ' + label + ' ' + _status_badge(status) + '</summary>'
-            + subject_html
-            + '<textarea class="finance-collect-body" rows="6" readonly>' + html.escape(body) + '</textarea>'
-            + mark + '</details>'
+            '<details class="finance-collect-draft"><summary>Review email ' + _status_badge(status) + '</summary>'
+            + '<p class="finance-collect-subject">To: ' + html.escape(contact) + '</p>'
+            + '<form method="post" action="/admin/finances/collections/send" onsubmit="' + confirm + '">'
+            + '<input type="hidden" name="customer_key" value="' + key + '">'
+            + '<input class="finance-collect-body" name="subject" value="' + html.escape(subject, quote=True) + '">'
+            + '<textarea class="finance-collect-body" name="body" rows="6">' + html.escape(body) + '</textarea>'
+            + '<div class="finance-collect-actions">'
+            + '<button type="submit" name="mode" value="test" class="btn btn-secondary btn-sm">Send test to me</button>'
+            + '<button type="submit" name="mode" value="' + send_mode + '" class="btn btn-primary btn-sm">'
+            + send_label + '</button></div></form></details>'
+        )
+
+    def _text_block(cust: dict) -> str:
+        key = html.escape(str(cust["customer_key"]), quote=True)
+        return (
+            '<details class="finance-collect-draft"><summary>Text draft (copy and send yourself)</summary>'
+            + '<textarea class="finance-collect-body" rows="4" readonly>'
+            + html.escape(str(cust["sms"]["body"])) + '</textarea>'
+            + '<p class="finance-accounts-asof">No text provider is connected, so texts are copy-and-send.</p>'
+            + '<form method="post" action="/admin/finances/collections/mark" class="finance-collect-actions">'
+            + '<input type="hidden" name="customer_key" value="' + key + '">'
+            + '<input type="hidden" name="channel" value="sms">'
+            + '<button type="submit" name="status" value="sent" class="btn btn-secondary btn-sm">Mark text as sent</button>'
+            + '<button type="submit" name="status" value="skipped" class="btn btn-secondary btn-sm">Skip</button></form>'
+            + '</details>'
         )
 
     rows = []
     for cust in data["customers"]:
-        key = str(cust["customer_key"])
-        email = _channel_block(key, "email", "email", cust["email_status"], cust["email"]["subject"], cust["email"]["body"])
-        sms = _channel_block(key, "text", "sms", cust["sms_status"], "", cust["sms"]["body"])
         rows.append(
             '<tr><td>' + html.escape(str(cust["customer"])) + '</td>'
             + '<td class="finance-accounts-amount">' + _money(int(cust["owed_cents"])) + '</td>'
             + '<td>' + str(cust["days_late"]) + ' days late</td>'
-            + '<td>' + email + sms + '</td></tr>'
+            + '<td>' + _email_block(cust) + _text_block(cust) + '</td></tr>'
         )
 
     table = (
@@ -2504,7 +2607,8 @@ def _render_collections() -> str:
     heading = _money(data["total_owed_cents"]) + " across " + str(data["customer_count"]) + " customer(s)"
     return (
         '<section class="finance-source-row finance-collections"><div style="width:100%">'
-        + '<strong>Who owes you</strong><span>' + heading + '. Drafts are ready to review; nothing sends on its own.</span>'
+        + '<strong>Who owes you</strong><span>' + heading
+        + '. One send per click; nothing goes out on its own and nothing sends in bulk.</span>'
         + table + '</div></section>'
     )
 
@@ -2577,6 +2681,99 @@ def _render_match_review() -> str:
         + '<div class="finance-vendor-actions">'
         + '<button type="submit" class="btn btn-primary btn-sm">Confirm selected matches</button></div></form>'
         + undo_html + '</div></section>'
+    )
+
+
+_BOOKKEEPING_CATEGORIES = (
+    "software", "supplies", "payroll", "rent", "utilities", "insurance",
+    "loan", "debt", "fees", "meals", "travel", "advertising", "contractor",
+    "taxes", "revenue", "transfer", "other",
+)
+
+
+def _render_bookkeeping() -> str:
+    """Filing status, the short decision queue, and the taught rules."""
+    from sales_support_agent.services.cashflow.bookkeeping import (
+        bookkeeping_summary,
+        list_needs_decision,
+        list_rules,
+    )
+    try:
+        summary = bookkeeping_summary()
+        pending = list_needs_decision(limit=25)
+        rules = list_rules()
+    except Exception:
+        return ""
+
+    if not summary["total_transactions"]:
+        return ""
+
+    head = (
+        '<div class="finance-accounts-totals">'
+        + '<div><span>Filed automatically</span><strong>' + str(summary["filed"])
+        + ' of ' + str(summary["total_transactions"]) + '</strong></div>'
+        + '<div><span>Need a decision</span><strong>' + str(summary["needs_decision"]) + '</strong></div>'
+        + '<div><span>Rules you taught</span><strong>' + str(summary["rule_count"]) + '</strong></div>'
+        + '</div>'
+        + '<form method="post" action="/admin/finances/bookkeeping/file-all" class="finance-vendor-actions">'
+        + '<button type="submit" class="btn btn-secondary btn-sm">File everything it can</button></form>'
+    )
+
+    if pending:
+        rows = []
+        for item in pending:
+            event_id = html.escape(str(item["id"]), quote=True)
+            guess = str(item["guess"] or "")
+            options = "".join(
+                '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
+                + category.title() + '</option>'
+                for category in _BOOKKEEPING_CATEGORIES
+            )
+            rows.append(
+                '<tr><td>' + html.escape(str(item["name"]))
+                + '<br><small>' + _money(item["amount_cents"]) + ' on ' + html.escape(item["posted_on"]) + '</small></td>'
+                + '<td><form method="post" action="/admin/finances/bookkeeping/file" class="finance-book-form">'
+                + '<input type="hidden" name="event_id" value="' + event_id + '">'
+                + '<select name="category">' + options + '</select>'
+                + '<label class="finance-book-always"><input type="checkbox" name="always" value="true"> always</label>'
+                + '<button type="submit" class="btn btn-secondary btn-sm">File</button>'
+                + '</form></td></tr>'
+            )
+        queue = (
+            '<table class="finance-accounts-table finance-book-table"><thead><tr>'
+            + '<th>Transaction</th><th>File it as</th></tr></thead><tbody>'
+            + "".join(rows) + '</tbody></table>'
+            + '<p class="finance-accounts-asof">Tick "always" to teach a rule so this merchant files itself next time.</p>'
+        )
+    else:
+        queue = '<p class="finance-plan-ok">Everything is filed. Nothing needs a decision.</p>'
+
+    if rules:
+        rule_items = []
+        for rule in rules[:12]:
+            rule_id = html.escape(str(rule["id"]), quote=True)
+            rule_items.append(
+                '<li><code>' + html.escape(str(rule.get("match_pattern") or "")) + '</code> &rarr; '
+                + html.escape(str(rule.get("category") or "")) + ' <small>(' + str(int(rule.get("hit_count") or 0)) + ' uses)</small> '
+                + '<form method="post" action="/admin/finances/bookkeeping/rules/' + rule_id + '/delete" class="finance-plan-move">'
+                + '<button type="submit" title="Remove rule">&times;</button></form></li>'
+            )
+        rules_html = (
+            '<details class="finance-vendor-edit"><summary>Rules you taught ('
+            + str(len(rules)) + ')</summary><ul class="finance-book-rules">'
+            + "".join(rule_items) + '</ul></details>'
+        )
+    else:
+        rules_html = ""
+
+    writeback = (
+        '<p class="finance-accounts-asof">QuickBooks write-back: <strong>not connected</strong>. '
+        + 'Bookkeeping stays inside this app; nothing is written to QuickBooks.</p>'
+    )
+    return (
+        '<section class="finance-source-row finance-bookkeeping"><div style="width:100%">'
+        + '<strong>Bookkeeping</strong><span>Transactions file themselves; only real unknowns ask you.</span>'
+        + head + queue + rules_html + writeback + '</div></section>'
     )
 
 
@@ -2872,8 +3069,9 @@ async def render_cashflow_overview_page(
         )
 
     vendors_html = _render_vendors_section()
-    todays_plan_html = _render_todays_plan()
+    daily_cockpit_html = _render_daily_cockpit()
     bill_audit_html = _render_bill_audit()
+    bookkeeping_html = _render_bookkeeping()
     collections_drafts_html = _render_collections()
 
     gap = cash["funding_gap_cents"]
@@ -3096,6 +3294,8 @@ async def render_cashflow_overview_page(
         <article class="is-next"><span>Next</span>{smart_next_html}<button type="button" class="finance-text-action" data-drawer-review="recommendation">{'Review next action' if trust_blocking else 'Review recommendation'}</button></article>
       </section>
 
+      {daily_cockpit_html}
+
       <section class="card finance-money-queue" id="finance-queue" aria-labelledby="money-queue-title">
         <div class="section-head">
           <div><p class="finance-eyebrow">Current decisions</p><h2 id="money-queue-title">Money queue</h2><p class="finance-queue-helper">Work this list first. Historical reconciliation stays in its own filter.</p></div>
@@ -3238,9 +3438,9 @@ async def render_cashflow_overview_page(
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         {trust_check_html}
         {match_review_html}
-        {todays_plan_html}
         {vendors_html}
         {bill_audit_html}
+        {bookkeeping_html}
         {collections_drafts_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>

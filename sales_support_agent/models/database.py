@@ -400,12 +400,43 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_match_run_items",
         "finance_bulk_batches",
         "finance_bulk_batch_items",
+        "finance_booking_rules",
+        "finance_customer_contacts",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
     _ensure_plaid_account_columns(engine)
+    _ensure_collection_draft_columns(engine)
+
+
+def _ensure_collection_draft_columns(engine: Any) -> None:
+    """Add the additive send-log columns to an existing drafts table."""
+    inspector = inspect(engine)
+    if "finance_collection_drafts" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("finance_collection_drafts")}
+    if engine.dialect.name == "postgresql":
+        statements = {
+            "sent_at": "ALTER TABLE finance_collection_drafts ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ NULL",
+            "provider_message_id": "ALTER TABLE finance_collection_drafts ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(255) NOT NULL DEFAULT ''",
+            "last_error": "ALTER TABLE finance_collection_drafts ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT ''",
+        }
+    elif engine.dialect.name == "sqlite":
+        statements = {
+            "sent_at": "ALTER TABLE finance_collection_drafts ADD COLUMN sent_at DATETIME",
+            "provider_message_id": "ALTER TABLE finance_collection_drafts ADD COLUMN provider_message_id VARCHAR(255) NOT NULL DEFAULT ''",
+            "last_error": "ALTER TABLE finance_collection_drafts ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+        }
+    else:
+        return
+    missing = {name: sql for name, sql in statements.items() if name not in columns}
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for sql in missing.values():
+            connection.execute(text(sql))
 
 
 def _ensure_plaid_account_columns(engine: Any) -> None:
@@ -586,7 +617,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
                     ADD COLUMN IF NOT EXISTS source_open_amount_cents INTEGER NULL,
                     ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ NULL,
                     ADD COLUMN IF NOT EXISTS match_status VARCHAR(16) NOT NULL DEFAULT '',
-                    ADD COLUMN IF NOT EXISTS match_candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb
+                    ADD COLUMN IF NOT EXISTS match_candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    ADD COLUMN IF NOT EXISTS manual_pay_order INTEGER NULL
             """))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_cash_events_source_status ON cash_events(source_status)"
@@ -605,6 +637,7 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "source_updated_at": "ALTER TABLE cash_events ADD COLUMN source_updated_at DATETIME",
         "match_status": "ALTER TABLE cash_events ADD COLUMN match_status VARCHAR(16) NOT NULL DEFAULT ''",
         "match_candidates_json": "ALTER TABLE cash_events ADD COLUMN match_candidates_json JSON NOT NULL DEFAULT '[]'",
+        "manual_pay_order": "ALTER TABLE cash_events ADD COLUMN manual_pay_order INTEGER",
     }
     with db_engine.begin() as connection:
         for column, statement in statements.items():
