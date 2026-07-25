@@ -2540,32 +2540,63 @@ def _render_collections() -> str:
             return '<span class="finance-collect-skip">Skipped</span>'
         return ""
 
-    def _channel_block(cust_key: str, label: str, channel: str, status: str, subject: str, body: str) -> str:
-        subject_html = ('<p class="finance-collect-subject">' + html.escape(subject) + '</p>') if subject else ""
-        mark = (
-            '<form method="post" action="/admin/finances/collections/mark" class="finance-collect-actions">'
-            + '<input type="hidden" name="customer_key" value="' + html.escape(cust_key, quote=True) + '">'
-            + '<input type="hidden" name="channel" value="' + channel + '">'
-            + '<button type="submit" name="status" value="sent" class="btn btn-secondary btn-sm">Mark as sent</button>'
-            + '<button type="submit" name="status" value="skipped" class="btn btn-secondary btn-sm">Skip</button></form>'
+    def _email_block(cust: dict) -> str:
+        key = html.escape(str(cust["customer_key"]), quote=True)
+        status = str(cust["email_status"])
+        contact = str(cust.get("contact_email") or "")
+        subject = str(cust["email"]["subject"])
+        body = str(cust["email"]["body"])
+
+        if not contact:
+            return (
+                '<details class="finance-collect-draft"><summary>Add an email to send &#9888;</summary>'
+                + '<form method="post" action="/admin/finances/collections/contact" class="finance-collect-actions">'
+                + '<input type="hidden" name="customer_key" value="' + key + '">'
+                + '<input name="email" type="email" placeholder="billing@customer.com" required>'
+                + '<button type="submit" class="btn btn-secondary btn-sm">Save email</button></form></details>'
+            )
+
+        already_sent = status == "sent"
+        send_label = "Send again" if already_sent else "Send now"
+        send_mode = "resend" if already_sent else "real"
+        confirm = (
+            "return confirm('Send this reminder to " + contact.replace("'", "") + "?');"
         )
         return (
-            '<details class="finance-collect-draft"><summary>Review ' + label + ' ' + _status_badge(status) + '</summary>'
-            + subject_html
-            + '<textarea class="finance-collect-body" rows="6" readonly>' + html.escape(body) + '</textarea>'
-            + mark + '</details>'
+            '<details class="finance-collect-draft"><summary>Review email ' + _status_badge(status) + '</summary>'
+            + '<p class="finance-collect-subject">To: ' + html.escape(contact) + '</p>'
+            + '<form method="post" action="/admin/finances/collections/send" onsubmit="' + confirm + '">'
+            + '<input type="hidden" name="customer_key" value="' + key + '">'
+            + '<input class="finance-collect-body" name="subject" value="' + html.escape(subject, quote=True) + '">'
+            + '<textarea class="finance-collect-body" name="body" rows="6">' + html.escape(body) + '</textarea>'
+            + '<div class="finance-collect-actions">'
+            + '<button type="submit" name="mode" value="test" class="btn btn-secondary btn-sm">Send test to me</button>'
+            + '<button type="submit" name="mode" value="' + send_mode + '" class="btn btn-primary btn-sm">'
+            + send_label + '</button></div></form></details>'
+        )
+
+    def _text_block(cust: dict) -> str:
+        key = html.escape(str(cust["customer_key"]), quote=True)
+        return (
+            '<details class="finance-collect-draft"><summary>Text draft (copy and send yourself)</summary>'
+            + '<textarea class="finance-collect-body" rows="4" readonly>'
+            + html.escape(str(cust["sms"]["body"])) + '</textarea>'
+            + '<p class="finance-accounts-asof">No text provider is connected, so texts are copy-and-send.</p>'
+            + '<form method="post" action="/admin/finances/collections/mark" class="finance-collect-actions">'
+            + '<input type="hidden" name="customer_key" value="' + key + '">'
+            + '<input type="hidden" name="channel" value="sms">'
+            + '<button type="submit" name="status" value="sent" class="btn btn-secondary btn-sm">Mark text as sent</button>'
+            + '<button type="submit" name="status" value="skipped" class="btn btn-secondary btn-sm">Skip</button></form>'
+            + '</details>'
         )
 
     rows = []
     for cust in data["customers"]:
-        key = str(cust["customer_key"])
-        email = _channel_block(key, "email", "email", cust["email_status"], cust["email"]["subject"], cust["email"]["body"])
-        sms = _channel_block(key, "text", "sms", cust["sms_status"], "", cust["sms"]["body"])
         rows.append(
             '<tr><td>' + html.escape(str(cust["customer"])) + '</td>'
             + '<td class="finance-accounts-amount">' + _money(int(cust["owed_cents"])) + '</td>'
             + '<td>' + str(cust["days_late"]) + ' days late</td>'
-            + '<td>' + email + sms + '</td></tr>'
+            + '<td>' + _email_block(cust) + _text_block(cust) + '</td></tr>'
         )
 
     table = (
@@ -2576,7 +2607,8 @@ def _render_collections() -> str:
     heading = _money(data["total_owed_cents"]) + " across " + str(data["customer_count"]) + " customer(s)"
     return (
         '<section class="finance-source-row finance-collections"><div style="width:100%">'
-        + '<strong>Who owes you</strong><span>' + heading + '. Drafts are ready to review; nothing sends on its own.</span>'
+        + '<strong>Who owes you</strong><span>' + heading
+        + '. One send per click; nothing goes out on its own and nothing sends in bulk.</span>'
         + table + '</div></section>'
     )
 

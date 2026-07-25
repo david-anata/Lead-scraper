@@ -803,12 +803,29 @@ class FinanceCollectionDraft(Base):
     channel: Mapped[str] = mapped_column(String(16), default="email")  # email | sms
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | sent | skipped
     amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_message_id: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    last_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     __table_args__ = (
         Index("ix_collection_draft_scope_customer_channel", "scope_key", "customer_key", "channel", unique=True),
     )
+
+
+class FinanceCustomerContact(Base):
+    """Where to reach a customer about an overdue invoice."""
+
+    __tablename__ = "finance_customer_contacts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    customer_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
 class FinanceActionAudit(Base):

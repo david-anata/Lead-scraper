@@ -550,6 +550,57 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     return _redirect_finance_home("Vendor removed.")
 
 
+@router.post("/collections/contact")
+async def collections_contact_endpoint(
+    request: Request,
+    customer_key: str = Form(...),
+    email: str = Form(""),
+    phone: str = Form(""),
+):
+    """Save where to reach one customer about overdue money."""
+    from sales_support_agent.services.cashflow.collections import set_contact
+
+    try:
+        await asyncio.to_thread(set_contact, customer_key, email=email, phone=phone)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not save that contact: {exc}")
+    return _redirect_finance_home("Contact saved.")
+
+
+@router.post("/collections/send")
+async def collections_send_endpoint(
+    request: Request,
+    customer_key: str = Form(...),
+    subject: str = Form(...),
+    body: str = Form(...),
+    mode: str = Form("real"),
+):
+    """Send one reminder email. One customer per click; never in bulk."""
+    from sales_support_agent.services.cashflow.collections import send_email_reminder
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    to_override = actor if str(mode) == "test" and "@" in actor else ""
+    if str(mode) == "test" and not to_override:
+        return _redirect_finance_error("No address to send your test to.")
+    try:
+        result = await asyncio.to_thread(
+            send_email_reminder,
+            customer_key,
+            subject=subject,
+            body=body,
+            settings=_finance_settings(request),
+            actor=actor,
+            to_override=to_override,
+            force=str(mode) == "resend",
+        )
+    except ValueError as exc:
+        return _redirect_finance_error(str(exc))
+    if result.get("test"):
+        return _redirect_finance_home(f"Test sent to {result['recipient']}.")
+    return _redirect_finance_home(f"Reminder sent to {result['recipient']}.")
+
+
 @router.post("/bookkeeping/file-all")
 async def bookkeeping_file_all_endpoint(request: Request):
     """File every transaction that can be filed confidently."""

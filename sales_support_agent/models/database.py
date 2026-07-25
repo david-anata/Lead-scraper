@@ -401,12 +401,42 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
         "finance_bulk_batches",
         "finance_bulk_batch_items",
         "finance_booking_rules",
+        "finance_customer_contacts",
     }
     tables = [table for name, table in Base.metadata.tables.items() if name in table_names]
     if tables:
         Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
 
     _ensure_plaid_account_columns(engine)
+    _ensure_collection_draft_columns(engine)
+
+
+def _ensure_collection_draft_columns(engine: Any) -> None:
+    """Add the additive send-log columns to an existing drafts table."""
+    inspector = inspect(engine)
+    if "finance_collection_drafts" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("finance_collection_drafts")}
+    if engine.dialect.name == "postgresql":
+        statements = {
+            "sent_at": "ALTER TABLE finance_collection_drafts ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ NULL",
+            "provider_message_id": "ALTER TABLE finance_collection_drafts ADD COLUMN IF NOT EXISTS provider_message_id VARCHAR(255) NOT NULL DEFAULT ''",
+            "last_error": "ALTER TABLE finance_collection_drafts ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT ''",
+        }
+    elif engine.dialect.name == "sqlite":
+        statements = {
+            "sent_at": "ALTER TABLE finance_collection_drafts ADD COLUMN sent_at DATETIME",
+            "provider_message_id": "ALTER TABLE finance_collection_drafts ADD COLUMN provider_message_id VARCHAR(255) NOT NULL DEFAULT ''",
+            "last_error": "ALTER TABLE finance_collection_drafts ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+        }
+    else:
+        return
+    missing = {name: sql for name, sql in statements.items() if name not in columns}
+    if not missing:
+        return
+    with engine.begin() as connection:
+        for sql in missing.values():
+            connection.execute(text(sql))
 
 
 def _ensure_plaid_account_columns(engine: Any) -> None:
