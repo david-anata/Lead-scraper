@@ -54,3 +54,42 @@ the middle by hand-off: the app pushes each pull straight into Clay, Clay enrich
 verifies, and pushes qualified rows into Instantly. The recipe tag survives the whole way,
 so per-recipe booked calls keep working. Nothing about the recipes or the tracking changes
 - only the transport does.
+
+---
+
+## Live results, first real runs (25 Jul 2026)
+
+Every recipe was run against the real StoreLeads API. These are the actual numbers.
+
+| Recipe | Scanned | Fresh brands | Notes |
+|---|---|---|---|
+| Core ICP | 45 | **25** | very efficient, reliable volume filler |
+| Upgraded to Shopify Plus | - | **30** | filled its cap |
+| Recently replatformed | 49 | **25** | very efficient |
+| Social following spiking | 39 | **25** | very efficient |
+| Just installed a growth/CRO app | 550 | **4** | hottest signal, but expensive and scarce |
+| Just dropped a growth tool | 0 | **0** | nothing matched today's rotated tool |
+
+Sample of what comes back: `Vitamin A` (vitaminaswim.com, apparel, US, Tier A) from the
+just-installed trigger; `Billy Reid` (billyreid.com, apparel, US, ~$14.9M/yr) from core ICP.
+
+### What we learned by running it
+1. **StoreLeads' app install/uninstall filters take ONE app id, not a list.** Given a comma
+   list they return zero rows and no error. This is the single most important gotcha here,
+   and it is why two recipes originally returned nothing. Fixed: the install window is now
+   re-checked in our own code, and the uninstall filter sends one tool at a time, rotating
+   daily so a few weeks covers the whole list.
+2. **The hottest trigger is the scarcest.** "Just installed a growth app" scanned 550 rows
+   to find 4 brands, because most stores installed their tools long ago. Expect a handful
+   of very warm leads from it, not volume. It is also the only recipe that gets cut short
+   by pagination, so it should not be relied on for daily numbers.
+3. **The steady earners are replatformed, social surge and plan upgrade** - each returned a
+   full cap from under 50 scanned rows. These carry the weekly volume.
+4. **Realistic weekly volume is roughly 110 to 135 fresh brands**, not the 175 originally
+   planned, because the just-installed trigger delivers far fewer than its cap.
+
+### Tuning to consider next
+- Widen the just-installed window from 14 to 30 days to lift its yield.
+- Add a second churn recipe so two tools are checked per day instead of one.
+- Once per-recipe booked calls exist on the scoreboard, drop whichever recipe is not
+  earning its place rather than guessing.
