@@ -605,6 +605,39 @@ def health(request: Request) -> ApiMessage:
         "plaid_secret_hex_only": plaid_secret_shape["hex_only"],
         "plaid_token_secret_present": bool(getattr(settings, "plaid_token_secret", "")),
     }
+
+    # Opt-in live probe (?plaid_probe=1): ask Plaid directly whether the
+    # configured keys are accepted, in BOTH environments, and report only the
+    # resulting status code — never the keys. This distinguishes wrong-
+    # environment keys (accepted in one, rejected in the other) from a
+    # production account that is not yet activated (rejected in both).
+    if request.query_params.get("plaid_probe") == "1":
+        def _probe(base_url: str) -> str:
+            try:
+                response = requests.post(
+                    f"{base_url}/link/token/create",
+                    json={
+                        "client_id": str(getattr(settings, "plaid_client_id", "") or ""),
+                        "secret": str(getattr(settings, "plaid_secret", "") or ""),
+                        "user": {"client_user_id": "health-probe"},
+                        "client_name": "Anata Finance",
+                        "country_codes": ["US"],
+                        "language": "en",
+                        "products": ["transactions"],
+                    },
+                    timeout=20,
+                )
+                data = response.json()
+                if data.get("link_token"):
+                    return "accepted"
+                return str(data.get("error_code") or f"http_{response.status_code}")
+            except Exception:
+                return "network_error"
+
+        plaid_details["plaid_probe"] = {
+            "sandbox": _probe("https://sandbox.plaid.com"),
+            "production": _probe("https://production.plaid.com"),
+        }
     return ApiMessage(
         status="ok",
         message="healthy",
