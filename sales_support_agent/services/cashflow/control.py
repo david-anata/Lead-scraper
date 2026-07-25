@@ -782,14 +782,16 @@ def _build_source_status(
     return result
 
 
-def _build_trust_gate(
-    snapshot: Mapping[str, Any],
+def classify_payable_issues(
     canonical: Sequence[Mapping[str, Any]],
-    income_projection: Mapping[str, Any],
     *,
     as_of: date,
-) -> dict[str, Any]:
-    cash_ready = bool(snapshot.get("available") and not snapshot.get("stale"))
+) -> list[tuple[str, str]]:
+    """Return (obligation id, reason) for every obligation blocking decisions.
+
+    Shared by the trust gate and the bulk review list so both always agree on
+    what is blocked and why.
+    """
     payable_issues: list[tuple[str, str]] = []
     for row in canonical:
         if not _is_forward_cash_obligation(row):
@@ -815,6 +817,18 @@ def _build_trust_gate(
             payable_issues.append((row_id, "missing date"))
         elif _payable_source_is_stale(row, as_of=as_of):
             payable_issues.append((row_id, "stale source evidence"))
+    return payable_issues
+
+
+def _build_trust_gate(
+    snapshot: Mapping[str, Any],
+    canonical: Sequence[Mapping[str, Any]],
+    income_projection: Mapping[str, Any],
+    *,
+    as_of: date,
+) -> dict[str, Any]:
+    cash_ready = bool(snapshot.get("available") and not snapshot.get("stale"))
+    payable_issues = classify_payable_issues(canonical, as_of=as_of)
     payables_ready = not payable_issues
     income_ready = bool(income_projection.get("ready"))
     reasons: list[str] = []

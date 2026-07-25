@@ -729,6 +729,36 @@ class FinanceMatchRunItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceBulkBatch(Base):
+    """One bulk resolve action over many obligations, undoable as a unit."""
+
+    __tablename__ = "finance_bulk_batches"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    action: Mapped[str] = mapped_column(String(32), default="")  # write_off | no_action_needed
+    reason: Mapped[str] = mapped_column(Text, default="")
+    actor: Mapped[str] = mapped_column(String(255), default="system")
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    undone_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FinanceBulkBatchItem(Base):
+    """Prior state of one obligation in a bulk batch, so undo is exact."""
+
+    __tablename__ = "finance_bulk_batch_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("finance_bulk_batches.id"), index=True)
+    event_id: Mapped[str] = mapped_column(String(64), index=True)
+    previous_workflow_status: Mapped[str] = mapped_column(String(32), default="")
+    previous_archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class FinanceAuditDismissal(Base):
     """A dismissed bill-audit finding, so it stays quiet on the next run."""
 

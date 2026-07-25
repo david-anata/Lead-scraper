@@ -166,6 +166,14 @@ def _redirect_finance_home(message: str = "Finance now lives on one control page
     return RedirectResponse(f"/admin/finances?flash={quote(f'ok:{message}')}", status_code=303)
 
 
+def _redirect_review_home(message: str) -> RedirectResponse:
+    return RedirectResponse(f"/admin/finances/review?flash={quote(f'ok:{message}')}", status_code=303)
+
+
+def _redirect_review_error(message: str) -> RedirectResponse:
+    return RedirectResponse(f"/admin/finances/review?flash={quote(f'err:{message}')}", status_code=303)
+
+
 def _redirect_finance_error(message: str) -> RedirectResponse:
     return RedirectResponse(f"/admin/finances?flash={quote(f'err:{message}')}", status_code=303)
 
@@ -540,6 +548,66 @@ async def delete_vendor_endpoint(request: Request, vendor_id: str):
     from sales_support_agent.services.cashflow.vendors import deactivate_vendor
     await asyncio.to_thread(deactivate_vendor, vendor_id)
     return _redirect_finance_home("Vendor removed.")
+
+
+@router.get("/review", response_class=HTMLResponse)
+async def review_page_endpoint(request: Request, flash: str = ""):
+    """The grouped review list for clearing blocked obligations in batches."""
+    from sales_support_agent.services.cashflow.review_page import render_review_page
+
+    return HTMLResponse(await asyncio.to_thread(render_review_page, flash=flash))
+
+
+@router.post("/review/preview", response_class=HTMLResponse)
+async def review_preview_endpoint(request: Request):
+    """Show exactly what a bulk action would change. Writes nothing."""
+    from sales_support_agent.services.cashflow.bulk_resolve import preview_bulk_action
+    from sales_support_agent.services.cashflow.review_page import render_review_preview
+
+    form = await request.form()
+    event_ids = [str(value) for value in form.getlist("event_id")]
+    action = str(form.get("action") or "write_off")
+    if not event_ids:
+        return _redirect_review_error("Tick at least one item first.")
+    try:
+        preview = await asyncio.to_thread(preview_bulk_action, event_ids, action)
+    except ValueError as exc:
+        return _redirect_review_error(str(exc))
+    return HTMLResponse(await asyncio.to_thread(render_review_preview, preview))
+
+
+@router.post("/review/apply")
+async def review_apply_endpoint(request: Request):
+    """Apply a previewed bulk action with a required reason."""
+    from sales_support_agent.services.cashflow.bulk_resolve import apply_bulk_action
+
+    form = await request.form()
+    event_ids = [str(value) for value in form.getlist("event_id")]
+    action = str(form.get("action") or "")
+    reason = str(form.get("reason") or "")
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(
+            apply_bulk_action, event_ids, action, reason=reason, actor=actor,
+        )
+    except ValueError as exc:
+        return _redirect_review_error(str(exc))
+    message = f"{result['applied']} item(s) resolved."
+    if result["skipped"]:
+        message += f" {result['skipped']} skipped."
+    return _redirect_review_home(message)
+
+
+@router.post("/review/undo/{batch_id}")
+async def review_undo_endpoint(request: Request, batch_id: str):
+    """Put every item in a batch back exactly as it was."""
+    from sales_support_agent.services.cashflow.bulk_resolve import undo_batch
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    result = await asyncio.to_thread(undo_batch, batch_id, actor=actor)
+    return _redirect_review_home(f"{result['restored']} item(s) put back.")
 
 
 @router.post("/matches/confirm")

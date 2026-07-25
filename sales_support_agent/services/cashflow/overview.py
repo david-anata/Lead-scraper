@@ -2618,6 +2618,9 @@ def _render_trust_check(cash: dict, trust_gate: dict) -> str:
             '<p class="finance-trust-line">' + str(tc["obligation_issue_count"])
             + ' obligation(s) are pausing cash decisions, by reason:</p>'
             + '<ul class="finance-trust-reasons">' + items + '</ul>'
+            + '<div class="finance-vendor-actions">'
+            + '<a class="btn btn-primary btn-sm" href="/admin/finances/review">'
+            + 'Clear these in bulk</a></div>'
             + '<p class="finance-accounts-asof">Records excluded from the trend math (transfers and duplicates) '
             + 'are normal and are not counted here.</p>'
         )
