@@ -606,6 +606,42 @@ def health(request: Request) -> ApiMessage:
         "plaid_token_secret_present": bool(getattr(settings, "plaid_token_secret", "")),
     }
 
+    # Coverage: which banks/accounts the app can see, and where its transaction
+    # history actually comes from. Counts only, never balances or identifiers.
+    try:
+        from sqlalchemy import text as _sa_text
+
+        from sales_support_agent.models.database import get_engine as _get_engine
+
+        with _get_engine().connect() as _conn:
+            plaid_details["connected_banks"] = int(_conn.execute(_sa_text(
+                "SELECT COUNT(*) FROM plaid_items WHERE disconnected_at IS NULL"
+            )).scalar() or 0)
+            plaid_details["active_accounts"] = int(_conn.execute(_sa_text(
+                "SELECT COUNT(*) FROM plaid_accounts WHERE active=TRUE"
+            )).scalar() or 0)
+            plaid_details["spendable_accounts"] = int(_conn.execute(_sa_text(
+                "SELECT COUNT(*) FROM plaid_accounts WHERE active=TRUE AND cash_role='spendable'"
+            )).scalar() or 0)
+            plaid_details["transaction_sources"] = {
+                str(row._mapping["source"]): int(row._mapping["n"])
+                for row in _conn.execute(_sa_text("""
+                    SELECT COALESCE(source,'') AS source, COUNT(*) AS n
+                    FROM cash_events WHERE record_kind='transaction'
+                    GROUP BY COALESCE(source,'') ORDER BY n DESC
+                """)).fetchall()
+            }
+            plaid_details["unsettled_overdue_outflows"] = int(_conn.execute(_sa_text("""
+                SELECT COUNT(*) FROM cash_events
+                WHERE record_kind <> 'transaction' AND event_type='outflow'
+                  AND LOWER(COALESCE(status,'')) IN ('planned','pending','overdue')
+                  AND COALESCE(amount_cents,0) > 0 AND archived_at IS NULL
+                  AND due_date IS NOT NULL AND due_date < CURRENT_DATE
+                  AND id NOT IN (SELECT obligation_event_id FROM settlement_allocations)
+            """)).scalar() or 0)
+    except Exception as exc:
+        plaid_details["coverage_error"] = str(exc)[:200]
+
     # Opt-in live probe (?plaid_probe=1): ask Plaid directly whether the
     # configured keys are accepted, in BOTH environments, and report only the
     # resulting status code — never the keys. This distinguishes wrong-
