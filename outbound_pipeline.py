@@ -539,6 +539,21 @@ def load_config_from_env() -> tuple[str, str]:
 # enrichment and the two prompts.
 CLAY_CSV_COLUMNS = ("tier", "brand", "domain", "niche", "country", "reason", "recipe", "score", "estimated_sales_yearly_cents", "categories")
 
+# The CSV header we WRITE for each field. These are named to match the Clay table's
+# existing columns exactly, so Clay auto-maps on import instead of creating a second
+# set of columns. Case matters: a header of "domain" makes a new text column, while
+# "Domain" matches the existing one the enrichment actually reads from.
+CLAY_CSV_HEADERS = {
+    "brand": "Merchant Name",
+    "domain": "Domain",
+    "reason": "personalization",
+    "estimated_sales_yearly_cents": "revenue_cents",
+}
+
+
+def clay_header(field: str) -> str:
+    return CLAY_CSV_HEADERS.get(field, field)
+
 
 def leads_to_csv(leads: list[dict[str, Any]]) -> str:
     """Serialize matched leads to CSV text for manual import into Clay."""
@@ -547,7 +562,8 @@ def leads_to_csv(leads: list[dict[str, Any]]) -> str:
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=CLAY_CSV_COLUMNS, extrasaction="ignore")
-    writer.writeheader()
+    # Write Clay's own column names as the header row so the import auto-maps.
+    writer.writerow({f: clay_header(f) for f in CLAY_CSV_COLUMNS})
     for lead in leads:
         row = dict(lead)
         # Flatten anything non-scalar so the CSV stays clean.

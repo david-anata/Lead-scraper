@@ -141,18 +141,41 @@ class TestRunPipeline(unittest.TestCase):
 
 
 class TestLeadsToCsv(unittest.TestCase):
+    def test_headers_match_clay_columns_so_import_auto_maps(self):
+        """Clay creates a NEW column when the header does not match an existing
+        one, and case matters: 'domain' makes a second text column while 'Domain'
+        matches the one the enrichment reads from."""
+        header = op.leads_to_csv([]).strip()
+        self.assertIn("Merchant Name", header)
+        self.assertIn("Domain", header)
+        self.assertIn("personalization", header)
+        self.assertNotIn("estimated_sales_yearly_cents", header)
+        # the raw lowercase field names must NOT be the header
+        cols = header.split(",")
+        self.assertNotIn("brand", cols)
+        self.assertNotIn("domain", cols)
+        self.assertNotIn("reason", cols)
+
+    def test_row_values_still_line_up_with_the_renamed_headers(self):
+        lead = op.to_clay_lead(_store(name="a.com"))
+        lines = op.leads_to_csv([lead]).strip().splitlines()
+        header = lines[0].split(",")
+        row = lines[1].split(",")
+        self.assertEqual(row[header.index("Domain")], "a.com")
+        self.assertEqual(row[header.index("Merchant Name")], "Good Brand")
+
     def test_csv_has_header_and_rows(self):
         leads = [op.to_clay_lead(_store(name="a.com")), op.to_clay_lead(_store(name="b.com", categories=["Pet", "Toys"]))]
         csv_text = op.leads_to_csv(leads)
         lines = csv_text.strip().splitlines()
-        self.assertEqual(lines[0], ",".join(op.CLAY_CSV_COLUMNS))
+        self.assertEqual(lines[0], ",".join(op.clay_header(c) for c in op.CLAY_CSV_COLUMNS))
         self.assertEqual(len(lines), 3)  # header + 2 rows
         self.assertIn("a.com", csv_text)
         self.assertIn("Pet, Toys", csv_text)  # list categories flattened
 
     def test_empty_leads_still_has_header(self):
         csv_text = op.leads_to_csv([])
-        self.assertEqual(csv_text.strip(), ",".join(op.CLAY_CSV_COLUMNS))
+        self.assertEqual(csv_text.strip(), ",".join(op.clay_header(c) for c in op.CLAY_CSV_COLUMNS))
 
 
 if __name__ == "__main__":
