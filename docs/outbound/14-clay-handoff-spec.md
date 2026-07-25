@@ -244,3 +244,42 @@ batch. Then a full recipe. Then the schedule. No step trusts the previous one's 
 ---
 
 > Does this spec look correct? Once approved, run /ship to begin building.
+
+---
+
+# BUILD STATUS - phase 1 shipped 25 Jul 2026
+
+**Built and live.** Push module, Send to Clay action, delivery tracking, budget guard,
+secret handling, and the un-contacted rule.
+
+| Verification | Result |
+|---|---|
+| Pass 1, code | 2,059 tests passing, 0 new failures against the 21 pre-existing baseline |
+| Pass 2, integration | every state exercised from a clean read: not connected, connected, unknown recipe, missing key |
+| Pass 3, live walk | **partial - see below** |
+
+## What the live walk proved
+- Not-connected state explains itself in plain words and shows **no dead button**.
+- The file path is untouched: a pull returned 25 brands and logged correctly.
+- Run history now shows Delivered (file vs Clay) and the settings version.
+- Dedup is visibly working: one pull showed 72 scanned, 51 fit ICP, 25 fresh, 25 already
+  seen, and a repeat of an earlier recipe returned 0 fresh because all 11 were already sent.
+- The reasons correctly read "in the last 30 days", matching the tuned window.
+
+## What the live walk could NOT prove
+**The connected path has not been exercised against real Clay**, because webhook sources
+need Growth tier (~6 Aug) and no webhook address is set. Specifically unproven:
+1. that Clay accepts our row shape,
+2. whether a batch body would work (we deliberately send one row per request until tested),
+3. rejection handling against Clay's real error responses.
+
+These are covered by unit tests against a stubbed Clay, which is not the same as proof.
+
+## To finish, when Growth unlocks
+1. In Clay, add a **Webhook** source to the Anata table and copy the address.
+2. On Render, set `CLAY_WEBHOOK_URL` (and `CLAY_WEBHOOK_TOKEN` if you enable the token).
+   Nobody needs to paste it anywhere else; the app never displays it back.
+3. On Lead Ops, press **Send to Clay** on one recipe with a small cap.
+4. Confirm in Clay's own table that the rows arrived with recipe, reason and settings
+   version intact. That is the check that matters.
+5. Then, and only then, consider phase 2 (running it on a schedule).
