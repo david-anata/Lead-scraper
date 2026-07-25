@@ -29,21 +29,45 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     source TEXT,
     tier TEXT,
     signals TEXT,
+    brand TEXT,
+    niche TEXT,
+    country TEXT,
+    score INTEGER,
+    reason TEXT,
+    recipe TEXT,
+    revenue_cents BIGINT,
+    categories TEXT,
+    config_version INTEGER,
     first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
 _SELECT_SQL = f"SELECT domain FROM {_TABLE}"
 _SELECT_PUSHED_SQL = f"SELECT domain, tier, signals FROM {_TABLE}"
 _INSERT_SQL = f"INSERT INTO {_TABLE} (domain, source) VALUES (:domain, :source) ON CONFLICT (domain) DO NOTHING"
+_LEAD_COLS = ("domain", "source", "tier", "signals", "brand", "niche", "country",
+              "score", "reason", "recipe", "revenue_cents", "categories", "config_version")
 _INSERT_LEAD_SQL = (
-    f"INSERT INTO {_TABLE} (domain, source, tier, signals) "
-    "VALUES (:domain, :source, :tier, :signals) ON CONFLICT (domain) DO NOTHING"
+    f"INSERT INTO {_TABLE} ({', '.join(_LEAD_COLS)}) "
+    f"VALUES ({', '.join(':' + c for c in _LEAD_COLS)}) ON CONFLICT (domain) DO NOTHING"
+)
+_SELECT_LEADS_SQL = (
+    f"SELECT {', '.join(_LEAD_COLS)}, first_seen_at FROM {_TABLE} "
+    "ORDER BY first_seen_at DESC"
 )
 # Best-effort upgrade for tables created before tier/signals existed. SQLite and
 # Postgres both accept ADD COLUMN; we swallow the "already exists" error.
 _ALTERS = (
     f"ALTER TABLE {_TABLE} ADD COLUMN tier TEXT",
     f"ALTER TABLE {_TABLE} ADD COLUMN signals TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN brand TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN niche TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN country TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN score INTEGER",
+    f"ALTER TABLE {_TABLE} ADD COLUMN reason TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN recipe TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN revenue_cents BIGINT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN categories TEXT",
+    f"ALTER TABLE {_TABLE} ADD COLUMN config_version INTEGER",
 )
 
 
@@ -236,20 +260,47 @@ def release_contacted(engine, domains: Iterable[str] | None = None) -> int:
         return 0
 
 
-def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export") -> int:
-    """Remember pushed leads WITH their tier + signals, for dedup AND per-signal
-    efficacy. De-dupes by domain within the batch; existing domains are left as-is.
+def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export",
+                 config_version: int = 0) -> int:
+    """Store the FULL sourced lead, not just the domain.
+
+    This table is our own record of every brand we have sourced: what it is, why
+    we picked it, which recipe found it and under which settings. Clay and
+    Instantly process these leads, but the record of them lives here, so losing
+    access to either tool never loses the leads.
+
+    De-dupes by domain within the batch; existing domains are left as-is.
     Best-effort: returns 0 on error rather than raising."""
     seen: dict[str, dict[str, Any]] = {}
     for lead in leads:
         dom = _norm(lead.get("domain"))
         if not dom or dom in seen:
             continue
+        cats = lead.get("categories")
+        if isinstance(cats, (list, tuple)):
+            cats = ", ".join(str(c) for c in cats)
+        try:
+            score = int(lead.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        try:
+            revenue = int(lead.get("estimated_sales_yearly_cents") or 0)
+        except (TypeError, ValueError):
+            revenue = 0
         seen[dom] = {
             "domain": dom,
             "source": source,
             "tier": lead.get("tier"),
             "signals": json.dumps(lead.get("signals") or []),
+            "brand": lead.get("brand"),
+            "niche": lead.get("niche"),
+            "country": lead.get("country"),
+            "score": score,
+            "reason": lead.get("reason"),
+            "recipe": lead.get("recipe"),
+            "revenue_cents": revenue,
+            "categories": cats,
+            "config_version": int(config_version or 0),
         }
     payload = list(seen.values())
     if not payload:
@@ -262,6 +313,29 @@ def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_
     except Exception:  # noqa: BLE001
         logger.exception("[outbound-memory] record_leads failed; %s leads not saved", len(payload))
         return 0
+
+
+def load_leads(engine, limit: int = 500) -> list[dict[str, Any]]:
+    """Every sourced lead with its full record, newest first."""
+    if engine is None:
+        return []
+    try:
+        ensure_table(engine)
+        with engine.connect() as conn:
+            rows = conn.execute(text(_SELECT_LEADS_SQL)).fetchall()
+        out = []
+        for r in rows[:limit]:
+            d = dict(zip(_LEAD_COLS, r))
+            try:
+                d["signals"] = json.loads(d.get("signals") or "[]")
+            except (ValueError, TypeError):
+                d["signals"] = []
+            d["first_seen_at"] = r[-1]
+            out.append(d)
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] load_leads failed")
+        return []
 
 
 def load_pushed(engine) -> list[dict[str, Any]]:

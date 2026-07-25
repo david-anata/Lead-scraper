@@ -280,7 +280,7 @@ def outbound_brands_csv(request: Request, max_new: int = 100, recipe: str = "") 
     if engine is not None:
         if result.leads:
             # Record full leads (domain + tier + signals) for dedup AND efficacy.
-            outbound_memory.record_leads(engine, result.leads, source=result.recipe or "csv_export")
+            outbound_memory.record_leads(engine, result.leads, source=result.recipe or "csv_export", config_version=version)
         # Log the pull itself, so Lead Ops shows what we pulled and when.
         outbound_memory.record_run(
             engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
@@ -607,7 +607,7 @@ async def outbound_push_to_clay(request: Request) -> Response:
         if accepted:
             outbound_memory.record_leads(
                 engine, [l for l in result.leads if l.get("domain") in accepted],
-                source=result.recipe or "clay_push")
+                source=result.recipe or "clay_push", config_version=version)
         outbound_memory.record_run(
             engine, recipe=result.recipe or "icp_baseline", scanned=result.scanned,
             matched=result.matched_icp, fresh=result.fresh,
@@ -625,6 +625,91 @@ async def outbound_push_to_clay(request: Request) -> Response:
         "summary": (f"Found {result.fresh} fresh brands. " + pushed.summary
                     if result.fresh else "No fresh brands to send right now."),
     })
+
+
+_LEADS_CSS = """
+  .ld-table { border-collapse:collapse; width:100%; background:#fff; border:1px solid #e5e7eb; border-radius:14px; overflow:hidden; }
+  .ld-table th, .ld-table td { text-align:left; padding:9px 12px; border-bottom:1px solid #f0f0f3; font-size:13px; white-space:nowrap; }
+  .ld-table th { background:#fafafa; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#6b7280; }
+  .ld-scroll { max-width:100%; overflow-x:auto; }
+  .ld-A{color:#0a7d33;font-weight:800} .ld-B{color:#b54708;font-weight:800} .ld-C{color:#6b7280;font-weight:800}
+  .ld-note { margin:12px 0 0; font-size:14px; color:rgba(43,54,68,.7); }
+  .ld-stat { display:inline-block; margin-right:22px; font-size:14px; }
+  .ld-stat b { font-size:20px; font-family:"Montserrat",sans-serif; }
+"""
+
+
+@router.get("/admin/outbound/leads", response_class=HTMLResponse)
+def outbound_leads(request: Request) -> Response:
+    """Our own record of every brand sourced. Clay and Instantly process these;
+    the leads themselves live here, so losing a tool never loses the leads."""
+    from sales_support_agent.services import outbound_memory
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    leads = outbound_memory.load_leads(engine, limit=500)
+
+    tiers: dict[str, int] = {}
+    niches: dict[str, int] = {}
+    revenue = 0
+    for l in leads:
+        tiers[l.get("tier") or "-"] = tiers.get(l.get("tier") or "-", 0) + 1
+        if l.get("niche"):
+            niches[l["niche"]] = niches.get(l["niche"], 0) + 1
+        revenue += int(l.get("revenue_cents") or 0)
+    avg = f"${revenue // max(len(leads), 1) // 100:,}" if leads else "-"
+
+    if leads:
+        rows = "".join(
+            f"<tr><td class='ld-{html.escape(str(l.get('tier') or '-'))}'>{html.escape(str(l.get('tier') or '-'))}</td>"
+            f"<td>{html.escape(str(l.get('brand') or '-'))}</td>"
+            f"<td>{html.escape(str(l.get('domain') or ''))}</td>"
+            f"<td>{html.escape(str(l.get('niche') or '-'))}</td>"
+            f"<td>{html.escape(str(l.get('country') or '-'))}</td>"
+            f"<td>${(int(l.get('revenue_cents') or 0)//100):,}</td>"
+            f"<td>{html.escape(str(l.get('score') if l.get('score') is not None else '-'))}</td>"
+            f"<td>{html.escape(str(l.get('recipe') or '-'))}</td>"
+            f"<td>v{l.get('config_version') or 0}</td>"
+            f"<td>{html.escape(str(l.get('first_seen_at'))[:16])}</td></tr>"
+            for l in leads
+        )
+    else:
+        rows = "<tr><td colspan='10'>No leads stored yet. Pull a batch on Lead Ops.</td></tr>"
+
+    tier_line = " &middot; ".join(f"{k}: {v}" for k, v in sorted(tiers.items())) or "-"
+    top_niches = ", ".join(f"{k} ({v})" for k, v in sorted(niches.items(), key=lambda x: -x[1])[:4]) or "-"
+
+    body = f"""
+        <h1>Leads</h1>
+        <p class="sub">Our own record of every brand we have sourced. Clay enriches these and
+        Instantly sends to them, but the leads themselves live here, so losing access to
+        either tool never loses the leads.</p>
+
+        <div style="margin:0 0 18px">
+          <span class="ld-stat"><b>{len(leads):,}</b> leads held</span>
+          <span class="ld-stat"><b>{avg}</b> average size</span>
+          <span class="ld-stat">{html.escape(tier_line)}</span>
+        </div>
+        <p class="ld-note" style="margin:0 0 14px">Top niches: {html.escape(top_niches)}</p>
+
+        <div class="ld-scroll">
+        <table class="ld-table">
+          <thead><tr><th>Tier</th><th>Brand</th><th>Domain</th><th>Niche</th><th>Country</th>
+          <th>Revenue/yr</th><th>Score</th><th>Recipe</th><th>Settings</th><th>Sourced</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+        </div>
+        <p class="ld-note">Showing the {len(leads):,} most recent. Every row records which
+        recipe found it and which settings version was live at the time, so results stay
+        attributable.</p>
+    """
+    return HTMLResponse(_shell_page(
+        request, active="outbound_leads", title="Outbound Leads",
+        extra_css=_LEADS_CSS, body=body,
+    ))
 
 
 @router.post("/admin/api/outbound/release", response_class=JSONResponse)

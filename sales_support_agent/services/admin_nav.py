@@ -53,6 +53,7 @@ _NAV_SECTIONS = [
         _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
         _NavSubpage("outbound.scoreboard", "Outbound", "/admin/outbound/scoreboard", "outbound_scoreboard"),
         _NavSubpage("outbound.scoreboard", "Lead Ops", "/admin/outbound/lead-ops", "outbound_leadops"),
+        _NavSubpage("outbound.scoreboard", "Leads", "/admin/outbound/leads", "outbound_leads"),
         _NavSubpage("outbound.scoreboard", "Brand List", "/admin/outbound/brands", "outbound_brands"),
         _NavSubpage("sales.priorities", "Fix Queue", "/admin/sales/fix-queue", "sales"),
         _NavSubpage("sales.decks", "Sales Decks", "/admin/sales-decks", "sales_decks"),
@@ -540,7 +541,7 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
     # Outbound pages highlight the Sales tab (Outbound is a Sales sub-page).
-    if active in {"outbound", "outbound_scoreboard", "outbound_brands", "outbound_leadops"}:
+    if active in {"outbound", "outbound_scoreboard", "outbound_brands", "outbound_leadops", "outbound_leads"}:
         primary_active = "sales"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"

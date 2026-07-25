@@ -143,5 +143,62 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(m.release_contacted(object(), ["a.com"]), 0)
 
 
+class FullLeadRecordTests(unittest.TestCase):
+    """Our database is the system of record for leads. Clay and Instantly are
+    processors, so losing either must never lose the lead itself."""
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def _lead(self, domain="rho.com"):
+        return {"domain": domain, "brand": "Rho Nutrition", "niche": "beauty_wellness",
+                "country": "US", "tier": "A", "score": 16,
+                "reason": "They upgraded their store plan", "recipe": "plan_upgrade",
+                "estimated_sales_yearly_cents": 835227012,
+                "categories": ["Health", "Vitamins"], "signals": ["upgrade"]}
+
+    def test_the_whole_record_is_kept_not_just_the_domain(self):
+        e = self._e()
+        m.record_leads(e, [self._lead()], config_version=2)
+        l = m.load_leads(e)[0]
+        self.assertEqual(l["brand"], "Rho Nutrition")
+        self.assertEqual(l["niche"], "beauty_wellness")
+        self.assertEqual(l["country"], "US")
+        self.assertEqual(l["tier"], "A")
+        self.assertEqual(l["score"], 16)
+        self.assertEqual(l["recipe"], "plan_upgrade")
+        self.assertEqual(l["revenue_cents"], 835227012)
+        self.assertEqual(l["config_version"], 2)
+        self.assertIn("upgraded", l["reason"])
+
+    def test_categories_are_flattened(self):
+        e = self._e()
+        m.record_leads(e, [self._lead()])
+        self.assertEqual(m.load_leads(e)[0]["categories"], "Health, Vitamins")
+
+    def test_signals_come_back_as_a_list(self):
+        e = self._e()
+        m.record_leads(e, [self._lead()])
+        self.assertEqual(m.load_leads(e)[0]["signals"], ["upgrade"])
+
+    def test_bad_numbers_do_not_break_the_record(self):
+        e = self._e()
+        bad = self._lead()
+        bad["score"] = "not a number"
+        bad["estimated_sales_yearly_cents"] = None
+        m.record_leads(e, [bad])
+        l = m.load_leads(e)[0]
+        self.assertEqual(l["score"], 0)
+        self.assertEqual(l["revenue_cents"], 0)
+
+    def test_dedup_still_works_off_the_same_table(self):
+        e = self._e()
+        m.record_leads(e, [self._lead()])
+        self.assertIn("rho.com", m.load_contacted(e))
+
+    def test_load_leads_is_safe_without_a_database(self):
+        self.assertEqual(m.load_leads(None), [])
+
+
 if __name__ == "__main__":
     unittest.main()
