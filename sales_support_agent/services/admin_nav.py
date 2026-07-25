@@ -45,10 +45,14 @@ class _NavSection:
 
 
 _NAV_SECTIONS = [
+    # Outbound lives INSIDE Sales: it is a sales motion, not a separate department.
+    # Control Room stays first so the Sales tab always lands on the overview.
     _NavSection("sales", "Sales", "sales", [
         _NavSubpage("sales.deals", "Control Room", "/admin/sales", "sales_operator"),
         _NavSubpage("sales.deals", "Deal Board", "/admin/sales/deals", "sales_deals"),
         _NavSubpage("sales.deals", "Rep Accountability", "/admin/sales/reps", "sales_reps"),
+        _NavSubpage("outbound.scoreboard", "Outbound", "/admin/outbound/scoreboard", "outbound_scoreboard"),
+        _NavSubpage("outbound.scoreboard", "Brand List", "/admin/outbound/brands", "outbound_brands"),
         _NavSubpage("sales.priorities", "Fix Queue", "/admin/sales/fix-queue", "sales"),
         _NavSubpage("sales.decks", "Sales Decks", "/admin/sales-decks", "sales_decks"),
     ]),
@@ -68,10 +72,6 @@ _NAV_SECTIONS = [
         _NavSubpage("advertising.audit", "Clients", "/admin/advertising/clients", "advertising_clients"),
         _NavSubpage("advertising.audit", "Profit Calculator", "/admin/advertising/profit-calculator", "advertising_profit_calculator", superadmin_only=True),
         _NavSubpage("advertising.audit", "Bulk Planner", "/admin/advertising/bulk-profitability", "advertising_bulk_profitability", superadmin_only=True),
-    ]),
-    _NavSection("outbound", "Outbound", "outbound", [
-        _NavSubpage("outbound.scoreboard", "Scoreboard", "/admin/outbound/scoreboard", "outbound_scoreboard"),
-        _NavSubpage("outbound.scoreboard", "Brand List", "/admin/outbound/brands", "outbound_brands"),
     ]),
     _NavSection("executive", "Executive", "executive", [
         _NavSubpage("executive.summary", "Executive Summary", "/admin/executive", "executive"),
@@ -538,8 +538,9 @@ def render_agent_nav(active: str = "", *, website_ops_section: str = "", sales_s
         primary_active = "building"
     if active in {"advertising", "advertising_audit", "advertising_clients", "advertising_profit_calculator", "advertising_bulk_profitability"}:
         primary_active = "advertising"
+    # Outbound pages highlight the Sales tab (Outbound is a Sales sub-page).
     if active in {"outbound", "outbound_scoreboard", "outbound_brands"}:
-        primary_active = "outbound"
+        primary_active = "sales"
     if active in {"executive", "brand_analysis"}:
         primary_active = "executive"
     if active in {"fulfillment", "fulfillment_sales", "fulfillment_dashboard", "fulfillment_reports", "fulfillment_latest"}:

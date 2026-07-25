@@ -170,3 +170,98 @@ conversion leaks we see most in {{niche}} stores - {yours to keep|no strings}.
 ## When testing
 Change **one** thing at a time, and judge only on **positive reply rate**. Give each variant
 roughly 500 to 1,000 sends before calling it. (Playbook 9)
+
+---
+
+# v3 - FINAL paste-ready copy (fixes what the live preview exposed)
+
+The Instantly preview (25 Jul) showed every merge variable rendering **empty**, and three
+sentences broke as a result:
+
+| Preview showed | Why it is broken |
+|---|---|
+| `{Hey\|Hi} ,` | dangling comma where the name should be |
+| "map out exactly where it's leaking **for** and send it" | brand variable was load-bearing |
+| "building out case studies **in** right now" | niche variable was load-bearing |
+
+That happens whenever a variable is missing for a lead, not just in preview. Clay will not
+return a niche or a clean brand name for 100% of rows, so this **would** have gone out to
+real people. Playbook 11 names this exactly: "mismatched grammar around a variable" is one
+of the clearest mail-merge tells.
+
+**The fix: no variable is load-bearing.** Every sentence below reads correctly even if the
+variable is blank. The real personalization stays where it belongs, in `[[clay_line]]`,
+which is the playbook's whole point (Block 1). The only remaining token is the first name,
+which gets a fallback.
+
+## Email 1 - paste this
+
+**Subject:**
+```
+{quick question|worth a look?|one thing i noticed|mind if i ask}
+```
+
+**Body:**
+```
+{Hey|Hi} {{first_name}},
+
+[[clay_line]]
+
+{We just|Recently we} helped another brand about your size find around {$4k|$5k}/mo
+{sitting in|going to} ad campaigns that weren't converting, and moved it into the
+ones that were.
+
+{Most|A lot of} the brands we look at are quietly {burning|wasting} 20-30% of their
+budget the same way, with a {couple of|few} conversion leaks {costing|draining} the rest.
+
+{Happy to|I can} map out exactly where the money is leaking and send it over free.
+{We're|I'm} building out more case studies right now, so there's no catch and nothing
+to pay.
+
+{Want me to send it?|Should I put it together?}
+
+{Best|Cheers},
+[Your Full Name]
+```
+
+## Email 2 - paste this (day 4, blank subject so it threads)
+
+```
+{{first_name}} - the {three|3} things {we|I} check first, in case it's useful:
+
+1. {Spend on|Budget going to} campaigns that haven't converted in 30 days
+2. {Where|The point where} {mobile|checkout} traffic drops off
+3. {Which|What} audiences are {overlapping|competing with each other} and bidding
+{against|up} themselves
+
+{That's usually|Between those three is normally} where the 20-30% is hiding.
+
+{Want me to run it for you?|Should I put your version together?}
+```
+
+## Email 3 - HOLD (leave it saved but switch it off until you beat baseline)
+
+```
+{{first_name}}, last one from me on this.
+
+{If ads aren't the priority right now, totally fair|No stress if the timing's off}.
+
+{Either way|Regardless}, {I can|happy to} send the 2-minute breakdown of the 3
+conversion leaks we see most - {yours to keep|no strings}.
+
+{Want it?|Should I send it over?}
+```
+
+## Two settings to change in Instantly
+1. **Set a fallback on `{{first_name}}`.** Use Instantly's Insert Variables menu and give it
+   a default of `there`, so a missing name reads "Hey there," not "Hey ,".
+2. **Spacing is set to 2 days.** Move it to 3 or 4. One or two days apart reads as needy and
+   costs replies.
+
+## How to actually validate the variables
+The preview is blank because the campaign has **no leads**. To prove the syntax works:
+1. Add one test lead in the Leads tab with your own email, a first name, and any brand.
+2. Open Preview again. Confirm the name fills in and no sentence has a gap or double space.
+3. Send the test to yourself and read it on a phone.
+4. Confirm the spintax braces are gone in the received email. If you can still see `{` or
+   `|` in the delivered message, the spintax did not render and it must be fixed before send.
