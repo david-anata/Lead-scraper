@@ -403,6 +403,12 @@ def outbound_lead_ops(request: Request) -> Response:
         run_rows = "<tr><td colspan='9'>No pulls yet. Use a Pull now button above.</td></tr>"
 
 
+    try:
+        from sales_support_agent.services import outbound_memory as _mem2
+        contacted_count = len(_mem2.load_contacted(_eng))
+    except Exception:  # noqa: BLE001
+        contacted_count = 0
+
     # Tuning: the numbers an operator should be able to change without a deploy.
     tune_fields = "".join(
         f'<div class="lo-field"><label for="s_{k}">{html.escape(lbl)}</label>'
@@ -449,6 +455,17 @@ def outbound_lead_ops(request: Request) -> Response:
         never contacted before. Already seen is the never-email-twice memory doing its job.
         Settings shows which tuning version each pull ran under.</p>
 
+        <p class="lo-h">Brands already used</p>
+        <div class="lo-clay">
+          <b>{contacted_count} brands</b> are marked as already contacted and will be skipped
+          on future pulls. If any of those were pulled but never actually emailed, for example
+          a test file you discarded, you can put them back in the pool.
+          <div style="margin-top:10px">
+            <button class="lo-save" id="rel-go" type="button">Release all back into the pool</button>
+            <span class="lo-msg" id="rel-msg" style="margin-left:10px"></span>
+          </div>
+        </div>
+
         <p class="lo-h">Tuning <span class="lo-ver">now on v{version}</span></p>
         <div class="lo-form">
           {tune_fields}
@@ -466,6 +483,21 @@ def outbound_lead_ops(request: Request) -> Response:
           <thead><tr><th>Version</th><th>When</th><th>Setting</th><th>Change</th><th>Note</th><th>Who</th></tr></thead>
           <tbody>{change_rows}</tbody>
         </table>
+        <script>
+          (function(){{
+            var rb=document.getElementById('rel-go'), rm=document.getElementById('rel-msg');
+            if(rb) rb.addEventListener('click', function(){{
+              if(!confirm('Only do this if these brands were never actually emailed. Release them all?')) return;
+              var fd=new FormData(); fd.append('confirm','yes');
+              rm.textContent='Releasing...';
+              fetch('/admin/api/outbound/release',{{method:'POST',body:fd}})
+                .then(function(r){{return r.json();}})
+                .then(function(d){{ rm.textContent=d.summary||d.reason;
+                  if(d.released) setTimeout(function(){{location.reload();}},1200); }})
+                .catch(function(){{ rm.textContent='Could not reach the server.'; }});
+            }});
+          }})();
+        </script>
         <script>
           (function(){{
             var msg=document.getElementById('push-msg');
@@ -592,6 +624,34 @@ async def outbound_push_to_clay(request: Request) -> Response:
         "skipped_already_contacted": result.skipped_already_contacted,
         "summary": (f"Found {result.fresh} fresh brands. " + pushed.summary
                     if result.fresh else "No fresh brands to send right now."),
+    })
+
+
+@router.post("/admin/api/outbound/release", response_class=JSONResponse)
+async def outbound_release(request: Request) -> Response:
+    """Put brands back in the pool that were pulled but never actually contacted.
+
+    Deliberately manual and deliberately explicit: releasing a brand that really
+    was emailed would let us email it twice. The caller must confirm.
+    """
+    from sales_support_agent.services import outbound_memory
+
+    form = await request.form()
+    if str(form.get("confirm") or "").lower() != "yes":
+        return JSONResponse(status_code=400, content={
+            "ok": False, "reason": "Not confirmed, so nothing was released."})
+
+    try:
+        from sales_support_agent.models.database import get_engine
+        engine = get_engine()
+    except Exception:  # noqa: BLE001
+        engine = None
+    released = outbound_memory.release_contacted(engine)
+    return JSONResponse(content={
+        "ok": True, "released": released,
+        "summary": (f"Released {released} brands back into the pool. They can be "
+                    "sourced again on the next pull.") if released
+                   else "There was nothing to release.",
     })
 
 

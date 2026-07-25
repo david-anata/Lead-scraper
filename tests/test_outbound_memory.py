@@ -107,5 +107,41 @@ class RunTrackingTests(unittest.TestCase):
         self.assertEqual(m.load_runs(object()), [])
 
 
+class ReleaseTests(unittest.TestCase):
+    """Brands pulled but never actually emailed must be recoverable, without
+    ever making it easy to release a brand that really was contacted."""
+
+    def _e(self):
+        return create_engine("sqlite://", future=True)
+
+    def test_release_named_domains_only(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "a.com"}, {"domain": "b.com"}])
+        self.assertEqual(m.release_contacted(e, ["a.com"]), 1)
+        self.assertEqual(m.load_contacted(e), {"b.com"})
+
+    def test_release_all_returns_the_count(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "a.com"}, {"domain": "b.com"}, {"domain": "c.com"}])
+        self.assertEqual(m.release_contacted(e), 3)
+        self.assertEqual(m.load_contacted(e), set())
+
+    def test_released_brand_can_be_sourced_again(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "a.com"}])
+        m.release_contacted(e, ["a.com"])
+        self.assertNotIn("a.com", m.load_contacted(e))
+
+    def test_release_normalizes_input(self):
+        e = self._e()
+        m.record_leads(e, [{"domain": "a.com"}])
+        self.assertEqual(m.release_contacted(e, ["  A.COM "]), 1)
+        self.assertEqual(m.load_contacted(e), set())
+
+    def test_release_fails_safe(self):
+        self.assertEqual(m.release_contacted(None), 0)
+        self.assertEqual(m.release_contacted(object(), ["a.com"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

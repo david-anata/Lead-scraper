@@ -207,6 +207,35 @@ def record_contacted(engine, domains: Iterable[str], *, source: str = "csv_expor
         return 0
 
 
+def release_contacted(engine, domains: Iterable[str] | None = None) -> int:
+    """Un-mark brands so they can be sourced again.
+
+    Use ONLY for brands that were pulled but never actually contacted, e.g. a
+    test pull whose file was discarded. Releasing a brand that really was emailed
+    would let us email it twice, which is the one thing this memory exists to
+    prevent, so this is never automatic.
+    Returns how many were released.
+    """
+    if engine is None:
+        return 0
+    try:
+        ensure_table(engine)
+        with engine.begin() as conn:
+            if domains is None:
+                row = conn.execute(text(f"SELECT COUNT(*) FROM {_TABLE}")).fetchone()
+                count = int(row[0] or 0)
+                conn.execute(text(f"DELETE FROM {_TABLE}"))
+                return count
+            wanted = [{"d": _norm(x)} for x in domains if _norm(x)]
+            if not wanted:
+                return 0
+            conn.execute(text(f"DELETE FROM {_TABLE} WHERE domain = :d"), wanted)
+            return len(wanted)
+    except Exception:  # noqa: BLE001
+        logger.exception("[outbound-memory] release_contacted failed")
+        return 0
+
+
 def record_leads(engine, leads: Iterable[dict[str, Any]], *, source: str = "csv_export") -> int:
     """Remember pushed leads WITH their tier + signals, for dedup AND per-signal
     efficacy. De-dupes by domain within the batch; existing domains are left as-is.
