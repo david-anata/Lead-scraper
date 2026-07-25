@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import uuid
 from datetime import date, datetime, timedelta
@@ -429,6 +430,105 @@ def delete_recurring_template(template_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Recurring generation
 # ---------------------------------------------------------------------------
+
+def supersede_stale_template_occurrences(
+    *,
+    as_of: Optional[date] = None,
+    grace_days: int = 5,
+) -> list[dict[str, Any]]:
+    """Roll a recurring forecast forward instead of letting it rot into debt.
+
+    A recurring schedule entry is a plan, not a bill. When its date passes
+    unpaid and a later occurrence in the same series already exists, the old one
+    is schedule residue: it is archived so it stops counting as a cash
+    requirement, and the live occurrence is the one still ahead.
+
+    This is reliable here in a way it never was for ClickUp: every generated
+    occurrence carries its template id, so the series is exact rather than
+    inferred from names and dates. Only template-generated rows are touched,
+    and an occurrence with any settlement against it is always left alone.
+    """
+    from sales_support_agent.models.database import get_engine
+    from sqlalchemy import text
+
+    as_of = as_of or _today()
+    cutoff = as_of - timedelta(days=max(0, grace_days))
+    now = datetime.utcnow()
+    superseded: list[dict[str, Any]] = []
+
+    with get_engine().begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT stale.id, stale.name, stale.amount_cents, stale.due_date,
+                       stale.recurring_template_id
+                FROM cash_events AS stale
+                WHERE stale.recurring_template_id IS NOT NULL
+                  AND stale.record_kind <> 'transaction'
+                  AND stale.archived_at IS NULL
+                  AND LOWER(COALESCE(stale.status,'')) IN ('planned','pending','overdue')
+                  AND stale.due_date IS NOT NULL
+                  AND stale.due_date < :cutoff
+                  AND stale.id NOT IN (
+                      SELECT obligation_event_id FROM settlement_allocations
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM cash_events AS later
+                      WHERE later.recurring_template_id = stale.recurring_template_id
+                        AND later.due_date > stale.due_date
+                        AND later.archived_at IS NULL
+                  )
+            """),
+            {"cutoff": cutoff.isoformat()},
+        ).fetchall()
+
+        for raw in rows:
+            row = dict(raw._mapping)
+            conn.execute(
+                text("""
+                    UPDATE cash_events
+                    SET workflow_status='cancelled', archived_at=:now,
+                        snoozed_until=NULL, follow_up_on=NULL, updated_at=:now
+                    WHERE id=:id
+                """),
+                {"now": now, "id": str(row["id"])},
+            )
+            superseded.append({
+                "id": str(row["id"]),
+                "name": str(row.get("name") or ""),
+                "amount_cents": int(row.get("amount_cents") or 0),
+                "due_date": str(row.get("due_date") or "")[:10],
+            })
+
+        if superseded:
+            conn.execute(
+                text("""
+                    INSERT INTO finance_action_audit (
+                        id, scope_key, action_type, entity_type, entity_id, actor,
+                        evidence_json, created_at
+                    ) VALUES (
+                        :audit_id, 'default', 'recurring_superseded', 'cash_event_batch',
+                        :first_id, 'system', :evidence, :now
+                    )
+                """),
+                {
+                    "audit_id": str(uuid.uuid4()),
+                    "first_id": superseded[0]["id"],
+                    "evidence": _json.dumps({
+                        "count": len(superseded),
+                        "amount_cents": sum(item["amount_cents"] for item in superseded),
+                        "grace_days": grace_days,
+                    }),
+                    "now": now,
+                },
+            )
+
+    if superseded:
+        logger.info(
+            "Recurring forecast rolled forward: %d occurrence(s) superseded",
+            len(superseded),
+        )
+    return superseded
+
 
 def generate_upcoming_from_templates(
     *,
