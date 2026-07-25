@@ -46,7 +46,12 @@ def enroll_contact(
         return {"ok": False, "reason": f"Outcome must be one of {sorted(VALID_OUTCOMES)}."}
     if "@" not in email or "." not in email:
         return {"ok": False, "reason": "A valid contact email is required."}
-    if not getattr(client, "is_configured", lambda: False)():
+    # HubSpotClient exposes is_configured as a property (bool); tests may use a
+    # method. Support both so a real client is never mis-read as unconfigured.
+    configured = getattr(client, "is_configured", False)
+    if callable(configured):
+        configured = configured()
+    if not configured:
         return {"ok": False, "reason": "HubSpot is not connected on this service."}
 
     prop = property_name or _nurture_property()

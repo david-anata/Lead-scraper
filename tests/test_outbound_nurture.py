@@ -34,7 +34,34 @@ class FakeClient:
         return {"id": cid, "properties": props}
 
 
+class PropertyConfiguredClient:
+    """Mirrors the REAL HubSpotClient, whose is_configured is a property (bool)."""
+
+    def __init__(self, configured=True):
+        self.is_configured = configured  # a bool attribute, not a method
+        self.created = []
+
+    def find_contact_by_email(self, email):
+        return None
+
+    def create_contact(self, props):
+        self.created.append(props)
+        return {"id": "x"}
+
+
 class EnrollTests(unittest.TestCase):
+    def test_supports_property_style_is_configured(self):
+        c = PropertyConfiguredClient(configured=True)
+        r = nur.enroll_contact(c, email="a@b.com", outcome="follow_up")
+        self.assertTrue(r["ok"])
+        self.assertEqual(len(c.created), 1)
+
+    def test_property_style_not_connected(self):
+        c = PropertyConfiguredClient(configured=False)
+        r = nur.enroll_contact(c, email="a@b.com", outcome="follow_up")
+        self.assertFalse(r["ok"])
+        self.assertIn("not connected", r["reason"])
+
     def test_creates_when_no_existing_contact(self):
         c = FakeClient(existing=None)
         r = nur.enroll_contact(c, email="Jane@Acme.com", outcome="follow_up", brand="Acme")
