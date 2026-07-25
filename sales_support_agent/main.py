@@ -141,6 +141,8 @@ def create_app() -> FastAPI:
     app.include_router(building_internal_router)
     app.include_router(building_crm_public_router)
     app.include_router(building_crm_internal_router)
+    from sales_support_agent.api.outbound_router import router as outbound_router
+    app.include_router(outbound_router)
     app.include_router(building_crm_admin_router)
     app.include_router(building_booking_router)
     app.include_router(building_billing_internal_router)
