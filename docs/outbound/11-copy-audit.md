@@ -300,3 +300,84 @@ Verified after a full page reload:
 
 If Gabe's mailboxes are also attached to this campaign, change the sign-off on email 1 so
 it is not always David's name.
+
+---
+
+# CRITICAL: the copy was written in the WRONG SYNTAX (found 25 Jul)
+
+Everything above used generic cold-email notation. **Instantly does not read it.**
+Proof: campaign `AGENT SDR // MARCH '26` in this same account has really sent 2,731
+emails. Reading its saved copy shows the syntax Instantly actually renders:
+
+`{{companyName}}` · `{{firstName | there}}` · `{{category | ecommerce}}` · `{{website}}`
+· `{{sendingAccountFirstName}}` · `{{RANDOM | Hi | Hey}}` · `{{RANDOM | Best | Appreciate it}}`
+
+Zero `[[double brackets]]` and zero `{single|brace}` spintax anywhere in the working copy.
+
+| What we had loaded | What Instantly needs | If sent as-is |
+|---|---|---|
+| `{Hey\|Hi}` | `{{RANDOM \| Hey \| Hi}}` | prints `{Hey\|Hi}` literally |
+| `{{first_name}}` | `{{firstName \| there}}` | never fills in |
+| `[[clay_line]]` | a `{{...}}` variable | prints `[[clay_line]]` literally |
+| `David Narayan` hardcoded | `{{sendingAccountFirstName}}` | every email signs as David |
+
+**This would have sent raw braces and placeholder text to every brand.** The earlier
+preview showing `{Hey|Hi}` unresolved was not a preview quirk. It was the real behaviour.
+
+## The corrected copy - Instantly-native syntax
+
+### Email 1
+**Subject:**
+```
+{{RANDOM | quick question | worth a look? | one thing i noticed | mind if i ask}}
+```
+**Body:**
+```
+{{RANDOM | Hey | Hi}} {{firstName | there}},
+
+{{personalization}}
+
+{{RANDOM | We just | Recently we}} helped another brand about your size find around {{RANDOM | $4k | $5k}}/mo {{RANDOM | sitting in | going to}} ad campaigns that weren't converting, and moved it into the ones that were.
+
+{{RANDOM | Most | A lot of}} the brands we look at are quietly {{RANDOM | burning | wasting}} 20-30% of their budget the same way, with a {{RANDOM | couple of | few}} conversion leaks {{RANDOM | costing | draining}} the rest.
+
+{{RANDOM | Happy to | I can}} map out exactly where the money is leaking and send it over free. {{RANDOM | We're | I'm}} building out more case studies right now, so there's no catch and nothing to pay.
+
+{{RANDOM | Want me to send it? | Should I put it together?}}
+
+{{RANDOM | Best | Cheers}},
+{{sendingAccountFirstName}}
+```
+
+### Email 2 (blank subject so it threads)
+```
+{{firstName | there}} - the {{RANDOM | three | 3}} things {{RANDOM | we | I}} check first, in case it's useful:
+
+1. {{RANDOM | Spend on | Budget going to}} campaigns that haven't converted in 30 days
+2. {{RANDOM | Where | The point where}} {{RANDOM | mobile | checkout}} traffic drops off
+3. {{RANDOM | Which | What}} audiences are {{RANDOM | overlapping | competing with each other}} and bidding {{RANDOM | against | up}} themselves
+
+{{RANDOM | That's usually | Between those three is normally}} where the 20-30% is hiding.
+
+{{RANDOM | Want me to run it for you? | Should I put your version together?}}
+```
+
+### Email 3 (blank subject, keep switched OFF until baseline is beaten)
+```
+{{firstName | there}}, last one from me on this.
+
+{{RANDOM | If ads aren't the priority right now, totally fair | No stress if the timing's off}}.
+
+{{RANDOM | Either way | Regardless}}, {{RANDOM | I can | happy to}} send the 2-minute breakdown of the 3 conversion leaks we see most - {{RANDOM | yours to keep | no strings}}.
+
+{{RANDOM | Want it? | Should I send it over?}}
+```
+
+## Note on the personalization variable
+`{{personalization}}` must match the column name Clay pushes. Whatever Clay's
+"Personalized Cold Outreach" column maps to on the Instantly side, the variable in the
+email must be spelled identically. Confirm the mapping on the first Clay push. If the
+value is ever empty the email still reads correctly - it just loses the opening line.
+
+`{{sendingAccountFirstName}}` means the sign-off automatically matches whichever mailbox
+sends, so David and Gabe can both send from this one campaign.
