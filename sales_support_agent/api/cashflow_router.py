@@ -668,6 +668,46 @@ async def plan_order_reset_endpoint(request: Request):
     return _redirect_finance_home(f"Back to the automatic order ({cleared} cleared).")
 
 
+@router.get("/audit", response_class=HTMLResponse)
+async def finance_audit_page(request: Request, flash: str = ""):
+    from sales_support_agent.services.cashflow.finance_pages import render_audit_page
+
+    return HTMLResponse(await asyncio.to_thread(render_audit_page, flash=flash))
+
+
+@router.get("/bookkeeping", response_class=HTMLResponse)
+async def finance_bookkeeping_page(request: Request, flash: str = ""):
+    from sales_support_agent.services.cashflow.finance_pages import render_bookkeeping_page
+
+    return HTMLResponse(await asyncio.to_thread(render_bookkeeping_page, flash=flash))
+
+
+@router.get("/collections", response_class=HTMLResponse)
+async def finance_collections_page(request: Request, flash: str = ""):
+    from sales_support_agent.services.cashflow.finance_pages import render_collections_page
+
+    return HTMLResponse(await asyncio.to_thread(render_collections_page, flash=flash))
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def finance_setup_page(request: Request, flash: str = ""):
+    from sales_support_agent.services.cashflow.finance_pages import render_setup_page
+
+    return HTMLResponse(await asyncio.to_thread(render_setup_page, flash=flash))
+
+
+@router.post("/audit/clear-dismissals")
+async def audit_clear_dismissals_endpoint(request: Request):
+    """Forget dismissals made against the old, broken rules."""
+    from sales_support_agent.services.cashflow.bill_audit import clear_dismissals
+
+    cleared = await asyncio.to_thread(clear_dismissals)
+    return RedirectResponse(
+        f"/admin/finances/audit?flash={quote(f'ok:{cleared} old dismissal(s) cleared.')}",
+        status_code=303,
+    )
+
+
 @router.get("/import", response_class=HTMLResponse)
 async def schedule_import_page(request: Request, flash: str = ""):
     """Review the schedule rebuilt from existing ClickUp data. Writes nothing."""

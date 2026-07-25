@@ -1534,3 +1534,11 @@ input:focus, select:focus, textarea:focus {
 /* Review page: cleanup + receivable actions */
 .finance-cleanup-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border, #eef1f5); }
 .finance-receivable-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* Finance section navigation */
+.finance-nav { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+.finance-nav-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border, #e5e7eb); font-size: 13px; text-decoration: none; color: var(--text, #2b3644); background: #fff; }
+.finance-nav-link:hover { background: var(--surface-2, #f5f7fa); }
+.finance-nav-link.is-active { background: var(--text, #2b3644); color: #fff; border-color: var(--text, #2b3644); }
+.finance-nav-count { display: inline-block; min-width: 18px; text-align: center; padding: 1px 6px; border-radius: 999px; background: #fdecec; color: #a12020; font-size: 11px; font-weight: 600; }
+.finance-nav-link.is-active .finance-nav-count { background: rgba(255,255,255,.2); color: #fff; }
