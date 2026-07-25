@@ -68,26 +68,63 @@ class Recipe:
     cadence: str                # "weekly" (trigger) or "daily" (baseline)
     max_per_run: int
     build: Callable[[datetime], dict[str, Any]] = field(repr=False)
+    # Some triggers cannot be expressed as a single StoreLeads filter, so the
+    # server narrows and this re-checks each row. Verified live 25 Jul: the
+    # app install/uninstall filters accept ONE app id, not a list, so a list
+    # silently returns zero rows.
+    client_filter: Optional[Callable[[dict[str, Any], datetime], bool]] = field(
+        default=None, repr=False)
 
     def params(self, now: Optional[datetime] = None) -> dict[str, Any]:
         """Full StoreLeads query for this recipe at a point in time."""
         now = now or datetime.now(timezone.utc)
         return {**BASE_FILTERS, **self.build(now)}
 
+    def keeps(self, store: dict[str, Any], now: Optional[datetime] = None) -> bool:
+        if self.client_filter is None:
+            return True
+        return self.client_filter(store, now or datetime.now(timezone.utc))
+
+
+def _installed_recently(store: dict[str, Any], now: datetime, days: int = 14) -> bool:
+    """True if the store installed one of our growth apps inside the window."""
+    for app in store.get("apps") or []:
+        if not isinstance(app, dict):
+            continue
+        token = f"{app.get('platform', 'shopify')}.{app.get('token', '')}"
+        if token not in GROWTH_APP_TOKENS:
+            continue
+        raw = str(app.get("installed_at") or "").strip().replace("Z", "+00:00")
+        if not raw:
+            continue
+        try:
+            installed = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if installed.tzinfo is None:
+            installed = installed.replace(tzinfo=timezone.utc)
+        age = (now - installed).days
+        if 0 <= age <= days:
+            return True
+    return False
+
 
 def _new_growth_app(now: datetime) -> dict[str, Any]:
+    # Server narrows to "has one of these apps"; the 14-day window is applied
+    # client-side because f:app_installed_at only accepts a single app id.
     return {
         "f:an": ",".join(GROWTH_APP_TOKENS),
         "f:an:op": "or",
-        "f:app_installed_at": ",".join(GROWTH_APP_TOKENS),
-        "f:app_installed_at:min": _iso(now - timedelta(days=14)),
         "sort": "-er,rank",
     }
 
 
 def _churned_tool(now: datetime) -> dict[str, Any]:
+    # f:app_uninstalled_at takes ONE app id, so we rotate through the list by
+    # day. Over a few weeks this covers every tool without ever sending a list.
+    token = GROWTH_APP_TOKENS[now.timetuple().tm_yday % len(GROWTH_APP_TOKENS)]
     return {
-        "f:app_uninstalled_at": ",".join(GROWTH_APP_TOKENS),
+        "f:app_uninstalled_at": token,
         "f:app_uninstalled_at:min": _iso(now - timedelta(days=30)),
         "sort": "-er,rank",
     }
@@ -125,6 +162,7 @@ RECIPES: tuple[Recipe, ...] = (
         label="Just installed a growth or CRO app",
         reason="They added a growth or conversion tool in the last two weeks",
         tier="A", cadence="weekly", max_per_run=40, build=_new_growth_app,
+        client_filter=_installed_recently,
     ),
     Recipe(
         key="churned_tool",

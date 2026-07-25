@@ -480,6 +480,10 @@ def run_storeleads_to_clay(
             break
         for store in stores:
             result.scanned += 1
+            # A recipe may re-check the trigger here when StoreLeads cannot
+            # express it as a single filter (see outbound_recipes.Recipe.keeps).
+            if recipe is not None and not recipe.keeps(store, now):
+                continue
             if not store_matches_icp(store):
                 continue
             result.matched_icp += 1

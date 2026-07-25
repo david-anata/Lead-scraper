@@ -37,11 +37,14 @@ class BaseFilterTests(unittest.TestCase):
 
 
 class TriggerWindowTests(unittest.TestCase):
-    def test_new_growth_app_uses_14_day_window(self):
+    def test_new_growth_app_narrows_by_app_then_windows_client_side(self):
+        # The install window CANNOT be a server filter (a list returns zero rows),
+        # so the server only narrows to "has one of these apps".
         p = rc.recipe("new_growth_app").params(WED)
-        self.assertTrue(p["f:app_installed_at:min"].startswith("2026-07-15"))
         self.assertIn("shopify.triplewhale-1", p["f:an"])
         self.assertEqual(p["f:an:op"], "or")
+        self.assertNotIn("f:app_installed_at", p)
+        self.assertIsNotNone(rc.recipe("new_growth_app").client_filter)
 
     def test_churned_tool_uses_30_day_window(self):
         p = rc.recipe("churned_tool").params(WED)
@@ -65,8 +68,8 @@ class TriggerWindowTests(unittest.TestCase):
         self.assertFalse([k for k in p if k.endswith(":min")])
 
     def test_timestamps_are_storeleads_json_format(self):
-        p = rc.recipe("new_growth_app").params(WED)
-        self.assertRegex(p["f:app_installed_at:min"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$")
+        p = rc.recipe("churned_tool").params(WED)
+        self.assertRegex(p["f:app_uninstalled_at:min"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$")
 
 
 class CadenceTests(unittest.TestCase):
@@ -115,7 +118,7 @@ class PipelineIntegrationTests(unittest.TestCase):
             max_new=5, throttle_seconds=0, recipe=rc.recipe("new_growth_app"),
             now=WED, fetch_page=fetch,
         )
-        self.assertIn("f:app_installed_at:min", seen["params"])
+        self.assertIn("f:an", seen["params"])
         self.assertEqual(seen["params"]["f:p"], "shopify")
 
     def test_leads_are_tagged_with_recipe_and_reason(self):
@@ -146,6 +149,71 @@ class PipelineIntegrationTests(unittest.TestCase):
             max_new=5, throttle_seconds=0, fetch_page=fetch,
         )
         self.assertEqual(r.recipe, "")
+
+
+class ClientFilterTests(unittest.TestCase):
+    """Verified live 25 Jul: StoreLeads' app install/uninstall filters take ONE
+    app id. A comma list silently returns zero rows, so the 14-day install
+    window is re-checked in our own code instead."""
+
+    def _store_with_app(self, token, installed_at):
+        return {
+            "name": "a.com", "merchant_name": "B", "platform": "shopify",
+            "country_code": "US", "estimated_sales_yearly": 5_000_000_00,
+            "categories": "Beauty & Skincare", "tags": "",
+            "contact_info": [{"type": "email", "value": "a@b.com"}],
+            "apps": [{"platform": "shopify", "token": token, "installed_at": installed_at}],
+        }
+
+    def test_no_app_list_is_ever_sent_to_the_install_filter(self):
+        p = rc.recipe("new_growth_app").params(WED)
+        self.assertNotIn("f:app_installed_at", p)
+
+    def test_recent_install_is_kept(self):
+        r = rc.recipe("new_growth_app")
+        s = self._store_with_app("triplewhale-1", "2026-07-20T00:00:00Z")  # 9 days before WED
+        self.assertTrue(r.keeps(s, WED))
+
+    def test_old_install_is_dropped(self):
+        r = rc.recipe("new_growth_app")
+        s = self._store_with_app("triplewhale-1", "2026-01-05T00:00:00Z")
+        self.assertFalse(r.keeps(s, WED))
+
+    def test_unrelated_app_is_dropped(self):
+        r = rc.recipe("new_growth_app")
+        s = self._store_with_app("some-random-app", "2026-07-20T00:00:00Z")
+        self.assertFalse(r.keeps(s, WED))
+
+    def test_bad_date_does_not_crash(self):
+        r = rc.recipe("new_growth_app")
+        s = self._store_with_app("triplewhale-1", "not-a-date")
+        self.assertFalse(r.keeps(s, WED))
+
+    def test_recipes_without_a_filter_keep_everything(self):
+        self.assertTrue(rc.recipe("icp_baseline").keeps({}, WED))
+
+    def test_churn_sends_a_single_app_id_and_rotates(self):
+        p = rc.recipe("churned_tool").params(WED)
+        self.assertNotIn(",", p["f:app_uninstalled_at"])
+        other = rc.recipe("churned_tool").params(
+            datetime(2026, 7, 30, tzinfo=timezone.utc))
+        self.assertNotEqual(p["f:app_uninstalled_at"], other["f:app_uninstalled_at"])
+
+    def test_client_filter_runs_in_the_pipeline(self):
+        old = self._store_with_app("triplewhale-1", "2026-01-05T00:00:00Z")
+        new = self._store_with_app("triplewhale-1", "2026-07-20T00:00:00Z")
+        new["name"] = "fresh.com"
+
+        def fetch(api_key, *, page=0, page_size=50, extra_params=None, **kw):
+            return [old, new] if page == 0 else []
+
+        r = op.run_storeleads_to_clay(
+            api_key="x", clay_webhook_url="", processed_domains=set(),
+            max_new=10, throttle_seconds=0, recipe=rc.recipe("new_growth_app"),
+            now=WED, fetch_page=fetch,
+        )
+        self.assertEqual(r.scanned, 2)
+        self.assertEqual([l["domain"] for l in r.leads], ["fresh.com"])
 
 
 if __name__ == "__main__":
