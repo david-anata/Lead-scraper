@@ -2746,7 +2746,7 @@ async def render_cashflow_overview_page(
     vendors_html = _render_vendors_section()
     todays_plan_html = _render_todays_plan()
     bill_audit_html = _render_bill_audit()
-    collections_html = _render_collections()
+    collections_drafts_html = _render_collections()
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -3111,7 +3111,7 @@ async def render_cashflow_overview_page(
         {todays_plan_html}
         {vendors_html}
         {bill_audit_html}
-        {collections_html}
+        {collections_drafts_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
