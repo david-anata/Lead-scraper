@@ -2811,17 +2811,23 @@ def _render_bookkeeping() -> str:
         for item in pending:
             event_id = html.escape(str(item["id"]), quote=True)
             guess = str(item["guess"] or "")
-            options = "".join(
-                '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
-                + category.title() + '</option>'
-                for category in _BOOKKEEPING_CATEGORIES
+            # Never pre-select when there is no real guess: the first option
+            # would show as chosen and a click-through would misfile everything
+            # as that category.
+            options = (
+                '<option value="" ' + ("selected" if not guess else "") + '>&mdash; choose &mdash;</option>'
+                + "".join(
+                    '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
+                    + category.title() + '</option>'
+                    for category in _BOOKKEEPING_CATEGORIES
+                )
             )
             rows.append(
                 '<tr><td>' + html.escape(str(item["name"]))
                 + '<br><small>' + _money(item["amount_cents"]) + ' on ' + html.escape(item["posted_on"]) + '</small></td>'
                 + '<td><form method="post" action="/admin/finances/bookkeeping/file" class="finance-book-form">'
                 + '<input type="hidden" name="event_id" value="' + event_id + '">'
-                + '<select name="category">' + options + '</select>'
+                + '<select name="category" required>' + options + '</select>'
                 + '<label class="finance-book-always"><input type="checkbox" name="always" value="true"> always</label>'
                 + '<button type="submit" class="btn btn-secondary btn-sm">File</button>'
                 + '</form></td></tr>'
@@ -2989,7 +2995,32 @@ async def render_cashflow_overview_page(
     trust_gate = state["trust_gate"]
     trust_ready = trust_gate["ready"]
     trust_check_html = _render_trust_check(cash, trust_gate)
-    match_review_html = _render_match_review()
+    from sales_support_agent.services.cashflow.finance_nav import nav_counts, render_finance_nav
+    try:
+        _nav_counts = nav_counts()
+    except Exception:
+        _nav_counts = {}
+    finance_nav_html = render_finance_nav("today", counts=_nav_counts)
+
+    def _panel_link(href: str, label: str, key: str = "") -> str:
+        count = int(_nav_counts.get(key) or 0) if key else 0
+        suffix = f" ({count})" if count else ""
+        return f'<a class="btn btn-secondary btn-sm" href="{href}">{label}{suffix}</a>'
+
+    # The dialog is for quick actions and links. The tools that produce hundreds
+    # of rows each have their own page and their own scroll.
+    panel_links_html = (
+        '<section class="finance-source-row"><div style="width:100%">'
+        + '<strong>Go to</strong><span>Each of these has its own page.</span>'
+        + '<div class="finance-vendor-actions" style="flex-wrap:wrap;margin-top:8px">'
+        + _panel_link("/admin/finances/review", "Review", "review")
+        + _panel_link("/admin/finances/bookkeeping", "Bookkeeping", "bookkeeping")
+        + _panel_link("/admin/finances/audit", "Bill audit", "audit")
+        + _panel_link("/admin/finances/collections", "Who owes you", "collections")
+        + _panel_link("/admin/finances/recurring", "Schedules")
+        + _panel_link("/admin/finances/setup", "Setup")
+        + '</div></div></section>'
+    )
     # CFO recommendations are opt-in: any absent, errored, or failed contract
     # leaves evidence visible but disables decision controls.
     decision_actions_allowed = trust_ready is True and not control_error
@@ -3155,12 +3186,8 @@ async def render_cashflow_overview_page(
             + _as_of_html + '</div>'
         )
 
-    vendors_html = _render_vendors_section()
     daily_cockpit_html = _render_daily_cockpit()
     cash_timeline_html = _render_cash_timeline()
-    bill_audit_html = _render_bill_audit()
-    bookkeeping_html = _render_bookkeeping()
-    collections_drafts_html = _render_collections()
 
     # Money excluded from required-out must never disappear silently.
     _backlog_cents = int(cash.get("historical_backlog_cents") or 0)
@@ -3392,6 +3419,7 @@ async def render_cashflow_overview_page(
         <article class="is-next"><span>Next</span>{smart_next_html}<button type="button" class="finance-text-action" data-drawer-review="recommendation">{'Review next action' if trust_blocking else 'Review recommendation'}</button></article>
       </section>
 
+      {finance_nav_html}
       {daily_cockpit_html}
       {cash_timeline_html}
 
@@ -3536,11 +3564,7 @@ async def render_cashflow_overview_page(
         <div class="finance-modal__head"><div><p class="finance-eyebrow">Sources and exceptions</p><h2>Update money</h2></div><button type="button" class="finance-icon-button" data-close-modal aria-label="Close update money">&times;</button></div>
         <section class="finance-source-row finance-source-row--primary"><div><strong>Bank accounts</strong><span>{plaid_status_text}. Connected balances and posted transactions replace routine CSV uploads.</span><p class="finance-source-consent">By continuing, you authorize Anata to retrieve bank account, balance, and transaction information for internal cash-flow management and reconciliation. Review the <a href="https://anatainc.com/privacy-page/" target="_blank" rel="noopener noreferrer">Anata privacy policy</a>.</p>{plaid_items_html}{plaid_accounts_html}<p id="finance-plaid-error" class="finance-assistant-error" hidden aria-live="polite"></p></div><div class="finance-plaid-actions">{'<button id="finance-plaid-refresh" class="btn btn-secondary btn-sm" type="button">Refresh bank now</button>' if plaid_summary.get('connected_count') else ''}<button id="finance-plaid-connect" class="btn btn-primary btn-sm" type="button"{plaid_button_disabled}>{plaid_action_text}</button></div></section>
         {trust_check_html}
-        {match_review_html}
-        {vendors_html}
-        {bill_audit_html}
-        {bookkeeping_html}
-        {collections_drafts_html}
+        {panel_links_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>
