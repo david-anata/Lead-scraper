@@ -14,7 +14,7 @@ payroll or tax by accident is not a recoverable mistake.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -26,11 +26,21 @@ PROTECTED_TYPES = {"payroll", "tax", "debt"}
 BULK_ACTIONS = {
     "write_off": "written_off",
     "no_action_needed": "cancelled",
+    "archive_historical": "cancelled",
+    "uncollectible": "written_off",
+    "invoiced_in_error": "cancelled",
 }
 ACTION_LABELS = {
     "write_off": "lost cause / written off",
     "no_action_needed": "not a real obligation",
+    "archive_historical": "historical, no longer actionable",
+    "uncollectible": "written off as uncollectible",
+    "invoiced_in_error": "invoiced in error",
 }
+# Actions the operator may take on money owed TO us, kept separate so a
+# receivable is never quietly resolved with a payables action.
+RECEIVABLE_ACTIONS = ("uncollectible", "invoiced_in_error")
+HISTORICAL_CLEANUP_DAYS = 90
 REASON_LABELS = {
     "missing settlement evidence": "No matching bank payment found yet",
     "ambiguous match": "More than one possible bank match",
@@ -85,6 +95,117 @@ def list_review_items(*, as_of: Optional[date] = None) -> dict[str, Any]:
             for reason, items in ordered
         ],
     }
+
+
+def list_historical_backlog(
+    *, older_than_days: int = HISTORICAL_CLEANUP_DAYS, as_of: Optional[date] = None,
+    event_type: str = "outflow", limit: int = 2000,
+) -> dict[str, Any]:
+    """Unsettled items older than the cutoff: the "start fresh" cleanup pile.
+
+    These are past their date with no linked payment. Archiving them does not
+    claim they were paid; it says they are no longer an actionable forecast.
+    """
+    as_of = as_of or date.today()
+    cutoff = as_of - timedelta(days=older_than_days)
+    with get_engine().connect() as connection:
+        rows = connection.execute(text("""
+            SELECT id, name, vendor_or_customer, amount_cents, due_date,
+                   commitment_type, event_type, source
+            FROM cash_events
+            WHERE record_kind <> 'transaction'
+              AND event_type = :event_type
+              AND LOWER(COALESCE(status,'')) IN ('planned','pending','overdue')
+              AND COALESCE(amount_cents,0) > 0
+              AND archived_at IS NULL
+              AND due_date IS NOT NULL
+              AND due_date < :cutoff
+              AND id NOT IN (SELECT obligation_event_id FROM settlement_allocations)
+            ORDER BY due_date
+            LIMIT :limit
+        """), {"event_type": event_type, "cutoff": cutoff.isoformat(), "limit": limit}).fetchall()
+
+    items = []
+    protected = 0
+    for raw in rows:
+        row = dict(raw._mapping)
+        is_protected = str(row.get("commitment_type") or "").lower() in PROTECTED_TYPES
+        if is_protected:
+            protected += 1
+        items.append({
+            "id": str(row["id"]),
+            "name": str(row.get("name") or row.get("vendor_or_customer") or "Item"),
+            "amount_cents": int(row.get("amount_cents") or 0),
+            "due_date": str(row.get("due_date") or "")[:10],
+            "protected": is_protected,
+            "source": str(row.get("source") or ""),
+        })
+    actionable = [item for item in items if not item["protected"]]
+    return {
+        "cutoff_date": cutoff.isoformat(),
+        "older_than_days": older_than_days,
+        "event_type": event_type,
+        "count": len(items),
+        "protected_count": protected,
+        "actionable_ids": [item["id"] for item in actionable],
+        "actionable_count": len(actionable),
+        "amount_cents": sum(item["amount_cents"] for item in actionable),
+        "items": items[:100],
+    }
+
+
+def snooze_events(
+    event_ids: list[str], *, until: date, actor: str = "system", note: str = "",
+) -> dict[str, Any]:
+    """Hide items until a date, then let them come back for another look."""
+    ids = [str(i) for i in event_ids if str(i).strip()]
+    if not ids:
+        return {"snoozed": 0}
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as connection:
+        for event_id in ids:
+            connection.execute(text(
+                "UPDATE cash_events SET snoozed_until=:until, updated_at=:now WHERE id=:id"
+            ), {"until": until.isoformat(), "now": now, "id": event_id})
+        connection.execute(text("""
+            INSERT INTO finance_action_audit (
+                id, scope_key, action_type, entity_type, entity_id, actor,
+                evidence_json, created_at
+            ) VALUES (
+                :audit_id, 'default', 'snooze', 'cash_event_batch', :first_id,
+                :actor, :evidence, :now
+            )
+        """), {"audit_id": str(uuid4()), "first_id": ids[0], "actor": actor or "system",
+               "evidence": json.dumps({"count": len(ids), "until": until.isoformat(), "note": note}),
+               "now": now})
+    return {"snoozed": len(ids), "until": until.isoformat()}
+
+
+def set_follow_up(
+    event_ids: list[str], *, follow_up_on: date, actor: str = "system",
+) -> dict[str, Any]:
+    """Keep chasing: leave the item open and set a date to come back to it."""
+    ids = [str(i) for i in event_ids if str(i).strip()]
+    if not ids:
+        return {"scheduled": 0}
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as connection:
+        for event_id in ids:
+            connection.execute(text(
+                "UPDATE cash_events SET follow_up_on=:date, updated_at=:now WHERE id=:id"
+            ), {"date": follow_up_on.isoformat(), "now": now, "id": event_id})
+        connection.execute(text("""
+            INSERT INTO finance_action_audit (
+                id, scope_key, action_type, entity_type, entity_id, actor,
+                evidence_json, created_at
+            ) VALUES (
+                :audit_id, 'default', 'follow_up', 'cash_event_batch', :first_id,
+                :actor, :evidence, :now
+            )
+        """), {"audit_id": str(uuid4()), "first_id": ids[0], "actor": actor or "system",
+               "evidence": json.dumps({"count": len(ids), "follow_up_on": follow_up_on.isoformat()}),
+               "now": now})
+    return {"scheduled": len(ids), "follow_up_on": follow_up_on.isoformat()}
 
 
 def preview_bulk_action(event_ids: list[str], action: str) -> dict[str, Any]:

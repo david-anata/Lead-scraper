@@ -409,6 +409,28 @@ def _ensure_finance_settlement_tables(engine: Any) -> None:
 
     _ensure_plaid_account_columns(engine)
     _ensure_collection_draft_columns(engine)
+    _ensure_vendor_columns(engine)
+
+
+def _ensure_vendor_columns(engine: Any) -> None:
+    """Add the additive running-account flag to an existing vendors table."""
+    inspector = inspect(engine)
+    if "finance_vendors" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("finance_vendors")}
+    if "running_account" in columns:
+        return
+    if engine.dialect.name == "postgresql":
+        statement = (
+            "ALTER TABLE finance_vendors "
+            "ADD COLUMN IF NOT EXISTS running_account BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+    elif engine.dialect.name == "sqlite":
+        statement = "ALTER TABLE finance_vendors ADD COLUMN running_account BOOLEAN NOT NULL DEFAULT 0"
+    else:
+        return
+    with engine.begin() as connection:
+        connection.execute(text(statement))
 
 
 def _ensure_collection_draft_columns(engine: Any) -> None:
@@ -618,7 +640,9 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
                     ADD COLUMN IF NOT EXISTS source_updated_at TIMESTAMPTZ NULL,
                     ADD COLUMN IF NOT EXISTS match_status VARCHAR(16) NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS match_candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-                    ADD COLUMN IF NOT EXISTS manual_pay_order INTEGER NULL
+                    ADD COLUMN IF NOT EXISTS manual_pay_order INTEGER NULL,
+                    ADD COLUMN IF NOT EXISTS snoozed_until DATE NULL,
+                    ADD COLUMN IF NOT EXISTS follow_up_on DATE NULL
             """))
             connection.execute(text(
                 "CREATE INDEX IF NOT EXISTS ix_cash_events_source_status ON cash_events(source_status)"
@@ -638,6 +662,8 @@ def ensure_finance_trust_schema(target_engine: Any | None = None) -> None:
         "match_status": "ALTER TABLE cash_events ADD COLUMN match_status VARCHAR(16) NOT NULL DEFAULT ''",
         "match_candidates_json": "ALTER TABLE cash_events ADD COLUMN match_candidates_json JSON NOT NULL DEFAULT '[]'",
         "manual_pay_order": "ALTER TABLE cash_events ADD COLUMN manual_pay_order INTEGER",
+        "snoozed_until": "ALTER TABLE cash_events ADD COLUMN snoozed_until DATE",
+        "follow_up_on": "ALTER TABLE cash_events ADD COLUMN follow_up_on DATE",
     }
     with db_engine.begin() as connection:
         for column, statement in statements.items():

@@ -463,6 +463,10 @@ class CashEvent(Base):
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     # Operator-chosen pay position; null means use the automatic order.
     manual_pay_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Hidden from review until this date, then it returns.
+    snoozed_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Still chasing: the date to come back to this one.
+    follow_up_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     # Provider-reported lifecycle is evidence, not canonical settlement truth.
     # ``status`` remains derived from allocations / explicit local decisions.
@@ -695,6 +699,9 @@ class Vendor(Base):
     start_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     end_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     match_terms: Mapped[str] = mapped_column(Text, default="")
+    # Pay-as-you-go: we pay into this vendor in pieces, so track a running
+    # balance rather than expecting one payment to settle one bill.
+    running_account: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     notes: Mapped[str] = mapped_column(Text, default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

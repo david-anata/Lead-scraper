@@ -71,11 +71,11 @@ def create_vendor(data: dict[str, Any]) -> str:
             INSERT INTO finance_vendors (
                 id, scope_key, name, terms_type, payment_amount_cents, frequency,
                 total_committed_cents, start_date, end_date, match_terms, notes,
-                active, created_at, updated_at
+                running_account, active, created_at, updated_at
             ) VALUES (
                 :id, 'default', :name, :terms_type, :payment, :frequency,
                 :total, :start_date, :end_date, :match_terms, :notes,
-                TRUE, :now, :now
+                :running_account, TRUE, :now, :now
             )
         """), {
             "id": vendor_id, "name": name, "terms_type": terms_type,
@@ -85,7 +85,8 @@ def create_vendor(data: dict[str, Any]) -> str:
             "start_date": _parse_date(data.get("start_date")),
             "end_date": _parse_date(data.get("end_date")),
             "match_terms": str(data.get("match_terms") or "").strip(),
-            "notes": str(data.get("notes") or "").strip(), "now": now,
+            "notes": str(data.get("notes") or "").strip(),
+            "running_account": bool(data.get("running_account")), "now": now,
         })
     return vendor_id
 
@@ -107,7 +108,7 @@ def update_vendor(vendor_id: str, data: dict[str, Any]) -> None:
                 name=:name, terms_type=:terms_type, payment_amount_cents=:payment,
                 frequency=:frequency, total_committed_cents=:total,
                 start_date=:start_date, end_date=:end_date, match_terms=:match_terms,
-                notes=:notes, updated_at=:now
+                notes=:notes, running_account=:running_account, updated_at=:now
             WHERE id=:id
         """), {
             "id": vendor_id, "name": name, "terms_type": terms_type,
@@ -117,7 +118,8 @@ def update_vendor(vendor_id: str, data: dict[str, Any]) -> None:
             "start_date": _parse_date(data.get("start_date")),
             "end_date": _parse_date(data.get("end_date")),
             "match_terms": str(data.get("match_terms") or "").strip(),
-            "notes": str(data.get("notes") or "").strip(), "now": now,
+            "notes": str(data.get("notes") or "").strip(),
+            "running_account": bool(data.get("running_account")), "now": now,
         })
     if result.rowcount == 0:
         raise ValueError("vendor not found")
@@ -168,6 +170,7 @@ def _vendor_progress(vendor: dict[str, Any], outflows: list[dict[str, Any]]) -> 
             if paid_on and (last_paid is None or paid_on > last_paid):
                 last_paid = paid_on
 
+    is_running = bool(vendor.get("running_account"))
     total = vendor.get("total_committed_cents")
     remaining_cents: Optional[int] = None
     percent_bps: Optional[int] = None
@@ -186,6 +189,7 @@ def _vendor_progress(vendor: dict[str, Any], outflows: list[dict[str, Any]]) -> 
                 payoff_date = anchor + timedelta(days=periods * cadence_days)
 
     return {
+        "running_account": is_running,
         "paid_cents": paid_cents,
         "matched_count": matched_count,
         "remaining_cents": remaining_cents,

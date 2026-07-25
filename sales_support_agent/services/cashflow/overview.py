@@ -2285,6 +2285,9 @@ def _render_vendor_fields(vendor: dict | None = None) -> str:
         + '<label>Start<input name="start_date" type="date" value="' + _val("start_date") + '"></label>'
         + '<label>End / payoff<input name="end_date" type="date" value="' + _val("end_date") + '"></label>'
         + '<label>Match words in bank<input name="match_terms" value="' + _val("match_terms") + '" placeholder="fora, stripe capital"></label>'
+        + '<label class="finance-book-always"><input type="checkbox" name="running_account" value="true"'
+        + (' checked' if v.get('running_account') else '')
+        + '> Pay-as-you-go (we pay into this in pieces)</label>'
         + '</div>'
     )
 
@@ -2315,7 +2318,11 @@ def _render_vendors_section() -> str:
             progress = ' <small>(' + str(pct_int) + '%)</small><div class="finance-vendor-bar"><span style="width:' + str(pct_int) + '%"></span></div>'
         else:
             progress = ""
-        payoff = html.escape(str(v.get("payoff_date") or "ongoing"))
+        if v.get("running_account"):
+            remaining = v.get("remaining_cents")
+            payoff = ('balance ' + _money(int(remaining))) if remaining is not None else 'running account'
+        else:
+            payoff = html.escape(str(v.get("payoff_date") or "ongoing"))
         edit = (
             '<details class="finance-vendor-edit"><summary>Edit</summary>'
             + '<form method="post" action="/admin/finances/vendors/' + vid + '">'

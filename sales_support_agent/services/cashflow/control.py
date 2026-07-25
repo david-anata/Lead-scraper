@@ -170,6 +170,11 @@ def _is_active_obligation(row: Mapping[str, Any]) -> bool:
     return True
 
 
+# A scheduler entry older than this with no linked payment is treated as
+# historical backlog rather than an upcoming cash requirement.
+HISTORICAL_BACKLOG_DAYS = 90
+
+
 def _is_forward_cash_obligation(row: Mapping[str, Any]) -> bool:
     """Return whether an obligation belongs in the forward cash calculation.
 
@@ -1094,7 +1099,10 @@ def assess_confidence(snapshot: Mapping[str, Any], trends: Mapping[str, Any], ro
 
 def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window_days: int) -> dict[str, int]:
     end = as_of + timedelta(days=window_days - 1)
+    stale_before = as_of - timedelta(days=HISTORICAL_BACKLOG_DAYS)
     confirmed_in = expected_in = required_out = exposure_out = 0
+    historical_backlog = 0
+    historical_backlog_count = 0
     for row in canonical:
         if not _is_forward_cash_obligation(row):
             continue
@@ -1102,6 +1110,18 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
             continue
         due = _event_date(row)
         open_amount = _amount(row.get("open_amount_cents"))
+        # A scheduler entry months past its date with no payment linked is
+        # history, not an upcoming cash requirement. Counting it as "required
+        # out in 14 days" overstates what has to leave the bank. It is reported
+        # separately so it stays visible and can be reconciled or cleared.
+        if (
+            row.get("event_type") != "inflow"
+            and due is not None
+            and due < stale_before
+        ):
+            historical_backlog += open_amount
+            historical_backlog_count += 1
+            continue
         if row.get("event_type") == "inflow":
             if due is None or due > end:
                 continue
@@ -1138,6 +1158,8 @@ def _summary_metrics(canonical: Sequence[Mapping[str, Any]], as_of: date, window
             else:
                 exposure_out += open_amount
     return {
+        "historical_backlog_cents": historical_backlog,
+        "historical_backlog_count": historical_backlog_count,
         "confirmed_incoming_cents": confirmed_in,
         "expected_incoming_cents": expected_in,
         "required_outgoing_cents": required_out,
@@ -1932,6 +1954,8 @@ def build_finance_control(
         "incoming_confirmed_cents": metrics["confirmed_incoming_cents"],
         "incoming_expected_cents": metrics["expected_incoming_cents"],
         "required_out_cents": metrics["required_outgoing_cents"],
+        "historical_backlog_cents": metrics.get("historical_backlog_cents", 0),
+        "historical_backlog_count": metrics.get("historical_backlog_count", 0),
         "exposure_out_cents": metrics["outgoing_exposure_cents"],
     }
     state["smart_brief"] = _smart_brief(state)
