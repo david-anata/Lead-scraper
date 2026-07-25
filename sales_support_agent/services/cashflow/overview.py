@@ -2446,6 +2446,68 @@ def _render_bill_audit() -> str:
     )
 
 
+def _render_collections() -> str:
+    """Render overdue customers with review-and-mark draft messages."""
+    from sales_support_agent.services.cashflow.collections import build_collections
+    try:
+        data = build_collections()
+    except Exception:
+        return ""
+
+    if not data["customers"]:
+        return (
+            '<section class="finance-source-row finance-collections"><div style="width:100%">'
+            + '<strong>Who owes you</strong><span>Nobody is past due right now.</span></div></section>'
+        )
+
+    def _status_badge(status: str) -> str:
+        if status == "sent":
+            return '<span class="finance-collect-sent">Sent</span>'
+        if status == "skipped":
+            return '<span class="finance-collect-skip">Skipped</span>'
+        return ""
+
+    def _channel_block(cust_key: str, label: str, channel: str, status: str, subject: str, body: str) -> str:
+        subject_html = ('<p class="finance-collect-subject">' + html.escape(subject) + '</p>') if subject else ""
+        mark = (
+            '<form method="post" action="/admin/finances/collections/mark" class="finance-collect-actions">'
+            + '<input type="hidden" name="customer_key" value="' + html.escape(cust_key, quote=True) + '">'
+            + '<input type="hidden" name="channel" value="' + channel + '">'
+            + '<button type="submit" name="status" value="sent" class="btn btn-secondary btn-sm">Mark as sent</button>'
+            + '<button type="submit" name="status" value="skipped" class="btn btn-secondary btn-sm">Skip</button></form>'
+        )
+        return (
+            '<details class="finance-collect-draft"><summary>Review ' + label + ' ' + _status_badge(status) + '</summary>'
+            + subject_html
+            + '<textarea class="finance-collect-body" rows="6" readonly>' + html.escape(body) + '</textarea>'
+            + mark + '</details>'
+        )
+
+    rows = []
+    for cust in data["customers"]:
+        key = str(cust["customer_key"])
+        email = _channel_block(key, "email", "email", cust["email_status"], cust["email"]["subject"], cust["email"]["body"])
+        sms = _channel_block(key, "text", "sms", cust["sms_status"], "", cust["sms"]["body"])
+        rows.append(
+            '<tr><td>' + html.escape(str(cust["customer"])) + '</td>'
+            + '<td class="finance-accounts-amount">' + _money(int(cust["owed_cents"])) + '</td>'
+            + '<td>' + str(cust["days_late"]) + ' days late</td>'
+            + '<td>' + email + sms + '</td></tr>'
+        )
+
+    table = (
+        '<table class="finance-accounts-table finance-collections-table"><thead><tr>'
+        + '<th>Customer</th><th>Owes</th><th>Late</th><th>Draft to review</th>'
+        + '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+    )
+    heading = _money(data["total_owed_cents"]) + " across " + str(data["customer_count"]) + " customer(s)"
+    return (
+        '<section class="finance-source-row finance-collections"><div style="width:100%">'
+        + '<strong>Who owes you</strong><span>' + heading + '. Drafts are ready to review; nothing sends on its own.</span>'
+        + table + '</div></section>'
+    )
+
+
 async def render_cashflow_overview_page(
     *, flash: str = "", inline_result_html: str = "", settings: Any = None
 ) -> str:
@@ -2684,6 +2746,7 @@ async def render_cashflow_overview_page(
     vendors_html = _render_vendors_section()
     todays_plan_html = _render_todays_plan()
     bill_audit_html = _render_bill_audit()
+    collections_html = _render_collections()
 
     gap = cash["funding_gap_cents"]
     fourth_label = "Funding gap" if gap else "Safe to commit"
@@ -3048,6 +3111,7 @@ async def render_cashflow_overview_page(
         {todays_plan_html}
         {vendors_html}
         {bill_audit_html}
+        {collections_html}
         <form class="finance-dropzone" method="post" action="/admin/finances/upload" enctype="multipart/form-data">
           <strong>Fallback file import</strong><span>Use a bank CSV only when the connected bank is unavailable. Bank history never creates confirmed income. QBO Open Invoices supplies dated receivables.</span>
           <input id="finance-file-input" type="file" name="csv_file" accept=".csv"><label for="finance-file-input" class="btn btn-secondary btn-sm">Choose file</label>

@@ -710,6 +710,30 @@ class FinanceAuditDismissal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
+class FinanceCollectionDraft(Base):
+    """Status of a collection message per customer and channel.
+
+    The draft text is regenerated on demand; this row only tracks whether the
+    operator has sent or skipped a given customer/channel. Nothing here sends a
+    message: the app drafts, the operator sends.
+    """
+
+    __tablename__ = "finance_collection_drafts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    customer_key: Mapped[str] = mapped_column(String(255), index=True)
+    channel: Mapped[str] = mapped_column(String(16), default="email")  # email | sms
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | sent | skipped
+    amount_cents: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_collection_draft_scope_customer_channel", "scope_key", "customer_key", "channel", unique=True),
+    )
+
+
 class FinanceActionAudit(Base):
     """Append-only evidence for trust-sensitive Finance mutations."""
 

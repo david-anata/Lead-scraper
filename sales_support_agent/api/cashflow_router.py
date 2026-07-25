@@ -549,6 +549,23 @@ async def audit_dismiss_endpoint(request: Request, fingerprint: str = Form(...))
     return _redirect_finance_home("Audit item dismissed. It will stay quiet next time.")
 
 
+@router.post("/collections/mark")
+async def collections_mark_endpoint(
+    request: Request,
+    customer_key: str = Form(...),
+    channel: str = Form(...),
+    status: str = Form(...),
+):
+    """Record that a collection message was sent or skipped. Never sends it."""
+    from sales_support_agent.services.cashflow.collections import set_draft_status
+    try:
+        await asyncio.to_thread(set_draft_status, customer_key, channel, status)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not update that message: {exc}")
+    verb = {"sent": "marked as sent", "skipped": "skipped", "draft": "reset to draft"}.get(status, status)
+    return _redirect_finance_home(f"Reminder {verb}.")
+
+
 @router.post("/assistant/preview")
 async def finance_assistant_preview(request: Request):
     """Turn plain English into a server-side draft; this never writes money."""

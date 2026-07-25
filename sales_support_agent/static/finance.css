@@ -1477,3 +1477,13 @@ input:focus, select:focus, textarea:focus {
 .finance-audit-high { border-left: 3px solid #d14343; }
 .finance-audit-medium { border-left: 3px solid #d1a343; }
 .finance-audit-low { border-left: 3px solid #9ca3af; }
+
+/* Collections */
+.finance-collections-table td { vertical-align: top; }
+.finance-collect-draft { margin-bottom: 6px; }
+.finance-collect-draft summary { cursor: pointer; font-size: 12px; color: var(--accent, #2f6feb); }
+.finance-collect-subject { font-size: 12px; font-weight: 600; margin: 6px 0 2px; }
+.finance-collect-body { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #d1d5db); resize: vertical; }
+.finance-collect-actions { display: flex; gap: 8px; margin-top: 6px; }
+.finance-collect-sent { color: #1f7a34; font-size: 11px; }
+.finance-collect-skip { color: #9ca3af; font-size: 11px; }
