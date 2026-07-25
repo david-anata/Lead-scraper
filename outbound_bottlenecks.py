@@ -153,10 +153,15 @@ BOTTLENECK_CSS = """
 """
 
 
+_SINGULAR = {"people": "person", "emails": "email"}
+
+
 def _fmt_num(v: Optional[float], unit: str) -> str:
     if v is None:
         return "not set"
     n = int(v) if float(v).is_integer() else v
+    if n == 1 and unit in _SINGULAR:
+        unit = _SINGULAR[unit]
     return f"{n:,} {unit}".strip()
 
 

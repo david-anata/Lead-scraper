@@ -103,5 +103,39 @@ class EnvDerivationTests(unittest.TestCase):
         self.assertEqual(members.have, 2.0)
 
 
+class PluralizationTests(unittest.TestCase):
+    """Pass-3 finding: the panel read '1 people'. Numbers users read must be grammatical."""
+
+    def test_one_person_is_singular(self):
+        b = bn.compute_bottlenecks(
+            emails_have=10, emails_need=1,
+            members_have=2, members_need=1,
+            clay_have=5, clay_need=5,
+        )
+        out = bn.render_bottlenecks_html(b)
+        self.assertIn("1 person", out)
+        self.assertNotIn("1 people", out)
+
+    def test_one_email_is_singular(self):
+        b = bn.compute_bottlenecks(
+            emails_have=1, emails_need=1,
+            members_have=2, members_need=2,
+            clay_have=5, clay_need=5,
+        )
+        out = bn.render_bottlenecks_html(b)
+        self.assertIn("1 email", out)
+        self.assertNotIn("1 emails", out)
+
+    def test_plural_still_plural(self):
+        b = bn.compute_bottlenecks(
+            emails_have=300, emails_need=600,
+            members_have=2, members_need=5,
+            clay_have=10, clay_need=10,
+        )
+        out = bn.render_bottlenecks_html(b)
+        self.assertIn("2 people", out)
+        self.assertIn("600 emails", out)
+
+
 if __name__ == "__main__":
     unittest.main()
