@@ -1085,7 +1085,8 @@ def render_hr_legacy_import(*, user, preview: dict | None = None,
             <div><h3>Source tables</h3>
               <table class="hr-tbl"><thead><tr><th>Table</th><th>Rows</th></tr></thead>
               <tbody>{count_rows}</tbody></table>
-              <p>{int(preview['sample_rows_excluded'])} sample/test rows will be excluded.</p></div>
+              <p>{int(preview['sample_rows_excluded'])} sample/test rows and
+              {int(preview.get('orphan_rows_excluded') or 0)} zero-duration orphan rows will be excluded.</p></div>
           </div>
           <div class="hr-callout warn"><strong>Controls that remain in force</strong><ul>{warnings}</ul></div>
           <form class="hr-form" method="post" enctype="multipart/form-data" action="/admin/hr/settings/legacy-import/commit">

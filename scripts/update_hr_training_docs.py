@@ -73,6 +73,11 @@ def update_operator() -> None:
             ("The import is idempotent: uploading the same export again skips records already recovered. It never sends invitations, stores full SSNs or bank details, files taxes, or moves money.", "Normal"),
         ],
     )
+    replace(
+        document,
+        "The import is idempotent: uploading the same export again skips records already recovered. It never sends invitations, stores full SSNs or bank details, files taxes, or moves money.",
+        "The import is idempotent: uploading the same export again skips records already recovered. Sample rows and zero-duration orphan identities without payroll or pay-period evidence are excluded. It never sends invitations, stores full SSNs or bank details, files taxes, or moves money.",
+    )
     insert_before(
         document,
         "9. Contractor payments through Wise",
