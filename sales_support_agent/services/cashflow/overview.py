@@ -2782,6 +2782,7 @@ def _render_bookkeeping() -> str:
     """Filing status, the short decision queue, and the taught rules."""
     from sales_support_agent.services.cashflow.bookkeeping import (
         bookkeeping_summary,
+        group_needs_decision,
         list_needs_decision,
         list_rules,
     )
@@ -2805,6 +2806,50 @@ def _render_bookkeeping() -> str:
         + '<form method="post" action="/admin/finances/bookkeeping/file-all" class="finance-vendor-actions">'
         + '<button type="submit" class="btn btn-secondary btn-sm">File everything it can</button></form>'
     )
+
+    # By merchant first: one decision can clear hundreds of rows.
+    try:
+        grouped = group_needs_decision()
+    except Exception:
+        grouped = {"groups": [], "group_count": 0, "transaction_count": 0, "covered_by_shown": 0}
+
+    grouped_html = ""
+    if grouped["groups"]:
+        group_rows = []
+        for group in grouped["groups"]:
+            key = html.escape(str(group["key"]), quote=True)
+            guess = str(group["guess"] or "")
+            options = (
+                '<option value="" ' + ("selected" if not guess else "") + '>&mdash; choose &mdash;</option>'
+                + "".join(
+                    '<option value="' + category + '"' + (" selected" if category == guess else "") + '>'
+                    + category.title() + '</option>'
+                    for category in _BOOKKEEPING_CATEGORIES
+                )
+            )
+            samples = html.escape(" &middot; ".join(group["samples"])[:160])
+            group_rows.append(
+                '<tr><td><strong>' + html.escape(str(group["label"])) + '</strong>'
+                + '<br><small>' + samples + '</small></td>'
+                + '<td class="finance-accounts-amount">' + str(group["count"]) + '</td>'
+                + '<td class="finance-accounts-amount">' + _money(group["amount_cents"]) + '</td>'
+                + '<td><form method="post" action="/admin/finances/bookkeeping/file-merchant" class="finance-book-form" '
+                + 'onsubmit="return confirm(\'File all ' + str(group["count"]) + ' of these the same way?\');">'
+                + '<input type="hidden" name="key" value="' + key + '">'
+                + '<select name="category" required>' + options + '</select>'
+                + '<button type="submit" class="btn btn-secondary btn-sm">File all ' + str(group["count"]) + '</button>'
+                + '</form></td></tr>'
+            )
+        grouped_html = (
+            '<h3 class="finance-book-subhead">By merchant &mdash; ' + str(grouped["group_count"])
+            + ' merchant(s) cover ' + str(grouped["transaction_count"]) + ' transaction(s)</h3>'
+            + '<p class="finance-accounts-asof">Deciding once per merchant clears the queue far faster '
+            + 'than one row at a time. Each group also teaches a rule, so it never asks again. '
+            + 'The sample descriptions show what you are filing together.</p>'
+            + '<table class="finance-accounts-table finance-book-table"><thead><tr>'
+            + '<th>Merchant</th><th>Count</th><th>Total</th><th>File all as</th>'
+            + '</tr></thead><tbody>' + "".join(group_rows) + '</tbody></table>'
+        )
 
     if pending:
         rows = []
@@ -2833,7 +2878,9 @@ def _render_bookkeeping() -> str:
                 + '</form></td></tr>'
             )
         queue = (
-            '<table class="finance-accounts-table finance-book-table"><thead><tr>'
+            grouped_html
+            + '<h3 class="finance-book-subhead">Or one at a time</h3>'
+            + '<table class="finance-accounts-table finance-book-table"><thead><tr>'
             + '<th>Transaction</th><th>File it as</th></tr></thead><tbody>'
             + "".join(rows) + '</tbody></table>'
             + '<p class="finance-accounts-asof">Tick "always" to teach a rule so this merchant files itself next time.</p>'

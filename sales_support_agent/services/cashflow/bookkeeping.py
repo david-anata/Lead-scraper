@@ -31,6 +31,41 @@ def _normalise(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
+# Bank wording that wraps the real merchant name. Stripping it first stops
+# every ACH line collapsing into one meaningless "ach withdrawal company" group.
+_BANK_NOISE = (
+    r"\bach (?:withdrawal|deposit)\b", r"\bdraft withdrawal\b", r"\bfee withdrawal\b",
+    r"\bhome banking\b", r"\bwithdrawal\b", r"\bdeposit\b", r"\bpurchase\b",
+    r"\bcompany:", r"\bentry:", r"\btracer:", r"\bcomment:", r"\bco:", r"\btype:",
+    r"\bdraft #\S*", r"\bcheck #\s*\S*", r"\bcard\b", r"\bdebit\b", r"\bdc\b",
+    r"\banata(?: llc| inc\.?| entry)?\b",  # the operator's own entity, not a merchant
+    r"\bllc\b", r"\binc\.?\b", r"\bcorp\b", r"\bentry class code\b",
+    r"\binternational service fee\b", r"\bisa\b",
+    r"\*+\d+", r"#+\d+", r"\b\d{4,}\b", r"\bx{2,}\d*\b",
+)
+_BANK_NOISE_RE = re.compile("|".join(_BANK_NOISE), re.IGNORECASE)
+
+
+def merchant_key(description: str) -> str:
+    """The merchant inside a bank descriptor, used to group the filing queue.
+
+    Real descriptors bury the payee in boilerplate: "Ach Withdrawal Company:
+    Anata Entry: Stripe Cap David Narayan". Grouping on the raw leading words
+    would file unrelated payments together, so the boilerplate is removed before
+    the identifying words are taken.
+    """
+    cleaned = _BANK_NOISE_RE.sub(" ", _normalise(description))
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
+    words = [word for word in cleaned.split() if len(word) > 1 and not word.isdigit()]
+    # Per-charge reference codes ("AMAZON *2K4L9") would otherwise split one
+    # merchant into a group per charge, which is the opposite of the point.
+    # Names that genuinely contain digits (Helium10) are kept when dropping
+    # them would leave nothing behind.
+    without_codes = [word for word in words if not any(ch.isdigit() for ch in word)]
+    words = without_codes or words
+    return " ".join(words[:3])[:255]
+
+
 def suggest_rule_pattern(description: str) -> str:
     """Derive a reusable merchant pattern from one transaction description.
 
@@ -146,6 +181,101 @@ def list_needs_decision(*, limit: int = 50) -> list[dict[str, Any]]:
             "suggested_pattern": suggest_rule_pattern(description or str(row.get("name") or "")),
         })
     return items
+
+
+def group_needs_decision(*, limit: int = 3000, top: int = 60) -> dict[str, Any]:
+    """The filing queue collapsed by merchant, biggest pile first.
+
+    Nine hundred one-at-a-time decisions is a wall nobody climbs. The same
+    transactions are usually a much smaller number of merchants, so deciding
+    once per merchant clears most of the queue. Sample descriptions travel with
+    each group so the operator can see what they are about to file together.
+    """
+    from sales_support_agent.services.cashflow.categorizer import categorize
+
+    pending = _unfiled_transactions(limit=limit)
+    groups: dict[str, dict[str, Any]] = {}
+    for row in pending:
+        description = str(row.get("description") or row.get("name") or "")
+        key = merchant_key(description) or _normalise(row.get("name") or "") or "unknown"
+        group = groups.setdefault(key, {
+            "key": key,
+            # The cleaned merchant reads better than a raw descriptor with a
+            # per-charge reference code in it; the samples show the real text.
+            "label": key.title() if key else str(row.get("name") or "Unknown"),
+            "count": 0,
+            "amount_cents": 0,
+            "samples": [],
+            "guess": "",
+        })
+        group["count"] += 1
+        group["amount_cents"] += int(row.get("amount_cents") or 0)
+        if len(group["samples"]) < 3:
+            sample = str(row.get("name") or description)[:90]
+            if sample not in group["samples"]:
+                group["samples"].append(sample)
+        if not group["guess"]:
+            guess = categorize(description)
+            if guess and guess.lower() not in UNFILED_CATEGORIES:
+                group["guess"] = guess
+
+    ordered = sorted(groups.values(), key=lambda item: -item["count"])
+    covered = sum(item["count"] for item in ordered[:top])
+    return {
+        "groups": ordered[:top],
+        "group_count": len(ordered),
+        "transaction_count": len(pending),
+        "covered_by_shown": covered,
+    }
+
+
+def file_merchant(
+    key: str, category: str, *, always: bool = True, actor: str = "system", limit: int = 3000,
+) -> dict[str, Any]:
+    """File every unfiled transaction from one merchant in a single decision."""
+    category = _normalise(category)
+    if not category or category in UNFILED_CATEGORIES:
+        raise ValueError("choose a category first")
+    key = _normalise(key)
+    if not key:
+        raise ValueError("no merchant given")
+
+    matches = [
+        row for row in _unfiled_transactions(limit=limit)
+        if merchant_key(str(row.get("description") or row.get("name") or "")) == key
+    ]
+    if not matches:
+        return {"filed": 0, "rule_id": ""}
+
+    now = datetime.now(timezone.utc)
+    with get_engine().begin() as connection:
+        for row in matches:
+            connection.execute(text(
+                "UPDATE cash_events SET category=:category, updated_at=:now WHERE id=:id"
+            ), {"category": category, "now": now, "id": str(row["id"])})
+
+    rule_id = ""
+    if always:
+        # Teach it once so this merchant files itself from now on.
+        with get_engine().begin() as connection:
+            existing = connection.execute(text(
+                "SELECT id FROM finance_booking_rules WHERE match_pattern=:pattern"
+            ), {"pattern": key}).fetchone()
+            if existing:
+                connection.execute(text(
+                    "UPDATE finance_booking_rules SET category=:category, updated_at=:now WHERE id=:id"
+                ), {"category": category, "now": now, "id": str(existing._mapping["id"])})
+                rule_id = str(existing._mapping["id"])
+            else:
+                rule_id = str(uuid4())
+                connection.execute(text("""
+                    INSERT INTO finance_booking_rules (
+                        id, scope_key, match_pattern, category, created_by,
+                        hit_count, created_at, updated_at
+                    ) VALUES (:id, 'default', :pattern, :category, :actor, :hits, :now, :now)
+                """), {"id": rule_id, "pattern": key, "category": category,
+                       "actor": actor or "system", "hits": len(matches), "now": now})
+    return {"filed": len(matches), "rule_id": rule_id, "category": category}
 
 
 def file_transaction(

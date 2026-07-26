@@ -1542,3 +1542,4 @@ input:focus, select:focus, textarea:focus {
 .finance-nav-link.is-active { background: var(--text, #2b3644); color: #fff; border-color: var(--text, #2b3644); }
 .finance-nav-count { display: inline-block; min-width: 18px; text-align: center; padding: 1px 6px; border-radius: 999px; background: #fdecec; color: #a12020; font-size: 11px; font-weight: 600; }
 .finance-nav-link.is-active .finance-nav-count { background: rgba(255,255,255,.2); color: #fff; }
+.finance-book-subhead { font-size: 13px; font-weight: 600; margin: 14px 0 4px; }

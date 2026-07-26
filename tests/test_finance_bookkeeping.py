@@ -163,3 +163,91 @@ def test_filing_without_choosing_a_category_is_refused():
     for bad in ("", "   ", "uncategorized", "other"):
         with pytest.raises(ValueError, match="choose a category"):
             file_transaction("t1", bad)
+
+
+# --- merchant grouping: 935 decisions become a few dozen -------------------
+
+def test_bank_boilerplate_is_stripped_so_real_merchants_group_apart():
+    """Real descriptors bury the payee in wrapper text. Grouping on the raw
+    leading words would file Stripe and Fora together as "ach withdrawal"."""
+    from sales_support_agent.services.cashflow.bookkeeping import merchant_key
+
+    stripe = merchant_key("Ach Withdrawal Company: Anata Entry: Stripe Cap David Narayan")
+    fora = merchant_key("Ach Withdrawal Company: Forafinancial S6 Entry: Merchdebit Anata Inc.")
+    ups = merchant_key("Ach Deposit Company: Ups General Serv Entry: Edi Paymts Anata Llc")
+
+    assert stripe != fora != ups
+    assert "withdrawal" not in stripe and "company" not in stripe
+    assert "stripe" in stripe and "fora" in fora and "ups" in ups
+
+
+def test_the_same_merchant_groups_despite_per_charge_noise():
+    from sales_support_agent.services.cashflow.bookkeeping import merchant_key
+
+    assert merchant_key("Amazon") == merchant_key("Amazon *2K4L9")
+    assert merchant_key("Costco #1234") == merchant_key("Costco")
+    assert merchant_key("Helium10"), "a name that genuinely contains digits survives"
+
+    # Honest limitation: a card descriptor and a clean name are different keys,
+    # so they appear as two groups. Both are still one decision each.
+    assert merchant_key("GoDaddy") != merchant_key("DNH*GODADDY 480-505-8855 AZ")
+
+
+def test_the_queue_collapses_to_merchants_biggest_first():
+    from sales_support_agent.services.cashflow.bookkeeping import group_needs_decision
+
+    engine = _setup()
+    for index in range(12):
+        _txn(engine, cid=f"a{index}", name="Madison Bicycle Shop", amount=100_00 + index)
+    for index in range(3):
+        _txn(engine, cid=f"k{index}", name="KFC", amount=50_00)
+
+    grouped = group_needs_decision()
+    assert grouped["transaction_count"] == 15
+    assert grouped["group_count"] == 2
+    assert grouped["groups"][0]["count"] == 12, "the biggest pile comes first"
+    assert grouped["groups"][0]["samples"], "samples let the operator see what they are filing"
+
+
+def test_filing_a_merchant_clears_every_one_and_teaches_a_rule():
+    from sales_support_agent.services.cashflow.bookkeeping import (
+        file_merchant,
+        group_needs_decision,
+    )
+
+    engine = _setup()
+    for index in range(12):
+        _txn(engine, cid=f"a{index}", name="Madison Bicycle Shop", amount=100_00)
+    _txn(engine, cid="other", name="KFC", amount=50_00)
+
+    key = group_needs_decision()["groups"][0]["key"]
+    result = file_merchant(key, "supplies", actor="qa@example.com")
+
+    assert result["filed"] == 12
+    assert _category(engine, "a0") == "supplies"
+    assert _category(engine, "other") == "uncategorized", "other merchants are untouched"
+    assert len(list_rules()) == 1, "one decision teaches one rule"
+
+    # A later charge from that merchant files itself.
+    _txn(engine, cid="later", name="Madison Bicycle Shop", amount=75_00)
+    assert file_transactions()["filed_by_rule"] == 1
+    assert _category(engine, "later") == "supplies"
+
+
+def test_filing_a_merchant_without_a_category_is_refused():
+    from sales_support_agent.services.cashflow.bookkeeping import file_merchant
+
+    engine = _setup()
+    _txn(engine, cid="a", name="KFC", amount=50_00)
+    for bad in ("", "uncategorized", "other"):
+        with pytest.raises(ValueError, match="choose a category"):
+            file_merchant("kfc", bad)
+
+
+def test_internal_transfers_are_not_offered_as_a_merchant_group():
+    from sales_support_agent.services.cashflow.bookkeeping import group_needs_decision
+
+    engine = _setup()
+    for index in range(5):
+        _txn(engine, cid=f"t{index}", name="Home banking Withdrawal Transfer to S0050", amount=25000_00)
+    assert group_needs_decision()["groups"] == []

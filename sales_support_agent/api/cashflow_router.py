@@ -706,6 +706,25 @@ async def bookkeeping_file_endpoint(
     return _redirect_finance_home("Filed.")
 
 
+@router.post("/bookkeeping/file-merchant")
+async def bookkeeping_file_merchant_endpoint(
+    request: Request, key: str = Form(...), category: str = Form(...),
+):
+    """File every unfiled transaction from one merchant in a single decision."""
+    from sales_support_agent.services.cashflow.bookkeeping import file_merchant
+
+    user = get_current_user(request) or {}
+    actor = str(user.get("email") or user.get("id") or "finance-operator")
+    try:
+        result = await asyncio.to_thread(file_merchant, key, category, actor=actor)
+    except ValueError as exc:
+        return _redirect_finance_error(f"Could not file those: {exc}")
+    return _redirect_finance_home(
+        f"Filed {result['filed']} transaction(s) as {result['category']}; "
+        "this merchant will file itself from now on."
+    )
+
+
 @router.post("/bookkeeping/rules/{rule_id}/delete")
 async def bookkeeping_rule_delete_endpoint(request: Request, rule_id: str):
     from sales_support_agent.services.cashflow.bookkeeping import delete_rule
